@@ -62,6 +62,21 @@ func (e *ErrWaitCancelled) Error() string {
 	return fmt.Sprintf("cargo wait cancelled for operation %s, good %s", e.OperationID, e.GoodSymbol)
 }
 
+// ErrWaitTimeout indicates a cargo wait exhausted its retry budget without
+// being satisfied by either a FIFO-queue notification or a direct resync
+// against the operation's storage ships (sp-pafv). Returned instead of
+// blocking forever when a NotifyCargoDeposited/ConfirmDeposit/
+// RegisterStorageShip wake-up is lost or races ahead of the waiter's
+// enqueue. Callers should park/defer the task rather than retry inline.
+type ErrWaitTimeout struct {
+	OperationID string
+	GoodSymbol  string
+}
+
+func (e *ErrWaitTimeout) Error() string {
+	return fmt.Sprintf("cargo wait timed out for operation %s, good %s", e.OperationID, e.GoodSymbol)
+}
+
 // ErrInvalidOperationState indicates operation is in wrong state for action
 type ErrInvalidOperationState struct {
 	OperationID   string

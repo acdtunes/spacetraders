@@ -4,11 +4,27 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 const depositSubscriberBufferSize = 10
+
+// Default grace period and attempt budget for WaitForCargo's
+// timeout->resync->park backstop (sp-pafv, subsumes sp-0e10). A waiter is
+// woken via processWaiterQueue, called from NotifyCargoDeposited/
+// ConfirmDeposit/RegisterStorageShip. If a deposit lands and
+// processWaiterQueue runs in the gap between tryImmediateReservation
+// returning "nothing available" and the waiter actually being enqueued
+// below, that wake-up is permanently missed - a lost-wakeup race. Without a
+// bound, a lost/raced wake-up stalls the waiting worker permanently. These
+// defaults only govern the timeout leg - the happy path (FIFO delivery) is
+// unaffected and still returns as soon as the notification shows up.
+const (
+	DefaultCargoWaitGracePeriod = 30 * time.Second
+	DefaultCargoWaitMaxAttempts = 3
+)
 
 // waiterQueueKey creates a unique key for operation+good combinations
 type waiterQueueKey struct {
@@ -43,15 +59,24 @@ type InMemoryStorageCoordinator struct {
 	// depositSubscribers maps shipSymbol -> list of subscriber channels
 	// Used to notify storage ship workers when cargo is deposited
 	depositSubscribers map[string][]chan storage.CargoDepositNotification
+
+	// cargoWaitGracePeriod and cargoWaitMaxAttempts bound WaitForCargo's
+	// timeout->resync->park backstop (sp-pafv). See the Default* constants
+	// above for the rationale; production always uses those defaults, tests
+	// construct the struct directly with tiny overrides.
+	cargoWaitGracePeriod time.Duration
+	cargoWaitMaxAttempts int
 }
 
 // NewInMemoryStorageCoordinator creates a new storage coordinator
 func NewInMemoryStorageCoordinator() *InMemoryStorageCoordinator {
 	return &InMemoryStorageCoordinator{
-		storageShips:       make(map[string]*storage.StorageShip),
-		shipsByOperation:   make(map[string][]string),
-		waiters:            make(map[waiterQueueKey][]*storage.CargoWaiter),
-		depositSubscribers: make(map[string][]chan storage.CargoDepositNotification),
+		storageShips:         make(map[string]*storage.StorageShip),
+		shipsByOperation:     make(map[string][]string),
+		waiters:              make(map[waiterQueueKey][]*storage.CargoWaiter),
+		depositSubscribers:   make(map[string][]chan storage.CargoDepositNotification),
+		cargoWaitGracePeriod: DefaultCargoWaitGracePeriod,
+		cargoWaitMaxAttempts: DefaultCargoWaitMaxAttempts,
 	}
 }
 
@@ -157,21 +182,84 @@ func (c *InMemoryStorageCoordinator) WaitForCargo(
 	c.waiters[key] = append(c.waiters[key], waiter)
 	c.mu.Unlock()
 
-	// Wait for notification or cancellation
-	select {
-	case <-ctx.Done():
-		// Remove from queue
-		c.removeWaiter(key, waiter)
-		return nil, 0, &storage.ErrWaitCancelled{
-			OperationID: operationID,
-			GoodSymbol:  goodSymbol,
-		}
+	return c.awaitCargo(ctx, key, waiter)
+}
 
+// awaitCargo waits for a queued CargoWaiter to be satisfied via the FIFO
+// notification path (NotifyCargoDeposited/ConfirmDeposit/RegisterStorageShip
+// call processWaiterQueue), with a timeout->resync->park backstop
+// (sp-pafv, subsumes sp-0e10). If the notification that would have woken
+// this waiter is lost - e.g. a deposit lands and processWaiterQueue runs
+// BEFORE this waiter's enqueue above completes, a genuine lost-wakeup race -
+// the wait would otherwise block forever. Instead, each grace period this
+// resyncs by re-checking cargo directly against the operation's storage
+// ships (tryImmediateReservation), bypassing the FIFO channel entirely. If
+// cargo still never shows up after cargoWaitMaxAttempts, the wait gives up
+// with a typed error instead of hanging, and removes the abandoned waiter
+// from the queue so it cannot permanently block waiters behind it
+// (processWaiterQueue stops at the first unsatisfied waiter in FIFO order).
+func (c *InMemoryStorageCoordinator) awaitCargo(
+	ctx context.Context,
+	key waiterQueueKey,
+	waiter *storage.CargoWaiter,
+) (*storage.StorageShip, int, error) {
+	for attempt := 1; attempt <= c.cargoWaitMaxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			c.removeWaiter(key, waiter)
+			return nil, 0, &storage.ErrWaitCancelled{
+				OperationID: key.operationID,
+				GoodSymbol:  key.goodSymbol,
+			}
+
+		case result := <-waiter.ResultChan:
+			if result.Error != nil {
+				return nil, 0, result.Error
+			}
+			return result.StorageShip, result.UnitsReserved, nil
+
+		case <-time.After(c.cargoWaitGracePeriod):
+			// No FIFO notification within the grace period. Resync directly
+			// against ship state instead of assuming the notification is
+			// merely slow - it may have been lost to the enqueue race
+			// described above. removeWaiter is required on success too: if
+			// processWaiterQueue is concurrently satisfying this SAME
+			// waiter via the FIFO path right as this resync also succeeds,
+			// leaving the waiter in the queue would either strand a
+			// duplicate reservation on waiter.ResultChan forever, or leave
+			// a phantom "already served" waiter clogging the FIFO queue.
+			ship, units, err := c.tryImmediateReservation(key.operationID, key.goodSymbol, waiter.MinUnits)
+			if err == nil && ship != nil {
+				c.removeWaiter(key, waiter)
+				return ship, units, nil
+			}
+			// Still nothing available (or a transient lookup error): loop
+			// back for another grace period. A concurrently-delivered FIFO
+			// result, if any, is picked up by this same select on the next
+			// iteration.
+		}
+	}
+
+	// Exhausted every attempt. Do one final non-blocking drain: a FIFO
+	// delivery may have landed in the same instant the last grace period
+	// elapsed (the same benign race described above) - prefer a real
+	// reservation over declaring failure so it is never silently leaked.
+	select {
 	case result := <-waiter.ResultChan:
 		if result.Error != nil {
 			return nil, 0, result.Error
 		}
 		return result.StorageShip, result.UnitsReserved, nil
+	default:
+	}
+
+	// Give up: remove the waiter so it cannot permanently block whoever is
+	// queued behind it, then park by returning a typed error instead of
+	// blocking forever.
+	c.removeWaiter(key, waiter)
+	return nil, 0, &storage.ErrWaitTimeout{
+		OperationID: key.operationID,
+		GoodSymbol:  key.goodSymbol,
 	}
 }
 

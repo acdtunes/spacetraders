@@ -577,8 +577,9 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		}
 	}
 
-	// Event-based waiting
-	if err := e.waitForArrivalEvent(ctx, ship, waitTimeSeconds, logger); err != nil {
+	// Event-based waiting, with a timeout->resync->park backstop if the
+	// ARRIVED event is lost or raced against subscription (sp-pafv).
+	if err := WaitForShipArrival(ctx, e.shipRepo, e.shipEventSubscriber, ship, playerID, waitTimeSeconds, logger); err != nil {
 		return err
 	}
 
@@ -745,45 +746,7 @@ func (e *RouteExecutor) waitForArrival(
 		return nil
 	}
 
-	return e.waitForArrivalEvent(ctx, ship, waitTime, logger)
-}
-
-// waitForArrivalEvent waits for the ARRIVED event from ShipStateScheduler
-func (e *RouteExecutor) waitForArrivalEvent(
-	ctx context.Context,
-	ship *domainNavigation.Ship,
-	waitTime int,
-	logger common.ContainerLogger,
-) error {
-	// Subscribe to ARRIVED event for this ship
-	arrivedCh := e.shipEventSubscriber.SubscribeArrived(ship.ShipSymbol())
-	defer e.shipEventSubscriber.UnsubscribeArrived(ship.ShipSymbol(), arrivedCh)
-
-	logger.Log("INFO", "Waiting for ship arrival event", map[string]interface{}{
-		"ship_symbol":      ship.ShipSymbol(),
-		"action":           "wait_arrival_event",
-		"expected_seconds": waitTime,
-	})
-
-	select {
-	case event := <-arrivedCh:
-		// Ship arrived - update domain state to match
-		logger.Log("INFO", "Ship arrival event received", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "arrival_event_received",
-			"location":    event.Location,
-			"status":      string(event.Status),
-		})
-		// Domain state is already updated by ShipStateScheduler
-		// Just update our local copy to reflect the new state
-		if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-			if err := ship.Arrive(); err != nil {
-				return fmt.Errorf("failed to update ship domain state: %w", err)
-			}
-		}
-		return nil
-
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// Event-based waiting, with a timeout->resync->park backstop if the
+	// ARRIVED event is lost or raced against subscription (sp-pafv).
+	return WaitForShipArrival(ctx, e.shipRepo, e.shipEventSubscriber, ship, playerID, waitTime, logger)
 }

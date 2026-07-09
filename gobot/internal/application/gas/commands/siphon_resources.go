@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -118,8 +119,10 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 }
 
 // waitForShipArrival waits for a ship in transit to complete its journey.
-// Uses event-based waiting via ShipEventSubscriber for efficient arrival detection.
-// This handles ships that were mid-navigation when daemon restarted.
+// Uses event-based waiting via ShipEventSubscriber for efficient arrival
+// detection, with a timeout->resync->park backstop if the ARRIVED event is
+// lost or raced against subscription (sp-pafv). This handles ships that were
+// mid-navigation when daemon restarted.
 func (h *SiphonResourcesHandler) waitForShipArrival(
 	ctx context.Context,
 	ship *navigation.Ship,
@@ -132,25 +135,13 @@ func (h *SiphonResourcesHandler) waitForShipArrival(
 		"action":      "wait_transit_arrival",
 	})
 
-	// Subscribe to arrival events for this ship
-	arrivedCh := h.shipEventSubscriber.SubscribeArrived(ship.ShipSymbol())
-	defer h.shipEventSubscriber.UnsubscribeArrived(ship.ShipSymbol(), arrivedCh)
-
-	select {
-	case <-arrivedCh:
-		// Ship arrived - update domain state
-		logger.Log("INFO", "Received arrival event for siphon ship", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "arrival_event_received",
-		})
-		if ship.NavStatus() == navigation.NavStatusInTransit {
-			if err := ship.Arrive(); err != nil {
-				return fmt.Errorf("failed to update ship domain state: %w", err)
-			}
+	var waitTimeSeconds int
+	if ship.ArrivalTime() != nil {
+		waitTime := time.Until(*ship.ArrivalTime())
+		if waitTime > 0 {
+			waitTimeSeconds = int(waitTime.Seconds())
 		}
-		return nil
-
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+
+	return shipapp.WaitForShipArrival(ctx, h.shipRepo, h.shipEventSubscriber, ship, playerID, waitTimeSeconds, logger)
 }
