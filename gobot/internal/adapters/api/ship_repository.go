@@ -1391,6 +1391,16 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			// immediately after ReleaseAllActive correctly leaves it alone).
 			model.AssignmentOwner = existingModel.AssignmentOwner
 			model.AssignmentReason = existingModel.AssignmentReason
+			// sp-bi75: DedicatedFleet (sp-l7h2) must also be preserved, same
+			// bug class as AssignmentOwner/AssignmentReason above. shipDataToModel
+			// builds the fresh model from raw API data, which has no concept of
+			// the bot's fleet-dedication tag, so it is left at its Go zero value
+			// on every ship synced from the API. Without copying it here, the
+			// UpdateAll upsert below silently wipes every `fleet assign` pin back
+			// to "" on every daemon restart (syncAllShipsOnStartup runs this
+			// unconditionally) - re-opening the hull to poaching by whichever
+			// coordinator claims it first.
+			model.DedicatedFleet = existingModel.DedicatedFleet
 		}
 
 		models = append(models, *model)
@@ -1451,6 +1461,10 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 		// "container" default the next time this ship is synced from the API.
 		model.AssignmentOwner = existingModel.AssignmentOwner
 		model.AssignmentReason = existingModel.AssignmentReason
+		// sp-bi75: see matching comment in SyncAllFromAPI - without this, a
+		// `fleet assign` pin is silently wiped back to "" the next time this
+		// ship is synced from the API, opening it up to poaching.
+		model.DedicatedFleet = existingModel.DedicatedFleet
 	}
 
 	err = r.db.WithContext(ctx).
