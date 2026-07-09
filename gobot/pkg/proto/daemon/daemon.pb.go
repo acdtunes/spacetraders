@@ -5681,8 +5681,13 @@ type StartConstructionPipelineResponse struct {
 	TaskCount        int32                   `protobuf:"varint,5,opt,name=task_count,json=taskCount,proto3" json:"task_count,omitempty"`
 	Status           string                  `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
 	Message          string                  `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Trade symbols of materials that could not be sourced this call (sp-560b).
+	// Each still has a visible PENDING task that the SupplyMonitor re-sources
+	// when supply regenerates; this names them so the operator can source the
+	// gap manually instead of only seeing a generic "no market" log line.
+	DeferredMaterials []string `protobuf:"bytes,8,rep,name=deferred_materials,json=deferredMaterials,proto3" json:"deferred_materials,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StartConstructionPipelineResponse) Reset() {
@@ -5762,6 +5767,13 @@ func (x *StartConstructionPipelineResponse) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *StartConstructionPipelineResponse) GetDeferredMaterials() []string {
+	if x != nil {
+		return x.DeferredMaterials
+	}
+	return nil
 }
 
 // ConstructionMaterial represents a material required for construction
@@ -6708,7 +6720,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"min_supply\x18\a \x01(\tH\x02R\tminSupply\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\x10\n" +
 	"\x0e_system_symbolB\r\n" +
-	"\v_min_supply\"\x9d\x02\n" +
+	"\v_min_supply\"\xcc\x02\n" +
 	"!StartConstructionPipelineResponse\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12+\n" +
@@ -6719,7 +6731,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"task_count\x18\x05 \x01(\x05R\ttaskCount\x12\x16\n" +
 	"\x06status\x18\x06 \x01(\tR\x06status\x12\x18\n" +
-	"\amessage\x18\a \x01(\tR\amessage\"\xad\x01\n" +
+	"\amessage\x18\a \x01(\tR\amessage\x12-\n" +
+	"\x12deferred_materials\x18\b \x03(\tR\x11deferredMaterials\"\xad\x01\n" +
 	"\x14ConstructionMaterial\x12!\n" +
 	"\ftrade_symbol\x18\x01 \x01(\tR\vtradeSymbol\x12\x1a\n" +
 	"\brequired\x18\x02 \x01(\x05R\brequired\x12\x1c\n" +

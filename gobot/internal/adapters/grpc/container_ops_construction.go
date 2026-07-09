@@ -19,6 +19,12 @@ type StartConstructionPipelineResult struct {
 	TaskCount        int32
 	Status           string
 	Message          string
+
+	// DeferredMaterials names every material (trade symbol) that could not be
+	// sourced this call (sp-560b/sp-ooba). Each still has a visible PENDING
+	// task that the SupplyMonitor re-sources when supply regenerates; this
+	// lets the caller report the gap by name instead of a generic message.
+	DeferredMaterials []string
 }
 
 // ConstructionMaterialResult represents material progress info.
@@ -98,13 +104,14 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 	}
 
 	return &StartConstructionPipelineResult{
-		PipelineID:       result.Pipeline.ID(),
-		ConstructionSite: constructionSite,
-		IsResumed:        result.IsResumed,
-		Materials:        materials,
-		TaskCount:        int32(result.Pipeline.TaskCount()),
-		Status:           status,
-		Message:          message,
+		PipelineID:        result.Pipeline.ID(),
+		ConstructionSite:  constructionSite,
+		IsResumed:         result.IsResumed,
+		Materials:         materials,
+		TaskCount:         int32(result.Pipeline.TaskCount()),
+		Status:            status,
+		Message:           message,
+		DeferredMaterials: result.DeferredMaterials,
 	}, nil
 }
 

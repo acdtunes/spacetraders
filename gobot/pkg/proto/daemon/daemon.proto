@@ -804,6 +804,11 @@ message StartConstructionPipelineResponse {
   int32 task_count = 5;
   string status = 6;
   string message = 7;
+  // Trade symbols of materials that could not be sourced this call (sp-560b).
+  // Each still has a visible PENDING task that the SupplyMonitor re-sources
+  // when supply regenerates; this names them so the operator can source the
+  // gap manually instead of only seeing a generic "no market" log line.
+  repeated string deferred_materials = 8;
 }
 
 // ConstructionMaterial represents a material required for construction

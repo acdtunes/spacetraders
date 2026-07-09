@@ -1126,6 +1126,11 @@ type StartConstructionPipelineResponse struct {
 	TaskCount        int32
 	Status           string
 	Message          string
+
+	// DeferredMaterials names every material (trade symbol) that could not be
+	// sourced this call (sp-560b/sp-ooba), so the CLI can report the gap by
+	// name instead of a generic "no market" message.
+	DeferredMaterials []string
 }
 
 // ConstructionMaterialResponse represents a construction material status
@@ -1187,13 +1192,14 @@ func (c *DaemonClient) StartConstructionPipeline(
 	}
 
 	return &StartConstructionPipelineResponse{
-		PipelineID:       resp.PipelineId,
-		ConstructionSite: resp.ConstructionSite,
-		IsResumed:        resp.IsResumed,
-		Materials:        materials,
-		TaskCount:        resp.TaskCount,
-		Status:           resp.Status,
-		Message:          resp.Message,
+		PipelineID:        resp.PipelineId,
+		ConstructionSite:  resp.ConstructionSite,
+		IsResumed:         resp.IsResumed,
+		Materials:         materials,
+		TaskCount:         resp.TaskCount,
+		Status:            resp.Status,
+		Message:           resp.Message,
+		DeferredMaterials: resp.DeferredMaterials,
 	}, nil
 }
 

@@ -63,6 +63,15 @@ func NewConstructionPipelinePlanner(
 type StartOrResumeResult struct {
 	Pipeline  *manufacturing.ManufacturingPipeline
 	IsResumed bool // true if resuming existing, false if newly created
+
+	// DeferredMaterials names every material (trade symbol) that could not be
+	// sourced this call, in the same order the pipeline's materials were
+	// planned/loaded. Planning is never all-or-nothing (sp-ooba): a deferred
+	// material still gets a visible PENDING task that the SupplyMonitor
+	// re-sources later, but the operator needs the name surfaced here rather
+	// than a generic "no market" message (sp-560b) to go source it manually.
+	// Empty (nil) when every material was sourced.
+	DeferredMaterials []string
 }
 
 // StartOrResume starts a new construction pipeline or resumes an existing one.
@@ -126,6 +135,19 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 					return nil, fmt.Errorf("failed to persist updated min-supply floor for pipeline %s: %w", existingPipeline.ID(), err)
 				}
 			}
+
+			// sp-560b: a resumed pipeline's deferred materials live only in its
+			// persisted tasks (the local deferredMaterials slice below only
+			// exists during initial planning), so scan for them here too - the
+			// operator re-running `construction start` on an in-progress
+			// pipeline deserves the same by-name visibility as a fresh plan.
+			resumedDeferred := make([]string, 0)
+			for _, task := range persistedTasks {
+				if task.IsDeferredConstruction() {
+					resumedDeferred = append(resumedDeferred, task.Good())
+				}
+			}
+
 			logger.Log("INFO", "Resuming existing construction pipeline", map[string]interface{}{
 				"pipeline_id":       existingPipeline.ID(),
 				"construction_site": constructionSite,
@@ -134,8 +156,9 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 				"progress":          fmt.Sprintf("%.1f%%", existingPipeline.ConstructionProgress()),
 			})
 			return &StartOrResumeResult{
-				Pipeline:  existingPipeline,
-				IsResumed: true,
+				Pipeline:          existingPipeline,
+				IsResumed:         true,
+				DeferredMaterials: resumedDeferred,
 			}, nil
 		}
 
@@ -264,8 +287,9 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	})
 
 	return &StartOrResumeResult{
-		Pipeline:  pipeline,
-		IsResumed: false,
+		Pipeline:          pipeline,
+		IsResumed:         false,
+		DeferredMaterials: deferredMaterials,
 	}, nil
 }
 

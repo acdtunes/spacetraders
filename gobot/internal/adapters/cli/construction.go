@@ -180,6 +180,18 @@ Examples:
 				}
 			}
 
+			// sp-560b: name every material that couldn't be sourced this pass,
+			// instead of a generic "no market with good supply" message. sp-ooba:
+			// planning is never all-or-nothing, so this can be non-empty even
+			// though the pipeline above started successfully - it's the gap the
+			// captain needs to go source manually.
+			if len(result.DeferredMaterials) > 0 {
+				fmt.Println("\nDeferred (no source found yet):")
+				for _, mat := range result.DeferredMaterials {
+					fmt.Printf("  - %s\n", mat)
+				}
+			}
+
 			if result.Message != "" {
 				fmt.Printf("\n%s\n", result.Message)
 			}

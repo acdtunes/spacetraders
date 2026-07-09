@@ -298,6 +298,9 @@ func TestStartOrResume_ExistingPipelineWithIncompleteTasks_Resumes(t *testing.T)
 	if len(taskRepo.createdBatches) != 0 {
 		t.Errorf("expected no new tasks persisted, got %d batches", len(taskRepo.createdBatches))
 	}
+	if len(result.DeferredMaterials) != 0 {
+		t.Errorf("expected no deferred materials when the resumed pipeline has no deferred task, got %v", result.DeferredMaterials)
+	}
 }
 
 // sp-j2hq: StartOrResume's resume branch must persist an updated --min-supply
@@ -492,6 +495,139 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testi
 	}
 	if result.Pipeline.Status() != manufacturing.PipelineStatusExecuting {
 		t.Errorf("expected pipeline EXECUTING so the sourceable leg runs, got %s", result.Pipeline.Status())
+	}
+}
+
+// sp-560b/sp-ooba: the caller (daemon gRPC + CLI) needs the unsourceable
+// material's NAME surfaced on the result, not just a task-level signal buried
+// in persisted state that never reaches `construction start` output. Same
+// setup as TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral,
+// asserting on the new StartOrResumeResult.DeferredMaterials field.
+func TestStartOrResume_MixedSourceableAndUnsourceable_ReportsDeferredMaterialByName(t *testing.T) {
+	const circuitryLimited = "X1-PZ28-D40"
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket, circuitryLimited},
+		markets: map[string]*market.Market{
+			plannerTestMarket: newTradeTypeMarket(t, plannerTestMarket, "FAB_MATS", "ABUNDANT", "STRONG", market.TradeTypeExport, 100),
+			circuitryLimited:  newTradeTypeMarket(t, circuitryLimited, "ADVANCED_CIRCUITRY", "LIMITED", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
+	if err != nil {
+		t.Fatalf("StartOrResume must not fail when one material is unsourceable: %v", err)
+	}
+
+	if len(result.DeferredMaterials) != 1 || result.DeferredMaterials[0] != "ADVANCED_CIRCUITRY" {
+		t.Errorf(`expected DeferredMaterials to name the unsourceable material ["ADVANCED_CIRCUITRY"], got %v`, result.DeferredMaterials)
+	}
+}
+
+// A fully-sourceable plan must report zero deferred materials - the new field
+// must not regress the happy path (sp-ooba: partial planning must be a
+// no-op change when nothing is actually unsourceable).
+func TestStartOrResume_FullySourceable_ReportsNoDeferredMaterials(t *testing.T) {
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if len(result.DeferredMaterials) != 0 {
+		t.Errorf("expected no deferred materials for a fully-sourceable plan, got %v", result.DeferredMaterials)
+	}
+}
+
+// A fully-unsourceable plan must report EVERY material by name, not a single
+// generic message - the operator needs to know exactly what to go source
+// manually (sp-560b). The plan must still succeed and start (sp-ooba: never
+// a hard abort), just with zero READY tasks until supply regenerates.
+func TestStartOrResume_FullyUnsourceable_ReportsAllMaterialsByName(t *testing.T) {
+	marketRepo := &plannerStubMarketRepo{}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
+	if err != nil {
+		t.Fatalf("StartOrResume must not fail even when every material is unsourceable: %v", err)
+	}
+
+	// Order matches how the construction site's materials were loaded
+	// (FAB_MATS, ADVANCED_CIRCUITRY - see newPlannerTestConstructionSite),
+	// per the DeferredMaterials doc comment's ordering guarantee.
+	wantDeferred := []string{"FAB_MATS", "ADVANCED_CIRCUITRY"}
+	if len(result.DeferredMaterials) != len(wantDeferred) {
+		t.Fatalf("expected both materials reported as deferred, got %v", result.DeferredMaterials)
+	}
+	for i, want := range wantDeferred {
+		if result.DeferredMaterials[i] != want {
+			t.Errorf("expected DeferredMaterials[%d]=%s, got %v", i, want, result.DeferredMaterials)
+		}
+	}
+
+	// Back up "zero READY tasks until supply regenerates": both materials'
+	// tasks must actually be PENDING/deferred, not just named on the result.
+	for _, good := range wantDeferred {
+		task := findTaskByGood(result.Pipeline, good)
+		if task == nil {
+			t.Fatalf("expected a %s task", good)
+		}
+		if task.Status() != manufacturing.TaskStatusPending {
+			t.Errorf("expected %s task PENDING (no source found), got %s", good, task.Status())
+		}
+		if !task.IsDeferredConstruction() {
+			t.Errorf("expected %s task to report IsDeferredConstruction()", good)
+		}
+	}
+
+	if result.Pipeline.Status() != manufacturing.PipelineStatusExecuting {
+		t.Errorf("expected an all-deferred pipeline to still start (EXECUTING) so tasks recover when supply regenerates, got %s", result.Pipeline.Status())
+	}
+}
+
+// The RESUME branch must also report deferred materials by name (sp-560b) -
+// not just the new-pipeline branch. A resumed pipeline's deferred tasks come
+// from persisted rows (e.g. after a daemon restart), so the planner must scan
+// them via IsDeferredConstruction()/Good() rather than relying on the local
+// slice that only exists during initial planning.
+func TestStartOrResume_ResumeWithDeferredTask_ReportsDeferredMaterialByName(t *testing.T) {
+	existing := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 5)
+	if err := existing.Start(); err != nil {
+		t.Fatalf("existing.Start: %v", err)
+	}
+	readyTask := manufacturing.NewDeliverToConstructionTask(
+		existing.ID(), 1, "FAB_MATS", plannerTestMarket, "", plannerTestSite, nil,
+	)
+	deferredTask := manufacturing.NewDeliverToConstructionTask(
+		existing.ID(), 1, "ADVANCED_CIRCUITRY", "", "", plannerTestSite, nil,
+	)
+
+	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{
+		existing.ID(): {readyTask, deferredTask},
+	}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if !result.IsResumed {
+		t.Fatal("expected IsResumed=true for a pipeline with incomplete tasks")
+	}
+	if len(result.DeferredMaterials) != 1 || result.DeferredMaterials[0] != "ADVANCED_CIRCUITRY" {
+		t.Errorf(`expected resumed pipeline to report its persisted deferred task by name ["ADVANCED_CIRCUITRY"], got %v`, result.DeferredMaterials)
 	}
 }
 

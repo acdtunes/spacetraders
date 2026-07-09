@@ -1054,13 +1054,14 @@ func (s *daemonServiceImpl) StartConstructionPipeline(ctx context.Context, req *
 	}
 
 	return &pb.StartConstructionPipelineResponse{
-		PipelineId:       result.PipelineID,
-		ConstructionSite: result.ConstructionSite,
-		IsResumed:        result.IsResumed,
-		Materials:        pbMaterials,
-		TaskCount:        result.TaskCount,
-		Status:           result.Status,
-		Message:          result.Message,
+		PipelineId:        result.PipelineID,
+		ConstructionSite:  result.ConstructionSite,
+		IsResumed:         result.IsResumed,
+		Materials:         pbMaterials,
+		TaskCount:         result.TaskCount,
+		Status:            result.Status,
+		Message:           result.Message,
+		DeferredMaterials: result.DeferredMaterials,
 	}, nil
 }
 
