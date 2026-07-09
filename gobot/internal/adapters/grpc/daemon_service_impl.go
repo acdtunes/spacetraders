@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -265,8 +265,10 @@ func (s *daemonServiceImpl) ContractFleetCoordinator(ctx context.Context, req *p
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	// No ship symbols needed - coordinator discovers idle haulers dynamically
-	containerID, err := s.daemon.ContractFleetCoordinator(ctx, nil, playerID)
+	// No ship symbols needed - coordinator discovers idle haulers dynamically.
+	// dedicated_ships/standby_stations (sp-snmb) are optional operator params
+	// for a static dedicated contract fleet; nil/empty when not configured.
+	containerID, err := s.daemon.ContractFleetCoordinator(ctx, nil, playerID, req.DedicatedShips, req.StandbyStations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start contract fleet coordinator: %w", err)
 	}

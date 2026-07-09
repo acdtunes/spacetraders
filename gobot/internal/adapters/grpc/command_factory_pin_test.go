@@ -88,6 +88,29 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 			},
 		},
 		{
+			// sp-snmb: dedicated_ships/standby_stations are optional config keys
+			// populated from the operator's --dedicated-ships/--standby-stations
+			// CLI flags. The case above (neither key present) must still default
+			// both fields to nil - covered implicitly since its `want` leaves
+			// them unset.
+			name:        "contract_fleet_coordinator with dedicated fleet params",
+			commandType: "contract_fleet_coordinator",
+			containerID: "fleet-2",
+			launchConfig: map[string]interface{}{
+				"ship_symbols":     []interface{}{},
+				"container_id":     "fleet-2",
+				"dedicated_ships":  []string{"TORWIND-4", "TORWIND-5"},
+				"standby_stations": []string{"X1-TEST-J56", "X1-TEST-E42"},
+			},
+			want: &contractCmd.RunFleetCoordinatorCommand{
+				PlayerID:        pid,
+				ShipSymbols:     []string{},
+				ContainerID:     "fleet-2",
+				DedicatedShips:  []string{"TORWIND-4", "TORWIND-5"},
+				StandbyStations: []string{"X1-TEST-J56", "X1-TEST-E42"},
+			},
+		},
+		{
 			name:        "purchase_ship",
 			commandType: "purchase_ship",
 			containerID: "purchase-1",

@@ -242,6 +242,15 @@ message BatchContractWorkflowResponse {
 message ContractFleetCoordinatorRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
+  // dedicated_ships (sp-snmb): operator-supplied --dedicated-ships list.
+  // Ships on this list are claim-filtered from every other coordinator's
+  // discovery pool and reserved exclusively for this contract coordinator.
+  // Optional - empty/absent means no dedicated fleet is configured.
+  repeated string dedicated_ships = 3;
+  // standby_stations (sp-snmb): operator-supplied --standby-stations list.
+  // An idle dedicated ship homes to the nearest of these waypoints instead
+  // of being balanced to a market. Optional - empty/absent disables homing.
+  repeated string standby_stations = 4;
 }
 
 message ContractFleetCoordinatorResponse {

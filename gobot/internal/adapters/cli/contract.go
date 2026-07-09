@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -389,6 +390,11 @@ Examples:
 
 // newContractStartCommand creates the contract start subcommand
 func newContractStartCommand() *cobra.Command {
+	var (
+		dedicatedShipsCsv  string
+		standbyStationsCsv string
+	)
+
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start contract fleet coordinator",
@@ -404,9 +410,20 @@ The coordinator will:
 
 Ships are selected dynamically from the pool of idle haulers. No pre-assignment needed.
 
+Optionally, a static dedicated contract fleet can be configured with
+--dedicated-ships: those ships are claim-filtered out of every other
+coordinator's discovery pool (mfg/gas/trade-route) and reserved exclusively
+for this contract coordinator. Pair with --standby-stations so an idle
+dedicated ship homes to the nearest standby waypoint instead of being
+balanced to a market. Both flags are optional; omitting them keeps the
+coordinator's original behavior (all idle haulers, no dedicated fleet).
+
 Examples:
   spacetraders contract start --player-id 1
-  spacetraders contract start --agent ENDURANCE`,
+  spacetraders contract start --agent ENDURANCE
+  spacetraders contract start --agent ENDURANCE \
+    --dedicated-ships ENDURANCE-4,ENDURANCE-5,ENDURANCE-6 \
+    --standby-stations X1-TEST-J56,X1-TEST-E42,X1-TEST-H49,X1-TEST-B7`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 
 			// Resolve player from flags or defaults
@@ -414,6 +431,11 @@ Examples:
 			if err != nil {
 				return err
 			}
+
+			// Parse the optional dedicated-fleet CSV flags (sp-snmb). Both are
+			// nil when unset, keeping the coordinator's plain behavior intact.
+			dedicatedShips := parseCsvList(dedicatedShipsCsv)
+			standbyStations := parseCsvList(standbyStationsCsv)
 
 			// Create gRPC client
 			client, err := connectDaemon()
@@ -426,7 +448,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := client.ContractFleetCoordinator(ctx, nil, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			result, err := client.ContractFleetCoordinator(ctx, nil, playerIdent.PlayerID, playerIdent.AgentSymbol, dedicatedShips, standbyStations)
 			if err != nil {
 				return fmt.Errorf("contract fleet coordinator failed: %w", err)
 			}
@@ -438,11 +460,20 @@ Examples:
 			fmt.Println("\n  The coordinator will use all available idle light hauler ships.")
 			fmt.Println("  Ships are selected dynamically for each contract.")
 			fmt.Println("  The coordinator will continuously negotiate and execute contracts.")
+			if len(dedicatedShips) > 0 {
+				fmt.Printf("  Dedicated fleet:  %s\n", strings.Join(dedicatedShips, ", "))
+			}
+			if len(standbyStations) > 0 {
+				fmt.Printf("  Standby stations: %s\n", strings.Join(standbyStations, ", "))
+			}
 			fmt.Println("  Use 'spacetraders container stop " + result.ContainerID + "' to stop the coordinator.")
 
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&dedicatedShipsCsv, "dedicated-ships", "", "Comma-separated list of ship symbols reserved exclusively for this contract coordinator (optional)")
+	cmd.Flags().StringVar(&standbyStationsCsv, "standby-stations", "", "Comma-separated list of waypoints an idle dedicated ship homes to (optional, requires --dedicated-ships)")
 
 	return cmd
 }

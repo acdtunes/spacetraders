@@ -76,8 +76,9 @@ const (
 //
 // A ship is a candidate if:
 //  1. Its role is "HAULER" - or "COMMAND" when the caller passes IncludeCommandShip
-//  2. It has cargo capacity (excludes probes/satellites)
-//  3. It is not in transit and has no active assignment (Ship.IsIdle() is true)
+//  2. It is not dedicated to a coordinator's exclusive fleet (Ship.DedicatedFleet() is empty)
+//  3. It has cargo capacity (excludes probes/satellites)
+//  4. It is not in transit and has no active assignment (Ship.IsIdle() is true)
 //
 // This provides a dynamic pool of available haulers without requiring pre-assignment.
 // Ship assignment status is now embedded in the Ship aggregate and enriched by the repository.
@@ -137,6 +138,16 @@ func FindIdleLightHaulers(
 			continue
 		}
 
+		// Claim-filter (sp-snmb): a ship dedicated to a coordinator (via the
+		// operator-configured --dedicated-ships list) is invisible to this
+		// general-purpose pool, unconditionally. Every caller of this function
+		// (contract, manufacturing, factory, balance-handler) shares this one
+		// exclusion "for free" - the contract coordinator finds its own
+		// dedicated ships separately via FindIdleDedicatedShips.
+		if ship.DedicatedFleet() != "" {
+			continue
+		}
+
 		// Must have cargo capacity (excludes probes/satellites tagged as haulers)
 		if ship.CargoCapacity() == 0 {
 			continue
@@ -169,6 +180,77 @@ func FindIdleLightHaulers(
 	})
 
 	return idleHaulers, idleHaulerSymbols, nil
+}
+
+// FindIdleDedicatedShips looks up the contract coordinator's own reserved
+// fleet by symbol - the operator-supplied --dedicated-ships list - and
+// returns only the ones currently idle. Busy ships and unknown/not-yet-owned
+// symbols are silently skipped rather than erroring, since fleet composition
+// legitimately varies over the coordinator's lifetime (sp-snmb).
+//
+// Unlike FindIdleLightHaulers, this does not filter by role or cargo
+// capacity: a ship qualifies purely by being named on the operator's list,
+// whatever hull it is. The list itself is the authorization - there is no
+// need to also check Ship.DedicatedFleet(), since the caller already knows
+// which ships it dedicated.
+//
+// Parameters:
+//   - ctx: Context for cancellation and logging
+//   - playerID: Player ID to find ships for
+//   - shipRepo: Repository to query ships (enriches assignment data automatically)
+//   - dedicatedShips: Ship symbols reserved for this coordinator (operator-supplied)
+//
+// Returns:
+//   - ships: List of idle dedicated ship entities
+//   - shipSymbols: List of idle dedicated ship symbols (for convenience)
+//   - error: Any error encountered
+func FindIdleDedicatedShips(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
+	dedicatedShips []string,
+) ([]*navigation.Ship, []string, error) {
+	if len(dedicatedShips) == 0 {
+		return nil, nil, nil
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+
+	wanted := make(map[string]bool, len(dedicatedShips))
+	for _, symbol := range dedicatedShips {
+		wanted[symbol] = true
+	}
+
+	var idleShips []*navigation.Ship
+	var idleSymbols []string
+	for _, ship := range allShips {
+		if !wanted[ship.ShipSymbol()] {
+			continue
+		}
+		// Exclude ships in transit (even without assignment), mirroring
+		// FindIdleLightHaulers: a hull mid-flight is not available to dispatch.
+		if ship.NavStatus() == navigation.NavStatusInTransit {
+			continue
+		}
+		if ship.IsIdle() {
+			idleShips = append(idleShips, ship)
+			idleSymbols = append(idleSymbols, ship.ShipSymbol())
+		}
+	}
+
+	logger.Log("INFO", "Idle dedicated ships discovered", map[string]interface{}{
+		"action":          "find_idle_dedicated_ships",
+		"dedicated_total": len(dedicatedShips),
+		"idle_dedicated":  len(idleSymbols),
+		"ship_symbols":    idleSymbols,
+	})
+
+	return idleShips, idleSymbols, nil
 }
 
 // isCommandShip checks if a ship symbol represents the command ship (ship #1).

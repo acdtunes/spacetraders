@@ -97,6 +97,12 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		Errors:             []string{},
 	}
 
+	// Reconcile the operator's --dedicated-ships list into the DedicatedFleet
+	// claim-filter (sp-snmb). Best-effort and additive-only: a ship symbol
+	// dropped from a later --dedicated-ships list on restart is NOT
+	// un-dedicated here, only newly-configured symbols are marked.
+	reconcileDedicatedFleet(ctx, logger, h.shipRepo, cmd.PlayerID, cmd.DedicatedShips, dedicatedFleetContract)
+
 	// No pool initialization - ships are discovered dynamically
 
 	// Subscribe to WorkerCompletedEvent for this coordinator
@@ -143,7 +149,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// legs fine and is often the fastest, largest hull owned, so it competes
 		// on distance like any hauler instead of sitting benched until zero
 		// haulers remain.
-		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, appContract.IncludeCommandShip)
+		_, generalShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, appContract.IncludeCommandShip)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -155,6 +161,21 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 		errMon.Note("find_idle_haulers", "")
+
+		// The coordinator's own dedicated fleet (sp-snmb) is invisible to
+		// FindIdleLightHaulers via the claim-filter, so it is looked up
+		// separately here and folded into the same candidate pool - dedicated
+		// ships still do contract work, they're just exclusive to this
+		// coordinator.
+		_, dedicatedIdleShips, err := appContract.FindIdleDedicatedShips(ctx, cmd.PlayerID, h.shipRepo, cmd.DedicatedShips)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to find idle dedicated ships: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			h.clock.Sleep(10 * time.Second)
+			continue
+		}
+		availableShips := append(generalShips, dedicatedIdleShips...)
 
 		// If no ships available, wait for completion signal
 		if len(availableShips) == 0 {
@@ -327,26 +348,51 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 
-		// If selected ship is different from previous ship, balance previous ship's position
+		// If selected ship is different from previous ship, reposition the
+		// previous ship: a dedicated ship (sp-snmb) homes to its nearest
+		// operator-configured standby station instead of the normal
+		// market-balancing treatment, since it's exclusively reserved for
+		// this coordinator and has no reason to loiter at a general market.
 		if previousShipSymbol != "" && previousShipSymbol != selectedShip {
-			logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
+			if isDedicatedShip(previousShipSymbol, cmd.DedicatedShips) {
+				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - homing dedicated ship %s to standby station", previousShipSymbol, selectedShip, previousShipSymbol), nil)
 
-			// Launch balancing command asynchronously (fire-and-forget)
-			go func(shipSymbol string, playerID shared.PlayerID, coordinatorID string) {
-				balanceCmd := &BalanceShipPositionCommand{
-					ShipSymbol:    shipSymbol,
-					PlayerID:      playerID,
-					CoordinatorID: coordinatorID,
-				}
-				// Create background context since parent context may be cancelled
-				balanceCtx := context.Background()
-				balanceCtx = common.WithLogger(balanceCtx, common.LoggerFromContext(ctx))
+				// Launch homing command asynchronously (fire-and-forget)
+				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string) {
+					homeCmd := &HomeShipCommand{
+						ShipSymbol:      shipSymbol,
+						PlayerID:        playerID,
+						StandbyStations: standbyStations,
+					}
+					// Create background context since parent context may be cancelled
+					homeCtx := context.Background()
+					homeCtx = common.WithLogger(homeCtx, common.LoggerFromContext(ctx))
 
-				_, err := h.fleetPoolManager.GetMediator().Send(balanceCtx, balanceCmd)
-				if err != nil {
-					logger.Log("WARNING", fmt.Sprintf("Failed to balance ship %s position: %v", shipSymbol, err), nil)
-				}
-			}(previousShipSymbol, cmd.PlayerID, cmd.ContainerID)
+					_, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd)
+					if err != nil {
+						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
+					}
+				}(previousShipSymbol, cmd.PlayerID, cmd.StandbyStations)
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
+
+				// Launch balancing command asynchronously (fire-and-forget)
+				go func(shipSymbol string, playerID shared.PlayerID, coordinatorID string) {
+					balanceCmd := &BalanceShipPositionCommand{
+						ShipSymbol:    shipSymbol,
+						PlayerID:      playerID,
+						CoordinatorID: coordinatorID,
+					}
+					// Create background context since parent context may be cancelled
+					balanceCtx := context.Background()
+					balanceCtx = common.WithLogger(balanceCtx, common.LoggerFromContext(ctx))
+
+					_, err := h.fleetPoolManager.GetMediator().Send(balanceCtx, balanceCmd)
+					if err != nil {
+						logger.Log("WARNING", fmt.Sprintf("Failed to balance ship %s position: %v", shipSymbol, err), nil)
+					}
+				}(previousShipSymbol, cmd.PlayerID, cmd.ContainerID)
+			}
 		}
 
 		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip)
@@ -394,6 +440,59 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			return result, ctx.Err()
 		}
 	}
+}
+
+// dedicatedFleetContract is the Ship.DedicatedFleet() value this coordinator
+// reconciles its --dedicated-ships list into (sp-snmb).
+const dedicatedFleetContract = "contract"
+
+// reconcileDedicatedFleet marks every operator-configured --dedicated-ships
+// entry into fleetName so the DedicatedFleet claim-filter in
+// FindIdleLightHaulers actually takes effect. Additive-only: a symbol removed
+// from a later --dedicated-ships list on restart is NOT un-dedicated by this
+// pass - only newly-configured symbols are reconciled (deferred symmetric-
+// removal gap, sp-snmb). Idempotent: a ship already reconciled into fleetName
+// is skipped so a restart with an unchanged list performs zero DB writes.
+// Per-ship load/save failures are logged at WARNING and skipped rather than
+// aborting the whole pass, since one bad symbol (e.g. a ship sold since the
+// operator last updated the flag) must not block reconciling the rest.
+func reconcileDedicatedFleet(
+	ctx context.Context,
+	logger common.ContainerLogger,
+	shipRepo navigation.ShipRepository,
+	playerID shared.PlayerID,
+	dedicatedShips []string,
+	fleetName string,
+) {
+	for _, symbol := range dedicatedShips {
+		ship, err := shipRepo.FindBySymbol(ctx, symbol, playerID)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to load ship %s: %v", symbol, err), nil)
+			continue
+		}
+		if ship.DedicatedFleet() == fleetName {
+			continue // Already reconciled.
+		}
+		ship.SetDedicatedFleet(fleetName)
+		if err := shipRepo.Save(ctx, ship); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to save ship %s: %v", symbol, err), nil)
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Ship %s reconciled into dedicated %s fleet", symbol, fleetName), nil)
+	}
+}
+
+// isDedicatedShip reports whether shipSymbol is one of the operator's
+// configured --dedicated-ships (sp-snmb). Used at the "previous ship" hook to
+// decide whether an idle ship should home to a standby station instead of
+// being balanced to a market.
+func isDedicatedShip(shipSymbol string, dedicatedShips []string) bool {
+	for _, symbol := range dedicatedShips {
+		if symbol == shipSymbol {
+			return true
+		}
+	}
+	return false
 }
 
 // recordWorkerCompletion logs the outcome of a worker-completion event honestly

@@ -145,16 +145,25 @@ func (s *DaemonServer) StartContractWorkflow(
 }
 
 // ContractFleetCoordinator creates a fleet coordinator for multi-ship contract operations
-// Ships are discovered dynamically - no pre-assignment needed
-func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols []string, playerID int) (string, error) {
+// Ships are discovered dynamically - no pre-assignment needed.
+//
+// dedicatedShips/standbyStations (sp-snmb) are the operator's optional
+// --dedicated-ships/--standby-stations CLI parameters, threaded straight into
+// the persisted launch config so they survive restart recovery unchanged
+// (buildContractFleetCoordinatorCommand reads them back via
+// configReader.OptionalStringSlice). Both are nil/empty when the operator
+// runs a plain, non-dedicated coordinator - the feature is opt-in.
+func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols []string, playerID int, dedicatedShips []string, standbyStations []string) (string, error) {
 	// Create container ID using player ID instead of ship symbol (no ships pre-assigned)
 	containerID := utils.GenerateContainerID("contract_fleet_coordinator", fmt.Sprintf("player-%d", playerID))
 
 	// No ship symbols metadata needed (dynamic discovery - no pre-assignment)
 	var shipSymbolsInterface []interface{}
 	config := map[string]interface{}{
-		"ship_symbols": shipSymbolsInterface,
-		"container_id": containerID,
+		"ship_symbols":     shipSymbolsInterface,
+		"container_id":     containerID,
+		"dedicated_ships":  dedicatedShips,
+		"standby_stations": standbyStations,
 	}
 
 	// Create contract fleet coordinator command from the launch config

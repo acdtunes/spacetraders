@@ -113,6 +113,18 @@ type RunFleetCoordinatorCommand struct {
 	PlayerID    shared.PlayerID
 	ShipSymbols []string // Deprecated: kept for backward compatibility, no longer used
 	ContainerID string   // Coordinator's own container ID
+
+	// DedicatedShips (sp-snmb): operator-supplied ship symbols permanently
+	// reserved for this coordinator, parametrized via CLI/config - e.g.
+	// --dedicated-ships. NOT a hardcoded default; an empty list means no
+	// dedicated fleet and the coordinator behaves exactly as before.
+	DedicatedShips []string
+
+	// StandbyStations (sp-snmb): operator-supplied waypoint symbols an idle
+	// dedicated ship homes to, parametrized via CLI/config - e.g.
+	// --standby-stations. An empty list disables homing (dedicated ships
+	// still get the claim-filter, they just don't relocate when idle).
+	StandbyStations []string
 }
 
 // RunFleetCoordinatorResponse contains fleet coordination results.
@@ -161,4 +173,25 @@ type BalanceShipPositionResponse struct {
 	Distance      float64 // Distance from ship to target market
 	Score         float64 // Balancing score (lower is better)
 	Navigated     bool    // Whether navigation was successful
+}
+
+// ============================================================================
+// Dedicated Ship Homing (sp-snmb)
+// ============================================================================
+
+// HomeShipCommand requests sending an idle dedicated ship to the nearest
+// operator-configured standby station. Unlike BalanceShipPositionCommand,
+// this has no market-balancing scoring - it is a simple nearest-station
+// dispatch for a ship that already has no work and nowhere else to be.
+type HomeShipCommand struct {
+	ShipSymbol      string
+	PlayerID        shared.PlayerID
+	StandbyStations []string // Operator-supplied waypoint symbols (--standby-stations)
+}
+
+// HomeShipResponse contains the result of a homing dispatch.
+type HomeShipResponse struct {
+	TargetStation string  // Waypoint symbol of the selected standby station
+	Distance      float64 // Distance from ship to target station
+	Navigated     bool    // Whether navigation was successful (false if already there, or no stations configured)
 }

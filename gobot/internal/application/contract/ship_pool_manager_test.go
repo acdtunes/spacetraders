@@ -132,3 +132,54 @@ func TestFindIdleLightHaulers_ExcludesCommandShip_WhenNotOptedIn(t *testing.T) {
 		t.Fatalf("hauler TORWIND-3 missing from manufacturing pool %v", symbols)
 	}
 }
+
+// Claim-filter (sp-snmb): a ship marked DedicatedFleet is reserved exclusively
+// for the contract coordinator's own direct lookup (FindIdleDedicatedShips) -
+// every other coordinator (manufacturing, factory, gas, balance-handler) shares
+// this same discovery function, so excluding dedicated ships here, unconditionally,
+// is what makes them invisible fleet-wide "for free" without touching every
+// caller individually.
+func TestFindIdleLightHaulers_ExcludesDedicatedShips(t *testing.T) {
+	dedicated := newCandidateShip(t, "TORWIND-4", "HAULER", 30, 10, 0)
+	dedicated.SetDedicatedFleet("contract")
+	general := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{dedicated, general}}
+
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, IncludeCommandShip)
+	if err != nil {
+		t.Fatalf("FindIdleLightHaulers: %v", err)
+	}
+
+	if containsSymbol(symbols, "TORWIND-4") {
+		t.Fatalf("dedicated ship TORWIND-4 must be excluded from the general pool %v - it is reserved for the contract coordinator's own dedicated lookup", symbols)
+	}
+	if !containsSymbol(symbols, "TORWIND-3") {
+		t.Fatalf("non-dedicated hauler TORWIND-3 missing from candidate pool %v", symbols)
+	}
+}
+
+// FindIdleDedicatedShips is the contract coordinator's direct lookup for its
+// reserved fleet (sp-snmb): given the operator-supplied --dedicated-ships list,
+// it returns only the ones that are currently idle - busy ships and unknown
+// symbols are silently skipped rather than erroring, since the fleet composition
+// legitimately varies (a dedicated ship might be mid-delivery, or not yet owned).
+func TestFindIdleDedicatedShips_ReturnsOnlyIdleListedShips(t *testing.T) {
+	idle := newCandidateShip(t, "TORWIND-4", "HAULER", 30, 10, 0)
+	idle.SetDedicatedFleet("contract")
+	busy := newCandidateShip(t, "TORWIND-5", "HAULER", 30, 10, 0)
+	busy.SetDedicatedFleet("contract")
+	if err := busy.AssignToContainer("contract-worker-TORWIND-5", shared.NewRealClock()); err != nil {
+		t.Fatalf("assign busy dedicated ship: %v", err)
+	}
+	unrelated := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{idle, busy, unrelated}}
+
+	_, symbols, err := FindIdleDedicatedShips(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-4", "TORWIND-5", "TORWIND-9"})
+	if err != nil {
+		t.Fatalf("FindIdleDedicatedShips: %v", err)
+	}
+
+	if len(symbols) != 1 || symbols[0] != "TORWIND-4" {
+		t.Fatalf("expected only the idle dedicated ship [TORWIND-4], got %v", symbols)
+	}
+}

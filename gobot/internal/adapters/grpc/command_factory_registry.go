@@ -104,6 +104,23 @@ func (r *configReader) RequiredStringSlice(key string, aliases ...string) []stri
 	return nil
 }
 
+// OptionalStringSlice reads a string-slice config value with no required
+// default (e.g. sp-snmb's --dedicated-ships/--standby-stations, which are
+// opt-in and disabled entirely when absent). Unlike RequiredStringSlice, a
+// missing or wrong-typed key is not a validation failure - it simply
+// returns nil.
+func (r *configReader) OptionalStringSlice(key string, aliases ...string) []string {
+	if value, ok := stringSliceValue(r.values[key]); ok {
+		return value
+	}
+	for _, alias := range aliases {
+		if value, ok := stringSliceValue(r.values[alias]); ok {
+			return value
+		}
+	}
+	return nil
+}
+
 func intValue(raw interface{}) (int, bool) {
 	switch v := raw.(type) {
 	case int:
@@ -201,9 +218,11 @@ func buildContractWorkflowCommand(cfg *configReader, playerID int, containerID s
 
 func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &contractCmd.RunFleetCoordinatorCommand{
-		PlayerID:    shared.MustNewPlayerID(playerID),
-		ShipSymbols: []string{},
-		ContainerID: cfg.RequiredString("container_id"),
+		PlayerID:        shared.MustNewPlayerID(playerID),
+		ShipSymbols:     []string{},
+		ContainerID:     cfg.RequiredString("container_id"),
+		DedicatedShips:  cfg.OptionalStringSlice("dedicated_ships"),
+		StandbyStations: cfg.OptionalStringSlice("standby_stations"),
 	}
 }
 

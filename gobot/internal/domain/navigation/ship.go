@@ -72,6 +72,12 @@ type Ship struct {
 	flightMode         string     // Current flight mode (CRUISE, DRIFT, BURN, STEALTH)
 	arrivalTime        *time.Time // When IN_TRANSIT ship will arrive
 	cooldownExpiration *time.Time // When cooldown expires (mining, surveying, etc.)
+
+	// dedicatedFleet marks the ship as permanently reserved for a specific
+	// coordinator (e.g. "contract"), set by the operator via CLI/config rather
+	// than derived at runtime. Empty means unreserved - the ship is fair game
+	// for any coordinator's normal discovery (sp-snmb).
+	dedicatedFleet string
 }
 
 // NewShip creates a new Ship entity with validation
@@ -566,9 +572,24 @@ func (s *Ship) CooldownExpiration() *time.Time {
 	return s.cooldownExpiration
 }
 
+// DedicatedFleet returns the coordinator this ship is permanently reserved
+// for (e.g. "contract"), or "" if the ship is unreserved and available to
+// any coordinator's normal discovery (sp-snmb).
+func (s *Ship) DedicatedFleet() string {
+	return s.dedicatedFleet
+}
+
 // SetFlightMode sets the ship's flight mode
 func (s *Ship) SetFlightMode(mode string) {
 	s.flightMode = mode
+}
+
+// SetDedicatedFleet marks (or clears, with "") the ship as permanently
+// reserved for the named coordinator. Used by repositories when loading from
+// database, and by a coordinator's startup reconciliation of its configured
+// --dedicated-ships list (sp-snmb).
+func (s *Ship) SetDedicatedFleet(fleet string) {
+	s.dedicatedFleet = fleet
 }
 
 // SetArrivalTime sets when the ship will arrive
@@ -621,6 +642,7 @@ func ReconstructShip(
 	arrivalTime *time.Time,
 	cooldownExpiration *time.Time,
 	assignment *ShipAssignment,
+	dedicatedFleet string,
 ) (*Ship, error) {
 	s := &Ship{
 		shipSymbol:         shipSymbol,
@@ -639,6 +661,7 @@ func ReconstructShip(
 		arrivalTime:        arrivalTime,
 		cooldownExpiration: cooldownExpiration,
 		assignment:         assignment,
+		dedicatedFleet:     dedicatedFleet,
 		fuelService:        NewShipFuelService(),
 	}
 

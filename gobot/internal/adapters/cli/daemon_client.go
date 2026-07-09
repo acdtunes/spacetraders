@@ -825,15 +825,23 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 }
 
 // ContractFleetCoordinator starts a contract fleet coordinator
-// Uses all available idle light hauler ships (no pre-assignment needed)
+// Uses all available idle light hauler ships (no pre-assignment needed).
+//
+// dedicatedShips/standbyStations (sp-snmb) carry the operator's optional
+// --dedicated-ships/--standby-stations CLI flags through to the daemon. Both
+// are nil for a plain, non-dedicated coordinator - the feature is opt-in.
 func (c *DaemonClient) ContractFleetCoordinator(
 	ctx context.Context,
 	shipSymbols []string, // Deprecated: kept for backward compatibility, ignored by server
 	playerID int,
 	agentSymbol string,
+	dedicatedShips []string,
+	standbyStations []string,
 ) (*ContractFleetCoordinatorResponse, error) {
 	req := &pb.ContractFleetCoordinatorRequest{
-		PlayerId: int32(playerID),
+		PlayerId:        int32(playerID),
+		DedicatedShips:  dedicatedShips,
+		StandbyStations: standbyStations,
 	}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol

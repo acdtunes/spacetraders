@@ -699,6 +699,10 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	// Cooldown
 	model.CooldownExpiration = ship.CooldownExpiration()
 
+	// Dedicated fleet (sp-snmb): permanent coordinator reservation, independent
+	// of the transient container assignment below.
+	model.DedicatedFleet = ship.DedicatedFleet()
+
 	// Assignment
 	model.AssignmentOwner = string(navigation.AssignmentOwnerContainer)
 	if ship.Assignment() != nil {
@@ -1165,6 +1169,7 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		model.ArrivalTime,
 		model.CooldownExpiration,
 		assignment,
+		model.DedicatedFleet,
 	)
 }
 

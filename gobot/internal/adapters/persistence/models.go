@@ -129,6 +129,12 @@ type ShipModel struct {
 	AssignmentOwner  string `gorm:"column:assignment_owner;default:'container'"`
 	AssignmentReason string `gorm:"column:assignment_reason"`
 
+	// DedicatedFleet (sp-snmb): permanent, operator-configured reservation for
+	// a specific coordinator (e.g. "contract"). Empty means unreserved. Unlike
+	// AssignmentOwner/ContainerID above, this is independent of any transient
+	// container claim - it is a standing claim-filter, not a work assignment.
+	DedicatedFleet string `gorm:"column:dedicated_fleet;default:''"`
+
 	// Sync metadata
 	SyncedAt time.Time `gorm:"column:synced_at;autoCreateTime"`
 	Version  int       `gorm:"column:version;default:1"`

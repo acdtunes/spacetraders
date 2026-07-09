@@ -446,6 +446,11 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register BalanceShipPosition handler: %w", err)
 	}
 
+	homeShipHandler := contractCmd.NewHomeShipHandler(med, shipRepo, graphService) // sp-snmb: dedicated fleet homing
+	if err := mediator.RegisterHandler[*contractCmd.HomeShipCommand](med, homeShipHandler); err != nil {
+		return fmt.Errorf("failed to register HomeShip handler: %w", err)
+	}
+
 	sellCargoHandler := shipCargo.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
 	if err := mediator.RegisterHandler[*shipCargo.SellCargoCommand](med, sellCargoHandler); err != nil {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)

@@ -865,11 +865,20 @@ func (x *BatchContractWorkflowResponse) GetStatus() string {
 // ContractFleetCoordinatorRequest initiates contract fleet coordination
 // Uses all available idle light hauler ships (no pre-assignment needed)
 type ContractFleetCoordinatorRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
-	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId    int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	// dedicated_ships (sp-snmb): operator-supplied --dedicated-ships list.
+	// Ships on this list are claim-filtered from every other coordinator's
+	// discovery pool and reserved exclusively for this contract coordinator.
+	// Optional - empty/absent means no dedicated fleet is configured.
+	DedicatedShips []string `protobuf:"bytes,3,rep,name=dedicated_ships,json=dedicatedShips,proto3" json:"dedicated_ships,omitempty"`
+	// standby_stations (sp-snmb): operator-supplied --standby-stations list.
+	// An idle dedicated ship homes to the nearest of these waypoints instead
+	// of being balanced to a market. Optional - empty/absent disables homing.
+	StandbyStations []string `protobuf:"bytes,4,rep,name=standby_stations,json=standbyStations,proto3" json:"standby_stations,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ContractFleetCoordinatorRequest) Reset() {
@@ -914,6 +923,20 @@ func (x *ContractFleetCoordinatorRequest) GetAgentSymbol() string {
 		return *x.AgentSymbol
 	}
 	return ""
+}
+
+func (x *ContractFleetCoordinatorRequest) GetDedicatedShips() []string {
+	if x != nil {
+		return x.DedicatedShips
+	}
+	return nil
+}
+
+func (x *ContractFleetCoordinatorRequest) GetStandbyStations() []string {
+	if x != nil {
+		return x.StandbyStations
+	}
+	return nil
 }
 
 type ContractFleetCoordinatorResponse struct {
@@ -6664,10 +6687,12 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"iterations\x18\x03 \x01(\x05R\n" +
 	"iterations\x12\x16\n" +
-	"\x06status\x18\x04 \x01(\tR\x06status\"w\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\"\xcb\x01\n" +
 	"\x1fContractFleetCoordinatorRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
-	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12'\n" +
+	"\x0fdedicated_ships\x18\x03 \x03(\tR\x0ededicatedShips\x12)\n" +
+	"\x10standby_stations\x18\x04 \x03(\tR\x0fstandbyStationsB\x0f\n" +
 	"\r_agent_symbol\"]\n" +
 	" ContractFleetCoordinatorResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +
