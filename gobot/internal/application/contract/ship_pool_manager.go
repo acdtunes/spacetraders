@@ -3,9 +3,9 @@ package contract
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -66,11 +66,10 @@ const (
 	IncludeCommandShip
 )
 
-// Ship roles that can be drafted to haul contract cargo.
-const (
-	roleHauler  = "HAULER"
-	roleCommand = "COMMAND"
-)
+// roleHauler is the registration role of dedicated haul hulls; the command
+// ship's role lives with the shared IsCommandHull predicate in the domain
+// contract package.
+const roleHauler = "HAULER"
 
 // FindIdleLightHaulers finds all idle haul-capable ships for a player.
 //
@@ -401,17 +400,10 @@ func FilterUnrelatedCargo(
 	return claimable, parked, nil
 }
 
-// isCommandShip checks if a ship symbol represents the command ship (ship #1).
-//
-// Ship symbols ending in "-1" are considered command ships (e.g., "TORWIND-1", "AGENT-1").
-func isCommandShip(shipSymbol string) bool {
-	return strings.HasSuffix(shipSymbol, "-1")
-}
-
 // isCommandHull reports whether a ship is the command ship, by registration role
-// or by the conventional "*-1" symbol. Candidate discovery and the selection log
-// share this predicate so the log marks exactly the hull the pool treats as the
-// command ship.
+// or by the conventional "*-1" symbol. Candidate discovery, the selection log
+// and the domain cargo-fit ladder (SelectHullForCargo) share the one domain
+// predicate so they all mark exactly the same hull as the command ship.
 func isCommandHull(ship *navigation.Ship) bool {
-	return ship.Role() == roleCommand || isCommandShip(ship.ShipSymbol())
+	return domainContract.IsCommandHull(ship)
 }

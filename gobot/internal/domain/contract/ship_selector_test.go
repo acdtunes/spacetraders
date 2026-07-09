@@ -7,14 +7,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// newSelectorTestShip builds a docked, idle ship at (x,y) with the given symbol
-// and role - the minimum the closest-ship rule inspects. Fixed speed=30/cargo=40
-// so tests using it are only varying position.
-func newSelectorTestShip(t *testing.T, symbol, role string, x, y float64) *navigation.Ship {
-	t.Helper()
-	return newSelectorTestShipWithHull(t, symbol, role, x, y, 30, 40)
-}
-
 // newSelectorTestShipWithHull builds a docked, idle ship at (x,y) with the given
 // symbol, role, engine speed and cargo capacity - used by the hull right-sizing
 // tests (sp-snmb) where speed and capacity must vary independently of position.
@@ -52,44 +44,44 @@ func newSelectorTestShipWithHull(t *testing.T, symbol, role string, x, y float64
 	return ship
 }
 
-// Once the command ship is a candidate (sp-4a4e), the closest-ship rule must be
-// able to pick it: a close COMMAND frigate beats a far hauler. This is exactly
-// the selection the fallback-only pool was silently defeating - the far hauler
-// (746 units) was chosen because the closer command ship never entered the pool.
-func TestSelectOptimalShip_ClosestCommandShip_BeatsFartherHauler(t *testing.T) {
+// Once the command ship is a candidate (sp-4a4e), the selection rule must be
+// able to pick it - but under the l7h2 Phase 3 cargo-fit ladder it is drafted
+// strictly last-resort: here its hold is the only one that fits the load, so
+// it wins even from farther away. (Pre-Phase-3 this fixture asserted the
+// closer command ship beat a far hauler on distance alone; the fit ladder
+// benches the frigate whenever any regular hull can carry the load.)
+func TestSelectOptimalShip_CommandShip_WinsWhenOnlyHullThatFits(t *testing.T) {
 	target, err := shared.NewWaypoint("X1-TW-MKT", 0, 0)
 	if err != nil {
 		t.Fatalf("build target waypoint: %v", err)
 	}
-	hauler := newSelectorTestShip(t, "TORWIND-3", "HAULER", 700, 0)  // far
-	command := newSelectorTestShip(t, "TORWIND-1", "COMMAND", 50, 0) // close
+	hauler := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 50, 0, 30, 8)     // close, hold too small
+	command := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 700, 0, 30, 40) // far, fits
 
 	selector := NewShipSelector()
-	// Both ships share the same speed/cargo here, so unitsNeeded doesn't change
-	// the outcome - this fixture is purely about the distance tie-break.
 	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, command}, target, "", 10)
 	if err != nil {
 		t.Fatalf("SelectOptimalShip: %v", err)
 	}
 
 	if result.Ship.ShipSymbol() != "TORWIND-1" {
-		t.Fatalf("expected the closer command ship TORWIND-1 to win selection, got %s (distance %.2f)", result.Ship.ShipSymbol(), result.Distance)
+		t.Fatalf("expected the command ship TORWIND-1 as the only hull fitting 10 units, got %s (distance %.2f)", result.Ship.ShipSymbol(), result.Distance)
 	}
 }
 
-// Admiral ruling (sp-snmb): contracts can never be skipped, so cycle time must
-// be cut by right-sizing the hull instead. A 2-unit delivery on a speed-36
-// frigate clears faster than the same job on a speed-15 hauler even when the
-// hauler is twice as close - the fast, adequately-sized hull should win a small
-// delivery over raw proximity.
-func TestSelectOptimalShip_FastAdequateFrigateBeatsCloserSlowHauler_ForSmallDelivery(t *testing.T) {
+// l7h2 Phase 3 doctrine: the command frigate is benched whenever a regular
+// hull fits the load - even a frigate that is faster AND a tighter fit loses
+// to a fitting hauler. Frigate-last-resort outranks smallest-fit; the frigate
+// is preserved for the legs only it can carry. (Pre-Phase-3, sp-snmb's
+// completion-time estimate sent the fast frigate on this 2-unit job.)
+func TestSelectOptimalShip_FittingHaulerBenchesCommandFrigate_ForSmallDelivery(t *testing.T) {
 	target, err := shared.NewWaypoint("X1-TW-MKT", 0, 0)
 	if err != nil {
 		t.Fatalf("build target waypoint: %v", err)
 	}
-	// Closer but slow and oversized for a 2-unit job.
+	// Slow and oversized for a 2-unit job - but a regular hull that fits.
 	hauler := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 50, 0, 15, 40)
-	// Farther but fast; its 4-unit hold is still adequate for a 2-unit job.
+	// Faster and tighter-fitting, but it is the command frigate.
 	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 100, 0, 36, 4)
 
 	selector := NewShipSelector()
@@ -98,8 +90,8 @@ func TestSelectOptimalShip_FastAdequateFrigateBeatsCloserSlowHauler_ForSmallDeli
 		t.Fatalf("SelectOptimalShip: %v", err)
 	}
 
-	if result.Ship.ShipSymbol() != "TORWIND-1" {
-		t.Fatalf("expected the fast adequate frigate TORWIND-1 to win a small delivery despite being farther, got %s (distance %.2f)", result.Ship.ShipSymbol(), result.Distance)
+	if result.Ship.ShipSymbol() != "TORWIND-3" {
+		t.Fatalf("expected the fitting hauler TORWIND-3 to bench the command frigate, got %s (distance %.2f)", result.Ship.ShipSymbol(), result.Distance)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -16,14 +17,16 @@ import (
 type HomeShipCommand = contractTypes.HomeShipCommand
 type HomeShipResponse = contractTypes.HomeShipResponse
 
-// HomeShipHandler dispatches an idle dedicated contract ship to the nearest
-// operator-configured standby station (sp-snmb). Unlike
-// BalanceShipPositionHandler this is a stateless "closest station, go there"
-// operation - no temporary container/assignment ceremony, because a
-// dedicated ship is already permanently invisible to other coordinators via
-// the DedicatedFleet claim-filter, and the contract coordinator's own
-// FindIdleDedicatedShips already excludes in-transit ships from re-claiming
-// during the homing trip.
+// HomeShipHandler dispatches an idle dedicated contract ship to an
+// operator-configured standby station (sp-snmb), balanced across the
+// configured set (l7h2 Phase 3): the station with the fewest dedicated-fleet
+// peers already parked at (or heading to) it wins, distance breaking ties -
+// nearest-only homing clumped every idle hull on one hub. Unlike
+// BalanceShipPositionHandler there is no temporary container/assignment
+// ceremony, because a dedicated ship is already permanently invisible to
+// other coordinators via the DedicatedFleet claim-filter, and the contract
+// coordinator's own idle-ship discovery already excludes in-transit ships
+// from re-claiming during the homing trip.
 type HomeShipHandler struct {
 	mediator      common.Mediator
 	shipRepo      navigation.ShipRepository
@@ -63,6 +66,19 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("failed to load ship %s: %w", cmd.ShipSymbol, err)
 	}
 
+	// Homing applies to idle standby hulls only (l7h2 Phase 3 invariant): a
+	// hull that is claimed/assigned or mid-flight is never relocated, no
+	// matter what the dispatcher believed when it fired this command.
+	if !ship.IsIdle() || ship.IsInTransit() {
+		logger.Log("INFO", "Skipping homing for busy hull", map[string]interface{}{
+			"action":      "home_ship",
+			"ship_symbol": cmd.ShipSymbol,
+			"idle":        ship.IsIdle(),
+			"in_transit":  ship.IsInTransit(),
+		})
+		return &HomeShipResponse{Navigated: false}, nil
+	}
+
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
@@ -82,22 +98,41 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("none of the configured standby stations %v found in system %s graph", cmd.StandbyStations, systemSymbol)
 	}
 
-	nearest, distance := shared.FindNearestWaypoint(ship.CurrentLocation(), candidates)
+	peers, err := h.loadFleetPeers(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	// The fleet-wide balancing policy (occupancy-first, distance tie-break)
+	// already lives in the domain ShipBalancer - standby stations are the
+	// "markets" and the dedicated-fleet peers the occupants. An in-transit
+	// peer counts at its destination (CurrentLocation is the destination once
+	// transit starts), so two hulls homed back-to-back pick different hubs.
+	balancer := domainContract.NewShipBalancer()
+	balance, err := balancer.SelectOptimalBalancingPosition(ship, candidates, peers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select standby station: %w", err)
+	}
+	target := balance.TargetMarket
+	distance := balance.Distance
 
 	logger.Log("INFO", "Standby station selected for homing", map[string]interface{}{
-		"action":      "home_ship",
-		"ship_symbol": cmd.ShipSymbol,
-		"station":     nearest.Symbol,
-		"distance":    distance,
+		"action":        "home_ship",
+		"ship_symbol":   cmd.ShipSymbol,
+		"station":       target.Symbol,
+		"distance":      distance,
+		"peers_at_hub":  balance.AssignedShips,
+		"fleet_peers":   len(peers),
+		"station_count": len(candidates),
 	})
 
-	if ship.IsAtLocation(nearest) {
-		return &HomeShipResponse{TargetStation: nearest.Symbol, Distance: distance, Navigated: false}, nil
+	if ship.IsAtLocation(target) {
+		return &HomeShipResponse{TargetStation: target.Symbol, Distance: distance, Navigated: false}, nil
 	}
 
 	navigateCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  cmd.ShipSymbol,
-		Destination: nearest.Symbol,
+		Destination: target.Symbol,
 		PlayerID:    cmd.PlayerID,
 	}
 	if _, err := h.mediator.Send(ctx, navigateCmd); err != nil {
@@ -107,9 +142,40 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 	logger.Log("INFO", "Dedicated ship homing to standby station", map[string]interface{}{
 		"action":      "home_ship",
 		"ship_symbol": cmd.ShipSymbol,
-		"station":     nearest.Symbol,
+		"station":     target.Symbol,
 		"distance":    distance,
 	})
 
-	return &HomeShipResponse{TargetStation: nearest.Symbol, Distance: distance, Navigated: true}, nil
+	return &HomeShipResponse{TargetStation: target.Symbol, Distance: distance, Navigated: true}, nil
+}
+
+// loadFleetPeers resolves the dedicated-fleet hulls (minus the ship being
+// homed) whose positions determine standby-station occupancy. An empty
+// FleetShips list means no occupancy data - the balancer then degrades to
+// pure nearest-station homing, the pre-Phase-3 behavior.
+func (h *HomeShipHandler) loadFleetPeers(ctx context.Context, cmd *HomeShipCommand) ([]*navigation.Ship, error) {
+	if len(cmd.FleetShips) == 0 {
+		return nil, nil
+	}
+
+	allShips, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load fleet peers for homing: %w", err)
+	}
+
+	fleet := make(map[string]bool, len(cmd.FleetShips))
+	for _, symbol := range cmd.FleetShips {
+		fleet[symbol] = true
+	}
+
+	var peers []*navigation.Ship
+	for _, peer := range allShips {
+		if peer.ShipSymbol() == cmd.ShipSymbol {
+			continue
+		}
+		if fleet[peer.ShipSymbol()] {
+			peers = append(peers, peer)
+		}
+	}
+	return peers, nil
 }

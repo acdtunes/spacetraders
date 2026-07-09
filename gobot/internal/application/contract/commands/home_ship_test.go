@@ -12,15 +12,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// homeStubShipRepo embeds the domain interface so only FindBySymbol needs a
-// concrete implementation; any unexpected call panics on a nil-method deref.
+// homeStubShipRepo embeds the domain interface so only the methods homing
+// uses need concrete implementations; any unexpected call panics on a
+// nil-method deref.
 type homeStubShipRepo struct {
 	navigation.ShipRepository
-	ship *navigation.Ship
+	ship  *navigation.Ship
+	fleet []*navigation.Ship // served by FindAllByPlayer for peer-occupancy tests
 }
 
 func (s *homeStubShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
 	return s.ship, nil
+}
+
+func (s *homeStubShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	return s.fleet, nil
 }
 
 // homeStubGraphProvider serves a fixed, pre-built graph regardless of the
@@ -55,6 +61,14 @@ func (m *homeFakeMediator) Send(_ context.Context, request common.Request) (comm
 // homing handler tests.
 func newHomeTestShip(t *testing.T, symbol, waypointSymbol string, x, y float64) *navigation.Ship {
 	t.Helper()
+	return newHomeTestShipWithStatus(t, symbol, waypointSymbol, x, y, navigation.NavStatusDocked)
+}
+
+// newHomeTestShipWithStatus builds an idle ship with an explicit nav status -
+// for an in-transit fixture the waypoint is the ship's DESTINATION, matching
+// how transit is modeled (CurrentLocation is the destination once underway).
+func newHomeTestShipWithStatus(t *testing.T, symbol, waypointSymbol string, x, y float64, status navigation.NavStatus) *navigation.Ship {
+	t.Helper()
 	location, err := shared.NewWaypoint(waypointSymbol, x, y)
 	if err != nil {
 		t.Fatalf("NewWaypoint: %v", err)
@@ -79,7 +93,7 @@ func newHomeTestShip(t *testing.T, symbol, waypointSymbol string, x, y float64) 
 		"FRAME_HAULER",
 		"HAULER",
 		nil,
-		navigation.NavStatusDocked,
+		status,
 	)
 	if err != nil {
 		t.Fatalf("NewShip: %v", err)
@@ -214,6 +228,148 @@ func TestHomeShipHandler_AlreadyAtStandbyStation_NoOp(t *testing.T) {
 	}
 	if homeResp.Distance != 0 {
 		t.Fatalf("expected Distance 0 when already at the target station, got %f", homeResp.Distance)
+	}
+}
+
+// Balanced-standby homing (l7h2 Phase 3): with a fleet peer already parked at
+// the nearer station, the ship must home to the emptier, farther one -
+// fewest-assigned-first with distance only breaking ties. Nearest-only homing
+// clumped every idle hull on one hub.
+func TestHomeShipHandler_BalancesAcrossStandbyStations_AvoidsOccupiedHub(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
+	peer := newHomeTestShip(t, "TORWIND-5", "X1-TEST-B2", 10, 0) // parked at the near hub
+	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
+
+	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship, peer}}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, far)}
+	mediator := &homeFakeMediator{}
+
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
+
+	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-4",
+		PlayerID:        shared.MustNewPlayerID(1),
+		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"},
+		FleetShips:      []string{"TORWIND-4", "TORWIND-5"},
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if len(mediator.navigateCalls) != 1 {
+		t.Fatalf("expected exactly one navigate dispatch, got %d", len(mediator.navigateCalls))
+	}
+	if mediator.navigateCalls[0].Destination != "X1-TEST-C3" {
+		t.Fatalf("expected navigation to the unoccupied station X1-TEST-C3, got %s", mediator.navigateCalls[0].Destination)
+	}
+	homeResp, ok := resp.(*HomeShipResponse)
+	if !ok {
+		t.Fatalf("unexpected response type: %T", resp)
+	}
+	if homeResp.TargetStation != "X1-TEST-C3" {
+		t.Fatalf("expected TargetStation X1-TEST-C3, got %s", homeResp.TargetStation)
+	}
+}
+
+// A peer still flying toward a station occupies it for balancing purposes:
+// its CurrentLocation is already the destination once transit starts, so two
+// hulls homed back-to-back must pick different hubs.
+func TestHomeShipHandler_InTransitPeerCountsAtItsDestination(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
+	peer := newHomeTestShipWithStatus(t, "TORWIND-5", "X1-TEST-B2", 10, 0, navigation.NavStatusInTransit) // flying to the near hub
+	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
+
+	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship, peer}}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, far)}
+	mediator := &homeFakeMediator{}
+
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
+
+	_, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-4",
+		PlayerID:        shared.MustNewPlayerID(1),
+		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"},
+		FleetShips:      []string{"TORWIND-4", "TORWIND-5"},
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if len(mediator.navigateCalls) != 1 {
+		t.Fatalf("expected exactly one navigate dispatch, got %d", len(mediator.navigateCalls))
+	}
+	if mediator.navigateCalls[0].Destination != "X1-TEST-C3" {
+		t.Fatalf("expected navigation away from the hub the in-transit peer is heading to, got %s", mediator.navigateCalls[0].Destination)
+	}
+}
+
+// Invariant (l7h2 Phase 3): homing applies to idle standby hulls only - a
+// hull claimed by a container is never relocated, regardless of what the
+// dispatcher believed when it fired the command.
+func TestHomeShipHandler_ClaimedHullNeverMoved(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
+	if err := ship.AssignToContainer("worker-1", shared.NewRealClock()); err != nil {
+		t.Fatalf("AssignToContainer: %v", err)
+	}
+	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+
+	shipRepo := &homeStubShipRepo{ship: ship}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near)}
+	mediator := &homeFakeMediator{}
+
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
+
+	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-4",
+		PlayerID:        shared.MustNewPlayerID(1),
+		StandbyStations: []string{"X1-TEST-B2"},
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(mediator.navigateCalls) != 0 {
+		t.Fatalf("expected no navigate dispatch for a claimed hull, got %d", len(mediator.navigateCalls))
+	}
+	homeResp, ok := resp.(*HomeShipResponse)
+	if !ok {
+		t.Fatalf("unexpected response type: %T", resp)
+	}
+	if homeResp.Navigated {
+		t.Fatalf("expected Navigated=false for a claimed hull, got %+v", homeResp)
+	}
+}
+
+// Invariant (l7h2 Phase 3): a hull already mid-flight is never re-routed by
+// homing.
+func TestHomeShipHandler_InTransitHullNeverMoved(t *testing.T) {
+	ship := newHomeTestShipWithStatus(t, "TORWIND-4", "X1-TEST-A1", 0, 0, navigation.NavStatusInTransit)
+	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+
+	shipRepo := &homeStubShipRepo{ship: ship}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near)}
+	mediator := &homeFakeMediator{}
+
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
+
+	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-4",
+		PlayerID:        shared.MustNewPlayerID(1),
+		StandbyStations: []string{"X1-TEST-B2"},
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(mediator.navigateCalls) != 0 {
+		t.Fatalf("expected no navigate dispatch for an in-transit hull, got %d", len(mediator.navigateCalls))
+	}
+	homeResp, ok := resp.(*HomeShipResponse)
+	if !ok {
+		t.Fatalf("unexpected response type: %T", resp)
+	}
+	if homeResp.Navigated {
+		t.Fatalf("expected Navigated=false for an in-transit hull, got %+v", homeResp)
 	}
 }
 

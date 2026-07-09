@@ -425,20 +425,22 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 
 		// If selected ship is different from previous ship, reposition the
-		// previous ship: a dedicated ship (sp-snmb) homes to its nearest
-		// operator-configured standby station instead of the normal
-		// market-balancing treatment, since it's exclusively reserved for
-		// this coordinator and has no reason to loiter at a general market.
+		// previous ship: a dedicated ship (sp-snmb) homes to a balanced
+		// operator-configured standby station (fewest fleet peers, distance
+		// tie-break - l7h2 Phase 3) instead of the normal market-balancing
+		// treatment, since it's exclusively reserved for this coordinator and
+		// has no reason to loiter at a general market.
 		if previousShipSymbol != "" && previousShipSymbol != selectedShip {
 			if isDedicatedShip(previousShipSymbol, cmd.DedicatedShips) {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - homing dedicated ship %s to standby station", previousShipSymbol, selectedShip, previousShipSymbol), nil)
 
 				// Launch homing command asynchronously (fire-and-forget)
-				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string) {
+				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
 					homeCmd := &HomeShipCommand{
 						ShipSymbol:      shipSymbol,
 						PlayerID:        playerID,
 						StandbyStations: standbyStations,
+						FleetShips:      fleetShips,
 					}
 					// Create background context since parent context may be cancelled
 					homeCtx := context.Background()
@@ -448,7 +450,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					if err != nil {
 						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
 					}
-				}(previousShipSymbol, cmd.PlayerID, cmd.StandbyStations)
+				}(previousShipSymbol, cmd.PlayerID, cmd.StandbyStations, cmd.DedicatedShips)
 			} else {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 

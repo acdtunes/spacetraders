@@ -179,14 +179,21 @@ type BalanceShipPositionResponse struct {
 // Dedicated Ship Homing (sp-snmb)
 // ============================================================================
 
-// HomeShipCommand requests sending an idle dedicated ship to the nearest
-// operator-configured standby station. Unlike BalanceShipPositionCommand,
-// this has no market-balancing scoring - it is a simple nearest-station
-// dispatch for a ship that already has no work and nowhere else to be.
+// HomeShipCommand requests sending an idle dedicated ship to an
+// operator-configured standby station, balanced across the configured set
+// (l7h2 Phase 3): the station with the fewest fleet hulls already parked at
+// (or heading to) it wins, distance breaking ties - so idle hulls spread
+// across the standby hubs instead of clumping on the nearest one.
 type HomeShipCommand struct {
 	ShipSymbol      string
 	PlayerID        shared.PlayerID
 	StandbyStations []string // Operator-supplied waypoint symbols (--standby-stations)
+
+	// FleetShips (l7h2 Phase 3): symbols of every hull in this coordinator's
+	// dedicated fleet - the homing peers whose positions determine station
+	// occupancy for balancing. Empty preserves the original behavior: plain
+	// nearest-station homing.
+	FleetShips []string
 }
 
 // HomeShipResponse contains the result of a homing dispatch.
