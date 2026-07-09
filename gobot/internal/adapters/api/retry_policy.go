@@ -138,6 +138,15 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 			return err
 		}
 
+		// Record one budget event per attempt (sp-51ti) — this single call
+		// site covers both terminal and retry paths, since it runs before
+		// classify() branches on the outcome.
+		if tracker := c.getBudgetTracker(); tracker != nil {
+			hull := extractShipSymbol(path)
+			purpose := classifyPurpose(method, attempt)
+			tracker.Record(hull, purpose, outcome.statusCode == http.StatusTooManyRequests)
+		}
+
 		decision := outcome.classify()
 		if !decision.retryable {
 			terminalErr := onTerminal(outcome.statusCode, outcome.body)

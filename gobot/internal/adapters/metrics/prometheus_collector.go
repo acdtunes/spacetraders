@@ -43,6 +43,18 @@ var (
 	// globalManufacturingCollector is the singleton manufacturing metrics collector
 	// Set by SetGlobalManufacturingCollector() when metrics are enabled
 	globalManufacturingCollector *ManufacturingMetricsCollector
+
+	// globalAPIBudgetTracker is the singleton API request-budget tracker
+	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
+	// client falls back to it when no per-instance tracker was injected, the
+	// same pattern getMetricsCollector() uses for globalAPICollector.
+	globalAPIBudgetTracker *APIBudgetTracker
+
+	// globalDutyCycleSampler is the singleton duty-cycle KPI sampler
+	// (sp-51ti captain amendment). Set by SetGlobalDutyCycleSampler() at
+	// daemon startup so a future CLI/gRPC read can reach it without a direct
+	// reference to the daemon's internal sampler instance.
+	globalDutyCycleSampler *DutyCycleSampler
 )
 
 // MetricsRecorder defines the interface for recording container metrics events
@@ -250,4 +262,28 @@ func RecordManufacturingTaskAssignment(playerID int, taskType string) {
 	if globalManufacturingCollector != nil {
 		globalManufacturingCollector.RecordTaskAssignment(playerID, taskType)
 	}
+}
+
+// SetGlobalAPIBudgetTracker sets the global API request-budget tracker
+// (sp-51ti). Pass nil to clear it (e.g. in test cleanup).
+func SetGlobalAPIBudgetTracker(tracker *APIBudgetTracker) {
+	globalAPIBudgetTracker = tracker
+}
+
+// GetGlobalAPIBudgetTracker returns the global API request-budget tracker.
+// Returns nil if it was never set.
+func GetGlobalAPIBudgetTracker() *APIBudgetTracker {
+	return globalAPIBudgetTracker
+}
+
+// SetGlobalDutyCycleSampler sets the global duty-cycle KPI sampler
+// (sp-51ti). Pass nil to clear it (e.g. in test cleanup).
+func SetGlobalDutyCycleSampler(sampler *DutyCycleSampler) {
+	globalDutyCycleSampler = sampler
+}
+
+// GetGlobalDutyCycleSampler returns the global duty-cycle KPI sampler.
+// Returns nil if it was never set.
+func GetGlobalDutyCycleSampler() *DutyCycleSampler {
+	return globalDutyCycleSampler
 }

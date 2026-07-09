@@ -26,6 +26,13 @@ const (
 	defaultBackoffBase = 2 * time.Second  // Increased from 1s for more aggressive backoff
 	maxBackoffDuration = 30 * time.Second // Cap exponential backoff to prevent extreme waits
 
+	// RateLimitPerSecond is the sustained request-rate ceiling this client
+	// enforces against SpaceTraders (burst 30). Exported so the budget
+	// tracker (sp-51ti, internal/adapters/grpc composition root) can compute
+	// utilization-vs-ceiling against the same number the limiter actually
+	// uses, instead of a second hardcoded copy that could drift.
+	RateLimitPerSecond = 2.0
+
 	errCodeAgentHasContract = 4511
 	errCodeShipMustBeDocked = 4214
 	errCodeShipNotDocked    = 4244
@@ -48,6 +55,7 @@ type SpaceTradersClient struct {
 	backoffBase      time.Duration
 	clock            shared.Clock
 	metricsCollector APIMetricsRecorder
+	budgetTracker    *metrics.APIBudgetTracker
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
@@ -79,7 +87,7 @@ func NewSpaceTradersClientWithConfig(
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter:      rate.NewLimiter(rate.Limit(2), 30), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
+		rateLimiter:      rate.NewLimiter(rate.Limit(RateLimitPerSecond), 30), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
 		baseURL:          baseURL,
 		maxRetries:       maxRetries,
 		backoffBase:      backoffBase,
@@ -113,6 +121,24 @@ func (c *SpaceTradersClient) getMetricsCollector() APIMetricsRecorder {
 		return collector
 	}
 	return nil
+}
+
+// SetBudgetTracker sets the API request-budget tracker for this client
+// (sp-51ti). This allows the tracker to be enabled after client construction,
+// mirroring SetMetricsCollector.
+func (c *SpaceTradersClient) SetBudgetTracker(tracker *metrics.APIBudgetTracker) {
+	c.budgetTracker = tracker
+}
+
+// getBudgetTracker returns the budget tracker for this client. If no local
+// tracker is set, it falls back to the global tracker (sp-51ti daemon
+// startup wiring). May return nil; APIBudgetTracker.Record tolerates a nil
+// receiver, so callers never need an extra nil-check.
+func (c *SpaceTradersClient) getBudgetTracker() *metrics.APIBudgetTracker {
+	if c.budgetTracker != nil {
+		return c.budgetTracker
+	}
+	return metrics.GetGlobalAPIBudgetTracker()
 }
 
 // GetRateLimiterTokens returns the current number of available tokens in the rate limiter

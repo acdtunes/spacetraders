@@ -7,6 +7,7 @@ import (
 
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -488,6 +489,24 @@ func (s *daemonServiceImpl) HealthCheck(ctx context.Context, req *pb.HealthCheck
 		Status:           "ok",
 		Version:          "0.1.0",
 		ActiveContainers: int32(activeCount),
+	}, nil
+}
+
+// GetAPIBudget returns API request-budget observability (sp-51ti): per-hull
+// req/s, global utilization vs the rate ceiling (429 rate, poll-cadence
+// share of the budget, headroom), and the duty-cycle KPI (ship-hours
+// earning/day per hull). Reads the daemon-wide singletons set at startup
+// (metrics.GetGlobalAPIBudgetTracker, metrics.GetGlobalDutyCycleSampler);
+// both trackers are nil-safe on Report(), so a metrics-disabled or
+// not-yet-warmed-up daemon returns a zero-value report instead of erroring.
+func (s *daemonServiceImpl) GetAPIBudget(ctx context.Context, req *pb.GetAPIBudgetRequest) (*pb.GetAPIBudgetResponse, error) {
+	dualReport := metrics.GetGlobalAPIBudgetTracker().Report()
+	dutyCycleReport := metrics.GetGlobalDutyCycleSampler().Report()
+
+	return &pb.GetAPIBudgetResponse{
+		Current:    apiBudgetReportToProto(dualReport.Current),
+		Rolling_5M: apiBudgetReportToProto(dualReport.Rolling5m),
+		DutyCycle:  dutyCycleReportToProto(dutyCycleReport),
 	}, nil
 }
 

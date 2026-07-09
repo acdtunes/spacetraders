@@ -34,6 +34,7 @@ const (
 	DaemonService_StopContainer_FullMethodName                         = "/daemon.DaemonService/StopContainer"
 	DaemonService_GetContainerLogs_FullMethodName                      = "/daemon.DaemonService/GetContainerLogs"
 	DaemonService_HealthCheck_FullMethodName                           = "/daemon.DaemonService/HealthCheck"
+	DaemonService_GetAPIBudget_FullMethodName                          = "/daemon.DaemonService/GetAPIBudget"
 	DaemonService_ListShips_FullMethodName                             = "/daemon.DaemonService/ListShips"
 	DaemonService_GetShip_FullMethodName                               = "/daemon.DaemonService/GetShip"
 	DaemonService_RefreshShip_FullMethodName                           = "/daemon.DaemonService/RefreshShip"
@@ -95,6 +96,11 @@ type DaemonServiceClient interface {
 	GetContainerLogs(ctx context.Context, in *GetContainerLogsRequest, opts ...grpc.CallOption) (*GetContainerLogsResponse, error)
 	// HealthCheck verifies daemon is running and responsive
 	HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
+	// GetAPIBudget returns API request-budget observability (sp-51ti):
+	// per-hull req/s, global utilization vs the rate ceiling (429 rate, poll
+	// cadence share of the budget, headroom), and the duty-cycle KPI
+	// (ship-hours earning/day per hull).
+	GetAPIBudget(ctx context.Context, in *GetAPIBudgetRequest, opts ...grpc.CallOption) (*GetAPIBudgetResponse, error)
 	// ListShips returns all ships for a player
 	ListShips(ctx context.Context, in *ListShipsRequest, opts ...grpc.CallOption) (*ListShipsResponse, error)
 	// GetShip returns detailed information about a specific ship
@@ -295,6 +301,16 @@ func (c *daemonServiceClient) HealthCheck(ctx context.Context, in *HealthCheckRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthCheckResponse)
 	err := c.cc.Invoke(ctx, DaemonService_HealthCheck_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetAPIBudget(ctx context.Context, in *GetAPIBudgetRequest, opts ...grpc.CallOption) (*GetAPIBudgetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAPIBudgetResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetAPIBudget_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -558,6 +574,11 @@ type DaemonServiceServer interface {
 	GetContainerLogs(context.Context, *GetContainerLogsRequest) (*GetContainerLogsResponse, error)
 	// HealthCheck verifies daemon is running and responsive
 	HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
+	// GetAPIBudget returns API request-budget observability (sp-51ti):
+	// per-hull req/s, global utilization vs the rate ceiling (429 rate, poll
+	// cadence share of the budget, headroom), and the duty-cycle KPI
+	// (ship-hours earning/day per hull).
+	GetAPIBudget(context.Context, *GetAPIBudgetRequest) (*GetAPIBudgetResponse, error)
 	// ListShips returns all ships for a player
 	ListShips(context.Context, *ListShipsRequest) (*ListShipsResponse, error)
 	// GetShip returns detailed information about a specific ship
@@ -658,6 +679,9 @@ func (UnimplementedDaemonServiceServer) GetContainerLogs(context.Context, *GetCo
 }
 func (UnimplementedDaemonServiceServer) HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method HealthCheck not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetAPIBudget(context.Context, *GetAPIBudgetRequest) (*GetAPIBudgetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAPIBudget not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListShips(context.Context, *ListShipsRequest) (*ListShipsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListShips not implemented")
@@ -1012,6 +1036,24 @@ func _DaemonService_HealthCheck_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).HealthCheck(ctx, req.(*HealthCheckRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetAPIBudget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAPIBudgetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetAPIBudget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetAPIBudget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetAPIBudget(ctx, req.(*GetAPIBudgetRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1478,6 +1520,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "HealthCheck",
 			Handler:    _DaemonService_HealthCheck_Handler,
+		},
+		{
+			MethodName: "GetAPIBudget",
+			Handler:    _DaemonService_GetAPIBudget_Handler,
 		},
 		{
 			MethodName: "ListShips",

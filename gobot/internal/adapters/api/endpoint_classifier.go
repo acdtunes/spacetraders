@@ -132,6 +132,24 @@ func looksLikeShipSymbol(s string) bool {
 	return strings.Contains(s, "-") && !strings.HasPrefix(s, "X")
 }
 
+// extractShipSymbol returns the ship symbol embedded in a ship-scoped API
+// path (e.g. "/my/ships/TORWIND-1/dock" -> "TORWIND-1"), or "" if the path
+// is not scoped to a single hull (e.g. "/my/ships" list/purchase, or a
+// waypoint/system/contract path). Used by the budget tracker (sp-51ti) to
+// attribute request-budget consumption per hull.
+func extractShipSymbol(path string) string {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		if part == "ships" && i+1 < len(parts) && looksLikeShipSymbol(parts[i+1]) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
 // looksLikeSystemSymbol checks if segment matches system symbol pattern (e.g., X1-ABC)
 func looksLikeSystemSymbol(s string) bool {
 	return len(s) > 3 && s[0] == 'X' && s[2] == '-'

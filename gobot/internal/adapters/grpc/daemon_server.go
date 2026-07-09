@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -58,6 +59,10 @@ type DaemonServer struct {
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 
+	// Duty-cycle KPI sampler (sp-51ti captain amendment): ship-hours
+	// EARNING/day per hull.
+	dutyCycleSampler *metrics.DutyCycleSampler
+
 	// Container orchestration
 	containers   map[string]*ContainerRunner
 	containersMu sync.RWMutex
@@ -82,6 +87,13 @@ type DaemonServer struct {
 	shutdownChan chan os.Signal
 	done         chan struct{}
 }
+
+// DutyCycleSampleInterval is how often the duty-cycle sampler snapshots
+// every hull's earning/idle status (sp-51ti captain amendment). Matches
+// ShipStateScheduler's SweeperInterval cadence — a well-understood DB load
+// pattern already proven safe at this frequency — and gives 1440
+// samples/day/hull, ample resolution for an hours/day KPI.
+const DutyCycleSampleInterval = 60 * time.Second
 
 // NewDaemonServer creates a new daemon server instance
 // shipEventPublisher is the event bus for ship state change notifications.
@@ -121,6 +133,15 @@ func NewDaemonServer(
 	clock := shared.NewRealClock()
 	shipStateScheduler := NewShipStateScheduler(shipRepo, clock, shipEventPublisher)
 
+	// Wire the global API request-budget tracker (sp-51ti) unconditionally.
+	// Unlike the Prometheus collectors below, this is a lightweight in-memory
+	// rolling tracker the CLI/gRPC health read depends on directly — it must
+	// not be gated behind the optional metricsConfig.Enabled flag. The API
+	// client (constructed by the caller, e.g. cmd/spacetraders-daemon) picks
+	// this up automatically via SpaceTradersClient.getBudgetTracker()'s
+	// fallback to the global, the same pattern getMetricsCollector() uses.
+	metrics.SetGlobalAPIBudgetTracker(metrics.NewAPIBudgetTracker(api.RateLimitPerSecond, clock))
+
 	// Wire arrival scheduler to ship repository so navigation triggers arrival timers
 	if concreteRepo, ok := shipRepo.(interface {
 		SetArrivalScheduler(navigation.ArrivalScheduler)
@@ -150,22 +171,62 @@ func NewDaemonServer(
 		done:                  make(chan struct{}),
 	}
 
+	// Create container info getter function. Hoisted above the
+	// metricsConfig.Enabled block (sp-51ti) because the duty-cycle sampler
+	// wired below needs it unconditionally — the same reasoning as the API
+	// budget tracker above: both are lightweight in-memory trackers the
+	// CLI/gRPC health read depends on directly, not optional Prometheus
+	// scrape targets.
+	getContainers := func() map[string]metrics.ContainerInfo {
+		server.containersMu.RLock()
+		defer server.containersMu.RUnlock()
+
+		containerInfoMap := make(map[string]metrics.ContainerInfo)
+		for id, runner := range server.containers {
+			containerInfoMap[id] = runner.Container()
+		}
+		return containerInfoMap
+	}
+
+	// Wire the global duty-cycle KPI sampler (sp-51ti captain amendment):
+	// ship-hours EARNING/day per hull. Each tick asks the ship-assignment
+	// repository which hulls are actively assigned to a container, for
+	// every player currently running at least one container (player-ID
+	// discovery mirrors FinancialMetricsCollector's getContainers-based
+	// approach). A captain-reserved hull (sp-i1ku) has an empty ContainerID
+	// just like a genuinely idle one, so it correctly reads as non-earning
+	// with no special-casing needed.
+	shipAssignmentRepo := persistence.NewShipAssignmentRepository(db)
+	dutyCycleSampler := metrics.NewDutyCycleSampler(func(ctx context.Context) ([]metrics.ShipEarningStatus, error) {
+		playerIDs := map[int]bool{}
+		for _, c := range getContainers() {
+			playerIDs[c.PlayerID()] = true
+		}
+
+		var statuses []metrics.ShipEarningStatus
+		for playerID := range playerIDs {
+			infos, err := shipAssignmentRepo.ListActive(ctx, playerID)
+			if err != nil {
+				// Best-effort per player: one player's DB hiccup shouldn't
+				// blank the whole tick for every other player.
+				continue
+			}
+			for _, info := range infos {
+				statuses = append(statuses, metrics.ShipEarningStatus{
+					Hull:    info.ShipSymbol,
+					Earning: info.ContainerID != "",
+				})
+			}
+		}
+		return statuses, nil
+	}, DutyCycleSampleInterval)
+	metrics.SetGlobalDutyCycleSampler(dutyCycleSampler)
+	server.dutyCycleSampler = dutyCycleSampler
+
 	// Initialize metrics collector if enabled
 	if metricsConfig != nil && metricsConfig.Enabled {
 		// Initialize the Prometheus registry
 		metrics.InitRegistry()
-
-		// Create container info getter function
-		getContainers := func() map[string]metrics.ContainerInfo {
-			server.containersMu.RLock()
-			defer server.containersMu.RUnlock()
-
-			containerInfoMap := make(map[string]metrics.ContainerInfo)
-			for id, runner := range server.containers {
-				containerInfoMap[id] = runner.Container()
-			}
-			return containerInfoMap
-		}
 
 		// Create container metrics collector
 		collector := metrics.NewContainerMetricsCollector(getContainers, shipRepo)
@@ -305,6 +366,12 @@ func (s *DaemonServer) Start() error {
 		}
 		// Start background sweeper to catch ships that slip through due to failures
 		s.shipStateScheduler.StartBackgroundSweeper()
+	}
+
+	// Start the duty-cycle KPI sampler (sp-51ti). Unconditional, like the
+	// ship state scheduler above — not gated behind metricsConfig.Enabled.
+	if s.dutyCycleSampler != nil {
+		s.dutyCycleSampler.Start()
 	}
 
 	// Start metrics server if enabled
@@ -452,6 +519,11 @@ func (s *DaemonServer) handleShutdown() {
 	// Stop ship state scheduler (cancels timers and stops background sweeper)
 	if s.shipStateScheduler != nil {
 		s.shipStateScheduler.Stop()
+	}
+
+	// Stop the duty-cycle KPI sampler (sp-51ti)
+	if s.dutyCycleSampler != nil {
+		s.dutyCycleSampler.Stop()
 	}
 
 	// BUG FIX #5: Graceful shutdown with timeout

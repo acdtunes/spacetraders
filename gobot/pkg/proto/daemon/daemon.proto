@@ -52,6 +52,12 @@ service DaemonService {
   // HealthCheck verifies daemon is running and responsive
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 
+  // GetAPIBudget returns API request-budget observability (sp-51ti):
+  // per-hull req/s, global utilization vs the rate ceiling (429 rate, poll
+  // cadence share of the budget, headroom), and the duty-cycle KPI
+  // (ship-hours earning/day per hull).
+  rpc GetAPIBudget(GetAPIBudgetRequest) returns (GetAPIBudgetResponse);
+
   // ListShips returns all ships for a player
   rpc ListShips(ListShipsRequest) returns (ListShipsResponse);
 
@@ -376,6 +382,63 @@ message HealthCheckResponse {
   string status = 1; // "ok" or error message
   string version = 2;
   int32 active_containers = 3;
+}
+
+// GetAPIBudgetRequest requests a snapshot of API request-budget
+// observability (sp-51ti). Empty for now.
+message GetAPIBudgetRequest {
+}
+
+// APIBudgetHullStats is one hull's share of the request budget within a
+// report window.
+message APIBudgetHullStats {
+  string hull = 1;
+  int32 requests_in_window = 2;
+  double req_per_sec = 3;
+}
+
+// APIBudgetReport mirrors internal/domain/apibudget.Report: global
+// utilization vs the rate ceiling, 429 rate, purpose-share breakdown (poll
+// vs transact vs retry), and the top consumers by hull.
+message APIBudgetReport {
+  double window_seconds = 1;
+  int32 total_requests = 2;
+  double global_req_per_sec = 3;
+  double ceiling_req_per_sec = 4;
+  double utilization_pct = 5;
+  double headroom_req_per_sec = 6;
+  int32 rate_limited_429 = 7;
+  double rate_limited_429_per_min = 8;
+  map<string, int32> purpose_counts = 9;
+  map<string, double> purpose_share_pct = 10;
+  double hulls_to_ceiling = 11;
+  repeated APIBudgetHullStats per_hull = 12;
+}
+
+// DutyCycleHullStats is one hull's earning/idle breakdown within the
+// duty-cycle sampling window (sp-51ti captain amendment).
+message DutyCycleHullStats {
+  string hull = 1;
+  double earning_hours = 2;
+  double idle_hours = 3;
+  double earning_pct = 4;
+  int32 sample_count = 5;
+}
+
+// DutyCycleReport mirrors internal/domain/dutycycle.Report: ship-hours
+// EARNING/day per hull, the KPI that makes the 20x duty-cycle gap
+// measurable.
+message DutyCycleReport {
+  double window_hours = 1;
+  repeated DutyCycleHullStats hulls = 2;
+}
+
+message GetAPIBudgetResponse {
+  // Current is a narrow (~10s) window, close to instantaneous utilization.
+  APIBudgetReport current = 1;
+  // Rolling5m is a 5-minute rolling window, smoothing out bursts.
+  APIBudgetReport rolling_5m = 2;
+  DutyCycleReport duty_cycle = 3;
 }
 
 // ListShipsRequest lists all ships for a player

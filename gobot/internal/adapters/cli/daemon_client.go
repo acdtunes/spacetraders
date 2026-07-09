@@ -631,6 +631,20 @@ func (c *DaemonClient) HealthCheck(ctx context.Context) (*HealthResponse, error)
 	}, nil
 }
 
+// GetAPIBudget retrieves API request-budget observability (sp-51ti):
+// per-hull req/s, global utilization vs the rate ceiling, and the
+// duty-cycle KPI (ship-hours earning/day per hull).
+func (c *DaemonClient) GetAPIBudget(ctx context.Context) (*pb.GetAPIBudgetResponse, error) {
+	req := &pb.GetAPIBudgetRequest{}
+
+	resp, err := c.client.GetAPIBudget(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListShips lists all ships for a player
 func (c *DaemonClient) ListShips(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListShipsResponse, error) {
 	req := &pb.ListShipsRequest{
