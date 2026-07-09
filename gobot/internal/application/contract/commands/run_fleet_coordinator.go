@@ -126,6 +126,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// Track current active worker container ID for cleanup on shutdown
 	var activeWorkerContainerID string
 
+	// Re-adopt any in-flight contract delivery a daemon restart orphaned
+	// (sp-tgp5), BEFORE the main loop's reclaim/discovery can force-release the
+	// cargo-laden ship and restart the workflow from scratch. Sets the active
+	// worker so shutdown cleanup and the one-worker guard both see it.
+	if readoptedWorkerID := h.readoptInterruptedDeliveries(ctx, cmd); readoptedWorkerID != "" {
+		activeWorkerContainerID = readoptedWorkerID
+	}
+
 	// Track previous ship for balancing logic
 	var previousShipSymbol string
 
@@ -577,6 +585,70 @@ func recordWorkerCompletion(logger common.ContainerLogger, event navigation.Work
 	}
 	logger.Log("ERROR", fmt.Sprintf("Worker for ship %s failed: %s", event.ShipSymbol, event.Error), nil)
 	return false
+}
+
+// readoptInterruptedDeliveries resumes a contract delivery that a daemon restart
+// orphaned mid-flight (sp-tgp5). A restart marks the in-flight worker container
+// FAILED (markWorkerInterrupted) but deliberately leaves its ship holding the
+// contract cargo. The existing "ship has cargo -> resume delivery" path
+// (StopExistingWorkers) only inspects RUNNING workers, so it never fires for a
+// restart-interrupted (FAILED) worker; without this pass the coordinator would
+// instead ForceRelease that ship (ReclaimShipsFromInterruptedWorkers) and restart
+// the whole workflow from the top — negotiate -> find-purchase-market -> select —
+// stalling the fully-loaded ship behind a purchase-market gate it does not need
+// while scouts repopulate market data after the restart (the 15-30min throughput
+// hole in the captain ledger).
+//
+// Re-adopting spawns a fresh worker directly for the cargo-laden ship; the
+// worker's already-idempotent workflow (FindOrNegotiate finds the accepted
+// contract, ProcessAllDeliveries delivers the aboard cargo) resumes at the
+// delivery leg with no re-negotiation and no re-purchase. At most one ship is
+// re-adopted per startup: contracts run one worker at a time (game constraint:
+// one active contract per player), so only one ship is ever mid-delivery. Empty
+// interrupted ships are left untouched here for ReclaimShipsFromInterruptedWorkers
+// to free into normal discovery. Any failure falls back to that reclaim path, so
+// a transient error here can never strand the ship — it just forgoes the fast
+// resume. Returns the re-adopted worker's container ID, or "" if nothing was
+// re-adopted.
+func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
+	ctx context.Context,
+	cmd *RunFleetCoordinatorCommand,
+) string {
+	logger := common.LoggerFromContext(ctx)
+
+	ships, err := h.workerLifecycleManager.FindInterruptedWorkerShipsWithCargo(ctx, cmd.PlayerID.Value())
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to find interrupted deliveries to re-adopt: %v", err), nil)
+		return ""
+	}
+	if len(ships) == 0 {
+		return ""
+	}
+
+	ship := ships[0]
+	shipSymbol := ship.ShipSymbol()
+
+	// Detach from the dead worker container so spawnContractWorker can re-assign
+	// the ship to the fresh one. Mirrors ReclaimShipsFromInterruptedWorkers' own
+	// detach, but here we immediately re-adopt instead of returning to discovery.
+	ship.ForceRelease("worker_readopt", h.clock)
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to release ship %s for re-adoption (falling back to reclaim/discovery): %v", shipSymbol, err), nil)
+		return ""
+	}
+
+	workerContainerID, err := h.spawnContractWorker(ctx, cmd, shipSymbol)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to re-adopt in-flight delivery for ship %s (falling back to discovery): %v", shipSymbol, err), nil)
+		return ""
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Re-adopted in-flight contract delivery: ship %s resuming in worker %s (cargo aboard, no re-negotiation)", shipSymbol, workerContainerID), map[string]interface{}{
+		"ship_symbol":  shipSymbol,
+		"container_id": workerContainerID,
+		"action":       "readopt_delivery",
+	})
+	return workerContainerID
 }
 
 func (h *RunFleetCoordinatorHandler) spawnContractWorker(

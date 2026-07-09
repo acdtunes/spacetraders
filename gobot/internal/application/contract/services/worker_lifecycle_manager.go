@@ -171,6 +171,47 @@ func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
 	return reclaimed, nil
 }
 
+// FindInterruptedWorkerShipsWithCargo returns ships still holding cargo that were
+// assigned to CONTRACT_WORKFLOW workers a daemon restart marked FAILED
+// (markWorkerInterrupted). Such a ship is mid-delivery — it holds contract cargo
+// for an already-accepted contract — so the coordinator re-adopts it to RESUME the
+// delivery leg (readoptInterruptedDeliveries) rather than restarting the workflow
+// from negotiate/find-purchase-market (sp-tgp5). Ships with empty cargo are NOT
+// returned: they were mid-purchase or mid-navigation with nothing aboard, and
+// ReclaimShipsFromInterruptedWorkers correctly frees them into normal discovery.
+// This is the read-only counterpart to that reclaim — it identifies which
+// interrupted ships have delivery work to salvage, and never mutates ship state.
+func (m *WorkerLifecycleManager) FindInterruptedWorkerShipsWithCargo(
+	ctx context.Context,
+	playerID int,
+) ([]*navigation.Ship, error) {
+	failedContainers, err := m.containerRepo.ListByStatusSimple(ctx, "FAILED", &playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query failed workers: %w", err)
+	}
+
+	var laden []*navigation.Ship
+	for _, worker := range failedContainers {
+		if worker.ContainerType != "CONTRACT_WORKFLOW" {
+			continue
+		}
+		ships, err := m.shipRepo.FindByContainer(ctx, worker.ID, shared.MustNewPlayerID(playerID))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ships for failed container %s: %w", worker.ID, err)
+		}
+		for _, ship := range ships {
+			if !ship.IsAssigned() {
+				continue
+			}
+			if ship.Cargo().IsEmpty() {
+				continue
+			}
+			laden = append(laden, ship)
+		}
+	}
+	return laden, nil
+}
+
 // StopWorkerContainer stops a specific worker container
 func (m *WorkerLifecycleManager) StopWorkerContainer(ctx context.Context, containerID string) error {
 	return m.daemonClient.StopContainer(ctx, containerID)
