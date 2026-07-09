@@ -344,6 +344,20 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ReleaseShip handler: %w", err)
 	}
 
+	// Fleet-dedication command + query: the single write path for the
+	// dedicated_fleet tag and the fleet listing behind `fleet list` (sp-l7h2).
+	// The contract coordinator's startup reconciliation of --dedicated-ships
+	// routes through the same command.
+	assignShipFleetHandler := shipAssignment.NewAssignShipFleetHandler(shipRepo, playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.AssignShipFleetCommand](med, assignShipFleetHandler); err != nil {
+		return fmt.Errorf("failed to register AssignShipFleet handler: %w", err)
+	}
+
+	listFleetsHandler := shipQuery.NewListFleetsHandler(shipRepo, playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.ListFleetsQuery](med, listFleetsHandler); err != nil {
+		return fmt.Errorf("failed to register ListFleets handler: %w", err)
+	}
+
 	// Waypoint discovery query handlers (graphService implements both the
 	// system-graph and single-waypoint provider interfaces).
 	listWaypointsHandler := systemQuery.NewListWaypointsHandler(graphService, playerRepo)

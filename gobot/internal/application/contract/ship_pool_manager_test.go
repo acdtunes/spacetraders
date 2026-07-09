@@ -134,8 +134,8 @@ func TestFindIdleLightHaulers_ExcludesCommandShip_WhenNotOptedIn(t *testing.T) {
 }
 
 // Claim-filter (sp-snmb): a ship marked DedicatedFleet is reserved exclusively
-// for the contract coordinator's own direct lookup (FindIdleDedicatedShips) -
-// every other coordinator (manufacturing, factory, gas, balance-handler) shares
+// for its own coordinator's direct lookup (FindIdleShipsByFleet) - every
+// other coordinator (manufacturing, factory, gas, balance-handler) shares
 // this same discovery function, so excluding dedicated ships here, unconditionally,
 // is what makes them invisible fleet-wide "for free" without touching every
 // caller individually.
@@ -158,28 +158,85 @@ func TestFindIdleLightHaulers_ExcludesDedicatedShips(t *testing.T) {
 	}
 }
 
-// FindIdleDedicatedShips is the contract coordinator's direct lookup for its
-// reserved fleet (sp-snmb): given the operator-supplied --dedicated-ships list,
-// it returns only the ones that are currently idle - busy ships and unknown
-// symbols are silently skipped rather than erroring, since the fleet composition
-// legitimately varies (a dedicated ship might be mid-delivery, or not yet owned).
-func TestFindIdleDedicatedShips_ReturnsOnlyIdleListedShips(t *testing.T) {
-	idle := newCandidateShip(t, "TORWIND-4", "HAULER", 30, 10, 0)
+// FindIdleShipsByFleet is a coordinator's direct lookup for its own dedicated
+// fleet (sp-l7h2, replacing sp-snmb's symbol-list FindIdleDedicatedShips): it
+// returns only currently-idle ships whose persisted DedicatedFleet tag equals
+// the fleet name. Busy members are silently skipped rather than erroring,
+// members of OTHER fleets and untagged ships never appear, and - unlike
+// FindIdleLightHaulers - role does not matter: carrying the tag is the whole
+// qualification.
+func TestFindIdleShipsByFleet_ReturnsOnlyIdleMembersOfNamedFleet(t *testing.T) {
+	idle := newCandidateShip(t, "TORWIND-4", "EXCAVATOR", 30, 10, 0) // non-hauler role: tag is the only qualification
 	idle.SetDedicatedFleet("contract")
 	busy := newCandidateShip(t, "TORWIND-5", "HAULER", 30, 10, 0)
 	busy.SetDedicatedFleet("contract")
 	if err := busy.AssignToContainer("contract-worker-TORWIND-5", shared.NewRealClock()); err != nil {
 		t.Fatalf("assign busy dedicated ship: %v", err)
 	}
-	unrelated := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
-	repo := &stubShipRepo{ships: []*navigation.Ship{idle, busy, unrelated}}
+	otherFleet := newCandidateShip(t, "TORWIND-19", "HAULER", 30, 10, 0)
+	otherFleet.SetDedicatedFleet("bulk_circuit")
+	untagged := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{idle, busy, otherFleet, untagged}}
 
-	_, symbols, err := FindIdleDedicatedShips(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-4", "TORWIND-5", "TORWIND-9"})
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "contract")
 	if err != nil {
-		t.Fatalf("FindIdleDedicatedShips: %v", err)
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
 	}
 
 	if len(symbols) != 1 || symbols[0] != "TORWIND-4" {
-		t.Fatalf("expected only the idle dedicated ship [TORWIND-4], got %v", symbols)
+		t.Fatalf("expected only the idle contract-fleet ship [TORWIND-4], got %v", symbols)
+	}
+}
+
+// A fleet member mid-flight is not dispatchable even without an active
+// assignment - mirroring FindIdleLightHaulers' in-transit exclusion.
+func TestFindIdleShipsByFleet_SkipsInTransitMembers(t *testing.T) {
+	cargo, err := shared.NewCargo(30, 0, nil)
+	if err != nil {
+		t.Fatalf("build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("build fuel: %v", err)
+	}
+	wp, err := shared.NewWaypoint("X1-TW-A2", 10, 0)
+	if err != nil {
+		t.Fatalf("build waypoint: %v", err)
+	}
+	inTransit, err := navigation.NewShip(
+		"TORWIND-4", shared.MustNewPlayerID(1), wp, fuel, 100, 30, cargo, 30,
+		"FRAME_FRIGATE", "HAULER", nil, navigation.NavStatusInTransit,
+	)
+	if err != nil {
+		t.Fatalf("build in-transit ship: %v", err)
+	}
+	inTransit.SetDedicatedFleet("contract")
+	repo := &stubShipRepo{ships: []*navigation.Ship{inTransit}}
+
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "contract")
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if len(symbols) != 0 {
+		t.Fatalf("expected no dispatchable ships while the only member is in transit, got %v", symbols)
+	}
+}
+
+// An empty fleet name means "general pool", never a fleet of its own: the
+// lookup must return nothing rather than every untagged ship - otherwise a
+// coordinator started without a dedicated fleet would treat the whole navy
+// as its exclusive property.
+func TestFindIdleShipsByFleet_EmptyFleetName_ReturnsNothing(t *testing.T) {
+	untagged := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{untagged}}
+
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "")
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if len(symbols) != 0 {
+		t.Fatalf("expected an empty fleet name to return nothing, got %v", symbols)
 	}
 }

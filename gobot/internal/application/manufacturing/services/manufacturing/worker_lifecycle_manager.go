@@ -14,6 +14,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
+// operationManufacturing is this coordinator's fleet identity for the
+// dedication check inside ClaimShip (sp-l7h2): a hull tagged with any other
+// DedicatedFleet is rejected atomically at claim time. Mirrors the contract
+// coordinator's dedicatedFleetContract constant.
+const operationManufacturing = "manufacturing"
+
 // WorkerManager manages worker container lifecycle
 type WorkerManager interface {
 	// AssignTaskToShip creates worker container and assigns ship
@@ -152,7 +158,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 	logger.Log("INFO", fmt.Sprintf("Claiming %s for worker container %s", shipSymbol, containerID), nil)
 	if m.shipRepo != nil {
 		playerID, _ := shared.NewPlayerID(params.PlayerID)
-		if err := m.shipRepo.ClaimShip(ctx, shipSymbol, containerID, playerID); err != nil {
+		if err := m.shipRepo.ClaimShip(ctx, shipSymbol, containerID, playerID, operationManufacturing); err != nil {
 			// Rollback: remove worker container
 			if m.containerRemover != nil {
 				if removeErr := m.containerRemover.Remove(ctx, containerID, params.PlayerID); removeErr != nil {

@@ -728,6 +728,56 @@ func (c *DaemonClient) ReleaseShip(ctx context.Context, shipSymbol string, reaso
 	return resp, nil
 }
 
+// AssignShipFleet dedicates a ship to a named fleet, making it exclusive to
+// that coordinator's discovery (sp-l7h2)
+func (c *DaemonClient) AssignShipFleet(ctx context.Context, shipSymbol, fleet string, playerID *int32, agentSymbol *string) (*pb.AssignShipFleetResponse, error) {
+	req := &pb.AssignShipFleetRequest{
+		ShipSymbol:  shipSymbol,
+		Fleet:       fleet,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.AssignShipFleet(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
+// UnassignShipFleet clears a ship's fleet dedication, returning it to the
+// general pool (sp-l7h2)
+func (c *DaemonClient) UnassignShipFleet(ctx context.Context, shipSymbol string, playerID *int32, agentSymbol *string) (*pb.UnassignShipFleetResponse, error) {
+	req := &pb.UnassignShipFleetRequest{
+		ShipSymbol:  shipSymbol,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.UnassignShipFleet(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
+// ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
+func (c *DaemonClient) ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error) {
+	req := &pb.ListFleetsRequest{
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.ListFleets(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 func (c *DaemonClient) ListWaypoints(ctx context.Context, systemSymbol string, trait, waypointType *string, playerID *int32, agentSymbol *string) (*pb.ListWaypointsResponse, error) {
 	req := &pb.ListWaypointsRequest{

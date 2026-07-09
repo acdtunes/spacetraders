@@ -3,94 +3,84 @@ package commands
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// reconcileStubShipRepo serves canned ships by symbol and records every Save
-// call, so tests can assert exactly which ships were reconciled and with what
-// DedicatedFleet() value - without needing a real database.
-type reconcileStubShipRepo struct {
-	navigation.ShipRepository
-	ships     map[string]*navigation.Ship
-	saveErr   map[string]error // symbol -> error to return from Save, if any
-	saveCalls []string         // ship symbols passed to Save, in order
+// reconcileStubMediator records every AssignShipFleetCommand sent through it
+// and returns a canned per-symbol error, so tests can assert exactly which
+// ships reconciliation tried to dedicate - without a real handler stack.
+// Reconciliation routes through the mediator (sp-l7h2), not the repository:
+// idempotence (skip the DB write when the tag is unchanged) now lives inside
+// ShipRepository.AssignFleet and is covered by the repository's own tests.
+type reconcileStubMediator struct {
+	sendErr map[string]error                         // ship symbol -> error to return, if any
+	sent    []*shipAssignment.AssignShipFleetCommand // commands received, in order
 }
 
-func (s *reconcileStubShipRepo) FindBySymbol(_ context.Context, symbol string, _ shared.PlayerID) (*navigation.Ship, error) {
-	ship, ok := s.ships[symbol]
+func (m *reconcileStubMediator) Send(_ context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*shipAssignment.AssignShipFleetCommand)
 	if !ok {
-		return nil, fmt.Errorf("ship %s not found", symbol)
+		return nil, fmt.Errorf("unexpected request type %T", request)
 	}
-	return ship, nil
+	m.sent = append(m.sent, cmd)
+	if err, ok := m.sendErr[cmd.ShipSymbol]; ok {
+		return nil, err
+	}
+	return &shipAssignment.AssignShipFleetResponse{ShipSymbol: cmd.ShipSymbol, Fleet: cmd.Fleet}, nil
 }
 
-func (s *reconcileStubShipRepo) Save(_ context.Context, ship *navigation.Ship) error {
-	s.saveCalls = append(s.saveCalls, ship.ShipSymbol())
-	if err, ok := s.saveErr[ship.ShipSymbol()]; ok {
-		return err
+func (m *reconcileStubMediator) Register(reflect.Type, common.RequestHandler) error { return nil }
+
+func (m *reconcileStubMediator) RegisterMiddleware(common.Middleware) {}
+
+// Every symbol on the operator's --dedicated-ships list must be routed
+// through AssignShipFleetCommand - the single write path for the dedication
+// tag (sp-l7h2) - into the named fleet, so the claim-filter in
+// FindIdleLightHaulers and the atomic guard in ClaimShip take effect.
+func TestReconcileDedicatedFleet_SendsAssignCommandPerConfiguredShip(t *testing.T) {
+	med := &reconcileStubMediator{}
+	logger := &completionCapturingLogger{}
+
+	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(7), []string{"TORWIND-4", "TORWIND-5"}, "contract")
+
+	if len(med.sent) != 2 {
+		t.Fatalf("expected exactly 2 assign commands, got %d: %+v", len(med.sent), med.sent)
 	}
-	return nil
+	for i, wantSymbol := range []string{"TORWIND-4", "TORWIND-5"} {
+		cmd := med.sent[i]
+		if cmd.ShipSymbol != wantSymbol {
+			t.Fatalf("command %d: expected ship %s, got %s", i, wantSymbol, cmd.ShipSymbol)
+		}
+		if cmd.Fleet != "contract" {
+			t.Fatalf("command %d: expected fleet %q, got %q", i, "contract", cmd.Fleet)
+		}
+		if cmd.PlayerID == nil || *cmd.PlayerID != 7 {
+			t.Fatalf("command %d: expected player ID 7, got %v", i, cmd.PlayerID)
+		}
+	}
 }
 
-// Every symbol on the operator's --dedicated-ships list must be marked into
-// the named fleet and persisted, so the claim-filter in FindIdleLightHaulers
-// actually takes effect (sp-snmb).
-func TestReconcileDedicatedFleet_MarksConfiguredShipsAsDedicated(t *testing.T) {
-	shipA := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
-	shipB := newHomeTestShip(t, "TORWIND-5", "X1-TEST-A1", 0, 0)
-	repo := &reconcileStubShipRepo{ships: map[string]*navigation.Ship{
-		"TORWIND-4": shipA,
-		"TORWIND-5": shipB,
+// A failing assignment (e.g. a ship sold or renamed since the operator's
+// --dedicated-ships flag was last updated) must log a warning and continue
+// reconciling the remaining ships, not abort the whole pass.
+func TestReconcileDedicatedFleet_CommandFailure_LogsWarningAndContinues(t *testing.T) {
+	med := &reconcileStubMediator{sendErr: map[string]error{
+		"TORWIND-GONE": fmt.Errorf("ship TORWIND-GONE not found for player 1"),
 	}}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, repo, shared.MustNewPlayerID(1), []string{"TORWIND-4", "TORWIND-5"}, "contract")
+	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), []string{"TORWIND-GONE", "TORWIND-5"}, "contract")
 
-	if shipA.DedicatedFleet() != "contract" {
-		t.Fatalf("expected TORWIND-4 marked into the contract fleet, got %q", shipA.DedicatedFleet())
+	if len(med.sent) != 2 {
+		t.Fatalf("expected the pass to continue past the failure and send both commands, got %d: %+v", len(med.sent), med.sent)
 	}
-	if shipB.DedicatedFleet() != "contract" {
-		t.Fatalf("expected TORWIND-5 marked into the contract fleet, got %q", shipB.DedicatedFleet())
-	}
-	if len(repo.saveCalls) != 2 {
-		t.Fatalf("expected exactly 2 Save calls, got %d: %v", len(repo.saveCalls), repo.saveCalls)
-	}
-}
-
-// A ship already reconciled into the target fleet on a prior pass must not be
-// saved again - reconciliation runs on every coordinator startup, and a fleet
-// of already-dedicated ships must not generate redundant DB writes each time.
-func TestReconcileDedicatedFleet_AlreadyReconciled_SkipsSave(t *testing.T) {
-	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
-	ship.SetDedicatedFleet("contract")
-	repo := &reconcileStubShipRepo{ships: map[string]*navigation.Ship{"TORWIND-4": ship}}
-	logger := &completionCapturingLogger{}
-
-	reconcileDedicatedFleet(context.Background(), logger, repo, shared.MustNewPlayerID(1), []string{"TORWIND-4"}, "contract")
-
-	if len(repo.saveCalls) != 0 {
-		t.Fatalf("expected no Save call for an already-reconciled ship, got %d: %v", len(repo.saveCalls), repo.saveCalls)
-	}
-}
-
-// An unknown ship symbol (e.g. sold or renamed since the operator's
-// --dedicated-ships flag was last updated) must log a warning and continue
-// reconciling the remaining ships, not abort the whole pass.
-func TestReconcileDedicatedFleet_UnknownShipSymbol_LogsWarningAndContinues(t *testing.T) {
-	knownShip := newHomeTestShip(t, "TORWIND-5", "X1-TEST-A1", 0, 0)
-	repo := &reconcileStubShipRepo{ships: map[string]*navigation.Ship{"TORWIND-5": knownShip}}
-	logger := &completionCapturingLogger{}
-
-	reconcileDedicatedFleet(context.Background(), logger, repo, shared.MustNewPlayerID(1), []string{"TORWIND-GONE", "TORWIND-5"}, "contract")
-
-	if knownShip.DedicatedFleet() != "contract" {
-		t.Fatalf("expected the known ship to still be reconciled despite the unknown symbol, got %q", knownShip.DedicatedFleet())
-	}
-	if len(repo.saveCalls) != 1 || repo.saveCalls[0] != "TORWIND-5" {
-		t.Fatalf("expected exactly one Save call for the known ship, got %v", repo.saveCalls)
+	if med.sent[1].ShipSymbol != "TORWIND-5" {
+		t.Fatalf("expected the known ship to still be reconciled despite the failure, got %s", med.sent[1].ShipSymbol)
 	}
 	foundWarning := false
 	for _, entry := range logger.entries {
@@ -99,20 +89,20 @@ func TestReconcileDedicatedFleet_UnknownShipSymbol_LogsWarningAndContinues(t *te
 		}
 	}
 	if !foundWarning {
-		t.Fatalf("expected a WARNING log for the unknown ship symbol, got entries: %+v", logger.entries)
+		t.Fatalf("expected a WARNING log for the failed assignment, got entries: %+v", logger.entries)
 	}
 }
 
 // An empty --dedicated-ships list (the default, no dedicated fleet
-// configured) must not touch the repository at all.
+// configured) must not dispatch any command or log anything at all.
 func TestReconcileDedicatedFleet_EmptyList_NoOp(t *testing.T) {
-	repo := &reconcileStubShipRepo{ships: map[string]*navigation.Ship{}}
+	med := &reconcileStubMediator{}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, repo, shared.MustNewPlayerID(1), nil, "contract")
+	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), nil, "contract")
 
-	if len(repo.saveCalls) != 0 {
-		t.Fatalf("expected no Save calls for an empty dedicated-ships list, got %v", repo.saveCalls)
+	if len(med.sent) != 0 {
+		t.Fatalf("expected no assign commands for an empty dedicated-ships list, got %+v", med.sent)
 	}
 	if len(logger.entries) != 0 {
 		t.Fatalf("expected no log entries for an empty dedicated-ships list, got %+v", logger.entries)

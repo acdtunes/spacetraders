@@ -138,12 +138,14 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Claim-filter (sp-snmb): a ship dedicated to a coordinator (via the
-		// operator-configured --dedicated-ships list) is invisible to this
-		// general-purpose pool, unconditionally. Every caller of this function
-		// (contract, manufacturing, factory, balance-handler) shares this one
-		// exclusion "for free" - the contract coordinator finds its own
-		// dedicated ships separately via FindIdleDedicatedShips.
+		// Claim-filter (sp-snmb): a ship dedicated to a coordinator's exclusive
+		// fleet is invisible to this general-purpose pool, unconditionally.
+		// Every caller of this function (contract, manufacturing, factory,
+		// balance-handler) shares this one exclusion "for free" - a coordinator
+		// finds its own dedicated ships separately via FindIdleShipsByFleet.
+		// This is layer 1 of the two-layer dedication enforcement (sp-l7h2): a
+		// cheap read-side pre-filter. Layer 2 - the correctness guarantee - is
+		// the atomic dedication check inside ShipRepository.ClaimShip.
 		if ship.DedicatedFleet() != "" {
 			continue
 		}
@@ -182,35 +184,40 @@ func FindIdleLightHaulers(
 	return idleHaulers, idleHaulerSymbols, nil
 }
 
-// FindIdleDedicatedShips looks up the contract coordinator's own reserved
-// fleet by symbol - the operator-supplied --dedicated-ships list - and
-// returns only the ones currently idle. Busy ships and unknown/not-yet-owned
-// symbols are silently skipped rather than erroring, since fleet composition
-// legitimately varies over the coordinator's lifetime (sp-snmb).
+// FindIdleShipsByFleet looks up a coordinator's own dedicated fleet by name -
+// every ship whose persisted DedicatedFleet tag equals fleet - and returns
+// only the ones currently idle. Busy and in-transit ships are silently
+// skipped rather than erroring, since fleet composition legitimately varies
+// over the coordinator's lifetime.
+//
+// This replaces the symbol-list FindIdleDedicatedShips (sp-snmb → sp-l7h2):
+// a remembered --dedicated-ships list goes stale the moment the captain
+// reassigns a ship via `fleet assign` without restarting the coordinator.
+// Reading DedicatedFleet() from the DB on every discovery pass is what makes
+// reassignment live instead of "live after next restart."
 //
 // Unlike FindIdleLightHaulers, this does not filter by role or cargo
-// capacity: a ship qualifies purely by being named on the operator's list,
-// whatever hull it is. The list itself is the authorization - there is no
-// need to also check Ship.DedicatedFleet(), since the caller already knows
-// which ships it dedicated.
+// capacity: a ship qualifies purely by carrying the fleet's tag, whatever
+// hull it is. The dedication itself is the authorization.
 //
 // Parameters:
 //   - ctx: Context for cancellation and logging
 //   - playerID: Player ID to find ships for
 //   - shipRepo: Repository to query ships (enriches assignment data automatically)
-//   - dedicatedShips: Ship symbols reserved for this coordinator (operator-supplied)
+//   - fleet: The fleet name to look up; "" (no dedicated fleet) returns nothing,
+//     since an empty tag means "general pool", never a fleet of its own
 //
 // Returns:
 //   - ships: List of idle dedicated ship entities
 //   - shipSymbols: List of idle dedicated ship symbols (for convenience)
 //   - error: Any error encountered
-func FindIdleDedicatedShips(
+func FindIdleShipsByFleet(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
-	dedicatedShips []string,
+	fleet string,
 ) ([]*navigation.Ship, []string, error) {
-	if len(dedicatedShips) == 0 {
+	if fleet == "" {
 		return nil, nil, nil
 	}
 
@@ -221,17 +228,14 @@ func FindIdleDedicatedShips(
 		return nil, nil, fmt.Errorf("failed to fetch ships: %w", err)
 	}
 
-	wanted := make(map[string]bool, len(dedicatedShips))
-	for _, symbol := range dedicatedShips {
-		wanted[symbol] = true
-	}
-
+	fleetTotal := 0
 	var idleShips []*navigation.Ship
 	var idleSymbols []string
 	for _, ship := range allShips {
-		if !wanted[ship.ShipSymbol()] {
+		if ship.DedicatedFleet() != fleet {
 			continue
 		}
+		fleetTotal++
 		// Exclude ships in transit (even without assignment), mirroring
 		// FindIdleLightHaulers: a hull mid-flight is not available to dispatch.
 		if ship.NavStatus() == navigation.NavStatusInTransit {
@@ -243,11 +247,12 @@ func FindIdleDedicatedShips(
 		}
 	}
 
-	logger.Log("INFO", "Idle dedicated ships discovered", map[string]interface{}{
-		"action":          "find_idle_dedicated_ships",
-		"dedicated_total": len(dedicatedShips),
-		"idle_dedicated":  len(idleSymbols),
-		"ship_symbols":    idleSymbols,
+	logger.Log("INFO", "Idle dedicated fleet ships discovered", map[string]interface{}{
+		"action":        "find_idle_ships_by_fleet",
+		"fleet":         fleet,
+		"fleet_total":   fleetTotal,
+		"idle_in_fleet": len(idleSymbols),
+		"ship_symbols":  idleSymbols,
 	})
 
 	return idleShips, idleSymbols, nil

@@ -9,6 +9,7 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -98,10 +99,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	}
 
 	// Reconcile the operator's --dedicated-ships list into the DedicatedFleet
-	// claim-filter (sp-snmb). Best-effort and additive-only: a ship symbol
-	// dropped from a later --dedicated-ships list on restart is NOT
-	// un-dedicated here, only newly-configured symbols are marked.
-	reconcileDedicatedFleet(ctx, logger, h.shipRepo, cmd.PlayerID, cmd.DedicatedShips, dedicatedFleetContract)
+	// claim-filter (sp-snmb), routed through AssignShipFleetCommand — the
+	// single write path for the tag (sp-l7h2). Best-effort and additive-only:
+	// a ship symbol dropped from a later --dedicated-ships list on restart is
+	// NOT un-dedicated here, only newly-configured symbols are marked. The
+	// empty default must not touch anything, mediator lookup included.
+	if len(cmd.DedicatedShips) > 0 {
+		reconcileDedicatedFleet(ctx, logger, h.fleetPoolManager.GetMediator(), cmd.PlayerID, cmd.DedicatedShips, dedicatedFleetContract)
+	}
 
 	// No pool initialization - ships are discovered dynamically
 
@@ -166,8 +171,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// FindIdleLightHaulers via the claim-filter, so it is looked up
 		// separately here and folded into the same candidate pool - dedicated
 		// ships still do contract work, they're just exclusive to this
-		// coordinator.
-		_, dedicatedIdleShips, err := appContract.FindIdleDedicatedShips(ctx, cmd.PlayerID, h.shipRepo, cmd.DedicatedShips)
+		// coordinator. Looked up by fleet NAME from the persisted tag
+		// (sp-l7h2), not the remembered --dedicated-ships list: a `fleet
+		// assign`/`unassign` while this coordinator runs takes effect on the
+		// very next pass, no restart needed. The two pools are disjoint by
+		// construction — FindIdleLightHaulers excludes every tagged hull,
+		// this returns only hulls tagged "contract" — so the append can
+		// never double-count a ship.
+		_, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle dedicated ships: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -448,34 +459,35 @@ const dedicatedFleetContract = "contract"
 
 // reconcileDedicatedFleet marks every operator-configured --dedicated-ships
 // entry into fleetName so the DedicatedFleet claim-filter in
-// FindIdleLightHaulers actually takes effect. Additive-only: a symbol removed
+// FindIdleLightHaulers actually takes effect. Routed through
+// AssignShipFleetCommand — the single write path for the dedication tag
+// (sp-l7h2) — rather than mutating ships directly, so reconciliation and
+// `fleet assign` can never drift apart. Additive-only: a symbol removed
 // from a later --dedicated-ships list on restart is NOT un-dedicated by this
-// pass - only newly-configured symbols are reconciled (deferred symmetric-
-// removal gap, sp-snmb). Idempotent: a ship already reconciled into fleetName
-// is skipped so a restart with an unchanged list performs zero DB writes.
-// Per-ship load/save failures are logged at WARNING and skipped rather than
-// aborting the whole pass, since one bad symbol (e.g. a ship sold since the
-// operator last updated the flag) must not block reconciling the rest.
+// pass - only configured symbols are marked (deferred symmetric-removal gap,
+// sp-snmb). Still idempotent: the repository write behind the command skips
+// the DB write when the tag is already fleetName, so a restart with an
+// unchanged list performs zero DB writes. Per-ship failures are logged at
+// WARNING and skipped rather than aborting the whole pass, since one bad
+// symbol (e.g. a ship sold since the operator last updated the flag) must
+// not block reconciling the rest.
 func reconcileDedicatedFleet(
 	ctx context.Context,
 	logger common.ContainerLogger,
-	shipRepo navigation.ShipRepository,
+	med common.Mediator,
 	playerID shared.PlayerID,
 	dedicatedShips []string,
 	fleetName string,
 ) {
 	for _, symbol := range dedicatedShips {
-		ship, err := shipRepo.FindBySymbol(ctx, symbol, playerID)
+		pid := playerID.Value()
+		_, err := med.Send(ctx, &shipAssignment.AssignShipFleetCommand{
+			ShipSymbol: symbol,
+			Fleet:      fleetName,
+			PlayerID:   &pid,
+		})
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to load ship %s: %v", symbol, err), nil)
-			continue
-		}
-		if ship.DedicatedFleet() == fleetName {
-			continue // Already reconciled.
-		}
-		ship.SetDedicatedFleet(fleetName)
-		if err := shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to save ship %s: %v", symbol, err), nil)
+			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to assign ship %s: %v", symbol, err), nil)
 			continue
 		}
 		logger.Log("INFO", fmt.Sprintf("Ship %s reconciled into dedicated %s fleet", symbol, fleetName), nil)

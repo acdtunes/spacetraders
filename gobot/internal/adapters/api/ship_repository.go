@@ -919,7 +919,14 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.P
 
 // ClaimShip exclusively assigns an idle ship to a container using row-level locking.
 // Returns ShipAlreadyAssignedError if ship is already assigned to another container.
-func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID) error {
+//
+// operation is the claiming coordinator's fleet identity ("contract",
+// "manufacturing", ...). A free hull whose DedicatedFleet tag names a
+// different fleet is rejected with ShipDedicatedToOtherFleetError — inside
+// the same locked transaction as the other guards, so a claim racing a
+// concurrent `fleet assign` cannot slip through on stale discovery data
+// (sp-l7h2, layer 2; the FindIdleLightHaulers exclude filter is layer 1).
+func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID, operation string) error {
 	if r.db == nil {
 		return fmt.Errorf("database not configured")
 	}
@@ -953,9 +960,24 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			return shared.NewShipAlreadyAssignedError(shipSymbol, *model.ContainerID)
 		}
 
-		// Already assigned to this container - idempotent success
+		// Already assigned to this container - idempotent success. Checked
+		// BEFORE the dedication guard on purpose: dedication is ownership of
+		// the NEXT acquisition, not eviction of the current holder (sp-l7h2).
+		// A worker re-claiming its own hull mid-job (crash recovery) must keep
+		// it even if the captain re-dedicated the ship while the job ran — the
+		// new fleet takes over when this claim is released, not by yanking a
+		// hull out from under a running operation.
 		if model.AssignmentStatus == "active" && model.ContainerID != nil && *model.ContainerID == containerID {
 			return nil
+		}
+
+		// sp-l7h2: the hull is free — a NEW acquisition. A dedicated ship may
+		// only be newly claimed by its own fleet's operation. Symmetric to the
+		// captain-reservation guard above, and atomic with the assignment
+		// write below: the discovery-time exclude filter alone has a TOCTOU
+		// window between a coordinator's read and this write.
+		if model.DedicatedFleet != "" && model.DedicatedFleet != operation {
+			return shared.NewShipDedicatedToOtherFleetError(shipSymbol, model.DedicatedFleet, operation)
 		}
 
 		// Assign ship to container
@@ -1094,6 +1116,53 @@ func (r *ShipRepository) ReleaseCaptainReservation(ctx context.Context, shipSymb
 		}
 
 		// Invalidate cache since assignment changed
+		r.shipListCache.Delete(playerID.Value())
+
+		return nil
+	})
+}
+
+// AssignFleet atomically sets the ship's DedicatedFleet tag — the single
+// write path for fleet dedication (sp-l7h2). fleet == "" clears it. Uses the
+// same row-level locking as ClaimShip so an assignment can never interleave
+// with a concurrent claim's read-check-write. Deliberately does NOT reject a
+// claimed or captain-reserved hull: dedication is permanent ownership ("who
+// may claim this next"), orthogonal to current occupancy — the tag takes
+// effect when the present claim is released, it does not evict the holder.
+// Idempotent: writing the already-persisted value performs zero DB writes,
+// keeping every-restart reconciliation cheap.
+func (r *ShipRepository) AssignFleet(ctx context.Context, shipSymbol string, fleet string, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		// Lock the row with SELECT FOR UPDATE to prevent race conditions
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		// Already tagged with this fleet — idempotent success, zero writes.
+		if model.DedicatedFleet == fleet {
+			return nil
+		}
+
+		if err := tx.Model(&model).Update("dedicated_fleet", fleet).Error; err != nil {
+			return fmt.Errorf("failed to assign fleet: %w", err)
+		}
+
+		// Invalidate the ship-list cache: a freshly-dedicated ship must not
+		// linger in another coordinator's discovery for a stale-cache window
+		// (design note, sp-l7h2).
 		r.shipListCache.Delete(playerID.Value())
 
 		return nil

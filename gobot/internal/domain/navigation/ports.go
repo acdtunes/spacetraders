@@ -89,7 +89,24 @@ type ShipRepository interface {
 	// Returns ErrShipAlreadyAssigned if ship is already assigned to another container.
 	// This method handles concurrency internally - multiple callers competing for the same
 	// ship will not cause race conditions.
-	ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID) error
+	//
+	// operation identifies the claiming coordinator's fleet name (e.g.
+	// "contract", "manufacturing"). A ship whose persisted DedicatedFleet tag
+	// is non-empty and differs from operation is rejected with
+	// ShipDedicatedToOtherFleetError — checked inside the same row-locked
+	// transaction as the other assignment guards, so dedication can never be
+	// raced past by a claim that read stale discovery data (sp-l7h2).
+	ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID, operation string) error
+
+	// AssignFleet atomically sets the ship's DedicatedFleet tag — the single
+	// write path for fleet dedication (sp-l7h2). fleet == "" clears the
+	// dedication, returning the ship to the general pool. Idempotent: writing
+	// the value already persisted performs zero DB writes, so reconciliation
+	// on every coordinator restart stays cheap. Dedication is ownership, not
+	// occupancy: assigning a currently-claimed or captain-reserved ship
+	// succeeds — the tag governs who may claim it NEXT, it does not evict the
+	// current holder.
+	AssignFleet(ctx context.Context, shipSymbol string, fleet string, playerID shared.PlayerID) error
 
 	// ReserveForCaptain atomically reserves an idle ship for the captain's direct,
 	// manual use, hiding it from coordinator discovery (sp-i1ku). Uses the same

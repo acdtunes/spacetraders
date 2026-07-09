@@ -131,3 +131,32 @@ func NewShipNotReservedError(shipSymbol string) *ShipNotReservedError {
 		),
 	}
 }
+
+// ShipDedicatedToOtherFleetError indicates a claim was rejected because the
+// ship is dedicated to a different operation's exclusive fleet (sp-l7h2).
+// Fleet is the ship's persisted DedicatedFleet tag; Operation is the fleet
+// name the claiming coordinator identified itself as. This is the atomic
+// layer-2 enforcement inside ClaimShip's row-locked transaction — the
+// discovery-time exclusion in FindIdleLightHaulers is only a best-effort
+// pre-filter and can race with a concurrent `fleet assign`.
+type ShipDedicatedToOtherFleetError struct {
+	*ShipAssignmentError
+	Fleet     string
+	Operation string
+}
+
+func NewShipDedicatedToOtherFleetError(shipSymbol, fleet, operation string) *ShipDedicatedToOtherFleetError {
+	claimant := operation
+	if claimant == "" {
+		claimant = "an undeclared operation"
+	}
+	return &ShipDedicatedToOtherFleetError{
+		ShipAssignmentError: NewShipAssignmentError(
+			fmt.Sprintf("ship %s is dedicated to fleet %q and cannot be claimed by %s", shipSymbol, fleet, claimant),
+			shipSymbol,
+			"",
+		),
+		Fleet:     fleet,
+		Operation: operation,
+	}
+}

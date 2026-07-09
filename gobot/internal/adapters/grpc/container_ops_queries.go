@@ -199,6 +199,62 @@ func (s *DaemonServer) ReleaseShip(ctx context.Context, shipSymbol, reason strin
 	return releaseResp.ShipSymbol, nil
 }
 
+// AssignShipFleet dedicates a ship to a named fleet, routing through the
+// single DedicatedFleet write path (sp-l7h2). Fleet == "" clears the
+// dedication — UnassignShipFleet sends exactly that.
+func (s *DaemonServer) AssignShipFleet(ctx context.Context, shipSymbol, fleet string, playerID *int, agentSymbol string) (string, string, error) {
+	cmd := &shipAssignmentCmd.AssignShipFleetCommand{
+		ShipSymbol:  shipSymbol,
+		Fleet:       fleet,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to assign ship fleet: %w", err)
+	}
+
+	assignResp, ok := response.(*shipAssignmentCmd.AssignShipFleetResponse)
+	if !ok {
+		return "", "", fmt.Errorf("unexpected response type")
+	}
+
+	return assignResp.ShipSymbol, assignResp.Fleet, nil
+}
+
+// ListFleets lists every dedicated fleet and its member ships (sp-l7h2).
+func (s *DaemonServer) ListFleets(ctx context.Context, playerID *int, agentSymbol string) ([]*pb.Fleet, error) {
+	query := &shipQuery.ListFleetsQuery{
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list fleets: %w", err)
+	}
+
+	listResp, ok := response.(*shipQuery.ListFleetsResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type")
+	}
+
+	var fleets []*pb.Fleet
+	for _, fleet := range listResp.Fleets {
+		pbFleet := &pb.Fleet{Name: fleet.Name}
+		for _, member := range fleet.Ships {
+			pbFleet.Ships = append(pbFleet.Ships, &pb.FleetShip{
+				ShipSymbol: member.ShipSymbol,
+				Idle:       member.Idle,
+			})
+		}
+		fleets = append(fleets, pbFleet)
+	}
+
+	return fleets, nil
+}
+
 // waypointToDetail converts a domain waypoint into its proto representation.
 func waypointToDetail(wp *shared.Waypoint) *pb.WaypointDetail {
 	return &pb.WaypointDetail{

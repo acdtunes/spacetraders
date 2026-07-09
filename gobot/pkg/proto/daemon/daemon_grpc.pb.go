@@ -40,6 +40,9 @@ const (
 	DaemonService_RefreshShip_FullMethodName                           = "/daemon.DaemonService/RefreshShip"
 	DaemonService_ReserveShip_FullMethodName                           = "/daemon.DaemonService/ReserveShip"
 	DaemonService_ReleaseShip_FullMethodName                           = "/daemon.DaemonService/ReleaseShip"
+	DaemonService_AssignShipFleet_FullMethodName                       = "/daemon.DaemonService/AssignShipFleet"
+	DaemonService_UnassignShipFleet_FullMethodName                     = "/daemon.DaemonService/UnassignShipFleet"
+	DaemonService_ListFleets_FullMethodName                            = "/daemon.DaemonService/ListFleets"
 	DaemonService_ListWaypoints_FullMethodName                         = "/daemon.DaemonService/ListWaypoints"
 	DaemonService_GetWaypoint_FullMethodName                           = "/daemon.DaemonService/GetWaypoint"
 	DaemonService_PurchaseShip_FullMethodName                          = "/daemon.DaemonService/PurchaseShip"
@@ -113,6 +116,14 @@ type DaemonServiceClient interface {
 	// ReleaseShip clears a captain reservation, returning the ship to idle so
 	// normal coordinator discovery can claim it again (sp-i1ku)
 	ReleaseShip(ctx context.Context, in *ReleaseShipRequest, opts ...grpc.CallOption) (*ReleaseShipResponse, error)
+	// AssignShipFleet dedicates a ship to a named fleet, making it exclusive
+	// to that fleet's coordinator (sp-l7h2)
+	AssignShipFleet(ctx context.Context, in *AssignShipFleetRequest, opts ...grpc.CallOption) (*AssignShipFleetResponse, error)
+	// UnassignShipFleet clears a ship's fleet dedication, returning it to the
+	// general pool (sp-l7h2)
+	UnassignShipFleet(ctx context.Context, in *UnassignShipFleetRequest, opts ...grpc.CallOption) (*UnassignShipFleetResponse, error)
+	// ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
+	ListFleets(ctx context.Context, in *ListFleetsRequest, opts ...grpc.CallOption) (*ListFleetsResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -367,6 +378,36 @@ func (c *daemonServiceClient) ReleaseShip(ctx context.Context, in *ReleaseShipRe
 	return out, nil
 }
 
+func (c *daemonServiceClient) AssignShipFleet(ctx context.Context, in *AssignShipFleetRequest, opts ...grpc.CallOption) (*AssignShipFleetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AssignShipFleetResponse)
+	err := c.cc.Invoke(ctx, DaemonService_AssignShipFleet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) UnassignShipFleet(ctx context.Context, in *UnassignShipFleetRequest, opts ...grpc.CallOption) (*UnassignShipFleetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnassignShipFleetResponse)
+	err := c.cc.Invoke(ctx, DaemonService_UnassignShipFleet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListFleets(ctx context.Context, in *ListFleetsRequest, opts ...grpc.CallOption) (*ListFleetsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFleetsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListFleets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWaypointsResponse)
@@ -591,6 +632,14 @@ type DaemonServiceServer interface {
 	// ReleaseShip clears a captain reservation, returning the ship to idle so
 	// normal coordinator discovery can claim it again (sp-i1ku)
 	ReleaseShip(context.Context, *ReleaseShipRequest) (*ReleaseShipResponse, error)
+	// AssignShipFleet dedicates a ship to a named fleet, making it exclusive
+	// to that fleet's coordinator (sp-l7h2)
+	AssignShipFleet(context.Context, *AssignShipFleetRequest) (*AssignShipFleetResponse, error)
+	// UnassignShipFleet clears a ship's fleet dedication, returning it to the
+	// general pool (sp-l7h2)
+	UnassignShipFleet(context.Context, *UnassignShipFleetRequest) (*UnassignShipFleetResponse, error)
+	// ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
+	ListFleets(context.Context, *ListFleetsRequest) (*ListFleetsResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -697,6 +746,15 @@ func (UnimplementedDaemonServiceServer) ReserveShip(context.Context, *ReserveShi
 }
 func (UnimplementedDaemonServiceServer) ReleaseShip(context.Context, *ReleaseShipRequest) (*ReleaseShipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseShip not implemented")
+}
+func (UnimplementedDaemonServiceServer) AssignShipFleet(context.Context, *AssignShipFleetRequest) (*AssignShipFleetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AssignShipFleet not implemented")
+}
+func (UnimplementedDaemonServiceServer) UnassignShipFleet(context.Context, *UnassignShipFleetRequest) (*UnassignShipFleetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnassignShipFleet not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListFleets(context.Context, *ListFleetsRequest) (*ListFleetsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFleets not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWaypoints not implemented")
@@ -1148,6 +1206,60 @@ func _DaemonService_ReleaseShip_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_AssignShipFleet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AssignShipFleetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).AssignShipFleet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_AssignShipFleet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).AssignShipFleet(ctx, req.(*AssignShipFleetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_UnassignShipFleet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnassignShipFleetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).UnassignShipFleet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_UnassignShipFleet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).UnassignShipFleet(ctx, req.(*UnassignShipFleetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListFleets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFleetsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListFleets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListFleets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListFleets(ctx, req.(*ListFleetsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListWaypoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWaypointsRequest)
 	if err := dec(in); err != nil {
@@ -1544,6 +1656,18 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseShip",
 			Handler:    _DaemonService_ReleaseShip_Handler,
+		},
+		{
+			MethodName: "AssignShipFleet",
+			Handler:    _DaemonService_AssignShipFleet_Handler,
+		},
+		{
+			MethodName: "UnassignShipFleet",
+			Handler:    _DaemonService_UnassignShipFleet_Handler,
+		},
+		{
+			MethodName: "ListFleets",
+			Handler:    _DaemonService_ListFleets_Handler,
 		},
 		{
 			MethodName: "ListWaypoints",

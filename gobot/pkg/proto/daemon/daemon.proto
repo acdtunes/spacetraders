@@ -75,6 +75,17 @@ service DaemonService {
   // normal coordinator discovery can claim it again (sp-i1ku)
   rpc ReleaseShip(ReleaseShipRequest) returns (ReleaseShipResponse);
 
+  // AssignShipFleet dedicates a ship to a named fleet, making it exclusive
+  // to that fleet's coordinator (sp-l7h2)
+  rpc AssignShipFleet(AssignShipFleetRequest) returns (AssignShipFleetResponse);
+
+  // UnassignShipFleet clears a ship's fleet dedication, returning it to the
+  // general pool (sp-l7h2)
+  rpc UnassignShipFleet(UnassignShipFleetRequest) returns (UnassignShipFleetResponse);
+
+  // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
+  rpc ListFleets(ListFleetsRequest) returns (ListFleetsResponse);
+
   // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
   rpc ListWaypoints(ListWaypointsRequest) returns (ListWaypointsResponse);
 
@@ -522,6 +533,50 @@ message ReleaseShipRequest {
 
 message ReleaseShipResponse {
   string ship_symbol = 1;
+}
+
+// AssignShipFleetRequest dedicates a ship to a named fleet (sp-l7h2)
+message AssignShipFleetRequest {
+  string ship_symbol = 1;
+  string fleet = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message AssignShipFleetResponse {
+  string ship_symbol = 1;
+  string fleet = 2;
+}
+
+// UnassignShipFleetRequest clears a ship's fleet dedication (sp-l7h2)
+message UnassignShipFleetRequest {
+  string ship_symbol = 1;
+  optional int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message UnassignShipFleetResponse {
+  string ship_symbol = 1;
+}
+
+// ListFleetsRequest lists every dedicated fleet and its members (sp-l7h2)
+message ListFleetsRequest {
+  optional int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message FleetShip {
+  string ship_symbol = 1;
+  bool idle = 2; // no active assignment and not in transit — claimable now
+}
+
+message Fleet {
+  string name = 1;
+  repeated FleetShip ships = 2;
+}
+
+message ListFleetsResponse {
+  repeated Fleet fleets = 1;
 }
 
 // ListWaypointsRequest lists the waypoints of a system from the waypoint cache

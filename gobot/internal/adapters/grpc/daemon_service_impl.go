@@ -619,6 +619,66 @@ func (s *daemonServiceImpl) ReleaseShip(ctx context.Context, req *pb.ReleaseShip
 	}, nil
 }
 
+func (s *daemonServiceImpl) AssignShipFleet(ctx context.Context, req *pb.AssignShipFleetRequest) (*pb.AssignShipFleetResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := stringValue(req.AgentSymbol)
+
+	shipSymbol, fleet, err := s.daemon.AssignShipFleet(ctx, req.ShipSymbol, req.Fleet, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to assign ship fleet: %w", err)
+	}
+
+	return &pb.AssignShipFleetResponse{
+		ShipSymbol: shipSymbol,
+		Fleet:      fleet,
+	}, nil
+}
+
+func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.UnassignShipFleetRequest) (*pb.UnassignShipFleetResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := stringValue(req.AgentSymbol)
+
+	// Unassign is assign-to-empty: Fleet "" clears the dedication through the
+	// same single write path (sp-l7h2).
+	shipSymbol, _, err := s.daemon.AssignShipFleet(ctx, req.ShipSymbol, "", playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unassign ship fleet: %w", err)
+	}
+
+	return &pb.UnassignShipFleetResponse{
+		ShipSymbol: shipSymbol,
+	}, nil
+}
+
+func (s *daemonServiceImpl) ListFleets(ctx context.Context, req *pb.ListFleetsRequest) (*pb.ListFleetsResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := stringValue(req.AgentSymbol)
+
+	fleets, err := s.daemon.ListFleets(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list fleets: %w", err)
+	}
+
+	return &pb.ListFleetsResponse{
+		Fleets: fleets,
+	}, nil
+}
+
 func (s *daemonServiceImpl) ListWaypoints(ctx context.Context, req *pb.ListWaypointsRequest) (*pb.ListWaypointsResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {
