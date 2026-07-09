@@ -200,7 +200,7 @@ func newZvHarness(t *testing.T, ship *navigation.Ship, residualUnits int) (*RunT
 	mediator := &zvMediator{fixture: fixture}
 	marketRepo := &zvMarketRepo{fixture: fixture}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil)
 	return handler, mediator
 }
 

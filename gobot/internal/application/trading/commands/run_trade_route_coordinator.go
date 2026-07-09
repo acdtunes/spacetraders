@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -111,26 +112,34 @@ type RunTradeRouteCoordinatorHandler struct {
 	shipRepo        navigation.ShipRepository
 	marketRepo      market.MarketRepository
 	marketRefresher MarketRefresher // optional; nil disables the live stale-ask guard
+	clock           shared.Clock    // used only for the cross-system jump-cooldown wait (sp-wlev)
 }
 
-// NewRunTradeRouteCoordinatorHandler wires the coordinator. It no longer owns a
-// container repository or clock: the daemon container runner claims and releases the
+// NewRunTradeRouteCoordinatorHandler wires the coordinator. It does not own a
+// container repository: the daemon container runner claims and releases the
 // hull through the normal container lifecycle (ship_symbol metadata → createShipAssignments
 // on start, releaseShipAssignments on every terminal path), so this handler only reads
 // ship/market state and flies the circuit. A nil marketRefresher disables the live
 // stale-ask guard (the circuit still runs on the ranked basis); the daemon injects a
-// real MarketScanner so the guard is active.
+// real MarketScanner so the guard is active. A nil clock defaults to shared.RealClock;
+// tests inject a shared.MockClock so the cross-system jump-cooldown wait (sp-wlev) is
+// instant instead of a real sleep.
 func NewRunTradeRouteCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	marketRefresher MarketRefresher,
+	clock shared.Clock,
 ) *RunTradeRouteCoordinatorHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &RunTradeRouteCoordinatorHandler{
 		mediator:        mediator,
 		shipRepo:        shipRepo,
 		marketRepo:      marketRepo,
 		marketRefresher: marketRefresher,
+		clock:           clock,
 	}
 }
 
@@ -305,10 +314,13 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			return
 		}
 
-		// Leg 1: buy a tranche at the source (exporter).
-		if err := h.navigate(ctx, ship, lane.SourceWaypoint, playerID); err != nil {
-			response.AbortReason = fmt.Sprintf("navigation to source %s failed: %v", lane.SourceWaypoint, err)
-			logger.Log("WARNING", "Navigation to source failed - ending circuit", map[string]interface{}{"error": err.Error()})
+		// Leg 1: buy a tranche at the source (exporter). A cross-system lane
+		// jumps instead of navigating (sp-wlev); travel reloads the ship
+		// afterward so this pointer reflects its post-jump state.
+		ship, err = h.travel(ctx, ship, lane.SourceWaypoint, playerID)
+		if err != nil {
+			response.AbortReason = fmt.Sprintf("travel to source %s failed: %v", lane.SourceWaypoint, err)
+			logger.Log("WARNING", "Travel to source failed - ending circuit", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
@@ -339,10 +351,12 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		held += buyResp.UnitsAdded
 		response.TotalCost += buyResp.TotalCost
 
-		// Leg 2: sell what we hold at the destination (importer).
-		if err := h.navigate(ctx, ship, lane.DestWaypoint, playerID); err != nil {
-			response.AbortReason = fmt.Sprintf("navigation to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
-			logger.Log("WARNING", "Navigation to destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
+		// Leg 2: sell what we hold at the destination (importer). A
+		// cross-system lane jumps instead of navigating (sp-wlev).
+		ship, err = h.travel(ctx, ship, lane.DestWaypoint, playerID)
+		if err != nil {
+			response.AbortReason = fmt.Sprintf("travel to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
+			logger.Log("WARNING", "Travel to destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
@@ -458,13 +472,48 @@ func (h *RunTradeRouteCoordinatorHandler) loadShip(
 	return ship, nil
 }
 
-// scanLanes builds cross-market listings for the system from cache and ranks
-// them, reusing the same trading.RankSpreads core the `market spreads` verb uses.
+// scanLanes builds cross-market listings for the system from cache, plus (sp-wlev)
+// every system one jump-gate hop away, and ranks them all in a single pass so
+// gate-crossing lanes can surface alongside home-system ones. Aggregating BEFORE
+// ranking (rather than ranking each system separately) is what lets a good that
+// only exports in one system and only imports in another form a lane at all —
+// trading.RankSpreads pairs listings purely by good and waypoint, indifferent to
+// which system either side is in. Cross-system candidates are then penalized via
+// rankLanesWithGatePenalty to reflect the jump+cooldown time cost a raw per-unit
+// spread can't see.
+//
+// Neighbor discovery is fail-open: a system with no jump gate, or a discovery
+// query that errors, simply contributes no extra listings — never an aborted
+// scan. One hop only (no recursive multi-hop chase): out of scope for sp-wlev.
 func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	ctx context.Context,
 	systemSymbol string,
 	playerID int,
 ) ([]trading.ArbitrageLane, error) {
+	listings, err := h.collectSystemListings(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, neighbor := range h.neighborSystems(ctx, systemSymbol, playerID) {
+		neighborListings, err := h.collectSystemListings(ctx, neighbor, playerID)
+		if err != nil {
+			continue // fail-open: an unreadable neighbor system just yields fewer lanes
+		}
+		listings = append(listings, neighborListings...)
+	}
+
+	return rankLanesWithGatePenalty(trading.RankSpreads(listings)), nil
+}
+
+// collectSystemListings reads every cached market in one system into flat
+// GoodListing rows, the shared building block scanLanes aggregates across the
+// home system and its jump-gate neighbors before ranking.
+func (h *RunTradeRouteCoordinatorHandler) collectSystemListings(
+	ctx context.Context,
+	systemSymbol string,
+	playerID int,
+) ([]trading.GoodListing, error) {
 	waypoints, err := h.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list markets in %s: %w", systemSymbol, err)
@@ -489,8 +538,27 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 			})
 		}
 	}
+	return listings, nil
+}
 
-	return trading.RankSpreads(listings), nil
+// neighborSystems returns the systems one jump directly away from systemSymbol's
+// own jump gate, via the already-registered GetJumpGateConnectionsQuery. Any
+// failure (no gate in the system, an API error, no player context) fails open to
+// an empty neighbor set rather than surfacing an error — a multi-system trade
+// route degrades to a home-system-only one, it never aborts the scan.
+func (h *RunTradeRouteCoordinatorHandler) neighborSystems(ctx context.Context, systemSymbol string, playerID int) []string {
+	resp, err := h.mediator.Send(ctx, &shipQuery.GetJumpGateConnectionsQuery{
+		SystemSymbol: systemSymbol,
+		PlayerID:     &playerID,
+	})
+	if err != nil {
+		return nil
+	}
+	conn, ok := resp.(*shipQuery.GetJumpGateConnectionsResponse)
+	if !ok || conn == nil {
+		return nil
+	}
+	return conn.ConnectedSystems
 }
 
 // observeGood re-reads a single good's live cached row at a waypoint so the loop

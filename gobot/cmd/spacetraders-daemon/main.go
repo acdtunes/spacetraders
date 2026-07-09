@@ -315,6 +315,22 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
 	}
 
+	// Jump-gate discovery query handlers. FindNearestJumpGate was already used
+	// internally by JumpShipHandler but, like JumpShipCommand itself before
+	// sp-n0x7, had never been registered with the mediator - dispatching it
+	// directly always failed with "no handler registered". GetJumpGateConnections
+	// is new (sp-wlev): it backs the multi-system trade-route's neighbor-system
+	// discovery.
+	findNearestJumpGateHandler := shipQuery.NewFindNearestJumpGateHandler(shipRepo, graphService, playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.FindNearestJumpGateQuery](med, findNearestJumpGateHandler); err != nil {
+		return fmt.Errorf("failed to register FindNearestJumpGate handler: %w", err)
+	}
+
+	getJumpGateConnectionsHandler := shipQuery.NewGetJumpGateConnectionsHandler(graphService, apiClient, playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.GetJumpGateConnectionsQuery](med, getJumpGateConnectionsHandler); err != nil {
+		return fmt.Errorf("failed to register GetJumpGateConnections handler: %w", err)
+	}
+
 	// Captain-reservation command handlers: reserve/release a hull for the
 	// captain's direct manual use, hiding it from coordinator discovery
 	// (sp-i1ku).
@@ -496,7 +512,7 @@ func run(cfg *config.Config) error {
 	// in-process nav — subsuming the 2sam/sj7p patches. marketScanner drives the live
 	// stale-ask guard (2sam hazard b). DaemonServer.StartTradeRoute launches the container.
 	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
-		med, shipRepo, marketRepo, marketScanner,
+		med, shipRepo, marketRepo, marketScanner, nil,
 	)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)

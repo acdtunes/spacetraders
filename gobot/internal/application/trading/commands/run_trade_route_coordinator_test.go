@@ -181,7 +181,7 @@ func newTradeHarness(t *testing.T, ship *navigation.Ship) *trHarness {
 	mediator := &trFakeMediator{fixture: fixture}
 	marketRepo := &trFakeMarketRepo{fixture: fixture}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil)
 	return &trHarness{handler: handler, mediator: mediator, shipRepo: shipRepo, ship: ship}
 }
 
@@ -275,7 +275,7 @@ func TestTradeRouteCoordinator_NoLane_CompletesWithoutTrading(t *testing.T) {
 	fixture := &trFixture{}
 	mediator := &trFakeMediator{fixture: fixture}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, &trEmptyMarketRepo{}, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, &trEmptyMarketRepo{}, nil, nil)
 
 	resp, err := handler.Handle(context.Background(), &RunTradeRouteCoordinatorCommand{
 		ShipSymbol:   ship.ShipSymbol(),

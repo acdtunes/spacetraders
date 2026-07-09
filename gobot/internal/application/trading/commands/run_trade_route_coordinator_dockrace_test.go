@@ -256,7 +256,7 @@ func newTdrHarness(t *testing.T, stuckWaypoint string) (*RunTradeRouteCoordinato
 		fixture:     fixture,
 	}
 	marketRepo := &trFakeMarketRepo{fixture: fixture}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, repo, marketRepo, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, repo, marketRepo, nil, nil)
 	logger := &capturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 	return handler, repo, mediator, logger, ctx

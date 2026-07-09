@@ -81,7 +81,7 @@ func newCollisionHarness(t *testing.T, ship *navigation.Ship, failNav bool) (*Ru
 	mediator := &collisionMediator{fixture: fixture, failNav: failNav}
 	marketRepo := &zvMarketRepo{fixture: fixture}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil)
 	return handler, mediator
 }
 
@@ -118,7 +118,7 @@ func TestTradeRouteCoordinator_NavigateLegFails_FliesZeroWithAbortReason(t *test
 	if coord.AbortReason == "" {
 		t.Fatal("a selected lane that flew zero MUST report AbortReason (sp-2sam)")
 	}
-	if !strings.Contains(coord.AbortReason, "navigation to source") {
+	if !strings.Contains(coord.AbortReason, "travel to source") {
 		t.Fatalf("AbortReason must name the failed navigate leg, got %q", coord.AbortReason)
 	}
 }

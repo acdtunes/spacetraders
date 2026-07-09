@@ -561,6 +561,93 @@ func TestJumpShip_ResolvesDestinationSystemToGateWaypoint_BeforeCallingJumpAPI(t
 	}
 }
 
+// sp-wlev (multi-system trade-route): a coordinator that already holds an
+// outer claim on the ship (e.g. a trade-route container mid-circuit) needs
+// to dispatch a jump leg WITHOUT jump_ship's own internal
+// claim/AssignToContainer - a second claim on an already-assigned ship
+// would either error ("already assigned to container X") or, worse,
+// silently steal/overwrite the outer coordinator's assignment. SkipClaim
+// lets the caller assert "I already hold this ship" and have jump_ship
+// trust that instead of taking its own lightweight FK-satisfying claim.
+// With SkipClaim, jump_ship must not create or remove any container record,
+// and the ship's pre-existing assignment must survive Handle untouched.
+func TestJumpShip_SkipClaim_DoesNotTouchContainerOrAssignment(t *testing.T) {
+	gate := newJumpGateWaypoint(t, "X1-AB12-GATE")
+	ship := newJumpTestShip(t, "PROBE-1", gate)
+
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	// The ship is already claimed by an outer coordinator (mirrors a
+	// trade-route container holding the ship for the whole circuit) before
+	// the jump is ever dispatched.
+	const outerContainerID = "trade-route-PROBE-1"
+	if err := ship.AssignToContainer(outerContainerID, clock); err != nil {
+		t.Fatalf("test setup: failed to pre-assign ship to outer container: %v", err)
+	}
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-AB12-GATE",
+			Connections: []string{"X1-CD34-GATE"},
+		},
+		result: &ports.JumpResult{
+			DestinationSystem:   "X1-CD34",
+			DestinationWaypoint: "X1-CD34-GATE",
+			CooldownSeconds:     60,
+		},
+	}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, nil, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-1",
+		DestinationSystem: "X1-CD34",
+		PlayerID:          &playerIDInt,
+		SkipClaim:         true,
+	}
+
+	resp, err := handler.Handle(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	jumpResp, ok := resp.(*JumpShipResponse)
+	if !ok || !jumpResp.Success {
+		t.Fatalf("expected a successful jump response, got %+v (ok=%v)", resp, ok)
+	}
+
+	// No lightweight jump container should ever be created or removed - the
+	// caller already holds the ship, so jump_ship must not touch container
+	// records at all under SkipClaim.
+	if len(containerRepo.added) != 0 {
+		t.Fatalf("expected no container record added under SkipClaim, got %d", len(containerRepo.added))
+	}
+	if len(containerRepo.removed) != 0 {
+		t.Fatalf("expected no container record removed under SkipClaim, got %d", len(containerRepo.removed))
+	}
+
+	// The ship's pre-existing outer assignment must survive completely
+	// untouched - not released, not overwritten.
+	if !ship.IsAssigned() {
+		t.Fatalf("expected ship to remain assigned after SkipClaim jump, but it was released")
+	}
+	if got := ship.ContainerID(); got != outerContainerID {
+		t.Fatalf("expected ship to remain assigned to outer container %q, got %q", outerContainerID, got)
+	}
+
+	// The jump itself must still take effect (nav state synced) even though
+	// no claim was taken.
+	if got := ship.CurrentLocation().SystemSymbol; got != "X1-CD34" {
+		t.Fatalf("expected ship system synced to X1-CD34, got %s", got)
+	}
+	if ship.CooldownExpiration() == nil {
+		t.Fatalf("expected cooldown to be set")
+	}
+}
+
 // If the origin gate has no connection into the requested destination
 // system, the handler must reject with a clear, actionable error instead
 // of forwarding an empty/wrong value to the live jump API.

@@ -22,6 +22,16 @@ type JumpShipCommand struct {
 	DestinationSystem string // Required: destination system symbol
 	PlayerID          *int   // Optional: player ID
 	AgentSymbol       string // Optional: agent symbol
+
+	// SkipClaim indicates the caller already holds the ship claimed under
+	// its own container (e.g. a trade-route coordinator mid-circuit,
+	// sp-wlev). When true, Handle does not create/remove the lightweight
+	// "ship-jump-<symbol>" container record and does not
+	// AssignToContainer/ForceRelease the ship - it trusts the caller's
+	// existing claim instead of taking a second, conflicting one. Defaults
+	// to false, preserving today's self-claiming behavior for every
+	// existing caller.
+	SkipClaim bool
 }
 
 // JumpShipResponse represents the result of a jump operation
@@ -227,36 +237,45 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// ship_assignments(container_id, player_id) foreign key, then claims the
 	// ship directly. Both are released unconditionally on the way out,
 	// regardless of success or failure below.
-	jumpContainerID := fmt.Sprintf("ship-jump-%s", cmd.ShipSymbol)
-	jumpContainer := domainContainer.NewContainer(
-		jumpContainerID,
-		domainContainer.ContainerTypeJump,
-		playerID.Value(),
-		1,
-		nil,
-		map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol,
-			"destination": cmd.DestinationSystem,
-		},
-		h.clock,
-	)
-	if err := h.containerRepo.Add(ctx, jumpContainer, "jump_ship"); err != nil {
-		return nil, fmt.Errorf("failed to create jump container record: %w", err)
-	}
-	defer func() {
-		_ = h.containerRepo.Remove(ctx, jumpContainerID, playerID.Value())
-	}()
+	//
+	// SkipClaim (sp-wlev) opts out of all of this: a caller that already
+	// holds the ship claimed under its own container (e.g. a trade-route
+	// coordinator mid-circuit) sets it so jump_ship trusts that existing
+	// claim instead of taking a second, conflicting one - AssignToContainer
+	// would otherwise error "already assigned to container X", and
+	// ForceRelease on the way out would wrongly drop the caller's claim.
+	if !cmd.SkipClaim {
+		jumpContainerID := fmt.Sprintf("ship-jump-%s", cmd.ShipSymbol)
+		jumpContainer := domainContainer.NewContainer(
+			jumpContainerID,
+			domainContainer.ContainerTypeJump,
+			playerID.Value(),
+			1,
+			nil,
+			map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"destination": cmd.DestinationSystem,
+			},
+			h.clock,
+		)
+		if err := h.containerRepo.Add(ctx, jumpContainer, "jump_ship"); err != nil {
+			return nil, fmt.Errorf("failed to create jump container record: %w", err)
+		}
+		defer func() {
+			_ = h.containerRepo.Remove(ctx, jumpContainerID, playerID.Value())
+		}()
 
-	if err := ship.AssignToContainer(jumpContainerID, h.clock); err != nil {
-		return nil, fmt.Errorf("failed to claim ship for jump: %w", err)
+		if err := ship.AssignToContainer(jumpContainerID, h.clock); err != nil {
+			return nil, fmt.Errorf("failed to claim ship for jump: %w", err)
+		}
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			return nil, fmt.Errorf("failed to save ship claim: %w", err)
+		}
+		defer func() {
+			ship.ForceRelease("jump_complete", h.clock)
+			_ = h.shipRepo.Save(ctx, ship)
+		}()
 	}
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		return nil, fmt.Errorf("failed to save ship claim: %w", err)
-	}
-	defer func() {
-		ship.ForceRelease("jump_complete", h.clock)
-		_ = h.shipRepo.Save(ctx, ship)
-	}()
 
 	// 9. Execute jump via API
 	// Get player to obtain token
