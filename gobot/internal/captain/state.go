@@ -35,17 +35,52 @@ type WakePolicy struct {
 	DeclaredAt     time.Time `json:"declared_at,omitempty"`
 }
 
+// RegimeTripwire is one captain-declared price tripwire (sp-zlfv): the
+// watchkeeper's price-regime detector emits a deferred market.regime_shift
+// event once a matching good's market price crosses Threshold — or, in
+// relative mode, Multiplier times a recorded baseline price — in Direction.
+// Exactly one of Threshold/Multiplier is set. Mechanizes the per-wake price
+// sweep the captain used to hand-roll.
+type RegimeTripwire struct {
+	// Good is either a good-class keyword ("ORE", "GAS") or a comma-separated
+	// literal symbol list (e.g. "IRON_ORE,COPPER_ORE").
+	Good string `json:"good"`
+	// Direction is "bid-above" or "bid-below".
+	Direction string `json:"direction"`
+	// Threshold is an absolute sell price. Mutually exclusive with Multiplier.
+	Threshold *int `json:"threshold,omitempty"`
+	// Multiplier expresses the threshold as Nx a recorded baseline price
+	// (the oldest price-history sample within Window). Mutually exclusive
+	// with Threshold.
+	Multiplier *float64 `json:"multiplier,omitempty"`
+	// Window is both the baseline lookback (multiplier mode) and the
+	// edge-trigger cooldown: once a crossing fires, the same crossing does
+	// not re-fire until Window elapses (sp-1hak HasSince lesson).
+	Window    time.Duration `json:"window"`
+	CreatedAt time.Time     `json:"created_at,omitempty"`
+}
+
+// RegimePolicy is the captain-declared set of price tripwires (sp-zlfv).
+// Declared via `spacetraders captain regime set` and consumed fresh by the
+// supervisor at the top of every Tick, so a declaration takes effect on the
+// very next poll without a restart. An empty/nil Tripwires list disables the
+// detector entirely — no config means no scan.
+type RegimePolicy struct {
+	Tripwires []RegimeTripwire `json:"tripwires,omitempty"`
+}
+
 // supervisorState is the durable subset of Supervisor's scheduling
 // bookkeeping. Everything here must survive a process restart so a fresh
 // process never re-treats an already-armed cadence as immediately due: a
 // restart must never fire an immediate wake or survey nudge.
 //
-// The struct has two independent owners sharing one file: the supervisor
+// The struct has three independent owners sharing one file: the supervisor
 // writes the cadence fields (LastSession, LastSurveyorNudge, Renudges,
-// Escalated, LastCredits) via saveCadenceState, and the captain CLI writes
-// the embedded WakePolicy via SaveWakePolicy. Each writer reads the current
-// file, mutates only its own fields, and writes back atomically, so neither
-// clobbers the other's most recent write.
+// Escalated, LastCredits) via saveCadenceState, the captain CLI writes the
+// embedded WakePolicy via SaveWakePolicy, and the captain CLI separately
+// writes the embedded RegimePolicy via SaveRegimePolicy. Each writer reads
+// the current file, mutates only its own fields, and writes back atomically,
+// so no writer clobbers another's most recent write.
 type supervisorState struct {
 	LastSession       time.Time      `json:"last_session"`
 	LastSurveyorNudge time.Time      `json:"last_surveyor_nudge"`
@@ -54,6 +89,7 @@ type supervisorState struct {
 	LastCredits       int            `json:"last_credits,omitempty"`
 
 	WakePolicy
+	RegimePolicy
 }
 
 // StatePath returns where the supervisor's durable scheduling state lives
@@ -167,4 +203,28 @@ func LoadWakePolicy(path string) (WakePolicy, error) {
 		return WakePolicy{}, err
 	}
 	return st.WakePolicy, nil
+}
+
+// SaveRegimePolicy updates only the captain-owned regime-tripwire fields,
+// preserving the supervisor's cadence bookkeeping and the independently
+// declared WakePolicy untouched. This is what `spacetraders captain regime
+// set`/`clear` call.
+func SaveRegimePolicy(path string, policy RegimePolicy) error {
+	return atomicUpdateState(path, func(st *supervisorState) {
+		st.RegimePolicy = policy
+	})
+}
+
+// LoadRegimePolicy returns the captain-declared price tripwires, or the zero
+// value (no tripwires — the regime detector does not scan) if none has been
+// declared yet. This is what `spacetraders captain regime list` calls, and
+// what the supervisor re-reads at the top of every Tick (before running
+// detectors, since tripwires configure detector behavior rather than just
+// the wake gate).
+func LoadRegimePolicy(path string) (RegimePolicy, error) {
+	st, err := loadSupervisorState(path)
+	if err != nil {
+		return RegimePolicy{}, err
+	}
+	return st.RegimePolicy, nil
 }

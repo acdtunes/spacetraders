@@ -303,6 +303,7 @@ Examples:
 	cmd.AddCommand(newCaptainReportCommand())
 	cmd.AddCommand(newCaptainTokensCommand())
 	cmd.AddCommand(newCaptainWakeCommand())
+	cmd.AddCommand(newCaptainRegimeCommand())
 
 	return cmd
 }

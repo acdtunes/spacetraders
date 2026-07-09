@@ -163,3 +163,136 @@ func TestSaveCadenceStatePreservesWakePolicy(t *testing.T) {
 	require.Equal(t, below, *got.CreditsBelow)
 	require.Equal(t, []string{"ship.idle"}, got.InterruptTypes)
 }
+
+// --- sp-zlfv: RegimePolicy persistence, mirroring the WakePolicy tests
+// above. supervisor-state.json now has three independent owners (cadence,
+// WakePolicy, RegimePolicy), so the cross-policy preservation tests below
+// guard the same dual-writer-safety property the WakePolicy tests already
+// establish, extended to the new third writer.
+
+func TestLoadRegimePolicyMissingFileReturnsZeroValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+
+	policy, err := LoadRegimePolicy(path)
+	require.NoError(t, err)
+	require.Empty(t, policy.Tripwires)
+}
+
+func TestRegimePolicyRoundTripsThroughSaveAndLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	threshold := 200
+	multiplier := 3.0
+	createdAt := time.Now().Truncate(time.Second)
+	want := RegimePolicy{
+		Tripwires: []RegimeTripwire{
+			{Good: "ORE", Direction: "bid-above", Threshold: &threshold, Window: 30 * time.Minute, CreatedAt: createdAt},
+			{Good: "GAS", Direction: "bid-above", Multiplier: &multiplier, Window: 4 * time.Hour, CreatedAt: createdAt},
+		},
+	}
+	require.NoError(t, SaveRegimePolicy(path, want))
+
+	got, err := LoadRegimePolicy(path)
+	require.NoError(t, err)
+	require.Len(t, got.Tripwires, 2)
+
+	require.Equal(t, "ORE", got.Tripwires[0].Good)
+	require.Equal(t, "bid-above", got.Tripwires[0].Direction)
+	require.NotNil(t, got.Tripwires[0].Threshold)
+	require.Equal(t, threshold, *got.Tripwires[0].Threshold)
+	require.Nil(t, got.Tripwires[0].Multiplier)
+	require.Equal(t, 30*time.Minute, got.Tripwires[0].Window)
+	require.True(t, createdAt.Equal(got.Tripwires[0].CreatedAt))
+
+	require.Equal(t, "GAS", got.Tripwires[1].Good)
+	require.NotNil(t, got.Tripwires[1].Multiplier)
+	require.Equal(t, multiplier, *got.Tripwires[1].Multiplier)
+	require.Nil(t, got.Tripwires[1].Threshold)
+	require.Equal(t, 4*time.Hour, got.Tripwires[1].Window)
+}
+
+func TestSaveRegimePolicyPreservesCadenceFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	cadence := supervisorState{
+		LastSession:       time.Now().Truncate(time.Second),
+		LastSurveyorNudge: time.Now().Add(-time.Hour).Truncate(time.Second),
+		Renudges:          map[int64]int{7: 1},
+		Escalated:         map[int64]bool{7: false},
+		LastCredits:       250000,
+	}
+	require.NoError(t, saveCadenceState(path, cadence))
+
+	threshold := 150
+	require.NoError(t, SaveRegimePolicy(path, RegimePolicy{
+		Tripwires: []RegimeTripwire{{Good: "GAS", Direction: "bid-above", Threshold: &threshold, Window: time.Hour}},
+	}))
+
+	got, err := loadSupervisorState(path)
+	require.NoError(t, err)
+	require.True(t, cadence.LastSession.Equal(got.LastSession), "cadence LastSession must survive a regime-policy-only write")
+	require.True(t, cadence.LastSurveyorNudge.Equal(got.LastSurveyorNudge))
+	require.Equal(t, cadence.Renudges, got.Renudges)
+	require.Equal(t, cadence.Escalated, got.Escalated)
+	require.Equal(t, cadence.LastCredits, got.LastCredits)
+	require.Len(t, got.Tripwires, 1)
+	require.Equal(t, "GAS", got.Tripwires[0].Good)
+}
+
+func TestSaveCadenceStatePreservesRegimePolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	threshold := 200
+	require.NoError(t, SaveRegimePolicy(path, RegimePolicy{
+		Tripwires: []RegimeTripwire{{Good: "ORE", Direction: "bid-above", Threshold: &threshold, Window: 30 * time.Minute}},
+	}))
+
+	cadence := supervisorState{LastSession: time.Now().Truncate(time.Second), LastCredits: 42}
+	require.NoError(t, saveCadenceState(path, cadence))
+
+	got, err := loadSupervisorState(path)
+	require.NoError(t, err)
+	require.True(t, cadence.LastSession.Equal(got.LastSession), "a cadence-only write must not clobber the previously-declared regime policy")
+	require.Equal(t, cadence.LastCredits, got.LastCredits)
+	require.Len(t, got.Tripwires, 1)
+	require.Equal(t, "ORE", got.Tripwires[0].Good)
+}
+
+func TestSaveRegimePolicyPreservesWakePolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	below := 1000
+	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsBelow: &below, InterruptTypes: []string{"ship.idle"}}))
+
+	threshold := 200
+	require.NoError(t, SaveRegimePolicy(path, RegimePolicy{
+		Tripwires: []RegimeTripwire{{Good: "ORE", Direction: "bid-above", Threshold: &threshold, Window: 30 * time.Minute}},
+	}))
+
+	gotWake, err := LoadWakePolicy(path)
+	require.NoError(t, err)
+	require.NotNil(t, gotWake.CreditsBelow, "a regime-policy write must not clobber the previously-declared wake policy")
+	require.Equal(t, below, *gotWake.CreditsBelow)
+	require.Equal(t, []string{"ship.idle"}, gotWake.InterruptTypes)
+
+	gotRegime, err := LoadRegimePolicy(path)
+	require.NoError(t, err)
+	require.Len(t, gotRegime.Tripwires, 1)
+}
+
+func TestSaveWakePolicyPreservesRegimePolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	threshold := 200
+	require.NoError(t, SaveRegimePolicy(path, RegimePolicy{
+		Tripwires: []RegimeTripwire{{Good: "ORE", Direction: "bid-above", Threshold: &threshold, Window: 30 * time.Minute}},
+	}))
+
+	above := 500000
+	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsAbove: &above}))
+
+	gotRegime, err := LoadRegimePolicy(path)
+	require.NoError(t, err)
+	require.Len(t, gotRegime.Tripwires, 1, "a wake-policy write must not clobber the previously-declared regime policy")
+	require.Equal(t, "ORE", gotRegime.Tripwires[0].Good)
+
+	gotWake, err := LoadWakePolicy(path)
+	require.NoError(t, err)
+	require.NotNil(t, gotWake.CreditsAbove)
+	require.Equal(t, above, *gotWake.CreditsAbove)
+}

@@ -185,6 +185,17 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	prevCredits := s.lastCredits
 	s.refreshCredits(ctx)
 
+	// Re-read the captain-declared regime tripwires fresh every tick (not
+	// cached at construction) so `spacetraders captain regime set` takes
+	// effect on the very next poll without a restart — same rationale as the
+	// WakePolicy re-read below, but this one must happen BEFORE dcfg since
+	// tripwires configure detector behavior rather than just the wake gate.
+	regimePolicy, err := LoadRegimePolicy(s.statePath)
+	if err != nil {
+		fmt.Printf("watchkeeper: regime policy unreadable, using defaults: %v\n", err)
+		regimePolicy = RegimePolicy{}
+	}
+
 	// Synthetic events (state-derived): stale heartbeats, idle ships, credit crossings.
 	dcfg := DetectorConfig{
 		PlayerID:            s.cfg.PlayerID,
@@ -198,6 +209,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		ExpectedStreams:     s.cfg.ExpectedStreams,
 		CrashLoopWindow:     defaultCrashLoopWindow,
 		CrashLoopThreshold:  defaultCrashLoopThreshold,
+		RegimeTripwires:     regimePolicy.Tripwires,
 	}
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation

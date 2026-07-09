@@ -31,6 +31,15 @@ const (
 	// looping on a known defect with a fix in flight resumes on this event
 	// instead of being re-rolled every heartbeat.
 	EventDeployCompleted EventType = "deploy.completed"
+
+	// EventMarketRegimeShift fires when a captain-declared price tripwire
+	// (sp-zlfv) crosses: mechanizes the per-wake price sweep the captain used
+	// to hand-roll ("any ore bid >=200 or gas bid >=150 (~3x baseline)
+	// triggers an immediate extraction re-consult" — captain transcript). It
+	// is deferred class (rides the next wake, NOT in DefaultInterruptTypes):
+	// a price crossing is worth reconsidering next time the captain is up,
+	// not worth forcing a wake on its own.
+	EventMarketRegimeShift EventType = "market.regime_shift"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force

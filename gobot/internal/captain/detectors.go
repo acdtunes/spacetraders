@@ -34,6 +34,11 @@ type DetectorConfig struct {
 	// field <= 0 disables the detector.
 	CrashLoopWindow    time.Duration
 	CrashLoopThreshold int
+
+	// RegimeTripwires (sp-zlfv): captain-declared price tripwires, loaded
+	// fresh each tick from RegimePolicy. Empty disables the price-regime
+	// detector entirely — no config means no scan.
+	RegimeTripwires []RegimeTripwire
 }
 
 // Crash-loop defaults wired by the supervisor until CaptainConfig grows tunable
@@ -61,6 +66,9 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 		return err
 	}
 	if err := detectCrashLoops(ctx, db, store, cfg, now); err != nil {
+		return err
+	}
+	if err := detectRegimeShift(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
 	return detectCreditsCrossing(ctx, store, cfg)
@@ -317,6 +325,134 @@ func crashContainerID(payload string) string {
 		return ""
 	}
 	return p.ContainerID
+}
+
+// gasSymbols is the fixed set of SpaceTraders goods the captain's "GAS"
+// price class covers (extracted via gas-siphon operations, not mining).
+// There is no exported domain classification to reuse — internal/domain/goods
+// keeps no ore/gas grouping — so sp-zlfv defines its own minimal, local
+// classifier rather than reach into an unrelated package for three strings.
+var gasSymbols = map[string]bool{
+	"HYDROCARBON":     true,
+	"LIQUID_HYDROGEN": true,
+	"LIQUID_NITROGEN": true,
+}
+
+// matchesGoodClass reports whether goodSymbol belongs to a tripwire's
+// configured good scope: the class keyword "ORE" (any *_ORE symbol), the
+// class keyword "GAS" (gasSymbols), or a literal comma-separated symbol
+// allowlist (exact match, case-insensitive) for anything else.
+func matchesGoodClass(goodSymbol, class string) bool {
+	switch strings.ToUpper(strings.TrimSpace(class)) {
+	case "ORE":
+		return strings.HasSuffix(goodSymbol, "_ORE")
+	case "GAS":
+		return gasSymbols[goodSymbol]
+	default:
+		for _, sym := range strings.Split(class, ",") {
+			if strings.EqualFold(strings.TrimSpace(sym), goodSymbol) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// resolveRegimeThreshold returns the effective price threshold to compare
+// against, plus the baseline it was derived from. Absolute mode (Threshold
+// set) needs no lookup: baseline reports as 0. Multiplier mode looks up the
+// OLDEST recorded price-history sample within tw.Window as the baseline and
+// scales it; ok=false when a multiplier tripwire has no baseline recorded
+// yet within the window (nothing to compare the current price against).
+func resolveRegimeThreshold(ctx context.Context, db *gorm.DB, playerID int, waypoint, good string, tw RegimeTripwire, now time.Time) (threshold int, baseline int, ok bool, err error) {
+	if tw.Threshold != nil {
+		return *tw.Threshold, 0, true, nil
+	}
+	if tw.Multiplier == nil {
+		return 0, 0, false, nil
+	}
+	var oldest persistence.MarketPriceHistoryModel
+	err = db.WithContext(ctx).
+		Where("player_id = ? AND waypoint_symbol = ? AND good_symbol = ? AND recorded_at >= ?",
+			playerID, waypoint, good, now.Add(-tw.Window)).
+		Order("recorded_at ASC").
+		Limit(1).
+		Find(&oldest).Error
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if oldest.WaypointSymbol == "" {
+		return 0, 0, false, nil
+	}
+	baseline = oldest.SellPrice
+	return int(*tw.Multiplier * float64(baseline)), baseline, true, nil
+}
+
+// regimeDedupKey scopes the edge-trigger cooldown to (good, market,
+// direction): the natural identity of a single crossing, not the tripwire
+// config that detected it. Two tripwires that happen to overlap on the same
+// good+market+direction are a degenerate config the captain would not
+// realistically declare (there is no reason to set two tripwires for the
+// same good, same direction, different thresholds instead of just one).
+func regimeDedupKey(good, waypoint, direction string) string {
+	return good + "@" + waypoint + ":" + direction
+}
+
+// detectRegimeShift scans MarketData for prices crossing a captain-declared
+// tripwire (sp-zlfv): mechanizes the per-wake price sweep the captain used to
+// hand-roll ("any ore bid >=200 or gas bid >=150 (~3x baseline) triggers an
+// immediate extraction re-consult"). Edge-triggered with cooldown via
+// HasSince (sp-1hak lesson): one event per crossing, not per poll — once
+// acknowledged, the same crossing does not re-fire until Window elapses AND
+// the price re-crosses. No tripwires configured means no query at all (zero
+// overhead when unset).
+func detectRegimeShift(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
+	if len(cfg.RegimeTripwires) == 0 {
+		return nil
+	}
+	var markets []persistence.MarketData
+	if err := db.WithContext(ctx).Where("player_id = ?", cfg.PlayerID).Find(&markets).Error; err != nil {
+		return err
+	}
+	for _, tw := range cfg.RegimeTripwires {
+		for _, m := range markets {
+			if !matchesGoodClass(m.GoodSymbol, tw.Good) {
+				continue
+			}
+			threshold, baseline, ok, err := resolveRegimeThreshold(ctx, db, cfg.PlayerID, m.WaypointSymbol, m.GoodSymbol, tw, now)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			price := m.SellPrice
+			var crossed bool
+			switch tw.Direction {
+			case "bid-above":
+				crossed = price >= threshold
+			case "bid-below":
+				crossed = price <= threshold
+			}
+			if !crossed {
+				continue
+			}
+			key := regimeDedupKey(m.GoodSymbol, m.WaypointSymbol, tw.Direction)
+			recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventMarketRegimeShift, key, now.Add(-tw.Window))
+			if err != nil {
+				return err
+			}
+			if recent {
+				continue
+			}
+			_ = store.Record(ctx, &captain.Event{
+				Type: captain.EventMarketRegimeShift, Ship: key, PlayerID: cfg.PlayerID,
+				Payload: fmt.Sprintf(`{"good":%q,"market":%q,"price":%d,"baseline":%d,"threshold":%d}`,
+					m.GoodSymbol, m.WaypointSymbol, price, baseline, threshold),
+			})
+		}
+	}
+	return nil
 }
 
 func detectCreditsCrossing(ctx context.Context, store captain.EventStore, cfg DetectorConfig) error {
