@@ -95,6 +95,7 @@ type zvMediator struct {
 	mu        sync.Mutex
 	fixture   *zvFixture
 	failBuy   error // when set, every purchase fails with this error (models an API buy rejection)
+	failSell  error // when set, every sell fails with this error (models an API sell rejection AFTER a buy — the cargo-aboard exit)
 	purchases []*shipCargo.PurchaseCargoCommand
 	sells     []*shipCargo.SellCargoCommand
 }
@@ -116,6 +117,9 @@ func (m *zvMediator) Send(ctx context.Context, request common.Request) (common.R
 		m.mu.Lock()
 		m.sells = append(m.sells, cmd)
 		m.mu.Unlock()
+		if m.failSell != nil {
+			return nil, m.failSell
+		}
 		bid := m.fixture.destBid()
 		m.fixture.recordSell(cmd.Units)
 		return &shipCargo.SellCargoResponse{TotalRevenue: cmd.Units * bid, UnitsSold: cmd.Units, TransactionCount: 1}, nil

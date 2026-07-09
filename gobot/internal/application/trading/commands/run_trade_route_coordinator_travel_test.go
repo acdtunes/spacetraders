@@ -231,9 +231,15 @@ func TestTravel_SameSystem_NavigatesWithoutJumping_ReturnsSameShipPointer(t *tes
 // A cross-system destination must jump instead of navigate, opt out of the
 // jump's own claim (the coordinator already holds this hull claimed for the
 // whole circuit - sp-wlev), wait out the reported cooldown using the
-// ETA-scaled budget (not a flat buffer), and return a ship reloaded from
-// the repository rather than the stale pre-jump pointer.
-func TestTravel_CrossSystem_JumpsWithSkipClaim_WaitsScaledCooldown_ReloadsShip(t *testing.T) {
+// ETA-scaled budget (not a flat buffer), reload the ship from the repository
+// rather than the stale pre-jump pointer, and THEN fly the final gate->waypoint
+// hop: the jump lands the hull on the destination system's JUMP GATE, not on
+// the destination waypoint's market, so without the hop the caller's dock+sell
+// fire at the gate (which does not trade the good) and strand the whole load
+// (sp-vzxu). The gate here (X1-BBB-GATE) is NOT the destination waypoint
+// (X1-BBB-MARKET), so exactly one NavigateRouteCommand to the destination
+// waypoint must follow the jump.
+func TestTravel_CrossSystem_JumpsThenHopsGateToWaypoint_WaitsScaledCooldown_ReloadsShip(t *testing.T) {
 	ship := newTravelShipAt(t, "HAULER-1", "X1-AAA-DOCK")
 	reloaded := newTravelShipAt(t, "HAULER-1", "X1-BBB-GATE")
 	mediator := &travelMediator{
@@ -265,8 +271,19 @@ func TestTravel_CrossSystem_JumpsWithSkipClaim_WaitsScaledCooldown_ReloadsShip(t
 	if !jump.SkipClaim {
 		t.Fatal("expected SkipClaim=true - the coordinator already holds this hull claimed for the circuit")
 	}
-	if len(mediator.navigates) != 0 {
-		t.Fatalf("cross-system travel must never dispatch a NavigateRouteCommand, got %d", len(mediator.navigates))
+
+	// THE sp-vzxu contract: after the jump lands the hull on the gate, travel()
+	// must fly the gate->waypoint hop to the destination WAYPOINT so dock+sell
+	// reach the market that trades the good. Exactly one NavigateRouteCommand,
+	// aimed at the destination waypoint (not the gate the jump left it on).
+	if len(mediator.navigates) != 1 {
+		t.Fatalf("cross-system travel must fly the gate->waypoint hop: expected exactly one NavigateRouteCommand after the jump, got %d", len(mediator.navigates))
+	}
+	if mediator.navigates[0].Destination != "X1-BBB-MARKET" {
+		t.Fatalf("the gate->waypoint hop must target the destination waypoint X1-BBB-MARKET, got %q", mediator.navigates[0].Destination)
+	}
+	if mediator.navigates[0].ShipSymbol != "HAULER-1" {
+		t.Fatalf("the gate->waypoint hop must fly HAULER-1, got %q", mediator.navigates[0].ShipSymbol)
 	}
 
 	wantBudget := calculateCooldownWaitBudget(60*time.Second, DefaultCooldownMarginFactor, DefaultCooldownMinMargin)
@@ -276,6 +293,42 @@ func TestTravel_CrossSystem_JumpsWithSkipClaim_WaitsScaledCooldown_ReloadsShip(t
 
 	if got != reloaded {
 		t.Fatal("expected travel() to return the RELOADED ship, not the stale pre-jump pointer")
+	}
+}
+
+// GUARD on the sp-vzxu hop: when the jump lands the hull DIRECTLY on the
+// destination waypoint (the lane's sink IS the system's gate waypoint), the
+// gate->waypoint hop is redundant and must be skipped - a gate-market lane
+// still costs exactly one jump and zero extra navigates. Here the reloaded ship
+// sits on X1-BBB-GATE and the destination waypoint is X1-BBB-GATE, so travel()
+// must NOT dispatch any NavigateRouteCommand.
+func TestTravel_CrossSystem_JumpLandsOnDestinationWaypoint_SkipsRedundantHop(t *testing.T) {
+	ship := newTravelShipAt(t, "HAULER-1", "X1-AAA-DOCK")
+	reloaded := newTravelShipAt(t, "HAULER-1", "X1-BBB-GATE")
+	mediator := &travelMediator{
+		jumpResp: &navCmd.JumpShipResponse{
+			Success:           true,
+			DestinationSystem: "X1-BBB",
+			CooldownSeconds:   60,
+		},
+	}
+	clock := &travelFakeClock{}
+	shipRepo := &travelShipRepo{ship: reloaded}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, clock, nil)
+
+	got, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(mediator.jumps) != 1 {
+		t.Fatalf("expected exactly one JumpShipCommand dispatched, got %d", len(mediator.jumps))
+	}
+	if len(mediator.navigates) != 0 {
+		t.Fatalf("jump landed ON the destination waypoint - the gate->waypoint hop must be skipped, got %d NavigateRouteCommand(s)", len(mediator.navigates))
+	}
+	if got != reloaded {
+		t.Fatal("expected travel() to return the RELOADED ship even when the hop is skipped")
 	}
 }
 

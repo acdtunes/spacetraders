@@ -122,6 +122,20 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	if err != nil {
 		return ship, fmt.Errorf("failed to reload ship %s after jump to %s: %w", ship.ShipSymbol(), destSystem, err)
 	}
+
+	// The jump lands the hull on destSystem's JUMP GATE, not on
+	// destinationWaypoint's market. Fly the final gate->waypoint hop so the
+	// caller's dock+sell fire at the market that actually trades the good -
+	// without it the sell fired at the gate (which doesn't trade the good) and
+	// stranded the whole load (sp-vzxu: observed -510k, 54-72 unsold
+	// lab_instruments). GUARDED: when the jump already landed the hull ON
+	// destinationWaypoint (the destination IS the gate), the hop is redundant
+	// and skipped, so a gate-market lane still costs exactly one jump.
+	if freshShip.CurrentLocation().Symbol != destinationWaypoint {
+		if err := h.navigate(ctx, freshShip, destinationWaypoint, playerID); err != nil {
+			return freshShip, fmt.Errorf("navigate %s from gate to %s after jump to %s failed: %w", freshShip.ShipSymbol(), destinationWaypoint, destSystem, err)
+		}
+	}
 	return freshShip, nil
 }
 

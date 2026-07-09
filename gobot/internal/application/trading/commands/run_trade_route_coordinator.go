@@ -554,7 +554,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		ship, err = h.travel(ctx, ship, lane.DestWaypoint, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("travel to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
-			logger.Log("WARNING", "Travel to destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
+			cargoAboardExitLog(logger, "WARNING", lane, held, fmt.Sprintf("travel to destination failed: %v", err))
 			return ship
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
@@ -570,15 +570,13 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			// clean margin-death, so surface it rather than return silently (the one
 			// early-return that used to vanish without a trace).
 			response.AbortReason = fmt.Sprintf("destination %s has no sellable volume for %s while holding %d units", lane.DestWaypoint, lane.Good, held)
-			logger.Log("INFO", "No sellable tranche at destination (importer volume exhausted) - ending circuit with cargo aboard", map[string]interface{}{
-				"good": lane.Good, "dest_volume": dstGood.TradeVolume(), "held": held,
-			})
+			cargoAboardExitLog(logger, "INFO", lane, held, fmt.Sprintf("no sellable tranche at destination (importer trade volume %d exhausted)", dstGood.TradeVolume()))
 			return ship
 		}
 		sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, sellUnits, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("sell of %d %s at destination %s failed (cargo aboard): %v", sellUnits, lane.Good, lane.DestWaypoint, err)
-			logger.Log("WARNING", "Sell failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
+			cargoAboardExitLog(logger, "WARNING", lane, held, fmt.Sprintf("sell of %d %s failed: %v", sellUnits, lane.Good, err))
 			return ship
 		}
 		held -= sellResp.UnitsSold
@@ -894,6 +892,27 @@ func (h *RunTradeRouteCoordinatorHandler) navigate(ctx context.Context, ship *na
 		PlayerID:    shared.MustNewPlayerID(playerID),
 	})
 	return err
+}
+
+// cargoAboardExitLog emits the one structured record every PRE-SELL circuit exit
+// shares (sp-149h): once the hull has BOUGHT and is holding cargo it could not
+// sell, an operator needs to see WHAT is stranded and WHERE — good/source/dest/
+// held/reason — on the log line itself, not buried in a bare {"error": ...} the
+// container-log renderer drops (the sp-ynuf/sp-iqyq class the source-dock and
+// dest-dock legs already fixed by putting the cause in the message). AbortReason
+// still carries the operator-facing prose on the response; this is its structured
+// telemetry twin, keyed so a stranded-cargo exit is greppable by action rather
+// than by parsing prose. reason names the specific cause (a failed leg's verbatim
+// error, or the exhausted-volume detail).
+func cargoAboardExitLog(logger common.ContainerLogger, level string, lane trading.ArbitrageLane, held int, reason string) {
+	logger.Log(level, "Circuit ending with cargo aboard", map[string]interface{}{
+		"action": "cargo_aboard_exit",
+		"good":   lane.Good,
+		"source": lane.SourceWaypoint,
+		"dest":   lane.DestWaypoint,
+		"held":   held,
+		"reason": reason,
+	})
 }
 
 // dock docks the hull at its current waypoint, surviving the nav-cache race the goods
