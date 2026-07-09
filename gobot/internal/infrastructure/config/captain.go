@@ -50,13 +50,6 @@ type CaptainConfig struct {
 	// a session indefinitely.
 	MaxWakeIntervalMinutes int `mapstructure:"max_wake_interval_minutes" validate:"omitempty,min=1"`
 
-	// RolloverNudgeHours is the session-age threshold (sp-0zx9) past which the
-	// watchkeeper nudges a standing session to hand off and restart with a
-	// fresh context (mirrors the surveyor cadence's MetaReviewDays, but keyed
-	// on a session's own age rather than a fixed-agent timer). Nil/0 disables
-	// the nudge entirely. Default 24h.
-	RolloverNudgeHours *int `mapstructure:"rollover_nudge_hours" validate:"omitempty,min=0"`
-
 	// WeeklyTokenBudget is the configured weekly-quota PROXY (sp-1vkr): the
 	// Anthropic/claude billing layer exposes nothing machine-readable to this
 	// CLI, so this is an operator-set token budget the fleet's cumulative

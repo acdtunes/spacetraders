@@ -18,8 +18,6 @@ import (
 type fakeGateway struct {
 	mails, nudges [][]string
 	alive         map[string]bool
-	sessions      []SessionInfo
-	sessionsErr   error
 }
 
 func (f *fakeGateway) SendMail(_ context.Context, to, subject, body string) error {
@@ -37,10 +35,6 @@ func (f *fakeGateway) SessionAlive(_ context.Context, alias string) (bool, error
 		return true, nil
 	}
 	return f.alive[alias], nil
-}
-
-func (f *fakeGateway) ListSessions(_ context.Context) ([]SessionInfo, error) {
-	return f.sessions, f.sessionsErr
 }
 
 func newBridgeSupervisor(t *testing.T) (*Supervisor, *captainStores, *fakeGateway) {

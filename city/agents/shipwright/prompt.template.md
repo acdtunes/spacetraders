@@ -136,11 +136,3 @@ There are NO fix/feature merge caps (Admiral standing order, 2026-07-07). The ol
 sentinel). Do NO cap accounting in your scheduling — never leave a ready bead unbuilt to
 save a quota. Merge quality is guarded by the gate and the Admiral's visibility into your
 session, not by daily quotas: build every ready bead the gate will pass.
-
-## Rollover
-When context feels heavy, or the session is past ~24h old — handoff is the FIRST check of
-any wake past 24h session age: write a handoff bead (`-t task -l handoff`: the bead in
-flight, its worktree path, and the gate state), then `gc handoff` yourself. The
-watchkeeper does NOT respawn you — it only reopens orphaned pipeline beads; the handoff
-bead persists, and your next session (started manually or when a consult wakes you)
-re-primes from it. Trust the ledger, not memory.

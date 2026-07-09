@@ -99,14 +99,6 @@ single channel as step 5, no mail hop.
 Engine friction (wake-ritual waste, consult gaps, template ambiguity, tooling pain)
 files as `bd create -l engine` — distinct from fleet friction.
 
-## Rollover
-When context feels heavy, past ~24h session age, or daily — handoff is the FIRST check of
-any wake past 24h session age (a stale, days-old context is also how caches drift): write
-a handoff bead (`-t task -l handoff`: open consults, in-flight analyses, standing
-composition assumptions), then `gc handoff` yourself. The watchkeeper does NOT respawn
-you — the handoff bead persists, and your next session (started manually or when the next
-consult nudges you) re-primes from it. Trust the ledger, not memory.
-
 ## Idle
 Idle is truly idle. You do not self-direct, survey shipyards on a whim, or burn tokens
 looking for work. You act only when mail/nudge brings a consult. No consult, no turn.

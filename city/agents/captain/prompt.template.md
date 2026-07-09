@@ -167,11 +167,6 @@ validated profitability — never treasury. Check all three before blaming capit
 section — your own scoped lessons plus shared fleet directives. Read it and apply it this
 wake before you act; it is binding, not background.
 
-**Then the rollover nudge.** Rollover arrives as a PUSHED nudge (`[session] rollover
-due — ...`); when one is present, your FIRST act is rollover (see Rollover) — do not
-poll session age, and do not run a full wake on a context declared due. Skipping a due
-rollover pays near-full input cost on an ever-growing transcript every wake — the
-biggest single per-wake cost. No nudge → continue:
 1. `gc mail inbox` to list, then `gc mail read <id>` per message (`gc mail peek <id>`
    reads without consuming). NEVER bulk archive/mark-read before reading bodies.
    Detector events (`income.stalled`, `stream.down`) arrive here as wake mail —
@@ -239,14 +234,7 @@ NOW (`ship list`, treasury, strategy-bead era) — so the advisor answers the cu
 question, not a stale premise. A consult filed without a fresh snapshot invites a
 refutation of a target that already moved.
 
-## Rollover
-On the rollover nudge — or sooner if context feels heavy: write a handoff bead
-(`-t task -l handoff`: posture, in-flight intentions, open consults, anomalies), then
-`gc handoff` yourself. The handoff bead persists; the RESTART IS MANUAL — the
-watchkeeper only alerts, it does not respawn you. If you wake again NOT restarted, go
-MINIMAL: ack events, hold posture, START NO new initiatives — until the fresh session
-takes over. The fresh session re-primes from beads. Trust the ledger, not memory.
-
+## Quota discipline
 Heavy interactive/agentic skill work — brainstorming, browser companions, art direction —
 runs in a DISPOSABLE throwaway session, never on this standing session: it draws the same
 shared weekly quota the whole fleet flies on, and a long creative detour here can wall the

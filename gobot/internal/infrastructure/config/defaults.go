@@ -223,10 +223,6 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.MaxWakeIntervalMinutes == 0 {
 		cfg.Captain.MaxWakeIntervalMinutes = 180
 	}
-	if cfg.Captain.RolloverNudgeHours == nil {
-		rolloverNudgeHoursDefault := 24
-		cfg.Captain.RolloverNudgeHours = &rolloverNudgeHoursDefault
-	}
 	// WeeklyTokenBudget intentionally has NO default: nil means the operator
 	// has not configured a weekly-quota proxy, and captain tokens/report must
 	// omit the quota block rather than assert an ungrounded number.
