@@ -234,4 +234,14 @@ func SetDefaults(cfg *Config) {
 		quotaAlertThresholdPctDefault := 80
 		cfg.Captain.QuotaAlertThresholdPct = &quotaAlertThresholdPctDefault
 	}
+
+	// Contract defaults
+	//
+	// ValueFloor default of 10,000cr sits comfortably above the micro-contract
+	// payouts that motivated this gate (2,500cr, 7,840cr - sp-snmb) and well
+	// below the normal fulfilled-contract range (104k-287k observed), so it
+	// screens out garbage without threatening real contracts.
+	if cfg.Contract.ValueFloor == 0 {
+		cfg.Contract.ValueFloor = 10000
+	}
 }

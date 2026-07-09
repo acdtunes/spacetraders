@@ -101,6 +101,15 @@ type RunWorkflowResponse struct {
 	TotalProfit int
 	TotalTrips  int
 	Error       string
+
+	// RejectedBelowFloor is true when a negotiated contract's total payout
+	// (Contract.TotalPayout) was below the configured value floor and was
+	// deliberately left unaccepted rather than consuming a full
+	// negotiate/accept/deliver/fulfill cycle on it (sp-snmb).
+	RejectedBelowFloor bool
+	// RejectedPayout is the total payout of the contract that was left
+	// unaccepted when RejectedBelowFloor is true (0 otherwise).
+	RejectedPayout int
 }
 
 // ============================================================================

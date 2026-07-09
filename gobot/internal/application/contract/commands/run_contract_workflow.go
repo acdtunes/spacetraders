@@ -43,6 +43,13 @@ type RunWorkflowResponse = contractTypes.RunWorkflowResponse
 type RunWorkflowHandler struct {
 	lifecycleService *contractServices.ContractLifecycleService
 	deliveryExecutor *contractServices.DeliveryExecutor
+
+	// valueFloor is the minimum total contract payout (see
+	// domainContract.Contract.TotalPayout) required before a negotiated
+	// contract will be accepted. Below-floor contracts are deliberately left
+	// unaccepted (sp-snmb) - see the gate in executeWorkflow and
+	// negotiateNextContractBestEffort.
+	valueFloor int
 }
 
 // NewRunWorkflowHandler creates a new contract workflow handler
@@ -51,6 +58,7 @@ func NewRunWorkflowHandler(
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
 	clock shared.Clock,
+	valueFloor int,
 ) *RunWorkflowHandler {
 	cargoManager := contractServices.NewCargoManager(mediator, shipRepo)
 	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
@@ -59,6 +67,7 @@ func NewRunWorkflowHandler(
 	return &RunWorkflowHandler{
 		lifecycleService: lifecycleService,
 		deliveryExecutor: deliveryExecutor,
+		valueFloor:       valueFloor,
 	}
 }
 
@@ -110,6 +119,28 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	profitabilityResp, err := h.lifecycleService.EvaluateContractProfitability(ctx, cmd.ShipSymbol, cmd.PlayerID, contract)
 	if err != nil {
 		// Non-fatal - logged in method
+	}
+
+	// Value floor gate (sp-snmb): a full negotiate/accept/deliver/fulfill
+	// cycle burns roughly the same ship-hours regardless of payout size, so a
+	// not-yet-accepted contract whose total payout falls below the
+	// configured floor is deliberately left unaccepted rather than spending a
+	// cycle on it. Contract.Fulfill hard-requires Accepted()==true, so this
+	// makes the contract structurally unfulfillable. Reported as a clean
+	// skip, not an error - nothing failed, the workflow just declined this
+	// contract.
+	if !contract.Accepted() && contract.TotalPayout() < h.valueFloor {
+		logger := common.LoggerFromContext(ctx)
+		logger.Log("WARNING", "Contract payout below value floor; leaving unaccepted", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "value_floor_reject",
+			"contract_id": contract.ContractID(),
+			"payout":      contract.TotalPayout(),
+			"value_floor": h.valueFloor,
+		})
+		result.RejectedBelowFloor = true
+		result.RejectedPayout = contract.TotalPayout()
+		return nil
 	}
 
 	var wasAccepted bool
@@ -168,6 +199,23 @@ func (h *RunWorkflowHandler) negotiateNextContractBestEffort(ctx context.Context
 			"ship_symbol": cmd.ShipSymbol,
 			"action":      "negotiate_next_contract",
 			"error":       err.Error(),
+		})
+		return
+	}
+
+	// Value floor gate (sp-snmb): same rationale as executeWorkflow - do not
+	// spend a full cycle on a garbage contract just because it happens to be
+	// the ship's own immediate next one. Leaving it unaccepted keeps it
+	// structurally unfulfillable (Contract.Fulfill requires Accepted()) and
+	// falls back to the coordinator's normal discovery pass, exactly like any
+	// other best-effort failure here.
+	if !nextContract.Accepted() && nextContract.TotalPayout() < h.valueFloor {
+		logger.Log("WARNING", "Next contract payout below value floor; leaving unaccepted", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "value_floor_reject_next",
+			"contract_id": nextContract.ContractID(),
+			"payout":      nextContract.TotalPayout(),
+			"value_floor": h.valueFloor,
 		})
 		return
 	}
