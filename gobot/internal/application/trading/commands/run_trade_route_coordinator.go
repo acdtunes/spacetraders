@@ -288,16 +288,18 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		response.DestWaypoint = lane.DestWaypoint
 		response.Circuits++
 
-		logger.Log("INFO", "Selected top disciplined arbitrage lane", map[string]interface{}{
-			"ship_symbol":   cmd.ShipSymbol,
-			"good":          lane.Good,
-			"source":        lane.SourceWaypoint,
-			"dest":          lane.DestWaypoint,
-			"spread_per_u":  lane.SpreadPerUnit,
-			"volume_cap":    lane.VolumeCap,
-			"capped_spread": lane.CappedSpread,
-			"circuit":       response.Circuits,
-		})
+		// sp-q1ca: this line used to print no structured payload — the captain could
+		// not tell which lane a daemon picked, or whether cross-system lanes were even
+		// scanned, without inferring it from nav destinations. laneLogPayload carries
+		// the SELECTED lane's full identity (both endpoints' waypoint+system, margin,
+		// cross-system flag); laneLogCandidates attaches the top-ranked shortlist so a
+		// penalized-but-present cross-system lane (see rankLanesWithGatePenalty) is
+		// verifiable in the log even when a home lane wins the selection.
+		selectionPayload := laneLogPayload(lane)
+		selectionPayload["ship_symbol"] = cmd.ShipSymbol
+		selectionPayload["circuit"] = response.Circuits
+		selectionPayload["candidates"] = laneLogCandidates(lanes)
+		logger.Log("INFO", "Selected top disciplined arbitrage lane", selectionPayload)
 
 		visitsBefore := response.Visits
 		ship = h.runCircuit(ctx, cmd, lane, ship, response)
@@ -584,6 +586,25 @@ func (h *RunTradeRouteCoordinatorHandler) loadShip(
 // Neighbor discovery is fail-open: a system with no jump gate, or a discovery
 // query that errors, simply contributes no extra listings — never an aborted
 // scan. One hop only (no recursive multi-hop chase): out of scope for sp-wlev.
+//
+// Multi-daemon lane-dedupe semantics (sp-q1ca, confirmed): scanLanes has NO
+// awareness of other concurrently-running trade-route daemons or their active
+// circuits — there is no registry of in-flight lanes and no query of what any
+// other hull is doing. Two daemons started at the same instant against the same
+// system WILL rank identically and both select the same top lane; there is no
+// explicit dedupe. Divergence observed in practice (e.g. one hull landing on a
+// different lane than another started moments later) is an EMERGENT side effect
+// of the shared market cache, not deliberate coordination: after a hull finishes
+// a buy/sell batch, the handler issues one extra live GET of that waypoint's
+// market and overwrites the cached rows (see cargo_transaction.go's
+// refreshMarketData -> MarketScanner.ScanAndSaveMarket -> UpsertMarketData),
+// synchronously before the command returns. h.collectSystemListings reads that
+// same cache with a plain uncached query, so a daemon that scans shortly AFTER
+// another hull has already traded into a lane's destination sees that lane's
+// decayed bid and naturally re-ranks it lower — no locking, no CAS, last writer
+// wins. Two daemons racing to scan at the SAME moment (before either has traded)
+// can still legitimately pick the same lane; only a bid-floor "margin died" stop
+// on one of them or a later rescan resolves the collision, not the ranker itself.
 func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	ctx context.Context,
 	systemSymbol string,
@@ -789,4 +810,47 @@ func derefString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// laneCandidateLogLimit bounds how many top-ranked candidates are attached to the
+// lane-selection log line (sp-q1ca): enough to show cross-system candidates were
+// actually scanned and ranked even when a penalized home lane wins the selection,
+// without flooding the log with the full ranked set on a system with many goods.
+const laneCandidateLogLimit = 5
+
+// laneLogCandidates summarizes up to laneCandidateLogLimit top-ranked lanes (in
+// their already-penalized rank order) into loggable payloads, so the lane-selection
+// log line makes cross-system scanning VERIFIABLE rather than inferred (sp-q1ca):
+// an operator can see the full ranked shortlist — including any cross-system
+// candidates that lost to a penalized home lane — not just the one that won.
+func laneLogCandidates(lanes []trading.ArbitrageLane) []map[string]interface{} {
+	limit := laneCandidateLogLimit
+	if len(lanes) < limit {
+		limit = len(lanes)
+	}
+	candidates := make([]map[string]interface{}, 0, limit)
+	for _, l := range lanes[:limit] {
+		candidates = append(candidates, laneLogPayload(l))
+	}
+	return candidates
+}
+
+// laneLogPayload flattens one lane into the structured fields the captain needs to
+// verify lane selection without inferring it from nav destinations (sp-q1ca): the
+// good, both endpoints (waypoint + system), the per-unit margin, and whether the
+// lane crosses a system boundary (source system != destination system).
+func laneLogPayload(l trading.ArbitrageLane) map[string]interface{} {
+	sourceSystem := shared.ExtractSystemSymbol(l.SourceWaypoint)
+	destSystem := shared.ExtractSystemSymbol(l.DestWaypoint)
+	return map[string]interface{}{
+		"good":          l.Good,
+		"source":        l.SourceWaypoint,
+		"source_system": sourceSystem,
+		"dest":          l.DestWaypoint,
+		"dest_system":   destSystem,
+		"cross_system":  sourceSystem != destSystem,
+		"spread_per_u":  l.SpreadPerUnit,
+		"volume_cap":    l.VolumeCap,
+		"capped_spread": l.CappedSpread,
+	}
 }
