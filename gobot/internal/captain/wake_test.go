@@ -353,3 +353,169 @@ func TestLastCreditsSurvivesRestart(t *testing.T) {
 	sup2, _ := reopenBridgeSupervisor(t, db, playerID, store, dir)
 	require.Equal(t, 777000, sup2.lastCredits, "LastCredits must survive a process restart")
 }
+
+// --- sp-o8wi: nudge coalescing (cooldown) + interrupt bypass + persisted clock ---
+//
+// Bug: firstWake fired a mail+nudge on EVERY poll tick that saw any newly
+// arrived event, so deploy churn (20-24 events queued across consecutive
+// ticks) nudged the captain seconds apart and stalled the session. The fix
+// enforces nudgeCooldown between successive non-interrupt firstWake nudges:
+// events arriving inside the window stay unmailed and ride the next allowed
+// firstWake as one accumulated batch. A never-mailed interrupt bypasses the
+// cooldown, and the clock is persisted so a restart mid-window does not reset
+// it and re-storm on boot.
+
+func deployEvent(id int64, at time.Time) *captain.Event {
+	return &captain.Event{ID: id, Type: captain.EventDeployCompleted, Ship: "S", CreatedAt: at}
+}
+
+func TestBridgeCoalescesNonInterruptStormIntoOneNudgePerCooldown(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+	ctx := context.Background()
+	t0 := time.Now()
+
+	// Tick 0 of the storm: the first deploy events fire one firstWake mail+nudge.
+	ran, err := sup.bridgeWake(ctx, t0, []*captain.Event{deployEvent(1, t0), deployEvent(2, t0)}, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw.mails, 1)
+	require.Len(t, gw.nudges, 1)
+
+	// Consecutive ticks inside the cooldown window: a new deploy event arrives
+	// each tick, yet NO new nudge is delivered — they accumulate unmailed.
+	for i, dt := range []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second, 120 * time.Second} {
+		batch := []*captain.Event{deployEvent(1, t0), deployEvent(2, t0)}
+		for j := int64(0); j <= int64(i); j++ {
+			batch = append(batch, deployEvent(3+j, t0.Add(dt))) // events 3,4,5,6 accumulate
+		}
+		ran, err = sup.bridgeWake(ctx, t0.Add(dt), batch, WakePolicy{})
+		require.NoError(t, err)
+		require.False(t, ran, "a non-interrupt batch inside the cooldown window must not nudge")
+	}
+	require.Len(t, gw.nudges, 1, "no per-tick nudging inside the cooldown window")
+
+	// Once the cooldown elapses: exactly one more nudge, carrying the WHOLE
+	// accumulated batch (events 1..6), not one nudge per queued event.
+	full := []*captain.Event{
+		deployEvent(1, t0), deployEvent(2, t0), deployEvent(3, t0), deployEvent(4, t0), deployEvent(5, t0), deployEvent(6, t0),
+	}
+	ran, err = sup.bridgeWake(ctx, t0.Add(nudgeCooldown+time.Second), full, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw.nudges, 2, "one coalesced nudge after the cooldown elapses")
+	require.Equal(t, "wake: 6 events", gw.mails[1][1], "the coalesced wake carries the whole accumulated batch")
+}
+
+func TestBridgeInterruptBypassesNudgeCooldown(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+	ctx := context.Background()
+	t0 := time.Now()
+
+	// A non-interrupt firstWake stamps the cooldown clock.
+	ran, err := sup.bridgeWake(ctx, t0, []*captain.Event{deployEvent(1, t0)}, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw.nudges, 1)
+
+	// A bare non-interrupt event 15s later is deferred (proves the window is open)...
+	ran, err = sup.bridgeWake(ctx, t0.Add(15*time.Second),
+		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(15 * time.Second))}, WakePolicy{})
+	require.NoError(t, err)
+	require.False(t, ran, "a non-interrupt event inside the window is deferred")
+	require.Len(t, gw.nudges, 1)
+
+	// ...but a brand-new INTERRUPT event well inside the same window nudges NOW.
+	ran, err = sup.bridgeWake(ctx, t0.Add(20*time.Second), []*captain.Event{
+		deployEvent(1, t0),
+		{ID: 3, Type: captain.EventWorkflowFailed, Ship: "S", CreatedAt: t0.Add(20 * time.Second)},
+	}, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran, "a never-mailed interrupt must bypass the cooldown")
+	require.Len(t, gw.nudges, 2, "interrupt nudges immediately despite the open cooldown window")
+}
+
+func TestNudgeCooldownClockSurvivesRestartAndDoesNotReStorm(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "state"), 0o755))
+	ctx := context.Background()
+	t0 := time.Now()
+
+	// Pre-restart: a non-interrupt firstWake stamps + persists lastNudge.
+	sup1, gw1 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	ran, err := sup1.bridgeWake(ctx, t0, []*captain.Event{deployEvent(1, t0)}, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw1.nudges, 1)
+
+	// Restart inside the cooldown window: the persisted clock reloads, so a new
+	// deploy event on boot is deferred — no re-storm.
+	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	require.False(t, sup2.lastNudge.IsZero(), "lastNudge must reload from disk after restart")
+	ran, err = sup2.bridgeWake(ctx, t0.Add(30*time.Second),
+		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(30 * time.Second))}, WakePolicy{})
+	require.NoError(t, err)
+	require.False(t, ran, "a restart inside the cooldown window must not re-nudge on boot")
+	require.Empty(t, gw2.nudges)
+
+	// Past the cooldown post-restart: the accumulated event finally nudges once.
+	sup3, gw3 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	ran, err = sup3.bridgeWake(ctx, t0.Add(nudgeCooldown+time.Second),
+		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(30 * time.Second))}, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran, "once the persisted cooldown elapses the coalesced wake fires")
+	require.Len(t, gw3.nudges, 1)
+}
+
+func TestSupervisorStateWithoutLastNudgeFieldLoadsCleanly(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	statePath := NewWorkspace(dir).StatePath()
+	require.NoError(t, os.MkdirAll(filepath.Dir(statePath), 0o755))
+
+	// A state file written before last_nudge existed (backward compatibility).
+	require.NoError(t, os.WriteFile(statePath,
+		[]byte(`{"last_session":"2020-01-01T00:00:00Z","last_surveyor_nudge":"2020-01-01T00:00:00Z"}`), 0o644))
+
+	sup, gw := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	require.True(t, sup.lastNudge.IsZero(), "an absent last_nudge loads as zero (fire the first wake immediately)")
+
+	// With no persisted cooldown, the first non-interrupt event fires at once.
+	ran, err := sup.bridgeWake(context.Background(), time.Now(),
+		[]*captain.Event{deployEvent(1, time.Now())}, WakePolicy{})
+	require.NoError(t, err)
+	require.True(t, ran, "a zero cooldown clock means the first wake fires immediately")
+	require.Len(t, gw.nudges, 1)
+}
+
+// TestTickCoalescesDeployStormBehindStandingInterrupt is the faithful incident
+// repro at the Tick level: a mailed interrupt keeps the wake GATE open every
+// tick (evaluateWakeGate wakes on any interrupt in the batch, mailed or not),
+// while deploy-churn events accumulate. Before the fix firstWake fired every
+// tick; after it, the non-interrupt accumulation rides one coalesced wake.
+func TestTickCoalescesDeployStormBehindStandingInterrupt(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	ctx := context.Background()
+	t0 := time.Now()
+	sup.lastSession = t0 // heartbeat cadence nowhere near due
+
+	// A standing interrupt: fires once, then keeps the gate open on later ticks.
+	recordEvent(t, s, captain.EventWorkflowFailed)
+	ran, err := sup.Tick(ctx, t0)
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw.nudges, 1, "the interrupt fires the initial wake")
+
+	// Deploy churn: a non-interrupt event arrives each tick inside the cooldown.
+	for i, dt := range []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second} {
+		recordEvent(t, s, captain.EventDeployCompleted)
+		_, err := sup.Tick(ctx, t0.Add(dt))
+		require.NoError(t, err)
+		require.Len(t, gw.nudges, 1, "tick %d inside the cooldown must not add a nudge", i+1)
+	}
+
+	// Once the cooldown elapses the accumulated deploy events ride one wake.
+	_, err = sup.Tick(ctx, t0.Add(nudgeCooldown+time.Second))
+	require.NoError(t, err)
+	require.Len(t, gw.nudges, 2, "the deploy storm coalesces into exactly one further nudge")
+}

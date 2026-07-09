@@ -87,6 +87,11 @@ type supervisorState struct {
 	Renudges          map[int64]int  `json:"renudges,omitempty"`
 	Escalated         map[int64]bool `json:"escalated,omitempty"`
 	LastCredits       int            `json:"last_credits,omitempty"`
+	// LastNudge persists the nudge-coalescing cooldown clock so a restart
+	// mid-window does not reset it and re-storm (sp-o8wi). omitempty keeps it
+	// absent from state written before this field existed — those files load
+	// with LastNudge zero, which correctly means "fire the first wake at once".
+	LastNudge time.Time `json:"last_nudge,omitempty"`
 
 	WakePolicy
 	RegimePolicy
@@ -172,8 +177,9 @@ func atomicUpdateState(path string, mutate func(*supervisorState)) error {
 }
 
 // saveCadenceState updates only the supervisor-owned cadence fields
-// (LastSession, LastSurveyorNudge, Renudges, Escalated, LastCredits),
-// preserving whatever wake policy the captain has separately declared.
+// (LastSession, LastSurveyorNudge, Renudges, Escalated, LastCredits,
+// LastNudge), preserving whatever wake policy the captain has separately
+// declared.
 func saveCadenceState(path string, cadence supervisorState) error {
 	return atomicUpdateState(path, func(st *supervisorState) {
 		st.LastSession = cadence.LastSession
@@ -181,6 +187,7 @@ func saveCadenceState(path string, cadence supervisorState) error {
 		st.Renudges = cadence.Renudges
 		st.Escalated = cadence.Escalated
 		st.LastCredits = cadence.LastCredits
+		st.LastNudge = cadence.LastNudge
 	})
 }
 

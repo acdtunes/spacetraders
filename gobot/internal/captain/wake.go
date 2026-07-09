@@ -25,10 +25,21 @@ func (s *Supervisor) SetCity(gw *CityGateway, bc *BeadsClient) {
 	s.bc = bc
 }
 
+// nudgeCooldown is the minimum spacing between successive non-interrupt wake
+// nudges. During deploy churn many events queue across consecutive poll ticks;
+// without this gate firstWake fired a fresh mail+nudge on EVERY tick that saw
+// any newly-arrived event and flooded — and ultimately stalled — the captain
+// session (sp-o8wi). Events arriving inside the window are NOT dropped: they
+// stay unmailed and ride the next allowed firstWake as one accumulated batch.
+// A never-mailed interrupt-class event bypasses the cooldown entirely — an
+// interrupt is never delayed. The clock (s.lastNudge) is persisted, so a
+// watchkeeper restart mid-window does not reset it and re-storm on boot.
+const nudgeCooldown = 3 * time.Minute
+
 // bridgeWake replaces the legacy prompt+runner session with visible city
 // signals: one event mail + nudge, re-nudges for unacked events, and an
 // Admiral escalation when the captain stays unresponsive.
-func (s *Supervisor) bridgeWake(ctx context.Context, now time.Time, events []*captain.Event) (bool, error) {
+func (s *Supervisor) bridgeWake(ctx context.Context, now time.Time, events []*captain.Event, policy WakePolicy) (bool, error) {
 	if s.renudges == nil {
 		s.renudges = map[int64]int{}
 	}
@@ -47,6 +58,13 @@ func (s *Supervisor) bridgeWake(ctx context.Context, now time.Time, events []*ca
 	}
 
 	if s.hasUnmailedEvents(events) {
+		// Coalesce a storm of newly-arrived events into at most one non-interrupt
+		// firstWake per nudgeCooldown window. Deferring leaves the events unmailed
+		// (no renudges entry) so they accumulate and the next allowed firstWake
+		// carries the whole batch; a never-mailed interrupt bypasses the gate.
+		if !s.firstWakeDue(now, events, policy) {
+			return false, nil
+		}
 		return s.firstWake(ctx, now, agent, events)
 	}
 
@@ -55,6 +73,19 @@ func (s *Supervisor) bridgeWake(ctx context.Context, now time.Time, events []*ca
 		return false, nil
 	}
 	return s.renudge(ctx, now, events)
+}
+
+// firstWakeDue reports whether a batch that contains never-mailed events may
+// deliver its wake mail+nudge now, or must defer to coalesce. A never-mailed
+// interrupt-class event always fires immediately (interrupts are never
+// delayed). Otherwise the batch fires only once nudgeCooldown has elapsed since
+// the last firstWake nudge; until then the events stay unmailed and accumulate,
+// so the eventual firstWake carries the whole batch as one nudge (sp-o8wi).
+func (s *Supervisor) firstWakeDue(now time.Time, events []*captain.Event, policy WakePolicy) bool {
+	if s.hasUnmailedInterrupt(events, policy) {
+		return true
+	}
+	return now.Sub(s.lastNudge) >= nudgeCooldown
 }
 
 func (s *Supervisor) firstWake(ctx context.Context, now time.Time, agent string, events []*captain.Event) (bool, error) {
@@ -71,6 +102,10 @@ func (s *Supervisor) firstWake(ctx context.Context, now time.Time, agent string,
 			s.renudges[e.ID] = 0
 		}
 	}
+	// Stamp the coalescing clock BEFORE recordNewSession so its saveState
+	// persists it: a restart inside the next window must not reset the cooldown
+	// and re-storm (sp-o8wi).
+	s.lastNudge = now
 	s.recordNewSession(now)
 	return true, nil
 }

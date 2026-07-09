@@ -44,6 +44,13 @@ type Supervisor struct {
 	lastCredits   int
 	sessionStarts []time.Time
 
+	// lastNudge is the time of the last non-interrupt firstWake nudge. It gates
+	// nudge coalescing (see nudgeCooldown): a fresh firstWake for newly-arrived
+	// non-interrupt events must wait out the cooldown since this stamp. Persisted
+	// so a restart mid-window continues the cooldown instead of re-storming on
+	// boot (sp-o8wi). Zero means "never nudged" — the first wake fires at once.
+	lastNudge time.Time
+
 	// Bridge engine (engine_mode: bridge): city adapters + wake bookkeeping.
 	gw        cityGateway
 	bc        beadsClient
@@ -130,6 +137,11 @@ func (s *Supervisor) restoreState(now time.Time) {
 	s.renudges = st.Renudges
 	s.escalated = st.Escalated
 	s.lastCredits = st.LastCredits
+	// Deliberately NOT zero-armed like the cadence clocks above: a zero
+	// lastNudge correctly means "never nudged, fire the first wake immediately"
+	// (sp-o8wi). An old state file without the field loads as zero — backward
+	// compatible.
+	s.lastNudge = st.LastNudge
 }
 
 // saveState persists current scheduling (cadence) state. Best-effort: a
@@ -145,6 +157,7 @@ func (s *Supervisor) saveState() {
 		Renudges:          s.renudges,
 		Escalated:         s.escalated,
 		LastCredits:       s.lastCredits,
+		LastNudge:         s.lastNudge,
 	}
 	if err := saveCadenceState(s.statePath, st); err != nil {
 		fmt.Printf("watchkeeper: supervisor state persist failed: %v\n", err)
@@ -249,7 +262,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		return false, nil
 	}
 	s.rememberAttempt(events, policy)
-	ran, err := s.bridgeWake(ctx, now, events)
+	ran, err := s.bridgeWake(ctx, now, events, policy)
 	if err != nil {
 		s.noteDeliveryFailure(now, err)
 	}
