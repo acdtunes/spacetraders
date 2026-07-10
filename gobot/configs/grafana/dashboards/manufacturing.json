@@ -60,7 +60,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -82,8 +84,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
@@ -122,7 +124,9 @@
         "orientation": "auto",
         "reduceOptions": {
           "values": false,
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": ""
         },
         "showThresholdLabels": false,
@@ -132,20 +136,23 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "sum(rate(spacetraders_daemon_manufacturing_pipeline_completed_total{status=\"COMPLETED\"}[5m])) / sum(rate(spacetraders_daemon_manufacturing_pipeline_completed_total[5m])) * 100",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'COMPLETED') / NULLIF(COUNT(*) FILTER (WHERE status IN ('COMPLETED', 'FAILED')), 0), 1), 100) FROM manufacturing_pipelines WHERE COALESCE(completed_at, created_at) >= NOW() - INTERVAL '24 hours'",
           "refId": "A"
         }
       ],
       "title": "Pipeline Success Rate",
-      "type": "gauge"
+      "type": "gauge",
+      "description": "Terminal pipelines in the last 24h that completed (vs failed). Source: manufacturing_pipelines."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
@@ -186,7 +193,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -196,15 +205,18 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "histogram_quantile(0.50, rate(spacetraders_daemon_manufacturing_pipeline_duration_seconds_bucket[5m]))",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (completed_at - created_at)))), 0) FROM manufacturing_pipelines WHERE status = 'COMPLETED' AND completed_at >= NOW() - INTERVAL '24 hours'",
           "refId": "A"
         }
       ],
       "title": "Avg Pipeline Duration",
-      "type": "stat"
+      "type": "stat",
+      "description": "Mean created->completed wall time of pipelines finished in the last 24h."
     },
     {
       "datasource": {
@@ -268,7 +280,9 @@
       "id": 204,
       "options": {
         "legend": {
-          "calcs": ["last"],
+          "calcs": [
+            "last"
+          ],
           "displayMode": "table",
           "placement": "right",
           "showLegend": true
@@ -294,72 +308,212 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Completed" },
+            "matcher": {
+              "id": "byName",
+              "options": "Completed"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "blue", "value": null },
-                { "color": "green", "value": 1 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Active" },
+            "matcher": {
+              "id": "byName",
+              "options": "Active"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "blue", "value": null },
-                { "color": "yellow", "value": 1 },
-                { "color": "green", "value": 5 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 5
+                    }
+                  ]
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Pending" },
+            "matcher": {
+              "id": "byName",
+              "options": "Pending"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 5 },
-                { "color": "orange", "value": 10 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 5
+                    },
+                    {
+                      "color": "orange",
+                      "value": 10
+                    }
+                  ]
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Final Collections" },
+            "matcher": {
+              "id": "byName",
+              "options": "Final Collections"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "basic" } },
-              { "id": "max", "value": 3 },
-              { "id": "min", "value": 0 },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "red", "value": null },
-                { "color": "yellow", "value": 1 },
-                { "color": "green", "value": 2 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "max",
+                "value": 3
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 7 },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
       "id": 263,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true, "sortBy": [{ "desc": true, "displayName": "Active" }] },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  p.product_good as \"Product\",\n  COUNT(*) FILTER (WHERE t.status = 'COMPLETED') as \"Completed\",\n  COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) as \"Active\",\n  COUNT(*) FILTER (WHERE t.status = 'PENDING') as \"Pending\",\n  COUNT(*) FILTER (WHERE t.task_type = 'COLLECT_SELL' AND t.good = p.product_good AND t.status = 'COMPLETED') as \"Final Collections\"\nFROM manufacturing_pipelines p\nLEFT JOIN manufacturing_tasks t ON p.id = t.pipeline_id\nWHERE p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nGROUP BY p.id, p.product_good\nORDER BY COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) DESC",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Active"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  p.product_good as \"Product\",\n  COUNT(*) FILTER (WHERE t.status = 'COMPLETED') as \"Completed\",\n  COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) as \"Active\",\n  COUNT(*) FILTER (WHERE t.status = 'PENDING') as \"Pending\",\n  COUNT(*) FILTER (WHERE t.task_type = 'COLLECT_SELL' AND t.good = p.product_good AND t.status = 'COMPLETED') as \"Final Collections\"\nFROM manufacturing_pipelines p\nLEFT JOIN manufacturing_tasks t ON p.id = t.pipeline_id\nWHERE p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nGROUP BY p.id, p.product_good\nORDER BY COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) DESC",
+          "refId": "A"
+        }
+      ],
       "title": "Pipeline Status Summary (Final Collections: 3 = Complete)",
       "type": "table"
     },
@@ -384,48 +538,136 @@
         "defaults": {
           "custom": {
             "align": "auto",
-            "cellOptions": {"type": "auto"},
+            "cellOptions": {
+              "type": "auto"
+            },
             "inspect": false
           },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Status"},
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
             "properties": [
-              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
-              {"id": "mappings", "value": [
-                {"options": {"PLANNING": {"color": "blue", "index": 0}}, "type": "value"},
-                {"options": {"EXECUTING": {"color": "yellow", "index": 1}}, "type": "value"},
-                {"options": {"COMPLETED": {"color": "green", "index": 2}}, "type": "value"},
-                {"options": {"FAILED": {"color": "red", "index": 3}}, "type": "value"}
-              ]}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "PLANNING": {
+                        "color": "blue",
+                        "index": 0
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "EXECUTING": {
+                        "color": "yellow",
+                        "index": 1
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "COMPLETED": {
+                        "color": "green",
+                        "index": 2
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "FAILED": {
+                        "color": "red",
+                        "index": 3
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Progress"},
+            "matcher": {
+              "id": "byName",
+              "options": "Progress"
+            },
             "properties": [
-              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "gauge"}},
-              {"id": "max", "value": 100},
-              {"id": "min", "value": 0}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "gauge"
+                }
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
             ]
           }
         ]
       },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
       "id": 261,
       "options": {
         "cellHeight": "sm",
-        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{"desc": false, "displayName": "Product"}]
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Product"
+          }
+        ]
       },
       "targets": [
         {
-          "datasource": {"type": "postgres", "uid": "postgresql"},
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
           "format": "table",
-          "rawSql": "SELECT p.product_good as \"Product\", p.status as \"Status\", p.sell_market as \"Sell Market\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Tasks\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Done\", ROUND((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric / NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100) as \"Progress\", (SELECT string_agg(DISTINCT t.assigned_ship, ', ') FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.assigned_ship IS NOT NULL) as \"Ships\" FROM manufacturing_pipelines p WHERE p.player_id = 12 AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.product_good",
+          "rawSql": "SELECT p.product_good as \"Product\", p.status as \"Status\", p.sell_market as \"Sell Market\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Tasks\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Done\", ROUND((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric / NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100) as \"Progress\", (SELECT string_agg(DISTINCT t.assigned_ship, ', ') FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.assigned_ship IS NOT NULL) as \"Ships\" FROM manufacturing_pipelines p WHERE p.player_id = (SELECT MAX(id) FROM players) AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.product_good",
           "refId": "A"
         }
       ],
@@ -441,46 +683,135 @@
         "defaults": {
           "custom": {
             "align": "auto",
-            "cellOptions": {"type": "auto"},
+            "cellOptions": {
+              "type": "auto"
+            },
             "inspect": false
           },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Status"},
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
             "properties": [
-              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
-              {"id": "mappings", "value": [
-                {"options": {"PENDING": {"color": "purple", "index": 0}}, "type": "value"},
-                {"options": {"READY": {"color": "blue", "index": 1}}, "type": "value"},
-                {"options": {"ASSIGNED": {"color": "yellow", "index": 2}}, "type": "value"},
-                {"options": {"EXECUTING": {"color": "orange", "index": 3}}, "type": "value"},
-                {"options": {"COMPLETED": {"color": "green", "index": 4}}, "type": "value"},
-                {"options": {"FAILED": {"color": "red", "index": 5}}, "type": "value"}
-              ]}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "PENDING": {
+                        "color": "purple",
+                        "index": 0
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "READY": {
+                        "color": "blue",
+                        "index": 1
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "ASSIGNED": {
+                        "color": "yellow",
+                        "index": 2
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "EXECUTING": {
+                        "color": "orange",
+                        "index": 3
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "COMPLETED": {
+                        "color": "green",
+                        "index": 4
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "FAILED": {
+                        "color": "red",
+                        "index": 5
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
             ]
           }
         ]
       },
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
       "id": 262,
       "options": {
         "cellHeight": "sm",
-        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{"desc": false, "displayName": "Pipeline"}]
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Pipeline"
+          }
+        ]
       },
       "targets": [
         {
-          "datasource": {"type": "postgres", "uid": "postgresql"},
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
           "format": "table",
-          "rawSql": "SELECT p.product_good as \"Pipeline\", t.task_type as \"Task\", t.good as \"Good\", t.status as \"Status\", COALESCE(t.assigned_ship, '-') as \"Ship\", t.source_market as \"Source\", COALESCE(t.target_market, t.factory_symbol) as \"Target\", CASE WHEN t.started_at IS NOT NULL THEN EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int || 's' ELSE '-' END as \"Duration\" FROM manufacturing_tasks t JOIN manufacturing_pipelines p ON t.pipeline_id = p.id WHERE t.player_id = 12 AND t.status NOT IN ('COMPLETED', 'FAILED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.product_good, CASE t.task_type WHEN 'ACQUIRE_DELIVER' THEN 1 WHEN 'COLLECT_SELL' THEN 2 ELSE 3 END, t.good",
+          "rawSql": "SELECT p.product_good as \"Pipeline\", t.task_type as \"Task\", t.good as \"Good\", t.status as \"Status\", COALESCE(t.assigned_ship, '-') as \"Ship\", t.source_market as \"Source\", COALESCE(t.target_market, t.factory_symbol) as \"Target\", CASE WHEN t.started_at IS NOT NULL THEN EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int || 's' ELSE '-' END as \"Duration\" FROM manufacturing_tasks t JOIN manufacturing_pipelines p ON t.pipeline_id = p.id WHERE t.player_id = (SELECT MAX(id) FROM players) AND t.status NOT IN ('COMPLETED', 'FAILED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.product_good, CASE t.task_type WHEN 'ACQUIRE_DELIVER' THEN 1 WHEN 'COLLECT_SELL' THEN 2 ELSE 3 END, t.good",
           "refId": "A"
         }
       ],
-      "title": "Pipeline Tasks Breakdown (grouped by Pipeline → Task Type)",
+      "title": "Pipeline Tasks Breakdown (grouped by Pipeline \u2192 Task Type)",
       "type": "table"
     },
     {
@@ -497,8 +828,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
@@ -532,7 +863,9 @@
         "minVizWidth": 0,
         "orientation": "horizontal",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -542,39 +875,23 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "sum by (task_type) (spacetraders_daemon_manufacturing_tasks_pending_total)",
-          "legendFormat": "{{task_type}} - Pending",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT task_type AS \"Task\", COUNT(*) FILTER (WHERE status = 'PENDING') AS \"Pending\", COUNT(*) FILTER (WHERE status = 'READY') AS \"Ready\", COUNT(*) FILTER (WHERE status IN ('ASSIGNED', 'EXECUTING')) AS \"Executing\" FROM manufacturing_tasks GROUP BY 1 ORDER BY 1",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (task_type) (spacetraders_daemon_manufacturing_tasks_ready_total)",
-          "legendFormat": "{{task_type}} - Ready",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (task_type) (spacetraders_daemon_manufacturing_tasks_executing_total)",
-          "legendFormat": "{{task_type}} - Executing",
-          "refId": "C"
         }
       ],
       "title": "Task Queue by Type",
-      "type": "bargauge"
+      "type": "bargauge",
+      "description": "Live task queue from manufacturing_tasks."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
@@ -633,7 +950,10 @@
       "id": 212,
       "options": {
         "legend": {
-          "calcs": ["last", "mean"],
+          "calcs": [
+            "last",
+            "mean"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -647,16 +967,18 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "sum by (task_type) (rate(spacetraders_daemon_manufacturing_tasks_completed_total{status=\"completed\"}[5m])) * 60",
-          "legendFormat": "{{task_type}}",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(completed_at, '15m'), task_type AS metric, COUNT(*) AS \"completed\" FROM manufacturing_tasks WHERE $__timeFilter(completed_at) AND status = 'COMPLETED' GROUP BY 1, 2 ORDER BY 1",
           "refId": "A"
         }
       ],
-      "title": "Task Completion Rate (per min)",
-      "type": "timeseries"
+      "title": "Task Completions per 15m",
+      "type": "timeseries",
+      "description": "Completed manufacturing tasks by type."
     },
     {
       "collapsed": false,
@@ -687,11 +1009,26 @@
           "mappings": [
             {
               "options": {
-                "1": {"text": "SCARCE", "color": "dark-red"},
-                "2": {"text": "LIMITED", "color": "dark-orange"},
-                "3": {"text": "MODERATE", "color": "dark-yellow"},
-                "4": {"text": "HIGH", "color": "dark-green"},
-                "5": {"text": "ABUNDANT", "color": "dark-blue"}
+                "1": {
+                  "text": "SCARCE",
+                  "color": "dark-red"
+                },
+                "2": {
+                  "text": "LIMITED",
+                  "color": "dark-orange"
+                },
+                "3": {
+                  "text": "MODERATE",
+                  "color": "dark-yellow"
+                },
+                "4": {
+                  "text": "HIGH",
+                  "color": "dark-green"
+                },
+                "5": {
+                  "text": "ABUNDANT",
+                  "color": "dark-blue"
+                }
               },
               "type": "value"
             }
@@ -728,11 +1065,26 @@
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    {"color": "dark-red", "value": null},
-                    {"color": "dark-orange", "value": 2},
-                    {"color": "dark-yellow", "value": 3},
-                    {"color": "dark-green", "value": 4},
-                    {"color": "dark-blue", "value": 5}
+                    {
+                      "color": "dark-red",
+                      "value": null
+                    },
+                    {
+                      "color": "dark-orange",
+                      "value": 2
+                    },
+                    {
+                      "color": "dark-yellow",
+                      "value": 3
+                    },
+                    {
+                      "color": "dark-green",
+                      "value": 4
+                    },
+                    {
+                      "color": "dark-blue",
+                      "value": 5
+                    }
                   ]
                 }
               }
@@ -752,7 +1104,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true
@@ -820,17 +1174,23 @@
       },
       "id": 222,
       "options": {
-        "displayLabels": ["percent"],
+        "displayLabels": [
+          "percent"
+        ],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": ["value"]
+          "values": [
+            "value"
+          ]
         },
         "pieType": "pie",
         "reduceOptions": {
           "values": false,
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": ""
         },
         "tooltip": {
@@ -893,7 +1253,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -969,7 +1331,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -991,8 +1355,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
@@ -1083,7 +1447,10 @@
       "id": 242,
       "options": {
         "legend": {
-          "calcs": ["last", "mean"],
+          "calcs": [
+            "last",
+            "mean"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1097,25 +1464,18 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "sum(rate(spacetraders_daemon_manufacturing_revenue_total[5m])) * 60",
-          "legendFormat": "Revenue",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) * 4 AS \"revenue/hr\", COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) * 4 AS \"costs/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type IN ('manufacturing', 'factory_workflow') AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(spacetraders_daemon_manufacturing_cost_total[5m])) * 60",
-          "legendFormat": "Costs",
-          "refId": "B"
         }
       ],
-      "title": "Revenue vs Costs (per min)",
-      "type": "timeseries"
+      "title": "Revenue vs Costs (cr/hr, ledger)",
+      "type": "timeseries",
+      "description": "Income-ledger view of the manufacturing + goods-factory chain."
     },
     {
       "collapsed": false,
@@ -1126,61 +1486,32 @@
         "y": 43
       },
       "id": 250,
-      "title": "Supply Dynamics",
+      "title": "Factory Floor Guard",
       "type": "row"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Transitions/min",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "mode": "thresholds"
           },
           "mappings": [],
+          "unit": "none",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "blue",
                 "value": null
               }
             ]
-          },
-          "unit": "short"
-        }
+          }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -1190,71 +1521,125 @@
       },
       "id": 251,
       "options": {
-        "legend": {
-          "calcs": ["last", "mean"],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "10.0.0",
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "sum by (good_symbol) (rate(spacetraders_daemon_manufacturing_supply_transitions_total[5m])) * 60",
-          "legendFormat": "{{good_symbol}}",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM factory_spend_reservations",
           "refId": "A"
         }
       ],
-      "title": "Supply Level Transitions by Good",
-      "type": "timeseries"
+      "title": "Active Factory Spend Reservations",
+      "type": "stat",
+      "description": "Rows in factory_spend_reservations - concurrent factory buys holding projected spend against the floor."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
+          "mappings": [],
+          "unit": "locale",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 252,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(projected_cost), 0) FROM factory_spend_reservations",
+          "refId": "A"
+        }
+      ],
+      "title": "Projected Reserved Spend",
+      "type": "stat",
+      "description": "Sum of projected costs currently reserved by factory workflows (guarded by max(50k, configured) floor)."
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 300,
+      "title": "Pipeline Details",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
+      "fieldConfig": {
+        "defaults": {
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Cycles/min",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
             },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "inspect": false
           },
           "mappings": [],
           "thresholds": {
@@ -1265,662 +1650,1540 @@
                 "value": null
               }
             ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "PLANNING": {
+                        "color": "blue",
+                        "index": 0
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "EXECUTING": {
+                        "color": "yellow",
+                        "index": 1
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "FAILED": {
+                        "color": "red",
+                        "index": 2
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
           },
-          "unit": "short"
-        }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Progress %"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 25
+                    },
+                    {
+                      "color": "green",
+                      "value": 75
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Profit"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 44
+        "w": 24,
+        "x": 0,
+        "y": 54
       },
-      "id": 252,
+      "id": 301,
       "options": {
-        "legend": {
-          "calcs": ["last", "sum"],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "showHeader": true
       },
-      "pluginVersion": "10.0.0",
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "postgres",
+            "uid": "postgresql"
           },
-          "expr": "sum by (output_good) (rate(spacetraders_daemon_manufacturing_factory_cycles_total[5m])) * 60",
-          "legendFormat": "{{output_good}}",
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT SUBSTRING(p.id, 1, 8) as \"Pipeline ID\", p.product_good as \"Product\", p.status as \"Status\", p.sell_market as \"Sell Market\", p.expected_price as \"Expected Price\", COALESCE(econ.cost, 0) as \"Cost\", COALESCE(econ.revenue, 0) as \"Revenue\", COALESCE(econ.revenue - econ.cost, 0) as \"Profit\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Total Tasks\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Completed\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status IN ('ASSIGNED', 'EXECUTING')) as \"Running\", ROUND( (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric / NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100 ) as \"Progress %\" FROM manufacturing_pipelines p LEFT JOIN LATERAL (SELECT SUM(t.total_cost) as cost, SUM(t.total_revenue) as revenue FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) econ ON true WHERE p.status NOT IN ('COMPLETED', 'CANCELLED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.created_at DESC",
           "refId": "A"
         }
       ],
-      "title": "Factory Production Cycles by Good",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 },
-      "id": 300,
-      "title": "Pipeline Details",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Status" },
-            "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [
-                { "options": { "PLANNING": { "color": "blue", "index": 0 } }, "type": "value" },
-                { "options": { "EXECUTING": { "color": "yellow", "index": 1 } }, "type": "value" },
-                { "options": { "FAILED": { "color": "red", "index": 2 } }, "type": "value" }
-              ]}
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Progress %" },
-            "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
-              { "id": "max", "value": 100 },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "red", "value": null },
-                { "color": "yellow", "value": 25 },
-                { "color": "green", "value": 75 }
-              ]}}
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Profit" },
-            "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "red", "value": null },
-                { "color": "green", "value": 0 }
-              ]}}
-            ]
-          }
-        ]
-      },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 54 },
-      "id": 301,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  SUBSTRING(p.id, 1, 8) as \"Pipeline ID\",\n  p.product_good as \"Product\",\n  p.status as \"Status\",\n  p.sell_market as \"Sell Market\",\n  p.expected_price as \"Expected Price\",\n  p.total_cost as \"Cost\",\n  p.total_revenue as \"Revenue\",\n  p.net_profit as \"Profit\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Total Tasks\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Completed\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status IN ('ASSIGNED', 'EXECUTING')) as \"Running\",\n  ROUND(\n    (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric /\n    NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100\n  ) as \"Progress %\"\nFROM manufacturing_pipelines p\nWHERE p.status NOT IN ('COMPLETED', 'CANCELLED')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.created_at DESC",
-        "refId": "A"
-      }],
       "title": "Active Pipelines Detail",
-      "type": "table"
+      "type": "table",
+      "description": "Economics rolled up from task-level totals (pipeline-level cost/revenue columns are never populated)."
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Status" },
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [
-                { "options": { "PENDING": { "color": "dark-purple", "index": 0 } }, "type": "value" },
-                { "options": { "READY": { "color": "dark-blue", "index": 1 } }, "type": "value" },
-                { "options": { "ASSIGNED": { "color": "dark-yellow", "index": 2 } }, "type": "value" },
-                { "options": { "EXECUTING": { "color": "dark-green", "index": 3 } }, "type": "value" },
-                { "options": { "FAILED": { "color": "dark-red", "index": 4 } }, "type": "value" }
-              ]}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "PENDING": {
+                        "color": "dark-purple",
+                        "index": 0
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "READY": {
+                        "color": "dark-blue",
+                        "index": 1
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "ASSIGNED": {
+                        "color": "dark-yellow",
+                        "index": 2
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "EXECUTING": {
+                        "color": "dark-green",
+                        "index": 3
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "FAILED": {
+                        "color": "dark-red",
+                        "index": 4
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Retries" },
+            "matcher": {
+              "id": "byName",
+              "options": "Retries"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 1 },
-                { "color": "red", "value": 3 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 62 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
       "id": 302,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  SUBSTRING(t.pipeline_id, 1, 8) as \"Pipeline\",\n  p.product_good as \"Product\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.assigned_ship as \"Ship\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Qty\",\n  t.retry_count as \"Retries\",\n  CASE\n    WHEN t.started_at IS NOT NULL THEN\n      EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int\n    ELSE NULL\n  END as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status NOT IN ('COMPLETED')\n  AND t.pipeline_id IS NOT NULL\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.product_good, t.task_type, t.created_at",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  SUBSTRING(t.pipeline_id, 1, 8) as \"Pipeline\",\n  p.product_good as \"Product\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.assigned_ship as \"Ship\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Qty\",\n  t.retry_count as \"Retries\",\n  CASE\n    WHEN t.started_at IS NOT NULL THEN\n      EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int\n    ELSE NULL\n  END as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status NOT IN ('COMPLETED')\n  AND t.pipeline_id IS NOT NULL\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.product_good, t.task_type, t.created_at",
+          "refId": "A"
+        }
+      ],
       "title": "Pipeline Tasks Breakdown",
       "type": "table"
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 72 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
       "id": 310,
       "title": "Ship Assignments",
       "type": "row"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Status" },
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [
-                { "options": { "ASSIGNED": { "color": "yellow", "index": 0 } }, "type": "value" },
-                { "options": { "EXECUTING": { "color": "green", "index": 1 } }, "type": "value" }
-              ]}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "ASSIGNED": {
+                        "color": "yellow",
+                        "index": 0
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "EXECUTING": {
+                        "color": "green",
+                        "index": 1
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Duration (s)" },
+            "matcher": {
+              "id": "byName",
+              "options": "Duration (s)"
+            },
             "properties": [
-              { "id": "unit", "value": "s" },
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 300 },
-                { "color": "red", "value": 600 }
-              ]}}
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 300
+                    },
+                    {
+                      "color": "red",
+                      "value": 600
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 73 },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 73
+      },
       "id": 311,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  t.assigned_ship as \"Ship\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Quantity\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.assigned_ship IS NOT NULL\n  AND t.status IN ('ASSIGNED', 'EXECUTING')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.started_at DESC",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  t.assigned_ship as \"Ship\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Quantity\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.assigned_ship IS NOT NULL\n  AND t.status IN ('ASSIGNED', 'EXECUTING')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.started_at DESC",
+          "refId": "A"
+        }
+      ],
       "title": "Currently Assigned Ships",
       "type": "table"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "hideFrom": { "tooltip": false, "viz": false, "legend": false } },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            }
+          },
           "mappings": []
         }
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 73 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 73
+      },
       "id": 312,
       "options": {
-        "displayLabels": ["percent", "value"],
-        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value"] },
+        "displayLabels": [
+          "percent",
+          "value"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value"
+          ]
+        },
         "pieType": "donut",
-        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
-      "targets": [{
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "expr": "sum by (task_type) (spacetraders_daemon_manufacturing_tasks_executing_total)",
-        "legendFormat": "{{task_type}}",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT task_type AS \"Task Type\", COUNT(*) AS \"Ships\" FROM manufacturing_tasks WHERE status IN ('ASSIGNED', 'EXECUTING') GROUP BY 1",
+          "refId": "A"
+        }
+      ],
       "title": "Ship Task Distribution",
-      "type": "piechart"
+      "type": "piechart",
+      "description": "Executing/assigned tasks by type."
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 81 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
       "id": 320,
       "title": "Bottleneck Analysis",
       "type": "row"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Age (s)" },
+            "matcher": {
+              "id": "byName",
+              "options": "Age (s)"
+            },
             "properties": [
-              { "id": "unit", "value": "s" },
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 300 },
-                { "color": "orange", "value": 600 },
-                { "color": "red", "value": 1200 }
-              ]}}
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 300
+                    },
+                    {
+                      "color": "orange",
+                      "value": 600
+                    },
+                    {
+                      "color": "red",
+                      "value": 1200
+                    }
+                  ]
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Retries" },
+            "matcher": {
+              "id": "byName",
+              "options": "Retries"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 1 },
-                { "color": "red", "value": 3 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 82 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 82
+      },
       "id": 321,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.status as \"Status\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.created_at))::int as \"Age (s)\",\n  t.retry_count as \"Retries\",\n  t.error_message as \"Last Error\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('PENDING', 'READY')\n  AND t.pipeline_id IS NOT NULL\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.created_at ASC\nLIMIT 20",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.status as \"Status\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.created_at))::int as \"Age (s)\",\n  t.retry_count as \"Retries\",\n  t.error_message as \"Last Error\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('PENDING', 'READY')\n  AND t.pipeline_id IS NOT NULL\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.created_at ASC\nLIMIT 20",
+          "refId": "A"
+        }
+      ],
       "title": "Blocked Tasks (Waiting Longest)",
       "type": "table"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Retries" },
+            "matcher": {
+              "id": "byName",
+              "options": "Retries"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "yellow", "value": null },
-                { "color": "orange", "value": 2 },
-                { "color": "red", "value": 3 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "yellow",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 2
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 82 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 82
+      },
       "id": 322,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.retry_count as \"Retries\",\n  t.max_retries as \"Max\",\n  p.product_good as \"Pipeline Product\",\n  LEFT(t.error_message, 60) as \"Error\",\n  t.completed_at as \"Failed At\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'FAILED'\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.completed_at DESC\nLIMIT 15",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.retry_count as \"Retries\",\n  t.max_retries as \"Max\",\n  p.product_good as \"Pipeline Product\",\n  LEFT(t.error_message, 60) as \"Error\",\n  t.completed_at as \"Failed At\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'FAILED'\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.completed_at DESC\nLIMIT 15",
+          "refId": "A"
+        }
+      ],
       "title": "Failed Tasks Requiring Attention",
       "type": "table"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "Retries/min",
-            "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10,
-            "gradientMode": "none", "hideFrom": { "tooltip": false, "viz": false, "legend": false },
-            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
-            "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" }
+          "color": {
+            "mode": "thresholds"
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
-        }
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        },
+        "overrides": []
       },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 90 },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 90
+      },
       "id": 323,
       "options": {
-        "legend": { "calcs": ["last", "mean"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
       },
-      "targets": [{
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "expr": "rate(spacetraders_daemon_manufacturing_task_retry_total[5m]) * 60",
-        "legendFormat": "{{task_type}}",
-        "refId": "A"
-      }],
-      "title": "Task Retry Rate (per min)",
-      "type": "timeseries"
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(retry_count), 0) FROM manufacturing_tasks WHERE status NOT IN ('COMPLETED', 'FAILED')",
+          "refId": "A"
+        }
+      ],
+      "title": "Retries on Active Tasks",
+      "type": "stat",
+      "description": "Accumulated retry_count across non-terminal tasks."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "blue", "value": null },
-            { "color": "green", "value": 1 }
-          ]},
-          "unit": "short"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
         }
       },
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 90 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 90
+      },
       "id": 324,
       "options": {
-        "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
-      "targets": [{
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "expr": "sum(spacetraders_daemon_manufacturing_tasks_executing_total)",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_tasks WHERE status IN ('ASSIGNED', 'EXECUTING')",
+          "refId": "A"
+        }
+      ],
       "title": "Tasks Currently Executing",
-      "type": "stat"
+      "type": "stat",
+      "description": "Live executing/assigned manufacturing tasks."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 5 },
-            { "color": "red", "value": 10 }
-          ]},
-          "unit": "short"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "none"
         }
       },
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 90 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 90
+      },
       "id": 325,
       "options": {
-        "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
-      "targets": [{
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "expr": "sum(spacetraders_daemon_manufacturing_tasks_pending_total) + sum(spacetraders_daemon_manufacturing_tasks_ready_total)",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_tasks WHERE status IN ('PENDING', 'READY')",
+          "refId": "A"
+        }
+      ],
       "title": "Tasks Waiting",
-      "type": "stat"
+      "type": "stat",
+      "description": "Tasks waiting (supply-gated PENDING + queued READY)."
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 96 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
       "id": 330,
       "title": "Economics Detail",
       "type": "row"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "ROI %" },
+            "matcher": {
+              "id": "byName",
+              "options": "ROI %"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "red", "value": null },
-                { "color": "yellow", "value": 0 },
-                { "color": "green", "value": 25 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 25
+                    }
+                  ]
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Net Profit" },
+            "matcher": {
+              "id": "byName",
+              "options": "Net Profit"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "red", "value": null },
-                { "color": "green", "value": 0 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 97 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 97
+      },
       "id": 331,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  p.product_good as \"Product\",\n  p.status as \"Status\",\n  p.total_cost as \"Total Cost\",\n  p.total_revenue as \"Revenue\",\n  p.net_profit as \"Net Profit\",\n  CASE\n    WHEN p.total_cost > 0 THEN ROUND((p.net_profit::numeric / p.total_cost) * 100, 1)\n    ELSE 0\n  END as \"ROI %\"\nFROM manufacturing_pipelines p\nWHERE (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.net_profit DESC\nLIMIT 20",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.product_good as \"Product\", p.status as \"Status\", COALESCE(SUM(t.total_cost), 0) as \"Total Cost\", COALESCE(SUM(t.total_revenue), 0) as \"Revenue\", COALESCE(SUM(t.total_revenue) - SUM(t.total_cost), 0) as \"Net Profit\", CASE WHEN COALESCE(SUM(t.total_cost), 0) > 0 THEN ROUND(((SUM(t.total_revenue) - SUM(t.total_cost))::numeric / SUM(t.total_cost)) * 100, 1) ELSE 0 END as \"ROI %\" FROM manufacturing_pipelines p JOIN manufacturing_tasks t ON t.pipeline_id = p.id WHERE (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') GROUP BY p.id, p.product_good, p.status ORDER BY \"Net Profit\" DESC LIMIT 20",
+          "refId": "A"
+        }
+      ],
       "title": "Cost Breakdown by Pipeline",
-      "type": "table"
+      "type": "table",
+      "description": "Task-level economics per pipeline."
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "hideFrom": { "tooltip": false, "viz": false, "legend": false } },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            }
+          },
           "mappings": []
         }
       },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 97 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 97
+      },
       "id": 332,
       "options": {
-        "displayLabels": ["percent"],
-        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value"] },
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value"
+          ]
+        },
         "pieType": "pie",
-        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  SUM(t.total_cost) as \"Total Cost\"\nFROM manufacturing_tasks t\nJOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.total_cost > 0\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nGROUP BY t.task_type",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  SUM(t.total_cost) as \"Total Cost\"\nFROM manufacturing_tasks t\nJOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.total_cost > 0\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nGROUP BY t.task_type",
+          "refId": "A"
+        }
+      ],
       "title": "Cost by Task Type",
       "type": "piechart"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "hideFrom": { "tooltip": false, "viz": false, "legend": false } },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            }
+          },
           "mappings": []
         }
       },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 97 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 97
+      },
       "id": 333,
       "options": {
-        "displayLabels": ["percent"],
-        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value"] },
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value"
+          ]
+        },
         "pieType": "pie",
-        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  product_good as \"Product\",\n  SUM(net_profit) as \"Net Profit\"\nFROM manufacturing_pipelines\nWHERE net_profit != 0\n  AND (sell_market LIKE '${system}%' OR construction_site LIKE '${system}%')\nGROUP BY product_good\nORDER BY SUM(net_profit) DESC",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.product_good as \"Product\", SUM(t.total_revenue) - SUM(t.total_cost) as \"Net Profit\" FROM manufacturing_pipelines p JOIN manufacturing_tasks t ON t.pipeline_id = p.id WHERE (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') GROUP BY p.product_good HAVING SUM(t.total_revenue) - SUM(t.total_cost) != 0 ORDER BY 2 DESC",
+          "refId": "A"
+        }
+      ],
       "title": "Profit by Product",
-      "type": "piechart"
+      "type": "piechart",
+      "description": "Task-level net by product."
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 105 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 105
+      },
       "id": 400,
       "title": "Construction Operations",
       "type": "row"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 1 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           },
           "unit": "short"
         }
       },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 106 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 106
+      },
       "id": 401,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT COUNT(*) FROM manufacturing_pipelines\nWHERE pipeline_type = 'CONSTRUCTION'\n  AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND construction_site LIKE '${system}%'",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_pipelines\nWHERE pipeline_type = 'CONSTRUCTION'\n  AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND construction_site LIKE '${system}%'",
+          "refId": "A"
+        }
+      ],
       "title": "Active Construction Pipelines",
       "type": "stat"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "max": 100,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 25 },
-              { "color": "green", "value": 75 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 25
+              },
+              {
+                "color": "green",
+                "value": 75
+              }
             ]
           },
           "unit": "percent"
         }
       },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 106 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 106
+      },
       "id": 402,
       "options": {
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "showThresholdLabels": false,
         "showThresholdMarkers": true
       },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  COALESCE(ROUND(\n    (SUM((m->>'deliveredQuantity')::int)::float /\n     NULLIF(SUM((m->>'targetQuantity')::int), 0) * 100)\n  ), 0) as progress\nFROM manufacturing_pipelines p,\n     jsonb_array_elements(p.materials) m\nWHERE p.pipeline_type = 'CONSTRUCTION'\n  AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND p.construction_site LIKE '${system}%'",
-        "refId": "A"
-      }],
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COALESCE(ROUND(\n    (SUM((m->>'deliveredQuantity')::int)::float /\n     NULLIF(SUM((m->>'targetQuantity')::int), 0) * 100)\n  ), 0) as progress\nFROM manufacturing_pipelines p,\n     jsonb_array_elements(p.materials) m\nWHERE p.pipeline_type = 'CONSTRUCTION'\n  AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND p.construction_site LIKE '${system}%'",
+          "refId": "A"
+        }
+      ],
       "title": "Construction Progress",
       "type": "gauge"
     },
     {
-      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgresql"
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Progress %" },
+            "matcher": {
+              "id": "byName",
+              "options": "Progress %"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
-              { "id": "min", "value": 0 },
-              { "id": "max", "value": 100 },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                { "color": "red", "value": null },
-                { "color": "yellow", "value": 25 },
-                { "color": "green", "value": 75 }
-              ]}}
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 25
+                    },
+                    {
+                      "color": "green",
+                      "value": 75
+                    }
+                  ]
+                }
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 106 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 106
+      },
       "id": 403,
-      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "postgresql" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n  p.construction_site as \"Site\",\n  m->>'tradeSymbol' as \"Material\",\n  (m->>'targetQuantity')::int as \"Required\",\n  (m->>'deliveredQuantity')::int as \"Delivered\",\n  ROUND(((m->>'deliveredQuantity')::float /\n         NULLIF((m->>'targetQuantity')::int, 0)) * 100) as \"Progress %\"\nFROM manufacturing_pipelines p,\n     jsonb_array_elements(p.materials) m\nWHERE p.pipeline_type = 'CONSTRUCTION'\n  AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND p.construction_site LIKE '${system}%'\nORDER BY p.construction_site, m->>'tradeSymbol'",
-        "refId": "A"
-      }],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgresql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  p.construction_site as \"Site\",\n  m->>'tradeSymbol' as \"Material\",\n  (m->>'targetQuantity')::int as \"Required\",\n  (m->>'deliveredQuantity')::int as \"Delivered\",\n  ROUND(((m->>'deliveredQuantity')::float /\n         NULLIF((m->>'targetQuantity')::int, 0)) * 100) as \"Progress %\"\nFROM manufacturing_pipelines p,\n     jsonb_array_elements(p.materials) m\nWHERE p.pipeline_type = 'CONSTRUCTION'\n  AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND p.construction_site LIKE '${system}%'\nORDER BY p.construction_site, m->>'tradeSymbol'",
+          "refId": "A"
+        }
+      ],
       "title": "Materials Delivery Progress",
       "type": "table"
     }
   ],
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["spacetraders", "manufacturing", "production"],
+  "tags": [
+    "spacetraders",
+    "manufacturing",
+    "production"
+  ],
   "templating": {
     "list": [
       {
         "allValue": "%",
-        "current": { "selected": true, "text": "All", "value": "$__all" },
-        "datasource": { "type": "postgres", "uid": "postgresql" },
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "postgresql"
+        },
         "definition": "SELECT DISTINCT SUBSTRING(sell_market, 1, POSITION('-' IN SUBSTRING(sell_market, 4)) + 2) as system FROM manufacturing_pipelines WHERE sell_market IS NOT NULL UNION SELECT DISTINCT SUBSTRING(construction_site, 1, POSITION('-' IN SUBSTRING(construction_site, 4)) + 2) FROM manufacturing_pipelines WHERE construction_site IS NOT NULL ORDER BY system",
         "includeAll": true,
         "label": "System",
