@@ -120,6 +120,25 @@ func TestSelectHullForCargo_CommandFrigateDraftedWhenOnlyHullThatFits(t *testing
 	}
 }
 
+// sp-uj6a: the command-cargo-baseline gate lives upstream, at selection time
+// (ship_pool_manager.FilterCommandCargoBaseline) - SelectHullForCargo itself
+// never changes, so the sp-4a4e last-resort tier must still draft an
+// UPGRADED frigate (era-2's 115-cargo hull, the realistic candidate once the
+// upstream gate is in place) exactly as it drafts the smaller one above.
+func TestSelectHullForCargo_UpgradedCommandFrigateDraftedWhenOnlyHullThatFits(t *testing.T) {
+	hauler := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 10, 0, 30, 8)
+	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 200, 0, 36, 115)
+
+	result := selectHull(t, []*navigation.Ship{hauler, frigate}, 30)
+
+	if result.Ship.ShipSymbol() != "TORWIND-1" {
+		t.Fatalf("expected the upgraded command frigate as the only fitting hull, got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
+	}
+	if !strings.Contains(result.Reason, "last resort") {
+		t.Fatalf("expected a last-resort reason for the frigate pick, got %q", result.Reason)
+	}
+}
+
 // Tier 3: when nothing fits in one trip, the regular hull needing the fewest
 // round trips wins - and the command frigate stays benched even if its hold
 // would need fewer trips still.

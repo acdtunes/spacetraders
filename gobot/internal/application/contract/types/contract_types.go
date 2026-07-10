@@ -146,6 +146,16 @@ type RunFleetCoordinatorCommand struct {
 	// 20min). Keeps a (good, sink) lane closed after its leg terminates so
 	// sequential passes never re-dump a sink the last leg just depressed.
 	IdleArbRecoveryHoldSecs int
+
+	// CommandCargoBaseline (sp-uj6a, RULINGS #5): minimum cargo capacity a
+	// COMMAND-role hull must carry to remain a contract-selection candidate
+	// once IncludeCommandShip has opted it into the pool (sp-4a4e). A stock
+	// hull below this bar double-trips a load a light hauler single-trips,
+	// spending its whole speed advantage on the extra leg for a net loss, so
+	// it is filtered back out at selection time. Zero takes the contract
+	// package's documented default (80, the light-hauler standard); era-2's
+	// upgraded frigate (115 cargo) clears it.
+	CommandCargoBaseline int
 }
 
 // RunFleetCoordinatorResponse contains fleet coordination results.

@@ -2,8 +2,10 @@ package contract
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -449,6 +451,111 @@ func TestFindIdleLightHaulers_ExcludesZeroCargoHauler(t *testing.T) {
 	}
 	if len(symbols) != 1 || symbols[0] != "TORWIND-29" {
 		t.Fatalf("expected only the cargo-carrying hauler [TORWIND-29], got %v", symbols)
+	}
+}
+
+// ============================================================================
+// COMMAND CARGO BASELINE (sp-uj6a)
+//
+// FindIdleLightHaulers' generic cargo check (CargoCapacity() == 0) only
+// screens out probes/satellites - it does not stop a stock 40-cargo command
+// frigate from competing for contract legs an 80-cargo light hauler would
+// single-trip. A stock frigate double-trips that load, spending its whole
+// speed advantage on the extra leg for a net loss versus just dispatching
+// the light hauler. FilterCommandCargoBaseline is a SEPARATE, later step the
+// caller runs after FindIdleLightHaulers returns - it does not touch
+// FindIdleLightHaulers itself, the r6f1 dedication-write floor, or the
+// sp-4a4e last-resort ranking in SelectHullForCargo (domain/contract).
+// ============================================================================
+
+// capturedLogEntry/capturingLogger mirror the fake in
+// contract/services/insufficient_credits_test.go: the container-log renderer
+// prints only level+message and DROPS the metadata map, so a cause hidden
+// only in metadata never reaches an operator. Assertions below check the
+// rendered MESSAGE TEXT, not the metadata, to prove the ship/capacity/
+// baseline actually surface.
+type capturedLogEntry struct {
+	level   string
+	message string
+}
+
+type capturingLogger struct {
+	entries []capturedLogEntry
+}
+
+func (l *capturingLogger) Log(level, message string, _ map[string]interface{}) {
+	l.entries = append(l.entries, capturedLogEntry{level: level, message: message})
+}
+
+// A stock 40-cargo command frigate is below the default 80 baseline (the
+// light-hauler standard, RULINGS #5) and must be excluded, with a log
+// message naming the ship, its capacity, and the baseline so the cause
+// actually reaches an operator.
+func TestFilterCommandCargoBaseline_StockCommandShip_ExcludedAndLogged(t *testing.T) {
+	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 40, 50, 0)
+	hauler := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	logger := &capturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	symbols := FilterCommandCargoBaseline(ctx, []*navigation.Ship{command, hauler}, 0)
+
+	if containsSymbol(symbols, "TORWIND-1") {
+		t.Fatalf("stock 40-cargo command ship TORWIND-1 must be excluded below the default baseline, got %v", symbols)
+	}
+	if !containsSymbol(symbols, "TORWIND-3") {
+		t.Fatalf("hauler TORWIND-3 missing from filtered pool %v", symbols)
+	}
+
+	found := false
+	for _, e := range logger.entries {
+		if strings.Contains(e.message, "TORWIND-1") && strings.Contains(e.message, "40") && strings.Contains(e.message, "80") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a log message naming the ship (TORWIND-1), its capacity (40), and the baseline (80), got entries=%v", logger.entries)
+	}
+}
+
+// era-2's upgraded frigate (115 cargo) clears the default 80 baseline and
+// must remain a candidate.
+func TestFilterCommandCargoBaseline_UpgradedCommandShip_Included(t *testing.T) {
+	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 115, 50, 0)
+
+	symbols := FilterCommandCargoBaseline(context.Background(), []*navigation.Ship{command}, 0)
+
+	if !containsSymbol(symbols, "TORWIND-1") {
+		t.Fatalf("upgraded 115-cargo command ship TORWIND-1 must remain a candidate, got %v", symbols)
+	}
+}
+
+// RULINGS #5 (parametrize, don't hardcode): a caller-supplied baseline
+// overrides the package default in both directions - a custom value can
+// exclude a hull the default would have allowed, or admit one the default
+// would have excluded.
+func TestFilterCommandCargoBaseline_CustomBaseline_Respected(t *testing.T) {
+	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 90, 50, 0)
+
+	excluded := FilterCommandCargoBaseline(context.Background(), []*navigation.Ship{command}, 100)
+	if containsSymbol(excluded, "TORWIND-1") {
+		t.Fatalf("a 90-cargo command ship must be excluded under a custom 100 baseline, got %v", excluded)
+	}
+
+	included := FilterCommandCargoBaseline(context.Background(), []*navigation.Ship{command}, 50)
+	if !containsSymbol(included, "TORWIND-1") {
+		t.Fatalf("a 90-cargo command ship must be included under a custom 50 baseline, got %v", included)
+	}
+}
+
+// Regression: non-command hulls are never subject to the baseline, however
+// small their hold - the gate is command-ship-specific.
+func TestFilterCommandCargoBaseline_NonCommandHulls_Unaffected(t *testing.T) {
+	tinyHauler := newCandidateShip(t, "TORWIND-3", "HAULER", 10, 700, 0)
+
+	symbols := FilterCommandCargoBaseline(context.Background(), []*navigation.Ship{tinyHauler}, 0)
+
+	if !containsSymbol(symbols, "TORWIND-3") {
+		t.Fatalf("non-command hauler TORWIND-3 must be unaffected by the command cargo baseline regardless of its own cargo capacity, got %v", symbols)
 	}
 }
 

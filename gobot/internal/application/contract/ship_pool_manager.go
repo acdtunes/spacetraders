@@ -223,6 +223,61 @@ func FindIdleLightHaulers(
 	return idleHaulers, idleHaulerSymbols, nil
 }
 
+// CommandCargoBaselineDefault is the minimum cargo capacity a command ship
+// must carry to stay a contract-selection candidate once IncludeCommandShip
+// has already opted it into FindIdleLightHaulers' pool. It matches the
+// light-hauler standard (RULINGS #5): a stock 40-cargo frigate double-trips
+// a load an 80-cargo light hauler single-trips, spending its whole speed
+// advantage on the extra leg for a net loss versus just dispatching the
+// hauler - so a stock hull is not a genuine candidate. era-2's upgraded
+// frigate (115 cargo) clears this bar (sp-uj6a).
+const CommandCargoBaselineDefault = 80
+
+// FilterCommandCargoBaseline drops the command ship from a candidate list
+// when its cargo capacity is below baseline; every non-command hull passes
+// through untouched. This is a SELECTION-time gate only, applied by the
+// caller immediately after FindIdleLightHaulers returns (when it opted in
+// with IncludeCommandShip) - it does not change FindIdleLightHaulers itself,
+// the r6f1 dedication-write floor (AssignShipFleet's cargo_capacity>=1
+// floor), or the sp-4a4e last-resort ranking in SelectHullForCargo (domain
+// contract package), which simply never sees a candidate this gate already
+// removed (sp-uj6a).
+//
+// Parameters:
+//   - ctx: Context for cancellation and logging
+//   - ships: Candidate ships to filter, as returned by FindIdleLightHaulers
+//   - baseline: Minimum cargo capacity a command ship must carry to remain
+//     eligible. <= 0 falls back to CommandCargoBaselineDefault (RULINGS #5:
+//     parametrize, don't hardcode - the zero value means "not configured",
+//     matching the IdleArb* knobs' idiom).
+//
+// Returns:
+//   - symbols: Candidate ship symbols with any under-baseline command ship
+//     removed, in input order.
+func FilterCommandCargoBaseline(ctx context.Context, ships []*navigation.Ship, baseline int) []string {
+	if baseline <= 0 {
+		baseline = CommandCargoBaselineDefault
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	symbols := make([]string, 0, len(ships))
+	for _, ship := range ships {
+		if isCommandHull(ship) && ship.CargoCapacity() < baseline {
+			logger.Log("INFO", fmt.Sprintf(
+				"Command ship %s skipped for contract selection: cargo capacity %d below baseline %d - upgrade its cargo hold or dispatch a light hauler instead",
+				ship.ShipSymbol(), ship.CargoCapacity(), baseline), map[string]interface{}{
+				"action":         "skipped:command_cargo_below_baseline",
+				"ship_symbol":    ship.ShipSymbol(),
+				"cargo_capacity": ship.CargoCapacity(),
+				"baseline":       baseline,
+			})
+			continue
+		}
+		symbols = append(symbols, ship.ShipSymbol())
+	}
+	return symbols
+}
+
 // FindIdleShipsByFleet looks up a coordinator's own dedicated fleet by name -
 // every ship whose persisted DedicatedFleet tag equals fleet - and returns
 // only the ones currently idle. Busy and in-transit ships are silently

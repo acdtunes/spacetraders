@@ -288,7 +288,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// legs fine and is often the fastest, largest hull owned, so it competes
 		// on distance like any hauler instead of sitting benched until zero
 		// haulers remain.
-		_, generalShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, "", appContract.IncludeCommandShip)
+		generalShipEntities, generalShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, "", appContract.IncludeCommandShip)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -300,6 +300,17 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 		errMon.Note("find_idle_haulers", "")
+
+		// Command-cargo baseline (sp-uj6a): FindIdleLightHaulers' generic cargo
+		// check only screens out probes (CargoCapacity() == 0) - it does not stop
+		// a stock command frigate from competing for legs a light hauler would
+		// single-trip. A command hull below baseline double-trips a load a
+		// dedicated hauler moves in one pass, spending its whole speed advantage
+		// on the extra leg for a net loss versus just dispatching the hauler, so
+		// it is filtered back out here, after discovery and before any candidate
+		// is ranked or claimed - the ranking ladder (SelectHullForCargo) never
+		// sees a hull this gate already removed.
+		generalShips = appContract.FilterCommandCargoBaseline(ctx, generalShipEntities, cmd.CommandCargoBaseline)
 
 		// The coordinator's own dedicated fleet (sp-snmb) is invisible to
 		// FindIdleLightHaulers via the claim-filter, so it is looked up

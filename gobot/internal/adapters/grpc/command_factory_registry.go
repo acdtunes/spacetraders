@@ -561,6 +561,10 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		ContainerID:     cfg.RequiredString("container_id"),
 		DedicatedShips:  cfg.OptionalStringSlice("dedicated_ships"),
 		StandbyStations: cfg.OptionalStringSlice("standby_stations"),
+		// Command-cargo baseline (sp-uj6a, RULINGS #5): absent key → 0 → the
+		// contract package's documented default (80, the light-hauler
+		// standard - see CommandCargoBaselineDefault).
+		CommandCargoBaseline: cfg.OptionalInt("command_cargo_baseline", 0),
 		// Idle-gap arb knobs (sp-1z2h): absent keys → 0 → the contract
 		// package's documented defaults (IdleArbConfig.WithDefaults). These
 		// keys are resolved LIVE from config.yaml by resolveIdleArbConfig on
