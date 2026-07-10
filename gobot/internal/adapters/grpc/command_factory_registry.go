@@ -298,6 +298,11 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
+		// trade_fleet_coordinator (sp-1278): a standing coordinator that loops forever
+		// inside one Handle() call, so — like scout_post/contract_fleet — it is NOT a
+		// CoordinatorOwnsIterations type; the container-level iteration budget (-1) is
+		// irrelevant because Handle() never returns.
+		{CommandType: "trade_fleet_coordinator", build: buildTradeFleetCoordinatorCommand},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
@@ -350,6 +355,14 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "contract_fleet_coordinator" {
 		s.resolveIdleArbConfig(config)
 	}
+	// sp-1278: same live-config discipline for the trade-fleet coordinator. Its
+	// [trade_fleet] knobs (enabled/cooldown/max-concurrent/per-tour caps) are cleared
+	// and re-injected from the boot-loaded config.yaml on every build — creation and
+	// recovery alike — so a config edit + restart retunes a recovered coordinator and
+	// no persisted copy can shadow the live value.
+	if commandType == "trade_fleet_coordinator" {
+		s.resolveTradeFleetConfig(config)
+	}
 	return spec.BuildCommand(config, playerID, containerID)
 }
 
@@ -388,6 +401,32 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		TickIntervalSecs:      cfg.OptionalInt("tick_interval_secs", 0),
 		MarketDriftThreshold:  cfg.OptionalInt("market_drift_threshold", 0),
 		MarketDriftMaxAgeSecs: cfg.OptionalInt("market_drift_max_age_secs", 0),
+	}
+}
+
+// buildTradeFleetCoordinatorCommand rebuilds the standing trade-fleet coordinator
+// command (sp-1278) from a persisted launch config so a daemon restart re-adopts it.
+// The [trade_fleet] knobs are resolved LIVE from config.yaml just before this runs
+// (resolveTradeFleetConfig in buildCommandForType), so the persisted trade_fleet_*
+// keys are transient — the reads below see the current config.yaml. Enabled is
+// reconstructed as the negation of trade_fleet_disabled: an absent key reads as
+// enabled, preserving the default-ON intent across a recovery from an old config that
+// predates the key. The int64 caps are read via OptionalInt (JSON numbers round-trip
+// through float64/int), mirroring buildTourCoordinatorCommand.
+func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunTradeFleetCoordinatorCommand{
+		PlayerID:              shared.MustNewPlayerID(playerID),
+		ContainerID:           cfg.RequiredNonEmptyString("container_id"),
+		AgentSymbol:           cfg.OptionalString("agent_symbol"),
+		Enabled:               !cfg.OptionalBool("trade_fleet_disabled"),
+		CooldownSecs:          cfg.OptionalInt("trade_fleet_cooldown_secs", 0),
+		MaxConcurrentTours:    cfg.OptionalInt("trade_fleet_max_concurrent", 0),
+		TickIntervalSecs:      cfg.OptionalInt("trade_fleet_tick_secs", 0),
+		MaxHops:               cfg.OptionalInt("trade_fleet_max_hops", 0),
+		MaxSpend:              int64(cfg.OptionalInt("trade_fleet_max_spend", 0)),
+		MinMargin:             cfg.OptionalInt("trade_fleet_min_margin", 0),
+		ReplanLimit:           cfg.OptionalInt("trade_fleet_replan_limit", 0),
+		WorkingCapitalReserve: int64(cfg.OptionalInt("trade_fleet_reserve", 0)),
 	}
 }
 

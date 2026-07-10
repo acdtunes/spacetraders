@@ -27,6 +27,7 @@ type Config struct {
 	Captain    CaptainConfig    `mapstructure:"captain"`
 	Contract   ContractConfig   `mapstructure:"contract"`
 	Absorption AbsorptionConfig `mapstructure:"absorption"`
+	TradeFleet TradeFleetConfig `mapstructure:"trade_fleet"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

@@ -230,4 +230,15 @@ func SetDefaults(cfg *Config) {
 		quotaAlertThresholdPctDefault := 80
 		cfg.Captain.QuotaAlertThresholdPct = &quotaAlertThresholdPctDefault
 	}
+
+	// Trade fleet coordinator defaults (sp-1278): default ON. A nil Enabled means the
+	// captain has not configured the coordinator, and its intent is to keep continuous
+	// tours alive on every trade hull — so an absent [trade_fleet] section runs ON. An
+	// explicit `enabled: false` is preserved as the off-switch. The cooldown, tick,
+	// concurrency, and per-tour caps default at the coordinator (0 => its own default),
+	// so they need no SetDefaults entry here.
+	if cfg.TradeFleet.Enabled == nil {
+		tradeFleetEnabledDefault := true
+		cfg.TradeFleet.Enabled = &tradeFleetEnabledDefault
+	}
 }

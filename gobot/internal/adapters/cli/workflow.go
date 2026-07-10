@@ -32,6 +32,7 @@ Examples:
 	cmd.AddCommand(newWorkflowTradeRouteCommand())
 	cmd.AddCommand(newWorkflowArbRunCommand())
 	cmd.AddCommand(newWorkflowTourRunCommand())
+	cmd.AddCommand(newWorkflowTradeFleetCoordinatorCommand())
 	cmd.AddCommand(newWorkflowWarehouseCommand())
 	cmd.AddCommand(newWorkflowStockerCommand())
 

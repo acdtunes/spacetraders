@@ -55,6 +55,11 @@ service DaemonService {
   // ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
   rpc ScoutPostCoordinator(ScoutPostCoordinatorRequest) returns (ScoutPostCoordinatorResponse);
 
+  // TradeFleetCoordinator starts the standing trade-fleet coordinator (sp-1278):
+  // keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
+  // exit after a cooldown. Retires the captain hand-relaunch loop.
+  rpc TradeFleetCoordinator(TradeFleetCoordinatorRequest) returns (TradeFleetCoordinatorResponse);
+
   // AddScoutPost adds or updates a desired-state scout post for a system
   rpc AddScoutPost(AddScoutPostRequest) returns (ScoutPostResponse);
 
@@ -485,6 +490,19 @@ message ScoutPostCoordinatorRequest {
 }
 
 message ScoutPostCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// TradeFleetCoordinatorRequest starts the standing trade-fleet coordinator (sp-1278).
+// All tuning lives in config.yaml's [trade_fleet] section (resolved live on every
+// build); this request only names the player/agent.
+message TradeFleetCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message TradeFleetCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

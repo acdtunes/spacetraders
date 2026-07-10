@@ -1159,6 +1159,24 @@ func (c *DaemonClient) ScoutPostCoordinator(ctx context.Context, playerID int, a
 	return resp.ContainerId, nil
 }
 
+// TradeFleetCoordinator starts the standing trade-fleet coordinator (sp-1278): it keeps
+// continuous tours alive on 'trade'-dedicated hulls, relaunching on honest exit after a
+// cooldown. All tuning lives in config.yaml's [trade_fleet] section; this call only
+// names the player/agent. Returns the coordinator container id.
+func (c *DaemonClient) TradeFleetCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+	req := &pb.TradeFleetCoordinatorRequest{
+		PlayerId: int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.TradeFleetCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq). hulls is the
 // probe budget N (sp-enry); 0 defaults to single-hull.
 func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string, hulls int) (*ScoutPost, error) {

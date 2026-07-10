@@ -471,6 +471,28 @@ func (s *daemonServiceImpl) ScoutPostCoordinator(ctx context.Context, req *pb.Sc
 	return &pb.ScoutPostCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// TradeFleetCoordinator starts the standing trade-fleet coordinator (sp-1278). The
+// agent symbol is threaded through to each tour launch so the tour can live-read the
+// agent's treasury for its 25%-of-treasury spend cap; the CLI always supplies it.
+func (s *daemonServiceImpl) TradeFleetCoordinator(ctx context.Context, req *pb.TradeFleetCoordinatorRequest) (*pb.TradeFleetCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.TradeFleetCoordinator(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start trade fleet coordinator: %w", err)
+	}
+
+	return &pb.TradeFleetCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq)
 func (s *daemonServiceImpl) AddScoutPost(ctx context.Context, req *pb.AddScoutPostRequest) (*pb.ScoutPostResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

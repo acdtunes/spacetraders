@@ -192,3 +192,37 @@ contract:
     # blocklist: goods NEVER deposited (wins over allowlist). Absent => none.
     # blocklist:
     #   - FUEL
+
+# Trade-fleet coordinator (sp-1278): the standing coordinator that keeps continuous
+# tours alive on every 'trade'-dedicated hull. When a tour makes an honest exit
+# (margins died in both systems, or a sold-out completion) the hull parks; this
+# coordinator relaunches a fresh continuous tour on it after a per-hull cooldown that
+# lets the local ground breathe (the rich->tapped->rich cycle). It retires the captain's
+# hand-relaunch loop. Launch it once with `spacetraders workflow trade-fleet-coordinator`.
+#
+# THIS SECTION IS LIVE (sp-ts82): the daemon resolves these knobs from THIS file every
+# time it builds the coordinator — at creation AND at restart recovery. Retune path: edit
+# a value, restart the daemon; even an already-running coordinator picks up the change on
+# the next boot (no recreate). Every value is OPTIONAL — an unset key takes the documented
+# default. Ownership is untouched: each tour claims its own hull under operation="trade";
+# a captain-reserved hull is skipped, and unpinning a hull from the 'trade' fleet removes
+# it from the coordinator's view with no restart.
+trade_fleet:
+  # enabled: false parks the WHOLE relaunch loop without unpinning any hull. Absent =>
+  # ON (the coordinator's purpose is to keep every trade hull touring).
+  # enabled: false
+  cooldown_seconds: 180        # per-hull wait after an honest exit before relaunch (default 180 = 3 min)
+  # max_concurrent_tours caps simultaneously-running trade tours. 0 (default) = unlimited,
+  # bounded only by fleet size — every idle trade hull is relaunched. Set a positive cap
+  # to bound concurrent capital deployment / API load (a capped fleet larger than the cap
+  # will leave surplus hulls parked, honest, until a running tour frees a slot).
+  max_concurrent_tours: 0
+  tick_seconds: 30             # reconcile cadence (default 30)
+  # Per-tour caps, passed verbatim to each tour launch. 0 => the tour's own default
+  # (max_hops->6, max_spend->25% of live treasury, replan_limit->2, reserve->the floor).
+  # Iterations is NOT configurable: every relaunched tour is continuous by construction.
+  # max_hops: 6
+  # max_spend: 0
+  # min_margin: 0
+  # replan_limit: 0
+  # working_capital_reserve: 0

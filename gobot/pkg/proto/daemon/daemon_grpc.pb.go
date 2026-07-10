@@ -33,6 +33,7 @@ const (
 	DaemonService_ScoutMarkets_FullMethodName                          = "/daemon.DaemonService/ScoutMarkets"
 	DaemonService_AssignScoutingFleet_FullMethodName                   = "/daemon.DaemonService/AssignScoutingFleet"
 	DaemonService_ScoutPostCoordinator_FullMethodName                  = "/daemon.DaemonService/ScoutPostCoordinator"
+	DaemonService_TradeFleetCoordinator_FullMethodName                 = "/daemon.DaemonService/TradeFleetCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                          = "/daemon.DaemonService/AddScoutPost"
 	DaemonService_RemoveScoutPost_FullMethodName                       = "/daemon.DaemonService/RemoveScoutPost"
 	DaemonService_ListScoutPosts_FullMethodName                        = "/daemon.DaemonService/ListScoutPosts"
@@ -114,6 +115,10 @@ type DaemonServiceClient interface {
 	AssignScoutingFleet(ctx context.Context, in *AssignScoutingFleetRequest, opts ...grpc.CallOption) (*AssignScoutingFleetResponse, error)
 	// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
 	ScoutPostCoordinator(ctx context.Context, in *ScoutPostCoordinatorRequest, opts ...grpc.CallOption) (*ScoutPostCoordinatorResponse, error)
+	// TradeFleetCoordinator starts the standing trade-fleet coordinator (sp-1278):
+	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
+	// exit after a cooldown. Retires the captain hand-relaunch loop.
+	TradeFleetCoordinator(ctx context.Context, in *TradeFleetCoordinatorRequest, opts ...grpc.CallOption) (*TradeFleetCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(ctx context.Context, in *AddScoutPostRequest, opts ...grpc.CallOption) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -348,6 +353,16 @@ func (c *daemonServiceClient) ScoutPostCoordinator(ctx context.Context, in *Scou
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ScoutPostCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ScoutPostCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) TradeFleetCoordinator(ctx context.Context, in *TradeFleetCoordinatorRequest, opts ...grpc.CallOption) (*TradeFleetCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TradeFleetCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_TradeFleetCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -775,6 +790,10 @@ type DaemonServiceServer interface {
 	AssignScoutingFleet(context.Context, *AssignScoutingFleetRequest) (*AssignScoutingFleetResponse, error)
 	// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
 	ScoutPostCoordinator(context.Context, *ScoutPostCoordinatorRequest) (*ScoutPostCoordinatorResponse, error)
+	// TradeFleetCoordinator starts the standing trade-fleet coordinator (sp-1278):
+	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
+	// exit after a cooldown. Retires the captain hand-relaunch loop.
+	TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -916,6 +935,9 @@ func (UnimplementedDaemonServiceServer) AssignScoutingFleet(context.Context, *As
 }
 func (UnimplementedDaemonServiceServer) ScoutPostCoordinator(context.Context, *ScoutPostCoordinatorRequest) (*ScoutPostCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ScoutPostCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TradeFleetCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddScoutPost not implemented")
@@ -1300,6 +1322,24 @@ func _DaemonService_ScoutPostCoordinator_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).ScoutPostCoordinator(ctx, req.(*ScoutPostCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_TradeFleetCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TradeFleetCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).TradeFleetCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_TradeFleetCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).TradeFleetCoordinator(ctx, req.(*TradeFleetCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2050,6 +2090,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ScoutPostCoordinator",
 			Handler:    _DaemonService_ScoutPostCoordinator_Handler,
+		},
+		{
+			MethodName: "TradeFleetCoordinator",
+			Handler:    _DaemonService_TradeFleetCoordinator_Handler,
 		},
 		{
 			MethodName: "AddScoutPost",

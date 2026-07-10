@@ -509,7 +509,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -579,6 +579,18 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*scoutingCmd.RunScoutPostCoordinatorCommand](med, scoutPostCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutPostCoordinator handler: %w", err)
+	}
+
+	// Register the standing trade-fleet coordinator (sp-1278): it watches every
+	// 'trade'-dedicated hull and relaunches a continuous tour on any hull parked by an
+	// honest tour exit, after a per-hull cooldown — retiring the captain's hand-relaunch
+	// loop. It claims nothing itself; each tour it spawns claims its own hull under
+	// operation="trade" through the daemon server (SetTourLauncher), the SAME StartTourRun
+	// path `workflow tour-run` uses. Tuning is resolved live from config.yaml [trade_fleet].
+	tradeFleetCoordinatorHandler := tradeRouteCmd.NewRunTradeFleetCoordinatorHandler(shipRepo, nil) // nil = use RealClock
+	tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeFleetCoordinatorCommand](med, tradeFleetCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}
 
 	// Register GoodsFactoryCoordinator handler (depends on daemonClientLocal)

@@ -92,6 +92,14 @@ type DaemonServer struct {
 	// no code redeploy.
 	contractConfig config.ContractConfig
 
+	// tradeFleetConfig carries the trade-fleet coordinator knobs (sp-1278) from
+	// config.yaml. TradeFleetCoordinator injects them into the coordinator
+	// container's launch config on every build (creation + restart recovery via
+	// resolveTradeFleetConfig), so a captain retunes the standing relaunch loop —
+	// enabled/cooldown/max-concurrent/per-tour caps — by editing config and
+	// restarting, no code redeploy.
+	tradeFleetConfig config.TradeFleetConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -121,6 +129,7 @@ func NewDaemonServer(
 	socketPath string,
 	metricsConfig *config.MetricsConfig,
 	contractConfig config.ContractConfig,
+	tradeFleetConfig config.TradeFleetConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -178,6 +187,7 @@ func NewDaemonServer(
 		pendingWorkerCommands: make(map[string]interface{}),
 		metricsConfig:         metricsConfig,
 		contractConfig:        contractConfig,
+		tradeFleetConfig:      tradeFleetConfig,
 		shutdownChan:          make(chan os.Signal, 1),
 		done:                  make(chan struct{}),
 	}
