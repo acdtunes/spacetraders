@@ -153,7 +153,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// NOT un-dedicated here, only newly-configured symbols are marked. The
 	// empty default must not touch anything, mediator lookup included.
 	if len(cmd.DedicatedShips) > 0 {
-		reconcileDedicatedFleet(ctx, logger, h.fleetPoolManager.GetMediator(), cmd.PlayerID, cmd.DedicatedShips, dedicatedFleetContract)
+		reconcileDedicatedFleet(ctx, logger, h.fleetPoolManager.GetMediator(), cmd.PlayerID, cmd.DedicatedShips, dedicatedFleetContract,
+			fmt.Sprintf("contract-coordinator-reconcile:%s", cmd.ContainerID))
 	}
 
 	// No pool initialization - ships are discovered dynamically
@@ -734,13 +735,22 @@ func reconcileDedicatedFleet(
 	playerID shared.PlayerID,
 	dedicatedShips []string,
 	fleetName string,
+	assigner string,
 ) {
 	for _, symbol := range dedicatedShips {
 		pid := playerID.Value()
+		// Automated path (Manual: false): the assign handler BLOCKS a 0-cargo
+		// hull from being pinned into a hauling fleet (sp-r6f1). This is what
+		// stopped the reconcile from silently re-pinning the 0-cargo satellites
+		// TORWIND-24/25 into "contract" on every restart. A blocked symbol
+		// surfaces as the WARNING below and is skipped, exactly like any other
+		// per-ship failure — the rest of the list still reconciles.
 		_, err := med.Send(ctx, &shipAssignment.AssignShipFleetCommand{
 			ShipSymbol: symbol,
 			Fleet:      fleetName,
 			PlayerID:   &pid,
+			Assigner:   assigner,
+			Manual:     false,
 		})
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to assign ship %s: %v", symbol, err), nil)

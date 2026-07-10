@@ -46,7 +46,7 @@ func TestReconcileDedicatedFleet_SendsAssignCommandPerConfiguredShip(t *testing.
 	med := &reconcileStubMediator{}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(7), []string{"TORWIND-4", "TORWIND-5"}, "contract")
+	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(7), []string{"TORWIND-4", "TORWIND-5"}, "contract", "contract-coordinator-reconcile:test")
 
 	if len(med.sent) != 2 {
 		t.Fatalf("expected exactly 2 assign commands, got %d: %+v", len(med.sent), med.sent)
@@ -62,6 +62,15 @@ func TestReconcileDedicatedFleet_SendsAssignCommandPerConfiguredShip(t *testing.
 		if cmd.PlayerID == nil || *cmd.PlayerID != 7 {
 			t.Fatalf("command %d: expected player ID 7, got %v", i, cmd.PlayerID)
 		}
+		// Reconciliation is the AUTOMATED path (sp-r6f1): it must send Manual:
+		// false so the handler BLOCKS an ineligible 0-cargo hull, and carry the
+		// assigner identity so a mispin names its culprit.
+		if cmd.Manual {
+			t.Fatalf("command %d: reconcile must be the automated path (Manual=false), got Manual=true", i)
+		}
+		if cmd.Assigner != "contract-coordinator-reconcile:test" {
+			t.Fatalf("command %d: expected assigner identity threaded through, got %q", i, cmd.Assigner)
+		}
 	}
 }
 
@@ -74,7 +83,7 @@ func TestReconcileDedicatedFleet_CommandFailure_LogsWarningAndContinues(t *testi
 	}}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), []string{"TORWIND-GONE", "TORWIND-5"}, "contract")
+	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), []string{"TORWIND-GONE", "TORWIND-5"}, "contract", "contract-coordinator-reconcile:test")
 
 	if len(med.sent) != 2 {
 		t.Fatalf("expected the pass to continue past the failure and send both commands, got %d: %+v", len(med.sent), med.sent)
@@ -99,7 +108,7 @@ func TestReconcileDedicatedFleet_EmptyList_NoOp(t *testing.T) {
 	med := &reconcileStubMediator{}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), nil, "contract")
+	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), nil, "contract", "contract-coordinator-reconcile:test")
 
 	if len(med.sent) != 0 {
 		t.Fatalf("expected no assign commands for an empty dedicated-ships list, got %+v", med.sent)

@@ -231,6 +231,11 @@ func (s *DaemonServer) AssignShipFleet(ctx context.Context, shipSymbol, fleet st
 		Fleet:       fleet,
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
+		// Operator-initiated via the CLI's `fleet assign`/`unassign` (sp-r6f1):
+		// Manual warns-but-allows an ineligible 0-cargo pin rather than blocking
+		// it — the captain may deliberately pin anything.
+		Assigner: "cli",
+		Manual:   true,
 	}
 
 	response, err := s.mediator.Send(ctx, cmd)
