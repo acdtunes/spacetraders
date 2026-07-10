@@ -54,7 +54,7 @@ func TestRefreshShipPoolOnce_IdleShipsAlreadyTracked_LogsClarifyingReason(t *tes
 	shipsUsed := map[string]bool{ship.ShipSymbol(): true}
 	var mu sync.Mutex
 
-	handler.refreshShipPoolOnce(ctx, shared.MustNewPlayerID(1), shipPool, shipsUsed, &mu, 0)
+	handler.refreshShipPoolOnce(ctx, shared.MustNewPlayerID(1), testSystem, shipPool, shipsUsed, &mu, 0)
 
 	found := false
 	for _, e := range logger.entries {
@@ -97,7 +97,7 @@ func TestRefreshShipPoolOnce_NewIdleShip_AddedToPoolAndLogged(t *testing.T) {
 	shipsUsed := map[string]bool{}
 	var mu sync.Mutex
 
-	discoveryCount := handler.refreshShipPoolOnce(ctx, shared.MustNewPlayerID(1), shipPool, shipsUsed, &mu, 0)
+	discoveryCount := handler.refreshShipPoolOnce(ctx, shared.MustNewPlayerID(1), testSystem, shipPool, shipsUsed, &mu, 0)
 
 	if discoveryCount != 1 {
 		t.Fatalf("expected discoveryCount incremented to 1 for one newly added ship, got %d", discoveryCount)

@@ -217,7 +217,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// legs fine and is often the fastest, largest hull owned, so it competes
 		// on distance like any hauler instead of sitting benched until zero
 		// haulers remain.
-		_, generalShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, appContract.IncludeCommandShip)
+		_, generalShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, "", appContract.IncludeCommandShip)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)

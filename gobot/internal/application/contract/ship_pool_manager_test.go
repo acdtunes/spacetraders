@@ -117,7 +117,7 @@ func TestFindIdleLightHaulers_IncludesIdleCommandShipAlongsideHaulers(t *testing
 	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 40, 50, 0) // idle, close, command
 	repo := &stubShipRepo{ships: []*navigation.Ship{hauler, command}}
 
-	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, IncludeCommandShip)
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
 	if err != nil {
 		t.Fatalf("FindIdleLightHaulers: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestFindIdleLightHaulers_BusyHauler_IdleCommandShip_CommandIsCandidate(t *t
 	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 40, 50, 0)
 	repo := &stubShipRepo{ships: []*navigation.Ship{hauler, command}}
 
-	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, IncludeCommandShip)
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
 	if err != nil {
 		t.Fatalf("FindIdleLightHaulers: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestFindIdleLightHaulers_ExcludesCommandShip_WhenNotOptedIn(t *testing.T) {
 	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 40, 50, 0)
 	repo := &stubShipRepo{ships: []*navigation.Ship{hauler, command}}
 
-	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo)
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "")
 	if err != nil {
 		t.Fatalf("FindIdleLightHaulers: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestFindIdleLightHaulers_ExcludesDedicatedShips(t *testing.T) {
 	general := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
 	repo := &stubShipRepo{ships: []*navigation.Ship{dedicated, general}}
 
-	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, IncludeCommandShip)
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
 	if err != nil {
 		t.Fatalf("FindIdleLightHaulers: %v", err)
 	}
@@ -196,6 +196,78 @@ func TestFindIdleLightHaulers_ExcludesDedicatedShips(t *testing.T) {
 	}
 	if !containsSymbol(symbols, "TORWIND-3") {
 		t.Fatalf("non-dedicated hauler TORWIND-3 missing from candidate pool %v", symbols)
+	}
+}
+
+// newCandidateShipAt builds an idle, docked hauler located at the given waypoint
+// symbol, so a test can place hulls in different systems and exercise the
+// single-system pool filter (sp-qr3v). Its system is derived from the waypoint
+// symbol exactly as production does (shared.ExtractSystemSymbol).
+func newCandidateShipAt(t *testing.T, symbol, waypointSymbol string) *navigation.Ship {
+	t.Helper()
+	cargo, err := shared.NewCargo(30, 0, nil)
+	if err != nil {
+		t.Fatalf("build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("build fuel: %v", err)
+	}
+	wp, err := shared.NewWaypoint(waypointSymbol, 0, 0)
+	if err != nil {
+		t.Fatalf("build waypoint: %v", err)
+	}
+	ship, err := navigation.NewShip(
+		symbol, shared.MustNewPlayerID(1), wp, fuel, 100, 30, cargo, 30,
+		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked,
+	)
+	if err != nil {
+		t.Fatalf("build ship: %v", err)
+	}
+	return ship
+}
+
+// Single-system filter (sp-qr3v): a factory operating in system X1-JP61 must see
+// ONLY hulls currently in that system. An idle hauler sitting in the home system
+// (X1-KA42) is unselectable - the factory can never navigate it home to work, so
+// claiming it just fails the worker on every pass. This is the incident:
+// goods_factory-LAB_INSTRUMENTS claimed TORWIND-1F at KA42-E42 (home) and churned
+// "Worker failed" every ~90s. With the systemFilter set, that out-of-system hull
+// never enters the pool, so it is never claimed.
+func TestFindIdleLightHaulers_SystemFilter_ExcludesOutOfSystemHulls(t *testing.T) {
+	inSystem := newCandidateShipAt(t, "JP61-2", "X1-JP61-E42")        // idle hauler in the factory's system
+	outOfSystem := newCandidateShipAt(t, "TORWIND-1F", "X1-KA42-E42") // idle hauler in the home system
+	repo := &stubShipRepo{ships: []*navigation.Ship{outOfSystem, inSystem}}
+
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "X1-JP61")
+	if err != nil {
+		t.Fatalf("FindIdleLightHaulers: %v", err)
+	}
+
+	if containsSymbol(symbols, "TORWIND-1F") {
+		t.Fatalf("out-of-system hull TORWIND-1F (X1-KA42) must be unselectable for an X1-JP61 factory, got %v", symbols)
+	}
+	if len(symbols) != 1 || symbols[0] != "JP61-2" {
+		t.Fatalf("expected only the in-system hauler [JP61-2], got %v", symbols)
+	}
+}
+
+// Contract compatibility: an empty systemFilter preserves the original
+// fleet-wide behavior - every idle hauler qualifies regardless of which system
+// it sits in. Contract callers (run_fleet_coordinator, balance_ship_position)
+// pass "" and must be entirely unaffected by the sp-qr3v filter.
+func TestFindIdleLightHaulers_EmptySystemFilter_ReturnsAllSystems(t *testing.T) {
+	home := newCandidateShipAt(t, "TORWIND-1F", "X1-KA42-E42")
+	away := newCandidateShipAt(t, "JP61-2", "X1-JP61-E42")
+	repo := &stubShipRepo{ships: []*navigation.Ship{home, away}}
+
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "")
+	if err != nil {
+		t.Fatalf("FindIdleLightHaulers: %v", err)
+	}
+
+	if !containsSymbol(symbols, "TORWIND-1F") || !containsSymbol(symbols, "JP61-2") {
+		t.Fatalf("an empty system filter must return haulers from every system (fleet-wide), got %v", symbols)
 	}
 }
 

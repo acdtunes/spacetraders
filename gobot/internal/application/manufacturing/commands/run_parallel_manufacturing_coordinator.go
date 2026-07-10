@@ -339,6 +339,7 @@ func assignParams(cmd *RunParallelManufacturingCoordinatorCommand, config coordi
 		PlayerID:           cmd.PlayerID,
 		MaxConcurrentTasks: config.maxConcurrentTasks,
 		CoordinatorID:      cmd.ContainerID,
+		SystemSymbol:       cmd.SystemSymbol,
 	}
 }
 

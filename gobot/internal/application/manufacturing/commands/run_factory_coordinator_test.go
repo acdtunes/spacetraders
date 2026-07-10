@@ -660,3 +660,140 @@ func TestFactoryCoordinator_ContextCancelledWhileWaiting_ExitsWithoutFatalCrash(
 		t.Fatalf("factory emitted the impatience-crash error while merely waiting for a hauler: %q", coordResp.Error)
 	}
 }
+
+// newTestHaulerAt builds an idle, docked hauler at the given waypoint symbol so
+// factory tests can place hulls in-system or out-of-system and exercise the
+// single-system pool filter (sp-qr3v). newTestHauler always builds at
+// testFactoryWaypoint (in the factory's own system); this variant chooses the
+// location, and the system is derived from the symbol exactly as production does.
+func newTestHaulerAt(t *testing.T, symbol, waypointSymbol string) *navigation.Ship {
+	t.Helper()
+	cargo, err := shared.NewCargo(40, 0, nil)
+	if err != nil {
+		t.Fatalf("failed to build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("failed to build fuel: %v", err)
+	}
+	waypoint, err := shared.NewWaypoint(waypointSymbol, 0, 0)
+	if err != nil {
+		t.Fatalf("failed to build waypoint: %v", err)
+	}
+	ship, err := navigation.NewShip(
+		symbol, shared.MustNewPlayerID(1), waypoint, fuel, 100, 40, cargo, 30,
+		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked,
+	)
+	if err != nil {
+		t.Fatalf("failed to build ship: %v", err)
+	}
+	return ship
+}
+
+// The incident (sp-qr3v): a factory operating in one system (testSystem) found
+// only an idle hauler sitting in ANOTHER system. Before the fix it claimed that
+// out-of-system hull and the fabricate worker failed every ~90s, because
+// manufacturing never jumps cross-system. The out-of-system hull must now be
+// UNSELECTABLE: no ClaimShip is ever attempted, and the factory parks with an
+// honest reason that NAMES THE SYSTEM in the message text (the container-log
+// renderer drops the metadata map, so a system buried there never reaches an
+// operator).
+func TestFactoryCoordinator_OnlyOutOfSystemHaulers_NoClaim_ParksWithReason(t *testing.T) {
+	handler, shipRepo := newFactoryHandlerAndShipRepo(t, &factoryFakeClock{})
+	// The only idle hauler sits in a DIFFERENT system than the factory (testSystem).
+	outOfSystem := newTestHaulerAt(t, "TORWIND-1F", "X1-HOME-E42")
+	shipRepo.ships = map[string]*navigation.Ship{outOfSystem.ShipSymbol(): outOfSystem}
+	shipRepo.order = []string{outOfSystem.ShipSymbol()}
+
+	// The factory blocks polling for an in-system hauler; cancel after a few
+	// fruitless polls so the test terminates (mirrors the sp-vmrj cancel pattern).
+	ctx, cancel := context.WithCancel(context.Background())
+	shipRepo.onFindAll = func(callNum int) {
+		if callNum >= 3 {
+			cancel()
+		}
+	}
+	logger := &capturingLogger{}
+	ctx = common.WithLogger(ctx, logger)
+
+	cmd := &RunFactoryCoordinatorCommand{
+		PlayerID:     1,
+		TargetGood:   testOutputGood,
+		SystemSymbol: testSystem,
+		ContainerID:  testContainerID,
+	}
+	_, _ = handler.Handle(ctx, cmd)
+
+	if len(shipRepo.claims) != 0 {
+		t.Fatalf("out-of-system hull must never be claimed by an in-system factory, got claims: %+v", shipRepo.claims)
+	}
+	found := false
+	for _, e := range logger.entries {
+		if strings.Contains(e.message, "No in-system worker") && strings.Contains(e.message, testSystem) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a park-with-reason log naming system %q in the MESSAGE TEXT (not only metadata), got entries: %+v", testSystem, logger.entries)
+	}
+}
+
+// sp-qr3v selectivity: an out-of-system hull present alongside the factory's own
+// in-system haulers must never be claimed, while the in-system haulers still
+// complete the run. Proves the filter removes ONLY the out-of-system candidate,
+// not the whole pool.
+func TestFactoryCoordinator_OutOfSystemHull_NeverClaimed_WhileInSystemRunCompletes(t *testing.T) {
+	f := newFactoryFixture(t)
+	// Inject an idle out-of-system hauler alongside the two in-system haulers the
+	// fixture already wires (both at testFactoryWaypoint, in testSystem).
+	outOfSystem := newTestHaulerAt(t, "TORWIND-1F", "X1-HOME-E42")
+	f.shipRepo.ships[outOfSystem.ShipSymbol()] = outOfSystem
+	f.shipRepo.order = append([]string{outOfSystem.ShipSymbol()}, f.shipRepo.order...)
+
+	resp, err := f.handler.Handle(context.Background(), f.cmd)
+	if err != nil {
+		t.Fatalf("coordinator failed: %v", err)
+	}
+	coordResp, _ := resp.(*RunFactoryCoordinatorResponse)
+	if coordResp == nil || !coordResp.Completed {
+		t.Fatalf("expected the in-system haulers to complete the run, got %+v", coordResp)
+	}
+	for _, c := range f.shipRepo.claims {
+		if c.symbol == "TORWIND-1F" {
+			t.Fatalf("out-of-system hull TORWIND-1F must never be claimed, claims: %+v", f.shipRepo.claims)
+		}
+	}
+	if len(f.shipRepo.claims) == 0 {
+		t.Fatalf("expected the in-system haulers to be claimed for production, got no claims")
+	}
+}
+
+// sp-qr3v self-heal: while only an out-of-system hull is idle, waitForIdleHaulers
+// keeps polling (never returns it for claiming). The moment the captain routes an
+// in-system hauler into the factory's system, the very next poll returns ONLY
+// that hull - zero operator action beyond moving the ship.
+func TestWaitForIdleHaulers_SelfHeal_ReturnsInSystemHullWhenItArrives(t *testing.T) {
+	handler, shipRepo := newFactoryHandlerAndShipRepo(t, &factoryFakeClock{})
+	outOfSystem := newTestHaulerAt(t, "TORWIND-1F", "X1-HOME-E42")
+	inSystem := newTestHaulerAt(t, "CRAFTY-9", testFactoryWaypoint)
+	shipRepo.ships = map[string]*navigation.Ship{outOfSystem.ShipSymbol(): outOfSystem}
+	shipRepo.order = []string{outOfSystem.ShipSymbol()}
+	// The captain routes an in-system hauler in after the 2nd fruitless poll.
+	shipRepo.onFindAll = func(callNum int) {
+		if callNum == 2 {
+			shipRepo.ships[inSystem.ShipSymbol()] = inSystem
+			shipRepo.order = append(shipRepo.order, inSystem.ShipSymbol())
+		}
+	}
+
+	idle, symbols, err := handler.waitForIdleHaulers(context.Background(), shared.MustNewPlayerID(1), testSystem, "factory-selfheal")
+	if err != nil {
+		t.Fatalf("waitForIdleHaulers: %v", err)
+	}
+	if len(idle) != 1 || len(symbols) != 1 || symbols[0] != "CRAFTY-9" {
+		t.Fatalf("expected self-heal to return only the in-system hull [CRAFTY-9] once it arrives, got %v", symbols)
+	}
+	if shipRepo.findAllCallCount() < 2 {
+		t.Fatalf("expected the factory to poll past the out-of-system-only state (>=2 polls) before the in-system hull arrived, got %d", shipRepo.findAllCallCount())
+	}
+}

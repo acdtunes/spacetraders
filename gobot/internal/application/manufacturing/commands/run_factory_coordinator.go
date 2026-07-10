@@ -312,7 +312,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// cancelled. A factory that holds a market at MODERATE+ is long-lived, so an
 	// indefinite wait for the next idle gap is the correct bound.
 	playerID := shared.MustNewPlayerID(cmd.PlayerID)
-	idleShips, idleShipSymbols, err := h.waitForIdleHaulers(ctx, playerID, response.FactoryID)
+	idleShips, idleShipSymbols, err := h.waitForIdleHaulers(ctx, playerID, cmd.SystemSymbol, response.FactoryID)
 	if err != nil {
 		return err
 	}
@@ -382,6 +382,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
+	systemSymbol string,
 	factoryID string,
 ) ([]*navigation.Ship, []string, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -396,7 +397,10 @@ func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
 		default:
 		}
 
-		idleShips, idleShipSymbols, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo)
+		// sp-qr3v: restrict the pool to hulls currently in the factory's own
+		// system. Manufacturing never jumps cross-system, so an out-of-system
+		// hull must be unselectable here (never claimed-then-failed).
+		idleShips, idleShipSymbols, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo, systemSymbol)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to discover idle ships: %w", err)
 		}
@@ -412,8 +416,15 @@ func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
 		}
 
 		waited = true
-		logger.Log("INFO", "No idle haulers available yet - waiting for an idle gap before production", map[string]interface{}{
+		// Park-with-reason (sp-qr3v): the substance goes in the MESSAGE TEXT, not
+		// only the metadata map - the CLI container-log renderer drops the map, so
+		// naming the system there is what an operator actually sees. This is the
+		// honest reason the factory is idle: no in-system hauler exists yet, NOT a
+		// claim that keeps failing. It self-heals the moment the captain routes a
+		// hauler into this system (the next poll claims it, zero operator action).
+		logger.Log("INFO", fmt.Sprintf("No in-system worker (system=%s) - waiting for an idle in-system hauler before production", systemSymbol), map[string]interface{}{
 			"factory_id":    factoryID,
+			"system_symbol": systemSymbol,
 			"poll_interval": shipDiscoveryInterval.String(),
 		})
 		h.clock.Sleep(shipDiscoveryInterval)
@@ -447,7 +458,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
 	defer cancelDiscovery()
 
-	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, shipPool, shipsUsed, &shipsUsedMutex)
+	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, cmd.SystemSymbol, shipPool, shipsUsed, &shipsUsedMutex)
 
 	logger.Log("INFO", "Starting parallel production", map[string]interface{}{
 		"factory_id":         response.FactoryID,
@@ -578,6 +589,7 @@ func (h *RunFactoryCoordinatorHandler) mapDeliveryDestinations(
 func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 	ctx context.Context,
 	playerID int,
+	systemSymbol string,
 	shipPool chan *navigation.Ship,
 	shipsUsed map[string]bool,
 	shipsUsedMutex *sync.Mutex,
@@ -602,7 +614,7 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 			return
 
 		case <-ticker.C:
-			discoveryCount = h.refreshShipPoolOnce(ctx, playerIDValue, shipPool, shipsUsed, shipsUsedMutex, discoveryCount)
+			discoveryCount = h.refreshShipPoolOnce(ctx, playerIDValue, systemSymbol, shipPool, shipsUsed, shipsUsedMutex, discoveryCount)
 		}
 	}
 }
@@ -624,6 +636,7 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 func (h *RunFactoryCoordinatorHandler) refreshShipPoolOnce(
 	ctx context.Context,
 	playerIDValue shared.PlayerID,
+	systemSymbol string,
 	shipPool chan *navigation.Ship,
 	shipsUsed map[string]bool,
 	shipsUsedMutex *sync.Mutex,
@@ -631,11 +644,14 @@ func (h *RunFactoryCoordinatorHandler) refreshShipPoolOnce(
 ) int {
 	logger := common.LoggerFromContext(ctx)
 
-	// Re-discover idle ships
+	// Re-discover idle ships. sp-qr3v: the mid-run refresh filters to the
+	// factory's own system too, so a hull that drifts idle in another system is
+	// never added to the pool and then claimed-then-failed.
 	newIdleShips, _, err := contract.FindIdleLightHaulers(
 		ctx,
 		playerIDValue,
 		h.shipRepo,
+		systemSymbol,
 	)
 	if err != nil {
 		logger.Log("WARNING", "Failed to refresh ship pool", map[string]interface{}{

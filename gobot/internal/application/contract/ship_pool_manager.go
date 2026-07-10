@@ -77,7 +77,8 @@ const roleHauler = "HAULER"
 //  1. Its role is "HAULER" - or "COMMAND" when the caller passes IncludeCommandShip
 //  2. It is not dedicated to a coordinator's exclusive fleet (Ship.DedicatedFleet() is empty)
 //  3. It has cargo capacity (excludes probes/satellites)
-//  4. It is not in transit and has no active assignment (Ship.IsIdle() is true)
+//  4. It is currently in systemFilter's system when a non-empty systemFilter is given
+//  5. It is not in transit and has no active assignment (Ship.IsIdle() is true)
 //
 // This provides a dynamic pool of available haulers without requiring pre-assignment.
 // Ship assignment status is now embedded in the Ship aggregate and enriched by the repository.
@@ -86,6 +87,13 @@ const roleHauler = "HAULER"
 //   - ctx: Context for cancellation and logging
 //   - playerID: Player ID to find ships for
 //   - shipRepo: Repository to query ships (enriches assignment data automatically)
+//   - systemFilter: When non-empty, restricts the pool to hulls whose CURRENT
+//     system equals it. Single-system callers (manufacturing/factory
+//     coordinators, which never jump cross-system) pass their operating system
+//     so an out-of-system hull they could never operate is UNSELECTABLE here
+//     rather than claimed-then-failed (the sp-9hu8 class, factory-side: sp-qr3v).
+//     Fleet-wide callers (contract) pass "" for the pre-filter's original,
+//     unfiltered behavior.
 //   - policies: Optional command-ship policy (default: ExcludeCommandShip). Pass
 //     IncludeCommandShip to treat the command ship as a first-class candidate.
 //
@@ -97,6 +105,7 @@ func FindIdleLightHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
+	systemFilter string,
 	policies ...CommandShipPolicy,
 ) ([]*navigation.Ship, []string, error) {
 	// Default: keep the command ship out of the pool.
@@ -157,6 +166,18 @@ func FindIdleLightHaulers(
 		// At least one haul-capable hull exists in the fleet.
 		candidateShipsExist = true
 
+		// Single-system filter (sp-qr3v): a caller that operates within one
+		// system (manufacturing/factory, which never jumps cross-system) restricts
+		// the pool to hulls CURRENTLY in that system. An out-of-system hull is
+		// invisible here - the coordinator can never navigate it home to work, so
+		// claiming it just fails the worker on every pass (the sp-9hu8 class,
+		// factory-side). A hull whose location is unknown is treated as
+		// out-of-system: the pre-filter fails CLOSED, never surfacing a hull it
+		// cannot confirm is in range. Fleet-wide callers pass "" and skip this.
+		if systemFilter != "" && shipCurrentSystem(ship) != systemFilter {
+			continue
+		}
+
 		// Exclude ships in transit (even without assignment): a hull being
 		// balanced or navigating is not available for a new contract leg.
 		if ship.NavStatus() == navigation.NavStatusInTransit {
@@ -176,6 +197,7 @@ func FindIdleLightHaulers(
 		"total_ships":           len(allShips),
 		"candidate_ships_exist": candidateShipsExist,
 		"include_command_ship":  policy == IncludeCommandShip,
+		"system_filter":         systemFilter,
 		"idle_haulers":          len(idleHaulers),
 		"hauler_symbols":        idleHaulerSymbols,
 	})
@@ -406,4 +428,16 @@ func FilterUnrelatedCargo(
 // predicate so they all mark exactly the same hull as the command ship.
 func isCommandHull(ship *navigation.Ship) bool {
 	return domainContract.IsCommandHull(ship)
+}
+
+// shipCurrentSystem returns the system symbol a ship is currently located in,
+// derived from its current waypoint symbol (e.g. "X1-KA42-E42" -> "X1-KA42").
+// Returns "" when the location is unknown, which the single-system pool filter
+// treats as out-of-system (fail-closed).
+func shipCurrentSystem(ship *navigation.Ship) string {
+	loc := ship.CurrentLocation()
+	if loc == nil {
+		return ""
+	}
+	return shared.ExtractSystemSymbol(loc.Symbol)
 }

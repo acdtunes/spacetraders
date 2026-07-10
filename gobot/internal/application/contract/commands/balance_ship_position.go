@@ -162,7 +162,7 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 	}
 
 	// Ships with active assignments (including other ships being balanced) are automatically excluded
-	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo)
+	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to find idle haulers: %w", err)
 	}

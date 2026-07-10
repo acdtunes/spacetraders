@@ -29,6 +29,12 @@ type AssignParams struct {
 	PlayerID           int
 	MaxConcurrentTasks int
 	CoordinatorID      string // Parent container ID for cascade stop support
+	// SystemSymbol is the coordinator's operating system. Manufacturing task
+	// workers never jump cross-system, so the idle-hauler pool is restricted to
+	// hulls currently in this system - an out-of-system hull is unselectable
+	// rather than claimed-then-failed (sp-qr3v, the second claim site). Empty
+	// means no restriction (fleet-wide), preserving legacy callers' behavior.
+	SystemSymbol string
 }
 
 // TaskAssignmentManager implements TaskAssigner using focused services.
@@ -107,10 +113,12 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		return 0, nil
 	}
 
-	// Get idle ships (FindIdleLightHaulers already calls FindAllByPlayer internally)
+	// Get idle ships (FindIdleLightHaulers already calls FindAllByPlayer internally).
+	// sp-qr3v: restricted to the coordinator's own system so an out-of-system hull
+	// is never assigned to a manufacturing task worker that cannot navigate it home.
 	playerID := shared.MustNewPlayerID(params.PlayerID)
 	idleShipsList, _, err := contract.FindIdleLightHaulers(
-		ctx, playerID, m.shipRepo,
+		ctx, playerID, m.shipRepo, params.SystemSymbol,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find idle ships: %w", err)
