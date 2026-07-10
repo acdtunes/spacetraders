@@ -254,6 +254,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
 		// One-shot ship operations (sp-7yej invariant 4): these were created by
 		// container_ops_ship.go but never registered, so a daemon restart
 		// mid-operation marked them FAILED ("unknown command type") and dropped
@@ -509,5 +510,27 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 		MaxSpend:              cfg.OptionalInt("max_spend", 0),
 		MinMargin:             cfg.OptionalInt("min_margin", 0),
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
+	}
+}
+
+// buildTourCoordinatorCommand rebuilds the one-shot guarded tour command (sp-1ek0) from
+// a persisted launch config so restart recovery can resume a RUNNING tour_run container.
+// ContainerID comes from the recovery-supplied containerID (the persisted row's ID),
+// mirroring arb_run/trade_route so the operation context and the runner's ship claim stay
+// pinned across a restart. ship_symbol is required; the guard knobs default to 0 (the
+// coordinator's own "0 → default" semantics: max_hops→6, max_spend→25% of treasury,
+// replan_limit→2, working_capital_reserve→50k). A restart re-plans from current
+// position/cargo, so recovery is cargo-aware, never a blind re-buy.
+func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunTourCoordinatorCommand{
+		ShipSymbol:            cfg.RequiredString("ship_symbol"),
+		PlayerID:              playerID,
+		ContainerID:           containerID,
+		AgentSymbol:           cfg.OptionalString("agent_symbol"),
+		MaxHops:               cfg.OptionalInt("max_hops", 0),
+		MaxSpend:              int64(cfg.OptionalInt("max_spend", 0)),
+		MinMargin:             cfg.OptionalInt("min_margin", 0),
+		ReplanLimit:           cfg.OptionalInt("replan_limit", 0),
+		WorkingCapitalReserve: int64(cfg.OptionalInt("working_capital_reserve", 0)),
 	}
 }

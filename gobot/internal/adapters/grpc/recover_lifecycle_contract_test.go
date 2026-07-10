@@ -211,7 +211,7 @@ func TestEveryPersistedCommandTypeIsRegistered(t *testing.T) {
 		// coordinators / one-shots
 		"scout_tour", "contract_workflow", "contract_fleet_coordinator",
 		"purchase_ship", "batch_purchase_ships", "goods_factory_coordinator",
-		"manufacturing_coordinator", "gas_coordinator", "trade_route", "arb_run",
+		"manufacturing_coordinator", "gas_coordinator", "trade_route", "arb_run", "tour_run",
 		"navigate_ship", "dock_ship", "orbit_ship", "refuel_ship",
 		"jettison_cargo", "scout_fleet_assignment",
 		// workers (recovered via their coordinator, never standalone)

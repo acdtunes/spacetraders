@@ -512,6 +512,40 @@ func (GateEdgeModel) TableName() string {
 	return "gate_edges"
 }
 
+// TourLegTelemetryModel is one planned-vs-realized record for a single trade at a
+// single leg of a multi-hop trade tour (sp-1ek0 P1b). The tour_run executor writes
+// one row per executed (or explicitly skipped) trade: the planner's projection
+// (PlannedUnits/PlannedUnitPrice, PlannedAt) alongside what the market actually gave
+// (RealizedUnits/RealizedUnitPrice, RealizedAt). These rows feed the graduation-gate
+// report (median |planned−realized|/planned price error — the gate metric that proves
+// the model, not just profit) and future model recalibration.
+//
+// Follows the SpendReservationModel idiom: NO players foreign key. player_id is a
+// plain indexed column the report scopes its reads to; tour_id (the container id)
+// groups a tour's legs. Rows are durable history (unlike the ephemeral spend
+// reservations) but referential integrity to players buys nothing here and a hard FK
+// would only add fixture friction to the executor tests that write these rows.
+type TourLegTelemetryModel struct {
+	ID                uint      `gorm:"column:id;primaryKey;autoIncrement"`
+	TourID            string    `gorm:"column:tour_id;not null;index:idx_tour_leg_telemetry_tour"`
+	ShipSymbol        string    `gorm:"column:ship_symbol;not null"`
+	LegIndex          int       `gorm:"column:leg_index;not null"`
+	Waypoint          string    `gorm:"column:waypoint;not null"`
+	Good              string    `gorm:"column:good;not null"`
+	IsBuy             bool      `gorm:"column:is_buy"`
+	PlannedUnits      int       `gorm:"column:planned_units"`
+	RealizedUnits     int       `gorm:"column:realized_units"`
+	PlannedUnitPrice  int       `gorm:"column:planned_unit_price"`
+	RealizedUnitPrice int       `gorm:"column:realized_unit_price"`
+	PlannedAt         time.Time `gorm:"column:planned_at"`
+	RealizedAt        time.Time `gorm:"column:realized_at"`
+	PlayerID          int       `gorm:"column:player_id;not null;index:idx_tour_leg_telemetry_player"`
+}
+
+func (TourLegTelemetryModel) TableName() string {
+	return "tour_leg_telemetry"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -539,5 +573,6 @@ func AllModels() []any {
 		&EraModel{},
 		&SpendReservationModel{},
 		&GateEdgeModel{},
+		&TourLegTelemetryModel{},
 	}
 }

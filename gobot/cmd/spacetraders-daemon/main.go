@@ -573,6 +573,22 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
 	}
 
+	// Tour-run coordinator (sp-1ek0): a one-shot, captain-directed, guarded multi-hop
+	// trade tour. Wired with the same ports as arb/trade-route (so its buy/sell/navigate
+	// legs resolve to the identical RouteExecutor-backed daemon handlers, and it inherits
+	// the shared gate graph for multi-jump travel) PLUS the depth-aware planner
+	// (routingClient), the era-scoped waypoint repository (real travel-time coordinates),
+	// and the tour telemetry repository (planned-vs-realized for the graduation report).
+	// DaemonServer.StartTourRun launches the container.
+	tourCoordinatorHandler := tradeRouteCmd.NewRunTourCoordinatorHandler(
+		med, shipRepo, marketRepo, waypointRepo, persistence.NewTourTelemetryRepository(db),
+		routingClient, marketScanner, nil, apiClient,
+	)
+	tourCoordinatorHandler.SetGateGraph(gateGraphService)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
+	}
+
 	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)
 	// NOTE: Storage coordinator is created below (after manufacturing setup) and passed here.
 	// We'll register these handlers after storage coordinator is created.

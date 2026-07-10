@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"google.golang.org/grpc"
@@ -283,4 +284,126 @@ func convertRouteStepsFromPb(pbSteps []*pb.RouteStep) []*domainRouting.RouteStep
 		}
 	}
 	return steps
+}
+
+// OptimizeTradeTour implements RoutingClient.OptimizeTradeTour (sp-1ek0). It
+// marshals the request-carried snapshot + waypoint coordinates + ship + constraints
+// into the proto request, calls the stateless Python planner, and converts the
+// response into a domain TourPlan. A transport error surfaces as an error; an
+// infeasible plan comes back as a TourPlan with Feasible=false and a structured
+// reason — the executor decides fail-open from that reason, never from a transport
+// error (a planner that is down is a different failure than one that says "no tour").
+func (c *GRPCRoutingClient) OptimizeTradeTour(
+	ctx context.Context,
+	snapshot []domainRouting.TourGoodSnapshot,
+	waypoints []domainRouting.TourWaypoint,
+	ship domainRouting.TourShipState,
+	cons domainRouting.TourConstraints,
+) (*domainRouting.TourPlan, error) {
+	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons))
+	if err != nil {
+		return nil, fmt.Errorf("gRPC OptimizeTradeTour failed: %w", err)
+	}
+	return tourPlanFromPb(pbResp), nil
+}
+
+// buildTourRequest converts the domain inputs into the proto request. Cargo is
+// emitted in a deterministic good-symbol order so request payloads (and their
+// logs) are reproducible regardless of Go map iteration order.
+func buildTourRequest(
+	snapshot []domainRouting.TourGoodSnapshot,
+	waypoints []domainRouting.TourWaypoint,
+	ship domainRouting.TourShipState,
+	cons domainRouting.TourConstraints,
+) *pb.OptimizeTradeTourRequest {
+	pbSnapshot := make([]*pb.MarketGoodSnapshot, len(snapshot))
+	for i, s := range snapshot {
+		pbSnapshot[i] = &pb.MarketGoodSnapshot{
+			WaypointSymbol: s.Waypoint,
+			SystemSymbol:   s.System,
+			GoodSymbol:     s.Good,
+			Ask:            int32(s.Ask),
+			Bid:            int32(s.Bid),
+			TradeVolume:    int32(s.TradeVolume),
+			Supply:         s.Supply,
+			Activity:       s.Activity,
+			ObservedAtUnix: s.ObservedAt.Unix(),
+		}
+	}
+	pbWaypoints := make([]*pb.TourWaypoint, len(waypoints))
+	for i, w := range waypoints {
+		pbWaypoints[i] = &pb.TourWaypoint{
+			Symbol:       w.Symbol,
+			SystemSymbol: w.System,
+			X:            int32(w.X),
+			Y:            int32(w.Y),
+		}
+	}
+	pbCargo := make([]*pb.TourCargoItem, 0, len(ship.Cargo))
+	for good, units := range ship.Cargo {
+		pbCargo = append(pbCargo, &pb.TourCargoItem{GoodSymbol: good, Units: int32(units)})
+	}
+	sort.Slice(pbCargo, func(i, j int) bool { return pbCargo[i].GoodSymbol < pbCargo[j].GoodSymbol })
+
+	return &pb.OptimizeTradeTourRequest{
+		Snapshot: pbSnapshot,
+		Ship: &pb.TourShip{
+			ShipSymbol:      ship.ShipSymbol,
+			CurrentWaypoint: ship.CurrentWaypoint,
+			CurrentSystem:   ship.CurrentSystem,
+			HoldCapacity:    int32(ship.HoldCapacity),
+			FuelCurrent:     int32(ship.FuelCurrent),
+			FuelCapacity:    int32(ship.FuelCapacity),
+			EngineSpeed:     int32(ship.EngineSpeed),
+			Cargo:           pbCargo,
+		},
+		Constraints: &pb.TourConstraints{
+			MaxHops:               int32(cons.MaxHops),
+			MaxSpend:              cons.MaxSpend,
+			MinMarginPerUnit:      int32(cons.MinMarginPerUnit),
+			WorkingCapitalReserve: cons.WorkingCapitalReserve,
+			AllowedSystems:        cons.AllowedSystems,
+			MaxSnapshotAgeMinutes: int32(cons.MaxSnapshotAgeMinutes),
+			ExpectedModelVersion:  cons.ExpectedModelVersion,
+		},
+		Waypoints: pbWaypoints,
+	}
+}
+
+// tourPlanFromPb converts the proto response into a domain TourPlan, flattening
+// each RejectedTour into a single "<summary> — <reason>" line (observability
+// parity with the lane-selection log).
+func tourPlanFromPb(resp *pb.OptimizeTradeTourResponse) *domainRouting.TourPlan {
+	plan := &domainRouting.TourPlan{
+		Feasible:                resp.GetFeasible(),
+		InfeasibleReason:        resp.GetInfeasibleReason(),
+		ProjectedProfit:         resp.GetProjectedProfit(),
+		ProjectedCreditsPerHour: resp.GetProjectedCreditsPerHour(),
+		ModelVersion:            resp.GetModelVersion(),
+	}
+	for _, leg := range resp.GetLegs() {
+		domainLeg := domainRouting.TourLeg{
+			Waypoint:              leg.GetWaypointSymbol(),
+			System:                leg.GetSystemSymbol(),
+			ProjectedLegProfit:    leg.GetProjectedLegProfit(),
+			TravelSecondsFromPrev: int(leg.GetTravelSecondsFromPrev()),
+		}
+		for _, tr := range leg.GetTrades() {
+			domainLeg.Trades = append(domainLeg.Trades, domainRouting.TourTrade{
+				Good:              tr.GetGoodSymbol(),
+				Units:             int(tr.GetUnits()),
+				ExpectedUnitPrice: int(tr.GetExpectedUnitPrice()),
+				IsBuy:             tr.GetIsBuy(),
+			})
+		}
+		plan.Legs = append(plan.Legs, domainLeg)
+	}
+	for _, r := range resp.GetTopRejected() {
+		summary := r.GetSummary()
+		if reason := r.GetReason(); reason != "" {
+			summary = fmt.Sprintf("%s — %s", summary, reason)
+		}
+		plan.TopRejected = append(plan.TopRejected, summary)
+	}
+	return plan
 }

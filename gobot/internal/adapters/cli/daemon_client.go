@@ -953,6 +953,50 @@ type StartArbRunResult struct {
 	Message     string
 }
 
+type StartTourRunResult struct {
+	ContainerID string
+	ShipSymbol  string
+	Status      string
+	Message     string
+}
+
+// StartTourRun asks the daemon to launch a one-shot, captain-directed, guarded multi-hop
+// trade tour as a recovery-safe container (sp-1ek0). maxHops/maxSpend/minMargin/replanLimit/
+// workingCapitalReserve are optional: pass nil to leave each unset (the coordinator's own
+// default semantics apply — max_hops→6, max_spend→25% of treasury, replan_limit→2).
+func (c *DaemonClient) StartTourRun(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+	agentSymbol *string,
+	maxHops *int32,
+	maxSpend *int64,
+	minMargin *int32,
+	replanLimit *int32,
+	workingCapitalReserve *int64,
+) (*StartTourRunResult, error) {
+	resp, err := c.client.StartTourRun(ctx, &pb.StartTourRunRequest{
+		PlayerId:              int32(playerID),
+		ShipSymbol:            shipSymbol,
+		AgentSymbol:           agentSymbol,
+		MaxHops:               maxHops,
+		MaxSpend:              maxSpend,
+		MinMargin:             minMargin,
+		ReplanLimit:           replanLimit,
+		WorkingCapitalReserve: workingCapitalReserve,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StartTourRunResult{
+		ContainerID: resp.ContainerId,
+		ShipSymbol:  resp.ShipSymbol,
+		Status:      resp.Status,
+		Message:     resp.Message,
+	}, nil
+}
+
 // StartArbRun asks the daemon to launch a one-shot, captain-directed, guarded arbitrage
 // run as a recovery-safe container (sp-p4ua). maxUnits/maxSpend/minMargin/workingCapitalReserve
 // are optional guards: pass nil to leave each unset (the coordinator's own default/disabled

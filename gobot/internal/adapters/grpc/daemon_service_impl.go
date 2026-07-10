@@ -958,6 +958,53 @@ func (s *daemonServiceImpl) StartArbRun(ctx context.Context, req *pb.StartArbRun
 	}, nil
 }
 
+func (s *daemonServiceImpl) StartTourRun(ctx context.Context, req *pb.StartTourRunRequest) (*pb.StartTourRunResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+	if req.ShipSymbol == "" {
+		return nil, fmt.Errorf("ship_symbol is required")
+	}
+
+	maxHops := 0
+	if req.MaxHops != nil {
+		maxHops = int(*req.MaxHops)
+	}
+	var maxSpend int64
+	if req.MaxSpend != nil {
+		maxSpend = *req.MaxSpend
+	}
+	minMargin := 0
+	if req.MinMargin != nil {
+		minMargin = int(*req.MinMargin)
+	}
+	replanLimit := 0
+	if req.ReplanLimit != nil {
+		replanLimit = int(*req.ReplanLimit)
+	}
+	var workingCapitalReserve int64
+	if req.WorkingCapitalReserve != nil {
+		workingCapitalReserve = *req.WorkingCapitalReserve
+	}
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, agentSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start tour-run: %w", err)
+	}
+
+	return &pb.StartTourRunResponse{
+		ContainerId: result.ContainerID,
+		ShipSymbol:  result.ShipSymbol,
+		Status:      "RUNNING",
+		Message:     fmt.Sprintf("Tour-run started for %s", req.ShipSymbol),
+	}, nil
+}
+
 // StopGoodsFactory implements the StopGoodsFactory RPC
 func (s *daemonServiceImpl) StopGoodsFactory(ctx context.Context, req *pb.StopGoodsFactoryRequest) (*pb.StopGoodsFactoryResponse, error) {
 	// Resolve player ID

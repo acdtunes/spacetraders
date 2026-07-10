@@ -12,6 +12,12 @@ type RoutingClient interface {
 	OptimizeTour(ctx context.Context, request *TourRequest) (*TourResponse, error)
 	OptimizeFueledTour(ctx context.Context, request *FueledTourRequest) (*FueledTourResponse, error)
 	PartitionFleet(ctx context.Context, request *VRPRequest) (*VRPResponse, error)
+	// OptimizeTradeTour plans a depth-aware multi-hop trade tour over the fitted
+	// market model (sp-1ek0). snapshot carries per-(waypoint,good) prices; waypoints
+	// carries coordinates so the planner prices travel time for real (empty → flat
+	// defaults). Returns a TourPlan whose Feasible=false carries a structured reason
+	// so the executor can fail open to single-lane trading.
+	OptimizeTradeTour(ctx context.Context, snapshot []TourGoodSnapshot, waypoints []TourWaypoint, ship TourShipState, cons TourConstraints) (*TourPlan, error)
 }
 
 // DTOs for routing operations

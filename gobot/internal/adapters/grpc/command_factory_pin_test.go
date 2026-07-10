@@ -292,6 +292,51 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				MaxVisits:    0,
 			},
 		},
+		{
+			// sp-1ek0: a RUNNING tour_run container must rebuild from its launch config
+			// on restart (invariant 4) so the tour resumes (cargo-aware re-plan from
+			// current state) instead of orphaning the hull. ContainerID comes from the
+			// recovery-supplied param; the guard knobs round-trip through their config keys.
+			name:        "tour_run",
+			commandType: "tour_run",
+			containerID: "tour-1",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":             "SHIP-A",
+				"container_id":            "tour-1",
+				"agent_symbol":            "TORWIND",
+				"max_hops":                4,
+				"max_spend":               300000,
+				"min_margin":              5,
+				"replan_limit":            2,
+				"working_capital_reserve": 60000,
+			},
+			want: &tradingCmd.RunTourCoordinatorCommand{
+				ShipSymbol:            "SHIP-A",
+				PlayerID:              playerID,
+				ContainerID:           "tour-1",
+				AgentSymbol:           "TORWIND",
+				MaxHops:               4,
+				MaxSpend:              300000,
+				MinMargin:             5,
+				ReplanLimit:           2,
+				WorkingCapitalReserve: 60000,
+			},
+		},
+		{
+			// Bare config → the coordinator's own "0 → default" semantics per knob.
+			name:        "tour_run defaults",
+			commandType: "tour_run",
+			containerID: "tour-2",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":  "SHIP-B",
+				"container_id": "tour-2",
+			},
+			want: &tradingCmd.RunTourCoordinatorCommand{
+				ShipSymbol:  "SHIP-B",
+				PlayerID:    playerID,
+				ContainerID: "tour-2",
+			},
+		},
 	}
 
 	for _, tc := range cases {

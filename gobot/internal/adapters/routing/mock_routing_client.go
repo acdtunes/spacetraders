@@ -10,7 +10,13 @@ import (
 
 // MockRoutingClient provides simple routing for testing (no OR-Tools required)
 // This is a POC implementation that returns basic routes without sophisticated optimization
-type MockRoutingClient struct{}
+type MockRoutingClient struct {
+	// CannedTourPlan, if set, is returned verbatim by OptimizeTradeTour; TourErr, if
+	// set, is returned instead (transport-failure simulation). Both zero → a benign
+	// infeasible plan, so a default-constructed mock never fabricates a tour.
+	CannedTourPlan *domainRouting.TourPlan
+	TourErr        error
+}
 
 // NewMockRoutingClient creates a new mock routing client
 func NewMockRoutingClient() *MockRoutingClient {
@@ -169,6 +175,24 @@ func (c *MockRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 	return &domainRouting.VRPResponse{
 		Assignments: assignments,
 	}, nil
+}
+
+// OptimizeTradeTour returns the configured canned plan (or error), or a benign
+// infeasible plan when neither is set — the mock never fabricates a tour.
+func (c *MockRoutingClient) OptimizeTradeTour(
+	ctx context.Context,
+	snapshot []domainRouting.TourGoodSnapshot,
+	waypoints []domainRouting.TourWaypoint,
+	ship domainRouting.TourShipState,
+	cons domainRouting.TourConstraints,
+) (*domainRouting.TourPlan, error) {
+	if c.TourErr != nil {
+		return nil, c.TourErr
+	}
+	if c.CannedTourPlan != nil {
+		return c.CannedTourPlan, nil
+	}
+	return &domainRouting.TourPlan{Feasible: false, InfeasibleReason: "mock: no canned tour plan configured"}, nil
 }
 
 // Helper functions

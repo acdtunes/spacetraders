@@ -72,6 +72,7 @@ Examples:
 	rootCmd.AddCommand(NewConstructionCommand())
 	rootCmd.AddCommand(NewUniverseCommand())
 	rootCmd.AddCommand(NewHistoryCommand())
+	rootCmd.AddCommand(NewTourCommand())
 	rootCmd.AddCommand(NewVersionCommand())
 
 	return rootCmd

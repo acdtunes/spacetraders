@@ -132,6 +132,11 @@ service DaemonService {
   // buy a named good at a source waypoint, route (cross-gate) to a destination, sell once, stop.
   rpc StartArbRun(StartArbRunRequest) returns (StartArbRunResponse);
 
+  // StartTourRun launches a ONE-SHOT, captain-directed, guarded multi-hop trade tour
+  // (sp-1ek0): plan a depth-aware tour for one idle hull, fly it leg by leg with prices
+  // re-verified live, re-plan on drift, and stop.
+  rpc StartTourRun(StartTourRunRequest) returns (StartTourRunResponse);
+
   // StartConstructionPipeline starts a pipeline to supply materials to a construction site
   rpc StartConstructionPipeline(StartConstructionPipelineRequest) returns (StartConstructionPipelineResponse);
 
@@ -910,6 +915,27 @@ message StartArbRunResponse {
   string sell_at = 5;
   string status = 6;
   string message = 7;
+}
+
+// StartTourRunRequest starts a one-shot, captain-directed, guarded multi-hop trade
+// tour (sp-1ek0): fly ONE idle hull through a planner-chosen tour, guarded. All caps
+// and floors are optional (0/unset = coordinator default).
+message StartTourRunRequest {
+  int32 player_id = 1;
+  string ship_symbol = 2;                      // Idle hull to fly the tour
+  optional string agent_symbol = 3;
+  optional int32 max_hops = 4;                 // 0/unset = planner default (6)
+  optional int64 max_spend = 5;                // 0/unset = 25% of live treasury at launch
+  optional int32 min_margin = 6;               // Per-unit margin floor passed to the planner
+  optional int32 replan_limit = 7;             // 0/unset = coordinator default (2)
+  optional int64 working_capital_reserve = 8;  // Hard spend floor (0/unset = coordinator default)
+}
+
+message StartTourRunResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string status = 3;
+  string message = 4;
 }
 
 // GasExtractionOperationRequest starts a gas extraction operation with siphon and transport ships
