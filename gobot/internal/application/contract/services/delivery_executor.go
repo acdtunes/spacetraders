@@ -106,7 +106,21 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 	return contract, nil
 }
 
-// ProcessSingleDelivery processes a single delivery item
+// ProcessSingleDelivery sources and delivers ONE contract good to completion.
+//
+// The cargo hold is finite, so a good whose requirement exceeds one hold takes
+// several source->deliver trips. This loops that leg — buy a load, deliver it,
+// re-read the good's registration from the deliver RESPONSE, repeat — until the
+// good is fully registered. Before sp-2ei3 this ran the leg exactly once and
+// returned a partial contract; RunWorkflowHandler then fulfilled that partial
+// state and crashed on "deliveries not complete", and the coordinator's
+// crash-respawn re-entered with the same wrong assumption — the livelock.
+//
+// It stops short of completion in exactly two honest, never-a-skip ways: a
+// ladder-cap sourcing halt (deliver what's aboard, park the runaway remainder
+// for the coordinator's defer gate to re-project) and a no-progress pass (the
+// remainder can't be sourced/delivered right now — park rather than spin). Both
+// return a partial contract; the caller's fulfill guard leaves it unfulfilled.
 func (e *DeliveryExecutor) ProcessSingleDelivery(
 	ctx context.Context,
 	shipSymbol string,
@@ -117,62 +131,131 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 	result *RunWorkflowResponse,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*domainContract.Contract, error) {
-	ship, currentUnits, err := e.cargoManager.ReloadShipState(ctx, shipSymbol, playerID, delivery.TradeSymbol)
-	if err != nil {
-		return nil, err
-	}
+	logger := common.LoggerFromContext(ctx)
 
-	unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
-	ship, currentUnits, err = e.cargoManager.JettisonWrongCargoIfNeeded(ctx, ship, delivery.TradeSymbol, currentUnits, unitsRemaining, playerID)
-	if err != nil {
-		return nil, err
-	}
+	// currentDelivery holds the good's live delivered/required. It starts from
+	// what the coordinator handed us and is re-read from each deliver response
+	// (the authoritative in-band contract state), so every completion/progress
+	// test below runs on truth, not a cached "delivered" belief.
+	currentDelivery := delivery
 
-	unitsToPurchase := e.cargoManager.CalculatePurchaseNeeds(ctx, shipSymbol, delivery.TradeSymbol, unitsRemaining, currentUnits)
+	for {
+		unitsRemaining := currentDelivery.UnitsRequired - currentDelivery.UnitsFulfilled
+		if unitsRemaining <= 0 {
+			return contract, nil
+		}
 
-	if unitsToPurchase > 0 {
-		profitResult, err := profitabilityResultOrErr(profitabilityResp, delivery.TradeSymbol)
+		ship, currentUnits, err := e.cargoManager.ReloadShipState(ctx, shipSymbol, playerID, currentDelivery.TradeSymbol)
 		if err != nil {
 			return nil, err
 		}
-		// The evaluation's cached ask for this good is the basis the sourcing
-		// defer gate projected against; the purchase loop's ladder cap
-		// (sp-1z2h) stops buying when realized prices run away from it.
-		projectedUnitAsk := profitResult.MarketPrices[delivery.TradeSymbol]
-		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, projectedUnitAsk, result, opContext)
+
+		ship, currentUnits, err = e.cargoManager.JettisonWrongCargoIfNeeded(ctx, ship, currentDelivery.TradeSymbol, currentUnits, unitsRemaining, playerID)
 		if err != nil {
-			// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
-			// state, not a bug. Enrich the sentinel with the numbers an
-			// operator needs and log ONCE at WARNING before returning it
-			// unchanged - RunWorkflowHandler.Handle converts this into a
-			// clean (nil-error) exit so the container doesn't crashloop.
-			// The dynamic-discovery fleet coordinator re-picks-up this
-			// contract on its next pass, which is the resume mechanism.
-			var insufficientErr *ErrInsufficientCredits
-			if errors.As(err, &insufficientErr) {
-				insufficientErr.CreditsNeeded = profitResult.PurchaseCost
-				insufficientErr.CreditsAvailable = e.lookupLiveCredits(ctx, playerID)
-				logger := common.LoggerFromContext(ctx)
-				logger.Log("WARNING", insufficientErr.Error(), map[string]interface{}{
-					"ship_symbol":       shipSymbol,
-					"action":            "parked",
-					"reason":            "insufficient_credits",
-					"trade_symbol":      delivery.TradeSymbol,
-					"units_attempted":   insufficientErr.UnitsAttempted,
-					"credits_needed":    insufficientErr.CreditsNeeded,
-					"credits_available": insufficientErr.CreditsAvailable,
-				})
+			return nil, err
+		}
+
+		unitsToPurchase := e.cargoManager.CalculatePurchaseNeeds(ctx, shipSymbol, currentDelivery.TradeSymbol, unitsRemaining, currentUnits)
+
+		sourcingHalted := false
+		if unitsToPurchase > 0 {
+			profitResult, err := profitabilityResultOrErr(profitabilityResp, currentDelivery.TradeSymbol)
+			if err != nil {
+				return nil, err
 			}
+			// The evaluation's cached ask for this good is the basis the sourcing
+			// defer gate projected against; the purchase loop's ladder cap
+			// (sp-1z2h) stops buying when realized prices run away from it.
+			projectedUnitAsk := profitResult.MarketPrices[currentDelivery.TradeSymbol]
+			ship, sourcingHalted, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, currentDelivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, projectedUnitAsk, result, opContext)
+			if err != nil {
+				// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
+				// state, not a bug. Enrich the sentinel with the numbers an
+				// operator needs and log ONCE at WARNING before returning it
+				// unchanged - RunWorkflowHandler.Handle converts this into a
+				// clean (nil-error) exit so the container doesn't crashloop.
+				// The dynamic-discovery fleet coordinator re-picks-up this
+				// contract on its next pass, which is the resume mechanism.
+				var insufficientErr *ErrInsufficientCredits
+				if errors.As(err, &insufficientErr) {
+					insufficientErr.CreditsNeeded = profitResult.PurchaseCost
+					insufficientErr.CreditsAvailable = e.lookupLiveCredits(ctx, playerID)
+					logger.Log("WARNING", insufficientErr.Error(), map[string]interface{}{
+						"ship_symbol":       shipSymbol,
+						"action":            "parked",
+						"reason":            "insufficient_credits",
+						"trade_symbol":      currentDelivery.TradeSymbol,
+						"units_attempted":   insufficientErr.UnitsAttempted,
+						"credits_needed":    insufficientErr.CreditsNeeded,
+						"credits_available": insufficientErr.CreditsAvailable,
+					})
+				}
+				return nil, err
+			}
+		}
+
+		fulfilledBefore := currentDelivery.UnitsFulfilled
+
+		contract, err = e.DeliverContractCargo(ctx, shipSymbol, playerID, contract, ship, currentDelivery)
+		if err != nil {
 			return nil, err
 		}
-	}
 
-	contract, err = e.DeliverContractCargo(ctx, shipSymbol, playerID, contract, ship, delivery)
-	if err != nil {
-		return nil, err
-	}
+		// Re-read the good's registration from the deliver response (the loop's
+		// source of truth). A nil contract only happens in unit fakes that skip
+		// the deliver; the progress guard below then parks the iteration.
+		if contract != nil {
+			if updated, ok := findDelivery(contract, currentDelivery.TradeSymbol); ok {
+				currentDelivery = updated
+			}
+		}
 
-	return contract, nil
+		if currentDelivery.UnitsFulfilled >= currentDelivery.UnitsRequired {
+			return contract, nil
+		}
+
+		if sourcingHalted {
+			// The ladder cap already WARNING-logged the runaway ask and the
+			// unsourced remainder. Deliver-what's-aboard has run; park the
+			// remainder for the coordinator's defer gate rather than looping
+			// and re-laddering the same ask (never a skip).
+			logger.Log("INFO", "Delivery leg parked partial after ladder-cap sourcing halt; remainder re-projects next coordinator pass", map[string]interface{}{
+				"ship_symbol":     shipSymbol,
+				"action":          "delivery_leg_sourcing_halt_park",
+				"trade_symbol":    currentDelivery.TradeSymbol,
+				"units_fulfilled": currentDelivery.UnitsFulfilled,
+				"units_required":  currentDelivery.UnitsRequired,
+			})
+			return contract, nil
+		}
+
+		if currentDelivery.UnitsFulfilled == fulfilledBefore {
+			// No forward progress this pass — the remainder could not be
+			// sourced/delivered now. Park honestly for coordinator re-projection
+			// rather than spin (never a skip).
+			logger.Log("INFO", "Delivery leg made no progress this pass; parking for coordinator re-projection", map[string]interface{}{
+				"ship_symbol":     shipSymbol,
+				"action":          "delivery_leg_no_progress_park",
+				"trade_symbol":    currentDelivery.TradeSymbol,
+				"units_fulfilled": currentDelivery.UnitsFulfilled,
+				"units_required":  currentDelivery.UnitsRequired,
+			})
+			return contract, nil
+		}
+		// Forward progress but still partial — loop for the next cargo-load.
+	}
+}
+
+// findDelivery returns the contract's live Delivery for the given good and
+// whether it was found. The delivery leg uses it to re-read delivered/required
+// straight off the deliver response after each trip.
+func findDelivery(contract *domainContract.Contract, tradeSymbol string) (domainContract.Delivery, bool) {
+	for _, d := range contract.Terms().Deliveries {
+		if d.TradeSymbol == tradeSymbol {
+			return d, true
+		}
+	}
+	return domainContract.Delivery{}, false
 }
 
 // lookupLiveCredits fetches a fresh treasury snapshot for the WARNING log
@@ -214,7 +297,7 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	projectedUnitAsk int,
 	result *RunWorkflowResponse,
 	opContext *shared.OperationContext, // Operation context for transaction linking
-) (*navigation.Ship, error) {
+) (*navigation.Ship, bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	logger.Log("INFO", "Cheapest market identified", map[string]interface{}{
@@ -233,25 +316,32 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 		"trade_symbol": tradeSymbol,
 	})
 
+	// sourcingHalted propagates a ladder-cap decision (stop buying a runaway
+	// ask) up to the delivery leg so it parks the remainder instead of looping
+	// and re-laddering. A full hold ends this loop without setting it.
+	sourcingHalted := false
 	for trip := 0; trip < trips; trip++ {
-		var shouldBreak bool
+		var stop bool
 		var err error
-		ship, unitsToPurchase, shouldBreak, err = e.executeSinglePurchaseTrip(ctx, shipSymbol, playerID, ship, tradeSymbol, cheapestMarket, unitsToPurchase, projectedUnitAsk, opContext)
+		ship, unitsToPurchase, stop, sourcingHalted, err = e.executeSinglePurchaseTrip(ctx, shipSymbol, playerID, ship, tradeSymbol, cheapestMarket, unitsToPurchase, projectedUnitAsk, opContext)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if shouldBreak {
+		if stop {
 			break
 		}
 	}
 
-	return ship, nil
+	return ship, sourcingHalted, nil
 }
 
-// executeSinglePurchaseTrip executes a single purchase trip. A trip whose
-// realized per-unit price breaches the ladder cap (see ExecutePurchaseLoop)
-// keeps its tranche — the cargo is aboard and will be delivered — but signals
-// the loop to stop buying more.
+// executeSinglePurchaseTrip executes a single purchase trip. It returns two
+// distinct stop signals: `stop` ends the trips loop for ANY reason (a full hold
+// or a ladder breach), while `sourcingHalted` is set ONLY by a ladder breach —
+// a deliberate decision to stop feeding a runaway ask, which the delivery leg
+// must honor by delivering what's aboard and parking the remainder rather than
+// looping and re-laddering the same ask. A full hold (`stop` without
+// `sourcingHalted`) is normal: it just means "go deliver, then come back".
 func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 	ctx context.Context,
 	shipSymbol string,
@@ -262,7 +352,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 	unitsToPurchase int,
 	projectedUnitAsk int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
-) (*navigation.Ship, int, bool, error) {
+) (*navigation.Ship, int, bool, bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
@@ -274,13 +364,13 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 			"action":      "purchase_loop_ended",
 			"reason":      "no_cargo_space",
 		})
-		return ship, unitsToPurchase, true, nil
+		return ship, unitsToPurchase, true, false, nil
 	}
 
 	var err error
 	ship, err = e.navigateAndDock(ctx, shipSymbol, cheapestMarket, playerID)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("failed to navigate to market: %w", err)
+		return nil, 0, false, false, fmt.Errorf("failed to navigate to market: %w", err)
 	}
 
 	purchaseCmd := &shipCargo.PurchaseCargoCommand{
@@ -293,22 +383,22 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
 	if err != nil {
 		if IsInsufficientCreditsError(err) {
-			return nil, 0, false, &ErrInsufficientCredits{
+			return nil, 0, false, false, &ErrInsufficientCredits{
 				ShipSymbol:     shipSymbol,
 				TradeSymbol:    tradeSymbol,
 				UnitsAttempted: unitsThisTrip,
 				Cause:          err,
 			}
 		}
-		return nil, 0, false, fmt.Errorf("failed to purchase cargo: %w", err)
+		return nil, 0, false, false, fmt.Errorf("failed to purchase cargo: %w", err)
 	}
 
 	unitsToPurchase -= unitsThisTrip
 
 	// SOURCING LADDER CAP (sp-1z2h): stop feeding an ask that has run away
 	// from the projected basis. The tranche just bought stays aboard and gets
-	// delivered; only FURTHER buying stops (shouldBreak) — the remainder
-	// re-gates through the coordinator's defer projection at live prices.
+	// delivered; only FURTHER buying stops — the remainder re-gates through the
+	// coordinator's defer projection at live prices.
 	ladderBreached, realizedPerUnit := sourcingLadderBreached(purchaseResp, projectedUnitAsk)
 	if ladderBreached {
 		logger.Log("WARNING", fmt.Sprintf(
@@ -316,22 +406,22 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 			realizedPerUnit, appContract.SourcingLadderCapNumer, appContract.SourcingLadderCapDenom,
 			projectedUnitAsk, tradeSymbol, cheapestMarket, unitsToPurchase,
 		), map[string]interface{}{
-			"ship_symbol":      shipSymbol,
-			"action":           "sourcing_ladder_cap",
-			"trade_symbol":     tradeSymbol,
-			"market":           cheapestMarket,
+			"ship_symbol":       shipSymbol,
+			"action":            "sourcing_ladder_cap",
+			"trade_symbol":      tradeSymbol,
+			"market":            cheapestMarket,
 			"realized_per_unit": realizedPerUnit,
-			"projected_ask":    projectedUnitAsk,
-			"units_unsourced":  unitsToPurchase,
+			"projected_ask":     projectedUnitAsk,
+			"units_unsourced":   unitsToPurchase,
 		})
 	}
 
 	ship, err = e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("failed to reload ship after purchase: %w", err)
+		return nil, 0, false, false, fmt.Errorf("failed to reload ship after purchase: %w", err)
 	}
 
-	return ship, unitsToPurchase, ladderBreached, nil
+	return ship, unitsToPurchase, ladderBreached, ladderBreached, nil
 }
 
 // sourcingLadderBreached reports whether the trip's realized per-unit price ran

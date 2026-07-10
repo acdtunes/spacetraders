@@ -141,6 +141,26 @@ func (h *RunWorkflowHandler) executeWorkflow(
 		return err
 	}
 
+	// VERIFY before fulfill (sp-2ei3): the delivery leg sources+delivers every
+	// unit it can and re-reads registration from each deliver response, but it
+	// returns an honestly-partial contract when sourcing halts (ladder cap) or
+	// the remainder can't be sourced this pass. Fulfilling that partial state is
+	// the exact "deliveries not complete" crash that livelocked the chain
+	// (worker crash -> coordinator re-cycle -> same partial state -> crash).
+	// Park instead: a clean nil-error exit that leaves the accepted contract for
+	// the coordinator to re-project and finish next pass. Never a skip
+	// (RULING #1) — the contract stays accepted and owed.
+	if !contract.CanFulfill() {
+		msg := fmt.Sprintf("Contract %s deliveries incomplete after sourcing pass; parking for coordinator re-projection (never-skip stands)", contract.ContractID())
+		common.LoggerFromContext(ctx).Log("WARNING", msg, map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "park_incomplete_deliveries",
+			"contract_id": contract.ContractID(),
+		})
+		result.Error = msg
+		return nil
+	}
+
 	if err := h.lifecycleService.FulfillContract(ctx, contract, cmd.PlayerID); err != nil {
 		return err
 	}
