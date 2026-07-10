@@ -599,7 +599,14 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 			break
 		}
 
-		if gasExtractionByproducts[opp.Good] {
+		// Extracted gas that fills the storage buffer must be sold when nothing
+		// consumes it, or siphons stall forever on a full buffer (sp-8yf1). Defer
+		// the sale ONLY to a factory that is actively pulling this gas via
+		// STORAGE_ACQUIRE_DELIVER; otherwise the gas is surplus and gets sold. The
+		// storage reservation layer keeps a concurrent factory pull and this sale
+		// from double-spending the same units, so deferral is a routing preference,
+		// not a safety requirement.
+		if gasExtractionByproducts[opp.Good] && m.gasSaleDeferredToFactory(ctx, opp.Good, params.PlayerID) {
 			continue
 		}
 
@@ -681,6 +688,31 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 	}
 
 	return pipelinesCreated
+}
+
+// gasSaleDeferredToFactory reports whether an extracted gas good is already being
+// pulled from the storage buffer by a factory via an in-flight STORAGE_ACQUIRE_DELIVER
+// task. When true, the storage-collection SELL path defers to that delivery (don't
+// sell gas a factory is consuming). When false, the gas is surplus and may be sold so
+// the buffer drains and siphons resume (sp-8yf1).
+//
+// Fail-open: if the in-flight task set can't be read, the sale is NOT blocked — a
+// dead-ended siphon (gas stuck forever) is worse than a rare competing pull, which the
+// storage reservation layer serializes anyway.
+func (m *PipelineLifecycleManager) gasSaleDeferredToFactory(ctx context.Context, good string, playerID int) bool {
+	if m.taskRepo == nil {
+		return false
+	}
+	tasks, err := m.taskRepo.FindIncomplete(ctx, playerID)
+	if err != nil {
+		return false
+	}
+	for _, t := range tasks {
+		if t.TaskType() == manufacturing.TaskTypeStorageAcquireDeliver && t.Good() == good {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckPipelineCompletion checks if a pipeline is complete and updates status.
