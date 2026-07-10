@@ -41,11 +41,13 @@ func factorySale(t *testing.T, db *gorm.DB, playerID int, id, containerID string
 
 // TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy is the tour-fleet
 // masking case, RED against pre-sp-7vos code: a tour_run container is up but
-// selling nothing, while the trade route beside it keeps TRADING_REVENUE
-// flowing. The aggregate detector stays silent (income exists) and the 'trading'
-// line stays silent (its trade_route income is healthy) — so before the tour
-// line existed, a dead tour fleet produced ZERO income events. It must now stall
-// independently.
+// selling nothing, while a stray trade_route-tagged transaction (no trade_route
+// container backing it — e.g. a route that has since stopped) keeps the
+// aggregate ledger looking healthy. The aggregate detector stays silent (income
+// exists) and the 'trading' line stays silent too, but for a different reason
+// than it looks: no trade_route container is running, so its gate never even
+// activates (sp-lyc3) — so before the tour line existed, a dead tour fleet
+// produced ZERO income events. It must now stall independently.
 func TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()
@@ -57,8 +59,10 @@ func TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy(t *testing.T) {
 		ID: "tour-coord", PlayerID: playerID, Status: "RUNNING",
 		ContainerType: "TRADING", CommandType: "tour_run", StartedAt: &started,
 	}).Error)
-	// Trade route income keeps both the aggregate AND the 'trading' line healthy
-	// (the tour container also satisfies the trading gate on container_type).
+	// Keeps the aggregate looking healthy. The 'trading' line stays silent too,
+	// but because no trade_route container is running (not because this income
+	// makes it "healthy" — sp-lyc3: container_type alone used to satisfy the
+	// trading gate here, which was the bug).
 	require.NoError(t, db.Create(&persistence.TransactionModel{
 		ID: "t-trade", PlayerID: playerID, Timestamp: now.Add(-30 * time.Minute),
 		TransactionType: "SELL_CARGO", Category: "TRADING_REVENUE", OperationType: "trade_route",
@@ -79,8 +83,10 @@ func TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy(t *testing.T) {
 }
 
 // TestDetectEngineIncomeStallSilentForTourWhenSelling verifies tour income
-// counts: with operation_type="tour" revenue flowing, the tour line stays quiet
-// (and the trade_route income keeps the trading line quiet too).
+// counts: with operation_type="tour" revenue flowing, the tour line stays
+// quiet. The stray trade_route-tagged transaction doesn't matter either way —
+// the 'trading' line stays quiet because no trade_route container is running
+// (sp-lyc3), same as the case above.
 func TestDetectEngineIncomeStallSilentForTourWhenSelling(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()

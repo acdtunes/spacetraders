@@ -275,7 +275,7 @@ func TestDetectEngineIncomeStallFiresForContractWhileTradingHealthy(t *testing.T
 	// aggregate (any amount>0 transaction silences the old detector).
 	require.NoError(t, db.Create(&persistence.ContainerModel{
 		ID: "trade-coord", PlayerID: playerID, Status: "RUNNING",
-		ContainerType: "TRADING", StartedAt: &started,
+		ContainerType: "TRADING", CommandType: "trade_route", StartedAt: &started,
 	}).Error)
 	require.NoError(t, db.Create(&persistence.TransactionModel{
 		ID: "t-trade", PlayerID: playerID, Timestamp: now.Add(-30 * time.Minute),

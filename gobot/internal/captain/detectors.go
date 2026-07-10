@@ -452,7 +452,18 @@ type incomeEngine struct {
 
 var incomeEngines = []incomeEngine{
 	{name: "contract", containerType: "CONTRACT_FLEET_COORDINATOR", category: "CONTRACT_REVENUE"},
-	{name: "trading", containerType: "TRADING", category: "TRADING_REVENUE",
+	// trade_route and tour_run containers both persist container_type="TRADING"
+	// (container.ContainerTypeTrading) - only command_type tells them apart.
+	// Before sp-lyc3 this line gated on container_type alone, so once
+	// trade_fleet_coordinator (sp-1278) made tour_run containers the fleet's
+	// permanent steady state, the activity gate below was perpetually satisfied
+	// by tour traffic while the ledger check only ever accepts
+	// operation_type='trade_route' - a healthy, churning tour fleet with zero
+	// real trade-route activity read as "trading engine active, income
+	// stalled" and false-fired every IncomeStallHours window even though the
+	// fleet was earning. commandType pins the gate to genuine trade_route
+	// containers, mirroring the 'tour' line's own disambiguation below.
+	{name: "trading", containerType: "TRADING", commandType: "trade_route", category: "TRADING_REVENUE",
 		operationTypes: []string{"trade_route"}},
 	{name: "manufacturing", containerType: "MANUFACTURING_COORDINATOR", category: "TRADING_REVENUE",
 		operationTypes: []string{"factory_workflow", "manufacturing"}},
