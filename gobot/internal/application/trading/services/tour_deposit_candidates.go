@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -49,6 +50,31 @@ type DepositCandidateConfig struct {
 	Blocklist         []string // never deposited; wins over the allowlist
 }
 
+// depositVerdict accumulates the per-re-plan deposit-candidate funnel so the
+// assembler emits exactly ONE structured verdict line per re-plan — success or a
+// DISTINCT zero-reason (sp-dchv observability; nw9v verdict-line pattern). The
+// counts live in the MESSAGE TEXT (not only structured metadata) because the
+// text log drops metadata fields, which is precisely how a 3h run of zero
+// deposits went undiagnosed: "assembled deposit candidates" logged the count in
+// metadata that never reached the log, and the dominant zero-reason
+// (no warehouse in the tour graph) logged NOTHING at all. Silent zeros become
+// impossible: every return path sets a reason and the deferred emit renders it.
+type depositVerdict struct {
+	level          string // "" => INFO
+	reason         string // "selected" on success; else the distinct zero-reason
+	allowedSystems []string
+	warehouseID    string
+	storageWaypoint string
+	homeSystem     string
+	ceilingCredits int64
+	ceilingKnown   bool
+	freeSpace      int
+	minerRows      int
+	stockEligible  int // rows passing eligibility (known asks, savings >= floor)
+	afterWhitelist int // of those, rows passing allow/block/SupportsGood
+	final          int // candidates actually offered to the planner
+}
+
 // BuildDepositCandidates assembles the haul-to-storage deposit sinks the tour
 // planner may price against arb sells (sp-dchv Lane C). It finds a RUNNING
 // warehouse whose system is inside the tour graph (allowedSystems), mines the
@@ -65,6 +91,12 @@ type DepositCandidateConfig struct {
 // (fail closed, RULINGS #4 — money guards never spend on an unreadable balance).
 // Any discovery/mining error degrades to no candidates (the tour falls back to
 // pure arb), never an error the caller must handle.
+//
+// Every non-disabled exit emits ONE verdict line (see depositVerdict): the
+// escalation on sp-dchv (0 deposit legs in 3h) was a diagnosis blind spot, not a
+// candidate bug — the dominant path (hull re-planning >1 gate hop from home, so
+// no warehouse in its tour graph) returned nil silently. The verdict makes that,
+// and every other zero-reason, LOUD and countable.
 func BuildDepositCandidates(
 	ctx context.Context,
 	miner DepositDemandMiner,
@@ -79,48 +111,98 @@ func BuildDepositCandidates(
 	logger := common.LoggerFromContext(ctx)
 
 	if !cfg.Enabled {
+		// Deliberate off-switch, not a silent zero: no verdict (the feature is off
+		// on purpose; the caller gates on Enabled before ever reaching here).
 		return nil
 	}
+
+	v := &depositVerdict{
+		allowedSystems: allowedSystems,
+		ceilingCredits: ceilingCredits,
+		ceilingKnown:   ceilingKnown,
+	}
+	var out []routing.TourDepositCandidate
+	defer func() {
+		v.final = len(out)
+		if v.reason == "" {
+			v.reason = "selected"
+		}
+		level := v.level
+		if level == "" {
+			level = "INFO"
+		}
+		wh := v.warehouseID
+		if wh == "" {
+			wh = "none"
+		}
+		logger.Log(level, fmt.Sprintf(
+			"Pre-positioning verdict: %d deposit candidate(s) — %s "+
+				"[warehouse=%s reachable=%t systems=%v ceiling=%d(known=%t) free=%d "+
+				"funnel: miner_rows=%d stock_eligible=%d after_whitelist=%d]",
+			v.final, v.reason, wh, v.warehouseID != "", v.allowedSystems,
+			v.ceilingCredits, v.ceilingKnown, v.freeSpace,
+			v.minerRows, v.stockEligible, v.afterWhitelist),
+			map[string]interface{}{
+				"final": v.final, "reason": v.reason,
+				"warehouse": v.warehouseID, "storage_waypoint": v.storageWaypoint,
+				"home_system": v.homeSystem, "reachable_warehouse": v.warehouseID != "",
+				"allowed_systems": v.allowedSystems, "ceiling_credits": v.ceilingCredits,
+				"ceiling_known": v.ceilingKnown, "free_space": v.freeSpace,
+				"miner_rows": v.minerRows, "stock_eligible": v.stockEligible,
+				"after_whitelist": v.afterWhitelist,
+			})
+	}()
+
 	// Fail CLOSED: an unreadable balance (or a non-positive ceiling) buys nothing
 	// (RULINGS #4). The 50k reserve + w3he cap are enforced separately at execution;
 	// this ceiling is the pre-positioning-specific budget on top.
 	if !ceilingKnown || ceilingCredits <= 0 {
-		logger.Log("INFO", "Pre-positioning: no deposit candidates (capital ceiling unreadable or zero — fail closed)", map[string]interface{}{
-			"ceiling_known": ceilingKnown, "ceiling_credits": ceilingCredits,
-		})
+		v.level = "WARNING"
+		v.reason = "capital ceiling unreadable or zero (fail closed, RULINGS #4)"
 		return nil
 	}
 	if miner == nil || warehouses == nil || space == nil {
-		return nil // dependencies not wired — pre-positioning disabled
+		v.level = "WARNING"
+		v.reason = "pre-positioning subsystem unwired (miner/warehouses/space nil)"
+		return nil
 	}
 
-	warehouse := findWarehouseInGraph(ctx, warehouses, allowedSystems, playerID)
-	if warehouse == nil {
-		return nil // no running warehouse in the tour graph — nothing to deposit into
+	warehouse, err := findWarehouseInGraph(ctx, warehouses, allowedSystems, playerID)
+	if err != nil {
+		v.level = "WARNING"
+		v.reason = "warehouse lookup failed: " + err.Error()
+		return nil
 	}
-	storageWaypoint := warehouse.WaypointSymbol()
-	homeSystem := shared.ExtractSystemSymbol(storageWaypoint)
+	if warehouse == nil {
+		// The dominant live zero-reason: the hull re-planned >1 gate hop from home,
+		// so the warehouse's system is outside its 2-system tour graph. Correct to
+		// fail closed (an unreachable sink cannot be deposited into) — but LOUD now.
+		v.reason = "no running warehouse in tour graph"
+		return nil
+	}
+	v.warehouseID = warehouse.ID()
+	v.storageWaypoint = warehouse.WaypointSymbol()
+	v.homeSystem = shared.ExtractSystemSymbol(v.storageWaypoint)
 
 	freeSpace := 0
 	for _, s := range space.GetStorageShipsForOperation(warehouse.ID()) {
 		freeSpace += s.AvailableSpace()
 	}
+	v.freeSpace = freeSpace
 	if freeSpace <= 0 {
-		logger.Log("INFO", "Pre-positioning: warehouse full — no deposit candidates this tour", map[string]interface{}{
-			"warehouse": warehouse.ID(), "storage_waypoint": storageWaypoint,
-		})
+		v.reason = "warehouse full (0 free space)"
 		return nil
 	}
 
-	rows, err := miner.Mine(ctx, homeSystem, playerID, nil, persistence.DemandMinerOptions{
+	rows, err := miner.Mine(ctx, v.homeSystem, playerID, nil, persistence.DemandMinerOptions{
 		MinRecurrence: cfg.MinRecurrence, TopN: depositCandidateMinerTopN,
 	})
 	if err != nil {
-		logger.Log("WARNING", "Pre-positioning: demand mining failed — no deposit candidates (tour falls back to pure arb)", map[string]interface{}{
-			"home_system": homeSystem, "error": err.Error(),
-		})
+		v.level = "WARNING"
+		v.reason = "demand mining failed: " + err.Error()
 		return nil
 	}
+	v.minerRows = len(rows)
 
 	allow := toSet(cfg.Allowlist)
 	block := toSet(cfg.Blocklist)
@@ -136,7 +218,6 @@ func BuildDepositCandidates(
 	// Rows arrive stock-eligible-first, ranked by total projected savings (Lane A).
 	remainingSpace := freeSpace
 	remainingCredits := ceilingCredits
-	var out []routing.TourDepositCandidate
 	for _, r := range rows {
 		if len(out) >= topN || remainingSpace <= 0 || remainingCredits <= 0 {
 			break
@@ -147,6 +228,7 @@ func BuildDepositCandidates(
 		if r.ProjectedSavingsPerUnit < minSavings || r.ForeignAsk <= 0 || r.HomeAsk <= 0 {
 			continue
 		}
+		v.stockEligible++
 		if len(allow) > 0 && !allow[r.Good] {
 			continue
 		}
@@ -160,6 +242,7 @@ func BuildDepositCandidates(
 		if !warehouse.SupportsGood(r.Good) {
 			continue
 		}
+		v.afterWhitelist++
 		// Remaining contract demand: total historical demand minus what the
 		// warehouse already holds for the good (unreserved). GetTotalCargoAvailable
 		// counts unreserved stock; reserved-but-not-yet-withdrawn units read as
@@ -177,37 +260,34 @@ func BuildDepositCandidates(
 			Good:            r.Good,
 			UnitsWanted:     units,
 			SyntheticBid:    r.HomeAsk, // the contract-savings value the sink is priced at
-			StorageWaypoint: storageWaypoint,
-			StorageSystem:   homeSystem,
+			StorageWaypoint: v.storageWaypoint,
+			StorageSystem:   v.homeSystem,
 		})
 		remainingSpace -= units
 		remainingCredits -= int64(units) * int64(r.ForeignAsk)
 	}
 
-	if len(out) > 0 {
-		logger.Log("INFO", "Pre-positioning: assembled deposit candidates", map[string]interface{}{
-			"home_system": homeSystem, "storage_waypoint": storageWaypoint,
-			"candidates": len(out), "free_space": freeSpace, "ceiling_credits": ceilingCredits,
-		})
+	if len(out) == 0 {
+		// Warehouse reachable with free space, but nothing survived the eligibility/
+		// whitelist/space/ceiling funnel — distinct from an absent warehouse.
+		v.reason = "no candidates survived filters (eligibility/whitelist/space/ceiling)"
 	}
 	return out
 }
 
 // findWarehouseInGraph returns the first RUNNING warehouse operation whose system
-// is inside the tour graph (allowedSystems), or nil. v1 targets one warehouse;
-// with several the lowest-ID one in the graph wins (deterministic).
+// is inside the tour graph (allowedSystems), or nil. A non-nil error means the
+// warehouse lookup itself failed (surfaced by the caller's verdict). v1 targets
+// one warehouse; with several the lowest-ID one in the graph wins (deterministic).
 func findWarehouseInGraph(
 	ctx context.Context,
 	warehouses WarehouseOperationFinder,
 	allowedSystems []string,
 	playerID int,
-) *storage.StorageOperation {
+) (*storage.StorageOperation, error) {
 	ops, err := warehouses.FindRunning(ctx, playerID)
 	if err != nil {
-		common.LoggerFromContext(ctx).Log("WARNING", "Pre-positioning: warehouse lookup failed — no deposit candidates", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return nil
+		return nil, err
 	}
 	allowed := toSet(allowedSystems)
 	var found *storage.StorageOperation
@@ -222,7 +302,7 @@ func findWarehouseInGraph(
 			found = op
 		}
 	}
-	return found
+	return found, nil
 }
 
 func toSet(items []string) map[string]bool {

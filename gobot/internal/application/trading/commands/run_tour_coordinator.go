@@ -904,7 +904,19 @@ func (h *RunTourCoordinatorHandler) plan(
 // the storage subsystem is unwired, or the live balance is unreadable — all of
 // which leave the tour to plan pure arb.
 func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, allowedSystems []string, playerID int, reserve int64) []routing.TourDepositCandidate {
-	if !h.prePositioning.Enabled || h.storageCoordinator == nil || h.warehouseFinder == nil || h.demandMiner == nil {
+	if !h.prePositioning.Enabled {
+		return nil // deliberate off-switch — not a silent zero, no verdict
+	}
+	if h.storageCoordinator == nil || h.warehouseFinder == nil || h.demandMiner == nil {
+		// Enabled but a dependency is unwired: a WIRING BUG, not an off-switch —
+		// make it LOUD (sp-dchv observability) rather than silently planning pure arb.
+		common.LoggerFromContext(ctx).Log("WARNING",
+			"Pre-positioning verdict: 0 deposit candidate(s) — enabled but subsystem unwired (storageCoordinator/warehouseFinder/demandMiner nil)",
+			map[string]interface{}{
+				"storage_coordinator_wired": h.storageCoordinator != nil,
+				"warehouse_finder_wired":    h.warehouseFinder != nil,
+				"demand_miner_wired":        h.demandMiner != nil,
+			})
 		return nil
 	}
 	ceiling, known := h.depositCapitalCeiling(ctx, reserve)

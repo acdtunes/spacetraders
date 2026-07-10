@@ -2,9 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -89,6 +92,8 @@ func candByGood(cands []routing.TourDepositCandidate) map[string]routing.TourDep
 }
 
 var allGoods = []string{"ELECTRONICS", "EQUIPMENT", "FOOD", "IRON"}
+
+var errMiner = errors.New("miner unavailable")
 
 // --- tests ------------------------------------------------------------------
 
@@ -243,5 +248,179 @@ func TestBuildDepositCandidates_RemainingDemandSubtractsStocked(t *testing.T) {
 		[]string{"X1-KA42"}, 1, 1_000_000_000, true, cfg)
 	if len(out) != 1 || out[0].UnitsWanted != 104 {
 		t.Fatalf("remaining demand should net out stocked units (104), got %+v", out)
+	}
+}
+
+// --- sp-dchv observability: per-re-plan deposit verdict ----------------------
+
+// recordingLogger captures every Log call so a test can assert the verdict line.
+type recordingLogger struct {
+	levels []string
+	lines  []string
+}
+
+func (l *recordingLogger) Log(level, message string, _ map[string]interface{}) {
+	l.levels = append(l.levels, level)
+	l.lines = append(l.lines, message)
+}
+
+func (l *recordingLogger) last() (string, string) {
+	if len(l.lines) == 0 {
+		return "", ""
+	}
+	return l.levels[len(l.levels)-1], l.lines[len(l.lines)-1]
+}
+
+// TestBuildDepositCandidates_VerdictRendersDistinctZeroReasons is the RED→GREEN
+// guard for the sp-dchv diagnosis blind spot: before this, the dominant zero
+// path (no warehouse in the tour graph) and the all-filtered path returned nil
+// SILENTLY, so a 3h run of zero deposits looked identical to a healthy one. Each
+// scenario must now emit exactly ONE verdict line naming its DISTINCT reason.
+func TestBuildDepositCandidates_VerdictRendersDistinctZeroReasons(t *testing.T) {
+	rows := []persistence.DemandCandidate{demandRow("ELECTRONICS", 404, 3000, 744)}
+	cases := []struct {
+		name       string
+		miner      *fakeDepositMiner
+		ceiling    int64
+		known      bool
+		cfg        DepositCandidateConfig
+		wantLevel  string
+		wantReason string
+	}{
+		{
+			name: "no_warehouse_in_graph",
+			// warehouse in X1-OTHER (built below); tour graph is X1-KA42 only.
+			miner:      &fakeDepositMiner{rows: rows},
+			ceiling:    1_000_000, known: true,
+			cfg:        DepositCandidateConfig{Enabled: true, TopN: 5},
+			wantLevel:  "INFO",
+			wantReason: "no running warehouse in tour graph",
+		},
+		{
+			name:       "ceiling_unreadable",
+			miner:      &fakeDepositMiner{rows: rows},
+			ceiling:    0, known: false,
+			cfg:        DepositCandidateConfig{Enabled: true, TopN: 5},
+			wantLevel:  "WARNING",
+			wantReason: "capital ceiling unreadable",
+		},
+		{
+			name:       "warehouse_full",
+			miner:      &fakeDepositMiner{rows: rows},
+			ceiling:    1_000_000, known: true,
+			cfg:        DepositCandidateConfig{Enabled: true, TopN: 5},
+			wantLevel:  "INFO",
+			wantReason: "warehouse full",
+		},
+		{
+			name:       "mining_failed",
+			miner:      &fakeDepositMiner{err: errMiner},
+			ceiling:    1_000_000, known: true,
+			cfg:        DepositCandidateConfig{Enabled: true, TopN: 5},
+			wantLevel:  "WARNING",
+			wantReason: "demand mining failed",
+		},
+		{
+			name: "all_filtered",
+			// home-cheaper row: not stock-eligible, so nothing survives the funnel.
+			miner: &fakeDepositMiner{rows: []persistence.DemandCandidate{
+				{Good: "IRON", DemandUnits: 50, ForeignAsk: 900, HomeAsk: 800, HomeAskKnown: true, ProjectedSavingsPerUnit: -100, StockEligible: false},
+			}},
+			ceiling:    1_000_000, known: true,
+			cfg:        DepositCandidateConfig{Enabled: true, TopN: 5, MinSavingsPerUnit: 1},
+			wantLevel:  "INFO",
+			wantReason: "no candidates survived filters",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Per-case warehouse/reader (full for warehouse_full, elsewhere in graph
+			// for no_warehouse_in_graph, otherwise a healthy in-graph warehouse).
+			var op *storage.StorageOperation
+			var reader *fakeSpaceReader
+			switch tc.name {
+			case "no_warehouse_in_graph":
+				op, reader = runningWarehouse(t, "wh1", "X1-OTHER-H1", 2000, allGoods, nil)
+			case "warehouse_full":
+				op, reader = runningWarehouse(t, "wh1", "X1-KA42-H1", 100, allGoods, map[string]int{"IRON": 100})
+			default:
+				op, reader = runningWarehouse(t, "wh1", "X1-KA42-H1", 2000, allGoods, nil)
+			}
+			finder := &fakeWarehouseFinder{ops: []*storage.StorageOperation{op}}
+
+			rec := &recordingLogger{}
+			ctx := common.WithLogger(context.Background(), rec)
+			out := BuildDepositCandidates(ctx, tc.miner, finder, reader,
+				[]string{"X1-KA42"}, 1, tc.ceiling, tc.known, tc.cfg)
+			if len(out) != 0 {
+				t.Fatalf("%s: expected zero candidates, got %+v", tc.name, out)
+			}
+			level, line := rec.last()
+			if line == "" {
+				t.Fatalf("%s: expected a verdict line, got none", tc.name)
+			}
+			if !strings.Contains(line, "Pre-positioning verdict: 0 deposit candidate(s)") {
+				t.Fatalf("%s: verdict missing zero-count header: %q", tc.name, line)
+			}
+			if !strings.Contains(line, tc.wantReason) {
+				t.Fatalf("%s: verdict reason %q not in line: %q", tc.name, tc.wantReason, line)
+			}
+			if level != tc.wantLevel {
+				t.Fatalf("%s: verdict level = %q, want %q (line: %q)", tc.name, level, tc.wantLevel, line)
+			}
+		})
+	}
+}
+
+// TestBuildDepositCandidates_VerdictOnSuccessCountsCandidates proves the success
+// verdict renders the candidate COUNT in the message text (the field that never
+// reached the text log before) so an operator can tell "assembled but unselected"
+// (a solver/economics outcome) apart from "assembled zero" (an eligibility one).
+func TestBuildDepositCandidates_VerdictOnSuccessCountsCandidates(t *testing.T) {
+	op, reader := runningWarehouse(t, "wh1", "X1-KA42-H1", 2000, allGoods, nil)
+	miner := &fakeDepositMiner{rows: []persistence.DemandCandidate{
+		demandRow("ELECTRONICS", 404, 3000, 744),
+		demandRow("EQUIPMENT", 592, 1500, 422),
+	}}
+	finder := &fakeWarehouseFinder{ops: []*storage.StorageOperation{op}}
+	cfg := DepositCandidateConfig{Enabled: true, TopN: 5, MinSavingsPerUnit: 1}
+
+	rec := &recordingLogger{}
+	ctx := common.WithLogger(context.Background(), rec)
+	out := BuildDepositCandidates(ctx, miner, finder, reader,
+		[]string{"X1-KA42"}, 1, 1_000_000_000, true, cfg)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 candidates, got %+v", out)
+	}
+	level, line := rec.last()
+	if level != "INFO" {
+		t.Fatalf("success verdict level = %q, want INFO", level)
+	}
+	if !strings.Contains(line, "2 deposit candidate(s) — selected") {
+		t.Fatalf("success verdict must count candidates and mark selected: %q", line)
+	}
+	// The funnel counts must be rendered in the text (not only metadata).
+	if !strings.Contains(line, "stock_eligible=2") || !strings.Contains(line, "after_whitelist=2") {
+		t.Fatalf("success verdict must render funnel counts in text: %q", line)
+	}
+}
+
+// TestDepositVerdictDisabledIsSilent confirms the deliberate off-switch stays
+// quiet: a disabled config is not a "silent zero" to be surfaced.
+func TestDepositVerdictDisabledIsSilent(t *testing.T) {
+	op, reader := runningWarehouse(t, "wh1", "X1-KA42-H1", 2000, allGoods, nil)
+	miner := &fakeDepositMiner{rows: []persistence.DemandCandidate{demandRow("ELECTRONICS", 404, 3000, 744)}}
+	finder := &fakeWarehouseFinder{ops: []*storage.StorageOperation{op}}
+
+	rec := &recordingLogger{}
+	ctx := common.WithLogger(context.Background(), rec)
+	out := BuildDepositCandidates(ctx, miner, finder, reader,
+		[]string{"X1-KA42"}, 1, 1_000_000, true, DepositCandidateConfig{Enabled: false})
+	if len(out) != 0 {
+		t.Fatalf("disabled must yield nothing, got %+v", out)
+	}
+	if len(rec.lines) != 0 {
+		t.Fatalf("disabled must emit no verdict, got %v", rec.lines)
 	}
 }
