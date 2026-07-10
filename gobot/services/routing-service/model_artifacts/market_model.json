@@ -1,0 +1,90 @@
+{
+  "diagnostics": {
+    "control_series_count": 43,
+    "ladder_count": 2928
+  },
+  "era": "torwind-2026-07-05",
+  "fit_version": 1,
+  "generated_at": "2026-07-10T00:00:51.445721+00:00",
+  "impact": {
+    "ABUNDANT|RESTRICTED": {
+      "buy_growth_per_step": 1.0810124856658552,
+      "n_obs": 416,
+      "sell_decay_per_step": 0.9808401723483996
+    },
+    "HIGH|RESTRICTED": {
+      "buy_growth_per_step": 1.1029863665613466,
+      "n_obs": 159
+    },
+    "LIMITED|": {
+      "buy_growth_per_step": 1.0,
+      "n_obs": 16
+    },
+    "LIMITED|RESTRICTED": {
+      "buy_growth_per_step": 1.0947414829835826,
+      "n_obs": 231,
+      "sell_decay_per_step": 0.9363841675109212
+    },
+    "LIMITED|WEAK": {
+      "n_obs": 11,
+      "sell_decay_per_step": 0.9818030808602283
+    },
+    "MODERATE|": {
+      "buy_growth_per_step": 1.0,
+      "n_obs": 12
+    },
+    "MODERATE|GROWING": {
+      "n_obs": 39,
+      "sell_decay_per_step": 0.9324684091528216
+    },
+    "MODERATE|RESTRICTED": {
+      "buy_growth_per_step": 1.0647918087440083,
+      "n_obs": 1091,
+      "sell_decay_per_step": 0.9011309591140395
+    },
+    "SCARCE|": {
+      "buy_growth_per_step": 1.0234642666324971,
+      "n_obs": 35
+    },
+    "SCARCE|GROWING": {
+      "n_obs": 54,
+      "sell_decay_per_step": 0.9701809365493108
+    },
+    "SCARCE|RESTRICTED": {
+      "buy_growth_per_step": 1.0702727577315476,
+      "n_obs": 659,
+      "sell_decay_per_step": 0.9627782921207968
+    },
+    "SCARCE|STRONG": {
+      "n_obs": 36,
+      "sell_decay_per_step": 0.9584402001786564
+    },
+    "SCARCE|WEAK": {
+      "buy_growth_per_step": 1.0185168131502655,
+      "n_obs": 169,
+      "sell_decay_per_step": 0.9592419795333446
+    }
+  },
+  "recovery": {
+    "": {
+      "half_life_minutes": 3991.470392233923,
+      "n_series": 2
+    },
+    "GROWING": {
+      "half_life_minutes": 180.67584044583344,
+      "n_series": 1
+    },
+    "RESTRICTED": {
+      "half_life_minutes": 258.7602427456054,
+      "n_series": 19
+    },
+    "STRONG": {
+      "half_life_minutes": 600.7778813191475,
+      "n_series": 1
+    },
+    "WEAK": {
+      "half_life_minutes": 1407.7887514185645,
+      "n_series": 20
+    }
+  }
+}
