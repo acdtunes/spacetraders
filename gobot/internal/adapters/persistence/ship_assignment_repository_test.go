@@ -69,6 +69,36 @@ func TestListActiveReturnsRoleAssignmentAndSyncedAtForEveryShip(t *testing.T) {
 	require.WithinDuration(t, idleSyncedAt, byShip["SHIP-2"].SyncedAt, time.Second)
 }
 
+// TestListActiveReturnsDedicatedFleet is a regression test for sp-ioqt: the
+// `ship list` FLEET column (the sp-lybx-prevention payload) reads
+// DedicatedFleet off ShipAssignmentInfo, so ListActive must actually
+// populate it from the ships row rather than leaving it zero-valued.
+func TestListActiveReturnsDedicatedFleet(t *testing.T) {
+	repo, playerID, db := setupShipAssignmentRepo(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-PINNED", PlayerID: playerID, Role: "PROBE",
+		AssignmentStatus: "idle", SyncedAt: time.Now(), DedicatedFleet: "contract",
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-UNPINNED", PlayerID: playerID, Role: "PROBE",
+		AssignmentStatus: "idle", SyncedAt: time.Now(),
+	}).Error)
+
+	infos, err := repo.ListActive(ctx, playerID)
+	require.NoError(t, err)
+	require.Len(t, infos, 2)
+
+	byShip := make(map[string]persistence.ShipAssignmentInfo, len(infos))
+	for _, info := range infos {
+		byShip[info.ShipSymbol] = info
+	}
+
+	require.Equal(t, "contract", byShip["SHIP-PINNED"].DedicatedFleet)
+	require.Empty(t, byShip["SHIP-UNPINNED"].DedicatedFleet)
+}
+
 func TestListActiveScopesToPlayer(t *testing.T) {
 	repo, playerID, db := setupShipAssignmentRepo(t)
 	ctx := context.Background()

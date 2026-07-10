@@ -274,6 +274,14 @@ type ShipAssignmentInfo struct {
 	// (sp-i1ku). Empty when the ship isn't captain-reserved, or when the
 	// captain gave no reason.
 	AssignmentReason string
+
+	// DedicatedFleet (sp-snmb) is the ship's permanent fleet dedication (e.g.
+	// "contract"), or "" when unreserved. Unlike ContainerID/AssignmentOwner
+	// above, this is independent of any transient container claim. Surfaced
+	// by `ship list` (sp-ioqt) so a hull pinned to the wrong fleet at
+	// purchase — the sp-lybx class of mistake — is visible at a glance
+	// instead of requiring a per-ship cross-check against `fleet list`.
+	DedicatedFleet string
 }
 
 // ListActive returns role/assignment/cache-age info for every ship owned by a
@@ -300,6 +308,7 @@ func (r *ShipAssignmentRepositoryGORM) ListActive(
 			SyncedAt:         model.SyncedAt,
 			AssignmentOwner:  model.AssignmentOwner,
 			AssignmentReason: model.AssignmentReason,
+			DedicatedFleet:   model.DedicatedFleet,
 		})
 	}
 

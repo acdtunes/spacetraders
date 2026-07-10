@@ -115,6 +115,63 @@ func TestBuildShipRowsShowsCaptainReservationWithoutReason(t *testing.T) {
 	require.Equal(t, "captain", rows[0].Assignment)
 }
 
+// TestBuildShipRowsPopulatesFleetAndSortsNatural is the sp-ioqt fixture test:
+// a probe, a hauler, a container-claimed ship, and a dedicated-fleet ship,
+// supplied out of symbol order (including a lexicographic trap — "TORWIND-3"
+// and "TORWIND-10" sort backwards under plain string comparison). It asserts
+// both the new FLEET column content (the sp-lybx-prevention payload) and
+// that buildShipRows itself — not caller order — produces natural-sorted
+// output, since a scrambled fleet roster was part of what let sp-lybx slip
+// past a visual check in the first place.
+func TestBuildShipRowsPopulatesFleetAndSortsNatural(t *testing.T) {
+	now := time.Now()
+	ships := []*pb.ShipInfo{
+		{Symbol: "TORWIND-10", Location: "X1-A1", NavStatus: "DOCKED"},
+		{Symbol: "TORWIND-3", Location: "X1-A1", NavStatus: "DOCKED"},
+		{Symbol: "TORWIND-1", Location: "X1-A1", NavStatus: "DOCKED"},
+		{Symbol: "TORWIND-2", Location: "X1-A1", NavStatus: "DOCKED"},
+	}
+	infos := map[string]persistence.ShipAssignmentInfo{
+		"TORWIND-1":  {ShipSymbol: "TORWIND-1", Role: "PROBE"},
+		"TORWIND-2":  {ShipSymbol: "TORWIND-2", Role: "HAULER"},
+		"TORWIND-3":  {ShipSymbol: "TORWIND-3", Role: "HAULER", ContainerID: "navigate-TORWIND-3-a3f8e2b1"},
+		"TORWIND-10": {ShipSymbol: "TORWIND-10", Role: "PROBE", DedicatedFleet: "contract"},
+	}
+
+	rows := buildShipRows(ships, infos, now)
+
+	require.Len(t, rows, 4)
+
+	gotOrder := make([]string, len(rows))
+	for i, r := range rows {
+		gotOrder[i] = r.Symbol
+	}
+	require.Equal(t, []string{"TORWIND-1", "TORWIND-2", "TORWIND-3", "TORWIND-10"}, gotOrder,
+		"rows must be in natural symbol order, not lexicographic (TORWIND-3 must not sort after TORWIND-10)")
+
+	// probe, unclaimed, undedicated
+	require.Equal(t, "PROBE", rows[0].Role)
+	require.Equal(t, "-", rows[0].Fleet)
+	require.Equal(t, "-", rows[0].Assignment)
+
+	// hauler, unclaimed, undedicated
+	require.Equal(t, "HAULER", rows[1].Role)
+	require.Equal(t, "-", rows[1].Fleet)
+	require.Equal(t, "-", rows[1].Assignment)
+
+	// hauler, claimed by a container
+	require.Equal(t, "HAULER", rows[2].Role)
+	require.Equal(t, "-", rows[2].Fleet)
+	require.Equal(t, "navigate-TORWIND-3-a3f8e2b1", rows[2].Assignment)
+
+	// dedicated to the "contract" fleet, otherwise idle — this is the
+	// sp-lybx scenario: a PROBE pinned to contract must be visible at a
+	// glance via FLEET even though it carries no container claim.
+	require.Equal(t, "PROBE", rows[3].Role)
+	require.Equal(t, "contract", rows[3].Fleet)
+	require.Equal(t, "-", rows[3].Assignment)
+}
+
 func TestRunShipListPropagatesListerError(t *testing.T) {
 	lister := &fakeShipAssignmentLister{err: errors.New("db down")}
 	ships := []*pb.ShipInfo{{Symbol: "SHIP-1"}}

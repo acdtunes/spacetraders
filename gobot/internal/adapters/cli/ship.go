@@ -81,8 +81,13 @@ type shipListRow struct {
 	CargoCapacity int32  `json:"cargoCapacity"`
 	EngineSpeed   int32  `json:"engineSpeed"`
 	Role          string `json:"role"`
-	Assignment    string `json:"assignment"`
-	CacheAge      string `json:"cacheAge"`
+	// Fleet (sp-ioqt) is the ship's permanent dedicated-fleet tag (sp-snmb),
+	// or "-" when unreserved. This is the sp-lybx-prevention column: it
+	// surfaces a hull pinned to the wrong fleet at purchase time without
+	// requiring a per-ship cross-check against `fleet list`.
+	Fleet      string `json:"fleet"`
+	Assignment string `json:"assignment"`
+	CacheAge   string `json:"cacheAge"`
 }
 
 // humanizeDuration renders a duration the way `ship list` shows cache age:
@@ -107,8 +112,10 @@ func humanizeDuration(d time.Duration) string {
 }
 
 // buildShipRows merges live ship data from the daemon with the persisted
-// per-ship assignment info, defaulting role/assignment/cache age to "-" for
-// ships that have no assignment row.
+// per-ship assignment info, defaulting role/fleet/assignment/cache age to
+// "-" for ships that have no assignment row. Rows are returned sorted by
+// ship symbol in natural order (TORWIND-2 before TORWIND-10) so a fleet
+// roster reads in the order a human expects.
 func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssignmentInfo, now time.Time) []shipListRow {
 	rows := make([]shipListRow, 0, len(ships))
 
@@ -123,6 +130,7 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 			CargoCapacity: s.CargoCapacity,
 			EngineSpeed:   s.EngineSpeed,
 			Role:          "-",
+			Fleet:         "-",
 			Assignment:    "-",
 			CacheAge:      "-",
 		}
@@ -130,6 +138,9 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 		if info, ok := infos[s.Symbol]; ok {
 			if info.Role != "" {
 				row.Role = info.Role
+			}
+			if info.DedicatedFleet != "" {
+				row.Fleet = info.DedicatedFleet
 			}
 			switch {
 			case info.AssignmentOwner == string(navigation.AssignmentOwnerCaptain):
@@ -154,6 +165,8 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 		rows = append(rows, row)
 	}
 
+	sortShipListRowsNatural(rows)
+
 	return rows
 }
 
@@ -166,11 +179,11 @@ func renderShipList(rows []shipListRow, jsonOut bool) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SHIP SYMBOL\tLOCATION\tSTATUS\tFUEL\tCARGO\tSPEED\tROLE\tASSIGNMENT\tCACHE AGE")
-	fmt.Fprintln(w, "-----------\t--------\t------\t----\t-----\t-----\t----\t----------\t---------")
+	fmt.Fprintln(w, "SHIP SYMBOL\tLOCATION\tSTATUS\tFUEL\tCARGO\tSPEED\tROLE\tFLEET\tASSIGNMENT\tCACHE AGE")
+	fmt.Fprintln(w, "-----------\t--------\t------\t----\t-----\t-----\t----\t-----\t----------\t---------")
 
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%d/%d\t%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%d/%d\t%d\t%s\t%s\t%s\t%s\n",
 			r.Symbol,
 			r.Location,
 			r.NavStatus,
@@ -180,6 +193,7 @@ func renderShipList(rows []shipListRow, jsonOut bool) error {
 			r.CargoCapacity,
 			r.EngineSpeed,
 			r.Role,
+			r.Fleet,
 			r.Assignment,
 			r.CacheAge,
 		)
@@ -253,7 +267,13 @@ func newShipListCommand() *cobra.Command {
 		Long: `List all ships owned by a player/agent.
 
 Shows ship symbol, location, navigation status, fuel, cargo levels, role,
-owning assignment (container id or "-"), and cache age.
+dedicated fleet (permanent pin, e.g. "contract", or "-" if unpinned), owning
+assignment (container id or "-"), and cache age. Rows are sorted by ship
+symbol in natural order (TORWIND-2 before TORWIND-10).
+
+The FLEET column is a one-glance check for a hull pinned to the wrong fleet
+at purchase time (the sp-lybx incident) — no need to cross-check each ship
+against 'fleet list' individually.
 
 Examples:
   spacetraders ship list --player-id 1
