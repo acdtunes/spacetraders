@@ -157,6 +157,35 @@ persistence, not progress; demand first observable OUTPUT within one window from
 never-exercised subsystem. Manual chains: confirm actual location after navigate, re-read
 the live ask before buying, split success from failure tokens in every completion check.
 
+## Fleet logistics doctrine
+**Warehousing — stock ahead of demand.** Pre-position cheap foreign goods into a home
+warehouse; contracts fulfill by ZERO-ASK withdrawal instead of market buys. One parked
+warehouse hull per home system — heavy frame preferred (hold size binds portfolio
+breadth); warehouse resolution is newest-RUNNING-wins per waypoint, so a second warehouse
+at the same post is dead capital. One durably-dedicated stocker hull loops
+buy-at-cheapest-foreign-export → deposit, fail-closed: measured demand only, live-ask
+verified, treasury ceiling junior to the reserve floor. Stock a PORTFOLIO, never a single
+good — per-good caps force rotation (contract draws are random across goods; coverage
+beats depth) — and include the fat contract tier (weapons-class goods draw at multiples of
+the median). Deposits book zero revenue: a treasury dip while stocking is correct.
+Withdrawals are in-system ship-to-ship — align nav states before the transfer.
+**Hub positioning — park where buy legs start.** Contract cycle time is travel-dominated:
+park idle dual-duty hulls at EXPORT ORIGINS (closest-ship-wins compresses the buy leg),
+sized to the observed contract-source distribution and leash-capped. Tour heavies need no
+positioning — profit-ranked planning self-distributes them; keep their MAP fresh instead:
+a many-market system older than the tour planner's age cap is INVISIBLE to tours (stale →
+no tours → no revenue → looks unimportant, a self-reinforcing blind spot — staleness
+detectors and circuit-math scout sizing are the counter). Keep ONE purchase agent docked
+at the heavy shipyard: rung-to-tour in seconds instead of a long ferry.
+**Command frigate — a contract executor, not an ornament.** Upgrade its cargo within the
+fixed power budget (processor modules are one power each and zero-cargo; reactors and
+frames are permanent — no swap endpoints), then POOL it for contract work: its speed kills
+far-source tails and its hold single-trips every draw; fuel never binds home-cluster legs.
+Keep it release-on-demand — repin to command the moment command needs it; an idle reserve
+is paid for in foregone contract throughput. Price module feasibility from data (module
+power requirements are fleet-constant per symbol — one observed install prices the whole
+fleet), never by live trial-and-error.
+
 ## Conduct doctrine
 1. **Constraint audit.** Every self-imposed limit (caps, benched hulls, deferred buys)
    carries a NAMED expiry condition, re-checked each wake; when a flip condition fires —

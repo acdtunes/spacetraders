@@ -44,8 +44,10 @@ This file exists so that class of miss cannot recur.)
    deploy that didn't happen.
 
 9. **Crew model policy.** Captain session = fable-5. Standing crew sessions = sonnet-5.
-   Ephemeral build subagents tier by complexity: sonnet (mechanical/spec'd), opus (normal
-   root-caused builds), fable (architecture/concurrency/economics design only).
+   The shipwright coordinates and delegates only — every build runs through an ephemeral
+   subagent: sonnet (mechanical/fully-spec'd) or opus (anything needing root-causing or
+   design judgment), chosen by the shipwright per dispatch (Admiral 2026-07-10; supersedes
+   the earlier three-tier table).
 
 10. **No merge caps.** Fixes/features per day are uncapped by policy (config 1000000).
     Do no cap accounting; throughput is limited by verification, not quotas.
