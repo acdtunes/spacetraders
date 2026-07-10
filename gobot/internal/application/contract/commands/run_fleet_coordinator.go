@@ -204,6 +204,15 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// streak crossing, not once per iteration.
 	errMon := newCoordinatorErrorMonitor(coordinatorErrorStreakThreshold)
 
+	// gov (sp-lybx) is the per-hull spawn-storm guard: an escalating backoff
+	// after each instant worker death, plus a quarantine after N instant deaths
+	// within a window, so a poison hull is skipped for the rest of this run while
+	// the coordinator moves on to a healthy hull (the CONTRACT keeps being
+	// worked — RULINGS #1). Clock-injected; its state is in-memory for this run
+	// only — a coordinator recreate/restart clears it deliberately, since the
+	// hull may have been fixed (reclassified, repaired, unpinned) meanwhile.
+	gov := newSpawnGovernor(h.clock)
+
 	// Step 4: Main coordinator loop (infinite)
 	// Execute one contract at a time (game constraint: one active contract per player)
 	for {
@@ -258,7 +267,12 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// (sp-l7h2), not the remembered --dedicated-ships list: a `fleet
 		// assign`/`unassign` while this coordinator runs takes effect on the
 		// very next pass, no restart needed.
-		_, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract)
+		// RequireCargoCapacity (sp-lybx): a 0-cargo hull mispinned into the
+		// contract fleet is UNSELECTABLE here — it can never carry a delivery, so
+		// claiming it just spawns a worker that dies instantly. The idle-arb
+		// dispatcher's own FindIdleShipsByFleet calls omit the policy and keep
+		// every tagged member, so its reserve accounting is unchanged.
+		_, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract, appContract.RequireCargoCapacity)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle dedicated ships: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -489,8 +503,20 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
-		if len(claimableShips) == 0 {
-			logger.Log("INFO", fmt.Sprintf("No claimable ships - %d candidate(s) hold unrelated cargo, waiting for completion...", len(parkedShips)), nil)
+		// Spawn-governor exclusion (sp-lybx): drop hulls in post-instant-death
+		// backoff or quarantined for repeated instant worker deaths (ANY cause,
+		// the generic net beyond Fix A's 0-cargo exclusion), so the coordinator
+		// spawns a worker on a HEALTHY hull instead of hot-respawning a poison
+		// one. A backoff'd hull re-enters selection when its interval expires; a
+		// quarantined one stays out for the rest of this run. Whenever a healthy
+		// hull remains the contract keeps being worked by it (RULINGS #1); only
+		// when EVERY candidate is held does the coordinator park and wait — a
+		// deferral, never a skip.
+		spawnableShips, heldShips := gov.FilterEligible(claimableShips)
+		if len(spawnableShips) == 0 {
+			logger.Log("INFO", fmt.Sprintf(
+				"No spawnable ships - %d hold unrelated cargo, %d in spawn-backoff/quarantine; waiting for completion...",
+				len(parkedShips), len(heldShips)), nil)
 			select {
 			case event := <-workerCompletedCh:
 				recordWorkerCompletion(logger, event, fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol))
@@ -508,7 +534,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
 		selectedShip, distance, err := appContract.SelectClosestShip(
 			ctx,
-			claimableShips,
+			spawnableShips,
 			h.shipRepo,
 			h.graphProvider,
 			h.converter,
@@ -593,11 +619,28 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		errMon.Note("spawn_contract_worker", "")
 
 		activeWorkerContainerID = workerContainerID
+		// Timestamp the spawn so an instant death of this worker is measurable
+		// against the spawn-governor's instant-death threshold (sp-lybx).
+		gov.NoteSpawn(selectedShip)
 
 		// Block waiting for worker completion
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
 		select {
 		case event := <-workerCompletedCh:
+			// Feed the completion to the spawn governor FIRST: a worker that just
+			// died instantly extends this hull's backoff, and the Nth instant
+			// death within the window crosses it into quarantine. On that exact
+			// crossing, emit the ONE loud line + captain event; thereafter the
+			// hull is skipped for the rest of the run and the next pass selects a
+			// healthy hull (the CONTRACT keeps being worked — RULINGS #1).
+			if outcome := gov.NoteCompletion(event.ShipSymbol, event.Success); outcome.JustQuarantined {
+				logger.Log("ERROR", hullQuarantineMessage(event.ShipSymbol, outcome.InstantDeaths), map[string]interface{}{
+					"action":         "hull_quarantined",
+					"ship_symbol":    event.ShipSymbol,
+					"instant_deaths": outcome.InstantDeaths,
+				})
+				h.recordHullQuarantineEvent(ctx, cmd, event.ShipSymbol, outcome.InstantDeaths)
+			}
 			if recordWorkerCompletion(logger, event, fmt.Sprintf("Contract completed by %s", event.ShipSymbol)) {
 				result.ContractsCompleted++
 			}
@@ -975,6 +1018,25 @@ func (h *RunFleetCoordinatorHandler) recordErrorLoopEvent(ctx context.Context, c
 	defer cancel()
 	if err := h.captainEvents.Record(recordCtx, event); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("captain outbox: failed to record %s for checkpoint %s: %v", captain.EventCoordinatorErrorLoop, checkpoint, err), nil)
+	}
+}
+
+// recordHullQuarantineEvent emits the single captain outbox event for a hull
+// crossing into spawn quarantine (sp-lybx). Fire-and-forget with its own short
+// timeout, mirroring recordErrorLoopEvent exactly: an outbox failure must never
+// break the coordinator's loop, so it is logged at WARNING and swallowed, and a
+// nil captainEvents (not wired — tests, or a daemon boot before DI completes)
+// silently disables recording rather than panicking.
+func (h *RunFleetCoordinatorHandler) recordHullQuarantineEvent(ctx context.Context, cmd *RunFleetCoordinatorCommand, hull string, instantDeaths int) {
+	if h.captainEvents == nil {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+	event := buildHullQuarantineEvent(cmd.ContainerID, cmd.PlayerID.Value(), hull, instantDeaths)
+	recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.captainEvents.Record(recordCtx, event); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("captain outbox: failed to record hull quarantine for %s: %v", hull, err), nil)
 	}
 }
 

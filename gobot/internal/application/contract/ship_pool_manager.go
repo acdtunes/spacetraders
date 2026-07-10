@@ -66,6 +66,24 @@ const (
 	IncludeCommandShip
 )
 
+// CargoCapacityPolicy controls whether a dedicated-fleet lookup excludes hulls
+// with zero cargo capacity. Mirrors the qr3v/sp-9hu8 "unsuitable = UNSELECTABLE,
+// not spawned-then-crashed" pattern for the dedicated pool.
+type CargoCapacityPolicy int
+
+const (
+	// AnyCargoCapacity returns every tagged fleet member regardless of cargo
+	// capacity - the original FindIdleShipsByFleet behavior. The idle-arb
+	// dispatcher keeps this default so its reserve accounting is unchanged.
+	AnyCargoCapacity CargoCapacityPolicy = iota
+	// RequireCargoCapacity excludes 0-cargo hulls (probes/satellites) from the
+	// pool. The contract coordinator opts in: a 0-cargo hull can never deliver a
+	// contract, so a probe mispinned into the contract fleet (sp-lybx: TORWIND-24)
+	// must be UNSELECTABLE here rather than claimed, spawned, and crashed on
+	// 'deliveries not complete' - the storm this closes at discovery.
+	RequireCargoCapacity
+)
+
 // roleHauler is the registration role of dedicated haul hulls; the command
 // ship's role lives with the shared IsCommandHull predicate in the domain
 // contract package.
@@ -217,9 +235,14 @@ func FindIdleLightHaulers(
 // Reading DedicatedFleet() from the DB on every discovery pass is what makes
 // reassignment live instead of "live after next restart."
 //
-// Unlike FindIdleLightHaulers, this does not filter by role or cargo
-// capacity: a ship qualifies purely by carrying the fleet's tag, whatever
-// hull it is. The dedication itself is the authorization.
+// Unlike FindIdleLightHaulers, this never filters by ROLE: a ship qualifies
+// purely by carrying the fleet's tag, whatever hull it is (an excavator, the
+// command frigate) - the dedication itself is the authorization. Cargo-capacity
+// filtering, by contrast, is OPT-IN via CargoCapacityPolicy: the default keeps
+// every tagged member (idle-arb relies on this for its reserve accounting), and
+// the contract coordinator passes RequireCargoCapacity so a 0-cargo probe
+// mispinned into the contract fleet (sp-lybx) is UNSELECTABLE rather than
+// claimed-spawned-crashed.
 //
 // Parameters:
 //   - ctx: Context for cancellation and logging
@@ -227,6 +250,9 @@ func FindIdleLightHaulers(
 //   - shipRepo: Repository to query ships (enriches assignment data automatically)
 //   - fleet: The fleet name to look up; "" (no dedicated fleet) returns nothing,
 //     since an empty tag means "general pool", never a fleet of its own
+//   - policies: Optional cargo-capacity policy (default: AnyCargoCapacity). Pass
+//     RequireCargoCapacity to exclude 0-cargo hulls (probes/satellites) that can
+//     never carry a delivery - the sp-lybx exclusion for contract worker selection.
 //
 // Returns:
 //   - ships: List of idle dedicated ship entities
@@ -237,9 +263,16 @@ func FindIdleShipsByFleet(
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
 	fleet string,
+	policies ...CargoCapacityPolicy,
 ) ([]*navigation.Ship, []string, error) {
 	if fleet == "" {
 		return nil, nil, nil
+	}
+
+	// Default: keep every tagged member regardless of cargo capacity.
+	cargoPolicy := AnyCargoCapacity
+	if len(policies) > 0 {
+		cargoPolicy = policies[0]
 	}
 
 	logger := common.LoggerFromContext(ctx)
@@ -250,6 +283,7 @@ func FindIdleShipsByFleet(
 	}
 
 	fleetTotal := 0
+	zeroCargoExcluded := 0
 	var idleShips []*navigation.Ship
 	var idleSymbols []string
 	for _, ship := range allShips {
@@ -257,6 +291,26 @@ func FindIdleShipsByFleet(
 			continue
 		}
 		fleetTotal++
+
+		// Cargo-capacity exclusion (sp-lybx): a caller that opts in
+		// (RequireCargoCapacity) drops 0-cargo hulls, because a probe/satellite
+		// can never carry a contract delivery - claiming it just spawns a worker
+		// that dies instantly on 'deliveries not complete'. Logged by name so the
+		// captain can see WHY a mispinned hull is being ignored (honest exclusion),
+		// and counted into the summary below so an all-probe fleet reads as
+		// "0 dispatchable, N excluded for 0 cargo" rather than a silent empty pool.
+		if cargoPolicy == RequireCargoCapacity && ship.CargoCapacity() == 0 {
+			zeroCargoExcluded++
+			logger.Log("WARNING", fmt.Sprintf(
+				"Dedicated %s-fleet hull %s excluded from contract worker selection: 0 cargo capacity (cannot deliver) - check hull class/pin",
+				fleet, ship.ShipSymbol()), map[string]interface{}{
+				"action":      "exclude_zero_cargo_dedicated_hull",
+				"fleet":       fleet,
+				"ship_symbol": ship.ShipSymbol(),
+			})
+			continue
+		}
+
 		// Exclude ships in transit (even without assignment), mirroring
 		// FindIdleLightHaulers: a hull mid-flight is not available to dispatch.
 		if ship.NavStatus() == navigation.NavStatusInTransit {
@@ -269,11 +323,12 @@ func FindIdleShipsByFleet(
 	}
 
 	logger.Log("INFO", "Idle dedicated fleet ships discovered", map[string]interface{}{
-		"action":        "find_idle_ships_by_fleet",
-		"fleet":         fleet,
-		"fleet_total":   fleetTotal,
-		"idle_in_fleet": len(idleSymbols),
-		"ship_symbols":  idleSymbols,
+		"action":              "find_idle_ships_by_fleet",
+		"fleet":               fleet,
+		"fleet_total":         fleetTotal,
+		"idle_in_fleet":       len(idleSymbols),
+		"zero_cargo_excluded": zeroCargoExcluded,
+		"ship_symbols":        idleSymbols,
 	})
 
 	return idleShips, idleSymbols, nil

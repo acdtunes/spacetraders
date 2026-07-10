@@ -355,6 +355,79 @@ func TestFindIdleShipsByFleet_EmptyFleetName_ReturnsNothing(t *testing.T) {
 }
 
 // ============================================================================
+// 0-CARGO EXCLUSION (sp-lybx)
+//
+// A probe/satellite mispinned into the contract fleet (TORWIND-24: 0/0 cargo)
+// can never carry a delivery, so claiming it just spawns a worker that dies
+// instantly on 'deliveries not complete' - the 4-spawns-in-9s storm. Both
+// contract-worker claim sites must make such a hull UNSELECTABLE at discovery:
+// the general pool (FindIdleLightHaulers, already) and the dedicated pool
+// (FindIdleShipsByFleet, opt-in via RequireCargoCapacity).
+// ============================================================================
+
+// The dedicated-fleet claim site, opted in with RequireCargoCapacity, must drop
+// a 0-cargo hull while keeping cargo-carrying members (including non-hauler
+// roles - role is still not the qualification here).
+func TestFindIdleShipsByFleet_RequireCargoCapacity_ExcludesZeroCargoProbe(t *testing.T) {
+	probe := newCandidateShip(t, "TORWIND-24", "HAULER", 0, 10, 0) // 0-cargo, tagged as a hauler (the sp-lybx mispin)
+	probe.SetDedicatedFleet("contract")
+	realHauler := newCandidateShip(t, "TORWIND-29", "HAULER", 30, 10, 0)
+	realHauler.SetDedicatedFleet("contract")
+	repo := &stubShipRepo{ships: []*navigation.Ship{probe, realHauler}}
+
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "contract", RequireCargoCapacity)
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if containsSymbol(symbols, "TORWIND-24") {
+		t.Fatalf("0-cargo probe TORWIND-24 must be UNSELECTABLE for contract work, got %v", symbols)
+	}
+	if len(symbols) != 1 || symbols[0] != "TORWIND-29" {
+		t.Fatalf("expected only the cargo-carrying hull [TORWIND-29], got %v", symbols)
+	}
+}
+
+// Regression: the DEFAULT policy (no CargoCapacityPolicy passed) keeps every
+// tagged member regardless of cargo - the idle-arb dispatcher's own calls omit
+// the policy, so its pool and reserve accounting are byte-identical to before.
+func TestFindIdleShipsByFleet_DefaultPolicy_KeepsZeroCargoHull(t *testing.T) {
+	probe := newCandidateShip(t, "TORWIND-24", "HAULER", 0, 10, 0)
+	probe.SetDedicatedFleet("contract")
+	repo := &stubShipRepo{ships: []*navigation.Ship{probe}}
+
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "contract")
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if len(symbols) != 1 || symbols[0] != "TORWIND-24" {
+		t.Fatalf("the default (AnyCargoCapacity) policy must keep the 0-cargo hull for callers that never opted in, got %v", symbols)
+	}
+}
+
+// The general claim site already excludes a 0-cargo hull tagged as a hauler -
+// pinned here explicitly so the "both claim sites covered" guarantee has a test
+// on each side, not just the dedicated one.
+func TestFindIdleLightHaulers_ExcludesZeroCargoHauler(t *testing.T) {
+	probe := newCandidateShip(t, "TORWIND-24", "HAULER", 0, 10, 0) // 0-cargo, role HAULER
+	realHauler := newCandidateShip(t, "TORWIND-29", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{probe, realHauler}}
+
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
+	if err != nil {
+		t.Fatalf("FindIdleLightHaulers: %v", err)
+	}
+
+	if containsSymbol(symbols, "TORWIND-24") {
+		t.Fatalf("0-cargo hauler TORWIND-24 must be excluded from the general pool, got %v", symbols)
+	}
+	if len(symbols) != 1 || symbols[0] != "TORWIND-29" {
+		t.Fatalf("expected only the cargo-carrying hauler [TORWIND-29], got %v", symbols)
+	}
+}
+
+// ============================================================================
 // EXCLUSIVE MODE (sp-wq7r)
 //
 // Bug: with a dedicated fleet configured, the coordinator still combined
