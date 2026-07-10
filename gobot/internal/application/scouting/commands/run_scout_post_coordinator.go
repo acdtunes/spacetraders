@@ -189,6 +189,29 @@ type RunScoutPostCoordinatorHandler struct {
 	// driftMu for the same singleton-handler concurrency reason as repositionMu.
 	driftMu           sync.Mutex
 	driftPendingSince map[string]time.Time
+
+	// singleHullMarketSnapshot and singleHullDriftPendingSince give a SINGLE-hull
+	// standing post the same debounced market-set-drift respawn ykhl gave partitioned
+	// posts (sp-tzqv). A single-hull tour's market list is frozen at spawn time
+	// (ScoutTourCommand.Markets, set once in spawnTour) and never re-read afterward by
+	// either scout_tour execution mode — including executeStationaryScout, which has
+	// no circuit-boundary hook at all — so a market nn0y discovers after spawn is never
+	// toured until the post re-mans for an unrelated reason. ensureSingleHullFreshness
+	// closes that gap by tearing down and re-manning the post (which re-discovers
+	// markets fresh, see slotMarkets) once its live discovered set has drifted from
+	// the snapshot taken at the post's last manning, reusing driftKey's key shape and
+	// the SAME MarketDriftThreshold/MarketDriftMaxAgeSecs config ykhl introduced. Two
+	// SEPARATE maps — not two keys inside driftPendingSince/repositionBackoffUntil —
+	// because ensurePartitions unconditionally clears driftPendingSince[driftKey(...)]
+	// every tick for every budget<=1 post, which would wipe a shared entry before it
+	// could ever accumulate age. In-memory and reset on restart: a lost snapshot is
+	// treated as "adopt current markets, don't respawn" (see ensureSingleHullFreshness)
+	// rather than maximal drift, so a restart never triggers a respawn storm across
+	// every standing post fleet-wide. Guarded by singleHullMu for the same
+	// singleton-handler concurrency reason as driftMu.
+	singleHullMu                sync.Mutex
+	singleHullMarketSnapshot    map[string][]string
+	singleHullDriftPendingSince map[string]time.Time
 }
 
 // NewRunScoutPostCoordinatorHandler wires the coordinator. clock defaults to the
@@ -208,14 +231,16 @@ func NewRunScoutPostCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 	return &RunScoutPostCoordinatorHandler{
-		postRepo:               postRepo,
-		shipRepo:               shipRepo,
-		daemonClient:           daemonClient,
-		containerQuery:         containerQuery,
-		marketProvider:         marketProvider,
-		clock:                  clock,
-		repositionBackoffUntil: make(map[string]time.Time),
-		driftPendingSince:      make(map[string]time.Time),
+		postRepo:                    postRepo,
+		shipRepo:                    shipRepo,
+		daemonClient:                daemonClient,
+		containerQuery:              containerQuery,
+		marketProvider:              marketProvider,
+		clock:                       clock,
+		repositionBackoffUntil:      make(map[string]time.Time),
+		driftPendingSince:           make(map[string]time.Time),
+		singleHullMarketSnapshot:    make(map[string][]string),
+		singleHullDriftPendingSince: make(map[string]time.Time),
 	}
 }
 
@@ -345,8 +370,13 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// Partition pass (sp-enry): materialize each multi-probe post's disjoint tours.
 	// A no-op for single-hull posts and for multi-probe posts already partitioned at
 	// their current budget — it re-partitions ONLY on a hull-budget change.
+	//
+	// ensureSingleHullFreshness (sp-tzqv) runs right after: the single-hull mirror of
+	// the same market-set-drift check, so a triggered teardown is picked up as
+	// "unmanned" by pass 1/2 in THIS SAME tick, exactly like a partition re-cut is.
 	for _, post := range posts {
 		h.ensurePartitions(ctx, cmd, post)
+		h.ensureSingleHullFreshness(ctx, cmd, post)
 	}
 
 	// Pass 1: manned slots.
@@ -416,6 +446,12 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		tgt.slot.SetTourContainerID(tourID)
 		if err := h.postRepo.Upsert(ctx, tgt.post); err != nil {
 			common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Manned post %s but failed to persist assignment: %v", tgt.post.SystemSymbol, err), nil)
+		}
+		if tgt.post.HullBudget() <= 1 && tgt.post.Kind == domainScouting.PostKindStanding {
+			// Baseline the freshness snapshot to what this tour actually launched with
+			// (sp-tzqv), so the NEXT tick's drift check compares against reality
+			// instead of an empty/stale snapshot.
+			h.setSingleHullSnapshot(driftKey(cmd.PlayerID.Value(), tgt.post.SystemSymbol), markets)
 		}
 	}
 
@@ -730,6 +766,111 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 	})
 }
 
+// ensureSingleHullFreshness is the single-hull mirror of ensurePartitions' market-set
+// drift re-cut (sp-tzqv): a single-hull standing post's tour is spawned once with the
+// system's market list AT THAT MOMENT (spawnTour←slotMarkets←discoverMarkets) and
+// never re-reads it afterward — executeMultiMarketTour only re-derives markets at a
+// respawn, and executeStationaryScout (chosen when the system had exactly one known
+// market at spawn) has no circuit-boundary hook at all. A market nn0y discovers after
+// spawn is therefore never toured until the post re-mans for an unrelated reason. This
+// closes the gap the same way ykhl closed it for partitioned posts: tear the post down
+// (which pass 2 immediately re-mans, and slotMarkets/discoverMarkets gives the new
+// tour a FRESH market list) once the live discovered set has drifted from the snapshot
+// taken at last manning by at least MarketDriftThreshold markets, or the drift has
+// been pending at least MarketDriftMaxAgeSecs — reusing ykhl's exact thresholds/config
+// fields and diffMarketSets' set-diff semantics rather than inventing new ones.
+//
+// Scoped to standing, single-hull, CURRENTLY MANNED posts only:
+//   - multi-hull posts are ensurePartitions' job (skip: HullBudget() > 1);
+//   - sweep-once posts are a one-shot frontier sweep that auto-retires on completion,
+//     not a freshness target (skip: Kind != PostKindStanding);
+//   - an unmanned/repositioning post has no live tour to go stale — pass 2a gives it a
+//     fresh market list the moment it mans it (skip: AssignedHull/TourContainerID
+//     empty).
+func (h *RunScoutPostCoordinatorHandler) ensureSingleHullFreshness(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) {
+	if post.HullBudget() > 1 || post.Kind != domainScouting.PostKindStanding {
+		return
+	}
+	if post.AssignedHull == "" || post.TourContainerID == "" {
+		return
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	key := driftKey(cmd.PlayerID.Value(), post.SystemSymbol)
+
+	markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to discover markets to check freshness of post %s: %v", post.SystemSymbol, err), nil)
+		return
+	}
+	if len(markets) == 0 {
+		return // transient discovery hiccup — leave the tour running, don't touch state.
+	}
+
+	snapshot, ok := h.singleHullSnapshot(key)
+	if !ok {
+		// No baseline yet — a fresh handler (daemon restart lost the in-memory map).
+		// Adopt the CURRENT markets as the new baseline without respawning: an
+		// already-healthy tour surviving a restart is not maximal drift, and treating
+		// it as such would respawn every standing post fleet-wide on every restart
+		// (mirrors driftPendingSince's own restart-safety rationale).
+		h.setSingleHullSnapshot(key, markets)
+		return
+	}
+
+	drifted, oldMarketCount := diffMarketSets(snapshot, markets)
+	if len(drifted) == 0 {
+		h.clearSingleHullDriftPending(key)
+		return // stable: same markets — no respawn (mirrors the sp-enry/ykhl invariant).
+	}
+
+	threshold := cmd.MarketDriftThreshold
+	if threshold <= 0 {
+		threshold = defaultMarketDriftThreshold
+	}
+	maxAge := time.Duration(cmd.MarketDriftMaxAgeSecs) * time.Second
+	if maxAge <= 0 {
+		maxAge = defaultMarketDriftMaxAge
+	}
+	age := h.noteSingleHullDriftPending(key)
+
+	driftTrigger := ""
+	switch {
+	case len(drifted) >= threshold:
+		driftTrigger = "threshold"
+	case age >= maxAge:
+		driftTrigger = "age"
+	default:
+		// Below both triggers — debounce, exactly like ensurePartitions: keep touring
+		// the existing (now slightly stale) market list a while longer rather than
+		// thrash the fleet on every single new/removed market.
+		logger.Log("INFO", fmt.Sprintf("Scout post %s market set drifted (%d markets) — below re-cut threshold, waiting", post.SystemSymbol, len(drifted)), map[string]interface{}{
+			"action":         "scout_post_single_hull_drift_pending",
+			"system_symbol":  post.SystemSymbol,
+			"drifted":        len(drifted),
+			"drift_age_secs": int(age.Seconds()),
+		})
+		return
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Scout post %s market set drifted (%d markets, trigger=%s) — respawning single-hull tour", post.SystemSymbol, len(drifted), driftTrigger), map[string]interface{}{
+		"action":           "scout_post_single_hull_market_drift_detected",
+		"system_symbol":    post.SystemSymbol,
+		"trigger":          driftTrigger,
+		"drifted_markets":  len(drifted),
+		"old_market_count": oldMarketCount,
+		"new_market_count": len(markets),
+		"drift_age_secs":   int(age.Seconds()),
+	})
+
+	h.tearDownSlots(ctx, cmd, post)
+	if err := h.postRepo.Upsert(ctx, post); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to persist single-hull freshness teardown for post %s: %v", post.SystemSymbol, err), nil)
+	}
+	h.clearSingleHullDriftPending(key)
+	h.clearSingleHullSnapshot(key)
+}
+
 // marketSetDrift returns the symbols where a partitioned post's CURRENT discovered
 // market set differs from the union of its persisted partitions (sp-ykhl), plus the
 // size of that union (the "old market count" for the re-cut's observability log). A
@@ -739,14 +880,29 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 // removals debounce the same way, with no special-casing (per the bead). Sorted for
 // a deterministic re-cut log and test assertions.
 func marketSetDrift(post *domainScouting.ScoutPost, currentMarkets []string) (drifted []string, unionSize int) {
-	union := make(map[string]bool, len(post.PrimaryPartition))
-	for _, m := range post.PrimaryPartition {
-		union[m] = true
-	}
+	union := make([]string, 0, len(post.PrimaryPartition))
+	union = append(union, post.PrimaryPartition...)
 	for _, slot := range post.ExtraSlots {
-		for _, m := range slot.Partition {
-			union[m] = true
-		}
+		union = append(union, slot.Partition...)
+	}
+	return diffMarketSets(union, currentMarkets)
+}
+
+// diffMarketSets is marketSetDrift's set-diff core, factored out so a SINGLE-hull
+// post's freshness check (ensureSingleHullFreshness, sp-tzqv) can reuse the identical
+// symmetric-difference semantics against its own snapshot baseline instead of a
+// partitioned post's PrimaryPartition/ExtraSlots union — a single-hull post never
+// carries a partition (see ScoutPost.PrimaryPartition's doc comment), so it has no
+// union to read here. oldMarkets is the baseline (a partition union, or a prior
+// discovered-markets snapshot); currentMarkets is the live discovered set. Returns the
+// symbols present in one set but not the other — additions AND removals, no
+// special-casing — sorted for a deterministic log/test assertions, plus the
+// deduplicated size of oldMarkets for the caller's "old market count" observability
+// log.
+func diffMarketSets(oldMarkets, currentMarkets []string) (drifted []string, unionSize int) {
+	old := make(map[string]bool, len(oldMarkets))
+	for _, m := range oldMarkets {
+		old[m] = true
 	}
 	current := make(map[string]bool, len(currentMarkets))
 	for _, m := range currentMarkets {
@@ -754,17 +910,17 @@ func marketSetDrift(post *domainScouting.ScoutPost, currentMarkets []string) (dr
 	}
 
 	for _, m := range currentMarkets {
-		if !union[m] {
-			drifted = append(drifted, m) // discovered, but in no partition yet
+		if !old[m] {
+			drifted = append(drifted, m) // discovered, but not in the baseline yet
 		}
 	}
-	for m := range union {
+	for m := range old {
 		if !current[m] {
-			drifted = append(drifted, m) // partitioned, but no longer discovered
+			drifted = append(drifted, m) // in the baseline, but no longer discovered
 		}
 	}
 	sort.Strings(drifted)
-	return drifted, len(union)
+	return drifted, len(old)
 }
 
 // tearDownSlots stops every slot's tour/relay container and reclaims its hull ahead of
@@ -1276,6 +1432,67 @@ func (h *RunScoutPostCoordinatorHandler) clearDriftPending(key string) {
 	h.driftMu.Lock()
 	defer h.driftMu.Unlock()
 	delete(h.driftPendingSince, key)
+}
+
+// singleHullSnapshot returns the market set a single-hull post was last (re-)manned
+// with, and whether one is recorded yet (sp-tzqv). Absent after a fresh handler
+// (daemon restart) or before the post's first successful manning.
+func (h *RunScoutPostCoordinatorHandler) singleHullSnapshot(key string) ([]string, bool) {
+	h.singleHullMu.Lock()
+	defer h.singleHullMu.Unlock()
+	markets, ok := h.singleHullMarketSnapshot[key]
+	return markets, ok
+}
+
+// setSingleHullSnapshot records the market set a single-hull post is now toured
+// against (sp-tzqv) — called once when the post is freshly (re-)manned (pass 2a), and
+// again when ensureSingleHullFreshness adopts a post's current markets as a fresh
+// baseline (e.g. after a restart cleared the in-memory snapshot).
+func (h *RunScoutPostCoordinatorHandler) setSingleHullSnapshot(key string, markets []string) {
+	h.singleHullMu.Lock()
+	defer h.singleHullMu.Unlock()
+	if h.singleHullMarketSnapshot == nil {
+		h.singleHullMarketSnapshot = make(map[string][]string)
+	}
+	h.singleHullMarketSnapshot[key] = markets
+}
+
+// clearSingleHullSnapshot forgets a single-hull post's freshness baseline (sp-tzqv):
+// called once a drift-triggered respawn resolves it. The post's next manning
+// (pass 2a) sets a fresh one immediately, so this is momentary.
+func (h *RunScoutPostCoordinatorHandler) clearSingleHullSnapshot(key string) {
+	h.singleHullMu.Lock()
+	defer h.singleHullMu.Unlock()
+	delete(h.singleHullMarketSnapshot, key)
+}
+
+// noteSingleHullDriftPending records the FIRST tick a single-hull post's market set
+// was seen drifting from its snapshot (sp-tzqv) and returns how long the drift episode
+// has been pending — the single-hull mirror of noteDriftPending, backed by a SEPARATE
+// map (see singleHullDriftPendingSince's doc comment on the handler struct for why it
+// cannot share driftPendingSince).
+func (h *RunScoutPostCoordinatorHandler) noteSingleHullDriftPending(key string) time.Duration {
+	h.singleHullMu.Lock()
+	defer h.singleHullMu.Unlock()
+	if h.singleHullDriftPendingSince == nil {
+		h.singleHullDriftPendingSince = make(map[string]time.Time)
+	}
+	now := h.clock.Now()
+	since, ok := h.singleHullDriftPendingSince[key]
+	if !ok {
+		h.singleHullDriftPendingSince[key] = now
+		return 0
+	}
+	return now.Sub(since)
+}
+
+// clearSingleHullDriftPending forgets a single-hull post's pending-drift episode
+// (sp-tzqv): called once a respawn resolves it, the drift resolves on its own, or the
+// post is no longer single-hull-standing. A nil/absent entry is a harmless no-op.
+func (h *RunScoutPostCoordinatorHandler) clearSingleHullDriftPending(key string) {
+	h.singleHullMu.Lock()
+	defer h.singleHullMu.Unlock()
+	delete(h.singleHullDriftPendingSince, key)
 }
 
 // pickRepositionDestination chooses the reposition target waypoint from a post's

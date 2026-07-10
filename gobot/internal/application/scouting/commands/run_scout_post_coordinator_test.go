@@ -1645,15 +1645,17 @@ func TestScoutPost_MultiHull_MarketRemovalTriggersDrift(t *testing.T) {
 	require.Empty(t, handler.driftPendingSince, "the re-cut resolves and clears the pending-drift episode")
 }
 
-// hulls=1 finding: a single-hull post's ensurePartitions is a pure no-op regardless of
-// how much its market set grows — it never opens a drift episode and never calls the VRP
-// partitioner. (The single probe's OWN tour still snapshots its market list once at
-// spawn rather than re-reading it per circuit — see scout_tour.go's rotateTourToStart /
-// ScoutTourCommand.Markets — so the SAME staleness this bead fixes for partitioned posts
-// can still occur for a single-hull post's tour. That snapshot is a different code path
-// than partitioning, out of this bead's explicit scope ("a partitioned (hulls>1) post"),
-// and is reported rather than fixed here.)
-func TestScoutPost_SingleHull_MarketGrowthNeverTriggersPartitionOrDrift(t *testing.T) {
+// hulls=1 finding (updated by sp-tzqv): a single-hull post's ensurePartitions is a pure
+// no-op regardless of how much its market set grows — it never opens a MULTI-hull drift
+// episode and never calls the VRP partitioner. That part of the original sp-ykhl finding
+// still holds. What has changed: the single probe's OWN tour used to snapshot its market
+// list once at spawn and never revisit a newly discovered market until the tour respawned
+// for an unrelated reason. ensureSingleHullFreshness (see the section below) closes that
+// gap by reusing this exact debounce — same MarketDriftThreshold/MarketDriftMaxAgeSecs
+// config, same defaults — against a per-post snapshot baseline instead of a partition
+// union, so THIS test's growth scenario, which used to be silently invisible to the single
+// probe, now also triggers a tour respawn.
+func TestScoutPost_SingleHull_NeverPartitionsButDoesRespawnOnMarketGrowth(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding} // Hulls unset → single-hull
 	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
@@ -1673,14 +1675,13 @@ func TestScoutPost_SingleHull_MarketGrowthNeverTriggersPartitionOrDrift(t *testi
 
 	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
 	require.Equal(t, 0, rc.calls)
-	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
-	for _, id := range daemonClient.started {
-		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
-	}
-	cq.byStatus["RUNNING"] = running
+	require.Len(t, daemonClient.started, 1)
+	firstTourID := daemonClient.started[0]
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: firstTourID, Status: "RUNNING"}}
 
 	// The market set grows well past both the count threshold and (via clock.Advance)
-	// the age ceiling — a partitioned post would re-cut; a single-hull post must not care.
+	// the age ceiling — a partitioned post would re-cut; a single-hull post instead
+	// respawns its single probe's tour over the grown market list (sp-tzqv).
 	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3", "X1-GZ7-M4", "X1-GZ7-M5")
 	clock.Advance(2 * time.Hour)
 
@@ -1690,5 +1691,292 @@ func TestScoutPost_SingleHull_MarketGrowthNeverTriggersPartitionOrDrift(t *testi
 	got := postRepo.find("X1-GZ7")
 	require.Empty(t, got.ExtraSlots, "still no extra slots")
 	require.Empty(t, got.PrimaryPartition, "still no partition — the single probe tours all markets directly")
-	require.Empty(t, handler.driftPendingSince, "single-hull posts never open a drift episode")
+	require.Empty(t, handler.driftPendingSince, "single-hull posts never open a MULTI-hull drift episode")
+	require.Contains(t, daemonClient.stopped, firstTourID, "the stale single-hull tour is torn down once growth crosses the threshold/age debounce")
+	require.Len(t, daemonClient.persistedTourCmds, 2, "the probe respawns exactly once over the grown market set")
+	require.Len(t, daemonClient.persistedTourCmds[1].Markets, 5, "the respawned tour covers all 5 discovered markets")
+	require.Equal(t, "SAT-1", got.AssignedHull, "the same hull re-mans the same post")
+	require.Empty(t, handler.singleHullDriftPendingSince, "the respawn resolves and clears the single-hull pending-drift episode")
+}
+
+// ---- tests: sp-tzqv single-hull freshness (debounced respawn) -------------
+//
+// ykhl gave PARTITIONED (hulls>1) posts a debounced re-cut when the market set drifts, but
+// a single-hull post's probe builds its tour ONCE at spawn — a market discovered
+// afterward (nn0y virgin discovery runs continuously) was never visited until the tour
+// respawned for an unrelated reason. ensureSingleHullFreshness closes that gap by reusing
+// ykhl's exact debounce config (MarketDriftThreshold/MarketDriftMaxAgeSecs, falling back to
+// the same defaults) against a per-post snapshot baseline instead of a partition union, and
+// respawning the single probe's tour — never a VRP partition — once the threshold or age
+// trigger fires. Scoped to standing, currently-manned, single-hull posts only: multi-hull
+// is ensurePartitions' job, sweep-once is a one-shot frontier sweep (not a freshness
+// target), and an unmanned/repositioning post gets a fresh market list the moment pass 2a
+// mans it, with no freshness check needed.
+//
+// Every test below needs a first tick to spawn the tour and record the baseline snapshot
+// (via pass 2a) BEFORE ensureSingleHullFreshness can run a real diff on a later tick —
+// ensureSingleHullFreshness runs early in reconcileOnce, before the post is manned, so it
+// no-ops on a post's very first (unmanned) tick.
+
+// Debounced respawn STABILITY: with the market set unchanged, repeated reconcile ticks
+// must never respawn the single probe's tour and must never even open a pending-drift
+// episode.
+func TestScoutPost_SingleHull_MarketDriftStableWhenUnchanged(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2", "X1-GZ7-M3"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Len(t, daemonClient.started, 1, "the initial tour spawns once")
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: daemonClient.started[0], Status: "RUNNING"}}
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	}
+
+	require.Len(t, daemonClient.started, 1, "an unchanged market set must never respawn, across any number of ticks")
+	require.Empty(t, daemonClient.stopped, "the healthy tour is never torn down")
+	require.Empty(t, handler.singleHullDriftPendingSince, "no drift episode is ever opened when the market set never differs from the snapshot")
+}
+
+// Debounce COUNT floor: a market discovered post-spawn, while still below both the count
+// threshold and the age ceiling, must not respawn the tour yet — it is tracked as pending,
+// not silently dropped and not immediately chased either.
+func TestScoutPost_SingleHull_MarketDriftBelowThresholdAndAgeNoRespawn(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: daemonClient.started[0], Status: "RUNNING"}}
+
+	// One new market appears — below the default count threshold (2) — no time passes.
+	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3")
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.started, 1, "one market below both the count threshold and the age ceiling must not respawn")
+	require.Empty(t, daemonClient.stopped, "the tour is not torn down while drift is only pending")
+	require.NotEmpty(t, handler.singleHullDriftPendingSince, "the drift is tracked as pending even though it hasn't fired yet")
+}
+
+// Debounce COUNT trigger: once the accumulated new-market count reaches the configured
+// threshold (default 2), the tour respawns on that very tick — no time needs to pass —
+// over the fresh full market list.
+func TestScoutPost_SingleHull_MarketDriftThresholdTriggersRespawn(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	firstTourID := daemonClient.started[0]
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: firstTourID, Status: "RUNNING"}}
+
+	// Two new markets appear — reaching the default threshold — no time needs to pass.
+	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3", "X1-GZ7-M4")
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Contains(t, daemonClient.stopped, firstTourID, "reaching the count threshold tears down the stale tour")
+	require.Len(t, daemonClient.started, 2, "reaching the count threshold respawns exactly once")
+	require.Len(t, daemonClient.persistedTourCmds, 2)
+	require.Len(t, daemonClient.persistedTourCmds[1].Markets, 4, "the respawned tour covers the full grown market set")
+	got := postRepo.find("X1-GZ7")
+	require.NotEqual(t, firstTourID, got.TourContainerID, "the post points at the new tour")
+	require.Equal(t, "SAT-1", got.AssignedHull, "the same hull re-mans the same post")
+	require.Empty(t, handler.singleHullDriftPendingSince, "the respawn resolves and clears the pending-drift episode")
+}
+
+// Debounce AGE trigger: a single new market that never reaches the count threshold on its
+// own still forces a respawn once it has been pending at least the configured max age
+// (default 60m) — nn0y virgin discovery must not be able to strand a single-hull post's
+// new market forever just by trickling markets in one at a time.
+func TestScoutPost_SingleHull_MarketDriftAgeTriggersRespawn(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	firstTourID := daemonClient.started[0]
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: firstTourID, Status: "RUNNING"}}
+
+	// One new market appears — never reaches the count threshold on its own.
+	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3")
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Len(t, daemonClient.started, 1, "one market below threshold does not yet respawn")
+
+	clock.Advance(61 * time.Minute)
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Contains(t, daemonClient.stopped, firstTourID, "a single market past the max age respawns even though it never reached the count threshold")
+	require.Len(t, daemonClient.started, 2)
+	require.Len(t, daemonClient.persistedTourCmds, 2)
+	require.Len(t, daemonClient.persistedTourCmds[1].Markets, 3, "the respawned tour covers the grown market set")
+	require.Empty(t, handler.singleHullDriftPendingSince, "the respawn resolves and clears the pending-drift episode")
+}
+
+// Debounce folds REMOVALS into the same drift check as additions: a market that
+// disappears from the discovered set counts toward the same threshold/age trigger as a
+// newly discovered one.
+func TestScoutPost_SingleHull_MarketRemovalTriggersDrift(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2", "X1-GZ7-M3", "X1-GZ7-M4"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	firstTourID := daemonClient.started[0]
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: firstTourID, Status: "RUNNING"}}
+
+	// Two markets stop being discovered (e.g. no longer carry a marketplace trait) —
+	// removals reach the same default count threshold as additions.
+	mp.markets["X1-GZ7"] = []string{"X1-GZ7-M1", "X1-GZ7-M2"}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Contains(t, daemonClient.stopped, firstTourID, "removals reaching the threshold respawn exactly like additions")
+	require.Len(t, daemonClient.persistedTourCmds, 2)
+	require.Len(t, daemonClient.persistedTourCmds[1].Markets, 2, "the respawned tour reflects the shrunken market set")
+	require.Empty(t, handler.singleHullDriftPendingSince, "the respawn resolves and clears the pending-drift episode")
+}
+
+// Regression: sweep-once posts are a one-shot frontier sweep, not a freshness target —
+// ensureSingleHullFreshness must never touch one, no matter how much its market set
+// drifts. (A sweep-once post's tour is finite and self-retires on completion; respawning
+// it mid-sweep would restart a scan that was already making progress.)
+func TestScoutPost_SingleHull_SweepOnceUnaffectedByMarketGrowth(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindSweepOnce}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	firstTourID := daemonClient.started[0]
+	cq.byStatus["RUNNING"] = []persistence.ContainerSummary{{ID: firstTourID, Status: "RUNNING"}}
+
+	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3", "X1-GZ7-M4")
+	clock.Advance(2 * time.Hour)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Empty(t, daemonClient.stopped, "a sweep-once tour is never torn down for market drift")
+	require.Len(t, daemonClient.started, 1, "a sweep-once tour is never respawned for market drift")
+	require.Equal(t, firstTourID, postRepo.find("X1-GZ7").TourContainerID, "the sweep-once tour keeps running unchanged")
+	require.Empty(t, handler.singleHullDriftPendingSince, "sweep-once posts never open a single-hull drift episode")
+}
+
+// Restart safety: a fresh handler (the daemon just restarted, so the in-memory
+// singleHullMarketSnapshot map is empty) must NOT treat an already-healthy post as
+// maximally drifted just because it has no baseline yet — it adopts the current markets
+// as the new baseline and leaves the live tour alone. Respawning every standing post
+// fleet-wide on every daemon restart would be a self-inflicted outage.
+func TestScoutPost_SingleHull_RestartAdoptsCurrentMarketsWithoutRespawn(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	// Reloaded from persistence: already manned, tour already running, no in-memory
+	// snapshot for this fresh handler instance.
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding,
+		AssignedHull: "SAT-1", TourContainerID: "live-tour",
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	require.NoError(t, sat.AssignToContainer("live-tour", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	// The system has since grown past what any threshold/age debounce would tolerate —
+	// but there is no baseline snapshot yet to diff against.
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2", "X1-GZ7-M3", "X1-GZ7-M4", "X1-GZ7-M5"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-tour", ContainerType: "SCOUT", Status: "RUNNING"}},
+	}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Empty(t, daemonClient.stopped, "no baseline yet means adopt, not respawn")
+	require.Empty(t, daemonClient.started, "the live tour is left running untouched")
+	require.Equal(t, "live-tour", postRepo.find("X1-GZ7").TourContainerID, "the post still points at the pre-restart tour")
+
+	// The now-established baseline is exactly the current (grown) market set: a REAL
+	// drift from here on is measured against it, not against the pre-restart state.
+	snapshot, ok := handler.singleHullSnapshot(driftKey(1, "X1-GZ7"))
+	require.True(t, ok, "a baseline is recorded on first sight after restart")
+	require.Len(t, snapshot, 5)
 }
