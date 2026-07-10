@@ -38,7 +38,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Live agent credits from the daemon gauge.",
+      "description": "Latest balance_after from the transaction ledger (exact; updates with every transaction). The daemon gauge is P14 \u2014 it oscillates 0<->balance (conflicting writers).",
       "fieldConfig": {
         "defaults": {
           "color": {
