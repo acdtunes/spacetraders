@@ -407,8 +407,25 @@ func (h *RunTourCoordinatorHandler) Handle(ctx context.Context, request common.R
 	return response, nil
 }
 
-func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse) error {
+func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse) (err error) {
 	logger := common.LoggerFromContext(ctx)
+
+	// sp-fbih P11/P12: observe the tour_run's terminal outcome exactly once, and ONLY on an
+	// HONEST completion (err == nil). A resumable exit — ctx-cancel on shutdown, the 7z7j
+	// fail-closed treasury pause, a travel error mid-reposition — returns non-nil and sets
+	// no ExitReason; the container is re-adopted and runs again, so counting an exit or
+	// observing a truncated duration there would double-count one logical run. Every
+	// err==nil return sets ExitReason first (unavailable/starvation/iterations), so the
+	// counter and the histogram move together. Pure observation after the loop has already
+	// decided (RULINGS #4); a metrics miss cannot alter the outcome.
+	tourStart := h.clock.Now()
+	defer func() {
+		if err != nil || response.ExitReason == "" {
+			return
+		}
+		metrics.RecordTourExit(cmd.PlayerID, response.ExitReason)
+		metrics.ObserveTourDuration(cmd.PlayerID, h.clock.Now().Sub(tourStart).Seconds())
+	}()
 
 	// Stamp every ledger row this run's buy/sell legs write with operation_type=
 	// "tour" (sp-lgnh). The delegated cargo-tx path reads this operation context
@@ -553,6 +570,10 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 				continue
 			}
 			tourMaxSpend = resolved
+			// sp-fbih P13: record the RESOLVED dynamic cap (25% of live treasury) the exact
+			// value nj2b's Guards panel proxies with a treasury x 0.25 line. Only on the dynamic
+			// path — an explicit --max-spend constant has nothing dynamic to track.
+			metrics.SetTourResolvedMaxSpend(cmd.PlayerID, resolved)
 		}
 
 		tradesBefore := response.TradesExecuted
@@ -605,6 +626,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		if noProgressStreak < tourStarvationLimit {
 			continue
 		}
+
+		// sp-fbih P4: the ground just tapped out (3-strike confirmed). Counted HERE, before the
+		// reposition attempt, so it measures the ground rich->tapped cadence whether or not a
+		// reposition then rescues the run — distinct from tour_exit_total{reason=starvation},
+		// which fires only when a tap-out becomes the final honest exit. A productive tour
+		// resets the streak, so this counts once per margins-death episode.
+		metrics.RecordTourMarginsDeath(cmd.PlayerID)
 
 		// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
 		// renewable ground (sp-zhii): rank jump-reachable systems by expected tour margin,
@@ -942,6 +970,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	if guardOn {
 		floorMaxUnits := headroom / liveAsk // floor-respecting max; headroom may be <= 0 (skip)
 		if floorMaxUnits <= 0 {
+			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "skip") // sp-fbih P5: floor bound the whole tranche
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy of %d %s @ %d would breach working-capital floor - live balance %d, reserve %d, even 1 unit pierces - skipping, will re-plan",
 				legIdx, units, trade.Good, liveAsk, liveBalance, reserve), map[string]interface{}{
 				"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
@@ -949,6 +978,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 			return false, nil
 		}
 		if floorMaxUnits < units {
+			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "shrink") // sp-fbih P5: floor cut the tranche to fit
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units @ %d to respect working-capital floor (live balance %d, reserve %d)",
 				legIdx, trade.Good, units, floorMaxUnits, liveAsk, liveBalance, reserve), map[string]interface{}{
 				"leg": legIdx, "good": trade.Good, "planned_units": units, "floor_max_units": floorMaxUnits, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,

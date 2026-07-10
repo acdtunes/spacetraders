@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -118,12 +119,14 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
+		metrics.RecordTourReposition(cmd.PlayerID, "failed") // sp-fbih P3: attempted, errored (resumable)
 		return false, err
 	}
 	currentSystem := ship.CurrentLocation().SystemSymbol
 
 	candidates := h.buildRepositionCandidates(ctx, cmd, currentSystem)
 	if len(candidates) == 0 {
+		metrics.RecordTourReposition(cmd.PlayerID, "no_candidate") // sp-fbih P3: map-wide margin exhaustion signal
 		logger.Log("INFO", fmt.Sprintf("Reposition: no jump-reachable candidate system with cached market data from %s - exiting honestly (margins died)", currentSystem), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem,
 		})
@@ -173,6 +176,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	if best == nil || best.freshProfit < floor {
 		// Nothing clears the floor: the jump costs more than the best destination is worth
 		// (RULINGS #5) — exit honestly, exactly as pre-sp-zhii.
+		metrics.RecordTourReposition(cmd.PlayerID, "no_candidate") // sp-fbih P3: candidates ranked, none worth the jump
 		return false, nil
 	}
 
@@ -188,6 +192,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	if terr := h.legs.RepositionToWaypoint(ctx, cmd.ShipSymbol, best.waypoint, cmd.PlayerID); terr != nil {
 		// Leave the persisted in-progress state set: a restart resumes toward the same
 		// destination. Surface the error resumable (the runner re-adopts and retries).
+		metrics.RecordTourReposition(cmd.PlayerID, "failed") // sp-fbih P3: jump attempted, travel errored (resumable)
 		return false, fmt.Errorf("reposition jump of %s to %s failed: %w", cmd.ShipSymbol, best.waypoint, terr)
 	}
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})
@@ -196,6 +201,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	episode.fromSystem = currentSystem
 	episode.toSystem = best.system
 	response.Repositions++
+	metrics.RecordTourReposition(cmd.PlayerID, "success") // sp-fbih P3: hull rotated to a fresh ground
 	return true, nil
 }
 

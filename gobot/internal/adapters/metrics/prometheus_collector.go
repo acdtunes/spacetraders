@@ -49,6 +49,11 @@ var (
 	// coordinator emits the cap-binding + ladder-incident counters through it.
 	globalAbsorptionCollector *AbsorptionMetricsCollector
 
+	// globalTourCollector is the singleton tour instrumentation collector (sp-fbih).
+	// Set by SetGlobalTourCollector() when metrics are enabled; the tour coordinator emits
+	// the reposition/margins-death/reserve-floor/exit/duration/resolved-cap series through it.
+	globalTourCollector *TourMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -294,6 +299,66 @@ func RecordAbsorptionCapBinding(playerID int, side, outcome string) {
 func RecordAbsorptionLadderIncident(playerID int, goodSymbol string) {
 	if globalAbsorptionCollector != nil {
 		globalAbsorptionCollector.RecordLadderIncident(playerID, goodSymbol)
+	}
+}
+
+// SetGlobalTourCollector sets the global tour instrumentation collector (sp-fbih).
+func SetGlobalTourCollector(collector *TourMetricsCollector) {
+	globalTourCollector = collector
+}
+
+// GetGlobalTourCollector returns the global tour instrumentation collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalTourCollector() *TourMetricsCollector {
+	return globalTourCollector
+}
+
+// RecordTourReposition records one margins-death reposition evaluation globally
+// (sp-fbih P3). No-op when metrics are disabled, so a metrics miss never touches the
+// trade path (RULINGS #4).
+func RecordTourReposition(playerID int, outcome string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordReposition(playerID, outcome)
+	}
+}
+
+// RecordTourMarginsDeath records one confirmed 3-strike ground tap-out globally
+// (sp-fbih P4). No-op when metrics are disabled.
+func RecordTourMarginsDeath(playerID int) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordMarginsDeath(playerID)
+	}
+}
+
+// RecordTourReserveFloorEngagement records one buy-time working-capital floor engagement
+// globally (sp-fbih P5). No-op when metrics are disabled.
+func RecordTourReserveFloorEngagement(playerID int, action string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordReserveFloorEngagement(playerID, action)
+	}
+}
+
+// RecordTourExit records one tour-run terminal completion by exit reason globally
+// (sp-fbih P11). No-op when metrics are disabled.
+func RecordTourExit(playerID int, reason string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordExit(playerID, reason)
+	}
+}
+
+// ObserveTourDuration observes one tour-run wall-time (seconds) globally at honest
+// completion (sp-fbih P12). No-op when metrics are disabled.
+func ObserveTourDuration(playerID int, seconds float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.ObserveDuration(playerID, seconds)
+	}
+}
+
+// SetTourResolvedMaxSpend records the dynamic per-tour spend cap globally as just resolved
+// (sp-fbih P13). No-op when metrics are disabled.
+func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
+	if globalTourCollector != nil {
+		globalTourCollector.SetResolvedMaxSpend(playerID, maxSpend)
 	}
 }
 
