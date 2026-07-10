@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -61,9 +62,19 @@ func calculateCooldownWaitBudget(remaining time.Duration, marginFactor float64, 
 // 1s - that resumes a cooldown persisted from a PREVIOUS session and has no
 // fresher number to scale from; here the jump response just told us the
 // exact cooldown synchronously, so the ETA-scaled budget applies cleanly).
-func (h *RunTradeRouteCoordinatorHandler) waitForJumpCooldown(ctx context.Context, cooldownSeconds int) {
+//
+// sp-wc5h: the wait is now ctx-interruptible (see sleepInterruptibly). A bare
+// h.clock.Sleep(budget) here was the tour-death exit path — a daemon shutdown
+// while a tour was settling out a jump cooldown blocked the whole graceful
+// window on a ~440s sleep the STOPPING flag could not reach (the wait sits
+// mid-iteration, not between iterations), then force-killed the goroutine
+// mid-sleep. Racing the sleep against ctx.Done() lets the iteration take
+// execute()'s ctx-cancel path instead — exiting RUNNING/resumable so the tour
+// is re-adopted at the next boot rather than stranded. Returns ctx.Err() on
+// cancellation so travel() aborts the circuit immediately.
+func (h *RunTradeRouteCoordinatorHandler) waitForJumpCooldown(ctx context.Context, cooldownSeconds int) error {
 	if cooldownSeconds <= 0 {
-		return
+		return nil
 	}
 	remaining := time.Duration(cooldownSeconds) * time.Second
 	budget := calculateCooldownWaitBudget(remaining, DefaultCooldownMarginFactor, DefaultCooldownMinMargin)
@@ -74,7 +85,118 @@ func (h *RunTradeRouteCoordinatorHandler) waitForJumpCooldown(ctx context.Contex
 		"cooldown_seconds":    cooldownSeconds,
 		"wait_budget_seconds": int(budget.Seconds()),
 	})
-	h.clock.Sleep(budget)
+	return h.sleepInterruptibly(ctx, budget)
+}
+
+// sleepInterruptibly blocks for d via the handler's injected clock (instant
+// under the test MockClock, a real sleep in production) but races it against
+// ctx.Done(), so a Stop/shutdown never has to wait the full cooldown budget
+// out. The same shape as the sp-l709 factory park wait and the container
+// runner's sleepOrCancel: the detached sleeper goroutine outlives an early
+// return by at most one budget before exiting, so it cannot leak. Returns
+// ctx.Err() when the context is cancelled first, nil when the sleep completed.
+func (h *RunTradeRouteCoordinatorHandler) sleepInterruptibly(ctx context.Context, d time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		h.clock.Sleep(d)
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// jumpHop dispatches ONE jump hop, riding out an active jump cooldown instead
+// of crashing on it (sp-wc5h). A tour re-adopted mid-circuit after a daemon
+// restart (RULING #2) re-attempts the jump while the hull is STILL cooling down
+// from the hop it made just before the restart — the ship's cooldown clock is
+// persisted (jump_ship.go SetCooldown), so the live jump API rejects the
+// re-jump with 409 code-4000 "Ship action is still on cooldown for N
+// second(s)". The pre-sp-wc5h path surfaced that 409 as a hard iteration error,
+// and the container runner's escalating restart budget (5s+30s+120s ≈ 155s)
+// cannot outlast a jump cooldown of 226–775s, so the tour crashed FAILED and
+// the hull stranded idle (the tour-death incident: TORWIND-2B-a2856bfc crashed
+// on a 325s-remaining cooldown; TORWIND-2C-52422c31 burned its whole restart
+// budget riding out an 88s one). Riding it — parse the remaining cooldown from
+// the 409, wait it out ctx-interruptibly, retry — resumes the circuit the
+// moment the cooldown clears, exactly as the gas siphon worker already does
+// (parseCooldownFromError). Bounded by maxCooldownRides so a jump that keeps
+// failing for any OTHER reason still surfaces the error rather than looping;
+// a non-cooldown error propagates on the first attempt, so a genuine jump
+// failure is never masked as a cooldown.
+func (h *RunTradeRouteCoordinatorHandler) jumpHop(ctx context.Context, cmd *navCmd.JumpShipCommand) (*navCmd.JumpShipResponse, error) {
+	const maxCooldownRides = 3
+	for ride := 0; ; ride++ {
+		resp, err := h.mediator.Send(ctx, cmd)
+		if err != nil {
+			cooldown := parseJumpCooldownRemaining(err)
+			if cooldown <= 0 || ride >= maxCooldownRides {
+				return nil, err
+			}
+			logger := common.LoggerFromContext(ctx)
+			logger.Log("INFO", "Jump still on cooldown from a pre-restart hop — riding it out before retrying (resume-safe)", map[string]interface{}{
+				"action":             "jump_cooldown_ride",
+				"ship_symbol":        cmd.ShipSymbol,
+				"destination_system": cmd.DestinationSystem,
+				"cooldown_seconds":   int(cooldown.Seconds()),
+				"ride":               ride + 1,
+			})
+			// Wait the reported remaining plus the same jitter margin the
+			// post-jump budget uses, so a rounded-down remainingSeconds or minor
+			// clock skew doesn't drop the retry back inside the cooldown.
+			if werr := h.sleepInterruptibly(ctx, cooldown+DefaultCooldownMinMargin); werr != nil {
+				return nil, werr
+			}
+			continue
+		}
+		jumpResp, ok := resp.(*navCmd.JumpShipResponse)
+		if !ok {
+			return nil, fmt.Errorf("unexpected jump response type %T", resp)
+		}
+		return jumpResp, nil
+	}
+}
+
+// parseJumpCooldownRemaining extracts the remaining cooldown from a jump 409
+// (SpaceTraders error code 4000). Returns 0 for any non-cooldown error, so
+// callers ride ONLY a genuine cooldown and propagate everything else. Mirrors
+// the gas package's parseCooldownFromError (run_siphon_worker.go) — deliberately
+// duplicated rather than shared to keep this fix inside the travel/runner files;
+// the wire format it parses is the stable SpaceTraders cooldown error:
+//
+//	API error (status 409): {"error":{"code":4000,...,"data":{"cooldown":{"remainingSeconds":88,...}}}}
+func parseJumpCooldownRemaining(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "cooldown") {
+		return 0
+	}
+	jsonStart := strings.Index(errStr, "{")
+	if jsonStart == -1 {
+		return 0
+	}
+	var apiErr struct {
+		Error struct {
+			Code int `json:"code"`
+			Data struct {
+				Cooldown struct {
+					RemainingSeconds int `json:"remainingSeconds"`
+				} `json:"cooldown"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(errStr[jsonStart:]), &apiErr) != nil {
+		return 0
+	}
+	if apiErr.Error.Code != 4000 || apiErr.Error.Data.Cooldown.RemainingSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(apiErr.Error.Data.Cooldown.RemainingSeconds) * time.Second
 }
 
 // travel moves the ship toward destinationWaypoint, crossing a system
@@ -176,7 +298,7 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	totalHops := len(path) - 1
 	for i := 1; i < len(path); i++ {
 		nextSystem := path[i]
-		resp, jerr := h.mediator.Send(ctx, &navCmd.JumpShipCommand{
+		jumpResp, jerr := h.jumpHop(ctx, &navCmd.JumpShipCommand{
 			ShipSymbol:        ship.ShipSymbol(),
 			DestinationSystem: nextSystem,
 			PlayerID:          &playerID,
@@ -185,11 +307,9 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 		if jerr != nil {
 			return ship, fmt.Errorf("jump %s to %s (hop %d of %d toward %s) failed: %w", ship.ShipSymbol(), nextSystem, i, totalHops, destSystem, jerr)
 		}
-		jumpResp, ok := resp.(*navCmd.JumpShipResponse)
-		if !ok {
-			return ship, fmt.Errorf("unexpected jump response type %T", resp)
+		if werr := h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds); werr != nil {
+			return ship, werr
 		}
-		h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds)
 	}
 
 	freshShip, err := h.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))

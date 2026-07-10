@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,8 +139,14 @@ type travelMediator struct {
 	gateQueries []*shipQueries.FindNearestJumpGateQuery
 	jumpResp    *navCmd.JumpShipResponse
 	jumpErr     error
-	gateResp    *shipQueries.FindNearestJumpGateResponse
-	gateErr     error
+	// jumpErrSeq, when non-empty, is consumed one entry per jump (front to back)
+	// BEFORE falling back to jumpErr/jumpResp — a nil entry means "this jump
+	// succeeds (return jumpResp)", a non-nil entry is returned as the jump error.
+	// It lets a test make the FIRST jump 409 on cooldown and a later retry succeed
+	// (sp-wc5h resume-ride). A nil/empty slice leaves every existing test unchanged.
+	jumpErrSeq []error
+	gateResp   *shipQueries.FindNearestJumpGateResponse
+	gateErr    error
 }
 
 func (m *travelMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
@@ -152,6 +159,14 @@ func (m *travelMediator) Send(ctx context.Context, request common.Request) (comm
 		return m.gateResp, nil
 	case *navCmd.JumpShipCommand:
 		m.jumps = append(m.jumps, cmd)
+		if len(m.jumpErrSeq) > 0 {
+			e := m.jumpErrSeq[0]
+			m.jumpErrSeq = m.jumpErrSeq[1:]
+			if e != nil {
+				return nil, e
+			}
+			return m.jumpResp, nil
+		}
 		if m.jumpErr != nil {
 			return nil, m.jumpErr
 		}
@@ -603,4 +618,136 @@ func TestTravel_CrossSystem_DepartureGateLookupFails_ReturnsWrappedError(t *test
 	if len(clock.slept) != 0 {
 		t.Fatalf("a failed departure hop must never reach the cooldown wait, got %d sleeps", len(clock.slept))
 	}
+}
+
+// --- sp-wc5h: cooldown-death exit paths ---
+
+// THE resume-death fix. A tour re-adopted mid-circuit after a daemon restart
+// re-attempts its jump while the hull is STILL cooling down from the hop it made
+// just before the restart, so the jump verb returns 409 code-4000 "still on
+// cooldown". travel() must NOT surface that as a hard error — the container
+// runner's ~155s restart budget cannot outlast a 226–775s jump cooldown, so the
+// tour would crash FAILED and strand the hull idle (the incident:
+// TORWIND-2B-a2856bfc crashed on a 325s cooldown). Instead travel() parses the
+// remaining cooldown, waits it out, and retries the jump, resuming the circuit
+// the moment it clears — then settles the successful jump's own cooldown.
+func TestTravel_CrossSystem_JumpOnCooldown_RidesRemainingThenRetries(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
+	reloaded := newTravelShipAt(t, "HAULER-1", "X1-BBB-GATE")
+	cooldownErr := errors.New(`failed to execute jump: failed to jump ship: API error (status 409): {"error":{"code":4000,"message":"Ship action is still on cooldown for 42 second(s).","data":{"cooldown":{"shipSymbol":"HAULER-1","totalSeconds":352,"remainingSeconds":42,"expiration":"2026-07-10T12:00:00.000Z"}},"requestId":"x"}}`)
+	mediator := &travelMediator{
+		// First jump 409s on cooldown; the retry after the ride succeeds.
+		jumpErrSeq: []error{cooldownErr, nil},
+		jumpResp:   &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
+	}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+
+	got, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1)
+	if err != nil {
+		t.Fatalf("expected travel to ride the cooldown and succeed, got error: %v", err)
+	}
+
+	// Two jump attempts: the 409, then the successful retry.
+	if len(mediator.jumps) != 2 {
+		t.Fatalf("expected exactly two JumpShipCommands (409 then retry), got %d", len(mediator.jumps))
+	}
+
+	// Two sleeps: [1] the ride — reported remaining (42s) plus the jitter margin;
+	// [2] the post-jump settle — the ETA-scaled budget for the successful jump's
+	// own reported cooldown (60s).
+	wantRide := 42*time.Second + DefaultCooldownMinMargin
+	wantSettle := calculateCooldownWaitBudget(60*time.Second, DefaultCooldownMarginFactor, DefaultCooldownMinMargin)
+	if len(clock.slept) != 2 || clock.slept[0] != wantRide || clock.slept[1] != wantSettle {
+		t.Fatalf("expected sleeps [ride %v, settle %v], got %v", wantRide, wantSettle, clock.slept)
+	}
+
+	if got != reloaded {
+		t.Fatal("expected travel() to return the reloaded ship after riding the cooldown")
+	}
+}
+
+// A non-cooldown jump failure must NOT be mistaken for a cooldown and ridden —
+// it propagates on the first attempt (exactly one jump, no wait), so a genuine
+// jump failure is never masked into an unbounded ride.
+func TestTravel_CrossSystem_NonCooldownJumpError_PropagatesWithoutRiding(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
+	mediator := &travelMediator{jumpErr: errors.New("API error (status 422): waypointSymbol Required")}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{}, nil, nil, clock, nil)
+
+	_, err := handler.travel(context.Background(), ship, "X1-BBB-MARKET", 1)
+	if err == nil {
+		t.Fatal("expected a non-cooldown jump error to surface")
+	}
+	if len(mediator.jumps) != 1 {
+		t.Fatalf("a non-cooldown error must propagate on the first attempt, got %d jumps", len(mediator.jumps))
+	}
+	if len(clock.slept) != 0 {
+		t.Fatalf("a non-cooldown error must never trigger a cooldown ride, got %d sleeps", len(clock.slept))
+	}
+}
+
+// THE shutdown-death fix. The post-jump cooldown wait must be ctx-interruptible:
+// a daemon shutdown while a tour is settling out a jump cooldown has to return
+// promptly (so execute() takes its ctx-cancel resumable path and the hull is
+// re-adopted next boot), not block the whole graceful window on a bare ~440s
+// sleep and get force-killed mid-sleep (the pre-sp-wc5h tour-death shape).
+func TestTravel_CrossSystem_CooldownWaitCancelled_ReturnsPromptly(t *testing.T) {
+	clock := &travelBlockingClock{
+		blockEntered: make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	// Let the abandoned sleeper goroutine drain once assertions are done.
+	defer close(clock.release)
+
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
+	reloaded := newTravelShipAt(t, "HAULER-1", "X1-BBB-GATE")
+	mediator := &travelMediator{
+		jumpResp: &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
+	}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := handler.travel(ctx, ship, "X1-BBB-GATE", 1)
+		done <- err
+	}()
+
+	// Wait until travel() is parked inside the cooldown-wait sleep.
+	select {
+	case <-clock.blockEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("travel never entered the cooldown-wait sleep")
+	}
+
+	// Cancel, as daemon shutdown does. The wait must race ctx.Done and let travel()
+	// return without waiting for the (never-released) sleep to finish.
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled after cancelling during the cooldown wait, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("travel did not return promptly after cancel during the cooldown wait — the sleep was not interruptible")
+	}
+}
+
+// travelBlockingClock blocks inside Sleep until the test releases it, signalling
+// entry exactly once so a test can deterministically cancel WHILE travel() is
+// parked in the cooldown wait — no wall-clock race. Mirrors parkWaitBlockingClock
+// (sp-l709, run_factory_coordinator_park_wait_interrupt_test.go).
+type travelBlockingClock struct {
+	enteredOnce  sync.Once
+	blockEntered chan struct{}
+	release      chan struct{}
+}
+
+func (c *travelBlockingClock) Now() time.Time { return time.Now() }
+func (c *travelBlockingClock) Sleep(time.Duration) {
+	c.enteredOnce.Do(func() { close(c.blockEntered) })
+	<-c.release
 }
