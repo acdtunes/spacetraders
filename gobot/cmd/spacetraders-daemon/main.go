@@ -704,6 +704,12 @@ func run(cfg *config.Config) error {
 	// system+waypoint) into the container config so a restart-rebuilt resume completes the
 	// jump toward the same ground instead of re-planning at an intermediate hop (RULINGS #2).
 	tourCoordinatorHandler.SetRepositionPersister(grpc.NewTourRepositionConfigPersister(containerRepo))
+	// sp-78ai L3: wire the SAME absorption ledger the idle-arb/arb engines use so the
+	// tour reserves its planned tranches (fleet-wide A-cap), nets outstanding depth into
+	// each plan, and converts sold sinks into recovery shadows — the flagship writer/reader
+	// of the cross-engine coordination. TourConsultDisabled is the operator escape hatch;
+	// the shared PlannedTTLSlack sizes reservation lifetimes.
+	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TourConsultDisabled, cfg.Absorption.PlannedTTLSlack)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

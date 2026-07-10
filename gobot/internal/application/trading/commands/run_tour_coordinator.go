@@ -9,12 +9,14 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -261,6 +263,30 @@ type RunTourCoordinatorHandler struct {
 	demandMiner        tradingsvc.DepositDemandMiner
 	prePositioning     tradingsvc.DepositCandidateConfig
 	depositCeilingPct  int
+
+	// --- Cross-engine absorption coordination (sp-78ai L3) ---
+	// absorptionLedger, when wired via SetAbsorptionLedger, makes the tour a ledger
+	// WRITER (reserve planned tranches at plan-accept, convert to recovery shadows at
+	// sale, release on re-plan/exit) AND a READER (net outstanding depth into each plan
+	// so the solver plans AROUND sinks other containers occupy). Nil (the pre-sp-78ai
+	// shape / tests that don't wire it) → no netting, no reservations: the tour plans
+	// and flies exactly as before.
+	absorptionLedger absorption.Ledger
+	// tourConsultDisabled is the operator escape hatch (RULINGS #5). true → the tour
+	// STOPS netting and STOPS conditionally gating (never rejects/re-plans on a
+	// reservation breach), but still RECORDS each plan's occupancy so other engines keep
+	// consulting it — the same "kill the consult, keep the record" posture idle-arb's
+	// IdleArbConsultDisabled takes. Convert + release still run. Default false.
+	tourConsultDisabled bool
+	// tourPlannedTTLSlack pads a plan's projected round-trip TTL (backstop to the sweep +
+	// dead-container reclaim). 0 → defaultTourPlannedTTLSlack.
+	tourPlannedTTLSlack time.Duration
+	// recoveryHalfLives caches the fitted per-tier recovery half-lives (minutes) read
+	// from the model artifact ONCE, for the report-only projected_recovery_burden metric
+	// (Q3). Immutable after the first load; the handler is shared across concurrent tour
+	// runs, so it is loaded under recoveryOnce and never mutated per-run.
+	recoveryHalfLives map[string]float64
+	recoveryOnce      sync.Once
 }
 
 // NewRunTourCoordinatorHandler wires the tour coordinator with the same driven ports
@@ -391,6 +417,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// baseline filters operation_type <> 'tour'). Mirrors how every coordinator
 	// tags its writes at the boundary (run_trade_route_coordinator.go's "trade_route").
 	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "tour_run"))
+
+	// sp-78ai L3: release this container's PLANNED reservations on EVERY exit path
+	// (clean completion, error, ctx-cancel) so a finished tour stops occupying sink/ask
+	// depth other engines net against. Converted EXECUTED shadows are LEFT (real recovery
+	// still decaying); a ctx-cancelled exit that cannot run the delete leaves the rows to
+	// the ledger's TTL sweep + dead-container reclaim (the belt-and-suspenders cleanup).
+	defer h.releaseTourReservations(ctx, cmd)
 
 	// Bind the model version from the checked-in artifact (RULINGS #4: unreadable →
 	// fail OPEN to single-lane, never guess a version). Path precedence (sp-wj0h): an
@@ -652,12 +685,16 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		return false, "", err
 	}
 
-	plan, err := h.plan(ctx, ship, maxHops, maxSpend, reserve, cmd, modelVersion)
+	// sp-78ai L3: plan a depth-netted tour AND conditionally reserve its tranches
+	// all-or-nothing. A reservation breach (another container claimed a sink between the
+	// netting snapshot and the reserve) is a normal re-plan, NOT a failure — planAndReserve
+	// retries against fresh ledger state, and only a persistent contention exits infeasible.
+	plan, reason, feasible, err := h.planAndReserve(ctx, cmd, ship, maxHops, maxSpend, reserve, modelVersion)
 	if err != nil {
-		return false, fmt.Sprintf("tour unavailable: planner error: %v", err), nil
+		return false, "", err
 	}
-	if !plan.Feasible {
-		return false, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), nil
+	if !feasible {
+		return false, reason, nil
 	}
 	response.LegsPlanned += len(plan.Legs)
 	// Honest projection split (sp-bc27 + sp-dchv Lane C): projected profit is the
@@ -700,8 +737,15 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 			return false, "", err
 		}
 		budget := remainingSpend(maxSpend, cumulativeSpend)
-		plan, err = h.plan(ctx, ship, maxHops, budget, reserve, cmd, modelVersion)
-		if err != nil || !plan.Feasible {
+		// Re-plan releases this container's prior PLANNED rows and reserves the new plan
+		// fresh (planAndReserve), so the replacement plan never double-counts the old
+		// one's holds and converted recovery shadows persist (sp-78ai L3).
+		var replanFeasible bool
+		plan, _, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
+		if err != nil {
+			return false, "", err
+		}
+		if !replanFeasible {
 			logger.Log("INFO", "Re-plan produced no feasible tour - stopping", map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol,
 			})
@@ -746,10 +790,14 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		}
 
 		legDegraded := false
+		// sp-78ai L3: accumulate realized units sold per good at THIS leg, so the sink's
+		// recovery shadow is converted ONCE with the full crush (across its price-tiered
+		// tranches), not once per tranche. Nil when no ledger is wired.
+		legSells := h.newLegSells()
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range sellsBeforeBuys(leg.Trades) {
-			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, response, netBought, cumulativeSpend, maxSpend, reserve)
+			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
 			if terr != nil {
 				return false, terr
 			}
@@ -757,6 +805,9 @@ func (h *RunTourCoordinatorHandler) executePlan(
 				legDegraded = true // a skipped trade degrades the leg but a still-good sibling trade may proceed
 			}
 		}
+		// Convert this leg's sinks to recovery shadows (per sink as legs complete, design
+		// §2) — even on a degraded leg, so the tranches that DID sell shadow their crush.
+		h.convertLegShadows(ctx, cmd, leg.Waypoint, legSells)
 		response.LegsExecuted++
 		if legDegraded {
 			return true, nil
@@ -778,6 +829,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	netBought map[string]int,
 	cumulativeSpend *int64,
 	maxSpend, reserve int64,
+	legSells map[string]*tourSinkSale,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -816,7 +868,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	if trade.IsBuy {
 		return h.executeBuy(ctx, cmd, leg, legIdx, trade, live, response, netBought, cumulativeSpend, maxSpend, reserve)
 	}
-	return h.executeSell(ctx, cmd, leg, legIdx, trade, live, response, netBought)
+	return h.executeSell(ctx, cmd, leg, legIdx, trade, live, response, netBought, legSells)
 }
 
 func (h *RunTourCoordinatorHandler) executeBuy(
@@ -938,6 +990,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	live *market.TradeGood,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
+	legSells map[string]*tourSinkSale,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -983,6 +1036,13 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	netBought[trade.Good] -= sellResp.UnitsSold
+	// sp-78ai L3: accumulate the realized units sold into this sink for the per-sink
+	// conversion at leg completion. The solver splits a sink's A-cap depth into SEPARATE
+	// price-tiered tranches (distinct trades), so a single sink can sell across several
+	// executeSell calls in one leg; converting per tranche would record only the first,
+	// under-stating the very multi-tranche co-dump crush this ledger exists to shadow. The
+	// live re-verify tier + trade_volume (stable across a sink's tranches) size the shadow.
+	h.noteSinkSale(legSells, trade.Good, sellResp.UnitsSold, live)
 	h.recordLeg(ctx, cmd, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: sold %d %s at %s (revenue %d)", legIdx, sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.TotalRevenue), nil)
 	return true, nil
@@ -1125,7 +1185,7 @@ func (h *RunTourCoordinatorHandler) plan(
 	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
 	modelVersion string,
-) (*routing.TourPlan, error) {
+) (*routing.TourPlan, []routing.TourGoodSnapshot, error) {
 	allowedSystems := h.tourSystems(ctx, ship, cmd.PlayerID)
 	return h.planForState(ctx, h.tourShipState(ship), allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
 }
@@ -1144,16 +1204,21 @@ func (h *RunTourCoordinatorHandler) planForState(
 	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
 	modelVersion string,
-) (*routing.TourPlan, error) {
+) (*routing.TourPlan, []routing.TourGoodSnapshot, error) {
 	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), maxListingAge)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// sp-dchv Lane C: assemble haul-to-storage deposit candidates for the planner to
 	// price against arb sells. Empty when pre-positioning is off, no warehouse is in
 	// the tour graph, or the capital ceiling is unreadable (fail closed) — the tour
 	// then plans pure arb, unchanged.
 	deposits := h.depositCandidates(ctx, allowedSystems, cmd.PlayerID, reserve)
+	// sp-78ai L3: assemble the outstanding cross-container absorption the solver nets
+	// out of available depth so it plans AROUND sinks other containers occupy. Empty
+	// when the ledger is unwired / the consult is killed / the read fails (fail-OPEN —
+	// the conditional Reserve is the hard backstop), leaving the plan against full depth.
+	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID)
 	cons := routing.TourConstraints{
 		MaxHops:               maxHops,
 		MinMarginPerUnit:      cmd.MinMargin,
@@ -1163,7 +1228,11 @@ func (h *RunTourCoordinatorHandler) planForState(
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
 	}
-	return h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits)
+	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
+	if err != nil {
+		return nil, nil, err
+	}
+	return plan, snapshot, nil
 }
 
 // depositCandidates assembles the haul-to-storage deposit sinks for the planner

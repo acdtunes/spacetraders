@@ -78,4 +78,12 @@ type Ledger interface {
 	ConvertByContainer(ctx context.Context, containerID string, playerID int, key LaneKey, realizedUnits int, liveTier string, trancheSize int) error
 	// Release consumes a PLANNED reservation on an exit without a sale (no-op if gone).
 	Release(ctx context.Context, reservationID string) error
+	// ReleaseByContainer drops ALL of a container's still-PLANNED reservations in one
+	// statement — the tour writer's re-plan/restart de-dup seam (sp-78ai L3): before a
+	// (re)plan it clears this container's stale in-flight intent so the fresh plan nets
+	// against OTHERS' depth and Reserve cannot double-count the container's own prior
+	// rows. EXECUTED recovery shadows are LEFT untouched (real market damage still
+	// recovering, which the container's own next plan must also avoid). Returns the
+	// number of PLANNED rows dropped. No-op (0) when the container holds none.
+	ReleaseByContainer(ctx context.Context, containerID string, playerID int) (int, error)
 }

@@ -431,6 +431,31 @@ message DepositCandidate {
   string storage_system = 5;   // system the warehouse is in (home; makes the sink routable)
 }
 
+// MarketAbsorption is the outstanding cross-container depth already committed at one
+// (waypoint, good, side) pool that the solver NETS out of that market's available
+// depth (sp-78ai L3). The Go daemon assembles these from the absorption ledger at plan
+// assembly time — decaying EXECUTED recovery shadows on the fitted half-life curve
+// Go-side, so the solver stays clock-free and the recovery curve is consumed in exactly
+// one place. Two quantities with DIFFERENT netting semantics (design §2, the
+// price-honesty split):
+//   - units_planned: in-flight PLANNED reservations from OTHER containers. The market
+//     cache is still pre-absorption, so these both CONSUME tranche capacity AND ADVANCE
+//     the price schedule — the plan's first tranche at that sink prices at the decayed
+//     step those earlier tranches leave behind, because someone is taking them there.
+//   - units_recovering: the decayed EXECUTED recovery residual. The cache ALREADY shows
+//     the crushed quote, so these consume tranche CAPACITY ONLY — pricing still starts
+//     at the live quote's step 0, or the crush would be double-counted.
+// Empty (the pre-sp-78ai shape) → no netting; the solver plans against full depth,
+// byte-identical to today. Additive-field precedent (sp-bc27/sp-dchv): an old solver
+// ignores field 6 and behaves exactly as it does now (version-skew safe).
+message MarketAbsorption {
+  string waypoint_symbol = 1;
+  string good_symbol = 2;
+  string side = 3;               // "sell" | "buy" (absorption.SideSell / SideBuy)
+  int32 units_planned = 4;       // in-flight PLANNED — advance price schedule + consume capacity
+  double units_recovering = 5;   // decayed EXECUTED residual — consume capacity ONLY
+}
+
 message OptimizeTradeTourRequest {
   repeated MarketGoodSnapshot snapshot = 1;
   TourShip ship = 2;
@@ -439,6 +464,10 @@ message OptimizeTradeTourRequest {
   // deposit_candidates offers haul-to-storage sinks (sp-dchv Lane C). Empty (the
   // pre-sp-dchv shape) → no deposit legs, the solver plans pure arb unchanged.
   repeated DepositCandidate deposit_candidates = 5;
+  // absorption carries per-(waypoint,good,side) outstanding cross-container depth the
+  // solver nets out of available tranche capacity (sp-78ai L3). Empty (the pre-sp-78ai
+  // shape) → no netting, plans against full depth unchanged.
+  repeated MarketAbsorption absorption = 6;
 }
 
 message OptimizeTradeTourResponse {

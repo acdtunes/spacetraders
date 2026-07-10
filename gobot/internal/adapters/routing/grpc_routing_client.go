@@ -325,8 +325,9 @@ func (c *GRPCRoutingClient) OptimizeTradeTour(
 	ship domainRouting.TourShipState,
 	cons domainRouting.TourConstraints,
 	deposits []domainRouting.TourDepositCandidate,
+	absorption []domainRouting.TourMarketAbsorption,
 ) (*domainRouting.TourPlan, error) {
-	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons, deposits))
+	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons, deposits, absorption))
 	if err != nil {
 		return nil, fmt.Errorf("gRPC OptimizeTradeTour failed: %w", err)
 	}
@@ -342,6 +343,7 @@ func buildTourRequest(
 	ship domainRouting.TourShipState,
 	cons domainRouting.TourConstraints,
 	deposits []domainRouting.TourDepositCandidate,
+	absorption []domainRouting.TourMarketAbsorption,
 ) *pb.OptimizeTradeTourRequest {
 	pbSnapshot := make([]*pb.MarketGoodSnapshot, len(snapshot))
 	for i, s := range snapshot {
@@ -392,6 +394,30 @@ func buildTourRequest(
 		return pbDeposits[i].GoodSymbol < pbDeposits[j].GoodSymbol
 	})
 
+	// Absorption (sp-78ai L3): the outstanding cross-container depth per
+	// (waypoint, good, side) the daemon netted from the ledger. Emitted in a
+	// deterministic (waypoint, good, side) order so request payloads and their logs
+	// are reproducible, mirroring the snapshot/deposit ordering.
+	pbAbsorption := make([]*pb.MarketAbsorption, 0, len(absorption))
+	for _, a := range absorption {
+		pbAbsorption = append(pbAbsorption, &pb.MarketAbsorption{
+			WaypointSymbol:  a.Waypoint,
+			GoodSymbol:      a.Good,
+			Side:            a.Side,
+			UnitsPlanned:    int32(a.PlannedUnits),
+			UnitsRecovering: a.RecoveringUnits,
+		})
+	}
+	sort.Slice(pbAbsorption, func(i, j int) bool {
+		if pbAbsorption[i].WaypointSymbol != pbAbsorption[j].WaypointSymbol {
+			return pbAbsorption[i].WaypointSymbol < pbAbsorption[j].WaypointSymbol
+		}
+		if pbAbsorption[i].GoodSymbol != pbAbsorption[j].GoodSymbol {
+			return pbAbsorption[i].GoodSymbol < pbAbsorption[j].GoodSymbol
+		}
+		return pbAbsorption[i].Side < pbAbsorption[j].Side
+	})
+
 	return &pb.OptimizeTradeTourRequest{
 		Snapshot: pbSnapshot,
 		Ship: &pb.TourShip{
@@ -415,6 +441,7 @@ func buildTourRequest(
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,
+		Absorption:        pbAbsorption,
 	}
 }
 

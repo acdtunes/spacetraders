@@ -101,10 +101,19 @@ class TourHandlerMixin:
                                        storage_waypoint=d.storage_waypoint,
                                        storage_system=d.storage_system)
                                   for d in request.deposit_candidates]
+            # sp-78ai L3: outstanding cross-container absorption per (waypoint, good,
+            # side) the Go daemon assembled from the ledger (EXECUTED shadows already
+            # decayed Go-side). Absent (pre-sp-78ai shape) -> [] -> no netting.
+            absorption = [dict(waypoint_symbol=a.waypoint_symbol,
+                               good_symbol=a.good_symbol, side=a.side,
+                               units_planned=a.units_planned,
+                               units_recovering=a.units_recovering)
+                          for a in request.absorption]
 
             result = solve_tour(snapshot, ship, constraints, self.tour_model,
                                 waypoints=waypoints,
-                                deposit_candidates=deposit_candidates)
+                                deposit_candidates=deposit_candidates,
+                                absorption=absorption)
 
             response = routing_pb2.OptimizeTradeTourResponse(
                 feasible=result["feasible"],

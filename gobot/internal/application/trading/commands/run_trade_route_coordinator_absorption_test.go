@@ -108,6 +108,13 @@ func (f *absorptionFakeLedger) Release(context.Context, string) error {
 	return nil
 }
 
+func (f *absorptionFakeLedger) ReleaseByContainer(context.Context, string, int) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releaseCalls++
+	return 0, nil
+}
+
 func (f *absorptionFakeLedger) writesCalled() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

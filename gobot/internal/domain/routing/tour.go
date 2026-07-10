@@ -100,6 +100,23 @@ type TourDepositCandidate struct {
 	StorageSystem   string
 }
 
+// TourMarketAbsorption is one (waypoint, good, side) pool's outstanding
+// cross-container depth the daemon assembles from the absorption ledger and hands the
+// planner to NET out of available tranche depth (sp-78ai L3). The daemon decays the
+// EXECUTED recovery residual on the fitted half-life curve BEFORE building this, so the
+// solver stays clock-free. PlannedUnits (in-flight PLANNED from other containers)
+// advances the price schedule AND consumes capacity; RecoveringUnits (the decayed
+// EXECUTED residual) consumes capacity ONLY — the live quote already reflects the crush
+// (the price-honesty split, design §2). An empty absorption list plans against full
+// depth, byte-identical to pre-sp-78ai (additive-field contract).
+type TourMarketAbsorption struct {
+	Waypoint        string
+	Good            string
+	Side            string
+	PlannedUnits    int
+	RecoveringUnits float64
+}
+
 // TourLeg is one market stop of the planned tour. Trades are ordered for
 // execution (the planner emits SELLS before BUYS within a leg); ProjectedLegProfit
 // is the planner's projection and TravelSecondsFromPrev prices the hop into it.

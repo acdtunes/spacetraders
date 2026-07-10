@@ -29,4 +29,11 @@ type AbsorptionConfig struct {
 	// there is no recording to keep alive. The operator escape hatch if the consult
 	// ever over-excludes. Default false (consult on).
 	TradeRouteConsultDisabled bool `mapstructure:"trade_route_consult_disabled"`
+	// TourConsultDisabled kills the tour's netting + conditional reservation gate
+	// (sp-78ai L3): the tour stops planning around reserved sinks and stops rejecting on
+	// a breach, while still RECORDING each plan's occupancy so other engines keep
+	// consulting it (the same "kill the consult, keep the record" posture as the idle-arb
+	// switch above). The operator escape hatch if the netting/gate ever over-restricts
+	// tour throughput. Default false (consult on).
+	TourConsultDisabled bool `mapstructure:"tour_consult_disabled"`
 }

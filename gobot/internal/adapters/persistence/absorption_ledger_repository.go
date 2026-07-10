@@ -357,6 +357,26 @@ func (r *AbsorptionLedgerGORM) Release(ctx context.Context, reservationID string
 	return nil
 }
 
+// ReleaseByContainer drops every still-PLANNED reservation a container holds in one
+// statement (the tour re-plan/restart de-dup seam, sp-78ai L3). EXECUTED recovery
+// shadows are deliberately EXCLUDED (state = PLANNED filter): a converted shadow is
+// real market damage still recovering, which the container's own next plan must keep
+// avoiding — only the in-flight intent is stale. Deleting zero rows is a no-op, so a
+// fresh-launch (nothing planned yet) or a double-release is safe. Returns the count
+// dropped.
+func (r *AbsorptionLedgerGORM) ReleaseByContainer(ctx context.Context, containerID string, playerID int) (int, error) {
+	if containerID == "" {
+		return 0, nil
+	}
+	result := r.db.WithContext(ctx).
+		Where("container_id = ? AND player_id = ? AND state = ?", containerID, playerID, absorptionStatePlanned).
+		Delete(&MarketAbsorptionLedgerModel{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("release planned absorption for container %s: %w", containerID, result.Error)
+	}
+	return int(result.RowsAffected), nil
+}
+
 // Sweep runs the self-cleaning pass (TTL-expired PLANNED, hard-cap-expired EXECUTED,
 // dead-container PLANNED reclaim) outside a reserve and returns how many rows it
 // reclaimed. Reserve runs the same sweep inside its own transaction on every call,

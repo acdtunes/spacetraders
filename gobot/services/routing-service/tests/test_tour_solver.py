@@ -1,7 +1,7 @@
 # gobot/services/routing-service/tests/test_tour_solver.py
 import random
 
-from utils.tour_solver import tranche_prices, solve_tour
+from utils.tour_solver import tranche_prices, solve_tour, net_absorption
 
 MODEL = {"fit_version": 1, "era": "e", "impact":
          {"LIMITED|WEAK": {"sell_decay_per_step": 0.9, "buy_growth_per_step": 1.1, "n_obs": 9}},
@@ -511,3 +511,114 @@ def test_deposit_value_split_and_projected_profit_total():
     assert out["held_liquidation"] == 0, out
     fresh = out["projected_profit"] - out["held_liquidation"] - out["deposit_value"]
     assert fresh == -spend, out                                 # honest negative cash outlay
+
+
+# --- sp-78ai L3: cross-container absorption netting ------------------------
+
+def _absorb(wp, good, side="sell", planned=0, recovering=0.0):
+    return dict(waypoint_symbol=wp, good_symbol=good, side=side,
+                units_planned=planned, units_recovering=recovering)
+
+
+def _one_sink_board():
+    # buy G cheap at A (ask 100, tv 40), one sink at B (bid 1000, tv 40). The
+    # LIMITED|WEAK sell-decay is 0.9, so B's A-cap-2 sell pool is [(40,1000),(40,900)]:
+    # step 0 at the live bid, step 1 one decay down. The single sink isolates the
+    # netting effect on that one pool.
+    return [snap("A", "S1", "G", ask=100, bid=90, tv=40),
+            snap("B", "S1", "G", ask=999, bid=1000, tv=40)]
+
+
+def _abs_ship():
+    return dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+
+
+def _abs_cons():
+    return dict(max_hops=4, max_spend=1_000_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+
+
+def _b_sells(out):
+    return [(t["units"], t["expected_unit_price"]) for l in out["legs"]
+            for t in l["trades"] if l["waypoint_symbol"] == "B" and not t["is_buy"]]
+
+
+def test_net_absorption_unit_semantics():
+    # The netting primitive in isolation: planned drops from the HEAD (price + capacity),
+    # recovering from the TAIL (capacity only), both quantized UP to whole tranches.
+    base = [(40, 1000), (40, 900)]
+    assert net_absorption(base, 0, 0.0, 40) == base                # no-op: identity
+    assert net_absorption(base, 40, 0.0, 40) == [(40, 900)]        # 1 planned: advance to step 1
+    assert net_absorption(base, 0, 40.0, 40) == [(40, 1000)]       # 1 recovering: keep step 0
+    assert net_absorption(base, 40, 40.0, 40) == []               # both: fully absorbed
+    assert net_absorption(base, 80, 0.0, 40) == []               # 2 planned: fully absorbed
+    assert net_absorption(base, 1, 0.0, 40) == [(40, 900)]        # ceil: any planned bumps a step
+    assert net_absorption(base, 0, 1.0, 40) == [(40, 1000)]       # ceil: any recovering drops a tranche
+
+
+def test_netting_planned_advances_price_and_capacity():
+    # 1 PLANNED tranche from another container at sink B: the plan's sell there both
+    # loses a tranche of CAPACITY (80 -> 40 sellable) AND prices at the ADVANCED step
+    # (900, not the live 1000) — someone is taking the head tranche at 1000.
+    out = solve_tour(_one_sink_board(), _abs_ship(), _abs_cons(), MODEL,
+                     absorption=[_absorb("B", "G", planned=40)])
+    assert out["feasible"], out
+    assert _b_sells(out) == [(40, 900)], out          # one tranche, at the advanced price
+    buys = sum(t["units"] for l in out["legs"] for t in l["trades"] if t["is_buy"])
+    assert buys == 40, out                             # capacity netted: only 40 flows
+
+
+def test_netting_recovering_consumes_capacity_only():
+    # 1 RECOVERING tranche (a decayed EXECUTED shadow) at sink B: same CAPACITY loss
+    # (80 -> 40 sellable) but pricing STAYS at step 0 (1000) — the live quote already
+    # reflects the crush, so re-pricing would double-count it. This is the price-honesty
+    # split vs the planned case above: identical capacity, different price.
+    out = solve_tour(_one_sink_board(), _abs_ship(), _abs_cons(), MODEL,
+                     absorption=[_absorb("B", "G", recovering=40.0)])
+    assert out["feasible"], out
+    assert _b_sells(out) == [(40, 1000)], out          # one tranche, at the LIVE (un-advanced) price
+    buys = sum(t["units"] for l in out["legs"] for t in l["trades"] if t["is_buy"])
+    assert buys == 40, out
+
+
+def test_netting_zero_absorption_is_byte_identical():
+    # Regression (the additive-field contract): an empty/None absorption request plans
+    # EXACTLY the pre-sp-78ai tour. Compared field-by-field against the no-arg call.
+    board, ship, cons = _one_sink_board(), _abs_ship(), _abs_cons()
+    baseline = solve_tour(board, ship, cons, MODEL)
+    for absorption in ([], None):
+        out = solve_tour(board, ship, cons, MODEL, absorption=absorption)
+        assert out == baseline, (absorption, out, baseline)
+    # And the baseline really does take BOTH tranches (so the netting tests above are
+    # cutting real depth, not a degenerate single-tranche plan). Sells emit
+    # price-ascending (the executor's dock order), so step 1 (900) precedes step 0.
+    assert _b_sells(baseline) == [(40, 900), (40, 1000)], baseline
+
+
+def test_netting_fully_absorbed_market_reroutes():
+    # Sink B fully absorbed (2 PLANNED tranches = the whole A-cap) yields NO tranche
+    # there; with a clean alternative sink C the plan routes to C instead. Proves the
+    # netting removes availability at the crowded sink without poisoning the tour.
+    board = _one_sink_board() + [snap("C", "S1", "G", ask=999, bid=950, tv=40)]
+    out = solve_tour(board, _abs_ship(), _abs_cons(), MODEL,
+                     absorption=[_absorb("B", "G", planned=80)])
+    assert out["feasible"], out
+    assert _b_sells(out) == [], out                    # nothing sellable at the absorbed sink
+    c_sells = sum(t["units"] for l in out["legs"] for t in l["trades"]
+                  if l["waypoint_symbol"] == "C" and not t["is_buy"])
+    assert c_sells > 0, out                            # the tour rerouted to the clean sink
+
+
+def test_netting_buy_side_advances_source_price():
+    # Absorption nets the BUY (ask) side too: a PLANNED buy-side reservation at source A
+    # advances the source's price ladder, so the plan pays the grown step (110) and can
+    # only take one buy tranche. The netting is symmetric across sides.
+    out = solve_tour(_one_sink_board(), _abs_ship(), _abs_cons(), MODEL,
+                     absorption=[_absorb("A", "G", side="buy", planned=40)])
+    assert out["feasible"], out
+    buys = [(t["units"], t["expected_unit_price"]) for l in out["legs"]
+            for t in l["trades"] if l["waypoint_symbol"] == "A" and t["is_buy"]]
+    assert buys == [(40, 110)], out                    # one tranche at the advanced buy step

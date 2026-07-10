@@ -282,7 +282,11 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	shipState.Cargo = nil
 	shipState.FuelCurrent = shipState.FuelCapacity
 	allowedSystems := h.tourSystemsFrom(ctx, cand.system, cmd.PlayerID)
-	return h.planForState(ctx, shipState, allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
+	// The pre-flight only PRICES a candidate ground (it reserves nothing — no plan is
+	// committed here, sp-78ai L3); the snapshot the netting/reserve path would need is
+	// discarded.
+	plan, _, err := h.planForState(ctx, shipState, allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
+	return plan, err
 }
 
 // persistReposition writes the in-flight reposition destination (or its clearing) into the

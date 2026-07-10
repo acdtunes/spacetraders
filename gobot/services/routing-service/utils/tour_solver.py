@@ -125,6 +125,35 @@ def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
     return tranches
 
 
+def net_absorption(tranches, units_planned, units_recovering, trade_volume):
+    """Net outstanding cross-container absorption out of a pool's tranche schedule
+    (sp-78ai L3). Depth is quantized to whole trade_volume tranches — the model prices
+    impact per tranche, so a partial planned presence still bumps the whole step (the
+    conservative, D39-honest direction).
+
+      - units_planned (in-flight PLANNED from other containers) drops ceil(planned/tv)
+        tranches from the HEAD: it consumes BOTH capacity and the leading, least-decayed
+        prices, so the plan's first tranche prices at the step those planned tranches
+        leave behind — someone is taking them there at those prices.
+      - units_recovering (the decayed EXECUTED residual) drops ceil(recovering/tv)
+        tranches from the TAIL: CAPACITY ONLY. The head prices are kept at step 0 (the
+        live quote already reflects the crush; re-pricing would double-count it).
+
+    Returns the netted (units, price) tranche list. Per-tranche PRICES are never
+    altered — only which tranches remain — so the D39 calibration and impact-curve math
+    are untouched; ONLY availability is netted (design §3)."""
+    if trade_volume <= 0 or not tranches:
+        return tranches
+    planned_tranches = math.ceil(units_planned / trade_volume) if units_planned > 0 else 0
+    recovering_tranches = (math.ceil(units_recovering / trade_volume)
+                           if units_recovering > 0 else 0)
+    start = planned_tranches
+    end = len(tranches) - recovering_tranches
+    if end <= start:
+        return []
+    return tranches[start:end]
+
+
 class _TranchePool:
     """Consumable tranche schedule shared per (waypoint, good, side)."""
 
@@ -231,7 +260,8 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
     return hop
 
 
-def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None):
+def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None,
+                   absorption_index=None):
     """Greedy tranche allocation over one hop sequence (the LP stage).
 
     Returns dict(profit, spend, seconds, cph, legs, held_liquidation,
@@ -247,8 +277,13 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     absorbs a foreign-bought good at a flat synthetic bid (= home_ask) with no
     depth decay and no A-cap, competing with real arb sells on margin so the
     greedy allocator hands hold space to whichever earns more.
+
+    `absorption_index` (sp-78ai L3) maps (waypoint, good, side) -> (units_planned,
+    units_recovering): outstanding cross-container depth netted out of each market
+    pool at construction (see net_absorption). Empty/None -> no netting.
     """
     deposit_sinks = deposit_sinks or {}
+    absorption_index = absorption_index or {}
     n = len(seq)
     hold_cap = ship["hold_capacity"]
     initial = {}
@@ -268,13 +303,22 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
         if pkey not in pools:
             row = markets[wp]["goods"][good]
             quote = row["ask"] if is_buy else row["bid"]
+            tv = row["trade_volume"]
             # Ladder cap: at most MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE
             # tranches per (market, good, side) across the whole tour,
             # revisits included (A-capped ruling — see module docstring).
             capped = min(pool_ceiling,
-                         MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * row["trade_volume"])
-            pools[pkey] = _TranchePool(tranche_prices(
-                quote, row["trade_volume"], _tier_of(row), model, is_buy, capped))
+                         MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * tv)
+            tranches = tranche_prices(quote, tv, _tier_of(row), model, is_buy, capped)
+            # sp-78ai L3: net outstanding cross-container absorption on this
+            # (waypoint, good, side) out of available depth. The A-cap ladder is now
+            # FLEET-WIDE-outstanding, not per-plan (the bead's design goal (a)) — the
+            # planned/recovering split (net_absorption) keeps per-tranche prices exact.
+            side = "buy" if is_buy else "sell"
+            up, ur = absorption_index.get((wp, good, side), (0, 0.0))
+            if up or ur:
+                tranches = net_absorption(tranches, up, ur, tv)
+            pools[pkey] = _TranchePool(tranches)
         return pools[pkey]
 
     # Deposit sinks reachable at each leg's waypoint (sp-dchv Lane C).
@@ -563,8 +607,24 @@ def _infeasible(reason, model_version, top_rejected=None):
                 top_rejected=top_rejected or [], model_version=model_version)
 
 
+def _index_absorption(absorption):
+    """Index MarketAbsorption rows as {(waypoint, good, side): (units_planned,
+    units_recovering)} for O(1) pool netting (sp-78ai L3). Duplicate keys are summed
+    (the Go assembler emits one row per key, but summing is the safe fold). None/empty
+    -> {} -> no netting anywhere (pre-sp-78ai plans byte-identical)."""
+    index = {}
+    for a in absorption or []:
+        key = (a.get("waypoint_symbol"), a.get("good_symbol"), a.get("side"))
+        if not all(key):
+            continue
+        up, ur = index.get(key, (0, 0.0))
+        index[key] = (up + int(a.get("units_planned", 0)),
+                      ur + float(a.get("units_recovering", 0.0)))
+    return index
+
+
 def solve_tour(snapshot, ship, constraints, model, waypoints=None,
-               deposit_candidates=None):
+               deposit_candidates=None, absorption=None):
     """Plan the best multi-hop trade tour for one hull. Pure; proto-shaped dicts.
 
     `waypoints` mirrors OptimizeTradeTourRequest.waypoints (coords for the
@@ -573,6 +633,12 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     `deposit_candidates` mirrors OptimizeTradeTourRequest.deposit_candidates
     (sp-dchv Lane C): each is a haul-to-storage sink offer the Go daemon assembled
     and capped. None/empty -> no deposit legs, pure-arb planning unchanged.
+
+    `absorption` mirrors OptimizeTradeTourRequest.absorption (sp-78ai L3): outstanding
+    cross-container depth per (waypoint, good, side) the Go daemon assembled from the
+    absorption ledger, decaying EXECUTED shadows Go-side. It NETS available tranche
+    depth (net_absorption) without touching per-tranche prices. None/empty -> no
+    netting, plans against full depth byte-identical to pre-sp-78ai.
 
     Fail-loud contract: missing artifact or version mismatch are structured
     infeasible reasons, never a silent fallback (spec error-handling table).
@@ -606,6 +672,7 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # markets[wp]["goods"], so real market rows and the deposit sink coexist at the
     # same waypoint without collision and are priced independently.
     deposit_sinks = _build_deposit_sinks(deposit_candidates, markets, allowed)
+    absorption_index = _index_absorption(absorption)
     travel_fn = _make_travel_fn(constraints, markets, ship, waypoints)
     candidates = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks)
     if not candidates:
@@ -615,7 +682,7 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     seen = set()
     for seq in candidates[:FULL_SCORE_TOP_N]:
         result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
-                                deposit_sinks)
+                                deposit_sinks, absorption_index)
         signature = tuple((l["waypoint_symbol"],
                            tuple((t["good_symbol"], t["units"], t["is_buy"],
                                   t["is_deposit"], t["expected_unit_price"])

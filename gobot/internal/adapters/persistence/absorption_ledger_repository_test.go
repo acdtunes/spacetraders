@@ -350,6 +350,79 @@ func TestAbsorptionLedger_Convert_Idempotent(t *testing.T) {
 	require.Equal(t, int64(1), countAbsorption(t, db), "a second convert writes no second shadow")
 }
 
+// --- ReleaseByContainer: the tour re-plan / restart de-dup seam (sp-78ai L3) ---
+
+func plannedCountFor(t *testing.T, db *gorm.DB, containerID string) int64 {
+	t.Helper()
+	var n int64
+	require.NoError(t, db.Model(&persistence.MarketAbsorptionLedgerModel{}).
+		Where("container_id = ? AND state = ?", containerID, "PLANNED").Count(&n).Error)
+	return n
+}
+
+// ReleaseByContainer drops ONLY the container's still-PLANNED rows: its own EXECUTED
+// shadow (real recovering damage) survives, and another container's PLANNED rows are
+// untouched. This is the tour writer's release-before-(re)plan invariant.
+func TestAbsorptionLedger_ReleaseByContainer_DropsOnlyOwnPlanned(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+
+	// ctr-A reserves two sinks; ctr-B reserves a third.
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-A", "tour", []absorption.ReserveEntry{
+		sellEntry("WP-1", "IRON", 40, 400, time.Hour),
+		sellEntry("WP-2", "COPPER", 40, 400, time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = ledger.Reserve(ctx, 1, "ctr-B", "tour",
+		[]absorption.ReserveEntry{sellEntry("WP-3", "GOLD", 40, 400, time.Hour)})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// ctr-A converts one sink (WP-1) to an EXECUTED recovery shadow.
+	require.NoError(t, ledger.ConvertByContainer(ctx, "ctr-A", 1,
+		absorption.LaneKey{Waypoint: "WP-1", Good: "IRON", Side: "sell"}, 40, "WEAK", 40))
+	require.Equal(t, int64(3), countAbsorption(t, db)) // A: 1 PLANNED + 1 EXECUTED, B: 1 PLANNED
+
+	dropped, err := ledger.ReleaseByContainer(ctx, "ctr-A", 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, dropped, "only ctr-A's remaining PLANNED row (WP-2) is dropped")
+
+	require.Equal(t, int64(0), plannedCountFor(t, db, "ctr-A"), "no PLANNED left for ctr-A")
+	require.Equal(t, int64(1), plannedCountFor(t, db, "ctr-B"), "ctr-B's PLANNED is untouched")
+	// ctr-A's EXECUTED shadow survives — real market damage still recovering.
+	var execN int64
+	require.NoError(t, db.Model(&persistence.MarketAbsorptionLedgerModel{}).
+		Where("container_id = ? AND state = ?", "ctr-A", "EXECUTED").Count(&execN).Error)
+	require.Equal(t, int64(1), execN, "the recovery shadow must persist across release")
+	require.Equal(t, int64(2), countAbsorption(t, db)) // A: EXECUTED, B: PLANNED
+}
+
+// Release is idempotent and a blank container is a no-op — a restart-resumed tour with
+// nothing yet planned, or a double-release, never errors.
+func TestAbsorptionLedger_ReleaseByContainer_IdempotentAndBlankNoop(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-A", "tour",
+		[]absorption.ReserveEntry{sellEntry("WP-1", "IRON", 40, 400, time.Hour)})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	dropped, err := ledger.ReleaseByContainer(ctx, "ctr-A", 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, dropped)
+
+	dropped, err = ledger.ReleaseByContainer(ctx, "ctr-A", 1)
+	require.NoError(t, err)
+	require.Equal(t, 0, dropped, "a second release finds nothing")
+
+	dropped, err = ledger.ReleaseByContainer(ctx, "", 1)
+	require.NoError(t, err)
+	require.Equal(t, 0, dropped, "a blank container id is a no-op")
+	require.Equal(t, int64(0), countAbsorption(t, db))
+}
+
 // --- Decay math + 50%-floor unblocking ---
 
 // insertExecuted writes an EXECUTED shadow directly with a chosen age, so decay is

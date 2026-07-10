@@ -98,6 +98,13 @@ func (f *fakeAbsorptionLedger) Release(context.Context, string) error {
 	return nil
 }
 
+func (f *fakeAbsorptionLedger) ReleaseByContainer(context.Context, string, int) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releases++
+	return 0, nil
+}
+
 var _ absorption.Ledger = (*fakeAbsorptionLedger)(nil)
 
 // A sink the ledger shows as reserved (a PLANNED leg in flight) is skipped with the

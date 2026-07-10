@@ -267,12 +267,17 @@ type tourFakeRoutingClient struct {
 	// index-based plans slice cannot express because planAtCandidate's pre-flight calls
 	// interleave with the loop's own re-plans. Takes precedence over the plans slice.
 	planFn func(ship routing.TourShipState) *routing.TourPlan
+	// absorptions captures the absorption view the coordinator assembled and passed on
+	// each call (sp-78ai L3): a netting integration test asserts the tour nets the ledger's
+	// outstanding depth into its plan request.
+	absorptions [][]routing.TourMarketAbsorption
 }
 
-func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate) (*routing.TourPlan, error) {
+func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
+	c.absorptions = append(c.absorptions, absorption)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {
 		held[g] = u

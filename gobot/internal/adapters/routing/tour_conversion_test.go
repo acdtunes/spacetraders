@@ -34,6 +34,12 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		[]domainRouting.TourDepositCandidate{
 			{Good: "ELECTRONICS", UnitsWanted: 120, SyntheticBid: 3400, StorageWaypoint: "X1-NK36-H1", StorageSystem: "X1-NK36"},
 		},
+		[]domainRouting.TourMarketAbsorption{
+			// Emitted deterministically by (waypoint, good, side): this SELL row sorts
+			// after the BUY row below despite being passed first.
+			{Waypoint: "X1-NK36-D39", Good: "MEDICINE", Side: "sell", PlannedUnits: 20, RecoveringUnits: 12.5},
+			{Waypoint: "X1-NK36-D39", Good: "FABRICS", Side: "buy", PlannedUnits: 40, RecoveringUnits: 0},
+		},
 	)
 
 	if len(req.Snapshot) != 1 {
@@ -83,6 +89,19 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 	if d.GoodSymbol != "ELECTRONICS" || d.UnitsWanted != 120 || d.SyntheticBid != 3400 ||
 		d.StorageWaypoint != "X1-NK36-H1" || d.StorageSystem != "X1-NK36" {
 		t.Fatalf("deposit candidate mapping wrong: %+v", d)
+	}
+
+	// sp-78ai L3: absorption rows map onto the request 1:1 and are emitted in
+	// deterministic (waypoint, good, side) order — FABRICS/buy before MEDICINE/sell.
+	if len(req.Absorption) != 2 {
+		t.Fatalf("expected 2 absorption rows, got %d", len(req.Absorption))
+	}
+	if a := req.Absorption[0]; a.GoodSymbol != "FABRICS" || a.Side != "buy" || a.UnitsPlanned != 40 || a.UnitsRecovering != 0 {
+		t.Fatalf("absorption[0] mapping/order wrong: %+v", a)
+	}
+	if a := req.Absorption[1]; a.WaypointSymbol != "X1-NK36-D39" || a.GoodSymbol != "MEDICINE" ||
+		a.Side != "sell" || a.UnitsPlanned != 20 || a.UnitsRecovering != 12.5 {
+		t.Fatalf("absorption[1] mapping wrong: %+v", a)
 	}
 }
 
@@ -150,7 +169,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 // phantom trade.
 func TestMockRoutingClient_OptimizeTradeTour_Configurable(t *testing.T) {
 	mock := NewMockRoutingClient()
-	plan, err := mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil)
+	plan, err := mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +178,7 @@ func TestMockRoutingClient_OptimizeTradeTour_Configurable(t *testing.T) {
 	}
 
 	mock.CannedTourPlan = &domainRouting.TourPlan{Feasible: true, ProjectedProfit: 999}
-	plan, err = mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil)
+	plan, err = mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil, nil)
 	if err != nil || !plan.Feasible || plan.ProjectedProfit != 999 {
 		t.Fatalf("canned plan not returned: plan=%+v err=%v", plan, err)
 	}
