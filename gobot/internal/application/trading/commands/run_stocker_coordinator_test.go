@@ -204,7 +204,13 @@ func stkWireWarehouse(t *testing.T, opID, waypoint string, capacity int, goods [
 }
 
 func newStockerHandler(t *testing.T, fx *stkFixture, coord storage.StorageCoordinator, op *storage.StorageOperation, miner tradingsvc.DepositDemandMiner, apiClient domainPorts.APIClient, cfg tradingsvc.DepositCandidateConfig, ceilingPct int) *RunStockerCoordinatorHandler {
-	finder := &fakeRunningFinder{ops: []*storage.StorageOperation{op}}
+	return newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{op}, miner, apiClient, cfg, ceilingPct)
+}
+
+// newStockerHandlerMulti wires a stocker handler whose warehouse finder returns
+// several co-located operations (sp-5q2c multi-warehouse harness).
+func newStockerHandlerMulti(t *testing.T, fx *stkFixture, coord storage.StorageCoordinator, ops []*storage.StorageOperation, miner tradingsvc.DepositDemandMiner, apiClient domainPorts.APIClient, cfg tradingsvc.DepositCandidateConfig, ceilingPct int) *RunStockerCoordinatorHandler {
+	finder := &fakeRunningFinder{ops: ops}
 	return NewRunStockerCoordinatorHandler(
 		&stkFakeMediator{fx: fx},
 		&stkFakeShipRepo{fx: fx, t: t},
@@ -214,6 +220,28 @@ func newStockerHandler(t *testing.T, fx *stkFixture, coord storage.StorageCoordi
 		apiClient,
 		coord, finder, miner, cfg, ceilingPct,
 	)
+}
+
+// stkRegisterWarehouse registers one warehouse hull of the given capacity (pre-seeded
+// with stocked) into coord and returns its RUNNING operation, created at createdAt so
+// the newest-wins deposit order is controllable across a co-located group.
+func stkRegisterWarehouse(t *testing.T, coord *storageApp.InMemoryStorageCoordinator, id, waypoint string, capacity int, createdAt time.Time, goods []string, stocked map[string]int) *storage.StorageOperation {
+	t.Helper()
+	whShip, err := storage.NewStorageShip(id+"-WH", waypoint, id, capacity, stocked)
+	if err != nil {
+		t.Fatalf("storage ship %s: %v", id, err)
+	}
+	if err := coord.RegisterStorageShip(whShip); err != nil {
+		t.Fatalf("register %s: %v", id, err)
+	}
+	op, err := storage.NewWarehouseOperation(id, 1, waypoint, []string{id + "-WH"}, goods, &shared.MockClock{CurrentTime: createdAt})
+	if err != nil {
+		t.Fatalf("warehouse op %s: %v", id, err)
+	}
+	if err := op.Start(); err != nil {
+		t.Fatalf("start %s: %v", id, err)
+	}
+	return op
 }
 
 // stkWarehouseOpAt builds a RUNNING warehouse operation with id at waypoint, created at
@@ -296,7 +324,7 @@ func TestStocker_Pick_MostNeededByValue(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
 	if !ok {
 		t.Fatalf("expected a pick")
 	}
@@ -318,7 +346,7 @@ func TestStocker_Pick_MinSavingsExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{MinSavingsPerUnit: 100}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
 		t.Fatalf("a below-min-savings candidate must be excluded")
 	}
 }
@@ -334,7 +362,7 @@ func TestStocker_Pick_CeilingCapsUnits(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 700000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
 	if !ok {
 		t.Fatalf("expected a pick within the ceiling")
 	}
@@ -352,7 +380,7 @@ func TestStocker_Pick_BudgetPerLegCapsUnits(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", BudgetPerLeg: 42000}, op, int64(defaultWorkingCapitalReserve), maxListingAge)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", BudgetPerLeg: 42000}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
 	if !ok {
 		t.Fatalf("expected a pick within the per-leg budget")
 	}
@@ -371,7 +399,7 @@ func TestStocker_Pick_WarehouseSpaceCapsUnits(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
 	if !ok {
 		t.Fatalf("expected a pick within warehouse space")
 	}
@@ -395,7 +423,7 @@ func TestStocker_Pick_AtTargetExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
 		t.Fatalf("a good already at target must be excluded")
 	}
 }
@@ -410,7 +438,7 @@ func TestStocker_Pick_UnreadableBalanceFailsClosed(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{err: errors.New("agent API unavailable")}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
 		t.Fatalf("an unreadable balance must stock nothing (fail closed)")
 	}
 }
@@ -425,7 +453,7 @@ func TestStocker_Pick_UnsupportedGoodExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
 		t.Fatalf("a good the warehouse does not support must be excluded")
 	}
 }
@@ -441,8 +469,109 @@ func TestStocker_Pick_StaleForeignMarketExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, op, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
 		t.Fatalf("a stale foreign market must be excluded (freshness discipline)")
+	}
+}
+
+// ---- multi-warehouse: aggregate need-math + deposit spill (sp-5q2c) ----
+
+// The units-short math nets the target against the SUMMED on-hand across the co-located
+// group: two warehouses holding 25 + 20 = 45 ELECTRONICS already meet a target of 40,
+// so nothing is stocked — a newest-only view (20 on hand) would wrongly still buy.
+func TestStocker_Pick_AggregateInventoryNetsTarget(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}}, marketAge: map[string]time.Duration{}}
+	coord := storageApp.NewInMemoryStorageCoordinator()
+	older := stkRegisterWarehouse(t, coord, "wh-a", "X1-S1-H", 500, t0, []string{"MEDICINE"}, map[string]int{"MEDICINE": 25})
+	newer := stkRegisterWarehouse(t, coord, "wh-b", "X1-S1-H", 500, t0.Add(time.Hour), []string{"MEDICINE"}, map[string]int{"MEDICINE": 20})
+	// target 40; aggregate on-hand 45 -> at target -> excluded.
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
+	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{older, newer}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{older, newer}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+		t.Fatalf("aggregate on-hand (25+20=45) already meets target 40 — must stock nothing")
+	}
+}
+
+// The haul is capped by the AGGREGATE free space across the group: two warehouses with
+// 15 free each cap a 40-short haul at 30 (a single-hull view would cap at 15).
+func TestStocker_Pick_AggregateFreeSpaceCapsHaul(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}}, marketAge: map[string]time.Duration{}}
+	coord := storageApp.NewInMemoryStorageCoordinator()
+	a := stkRegisterWarehouse(t, coord, "wh-a", "X1-S1-H", 15, t0, []string{"MEDICINE"}, nil)
+	b := stkRegisterWarehouse(t, coord, "wh-b", "X1-S1-H", 15, t0.Add(time.Hour), []string{"MEDICINE"}, nil)
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
+	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{a, b}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{a, b}, int64(defaultWorkingCapitalReserve), maxListingAge)
+	if !ok {
+		t.Fatalf("expected a pick within aggregate free space")
+	}
+	if pick.Units != 30 {
+		t.Fatalf("aggregate free space (15+15=30) must cap the haul, got %d", pick.Units)
+	}
+}
+
+// "Full" is reported only when EVERY co-located member is full: with one hull full and a
+// sibling holding space, the stocker still stocks (into the sibling's free space).
+func TestStocker_Pick_FullOnlyWhenAllMembersFull(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}}, marketAge: map[string]time.Duration{}}
+	coord := storageApp.NewInMemoryStorageCoordinator()
+	full := stkRegisterWarehouse(t, coord, "wh-full", "X1-S1-H", 10, t0.Add(time.Hour), []string{"MEDICINE"}, map[string]int{"MEDICINE": 10}) // newest, full
+	spare := stkRegisterWarehouse(t, coord, "wh-spare", "X1-S1-H", 50, t0, []string{"MEDICINE"}, nil)                                       // older, has room
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
+	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{full, spare}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{full, spare}, int64(defaultWorkingCapitalReserve), maxListingAge)
+	if !ok {
+		t.Fatalf("a full member with a spare sibling must NOT report full — stock into the sibling")
+	}
+	// on-hand 10, target 40 -> short 30; hold 100; aggregate free 50 -> haul 30.
+	if pick.Units != 30 {
+		t.Fatalf("expected to haul the 30 short units into the sibling's space, got %d", pick.Units)
+	}
+}
+
+// A full round trip with two co-located warehouses: the deposit fills the newest member
+// with space, then SPILLS the remainder into the older one — additive capacity realized
+// within a single haul.
+func TestStocker_MultiWarehouse_DepositSpillsWhenFirstFills(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+	coord := storageApp.NewInMemoryStorageCoordinator()
+	// newest hull only holds 25; older holds the rest. A 40-unit haul must spill 15 over.
+	older := stkRegisterWarehouse(t, coord, "wh-older", "X1-S1-H", 1000, t0, []string{"MEDICINE"}, nil)
+	newer := stkRegisterWarehouse(t, coord, "wh-newer", "X1-S1-H", 25, t0.Add(time.Hour), []string{"MEDICINE"}, nil)
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{older, newer}, miner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STOCKER-1", PlayerID: 1, ContainerID: "ctr-1", WarehouseWaypoint: "X1-S1-H"})
+	if err != nil {
+		t.Fatalf("stocker returned error: %v", err)
+	}
+	_ = stkResponse(t, resp)
+
+	newerHeld := coord.GetTotalCargoAvailable("wh-newer", "MEDICINE")
+	olderHeld := coord.GetTotalCargoAvailable("wh-older", "MEDICINE")
+	if newerHeld != 25 {
+		t.Fatalf("the newest hull must fill to its 25 capacity first, got %d", newerHeld)
+	}
+	if olderHeld != 15 {
+		t.Fatalf("the remaining 15 must spill into the older hull, got %d", olderHeld)
+	}
+	if newerHeld+olderHeld != 40 {
+		t.Fatalf("the group must hold the full 40-unit haul (additive capacity), got %d", newerHeld+olderHeld)
 	}
 }
 

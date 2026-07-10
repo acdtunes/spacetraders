@@ -27,7 +27,7 @@ func TestFindWarehouseInGraph_PrefersNewestOverLowerLexicographicID(t *testing.T
 	live := warehouseOpAt(t, "warehouse-zzzzzzzz", "X1-TORWIND-12", t0.Add(2*time.Hour))
 	finder := &fakeWarehouseFinder{ops: []*storage.StorageOperation{zombie, live}}
 
-	got, _, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
+	got, _, _, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -49,7 +49,7 @@ func TestFindWarehouseInGraph_ExactIncidentIDsResolveToLiveOperation(t *testing.
 	live := warehouseOpAt(t, "warehouse-TORWIND-12-3477282e", "X1-TORWIND-12", t0.Add(2*time.Hour))
 	finder := &fakeWarehouseFinder{ops: []*storage.StorageOperation{zombie, live}}
 
-	got, _, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
+	got, _, _, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -67,7 +67,7 @@ func TestFindWarehouseInGraph_ExactIncidentIDsResolveToLiveOperation(t *testing.
 func TestFindWarehouseInGraph_NoRunningOpsReturnsNil(t *testing.T) {
 	finder := &fakeWarehouseFinder{ops: nil}
 
-	got, matches, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
+	got, _, matches, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -91,7 +91,7 @@ func TestFindWarehouseInGraph_ReportsCollisionCount(t *testing.T) {
 	live := warehouseOpAt(t, "warehouse-TORWIND-12-3477282e", "X1-TORWIND-12", t0.Add(2*time.Hour))
 	finder := &fakeWarehouseFinder{ops: []*storage.StorageOperation{zombie, live}}
 
-	_, matches, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
+	_, _, matches, err := findWarehouseInGraph(context.Background(), finder, []string{"X1-TORWIND"}, 1)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

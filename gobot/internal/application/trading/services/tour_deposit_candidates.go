@@ -170,20 +170,13 @@ func BuildDepositCandidates(
 		return nil
 	}
 
-	warehouse, whCandidates, err := findWarehouseInGraph(ctx, warehouses, allowedSystems, playerID)
+	warehouse, group, whCandidates, err := findWarehouseInGraph(ctx, warehouses, allowedSystems, playerID)
 	if err != nil {
 		v.level = "WARNING"
 		v.reason = "warehouse lookup failed: " + err.Error()
 		return nil
 	}
 	v.warehouseCandidates = whCandidates
-	if whCandidates > 1 {
-		// More than one RUNNING warehouse op in the graph: normally 0 or 1, so this
-		// means a stale zombie row is sitting alongside the live one (sp-3lj5) — the
-		// newest-wins tie-break below resolves it correctly, but the collision itself
-		// is worth being loud about until the upstream row leak is fully drained.
-		v.level = "WARNING"
-	}
 	if warehouse == nil {
 		// The dominant live zero-reason: the hull re-planned >1 gate hop from home,
 		// so the warehouse's system is outside its 2-system tour graph. Correct to
@@ -195,10 +188,13 @@ func BuildDepositCandidates(
 	v.storageWaypoint = warehouse.WaypointSymbol()
 	v.homeSystem = shared.ExtractSystemSymbol(v.storageWaypoint)
 
-	freeSpace := 0
-	for _, s := range space.GetStorageShipsForOperation(warehouse.ID()) {
-		freeSpace += s.AvailableSpace()
-	}
+	// Multi-warehouse (sp-5q2c): the deposit sink is the CO-LOCATED group at the
+	// anchor's waypoint (the anchor + any additive-capacity siblings, e.g. light-12
+	// beside heavy-4B). Free space and on-hand stock are the SUM across the group, so
+	// a second warehouse's slots are priced as real capacity rather than orphaned. A
+	// >1 count is now a normal topology (or a harmless zombie contributing 0), not an
+	// alarm — the count stays in the verdict for observability but no longer escalates.
+	freeSpace := TotalFreeSpace(space, group)
 	v.freeSpace = freeSpace
 	if freeSpace <= 0 {
 		v.reason = "warehouse full (0 free space)"
@@ -246,19 +242,21 @@ func BuildDepositCandidates(
 		if block[r.Good] {
 			continue
 		}
-		// Only offer goods the warehouse actually BUFFERS: withdrawal discovery
-		// (Lane D, StorageSourceFinder.FindByGood) keys on the warehouse's supported
-		// goods, so depositing a good the warehouse doesn't support would strand it
-		// (paid-for inventory that no contract worker can source). Fail closed.
-		if !warehouse.SupportsGood(r.Good) {
+		// Only offer goods the group actually BUFFERS: withdrawal discovery (Lane D,
+		// StorageSourceFinder.FindByGood) keys on the warehouse's supported goods, so
+		// depositing a good no co-located member supports would strand it (paid-for
+		// inventory that no contract worker can source). Fail closed. AnySupportsGood
+		// spans the group so a good buffered by only one of the co-located hulls still
+		// qualifies — the deposit executor lands it on a member that supports it.
+		if !AnySupportsGood(group, r.Good) {
 			continue
 		}
 		v.afterWhitelist++
-		// Remaining contract demand: total historical demand minus what the
-		// warehouse already holds for the good (unreserved). GetTotalCargoAvailable
-		// counts unreserved stock; reserved-but-not-yet-withdrawn units read as
-		// still-needed, which is conservative (never over-stocks).
-		remainingDemand := r.DemandUnits - space.GetTotalCargoAvailable(warehouse.ID(), r.Good)
+		// Remaining contract demand: total historical demand minus what the group
+		// already holds for the good (unreserved), SUMMED across every co-located
+		// warehouse so a sibling's stock is netted out too. Reserved-but-not-yet-
+		// withdrawn units read as still-needed, which is conservative (never over-stocks).
+		remainingDemand := r.DemandUnits - TotalCargoAvailable(space, group, r.Good)
 		if remainingDemand <= 0 {
 			continue
 		}
@@ -286,37 +284,39 @@ func BuildDepositCandidates(
 	return out
 }
 
-// findWarehouseInGraph returns the RUNNING warehouse operation whose system is
-// inside the tour graph (allowedSystems) with the latest CreatedAt, or nil if none
-// matches. A non-nil error means the warehouse lookup itself failed (surfaced by
-// the caller's verdict). matches is the number of RUNNING operations that matched
-// the graph filter before the newest-wins tie-break — normally 0 or 1, but >1 when
-// a container stopped without its storage_operations row being terminalized
-// (sp-3lj5): the stale "zombie" row keeps reading RUNNING alongside its live
-// replacement. Callers surface matches in their own verdict/logging so a collision
-// is visible rather than silently resolved.
+// findWarehouseInGraph resolves the deposit sink for a tour graph. anchor is the
+// RUNNING warehouse operation whose system is inside allowedSystems with the latest
+// CreatedAt (nil if none matches). group is the co-located additive-capacity set
+// (sp-5q2c): every RUNNING warehouse at the anchor's waypoint — the anchor plus any
+// siblings sharing that waypoint, whose capacity and stock the caller sums. A non-nil
+// error means the warehouse lookup itself failed (surfaced by the caller's verdict).
+// matches is the number of RUNNING warehouse operations that matched the graph filter
+// (across all in-graph waypoints) before the newest-wins anchor pick. It is >1 both
+// for the legitimate multi-warehouse topology and for a stale sp-3lj5 "zombie" row
+// (a container stopped without its storage_operations row terminalized) sitting
+// alongside a live replacement; the zombie contributes 0 to every aggregate and is
+// never chosen as a deposit target, so aggregation stays correct either way.
 func findWarehouseInGraph(
 	ctx context.Context,
 	warehouses WarehouseOperationFinder,
 	allowedSystems []string,
 	playerID int,
-) (op *storage.StorageOperation, matches int, err error) {
+) (anchor *storage.StorageOperation, group []*storage.StorageOperation, matches int, err error) {
 	ops, err := warehouses.FindRunning(ctx, playerID)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
-	allowed := toSet(allowedSystems)
-	var candidates []*storage.StorageOperation
-	for _, candidate := range ops {
-		if candidate.OperationType() != storage.OperationTypeWarehouse {
-			continue
-		}
-		if !allowed[shared.ExtractSystemSymbol(candidate.WaypointSymbol())] {
-			continue
-		}
-		candidates = append(candidates, candidate)
+	graph := RunningWarehousesInGraph(ops, allowedSystems)
+	anchor = SelectNewestRunningWarehouse(graph)
+	if anchor == nil {
+		return nil, nil, len(graph), nil
 	}
-	return SelectNewestRunningWarehouse(candidates), len(candidates), nil
+	// Aggregate only the CO-LOCATED siblings (same waypoint as the anchor): a
+	// warehouse at a different in-graph waypoint is a distinct physical sink the
+	// planner would route a different leg to, so it is never folded into this
+	// candidate's capacity.
+	group = RunningWarehousesAtWaypoint(ops, anchor.WaypointSymbol())
+	return anchor, group, len(graph), nil
 }
 
 func toSet(items []string) map[string]bool {

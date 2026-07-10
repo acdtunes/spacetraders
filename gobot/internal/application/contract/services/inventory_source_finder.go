@@ -38,8 +38,19 @@ func NewStorageInventoryFinder(opRepo storage.StorageOperationRepository, coordi
 	return &StorageInventoryFinder{opRepo: opRepo, coordinator: coordinator}
 }
 
-// FindInSystemInventory returns the first running warehouse in systemSymbol
-// holding good with unreserved units, or nil (fail-open). Nil-receiver-safe.
+// FindInSystemInventory returns the in-system warehouse the contract worker should
+// withdraw good from, or nil (fail-open). Nil-receiver-safe.
+//
+// Multi-warehouse (sp-5q2c): more than one warehouse may hold the good in the
+// delivery system (additive capacity). The withdrawal targets the FULLEST hull — the
+// one with the most unreserved units, breaking ties toward the newest operation — so
+// a single trip moves the most and the choice is stable across reads; as that hull
+// drains, the next read re-picks the new fullest. UnitsAvailable is the SUM of
+// unreserved units across every in-system warehouse holding the good — the true total
+// on hand, so a sibling's stock is never invisible to the sourcing gate. The withdrawal
+// itself still reserves against the single chosen OperationID (bounded by that hull),
+// which is correct: it is one physical ship-to-ship transfer, and the caller re-consults
+// this finder each trip.
 func (f *StorageInventoryFinder) FindInSystemInventory(ctx context.Context, playerID int, systemSymbol, good string) *appContract.InventorySource {
 	if f == nil || f.opRepo == nil || f.coordinator == nil {
 		return nil
@@ -50,6 +61,9 @@ func (f *StorageInventoryFinder) FindInSystemInventory(ctx context.Context, play
 		return nil // fail-open: never park a contract on a warehouse read
 	}
 
+	var best *storage.StorageOperation
+	bestUnits := 0
+	totalUnits := 0
 	for _, op := range ops {
 		if op == nil || !op.IsRunning() {
 			continue
@@ -72,12 +86,22 @@ func (f *StorageInventoryFinder) FindInSystemInventory(ctx context.Context, play
 		if available <= 0 {
 			continue
 		}
-		return &appContract.InventorySource{
-			OperationID:     op.ID(),
-			StorageWaypoint: op.WaypointSymbol(),
-			UnitsAvailable:  available,
+		totalUnits += available
+		// Fullest hull wins; tie -> newest operation (then higher ID) for determinism.
+		if best == nil || available > bestUnits ||
+			(available == bestUnits && (op.CreatedAt().After(best.CreatedAt()) ||
+				(op.CreatedAt().Equal(best.CreatedAt()) && op.ID() > best.ID()))) {
+			best = op
+			bestUnits = available
 		}
 	}
 
-	return nil
+	if best == nil {
+		return nil
+	}
+	return &appContract.InventorySource{
+		OperationID:     best.ID(),
+		StorageWaypoint: best.WaypointSymbol(),
+		UnitsAvailable:  totalUnits,
+	}
 }

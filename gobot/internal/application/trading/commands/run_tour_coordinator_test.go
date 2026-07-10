@@ -399,6 +399,43 @@ func wireWarehouse(t *testing.T, h *RunTourCoordinatorHandler, opID, waypoint st
 	return coord
 }
 
+// coLocatedSpec describes one warehouse hull in a co-located group for the multi-
+// warehouse deposit harness (sp-5q2c).
+type coLocatedSpec struct {
+	id        string
+	capacity  int
+	createdAt time.Time
+	goods     []string
+}
+
+// wireWarehouses registers several co-located warehouse hulls at waypoint into one
+// coordinator and wires the tour handler's deposit subsystem to all of them, so a
+// deposit leg can spill across the group.
+func wireWarehouses(t *testing.T, h *RunTourCoordinatorHandler, waypoint string, specs []coLocatedSpec) *storageApp.InMemoryStorageCoordinator {
+	t.Helper()
+	coord := storageApp.NewInMemoryStorageCoordinator()
+	var ops []*storage.StorageOperation
+	for _, s := range specs {
+		whShip, err := storage.NewStorageShip(s.id+"-WH", waypoint, s.id, s.capacity, nil)
+		if err != nil {
+			t.Fatalf("storage ship %s: %v", s.id, err)
+		}
+		if err := coord.RegisterStorageShip(whShip); err != nil {
+			t.Fatalf("register %s: %v", s.id, err)
+		}
+		op, err := storage.NewWarehouseOperation(s.id, 1, waypoint, []string{s.id + "-WH"}, s.goods, &shared.MockClock{CurrentTime: s.createdAt})
+		if err != nil {
+			t.Fatalf("warehouse op %s: %v", s.id, err)
+		}
+		if err := op.Start(); err != nil {
+			t.Fatalf("start %s: %v", s.id, err)
+		}
+		ops = append(ops, op)
+	}
+	h.SetPrePositioning(coord, &fakeRunningFinder{ops: ops}, nil, tradingsvc.DepositCandidateConfig{}, 10)
+	return coord
+}
+
 // tourWarehouseOpAt builds a RUNNING warehouse operation with id at waypoint, created
 // at createdAt (via a MockClock pinned to that instant, so CreatedAt() is fully
 // controllable) — used to pin the sp-3lj5 zombie-row collision shape directly at the
@@ -774,6 +811,57 @@ func TestTour_DepositLeg_DepositsIntoWarehouseAndBooksNoRevenue(t *testing.T) {
 	}
 	if r.CargoStranded {
 		t.Fatalf("deposited cargo left the hull — must not strand: %s", r.CargoStrandedReason)
+	}
+	if !r.Completed {
+		t.Fatalf("tour should complete cleanly, got %+v", r)
+	}
+}
+
+// sp-5q2c multi-warehouse: a single deposit leg spills across the CO-LOCATED group —
+// the newest hull fills to capacity, the remainder lands in the older sibling — so a
+// deposit larger than one hull still lands in full (additive capacity), not degrading
+// to a re-plan while a sibling sits with free slots.
+func TestTour_DepositLeg_SpillsAcrossCoLocatedWarehouses(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 80,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-W"}},
+		ask:     map[string]map[string]int{"X1-S1-A": {"ELECTRONICS": 744}},
+		bid:     map[string]map[string]int{"X1-S1-A": {"ELECTRONICS": 700}},
+		tv:      map[string]map[string]int{"X1-S1-A": {"ELECTRONICS": 40}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{
+		Feasible: true, ProjectedProfit: 90240, DepositValue: 120000,
+		Legs: []routing.TourLeg{
+			leg("X1-S1-A", "X1-S1", buy("ELECTRONICS", 40, 744)),
+			leg("X1-S1-W", "X1-S1", deposit("ELECTRONICS", 40, 3000)),
+		},
+	}}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	// newest hull holds only 25; the 40-unit deposit must spill 15 into the older one.
+	coord := wireWarehouses(t, h, "X1-S1-W", []coLocatedSpec{
+		{id: "wh-older", capacity: 1000, createdAt: t0, goods: []string{"ELECTRONICS"}},
+		{id: "wh-newer", capacity: 25, createdAt: t0.Add(time.Hour), goods: []string{"ELECTRONICS"}},
+	})
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	newer := coord.GetTotalCargoAvailable("wh-newer", "ELECTRONICS")
+	older := coord.GetTotalCargoAvailable("wh-older", "ELECTRONICS")
+	if newer != 25 {
+		t.Fatalf("the newest hull must fill to its 25 capacity first, got %d", newer)
+	}
+	if older != 15 {
+		t.Fatalf("the remaining 15 must spill into the older hull, got %d", older)
+	}
+	if r.CargoStranded {
+		t.Fatalf("the whole 40 landed across the group — must not strand: %s", r.CargoStrandedReason)
 	}
 	if !r.Completed {
 		t.Fatalf("tour should complete cleanly, got %+v", r)

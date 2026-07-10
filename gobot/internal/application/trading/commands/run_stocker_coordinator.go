@@ -319,10 +319,12 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// The warehouse op at the deposit waypoint is required to stock. Gone/never-running →
-	// an empty pass (the starvation streak exits honestly after K of these).
-	op := h.warehouseAt(ctx, cmd.PlayerID, cmd.WarehouseWaypoint)
-	if op == nil {
+	// The co-located warehouse group at the deposit waypoint is required to stock
+	// (sp-5q2c: one OR MORE running warehouses whose capacity sums). None
+	// running/never-running → an empty pass (the starvation streak exits honestly
+	// after K of these).
+	group := h.warehousesAt(ctx, cmd.PlayerID, cmd.WarehouseWaypoint)
+	if len(group) == 0 {
 		logger.Log("WARNING", fmt.Sprintf("Stocker: no running warehouse at %s - nothing to stock this pass", cmd.WarehouseWaypoint), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint,
 		})
@@ -338,9 +340,9 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 	}
 	if heldUnits(ship) > 0 {
 		logger.Log("INFO", fmt.Sprintf("Stocker: hull %s laden on start - depositing held cargo before buying (resume-safe)", cmd.ShipSymbol), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "warehouse": op.ID(),
+			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint,
 		})
-		deposited, derr := h.haulAndDeposit(ctx, cmd, op, response, depositedGoods)
+		deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods)
 		if derr != nil {
 			return false, derr
 		}
@@ -348,7 +350,7 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 	}
 
 	// PICK the most-needed good (need-ranked, every money guard fail-closed).
-	pick, ok := h.pick(ctx, cmd, op, reserve, maxAge)
+	pick, ok := h.pick(ctx, cmd, group, reserve, maxAge)
 	if !ok {
 		return false, nil // nothing to stock this pass — verdict already logged in pick
 	}
@@ -363,7 +365,7 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 	}
 
 	// HAUL HOME + DEPOSIT.
-	deposited, derr := h.haulAndDeposit(ctx, cmd, op, response, depositedGoods)
+	deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods)
 	if derr != nil {
 		return false, derr
 	}
@@ -390,7 +392,7 @@ type stockerPick struct {
 func (h *RunStockerCoordinatorHandler) pick(
 	ctx context.Context,
 	cmd *RunStockerCoordinatorCommand,
-	op *storage.StorageOperation,
+	group []*storage.StorageOperation,
 	reserve int64,
 	maxAge time.Duration,
 ) (stockerPick, bool) {
@@ -412,14 +414,12 @@ func (h *RunStockerCoordinatorHandler) pick(
 		return stockerPick{}, false
 	}
 
-	// Warehouse free space (shared across the op's storage ships).
-	freeSpace := 0
-	for _, s := range h.storageCoordinator.GetStorageShipsForOperation(op.ID()) {
-		freeSpace += s.AvailableSpace()
-	}
+	// AGGREGATE warehouse free space across the co-located group (sp-5q2c: light-12 +
+	// heavy-4B sum). Full — and an empty pass — only when EVERY member is full.
+	freeSpace := tradingsvc.TotalFreeSpace(h.storageCoordinator, group)
 	if freeSpace <= 0 {
-		logger.Log("INFO", fmt.Sprintf("Stocker: warehouse %s full (0 free space) - nothing to stock this pass", op.ID()), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "warehouse": op.ID(),
+		logger.Log("INFO", fmt.Sprintf("Stocker: warehouse group at %s full (0 aggregate free space across %d op(s)) - nothing to stock this pass", cmd.WarehouseWaypoint, len(group)), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "group_size": len(group),
 		})
 		return stockerPick{}, false
 	}
@@ -475,9 +475,9 @@ func (h *RunStockerCoordinatorHandler) pick(
 		if block[r.Good] {
 			continue
 		}
-		// Only stock goods the warehouse actually BUFFERS: a good it does not support
-		// would strand (no contract worker could withdraw it). Fail closed.
-		if !op.SupportsGood(r.Good) {
+		// Only stock goods the group actually BUFFERS: a good no co-located member
+		// supports would strand (no contract worker could withdraw it). Fail closed.
+		if !tradingsvc.AnySupportsGood(group, r.Good) {
 			continue
 		}
 
@@ -485,7 +485,10 @@ func (h *RunStockerCoordinatorHandler) pick(
 		if cmd.TargetPerGood > 0 {
 			target = cmd.TargetPerGood
 		}
-		unitsShort := target - h.storageCoordinator.GetTotalCargoAvailable(op.ID(), r.Good)
+		// Net the target against AGGREGATE on-hand across the group (sp-5q2c) so a
+		// sibling warehouse's stock is never invisible — the stocker stops buying once
+		// the COMBINED inventory reaches target, not once any single hull does.
+		unitsShort := target - tradingsvc.TotalCargoAvailable(h.storageCoordinator, group, r.Good)
 		if unitsShort <= 0 {
 			continue // already at/over the fill target
 		}
@@ -526,9 +529,9 @@ func (h *RunStockerCoordinatorHandler) pick(
 
 	if bestValue <= 0 {
 		logger.Log("INFO", fmt.Sprintf(
-			"Stocker verdict: nothing to stock — [warehouse=%s free=%d ceiling=%d funnel: miner_rows=%d eligible=%d after_filters=%d] (at target / unaffordable / stale / unsupported)",
-			op.ID(), freeSpace, ceiling, len(rows), eligible, afterFilters), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "warehouse": op.ID(), "free_space": freeSpace,
+			"Stocker verdict: nothing to stock — [warehouse=%s(group %d) free=%d ceiling=%d funnel: miner_rows=%d eligible=%d after_filters=%d] (at target / unaffordable / stale / unsupported)",
+			cmd.WarehouseWaypoint, len(group), freeSpace, ceiling, len(rows), eligible, afterFilters), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "group_size": len(group), "free_space": freeSpace,
 			"ceiling": ceiling, "miner_rows": len(rows), "eligible": eligible, "after_filters": afterFilters,
 		})
 		return stockerPick{}, false
@@ -623,7 +626,7 @@ func (h *RunStockerCoordinatorHandler) buy(
 func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 	ctx context.Context,
 	cmd *RunStockerCoordinatorCommand,
-	op *storage.StorageOperation,
+	group []*storage.StorageOperation,
 	response *RunStockerCoordinatorResponse,
 	depositedGoods map[string]bool,
 ) (int, error) {
@@ -664,18 +667,27 @@ func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 
 	total := 0
 	for _, good := range goods {
-		units := heldByGood[good]
-		if !op.SupportsGood(good) {
-			logger.Log("WARNING", fmt.Sprintf("Stocker: warehouse %s does not support %s - %d units held aboard (will report stranded)", op.ID(), good, units), map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol, "warehouse": op.ID(), "good": good, "units": units,
-			})
-			continue
-		}
-		deposited, derr := h.depositGood(ctx, cmd, op, good, units, response)
-		if derr != nil {
-			return total, derr
-		}
-		if deposited > 0 {
+		// Deposit the good into the co-located group, spilling from the newest member
+		// with space into the next as each fills (sp-5q2c additive capacity). The
+		// remainder is held aboard ONLY when the WHOLE group is full or no member
+		// supports the good — that is the sole "warehouse full" condition now.
+		remaining := heldByGood[good]
+		for remaining > 0 {
+			dst := tradingsvc.SelectDepositWarehouse(h.storageCoordinator, group, good)
+			if dst == nil {
+				logger.Log("WARNING", fmt.Sprintf("Stocker: no co-located warehouse at %s can accept %d %s (all full or unsupported) - held aboard (reports stranded if undeposited at exit)", cmd.WarehouseWaypoint, remaining, good), map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "good": good, "units": remaining, "group_size": len(group),
+				})
+				break
+			}
+			deposited, derr := h.depositGood(ctx, cmd, dst, good, remaining, response)
+			if derr != nil {
+				return total, derr
+			}
+			if deposited <= 0 {
+				break // race: space vanished between select and reserve — hold the rest
+			}
+			remaining -= deposited
 			total += deposited
 			depositedGoods[good] = true
 		}
@@ -730,33 +742,30 @@ func (h *RunStockerCoordinatorHandler) depositGood(
 	return units, nil
 }
 
-// warehouseAt returns the RUNNING warehouse operation parked at waypoint (the deposit
-// anchor), or nil if none is running there. Mirrors the tour's warehouseAt. When more
-// than one RUNNING op matches (sp-3lj5: a container stopped without its
-// storage_operations row being terminalized, leaving a stale "zombie" row alongside
-// its live replacement at the same waypoint), resolves deterministically to the
-// newest via tradingsvc.SelectNewestRunningWarehouse and logs the collision - a naive
-// first-match pick can silently select the dead operation, which always reads back
-// zero free space and makes a live warehouse look full.
-func (h *RunStockerCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
+// warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the
+// co-located additive-capacity group (sp-5q2c: e.g. light-12's 80 slots + heavy-4B's
+// 225 at E42, whose capacity and stock sum). Empty when none is running there (fail
+// closed — the caller treats the pass as empty). A stale sp-3lj5 zombie row (a
+// container stopped without its storage_operations row terminalized) is included but
+// contributes 0 free space and 0 stock to every aggregate and is never chosen as a
+// deposit target, so aggregation composes with the newest-wins zombie fix.
+func (h *RunStockerCoordinatorHandler) warehousesAt(ctx context.Context, playerID int, waypoint string) []*storage.StorageOperation {
 	ops, err := h.warehouseFinder.FindRunning(ctx, playerID)
 	if err != nil {
 		return nil
 	}
-	var matches []*storage.StorageOperation
-	for _, op := range ops {
-		if op.OperationType() == storage.OperationTypeWarehouse && op.WaypointSymbol() == waypoint {
-			matches = append(matches, op)
-		}
-	}
-	if len(matches) > 1 {
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Stocker: %d RUNNING warehouse operations at %s - resolving to the newest (sp-3lj5 zombie-row collision)",
-			len(matches), waypoint), map[string]interface{}{
-			"warehouse_waypoint": waypoint, "collision_count": len(matches),
-		})
-	}
-	return tradingsvc.SelectNewestRunningWarehouse(matches)
+	return tradingsvc.RunningWarehousesAtWaypoint(ops, waypoint)
+}
+
+// warehouseAt returns the newest RUNNING warehouse operation at waypoint (the group's
+// deposit anchor), or nil if none is running there. The stocking flow aggregates the
+// whole co-located group (warehousesAt); this anchor pick is retained for the sp-3lj5
+// regression, where a stale zombie row sits alongside its live replacement at the same
+// waypoint — the newest-wins resolution ensures the anchor is the live operation, and
+// the group aggregation independently ensures the zombie's 0-capacity never makes the
+// warehouse look full.
+func (h *RunStockerCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
+	return tradingsvc.SelectNewestRunningWarehouse(h.warehousesAt(ctx, playerID, waypoint))
 }
 
 // capitalCeiling resolves the pre-positioning capital ceiling: ceilingPct (default 10)

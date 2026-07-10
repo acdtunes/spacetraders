@@ -1082,8 +1082,10 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 		return false, nil
 	}
 
-	op := h.warehouseAt(ctx, cmd.PlayerID, leg.Waypoint)
-	if op == nil {
+	// The deposit sink is the CO-LOCATED warehouse group at the leg's waypoint (sp-5q2c:
+	// the anchor plus any additive-capacity siblings). None running → degrade.
+	group := h.warehousesAt(ctx, cmd.PlayerID, leg.Waypoint)
+	if len(group) == 0 {
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no running warehouse at %s for %s deposit - degrading to re-plan (held cargo will liquidate)", legIdx, leg.Waypoint, trade.Good), map[string]interface{}{
 			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
 		})
@@ -1106,51 +1108,63 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 		return false, nil // nothing to deposit (cargo already gone) — not a degrade
 	}
 
-	// Reserve space atomically, then transfer, then confirm (Lane B / siphon protocol).
-	storageShip, reserved, ok := h.storageCoordinator.ReserveSpaceForDeposit(op.ID(), units)
-	if !ok || storageShip == nil {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: warehouse %s has no space for %d %s - degrading to re-plan (held cargo will liquidate at market)", legIdx, op.ID(), units, trade.Good), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "units": units, "warehouse": op.ID(),
+	// Deposit across the group, spilling from the newest member with space into the
+	// next as each fills (additive capacity). Each member: reserve atomically → transfer
+	// → confirm (Lane B / siphon protocol). "Full" — and the degrade — is reached only
+	// when the WHOLE group is saturated.
+	deposited := 0
+	for deposited < units {
+		remaining := units - deposited
+		dst := tradingsvc.SelectDepositWarehouse(h.storageCoordinator, group, trade.Good)
+		if dst == nil {
+			break // every co-located member full or unsupported
+		}
+		storageShip, reserved, ok := h.storageCoordinator.ReserveSpaceForDeposit(dst.ID(), remaining)
+		if !ok || storageShip == nil {
+			break // race: space vanished between select and reserve
+		}
+		move := reserved
+		if move > remaining {
+			move = remaining
+		}
+		if _, terr := h.mediator.Send(ctx, &gasCmd.TransferCargoCommand{
+			FromShip:   cmd.ShipSymbol,
+			ToShip:     storageShip.ShipSymbol(),
+			GoodSymbol: trade.Good,
+			Units:      move,
+			PlayerID:   shared.MustNewPlayerID(cmd.PlayerID),
+		}); terr != nil {
+			h.storageCoordinator.ReleaseReservedSpace(storageShip.ShipSymbol(), reserved)
+			return false, fmt.Errorf("deposit transfer of %d %s to warehouse hull %s failed: %w", move, trade.Good, storageShip.ShipSymbol(), terr)
+		}
+		h.storageCoordinator.ConfirmDeposit(storageShip.ShipSymbol(), trade.Good, move)
+		logger.Log("INFO", fmt.Sprintf("Tour leg %d: deposited %d %s into warehouse %s (savings value %d, no revenue)", legIdx, move, trade.Good, storageShip.WaypointSymbol(), move*trade.ExpectedUnitPrice), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "units": move, "warehouse": dst.ID(),
+			"storage_ship": storageShip.ShipSymbol(), "savings_value": move * trade.ExpectedUnitPrice,
+			"operation_type": "warehouse_deposit",
+		})
+		deposited += move
+	}
+
+	if deposited <= 0 {
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: warehouse group at %s has no space for %d %s (all %d co-located op(s) full) - degrading to re-plan (held cargo will liquidate at market)", legIdx, leg.Waypoint, units, trade.Good, len(group)), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "units": units, "waypoint": leg.Waypoint, "group_size": len(group),
 		})
 		return false, nil // full → degrade → next plan liquidates the held cargo (m5kv)
 	}
-	if reserved < units {
-		units = reserved
-	}
-
-	if _, terr := h.mediator.Send(ctx, &gasCmd.TransferCargoCommand{
-		FromShip:   cmd.ShipSymbol,
-		ToShip:     storageShip.ShipSymbol(),
-		GoodSymbol: trade.Good,
-		Units:      units,
-		PlayerID:   shared.MustNewPlayerID(cmd.PlayerID),
-	}); terr != nil {
-		h.storageCoordinator.ReleaseReservedSpace(storageShip.ShipSymbol(), reserved)
-		return false, fmt.Errorf("deposit transfer of %d %s to warehouse hull %s failed: %w", units, trade.Good, storageShip.ShipSymbol(), terr)
-	}
-	h.storageCoordinator.ConfirmDeposit(storageShip.ShipSymbol(), trade.Good, units)
 
 	response.TradesExecuted++
-	netBought[trade.Good] -= units // left the hull into inventory — not stranded
-	savingsValue := units * trade.ExpectedUnitPrice
-	logger.Log("INFO", fmt.Sprintf("Tour leg %d: deposited %d %s into warehouse %s (savings value %d, no revenue)", legIdx, units, trade.Good, storageShip.WaypointSymbol(), savingsValue), map[string]interface{}{
-		"leg": legIdx, "good": trade.Good, "units": units, "warehouse": op.ID(),
-		"storage_ship": storageShip.ShipSymbol(), "savings_value": savingsValue,
-		"operation_type": "warehouse_deposit",
-	})
+	netBought[trade.Good] -= deposited // left the hull into inventory — not stranded
 	return true, nil
 }
 
-// warehouseAt returns the RUNNING warehouse operation parked at waypoint (the
-// storage anchor the planner routed a deposit leg to), or nil if none is running
-// there (warehouse stopped/gone since plan time — the caller degrades). When more
-// than one RUNNING op matches (sp-3lj5: a container stopped without its
-// storage_operations row being terminalized, leaving a stale "zombie" row alongside
-// its live replacement at the same waypoint), resolves deterministically to the
-// newest via tradingsvc.SelectNewestRunningWarehouse and logs the collision - a naive
-// first-match pick can silently select the dead operation, which always reads back
-// zero free space and makes a live warehouse look full.
-func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
+// warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the
+// co-located additive-capacity group (sp-5q2c: e.g. light-12 + heavy-4B at E42, whose
+// slots sum). Empty when none is running there or the finder is unwired (fail closed —
+// the caller degrades to pure arb for that leg). A stale sp-3lj5 zombie row is included
+// but contributes 0 free space and is never chosen as a deposit target, so aggregation
+// composes with the newest-wins zombie fix.
+func (h *RunTourCoordinatorHandler) warehousesAt(ctx context.Context, playerID int, waypoint string) []*storage.StorageOperation {
 	if h.warehouseFinder == nil {
 		return nil
 	}
@@ -1158,20 +1172,17 @@ func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID in
 	if err != nil {
 		return nil
 	}
-	var matches []*storage.StorageOperation
-	for _, op := range ops {
-		if op.OperationType() == storage.OperationTypeWarehouse && op.WaypointSymbol() == waypoint {
-			matches = append(matches, op)
-		}
-	}
-	if len(matches) > 1 {
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Tour: %d RUNNING warehouse operations at %s - resolving to the newest (sp-3lj5 zombie-row collision)",
-			len(matches), waypoint), map[string]interface{}{
-			"warehouse_waypoint": waypoint, "collision_count": len(matches),
-		})
-	}
-	return tradingsvc.SelectNewestRunningWarehouse(matches)
+	return tradingsvc.RunningWarehousesAtWaypoint(ops, waypoint)
+}
+
+// warehouseAt returns the newest RUNNING warehouse operation at waypoint (the group's
+// deposit anchor), or nil if none is running there. The deposit path aggregates the
+// whole co-located group (warehousesAt); this anchor pick is retained for the sp-3lj5
+// regression, where a stale zombie row sits alongside its live replacement at the same
+// waypoint — newest-wins ensures the anchor is the live op, and the group aggregation
+// independently ensures the zombie's 0-capacity never makes the warehouse look full.
+func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
+	return tradingsvc.SelectNewestRunningWarehouse(h.warehousesAt(ctx, playerID, waypoint))
 }
 
 // plan assembles the market snapshot + era-scoped coordinates over the tour graph
