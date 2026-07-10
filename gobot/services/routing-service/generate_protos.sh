@@ -15,8 +15,12 @@ echo "Project root: $PROJECT_ROOT"
 mkdir -p "$SCRIPT_DIR/generated"
 
 # Generate Python code
+# -I is the routing proto dir (not pkg/proto) so output lands at
+# generated/routing_pb2*.py — the layout `from generated import routing_pb2`
+# and the sed below both expect. With -I at pkg/proto the files nest under
+# generated/routing/ and the sed fails on the missing top-level file.
 python3 -m grpc_tools.protoc \
-    -I"$PROJECT_ROOT/pkg/proto" \
+    -I"$PROJECT_ROOT/pkg/proto/routing" \
     --python_out="$SCRIPT_DIR/generated" \
     --grpc_python_out="$SCRIPT_DIR/generated" \
     "$PROJECT_ROOT/pkg/proto/routing/routing.proto"

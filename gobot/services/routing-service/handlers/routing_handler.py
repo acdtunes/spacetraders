@@ -15,27 +15,34 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'generated'))
 from generated import routing_pb2
 from generated import routing_pb2_grpc
 
+from handlers.tour_handler import TourHandlerMixin, load_model_artifact
 from utils.routing_engine import ORToolsRoutingEngine, Waypoint
 
 logger = logging.getLogger(__name__)
 
 
-class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
+class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceServicer):
     """
     gRPC service implementation for routing operations.
 
     Delegates to ORToolsRoutingEngine for actual routing logic.
+    OptimizeTradeTour (sp-1ek0) comes from TourHandlerMixin so this stays
+    the single registered servicer.
     """
 
-    def __init__(self, tsp_timeout: int = 5, vrp_timeout: int = 30):
+    def __init__(self, tsp_timeout: int = 5, vrp_timeout: int = 30,
+                 tour_artifact_path: str = None):
         """
         Initialize the routing service handler.
 
         Args:
             tsp_timeout: Timeout for TSP solver (seconds)
             vrp_timeout: Timeout for VRP solver (seconds)
+            tour_artifact_path: Override for the market-model artifact path
+                (tests); None -> the checked-in model_artifacts/ default
         """
         self.engine = ORToolsRoutingEngine(tsp_timeout=tsp_timeout, vrp_timeout=vrp_timeout)
+        self.tour_model = load_model_artifact(tour_artifact_path)
         logger.info(f"RoutingServiceHandler initialized (TSP timeout={tsp_timeout}s, VRP timeout={vrp_timeout}s)")
 
     def PlanRoute(self, request: routing_pb2.PlanRouteRequest, context) -> routing_pb2.PlanRouteResponse:

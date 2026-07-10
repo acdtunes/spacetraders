@@ -7,3 +7,11 @@ numpy==2.5.1
 sqlalchemy==2.0.51
 psycopg2-binary==2.9.12
 pytest==9.1.1
+# sp-1ek0 P1a: tour handler tests construct routing_pb2 messages and import
+# the real RoutingServiceHandler (which pulls the OR-Tools engine), so the
+# test venv needs these three (the service venv stays untouched). protobuf
+# sits at 6.x because ortools 9.15 requires it — same reality as
+# requirements.txt.
+grpcio==1.82.1
+protobuf==6.33.6
+ortools==9.15.6755

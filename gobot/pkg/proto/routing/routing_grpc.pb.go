@@ -23,6 +23,7 @@ const (
 	RoutingService_OptimizeTour_FullMethodName       = "/routing.RoutingService/OptimizeTour"
 	RoutingService_OptimizeFueledTour_FullMethodName = "/routing.RoutingService/OptimizeFueledTour"
 	RoutingService_PartitionFleet_FullMethodName     = "/routing.RoutingService/PartitionFleet"
+	RoutingService_OptimizeTradeTour_FullMethodName  = "/routing.RoutingService/OptimizeTradeTour"
 )
 
 // RoutingServiceClient is the client API for RoutingService service.
@@ -42,6 +43,10 @@ type RoutingServiceClient interface {
 	OptimizeFueledTour(ctx context.Context, in *OptimizeFueledTourRequest, opts ...grpc.CallOption) (*OptimizeFueledTourResponse, error)
 	// PartitionFleet solves VRP to distribute waypoints across multiple ships
 	PartitionFleet(ctx context.Context, in *PartitionFleetRequest, opts ...grpc.CallOption) (*PartitionFleetResponse, error)
+	// OptimizeTradeTour plans a depth-aware multi-hop trade tour (sp-1ek0)
+	// Beam search over hop sequences + tranche allocation over the fitted
+	// market-impact model. Request-carried snapshot; the service stays stateless.
+	OptimizeTradeTour(ctx context.Context, in *OptimizeTradeTourRequest, opts ...grpc.CallOption) (*OptimizeTradeTourResponse, error)
 }
 
 type routingServiceClient struct {
@@ -92,6 +97,16 @@ func (c *routingServiceClient) PartitionFleet(ctx context.Context, in *Partition
 	return out, nil
 }
 
+func (c *routingServiceClient) OptimizeTradeTour(ctx context.Context, in *OptimizeTradeTourRequest, opts ...grpc.CallOption) (*OptimizeTradeTourResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OptimizeTradeTourResponse)
+	err := c.cc.Invoke(ctx, RoutingService_OptimizeTradeTour_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RoutingServiceServer is the server API for RoutingService service.
 // All implementations must embed UnimplementedRoutingServiceServer
 // for forward compatibility.
@@ -109,6 +124,10 @@ type RoutingServiceServer interface {
 	OptimizeFueledTour(context.Context, *OptimizeFueledTourRequest) (*OptimizeFueledTourResponse, error)
 	// PartitionFleet solves VRP to distribute waypoints across multiple ships
 	PartitionFleet(context.Context, *PartitionFleetRequest) (*PartitionFleetResponse, error)
+	// OptimizeTradeTour plans a depth-aware multi-hop trade tour (sp-1ek0)
+	// Beam search over hop sequences + tranche allocation over the fitted
+	// market-impact model. Request-carried snapshot; the service stays stateless.
+	OptimizeTradeTour(context.Context, *OptimizeTradeTourRequest) (*OptimizeTradeTourResponse, error)
 	mustEmbedUnimplementedRoutingServiceServer()
 }
 
@@ -130,6 +149,9 @@ func (UnimplementedRoutingServiceServer) OptimizeFueledTour(context.Context, *Op
 }
 func (UnimplementedRoutingServiceServer) PartitionFleet(context.Context, *PartitionFleetRequest) (*PartitionFleetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PartitionFleet not implemented")
+}
+func (UnimplementedRoutingServiceServer) OptimizeTradeTour(context.Context, *OptimizeTradeTourRequest) (*OptimizeTradeTourResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method OptimizeTradeTour not implemented")
 }
 func (UnimplementedRoutingServiceServer) mustEmbedUnimplementedRoutingServiceServer() {}
 func (UnimplementedRoutingServiceServer) testEmbeddedByValue()                        {}
@@ -224,6 +246,24 @@ func _RoutingService_PartitionFleet_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RoutingService_OptimizeTradeTour_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OptimizeTradeTourRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoutingServiceServer).OptimizeTradeTour(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoutingService_OptimizeTradeTour_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoutingServiceServer).OptimizeTradeTour(ctx, req.(*OptimizeTradeTourRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RoutingService_ServiceDesc is the grpc.ServiceDesc for RoutingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -246,6 +286,10 @@ var RoutingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PartitionFleet",
 			Handler:    _RoutingService_PartitionFleet_Handler,
+		},
+		{
+			MethodName: "OptimizeTradeTour",
+			Handler:    _RoutingService_OptimizeTradeTour_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

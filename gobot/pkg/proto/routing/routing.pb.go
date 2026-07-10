@@ -1373,6 +1373,796 @@ func (x *ShipTour) GetTotalDistance() float64 {
 	return 0
 }
 
+// MarketGoodSnapshot is one (waypoint, good) row of the request-carried
+// market snapshot the Go daemon assembles from the scout cache.
+type MarketGoodSnapshot struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WaypointSymbol string                 `protobuf:"bytes,1,opt,name=waypoint_symbol,json=waypointSymbol,proto3" json:"waypoint_symbol,omitempty"`
+	SystemSymbol   string                 `protobuf:"bytes,2,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
+	GoodSymbol     string                 `protobuf:"bytes,3,opt,name=good_symbol,json=goodSymbol,proto3" json:"good_symbol,omitempty"`
+	Ask            int32                  `protobuf:"varint,4,opt,name=ask,proto3" json:"ask,omitempty"` // what we pay to buy (sellPrice in Go domain)
+	Bid            int32                  `protobuf:"varint,5,opt,name=bid,proto3" json:"bid,omitempty"` // what market pays us (purchasePrice)
+	TradeVolume    int32                  `protobuf:"varint,6,opt,name=trade_volume,json=tradeVolume,proto3" json:"trade_volume,omitempty"`
+	Supply         string                 `protobuf:"bytes,7,opt,name=supply,proto3" json:"supply,omitempty"`     // SCARCE..ABUNDANT
+	Activity       string                 `protobuf:"bytes,8,opt,name=activity,proto3" json:"activity,omitempty"` // WEAK..RESTRICTED
+	ObservedAtUnix int64                  `protobuf:"varint,9,opt,name=observed_at_unix,json=observedAtUnix,proto3" json:"observed_at_unix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *MarketGoodSnapshot) Reset() {
+	*x = MarketGoodSnapshot{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarketGoodSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarketGoodSnapshot) ProtoMessage() {}
+
+func (x *MarketGoodSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarketGoodSnapshot.ProtoReflect.Descriptor instead.
+func (*MarketGoodSnapshot) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *MarketGoodSnapshot) GetWaypointSymbol() string {
+	if x != nil {
+		return x.WaypointSymbol
+	}
+	return ""
+}
+
+func (x *MarketGoodSnapshot) GetSystemSymbol() string {
+	if x != nil {
+		return x.SystemSymbol
+	}
+	return ""
+}
+
+func (x *MarketGoodSnapshot) GetGoodSymbol() string {
+	if x != nil {
+		return x.GoodSymbol
+	}
+	return ""
+}
+
+func (x *MarketGoodSnapshot) GetAsk() int32 {
+	if x != nil {
+		return x.Ask
+	}
+	return 0
+}
+
+func (x *MarketGoodSnapshot) GetBid() int32 {
+	if x != nil {
+		return x.Bid
+	}
+	return 0
+}
+
+func (x *MarketGoodSnapshot) GetTradeVolume() int32 {
+	if x != nil {
+		return x.TradeVolume
+	}
+	return 0
+}
+
+func (x *MarketGoodSnapshot) GetSupply() string {
+	if x != nil {
+		return x.Supply
+	}
+	return ""
+}
+
+func (x *MarketGoodSnapshot) GetActivity() string {
+	if x != nil {
+		return x.Activity
+	}
+	return ""
+}
+
+func (x *MarketGoodSnapshot) GetObservedAtUnix() int64 {
+	if x != nil {
+		return x.ObservedAtUnix
+	}
+	return 0
+}
+
+// TourShip carries the touring hull's position, capacity and current cargo.
+type TourShip struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ShipSymbol      string                 `protobuf:"bytes,1,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	CurrentWaypoint string                 `protobuf:"bytes,2,opt,name=current_waypoint,json=currentWaypoint,proto3" json:"current_waypoint,omitempty"`
+	CurrentSystem   string                 `protobuf:"bytes,3,opt,name=current_system,json=currentSystem,proto3" json:"current_system,omitempty"`
+	HoldCapacity    int32                  `protobuf:"varint,4,opt,name=hold_capacity,json=holdCapacity,proto3" json:"hold_capacity,omitempty"`
+	FuelCurrent     int32                  `protobuf:"varint,5,opt,name=fuel_current,json=fuelCurrent,proto3" json:"fuel_current,omitempty"`
+	FuelCapacity    int32                  `protobuf:"varint,6,opt,name=fuel_capacity,json=fuelCapacity,proto3" json:"fuel_capacity,omitempty"`
+	EngineSpeed     int32                  `protobuf:"varint,7,opt,name=engine_speed,json=engineSpeed,proto3" json:"engine_speed,omitempty"`
+	Cargo           []*TourCargoItem       `protobuf:"bytes,8,rep,name=cargo,proto3" json:"cargo,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *TourShip) Reset() {
+	*x = TourShip{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourShip) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourShip) ProtoMessage() {}
+
+func (x *TourShip) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourShip.ProtoReflect.Descriptor instead.
+func (*TourShip) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *TourShip) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+func (x *TourShip) GetCurrentWaypoint() string {
+	if x != nil {
+		return x.CurrentWaypoint
+	}
+	return ""
+}
+
+func (x *TourShip) GetCurrentSystem() string {
+	if x != nil {
+		return x.CurrentSystem
+	}
+	return ""
+}
+
+func (x *TourShip) GetHoldCapacity() int32 {
+	if x != nil {
+		return x.HoldCapacity
+	}
+	return 0
+}
+
+func (x *TourShip) GetFuelCurrent() int32 {
+	if x != nil {
+		return x.FuelCurrent
+	}
+	return 0
+}
+
+func (x *TourShip) GetFuelCapacity() int32 {
+	if x != nil {
+		return x.FuelCapacity
+	}
+	return 0
+}
+
+func (x *TourShip) GetEngineSpeed() int32 {
+	if x != nil {
+		return x.EngineSpeed
+	}
+	return 0
+}
+
+func (x *TourShip) GetCargo() []*TourCargoItem {
+	if x != nil {
+		return x.Cargo
+	}
+	return nil
+}
+
+type TourCargoItem struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GoodSymbol    string                 `protobuf:"bytes,1,opt,name=good_symbol,json=goodSymbol,proto3" json:"good_symbol,omitempty"`
+	Units         int32                  `protobuf:"varint,2,opt,name=units,proto3" json:"units,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TourCargoItem) Reset() {
+	*x = TourCargoItem{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourCargoItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourCargoItem) ProtoMessage() {}
+
+func (x *TourCargoItem) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourCargoItem.ProtoReflect.Descriptor instead.
+func (*TourCargoItem) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TourCargoItem) GetGoodSymbol() string {
+	if x != nil {
+		return x.GoodSymbol
+	}
+	return ""
+}
+
+func (x *TourCargoItem) GetUnits() int32 {
+	if x != nil {
+		return x.Units
+	}
+	return 0
+}
+
+// TourConstraints binds the solver: hop budget, money guards, system scope.
+type TourConstraints struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	MaxHops               int32                  `protobuf:"varint,1,opt,name=max_hops,json=maxHops,proto3" json:"max_hops,omitempty"` // default 6
+	MaxSpend              int64                  `protobuf:"varint,2,opt,name=max_spend,json=maxSpend,proto3" json:"max_spend,omitempty"`
+	MinMarginPerUnit      int32                  `protobuf:"varint,3,opt,name=min_margin_per_unit,json=minMarginPerUnit,proto3" json:"min_margin_per_unit,omitempty"`
+	WorkingCapitalReserve int64                  `protobuf:"varint,4,opt,name=working_capital_reserve,json=workingCapitalReserve,proto3" json:"working_capital_reserve,omitempty"`
+	AllowedSystems        []string               `protobuf:"bytes,5,rep,name=allowed_systems,json=allowedSystems,proto3" json:"allowed_systems,omitempty"`                           // <=2, gate-adjacent (maxTourSystems)
+	MaxSnapshotAgeMinutes int32                  `protobuf:"varint,6,opt,name=max_snapshot_age_minutes,json=maxSnapshotAgeMinutes,proto3" json:"max_snapshot_age_minutes,omitempty"` // 75
+	ExpectedModelVersion  string                 `protobuf:"bytes,7,opt,name=expected_model_version,json=expectedModelVersion,proto3" json:"expected_model_version,omitempty"`       // "1@<era>"; mismatch -> error
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *TourConstraints) Reset() {
+	*x = TourConstraints{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourConstraints) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourConstraints) ProtoMessage() {}
+
+func (x *TourConstraints) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourConstraints.ProtoReflect.Descriptor instead.
+func (*TourConstraints) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *TourConstraints) GetMaxHops() int32 {
+	if x != nil {
+		return x.MaxHops
+	}
+	return 0
+}
+
+func (x *TourConstraints) GetMaxSpend() int64 {
+	if x != nil {
+		return x.MaxSpend
+	}
+	return 0
+}
+
+func (x *TourConstraints) GetMinMarginPerUnit() int32 {
+	if x != nil {
+		return x.MinMarginPerUnit
+	}
+	return 0
+}
+
+func (x *TourConstraints) GetWorkingCapitalReserve() int64 {
+	if x != nil {
+		return x.WorkingCapitalReserve
+	}
+	return 0
+}
+
+func (x *TourConstraints) GetAllowedSystems() []string {
+	if x != nil {
+		return x.AllowedSystems
+	}
+	return nil
+}
+
+func (x *TourConstraints) GetMaxSnapshotAgeMinutes() int32 {
+	if x != nil {
+		return x.MaxSnapshotAgeMinutes
+	}
+	return 0
+}
+
+func (x *TourConstraints) GetExpectedModelVersion() string {
+	if x != nil {
+		return x.ExpectedModelVersion
+	}
+	return ""
+}
+
+// TourTrade is one buy or sell tranche at a leg (execution order preserved).
+type TourTrade struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	GoodSymbol        string                 `protobuf:"bytes,1,opt,name=good_symbol,json=goodSymbol,proto3" json:"good_symbol,omitempty"`
+	Units             int32                  `protobuf:"varint,2,opt,name=units,proto3" json:"units,omitempty"`
+	IsBuy             bool                   `protobuf:"varint,3,opt,name=is_buy,json=isBuy,proto3" json:"is_buy,omitempty"`
+	ExpectedUnitPrice int32                  `protobuf:"varint,4,opt,name=expected_unit_price,json=expectedUnitPrice,proto3" json:"expected_unit_price,omitempty"` // curve-adjusted
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *TourTrade) Reset() {
+	*x = TourTrade{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourTrade) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourTrade) ProtoMessage() {}
+
+func (x *TourTrade) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourTrade.ProtoReflect.Descriptor instead.
+func (*TourTrade) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *TourTrade) GetGoodSymbol() string {
+	if x != nil {
+		return x.GoodSymbol
+	}
+	return ""
+}
+
+func (x *TourTrade) GetUnits() int32 {
+	if x != nil {
+		return x.Units
+	}
+	return 0
+}
+
+func (x *TourTrade) GetIsBuy() bool {
+	if x != nil {
+		return x.IsBuy
+	}
+	return false
+}
+
+func (x *TourTrade) GetExpectedUnitPrice() int32 {
+	if x != nil {
+		return x.ExpectedUnitPrice
+	}
+	return 0
+}
+
+// TradeTourLeg is one market stop of the planned tour.
+// (Named TradeTourLeg because TourLeg is already taken by OptimizeFueledTour.)
+type TradeTourLeg struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	WaypointSymbol        string                 `protobuf:"bytes,1,opt,name=waypoint_symbol,json=waypointSymbol,proto3" json:"waypoint_symbol,omitempty"`
+	SystemSymbol          string                 `protobuf:"bytes,2,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
+	Trades                []*TourTrade           `protobuf:"bytes,3,rep,name=trades,proto3" json:"trades,omitempty"`
+	ProjectedLegProfit    int64                  `protobuf:"varint,4,opt,name=projected_leg_profit,json=projectedLegProfit,proto3" json:"projected_leg_profit,omitempty"`
+	TravelSecondsFromPrev int32                  `protobuf:"varint,5,opt,name=travel_seconds_from_prev,json=travelSecondsFromPrev,proto3" json:"travel_seconds_from_prev,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *TradeTourLeg) Reset() {
+	*x = TradeTourLeg{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TradeTourLeg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TradeTourLeg) ProtoMessage() {}
+
+func (x *TradeTourLeg) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TradeTourLeg.ProtoReflect.Descriptor instead.
+func (*TradeTourLeg) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *TradeTourLeg) GetWaypointSymbol() string {
+	if x != nil {
+		return x.WaypointSymbol
+	}
+	return ""
+}
+
+func (x *TradeTourLeg) GetSystemSymbol() string {
+	if x != nil {
+		return x.SystemSymbol
+	}
+	return ""
+}
+
+func (x *TradeTourLeg) GetTrades() []*TourTrade {
+	if x != nil {
+		return x.Trades
+	}
+	return nil
+}
+
+func (x *TradeTourLeg) GetProjectedLegProfit() int64 {
+	if x != nil {
+		return x.ProjectedLegProfit
+	}
+	return 0
+}
+
+func (x *TradeTourLeg) GetTravelSecondsFromPrev() int32 {
+	if x != nil {
+		return x.TravelSecondsFromPrev
+	}
+	return 0
+}
+
+// RejectedTour is one of the top alternative tours the solver declined,
+// with a one-line reason (observability parity with lane-selection logs).
+type RejectedTour struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Summary       string                 `protobuf:"bytes,1,opt,name=summary,proto3" json:"summary,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RejectedTour) Reset() {
+	*x = RejectedTour{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RejectedTour) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RejectedTour) ProtoMessage() {}
+
+func (x *RejectedTour) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RejectedTour.ProtoReflect.Descriptor instead.
+func (*RejectedTour) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *RejectedTour) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *RejectedTour) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// TourWaypoint carries coordinates for one distinct market waypoint in the
+// snapshot so the planner prices travel time for real (harbormaster
+// amendment 2026-07-09: flat travel defaults gut the $/hr denominator).
+// Assembled Go-side from the waypoints table; missing/empty list -> the
+// solver falls back to flat named defaults with a logged warning.
+type TourWaypoint struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	SystemSymbol  string                 `protobuf:"bytes,2,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
+	X             int32                  `protobuf:"varint,3,opt,name=x,proto3" json:"x,omitempty"`
+	Y             int32                  `protobuf:"varint,4,opt,name=y,proto3" json:"y,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TourWaypoint) Reset() {
+	*x = TourWaypoint{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourWaypoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourWaypoint) ProtoMessage() {}
+
+func (x *TourWaypoint) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourWaypoint.ProtoReflect.Descriptor instead.
+func (*TourWaypoint) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *TourWaypoint) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *TourWaypoint) GetSystemSymbol() string {
+	if x != nil {
+		return x.SystemSymbol
+	}
+	return ""
+}
+
+func (x *TourWaypoint) GetX() int32 {
+	if x != nil {
+		return x.X
+	}
+	return 0
+}
+
+func (x *TourWaypoint) GetY() int32 {
+	if x != nil {
+		return x.Y
+	}
+	return 0
+}
+
+type OptimizeTradeTourRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Snapshot      []*MarketGoodSnapshot  `protobuf:"bytes,1,rep,name=snapshot,proto3" json:"snapshot,omitempty"`
+	Ship          *TourShip              `protobuf:"bytes,2,opt,name=ship,proto3" json:"ship,omitempty"`
+	Constraints   *TourConstraints       `protobuf:"bytes,3,opt,name=constraints,proto3" json:"constraints,omitempty"`
+	Waypoints     []*TourWaypoint        `protobuf:"bytes,4,rep,name=waypoints,proto3" json:"waypoints,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OptimizeTradeTourRequest) Reset() {
+	*x = OptimizeTradeTourRequest{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OptimizeTradeTourRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OptimizeTradeTourRequest) ProtoMessage() {}
+
+func (x *OptimizeTradeTourRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OptimizeTradeTourRequest.ProtoReflect.Descriptor instead.
+func (*OptimizeTradeTourRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *OptimizeTradeTourRequest) GetSnapshot() []*MarketGoodSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+func (x *OptimizeTradeTourRequest) GetShip() *TourShip {
+	if x != nil {
+		return x.Ship
+	}
+	return nil
+}
+
+func (x *OptimizeTradeTourRequest) GetConstraints() *TourConstraints {
+	if x != nil {
+		return x.Constraints
+	}
+	return nil
+}
+
+func (x *OptimizeTradeTourRequest) GetWaypoints() []*TourWaypoint {
+	if x != nil {
+		return x.Waypoints
+	}
+	return nil
+}
+
+type OptimizeTradeTourResponse struct {
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	Feasible                bool                   `protobuf:"varint,1,opt,name=feasible,proto3" json:"feasible,omitempty"`
+	InfeasibleReason        string                 `protobuf:"bytes,2,opt,name=infeasible_reason,json=infeasibleReason,proto3" json:"infeasible_reason,omitempty"`
+	Legs                    []*TradeTourLeg        `protobuf:"bytes,3,rep,name=legs,proto3" json:"legs,omitempty"`
+	ProjectedProfit         int64                  `protobuf:"varint,4,opt,name=projected_profit,json=projectedProfit,proto3" json:"projected_profit,omitempty"`
+	ProjectedCreditsPerHour float64                `protobuf:"fixed64,5,opt,name=projected_credits_per_hour,json=projectedCreditsPerHour,proto3" json:"projected_credits_per_hour,omitempty"`
+	TopRejected             []*RejectedTour        `protobuf:"bytes,6,rep,name=top_rejected,json=topRejected,proto3" json:"top_rejected,omitempty"`
+	ModelVersion            string                 `protobuf:"bytes,7,opt,name=model_version,json=modelVersion,proto3" json:"model_version,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *OptimizeTradeTourResponse) Reset() {
+	*x = OptimizeTradeTourResponse{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OptimizeTradeTourResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OptimizeTradeTourResponse) ProtoMessage() {}
+
+func (x *OptimizeTradeTourResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OptimizeTradeTourResponse.ProtoReflect.Descriptor instead.
+func (*OptimizeTradeTourResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *OptimizeTradeTourResponse) GetFeasible() bool {
+	if x != nil {
+		return x.Feasible
+	}
+	return false
+}
+
+func (x *OptimizeTradeTourResponse) GetInfeasibleReason() string {
+	if x != nil {
+		return x.InfeasibleReason
+	}
+	return ""
+}
+
+func (x *OptimizeTradeTourResponse) GetLegs() []*TradeTourLeg {
+	if x != nil {
+		return x.Legs
+	}
+	return nil
+}
+
+func (x *OptimizeTradeTourResponse) GetProjectedProfit() int64 {
+	if x != nil {
+		return x.ProjectedProfit
+	}
+	return 0
+}
+
+func (x *OptimizeTradeTourResponse) GetProjectedCreditsPerHour() float64 {
+	if x != nil {
+		return x.ProjectedCreditsPerHour
+	}
+	return 0
+}
+
+func (x *OptimizeTradeTourResponse) GetTopRejected() []*RejectedTour {
+	if x != nil {
+		return x.TopRejected
+	}
+	return nil
+}
+
+func (x *OptimizeTradeTourResponse) GetModelVersion() string {
+	if x != nil {
+		return x.ModelVersion
+	}
+	return ""
+}
+
 var File_pkg_proto_routing_routing_proto protoreflect.FileDescriptor
 
 const file_pkg_proto_routing_routing_proto_rawDesc = "" +
@@ -1505,16 +2295,83 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\vroute_steps\x18\x02 \x03(\v2\x12.routing.RouteStepR\n" +
 	"routeSteps\x12,\n" +
 	"\x12total_time_seconds\x18\x03 \x01(\x05R\x10totalTimeSeconds\x12%\n" +
-	"\x0etotal_distance\x18\x04 \x01(\x01R\rtotalDistance*]\n" +
+	"\x0etotal_distance\x18\x04 \x01(\x01R\rtotalDistance\"\xa8\x02\n" +
+	"\x12MarketGoodSnapshot\x12'\n" +
+	"\x0fwaypoint_symbol\x18\x01 \x01(\tR\x0ewaypointSymbol\x12#\n" +
+	"\rsystem_symbol\x18\x02 \x01(\tR\fsystemSymbol\x12\x1f\n" +
+	"\vgood_symbol\x18\x03 \x01(\tR\n" +
+	"goodSymbol\x12\x10\n" +
+	"\x03ask\x18\x04 \x01(\x05R\x03ask\x12\x10\n" +
+	"\x03bid\x18\x05 \x01(\x05R\x03bid\x12!\n" +
+	"\ftrade_volume\x18\x06 \x01(\x05R\vtradeVolume\x12\x16\n" +
+	"\x06supply\x18\a \x01(\tR\x06supply\x12\x1a\n" +
+	"\bactivity\x18\b \x01(\tR\bactivity\x12(\n" +
+	"\x10observed_at_unix\x18\t \x01(\x03R\x0eobservedAtUnix\"\xbb\x02\n" +
+	"\bTourShip\x12\x1f\n" +
+	"\vship_symbol\x18\x01 \x01(\tR\n" +
+	"shipSymbol\x12)\n" +
+	"\x10current_waypoint\x18\x02 \x01(\tR\x0fcurrentWaypoint\x12%\n" +
+	"\x0ecurrent_system\x18\x03 \x01(\tR\rcurrentSystem\x12#\n" +
+	"\rhold_capacity\x18\x04 \x01(\x05R\fholdCapacity\x12!\n" +
+	"\ffuel_current\x18\x05 \x01(\x05R\vfuelCurrent\x12#\n" +
+	"\rfuel_capacity\x18\x06 \x01(\x05R\ffuelCapacity\x12!\n" +
+	"\fengine_speed\x18\a \x01(\x05R\vengineSpeed\x12,\n" +
+	"\x05cargo\x18\b \x03(\v2\x16.routing.TourCargoItemR\x05cargo\"F\n" +
+	"\rTourCargoItem\x12\x1f\n" +
+	"\vgood_symbol\x18\x01 \x01(\tR\n" +
+	"goodSymbol\x12\x14\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\"\xc8\x02\n" +
+	"\x0fTourConstraints\x12\x19\n" +
+	"\bmax_hops\x18\x01 \x01(\x05R\amaxHops\x12\x1b\n" +
+	"\tmax_spend\x18\x02 \x01(\x03R\bmaxSpend\x12-\n" +
+	"\x13min_margin_per_unit\x18\x03 \x01(\x05R\x10minMarginPerUnit\x126\n" +
+	"\x17working_capital_reserve\x18\x04 \x01(\x03R\x15workingCapitalReserve\x12'\n" +
+	"\x0fallowed_systems\x18\x05 \x03(\tR\x0eallowedSystems\x127\n" +
+	"\x18max_snapshot_age_minutes\x18\x06 \x01(\x05R\x15maxSnapshotAgeMinutes\x124\n" +
+	"\x16expected_model_version\x18\a \x01(\tR\x14expectedModelVersion\"\x89\x01\n" +
+	"\tTourTrade\x12\x1f\n" +
+	"\vgood_symbol\x18\x01 \x01(\tR\n" +
+	"goodSymbol\x12\x14\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\x12\x15\n" +
+	"\x06is_buy\x18\x03 \x01(\bR\x05isBuy\x12.\n" +
+	"\x13expected_unit_price\x18\x04 \x01(\x05R\x11expectedUnitPrice\"\xf3\x01\n" +
+	"\fTradeTourLeg\x12'\n" +
+	"\x0fwaypoint_symbol\x18\x01 \x01(\tR\x0ewaypointSymbol\x12#\n" +
+	"\rsystem_symbol\x18\x02 \x01(\tR\fsystemSymbol\x12*\n" +
+	"\x06trades\x18\x03 \x03(\v2\x12.routing.TourTradeR\x06trades\x120\n" +
+	"\x14projected_leg_profit\x18\x04 \x01(\x03R\x12projectedLegProfit\x127\n" +
+	"\x18travel_seconds_from_prev\x18\x05 \x01(\x05R\x15travelSecondsFromPrev\"@\n" +
+	"\fRejectedTour\x12\x18\n" +
+	"\asummary\x18\x01 \x01(\tR\asummary\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"g\n" +
+	"\fTourWaypoint\x12\x16\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12#\n" +
+	"\rsystem_symbol\x18\x02 \x01(\tR\fsystemSymbol\x12\f\n" +
+	"\x01x\x18\x03 \x01(\x05R\x01x\x12\f\n" +
+	"\x01y\x18\x04 \x01(\x05R\x01y\"\xeb\x01\n" +
+	"\x18OptimizeTradeTourRequest\x127\n" +
+	"\bsnapshot\x18\x01 \x03(\v2\x1b.routing.MarketGoodSnapshotR\bsnapshot\x12%\n" +
+	"\x04ship\x18\x02 \x01(\v2\x11.routing.TourShipR\x04ship\x12:\n" +
+	"\vconstraints\x18\x03 \x01(\v2\x18.routing.TourConstraintsR\vconstraints\x123\n" +
+	"\twaypoints\x18\x04 \x03(\v2\x15.routing.TourWaypointR\twaypoints\"\xd6\x02\n" +
+	"\x19OptimizeTradeTourResponse\x12\x1a\n" +
+	"\bfeasible\x18\x01 \x01(\bR\bfeasible\x12+\n" +
+	"\x11infeasible_reason\x18\x02 \x01(\tR\x10infeasibleReason\x12)\n" +
+	"\x04legs\x18\x03 \x03(\v2\x15.routing.TradeTourLegR\x04legs\x12)\n" +
+	"\x10projected_profit\x18\x04 \x01(\x03R\x0fprojectedProfit\x12;\n" +
+	"\x1aprojected_credits_per_hour\x18\x05 \x01(\x01R\x17projectedCreditsPerHour\x128\n" +
+	"\ftop_rejected\x18\x06 \x03(\v2\x15.routing.RejectedTourR\vtopRejected\x12#\n" +
+	"\rmodel_version\x18\a \x01(\tR\fmodelVersion*]\n" +
 	"\vRouteAction\x12\x1c\n" +
 	"\x18ROUTE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13ROUTE_ACTION_TRAVEL\x10\x01\x12\x17\n" +
-	"\x13ROUTE_ACTION_REFUEL\x10\x022\xd3\x02\n" +
+	"\x13ROUTE_ACTION_REFUEL\x10\x022\xaf\x03\n" +
 	"\x0eRoutingService\x12B\n" +
 	"\tPlanRoute\x12\x19.routing.PlanRouteRequest\x1a\x1a.routing.PlanRouteResponse\x12K\n" +
 	"\fOptimizeTour\x12\x1c.routing.OptimizeTourRequest\x1a\x1d.routing.OptimizeTourResponse\x12]\n" +
 	"\x12OptimizeFueledTour\x12\".routing.OptimizeFueledTourRequest\x1a#.routing.OptimizeFueledTourResponse\x12Q\n" +
-	"\x0ePartitionFleet\x12\x1e.routing.PartitionFleetRequest\x1a\x1f.routing.PartitionFleetResponseB<Z:github.com/andrescamacho/spacetraders-go/pkg/proto/routingb\x06proto3"
+	"\x0ePartitionFleet\x12\x1e.routing.PartitionFleetRequest\x1a\x1f.routing.PartitionFleetResponse\x12Z\n" +
+	"\x11OptimizeTradeTour\x12!.routing.OptimizeTradeTourRequest\x1a\".routing.OptimizeTradeTourResponseB<Z:github.com/andrescamacho/spacetraders-go/pkg/proto/routingb\x06proto3"
 
 var (
 	file_pkg_proto_routing_routing_proto_rawDescOnce sync.Once
@@ -1529,7 +2386,7 @@ func file_pkg_proto_routing_routing_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_proto_routing_routing_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pkg_proto_routing_routing_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_pkg_proto_routing_routing_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_pkg_proto_routing_routing_proto_goTypes = []any{
 	(RouteAction)(0),                   // 0: routing.RouteAction
 	(*PlanRouteRequest)(nil),           // 1: routing.PlanRouteRequest
@@ -1546,8 +2403,18 @@ var file_pkg_proto_routing_routing_proto_goTypes = []any{
 	(*ShipConfig)(nil),                 // 12: routing.ShipConfig
 	(*PartitionFleetResponse)(nil),     // 13: routing.PartitionFleetResponse
 	(*ShipTour)(nil),                   // 14: routing.ShipTour
-	nil,                                // 15: routing.PartitionFleetRequest.ShipConfigsEntry
-	nil,                                // 16: routing.PartitionFleetResponse.AssignmentsEntry
+	(*MarketGoodSnapshot)(nil),         // 15: routing.MarketGoodSnapshot
+	(*TourShip)(nil),                   // 16: routing.TourShip
+	(*TourCargoItem)(nil),              // 17: routing.TourCargoItem
+	(*TourConstraints)(nil),            // 18: routing.TourConstraints
+	(*TourTrade)(nil),                  // 19: routing.TourTrade
+	(*TradeTourLeg)(nil),               // 20: routing.TradeTourLeg
+	(*RejectedTour)(nil),               // 21: routing.RejectedTour
+	(*TourWaypoint)(nil),               // 22: routing.TourWaypoint
+	(*OptimizeTradeTourRequest)(nil),   // 23: routing.OptimizeTradeTourRequest
+	(*OptimizeTradeTourResponse)(nil),  // 24: routing.OptimizeTradeTourResponse
+	nil,                                // 25: routing.PartitionFleetRequest.ShipConfigsEntry
+	nil,                                // 26: routing.PartitionFleetResponse.AssignmentsEntry
 }
 var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	2,  // 0: routing.PlanRouteRequest.waypoints:type_name -> routing.Waypoint
@@ -1558,25 +2425,35 @@ var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	2,  // 5: routing.OptimizeFueledTourRequest.all_waypoints:type_name -> routing.Waypoint
 	9,  // 6: routing.OptimizeFueledTourResponse.legs:type_name -> routing.TourLeg
 	10, // 7: routing.TourLeg.intermediate_stops:type_name -> routing.IntermediateStop
-	15, // 8: routing.PartitionFleetRequest.ship_configs:type_name -> routing.PartitionFleetRequest.ShipConfigsEntry
+	25, // 8: routing.PartitionFleetRequest.ship_configs:type_name -> routing.PartitionFleetRequest.ShipConfigsEntry
 	2,  // 9: routing.PartitionFleetRequest.all_waypoints:type_name -> routing.Waypoint
-	16, // 10: routing.PartitionFleetResponse.assignments:type_name -> routing.PartitionFleetResponse.AssignmentsEntry
+	26, // 10: routing.PartitionFleetResponse.assignments:type_name -> routing.PartitionFleetResponse.AssignmentsEntry
 	4,  // 11: routing.ShipTour.route_steps:type_name -> routing.RouteStep
-	12, // 12: routing.PartitionFleetRequest.ShipConfigsEntry.value:type_name -> routing.ShipConfig
-	14, // 13: routing.PartitionFleetResponse.AssignmentsEntry.value:type_name -> routing.ShipTour
-	1,  // 14: routing.RoutingService.PlanRoute:input_type -> routing.PlanRouteRequest
-	5,  // 15: routing.RoutingService.OptimizeTour:input_type -> routing.OptimizeTourRequest
-	7,  // 16: routing.RoutingService.OptimizeFueledTour:input_type -> routing.OptimizeFueledTourRequest
-	11, // 17: routing.RoutingService.PartitionFleet:input_type -> routing.PartitionFleetRequest
-	3,  // 18: routing.RoutingService.PlanRoute:output_type -> routing.PlanRouteResponse
-	6,  // 19: routing.RoutingService.OptimizeTour:output_type -> routing.OptimizeTourResponse
-	8,  // 20: routing.RoutingService.OptimizeFueledTour:output_type -> routing.OptimizeFueledTourResponse
-	13, // 21: routing.RoutingService.PartitionFleet:output_type -> routing.PartitionFleetResponse
-	18, // [18:22] is the sub-list for method output_type
-	14, // [14:18] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	17, // 12: routing.TourShip.cargo:type_name -> routing.TourCargoItem
+	19, // 13: routing.TradeTourLeg.trades:type_name -> routing.TourTrade
+	15, // 14: routing.OptimizeTradeTourRequest.snapshot:type_name -> routing.MarketGoodSnapshot
+	16, // 15: routing.OptimizeTradeTourRequest.ship:type_name -> routing.TourShip
+	18, // 16: routing.OptimizeTradeTourRequest.constraints:type_name -> routing.TourConstraints
+	22, // 17: routing.OptimizeTradeTourRequest.waypoints:type_name -> routing.TourWaypoint
+	20, // 18: routing.OptimizeTradeTourResponse.legs:type_name -> routing.TradeTourLeg
+	21, // 19: routing.OptimizeTradeTourResponse.top_rejected:type_name -> routing.RejectedTour
+	12, // 20: routing.PartitionFleetRequest.ShipConfigsEntry.value:type_name -> routing.ShipConfig
+	14, // 21: routing.PartitionFleetResponse.AssignmentsEntry.value:type_name -> routing.ShipTour
+	1,  // 22: routing.RoutingService.PlanRoute:input_type -> routing.PlanRouteRequest
+	5,  // 23: routing.RoutingService.OptimizeTour:input_type -> routing.OptimizeTourRequest
+	7,  // 24: routing.RoutingService.OptimizeFueledTour:input_type -> routing.OptimizeFueledTourRequest
+	11, // 25: routing.RoutingService.PartitionFleet:input_type -> routing.PartitionFleetRequest
+	23, // 26: routing.RoutingService.OptimizeTradeTour:input_type -> routing.OptimizeTradeTourRequest
+	3,  // 27: routing.RoutingService.PlanRoute:output_type -> routing.PlanRouteResponse
+	6,  // 28: routing.RoutingService.OptimizeTour:output_type -> routing.OptimizeTourResponse
+	8,  // 29: routing.RoutingService.OptimizeFueledTour:output_type -> routing.OptimizeFueledTourResponse
+	13, // 30: routing.RoutingService.PartitionFleet:output_type -> routing.PartitionFleetResponse
+	24, // 31: routing.RoutingService.OptimizeTradeTour:output_type -> routing.OptimizeTradeTourResponse
+	27, // [27:32] is the sub-list for method output_type
+	22, // [22:27] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_pkg_proto_routing_routing_proto_init() }
@@ -1598,7 +2475,7 @@ func file_pkg_proto_routing_routing_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_routing_routing_proto_rawDesc), len(file_pkg_proto_routing_routing_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
