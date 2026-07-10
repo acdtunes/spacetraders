@@ -55,7 +55,9 @@ def extract_control_series(engine) -> pd.DataFrame:
     return pd.read_sql(text("""
         SELECT h.waypoint_symbol AS waypoint, h.good_symbol AS good,
                h.sell_price AS ask, h.purchase_price AS bid,
-               h.trade_volume, h.recorded_at
+               h.trade_volume, h.recorded_at,
+               COALESCE(h.supply, '') AS supply,
+               COALESCE(h.activity, '') AS activity
         FROM market_price_history h
         WHERE NOT EXISTS (
             SELECT 1 FROM transactions t
