@@ -24,7 +24,7 @@ import pandas as pd
 
 from model.fit import fit_impact
 
-FIT_VERSION = 1
+FIT_VERSION = 2
 
 # --- FORM check: the known D39 incident, reconstructed as a fixed fixture ---
 D39_TIER = "LIMITED|WEAK"
@@ -33,8 +33,9 @@ D39_STEPS = 3
 FORM_TOLERANCE = 0.20
 # Four consecutive full-tranche (units == tradeVolume == 20) sells at LIMITED|WEAK, unit
 # prices tracing the incident's ~0.949/step decay. Fed through fit_impact so the FORM gate
-# exercises the real fitting code on a known incident (units == tv → tranche exponent 1, so
-# the tranche-normalization is a no-op here and the fixture stays the incident's shape).
+# exercises the real fitting code on a known incident (units == tv → exponent 1 and weight 1,
+# so the units-weighted estimator reduces to the plain geometric mean and the fixture stays
+# the incident's shape — the FORM result is invariant to the sp-bkjz weighting change).
 D39_FIXTURE_PRICES = [1844, 1750, 1662, 1578]
 D39_FIXTURE_UNITS = 20
 D39_FIXTURE_TRADE_VOLUME = 20
@@ -45,12 +46,14 @@ SELL_DECAY_MIN, SELL_DECAY_MAX = 0.85, 1.0
 BUY_GROWTH_MIN, BUY_GROWTH_MAX = 1.0, 1.18
 
 
-def write_artifact(path, impact, recovery, era, generated_at):
+def write_artifact(path, impact, recovery, era, generated_at, extra_diagnostics=None):
+    diagnostics = {"ladder_count": sum(v.get("n_obs", 0) for v in impact.values()),
+                   "control_series_count": sum(v.get("n_series", 0)
+                                               for v in recovery.values())}
+    if extra_diagnostics:
+        diagnostics.update(extra_diagnostics)
     art = {"fit_version": FIT_VERSION, "era": era, "generated_at": generated_at,
-           "impact": impact, "recovery": recovery,
-           "diagnostics": {"ladder_count": sum(v.get("n_obs", 0) for v in impact.values()),
-                            "control_series_count": sum(v.get("n_series", 0)
-                                                        for v in recovery.values())}}
+           "impact": impact, "recovery": recovery, "diagnostics": diagnostics}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(art, f, indent=2, sort_keys=True)
@@ -99,23 +102,47 @@ def validate_form() -> tuple[bool, str]:
 
 
 def validate_coverage(impact: dict) -> tuple[bool, str]:
-    """COVERAGE gate: every live tier with n_obs >= COVERAGE_MIN_OBS fits sane bounds."""
+    """COVERAGE gate: every well-populated tier SIDE fits sane bounds.
+
+    The COVERAGE_MIN_OBS floor is applied PER SIDE (sp-bkjz): a sell side is gated
+    only when sell_n_obs >= floor, a buy side only when buy_n_obs >= floor. A side
+    below the floor is thin — not fleet-trusted — and is simply not gated (the
+    combined sell+buy count previously let a 23-obs sell fit slip through: the
+    HIGH|GROWING miss). ``checked`` counts gated sides."""
     violations = []
     checked = 0
     for tier, v in sorted(impact.items()):
-        if v.get("n_obs", 0) < COVERAGE_MIN_OBS:
-            continue
-        checked += 1
         sell = v.get("sell_decay_per_step")
         buy = v.get("buy_growth_per_step")
-        if sell is not None and not (SELL_DECAY_MIN <= sell <= SELL_DECAY_MAX):
-            violations.append(
-                f"{tier} sell_decay {sell:.4f}∉[{SELL_DECAY_MIN},{SELL_DECAY_MAX}]")
-        if buy is not None and not (BUY_GROWTH_MIN <= buy <= BUY_GROWTH_MAX):
-            violations.append(
-                f"{tier} buy_growth {buy:.4f}∉[{BUY_GROWTH_MIN},{BUY_GROWTH_MAX}]")
+        if sell is not None and v.get("sell_n_obs", 0) >= COVERAGE_MIN_OBS:
+            checked += 1
+            if not (SELL_DECAY_MIN <= sell <= SELL_DECAY_MAX):
+                violations.append(
+                    f"{tier} sell_decay {sell:.4f}∉[{SELL_DECAY_MIN},{SELL_DECAY_MAX}]")
+        if buy is not None and v.get("buy_n_obs", 0) >= COVERAGE_MIN_OBS:
+            checked += 1
+            if not (BUY_GROWTH_MIN <= buy <= BUY_GROWTH_MAX):
+                violations.append(
+                    f"{tier} buy_growth {buy:.4f}∉[{BUY_GROWTH_MIN},{BUY_GROWTH_MAX}]")
     if violations:
         return False, (f"COVERAGE gate FAIL: {len(violations)} out-of-bounds across "
-                       f"{checked} tiers (n_obs≥{COVERAGE_MIN_OBS}): " + "; ".join(violations))
-    return True, (f"COVERAGE gate PASS: all {checked} tiers (n_obs≥{COVERAGE_MIN_OBS}) within "
+                       f"{checked} sides (n_obs≥{COVERAGE_MIN_OBS}): " + "; ".join(violations))
+    return True, (f"COVERAGE gate PASS: all {checked} sides (n_obs≥{COVERAGE_MIN_OBS}) within "
                   f"sell∈[{SELL_DECAY_MIN},{SELL_DECAY_MAX}] buy∈[{BUY_GROWTH_MIN},{BUY_GROWTH_MAX}]")
+
+
+def mark_thin_sides(impact: dict, min_obs: int = COVERAGE_MIN_OBS) -> dict:
+    """Flag tier sides below the coverage floor as thin (sp-bkjz).
+
+    A side with fewer than min_obs observations is not gated by COVERAGE and its
+    coefficient is not one consumers should trust; mark it so the shipped artifact
+    is self-describing. Returns a new dict; the input is not mutated."""
+    marked = {}
+    for tier, v in impact.items():
+        e = dict(v)
+        if "sell_decay_per_step" in e and e.get("sell_n_obs", 0) < min_obs:
+            e["sell_thin"] = True
+        if "buy_growth_per_step" in e and e.get("buy_n_obs", 0) < min_obs:
+            e["buy_thin"] = True
+        marked[tier] = e
+    return marked

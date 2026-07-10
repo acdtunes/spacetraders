@@ -1,89 +1,189 @@
 {
   "diagnostics": {
-    "control_series_count": 43,
-    "ladder_count": 2928
+    "control_series_count": 49,
+    "ladder_count": 3347,
+    "tier_at_time": {
+      "coverage": 0.9549,
+      "steps_total": 4812,
+      "steps_true": 4595
+    }
   },
   "era": "torwind-2026-07-05",
-  "fit_version": 1,
-  "generated_at": "2026-07-10T00:00:51.445721+00:00",
+  "fit_version": 2,
+  "generated_at": "2026-07-10T01:19:07.480160+00:00",
   "impact": {
+    "ABUNDANT|GROWING": {
+      "buy_growth_per_step": 1.0,
+      "buy_n_obs": 85,
+      "n_obs": 171,
+      "sell_decay_per_step": 1.0,
+      "sell_n_obs": 86
+    },
     "ABUNDANT|RESTRICTED": {
-      "buy_growth_per_step": 1.0810124856658552,
-      "n_obs": 416,
-      "sell_decay_per_step": 0.9808401723483996
+      "buy_growth_per_step": 1.0341638556624235,
+      "buy_n_obs": 111,
+      "n_obs": 111
+    },
+    "ABUNDANT|WEAK": {
+      "buy_growth_per_step": 1.0330874569399717,
+      "buy_n_obs": 63,
+      "n_obs": 63
+    },
+    "HIGH|GROWING": {
+      "buy_growth_per_step": 1.0,
+      "buy_n_obs": 24,
+      "buy_thin": true,
+      "n_obs": 47,
+      "sell_decay_per_step": 0.9190937127065686,
+      "sell_n_obs": 23,
+      "sell_thin": true
     },
     "HIGH|RESTRICTED": {
-      "buy_growth_per_step": 1.1029863665613466,
-      "n_obs": 159
+      "buy_growth_per_step": 1.0561217187210628,
+      "buy_n_obs": 312,
+      "n_obs": 312
+    },
+    "HIGH|STRONG": {
+      "buy_growth_per_step": 1.0218304036338046,
+      "buy_n_obs": 7,
+      "buy_thin": true,
+      "n_obs": 7
+    },
+    "HIGH|WEAK": {
+      "buy_growth_per_step": 1.0648026334576128,
+      "buy_n_obs": 40,
+      "n_obs": 40
     },
     "LIMITED|": {
       "buy_growth_per_step": 1.0,
+      "buy_n_obs": 16,
+      "buy_thin": true,
       "n_obs": 16
     },
+    "LIMITED|GROWING": {
+      "buy_growth_per_step": 1.1040724115912677,
+      "buy_n_obs": 22,
+      "buy_thin": true,
+      "n_obs": 81,
+      "sell_decay_per_step": 0.9846386758193993,
+      "sell_n_obs": 59
+    },
     "LIMITED|RESTRICTED": {
-      "buy_growth_per_step": 1.0947414829835826,
-      "n_obs": 231,
-      "sell_decay_per_step": 0.9363841675109212
+      "buy_growth_per_step": 1.0943539406568892,
+      "buy_n_obs": 289,
+      "n_obs": 318,
+      "sell_decay_per_step": 0.9874823593006093,
+      "sell_n_obs": 29,
+      "sell_thin": true
+    },
+    "LIMITED|STRONG": {
+      "buy_growth_per_step": 1.107362825391782,
+      "buy_n_obs": 10,
+      "buy_thin": true,
+      "n_obs": 10
     },
     "LIMITED|WEAK": {
-      "n_obs": 11,
-      "sell_decay_per_step": 0.9818030808602283
+      "buy_growth_per_step": 1.0446522068660629,
+      "buy_n_obs": 24,
+      "buy_thin": true,
+      "n_obs": 65,
+      "sell_decay_per_step": 0.9676162456275721,
+      "sell_n_obs": 41
     },
     "MODERATE|": {
       "buy_growth_per_step": 1.0,
+      "buy_n_obs": 12,
+      "buy_thin": true,
       "n_obs": 12
     },
     "MODERATE|GROWING": {
-      "n_obs": 39,
-      "sell_decay_per_step": 0.9324684091528216
+      "buy_growth_per_step": 1.0194014337290431,
+      "buy_n_obs": 121,
+      "n_obs": 291,
+      "sell_decay_per_step": 0.9644789611467618,
+      "sell_n_obs": 170
     },
     "MODERATE|RESTRICTED": {
-      "buy_growth_per_step": 1.0647918087440083,
-      "n_obs": 1091,
-      "sell_decay_per_step": 0.9011309591140395
+      "buy_growth_per_step": 1.0791435977461243,
+      "buy_n_obs": 520,
+      "n_obs": 543,
+      "sell_decay_per_step": 0.9504963536688549,
+      "sell_n_obs": 23,
+      "sell_thin": true
+    },
+    "MODERATE|STRONG": {
+      "buy_growth_per_step": 1.1014526159380267,
+      "buy_n_obs": 5,
+      "buy_thin": true,
+      "n_obs": 8,
+      "sell_decay_per_step": 1.0,
+      "sell_n_obs": 3,
+      "sell_thin": true
+    },
+    "MODERATE|WEAK": {
+      "buy_growth_per_step": 1.090570510274322,
+      "buy_n_obs": 36,
+      "n_obs": 72,
+      "sell_decay_per_step": 0.9288012453286727,
+      "sell_n_obs": 36
     },
     "SCARCE|": {
-      "buy_growth_per_step": 1.0234642666324971,
+      "buy_growth_per_step": 1.0237069155135317,
+      "buy_n_obs": 35,
       "n_obs": 35
     },
     "SCARCE|GROWING": {
-      "n_obs": 54,
-      "sell_decay_per_step": 0.9701809365493108
+      "buy_growth_per_step": 1.0170069689171706,
+      "buy_n_obs": 18,
+      "buy_thin": true,
+      "n_obs": 214,
+      "sell_decay_per_step": 0.9907712860664993,
+      "sell_n_obs": 196
     },
     "SCARCE|RESTRICTED": {
-      "buy_growth_per_step": 1.0702727577315476,
-      "n_obs": 659,
-      "sell_decay_per_step": 0.9627782921207968
+      "buy_growth_per_step": 1.0766497110064606,
+      "buy_n_obs": 518,
+      "n_obs": 537,
+      "sell_decay_per_step": 0.9566518588352977,
+      "sell_n_obs": 19,
+      "sell_thin": true
     },
     "SCARCE|STRONG": {
-      "n_obs": 36,
-      "sell_decay_per_step": 0.9584402001786564
+      "buy_growth_per_step": 1.0114178063052655,
+      "buy_n_obs": 122,
+      "n_obs": 136,
+      "sell_decay_per_step": 0.9924600704985496,
+      "sell_n_obs": 14,
+      "sell_thin": true
     },
     "SCARCE|WEAK": {
-      "buy_growth_per_step": 1.0185168131502655,
-      "n_obs": 169,
-      "sell_decay_per_step": 0.9592419795333446
+      "buy_growth_per_step": 1.0384543749655617,
+      "buy_n_obs": 15,
+      "buy_thin": true,
+      "n_obs": 258,
+      "sell_decay_per_step": 0.981002702981735,
+      "sell_n_obs": 243
     }
   },
   "recovery": {
     "": {
-      "half_life_minutes": 3991.470392233923,
-      "n_series": 2
+      "half_life_minutes": 1074.3230648521003,
+      "n_series": 3
     },
     "GROWING": {
       "half_life_minutes": 180.67584044583344,
-      "n_series": 1
+      "n_series": 3
     },
     "RESTRICTED": {
-      "half_life_minutes": 258.7602427456054,
-      "n_series": 19
+      "half_life_minutes": 413.6573775318799,
+      "n_series": 22
     },
     "STRONG": {
-      "half_life_minutes": 600.7778813191475,
+      "half_life_minutes": 386.12786531997995,
       "n_series": 1
     },
     "WEAK": {
-      "half_life_minutes": 1407.7887514185645,
+      "half_life_minutes": 279.1386201788089,
       "n_series": 20
     }
   }
