@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	expansionAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/expansion"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
@@ -19,6 +19,7 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
+	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
 	ledgerCmd "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
@@ -30,7 +31,6 @@ import (
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -664,6 +664,11 @@ func run(cfg *config.Config) error {
 	// the routing service already solves the partition problem. nil would leave multi-probe
 	// posts parked (fail-closed); single-hull posts never partition and are unaffected.
 	scoutPostCoordinatorHandler.SetRoutingClient(routingClient)
+	// sp-k7q5 layer 1: wire the captain event outbox so the coordinator warns (deferred)
+	// on a standing post whose circuit math cannot meet its freshness contract — the
+	// SAME store the watchkeeper reads, so the warning rides the next wake. nil would
+	// leave the warning off (pre-k7q5 behavior).
+	scoutPostCoordinatorHandler.SetEventStore(captainEventRepo)
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)

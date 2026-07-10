@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -69,6 +70,15 @@ const (
 	// stability gate: same hulls + same markets is still zero re-cuts.
 	defaultMarketDriftThreshold = 2
 	defaultMarketDriftMaxAge    = 60 * time.Minute
+
+	// defaultUndersizedAvgHop and defaultUndersizedRewarnCooldown bound the sp-k7q5
+	// undersized-post warning (layer 1) when the launch config leaves them unset
+	// (RULINGS #5). avgHop (~3min) is the Admiral circuit-model average per-market
+	// hop cost (navigation + scan dwell) used to project a post's circuit time; the
+	// cooldown debounces the DEFERRED warning so a persistently-undersized post
+	// re-queues the event at most once per window, never every 30s tick.
+	defaultUndersizedAvgHop         = 3 * time.Minute
+	defaultUndersizedRewarnCooldown = 3 * time.Hour
 )
 
 // RunScoutPostCoordinatorCommand launches the standing scout-post coordinator for
@@ -89,6 +99,13 @@ type RunScoutPostCoordinatorCommand struct {
 	// site) — mirrors TickIntervalSecs.
 	MarketDriftThreshold  int
 	MarketDriftMaxAgeSecs int
+
+	// UndersizedAvgHopSecs and UndersizedRewarnCooldownSecs tune the sp-k7q5
+	// undersized-post warning (layer 1, RULINGS #5): the circuit-model average
+	// per-market hop cost, and how long a fired warning suppresses a re-fire for the
+	// same system. <= 0 uses the coordinator's own defaults, mirroring TickIntervalSecs.
+	UndersizedAvgHopSecs         int
+	UndersizedRewarnCooldownSecs int
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -212,6 +229,13 @@ type RunScoutPostCoordinatorHandler struct {
 	singleHullMu                sync.Mutex
 	singleHullMarketSnapshot    map[string][]string
 	singleHullDriftPendingSince map[string]time.Time
+
+	// eventStore records the DEFERRED scout.post_undersized warning (sp-k7q5 layer 1)
+	// and dedups it via HasSince. Optional (SetEventStore): nil leaves the warning off
+	// entirely — every pre-k7q5 caller/test that never wires it behaves exactly as
+	// before, and the coordinator's manning/reconcile behavior is untouched. It is a
+	// pure OBSERVATION seam: a store error never aborts a reconcile pass.
+	eventStore captain.EventStore
 }
 
 // NewRunScoutPostCoordinatorHandler wires the coordinator. clock defaults to the
@@ -270,6 +294,15 @@ func (h *RunScoutPostCoordinatorHandler) SetGraphProvider(g system.ISystemGraphP
 // unaffected and a multi-probe post parks fail-closed until a client is wired.
 func (h *RunScoutPostCoordinatorHandler) SetRoutingClient(c routing.RoutingClient) {
 	h.routingClient = c
+}
+
+// SetEventStore wires the captain event outbox for the undersized-post warning
+// (sp-k7q5 layer 1). The daemon injects the SAME store the watchkeeper reads, so a
+// warning rides the next wake as a deferred event. Optional-injection (like
+// SetGateGraph): nil (the default) leaves the warning disabled and every pre-k7q5
+// caller/test unchanged.
+func (h *RunScoutPostCoordinatorHandler) SetEventStore(s captain.EventStore) {
+	h.eventStore = s
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -355,6 +388,11 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	if len(posts) == 0 {
 		return nil
 	}
+
+	// sp-k7q5 layer 1: warn (deferred) on any standing post whose circuit math cannot
+	// meet its own freshness contract, BEFORE the manning passes — a pure observation
+	// over the freshly-loaded post state that never mutates a post or aborts the tick.
+	h.warnUndersizedPosts(ctx, cmd, posts)
 
 	running, err := h.containerIDSet(ctx, cmd, "RUNNING")
 	if err != nil {
@@ -464,6 +502,76 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	}
 
 	return nil
+}
+
+// warnUndersizedPosts emits a DEFERRED scout.post_undersized event for any STANDING
+// post whose deterministic circuit math (markets / hulls × avgHop) cannot keep its
+// markets within the post's own freshness target (sp-k7q5 layer 1) — the structural
+// defect that let XT71/UQ87 run 110-125-min-stale on a single probe while reading
+// "fully manned" and alarming nothing. The event names the required hull count, so the
+// fix (raise the budget) is spelled out.
+//
+// Scope: STANDING posts only (a sweep-once is a one-shot frontier pass with no standing
+// freshness contract) with a positive freshness target and readable markets. It is pure
+// observation: no post is mutated, a discovery/store error is swallowed (never aborts a
+// reconcile), and with no event store wired (tests, pre-wiring) it is a no-op.
+//
+// Debounce (per post per condition-onset, not per 30s tick): a HasSince cooldown on any
+// recent undersized event for the same system, processed or not — the same idiom the
+// watchkeeper detectors use so a deferred event does not re-queue every tick while the
+// post stays undersized.
+func (h *RunScoutPostCoordinatorHandler) warnUndersizedPosts(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, posts []*domainScouting.ScoutPost) {
+	if h.eventStore == nil {
+		return // events not wired — warning disabled (pre-k7q5 behavior).
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	avgHop := time.Duration(cmd.UndersizedAvgHopSecs) * time.Second
+	if avgHop <= 0 {
+		avgHop = defaultUndersizedAvgHop
+	}
+	cooldown := time.Duration(cmd.UndersizedRewarnCooldownSecs) * time.Second
+	if cooldown <= 0 {
+		cooldown = defaultUndersizedRewarnCooldown
+	}
+	now := h.clock.Now()
+
+	for _, post := range posts {
+		if post.Kind != domainScouting.PostKindStanding {
+			continue // sweep-once has no standing freshness contract to fail.
+		}
+		freshness := post.FreshnessTarget
+		if freshness <= 0 {
+			continue // no contract to measure against — cannot assess.
+		}
+		markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
+		if err != nil {
+			continue // transient discovery gap — never warn on missing data.
+		}
+		hulls := post.HullBudget()
+		if !domainScouting.IsUndersized(len(markets), hulls, avgHop, freshness) {
+			continue
+		}
+		required := domainScouting.RequiredHulls(len(markets), avgHop, freshness)
+		circuit := domainScouting.CircuitDuration(len(markets), hulls, avgHop)
+
+		recent, err := h.eventStore.HasSince(ctx, cmd.PlayerID.Value(), captain.EventScoutPostUndersized, post.SystemSymbol, now.Add(-cooldown))
+		if err != nil || recent {
+			continue
+		}
+		_ = h.eventStore.Record(ctx, &captain.Event{
+			Type: captain.EventScoutPostUndersized, Ship: post.SystemSymbol, PlayerID: cmd.PlayerID.Value(),
+			Payload: fmt.Sprintf(`{"system":%q,"markets":%d,"hulls":%d,"required_hulls":%d,"freshness_secs":%d,"circuit_secs":%d}`,
+				post.SystemSymbol, len(markets), hulls, required, int(freshness.Seconds()), int(circuit.Seconds())),
+		})
+		logger.Log("WARNING", fmt.Sprintf("Scout post %s undersized: %d markets over %d hull(s) ≈ %s circuit exceeds its %s freshness target — needs %d hulls", post.SystemSymbol, len(markets), hulls, circuit.Round(time.Second), freshness.Round(time.Second), required), map[string]interface{}{
+			"action":         "scout_post_undersized",
+			"system_symbol":  post.SystemSymbol,
+			"markets":        len(markets),
+			"hulls":          hulls,
+			"required_hulls": required,
+		})
+	}
 }
 
 // reconcileMannedSlots runs pass 1 over one post's slots. It returns true when the

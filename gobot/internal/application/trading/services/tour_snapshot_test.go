@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -13,8 +14,8 @@ import (
 // snapFakeMarketRepo serves a fixed set of markets keyed by waypoint symbol.
 type snapFakeMarketRepo struct {
 	market.MarketRepository
-	order   map[string][]string        // system -> market waypoint order
-	markets map[string]*market.Market   // waypoint -> market
+	order   map[string][]string       // system -> market waypoint order
+	markets map[string]*market.Market // waypoint -> market
 }
 
 func (r *snapFakeMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
@@ -142,4 +143,70 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 	if _, bad := coords["X1-NK36-C37"]; bad {
 		t.Fatalf("stale C37 coords leaked: %+v", coords)
 	}
+}
+
+// TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter proves the sp-k7q5 layer-2
+// counter increments once PER dropped stale lane, labeled by system — so a market-rich
+// system silently aging out of the plan is visible on tour_lanes_stale_excluded_total,
+// not just absent.
+func TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter(t *testing.T) {
+	prevReg := metrics.Registry
+	t.Cleanup(func() {
+		metrics.Registry = prevReg
+		metrics.SetGlobalTourStalenessCollector(nil)
+	})
+	metrics.InitRegistry()
+	coll := metrics.NewTourStalenessMetricsCollector()
+	if err := coll.Register(); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	metrics.SetGlobalTourStalenessCollector(coll)
+
+	now := time.Date(2026, 7, 9, 22, 0, 0, 0, time.UTC)
+	stale := now.Add(-2 * time.Hour) // beyond the 75-min cap
+
+	// One fresh + two stale markets: the two stale drops must count as 2 for the system.
+	repo := &snapFakeMarketRepo{
+		order: map[string][]string{"X1-NK36": {"X1-NK36-FRESH", "X1-NK36-ST1", "X1-NK36-ST2"}},
+		markets: map[string]*market.Market{
+			"X1-NK36-FRESH": mustMarket(t, "X1-NK36-FRESH", now,
+				mustGood(t, "FUEL", 90, 100, 40, "ABUNDANT", "STRONG", market.TradeTypeImport)),
+			"X1-NK36-ST1": mustMarket(t, "X1-NK36-ST1", stale,
+				mustGood(t, "MEDICINE", 1844, 1900, 20, "LIMITED", "WEAK", market.TradeTypeExport)),
+			"X1-NK36-ST2": mustMarket(t, "X1-NK36-ST2", stale,
+				mustGood(t, "SHIP_PARTS", 500, 600, 6, "SCARCE", "RESTRICTED", market.TradeTypeExport)),
+		},
+	}
+	wps := &snapFakeWaypointRepo{byS: map[string][]*shared.Waypoint{"X1-NK36": {mustWaypoint(t, "X1-NK36-FRESH", 1, 2)}}}
+
+	if _, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-NK36"}, 1, now, 75*time.Minute); err != nil {
+		t.Fatalf("BuildTourSnapshot: %v", err)
+	}
+
+	if got := gatherStaleExcluded(t, "X1-NK36"); got != 2 {
+		t.Fatalf("tour_lanes_stale_excluded_total{system=X1-NK36} = %v, want 2", got)
+	}
+}
+
+// gatherStaleExcluded reads the stale-exclusion counter value for a system off the
+// package Registry via Gather() — method-call based so the test needs no dto import.
+func gatherStaleExcluded(t *testing.T, system string) float64 {
+	t.Helper()
+	families, err := metrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != "spacetraders_daemon_tour_lanes_stale_excluded_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "system" && lp.GetValue() == system {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }

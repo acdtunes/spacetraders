@@ -54,6 +54,12 @@ var (
 	// the reposition/margins-death/reserve-floor/exit/duration/resolved-cap series through it.
 	globalTourCollector *TourMetricsCollector
 
+	// globalTourStalenessCollector is the singleton planner staleness-exclusion
+	// collector (sp-k7q5 layer 2). Set by SetGlobalTourStalenessCollector() when
+	// metrics are enabled; the tour planner's two staleness drop sites emit the
+	// tour_lanes_stale_excluded_total counter through it.
+	globalTourStalenessCollector *TourStalenessMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -359,6 +365,21 @@ func ObserveTourDuration(playerID int, seconds float64) {
 func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
 	if globalTourCollector != nil {
 		globalTourCollector.SetResolvedMaxSpend(playerID, maxSpend)
+	}
+}
+
+// SetGlobalTourStalenessCollector sets the global planner staleness-exclusion
+// collector (sp-k7q5 layer 2).
+func SetGlobalTourStalenessCollector(collector *TourStalenessMetricsCollector) {
+	globalTourStalenessCollector = collector
+}
+
+// RecordTourLanesStaleExcluded records `count` tour lanes dropped for staleness in
+// `system` globally (sp-k7q5 layer 2). No-op when metrics are disabled, so a metrics
+// miss never touches the tour planning path (RULINGS #4).
+func RecordTourLanesStaleExcluded(playerID int, system string, count int) {
+	if globalTourStalenessCollector != nil {
+		globalTourStalenessCollector.RecordStaleExcluded(playerID, system, count)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -63,6 +64,11 @@ func BuildTourSnapshot(
 			}
 			observed := mkt.LastUpdated()
 			if !observed.IsZero() && now.Sub(observed) > maxAge {
+				// sp-k7q5 layer 2: count this drop so a market-rich system silently
+				// aging past the cap is visible on tour_lanes_stale_excluded_total
+				// instead of just vanishing from the plan. Observation only (RULINGS
+				// #4): a no-op when metrics are disabled.
+				metrics.RecordTourLanesStaleExcluded(playerID, sys, 1)
 				continue // stale — same age-cap as lane ranking
 			}
 			for _, g := range mkt.TradeGoods() {

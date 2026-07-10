@@ -216,6 +216,17 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		RegimeTripwires:           regimePolicy.Tripwires,
 		PinnedHullContainerless:   defaultPinnedHullContainerless,
 		StandingCoordinatorFleets: defaultStandingCoordinatorFleets,
+
+		// sp-k7q5 layers 2+3, wired to package defaults here until CaptainConfig grows
+		// tunable fields (mirrors FactoryIncomeStall / CrashLoop above).
+		StalenessHidingStaleAge:         defaultStalenessHidingStaleAge,
+		StalenessHidingMinPricedMarkets: defaultStalenessHidingMinPricedMarkets,
+		StalenessHidingThreshold:        defaultStalenessHidingThreshold,
+		StalenessHidingCooldown:         defaultStalenessHidingCooldown,
+		PostProposalMinPricedMarkets:    defaultPostProposalMinPricedMarkets,
+		PostProposalFreshness:           defaultPostProposalFreshness,
+		PostProposalAvgHop:              defaultPostProposalAvgHop,
+		PostProposalCooldown:            defaultPostProposalCooldown,
 	}
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation

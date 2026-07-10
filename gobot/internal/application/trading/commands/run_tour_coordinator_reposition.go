@@ -235,6 +235,13 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 		// genuinely-fresh candidate out of the bounded top-K solver pre-flight. Aligning the
 		// pre-rank freshness with the snapshot keeps the top-K ordered by tradeable spread.
 		fresh := freshListings(listings, now, maxListingAge)
+		// sp-k7q5 layer 2: count the lanes this pre-rank drops for staleness, the same
+		// exclusion BuildTourSnapshot counts on the solver side — so a candidate system
+		// going invisible to the reposition ranking shows up on
+		// tour_lanes_stale_excluded_total, not just silently. Observation only (RULINGS #4).
+		if dropped := len(listings) - len(fresh); dropped > 0 {
+			metrics.RecordTourLanesStaleExcluded(cmd.PlayerID, sys, dropped)
+		}
 		if len(fresh) == 0 {
 			continue // every cached row is stale → the solver would see no fresh data here either
 		}

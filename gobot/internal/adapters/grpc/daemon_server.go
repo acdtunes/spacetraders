@@ -362,6 +362,17 @@ func NewDaemonServer(
 
 		// Store reference for lifecycle management
 		server.tourMetricsCollector = tourCollector
+
+		// Create tour-staleness collector (sp-k7q5 layer 2): the tour planner's two
+		// staleness drop sites emit tour_lanes_stale_excluded_total through the global
+		// set here. Event-driven (no polling goroutine), so registration + the global
+		// wire is the whole lifecycle, mirroring the absorption collector above.
+		tourStalenessCollector := metrics.NewTourStalenessMetricsCollector()
+		if err := tourStalenessCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register tour staleness metrics collector: %w", err)
+		}
+		metrics.SetGlobalTourStalenessCollector(tourStalenessCollector)
 	}
 
 	// Register container specs for launch and recovery

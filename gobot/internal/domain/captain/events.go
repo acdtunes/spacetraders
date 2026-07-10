@@ -76,6 +76,34 @@ const (
 	// silently drop this marker exactly when a watch fires. The watch payload
 	// carries which watch fired and whether it was matched or deadline-fired.
 	EventWakeWatch EventType = "wake.watch"
+
+	// The scout staleness-blind-spot family (sp-k7q5) surfaces the XT71/UQ87 class:
+	// a market-rich system whose scout freshness silently fell past the tour
+	// planner's cap, so every lane went invisible and NOTHING alarmed. All three are
+	// DEFERRED class (NOT in DefaultInterruptTypes): each is a "reconsider next wake"
+	// signal for the captain's coverage planning, never worth forcing a wake on its
+	// own — the freshness gap is hours-scale, not seconds.
+
+	// EventScoutPostUndersized fires when a standing scout post's deterministic
+	// circuit math (markets / hulls × avg hop) cannot keep its markets within the
+	// post's own freshness target — the post is structurally too small for its
+	// system. The payload names the required hull count, so the fix (raise the
+	// budget) is spelled out. Would have named XT71/UQ87 on day one.
+	EventScoutPostUndersized EventType = "scout.post_undersized"
+
+	// EventStalenessHidingRevenue fires when a market-rich system (>= N priced
+	// markets) has enough of its markets aged past the tour-planner staleness cap
+	// that the planner is dropping their lanes — staleness is actively hiding
+	// tradeable revenue. This is the chicken-egg killer: it fires PRECISELY when the
+	// invisibility that alarmed nothing is occurring.
+	EventStalenessHidingRevenue EventType = "scout.staleness_hiding_revenue"
+
+	// EventScoutPostProposal fires when discovery has priced a system past the
+	// market-rich threshold yet NO scout post stands over it — a coverage gap the
+	// captain should close. It is a PROPOSAL only (the captain decides and declares);
+	// the payload carries the hull count from the circuit math, not a default of 1,
+	// so a rich system is not under-provisioned the way XT71/UQ87 were.
+	EventScoutPostProposal EventType = "scout.post_proposal"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force
