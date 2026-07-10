@@ -1157,17 +1157,29 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 	// spawns STORAGE_ACQUIRE_DELIVER tasks against ships that are no longer there
 	// - the recurring storage wedge. ctx is still live here (unlike the stopped
 	// container's own cancelled ctx), so this write isn't racing shutdown.
-	if runner.containerEntity.Type() == container.ContainerTypeGasCoordinator {
+	//
+	// sp-3lj5: a warehouse container's storage_operations row needs the identical
+	// terminalization, for the identical reason. Left un-terminalized, the stale
+	// "zombie" RUNNING row keeps surfacing alongside its live replacement at the
+	// same waypoint - the stocker/tour warehouse lookup can resolve to the dead
+	// operation (whose registered storage ships are gone, so it always reads back
+	// zero free space) and wrongly declare a warehouse with real free space full.
+	// operationID == containerID for both container types (see
+	// command_factory_registry.go's buildWarehouseCommand / gas-coordinator
+	// equivalent), so the single call below covers both.
+	if runner.containerEntity.Type() == container.ContainerTypeGasCoordinator ||
+		runner.containerEntity.Type() == container.ContainerTypeWarehouse {
 		s.terminalizeStorageOperation(ctx, containerID)
 	}
 
 	return stopErr
 }
 
-// terminalizeStorageOperation moves a gas coordinator's storage_operations row to
-// a terminal status when its container is stopped (sp-86yb). No-ops if there's no
-// matching row, or it already reached a terminal status (idempotent - never
-// clobbers e.g. an already-COMPLETED row back to STOPPED).
+// terminalizeStorageOperation moves a gas coordinator's or warehouse's
+// storage_operations row to a terminal status when its container is stopped
+// (sp-86yb gas coordinators; sp-3lj5 extends this to warehouses). No-ops if
+// there's no matching row, or it already reached a terminal status (idempotent -
+// never clobbers e.g. an already-COMPLETED row back to STOPPED).
 func (s *DaemonServer) terminalizeStorageOperation(ctx context.Context, operationID string) {
 	if s.db == nil {
 		return

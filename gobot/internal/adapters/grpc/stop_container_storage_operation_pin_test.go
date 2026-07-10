@@ -28,6 +28,24 @@ func TestStopContainerTerminalizesGasCoordinatorStorageOperationRow(t *testing.T
 	requireStorageOperationStatus(t, db, coordinatorID, playerID, "STOPPED")
 }
 
+// sp-3lj5: a warehouse container needs the identical terminalization gas
+// coordinators received under sp-86yb. Left un-terminalized, a stopped
+// warehouse's storage_operations row stays RUNNING forever - a stale "zombie"
+// row that the stocker/tour warehouse lookup can resolve to instead of a live
+// replacement at the same waypoint, always reading back zero free space and
+// making a warehouse with real free space look full.
+func TestStopContainerTerminalizesWarehouseStorageOperationRow(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	const warehouseID = "warehouse-TORWIND-12-bad719ff"
+	seedWarehouseStorageOperation(t, db, warehouseID, playerID, "RUNNING")
+	startTestWarehouse(t, s, warehouseID, playerID)
+
+	require.NoError(t, s.StopContainer(warehouseID))
+
+	requireStorageOperationStatus(t, db, warehouseID, playerID, "STOPPED")
+}
+
 // The terminalization must be scoped to gas coordinators specifically: stopping
 // some other container type must never reach into storage_operations, even if a
 // row happens to share its ID.
@@ -59,9 +77,27 @@ func TestStopContainerDoesNotClobberAlreadyCompletedStorageOperationRow(t *testi
 	requireStorageOperationStatus(t, db, coordinatorID, playerID, "COMPLETED")
 }
 
+// Same idempotency guard, mirrored for warehouses (sp-3lj5).
+func TestStopContainerDoesNotClobberAlreadyCompletedWarehouseStorageOperationRow(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	const warehouseID = "warehouse-TORWIND-12-already-done"
+	seedWarehouseStorageOperation(t, db, warehouseID, playerID, "COMPLETED")
+	startTestWarehouse(t, s, warehouseID, playerID)
+
+	require.NoError(t, s.StopContainer(warehouseID))
+
+	requireStorageOperationStatus(t, db, warehouseID, playerID, "COMPLETED")
+}
+
 func startTestGasCoordinator(t *testing.T, s *DaemonServer, id string, playerID int) {
 	t.Helper()
 	startTestContainer(t, s, id, playerID, container.ContainerTypeGasCoordinator)
+}
+
+func startTestWarehouse(t *testing.T, s *DaemonServer, id string, playerID int) {
+	t.Helper()
+	startTestContainer(t, s, id, playerID, container.ContainerTypeWarehouse)
 }
 
 // startTestContainer registers a real, running ContainerRunner (Start()ed for
@@ -86,6 +122,25 @@ func seedStorageOperation(t *testing.T, db *gorm.DB, id string, playerID int, st
 		ExtractorShips: `["SHIP-EXT-1"]`,
 		StorageShips:   `["SHIP-STORE-1"]`,
 		SupportedGoods: `["LIQUID_HYDROGEN"]`,
+	}
+	require.NoError(t, db.Create(model).Error)
+}
+
+// seedWarehouseStorageOperation mirrors seedStorageOperation for the WAREHOUSE
+// operation type. ExtractorShips is deliberately empty, matching
+// storage.NewWarehouseOperation's shape: a warehouse is fed by haulers, not
+// extractors.
+func seedWarehouseStorageOperation(t *testing.T, db *gorm.DB, id string, playerID int, status string) {
+	t.Helper()
+	model := &persistence.StorageOperationModel{
+		ID:             id,
+		PlayerID:       playerID,
+		WaypointSymbol: "X1-TORWIND-12",
+		OperationType:  "WAREHOUSE",
+		Status:         status,
+		ExtractorShips: `[]`,
+		StorageShips:   `["SHIP-STORE-1"]`,
+		SupportedGoods: `["FUEL"]`,
 	}
 	require.NoError(t, db.Create(model).Error)
 }

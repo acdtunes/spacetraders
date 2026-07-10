@@ -1069,7 +1069,13 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 
 // warehouseAt returns the RUNNING warehouse operation parked at waypoint (the
 // storage anchor the planner routed a deposit leg to), or nil if none is running
-// there (warehouse stopped/gone since plan time — the caller degrades).
+// there (warehouse stopped/gone since plan time — the caller degrades). When more
+// than one RUNNING op matches (sp-3lj5: a container stopped without its
+// storage_operations row being terminalized, leaving a stale "zombie" row alongside
+// its live replacement at the same waypoint), resolves deterministically to the
+// newest via tradingsvc.SelectNewestRunningWarehouse and logs the collision - a naive
+// first-match pick can silently select the dead operation, which always reads back
+// zero free space and makes a live warehouse look full.
 func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
 	if h.warehouseFinder == nil {
 		return nil
@@ -1078,12 +1084,20 @@ func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID in
 	if err != nil {
 		return nil
 	}
+	var matches []*storage.StorageOperation
 	for _, op := range ops {
 		if op.OperationType() == storage.OperationTypeWarehouse && op.WaypointSymbol() == waypoint {
-			return op
+			matches = append(matches, op)
 		}
 	}
-	return nil
+	if len(matches) > 1 {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Tour: %d RUNNING warehouse operations at %s - resolving to the newest (sp-3lj5 zombie-row collision)",
+			len(matches), waypoint), map[string]interface{}{
+			"warehouse_waypoint": waypoint, "collision_count": len(matches),
+		})
+	}
+	return tradingsvc.SelectNewestRunningWarehouse(matches)
 }
 
 // plan assembles the market snapshot + era-scoped coordinates over the tour graph

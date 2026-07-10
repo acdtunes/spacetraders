@@ -216,6 +216,61 @@ func newStockerHandler(t *testing.T, fx *stkFixture, coord storage.StorageCoordi
 	)
 }
 
+// stkWarehouseOpAt builds a RUNNING warehouse operation with id at waypoint, created at
+// createdAt (via a MockClock pinned to that instant, so CreatedAt() is fully
+// controllable) — used to pin the sp-3lj5 zombie-row collision shape directly at the
+// stocker's warehouseAt call site.
+func stkWarehouseOpAt(t *testing.T, id, waypoint string, createdAt time.Time) *storage.StorageOperation {
+	t.Helper()
+	op, err := storage.NewWarehouseOperation(id, 1, waypoint, []string{id + "-WH"}, []string{"FOOD"}, &shared.MockClock{CurrentTime: createdAt})
+	if err != nil {
+		t.Fatalf("warehouse op %s: %v", id, err)
+	}
+	if err := op.Start(); err != nil {
+		t.Fatalf("start %s: %v", id, err)
+	}
+	return op
+}
+
+// TestStockerWarehouseAt_ResolvesToNewestOnZombieCollision is the regression pin for
+// sp-3lj5 at the stocker's own warehouseAt call site: warehouse-TORWIND-12-bad719ff
+// was STOPPED at 15:24Z but its storage_operations row was never terminalized (fixed
+// separately in daemon_server.go), so it still surfaced as RUNNING alongside its live
+// replacement warehouse-TORWIND-12-3477282e at the same waypoint — and the finder
+// returned the zombie FIRST, matching the actual incident order. The old
+// first-match-wins loop picked the dead operation (which always reads back zero free
+// space), logging "warehouse full (0 free space)" three times and exiting, while the
+// live warehouse sat at 80/80 free. warehouseAt must resolve to the live operation.
+func TestStockerWarehouseAt_ResolvesToNewestOnZombieCollision(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 15, 24, 0, 0, time.UTC)
+	zombie := stkWarehouseOpAt(t, "warehouse-TORWIND-12-bad719ff", "X1-TORWIND-12", t0)
+	live := stkWarehouseOpAt(t, "warehouse-TORWIND-12-3477282e", "X1-TORWIND-12", t0.Add(2*time.Hour))
+	finder := &fakeRunningFinder{ops: []*storage.StorageOperation{zombie, live}}
+	h := NewRunStockerCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, finder, nil, tradingsvc.DepositCandidateConfig{}, 0)
+
+	got := h.warehouseAt(context.Background(), 1, "X1-TORWIND-12")
+
+	if got == nil || got.ID() != live.ID() {
+		t.Fatalf("want live op %s, got %v", live.ID(), got)
+	}
+}
+
+// TestStockerWarehouseAt_NoRunningWarehouseReturnsNil is the fail-closed sanity check:
+// with nothing RUNNING at the waypoint (e.g. the only warehouse there is now properly
+// terminalized-stopped, so FindRunning no longer returns it), warehouseAt returns nil
+// rather than guessing — the caller then treats the pass as empty (RULINGS #6, never
+// speculative stocking).
+func TestStockerWarehouseAt_NoRunningWarehouseReturnsNil(t *testing.T) {
+	finder := &fakeRunningFinder{ops: nil}
+	h := NewRunStockerCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, finder, nil, tradingsvc.DepositCandidateConfig{}, 0)
+
+	got := h.warehouseAt(context.Background(), 1, "X1-TORWIND-12")
+
+	if got != nil {
+		t.Fatalf("want nil, got %v", got)
+	}
+}
+
 func stkResponse(t *testing.T, resp interface{}) *RunStockerCoordinatorResponse {
 	t.Helper()
 	r, ok := resp.(*RunStockerCoordinatorResponse)

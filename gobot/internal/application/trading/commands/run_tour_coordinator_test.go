@@ -394,6 +394,61 @@ func wireWarehouse(t *testing.T, h *RunTourCoordinatorHandler, opID, waypoint st
 	return coord
 }
 
+// tourWarehouseOpAt builds a RUNNING warehouse operation with id at waypoint, created
+// at createdAt (via a MockClock pinned to that instant, so CreatedAt() is fully
+// controllable) — used to pin the sp-3lj5 zombie-row collision shape directly at the
+// tour's warehouseAt call site.
+func tourWarehouseOpAt(t *testing.T, id, waypoint string, createdAt time.Time) *storage.StorageOperation {
+	t.Helper()
+	op, err := storage.NewWarehouseOperation(id, 1, waypoint, []string{id + "-WH"}, []string{"FOOD"}, &shared.MockClock{CurrentTime: createdAt})
+	if err != nil {
+		t.Fatalf("warehouse op %s: %v", id, err)
+	}
+	if err := op.Start(); err != nil {
+		t.Fatalf("start %s: %v", id, err)
+	}
+	return op
+}
+
+// TestTourWarehouseAt_ResolvesToNewestOnZombieCollision is the regression pin for
+// sp-3lj5 at the tour's own warehouseAt call site: warehouse-TORWIND-12-bad719ff was
+// STOPPED at 15:24Z but its storage_operations row was never terminalized (fixed
+// separately in daemon_server.go), so it still surfaced as RUNNING alongside its live
+// replacement warehouse-TORWIND-12-3477282e at the same waypoint — and the finder
+// returned the zombie FIRST, matching the actual incident order. The old
+// first-match-wins loop picked the dead operation. warehouseAt must resolve to the
+// live operation instead. (No existing test exercised this call site directly before
+// sp-3lj5 — the executor tests all go through wireWarehouse's single-op finder.)
+func TestTourWarehouseAt_ResolvesToNewestOnZombieCollision(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 15, 24, 0, 0, time.UTC)
+	zombie := tourWarehouseOpAt(t, "warehouse-TORWIND-12-bad719ff", "X1-TORWIND-12", t0)
+	live := tourWarehouseOpAt(t, "warehouse-TORWIND-12-3477282e", "X1-TORWIND-12", t0.Add(2*time.Hour))
+	h := NewRunTourCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.SetPrePositioning(nil, &fakeRunningFinder{ops: []*storage.StorageOperation{zombie, live}}, nil,
+		tradingsvc.DepositCandidateConfig{}, 0)
+
+	got := h.warehouseAt(context.Background(), 1, "X1-TORWIND-12")
+
+	if got == nil || got.ID() != live.ID() {
+		t.Fatalf("want live op %s, got %v", live.ID(), got)
+	}
+}
+
+// TestTourWarehouseAt_NoRunningWarehouseReturnsNil is the fail-closed sanity check:
+// with nothing RUNNING at the waypoint (e.g. the only warehouse there is now properly
+// terminalized-stopped, so FindRunning no longer returns it), warehouseAt returns nil
+// rather than guessing — the caller then degrades to pure arb for that leg.
+func TestTourWarehouseAt_NoRunningWarehouseReturnsNil(t *testing.T) {
+	h := NewRunTourCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.SetPrePositioning(nil, &fakeRunningFinder{ops: nil}, nil, tradingsvc.DepositCandidateConfig{}, 0)
+
+	got := h.warehouseAt(context.Background(), 1, "X1-TORWIND-12")
+
+	if got != nil {
+		t.Fatalf("want nil, got %v", got)
+	}
+}
+
 // A 3-leg tour that fills the hold both ways executes every buy and sell, records one
 // telemetry row per trade, orders the mixed leg sells-before-buys, and completes clean.
 func TestTour_ExecutesLegsAndRecordsTelemetry(t *testing.T) {

@@ -731,18 +731,32 @@ func (h *RunStockerCoordinatorHandler) depositGood(
 }
 
 // warehouseAt returns the RUNNING warehouse operation parked at waypoint (the deposit
-// anchor), or nil if none is running there. Mirrors the tour's warehouseAt.
+// anchor), or nil if none is running there. Mirrors the tour's warehouseAt. When more
+// than one RUNNING op matches (sp-3lj5: a container stopped without its
+// storage_operations row being terminalized, leaving a stale "zombie" row alongside
+// its live replacement at the same waypoint), resolves deterministically to the
+// newest via tradingsvc.SelectNewestRunningWarehouse and logs the collision - a naive
+// first-match pick can silently select the dead operation, which always reads back
+// zero free space and makes a live warehouse look full.
 func (h *RunStockerCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
 	ops, err := h.warehouseFinder.FindRunning(ctx, playerID)
 	if err != nil {
 		return nil
 	}
+	var matches []*storage.StorageOperation
 	for _, op := range ops {
 		if op.OperationType() == storage.OperationTypeWarehouse && op.WaypointSymbol() == waypoint {
-			return op
+			matches = append(matches, op)
 		}
 	}
-	return nil
+	if len(matches) > 1 {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Stocker: %d RUNNING warehouse operations at %s - resolving to the newest (sp-3lj5 zombie-row collision)",
+			len(matches), waypoint), map[string]interface{}{
+			"warehouse_waypoint": waypoint, "collision_count": len(matches),
+		})
+	}
+	return tradingsvc.SelectNewestRunningWarehouse(matches)
 }
 
 // capitalCeiling resolves the pre-positioning capital ceiling: ceilingPct (default 10)

@@ -60,19 +60,21 @@ type DepositCandidateConfig struct {
 // (no warehouse in the tour graph) logged NOTHING at all. Silent zeros become
 // impossible: every return path sets a reason and the deferred emit renders it.
 type depositVerdict struct {
-	level          string // "" => INFO
-	reason         string // "selected" on success; else the distinct zero-reason
-	allowedSystems []string
-	warehouseID    string
-	storageWaypoint string
-	homeSystem     string
-	ceilingCredits int64
-	ceilingKnown   bool
-	freeSpace      int
-	minerRows      int
-	stockEligible  int // rows passing eligibility (known asks, savings >= floor)
-	afterWhitelist int // of those, rows passing allow/block/SupportsGood
-	final          int // candidates actually offered to the planner
+	level               string // "" => INFO
+	reason              string // "selected" on success; else the distinct zero-reason
+	allowedSystems      []string
+	warehouseID         string
+	storageWaypoint     string
+	homeSystem          string
+	ceilingCredits      int64
+	ceilingKnown        bool
+	freeSpace           int
+	minerRows           int
+	stockEligible       int // rows passing eligibility (known asks, savings >= floor)
+	afterWhitelist      int // of those, rows passing allow/block/SupportsGood
+	final               int // candidates actually offered to the planner
+	warehouseCandidates int // RUNNING ops matching the graph filter, pre tie-break; >1 means a
+	// stale zombie row (sp-3lj5) is sitting alongside the live one
 }
 
 // BuildDepositCandidates assembles the haul-to-storage deposit sinks the tour
@@ -137,15 +139,16 @@ func BuildDepositCandidates(
 		}
 		logger.Log(level, fmt.Sprintf(
 			"Pre-positioning verdict: %d deposit candidate(s) — %s "+
-				"[warehouse=%s reachable=%t systems=%v ceiling=%d(known=%t) free=%d "+
+				"[warehouse=%s wh_candidates=%d reachable=%t systems=%v ceiling=%d(known=%t) free=%d "+
 				"funnel: miner_rows=%d stock_eligible=%d after_whitelist=%d]",
-			v.final, v.reason, wh, v.warehouseID != "", v.allowedSystems,
+			v.final, v.reason, wh, v.warehouseCandidates, v.warehouseID != "", v.allowedSystems,
 			v.ceilingCredits, v.ceilingKnown, v.freeSpace,
 			v.minerRows, v.stockEligible, v.afterWhitelist),
 			map[string]interface{}{
 				"final": v.final, "reason": v.reason,
 				"warehouse": v.warehouseID, "storage_waypoint": v.storageWaypoint,
-				"home_system": v.homeSystem, "reachable_warehouse": v.warehouseID != "",
+				"warehouse_candidates": v.warehouseCandidates,
+				"home_system":          v.homeSystem, "reachable_warehouse": v.warehouseID != "",
 				"allowed_systems": v.allowedSystems, "ceiling_credits": v.ceilingCredits,
 				"ceiling_known": v.ceilingKnown, "free_space": v.freeSpace,
 				"miner_rows": v.minerRows, "stock_eligible": v.stockEligible,
@@ -167,11 +170,19 @@ func BuildDepositCandidates(
 		return nil
 	}
 
-	warehouse, err := findWarehouseInGraph(ctx, warehouses, allowedSystems, playerID)
+	warehouse, whCandidates, err := findWarehouseInGraph(ctx, warehouses, allowedSystems, playerID)
 	if err != nil {
 		v.level = "WARNING"
 		v.reason = "warehouse lookup failed: " + err.Error()
 		return nil
+	}
+	v.warehouseCandidates = whCandidates
+	if whCandidates > 1 {
+		// More than one RUNNING warehouse op in the graph: normally 0 or 1, so this
+		// means a stale zombie row is sitting alongside the live one (sp-3lj5) — the
+		// newest-wins tie-break below resolves it correctly, but the collision itself
+		// is worth being loud about until the upstream row leak is fully drained.
+		v.level = "WARNING"
 	}
 	if warehouse == nil {
 		// The dominant live zero-reason: the hull re-planned >1 gate hop from home,
@@ -275,34 +286,37 @@ func BuildDepositCandidates(
 	return out
 }
 
-// findWarehouseInGraph returns the first RUNNING warehouse operation whose system
-// is inside the tour graph (allowedSystems), or nil. A non-nil error means the
-// warehouse lookup itself failed (surfaced by the caller's verdict). v1 targets
-// one warehouse; with several the lowest-ID one in the graph wins (deterministic).
+// findWarehouseInGraph returns the RUNNING warehouse operation whose system is
+// inside the tour graph (allowedSystems) with the latest CreatedAt, or nil if none
+// matches. A non-nil error means the warehouse lookup itself failed (surfaced by
+// the caller's verdict). matches is the number of RUNNING operations that matched
+// the graph filter before the newest-wins tie-break — normally 0 or 1, but >1 when
+// a container stopped without its storage_operations row being terminalized
+// (sp-3lj5): the stale "zombie" row keeps reading RUNNING alongside its live
+// replacement. Callers surface matches in their own verdict/logging so a collision
+// is visible rather than silently resolved.
 func findWarehouseInGraph(
 	ctx context.Context,
 	warehouses WarehouseOperationFinder,
 	allowedSystems []string,
 	playerID int,
-) (*storage.StorageOperation, error) {
+) (op *storage.StorageOperation, matches int, err error) {
 	ops, err := warehouses.FindRunning(ctx, playerID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	allowed := toSet(allowedSystems)
-	var found *storage.StorageOperation
-	for _, op := range ops {
-		if op.OperationType() != storage.OperationTypeWarehouse {
+	var candidates []*storage.StorageOperation
+	for _, candidate := range ops {
+		if candidate.OperationType() != storage.OperationTypeWarehouse {
 			continue
 		}
-		if !allowed[shared.ExtractSystemSymbol(op.WaypointSymbol())] {
+		if !allowed[shared.ExtractSystemSymbol(candidate.WaypointSymbol())] {
 			continue
 		}
-		if found == nil || op.ID() < found.ID() {
-			found = op
-		}
+		candidates = append(candidates, candidate)
 	}
-	return found, nil
+	return SelectNewestRunningWarehouse(candidates), len(candidates), nil
 }
 
 func toSet(items []string) map[string]bool {
