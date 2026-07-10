@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -109,6 +110,16 @@ type RunScoutPostCoordinatorHandler struct {
 	// that never wires it behaves exactly as before.
 	gateGraph GateGraph
 
+	// graphProvider discovers a VIRGIN system's waypoints presence-free via the API when
+	// the reposition target has zero KNOWN market waypoints (sp-nn0y — the s232 bootstrap
+	// chicken-and-egg: an unswept system has no market waypoint to relay to). It is the
+	// same cache-first ISystemGraphProvider port scout_markets/assign_scouting_fleet use,
+	// and persists discovered waypoints era-scoped via its BuildSystemGraph→Add path
+	// (sp-vapw). nil disables virgin discovery — the reposition path then parks exactly as
+	// before nn0y — so it is wired via SetGraphProvider rather than the constructor, and
+	// every existing caller/test that never wires it behaves identically.
+	graphProvider system.ISystemGraphProvider
+
 	// repositionBackoffUntil rate-limits reposition DISPATCH per post (key
 	// playerID|system → earliest next dispatch time) so a relay that fails fast does
 	// not hot-loop re-dispatch (sp-s232). In-memory (reset on restart); guarded by
@@ -150,6 +161,15 @@ func NewRunScoutPostCoordinatorHandler(
 // leaves repositioning disabled and the sp-qxa4 park behavior intact.
 func (h *RunScoutPostCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.gateGraph = g
+}
+
+// SetGraphProvider wires the presence-free waypoint discoverer for virgin reposition
+// targets (sp-nn0y). The daemon injects the same graphService the `waypoint` verb and the
+// scout-markets planner use, so virgin discovery shares one cache/graph and persists
+// era-scoped exactly as every other charting path. Mirrors SetGateGraph's optional-
+// injection idiom; nil (the default) leaves the pre-nn0y park behavior intact.
+func (h *RunScoutPostCoordinatorHandler) SetGraphProvider(g system.ISystemGraphProvider) {
+	h.graphProvider = g
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -215,10 +235,13 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 //   - Pass 2b (reposition, sp-s232): for a post STILL unmanned after 2a, jump-route
 //     the FLEET-WIDE nearest idle satellite (fewest gate hops, via the gate-graph BFS)
 //     to it as a claimed cross-gate relay, then let the next tick's 2a man it in-system.
-//     Fail-closed: no gate graph, no reachable satellite, no known markets, or an
-//     active backoff → the post parks honest and is re-checked next tick. In-system
-//     manning (2a) always wins over repositioning (2b) for the same satellite, since a
-//     satellite that arrives idle in a post's system is claimed by 2a before 2b runs.
+//     A VIRGIN target (no KNOWN market waypoint to relay to) is first DISCOVERED presence-
+//     free via the API and repositioned the same tick, or parked UNSERVICEABLE if it has
+//     no marketplaces (sp-nn0y). Fail-closed: no gate graph, no reachable satellite, an
+//     API discovery failure, or an active backoff → the post parks honest and is re-checked
+//     next tick. In-system manning (2a) always wins over repositioning (2b) for the same
+//     satellite, since a satellite that arrives idle in a post's system is claimed by 2a
+//     before 2b runs.
 func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunScoutPostCoordinatorCommand) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -500,9 +523,11 @@ func (h *RunScoutPostCoordinatorHandler) spawnTour(
 
 // repositionUnmannedPost jump-routes the fleet-wide nearest idle satellite to a post
 // with no in-system hull (sp-s232). It FAILS CLOSED at every gap — no gate graph, no
-// idle satellite, an active backoff, no known markets, or no jump-routable satellite —
-// by parking the post honest and returning, so the post is simply re-checked next tick
-// (nothing is spent, no hull is committed to an un-flyable relay). On success it claims
+// idle satellite, an active backoff, an unserviceable/undiscoverable virgin system, or
+// no jump-routable satellite — by parking the post honest and returning, so the post is
+// simply re-checked next tick (nothing is spent, no hull is committed to an un-flyable
+// relay). A virgin target with no KNOWN market waypoint is first discovered presence-free
+// (discoverVirginMarkets, sp-nn0y) and repositioned the same tick. On success it claims
 // the satellite to a new reposition container (the relay owns the hull for the whole
 // flight, RULINGS #7), records the relay on the post, and arms the per-post dispatch
 // backoff. idleSats is a pointer so a dispatched satellite is removed from the shared
@@ -534,18 +559,23 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedPost(
 
 	// Repositioning to a system with nothing to scan is pointless, and travel() needs a
 	// concrete destination waypoint — reuse the discovered markets (the same waypoints
-	// the tour will scan on arrival). No known markets → park (self-heals once charted).
+	// the tour will scan on arrival).
 	markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to discover markets for reposition target %s: %v", post.SystemSymbol, err), nil)
 		return
 	}
 	if len(markets) == 0 {
-		logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — cannot reposition (nothing to scan), post parks", post.SystemSymbol), map[string]interface{}{
-			"action":        "scout_reposition_no_markets",
-			"system_symbol": post.SystemSymbol,
-		})
-		return
+		// Virgin frontier system (sp-nn0y): the post's system has ZERO KNOWN market
+		// waypoints, so there is no destination to relay to — the s232 bootstrap chicken-
+		// and-egg, since nothing can scan a system no satellite can reach. DISCOVER its
+		// waypoints presence-free via the API, then retry the read. discoverVirginMarkets
+		// fails closed (parks honest) at every gap and arms the dispatch backoff so the
+		// API is probed at most once per window, never per tick.
+		markets = h.discoverVirginMarkets(ctx, cmd, post)
+		if len(markets) == 0 {
+			return // parked honest by discoverVirginMarkets (no discoverer / API error / unserviceable)
+		}
 	}
 	destWaypoint := pickRepositionDestination(markets)
 
@@ -586,6 +616,81 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedPost(
 		"destination":   destWaypoint,
 		"relay":         relayID,
 	})
+}
+
+// discoverVirginMarkets resolves the s232 bootstrap chicken-and-egg for a post whose
+// system has ZERO known market waypoints (sp-nn0y): the reposition destination IS a known
+// market waypoint, and an unswept system has none, so the captain's frontier relay targets
+// would park forever. It DISCOVERS the system's waypoints presence-free via the graph
+// provider's cache-first GetGraph — the same fetch-through the `waypoint` verb and
+// scout_markets use, which needs no local ship in the system — persisting them era-scoped
+// (the unchanged BuildSystemGraph→waypointRepo.Add path, sp-vapw). It then re-reads:
+//   - markets found → returns them; the caller repositions THIS tick.
+//   - none found → the system is genuinely marketless: parks UNSERVICEABLE with a DISTINCT
+//     reason, so the captain can tell 'not yet scanned' from 'nothing there' and remove it.
+//   - API error → parks fail-closed with the pre-nn0y reason, retried next window.
+//
+// It arms the reposition dispatch backoff BEFORE the API call (reusing the s232 keying), so
+// a marketless or API-erroring system is probed at most ONCE per window — the caller's
+// pass-2b backoff check short-circuits every intervening tick (no per-tick API hammering).
+// A system whose discovery finds markets is never re-discovered: the persisted rows satisfy
+// the caller's discoverMarkets read directly next pass. With no graph provider wired it is a
+// no-op that logs the pre-nn0y park verbatim, so every existing caller/test is unaffected.
+func (h *RunScoutPostCoordinatorHandler) discoverVirginMarkets(
+	ctx context.Context,
+	cmd *RunScoutPostCoordinatorCommand,
+	post *domainScouting.ScoutPost,
+) []string {
+	logger := common.LoggerFromContext(ctx)
+
+	// No discoverer wired → preserve the pre-nn0y park verbatim (its message text and
+	// action still grep-match; disabled discovery cannot change existing behavior).
+	if h.graphProvider == nil {
+		logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — cannot reposition (nothing to scan), post parks", post.SystemSymbol), map[string]interface{}{
+			"action":        "scout_reposition_no_markets",
+			"system_symbol": post.SystemSymbol,
+		})
+		return nil
+	}
+
+	// Arm the backoff BEFORE the API call: whether discovery finds markets, finds none, or
+	// errors, this system is not probed again until the window elapses. On the found-markets
+	// path the caller repositions immediately and the persisted rows short-circuit any
+	// re-discovery next pass anyway, so the extra arm is harmless there.
+	h.noteRepositionDispatch(cmd.PlayerID.Value(), post.SystemSymbol)
+
+	if _, err := h.graphProvider.GetGraph(ctx, post.SystemSymbol, false, cmd.PlayerID.Value()); err != nil {
+		// Fail closed: nothing spent, no hull committed — park and retry after the backoff.
+		logger.Log("WARNING", fmt.Sprintf("Virgin-system waypoint discovery for reposition target %s failed: %v — post parks (fail-closed), retrying after backoff", post.SystemSymbol, err), map[string]interface{}{
+			"action":        "scout_reposition_discovery_failed",
+			"system_symbol": post.SystemSymbol,
+		})
+		return nil
+	}
+
+	// Discovery persisted the system's waypoints era-scoped — re-read the markets.
+	markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to re-read markets for %s after discovery: %v", post.SystemSymbol, err), nil)
+		return nil
+	}
+	if len(markets) == 0 {
+		// Discovery succeeded but the system genuinely has NO marketplaces — the post is
+		// unserviceable. A distinct reason (not the 'not yet scanned' park) so the captain
+		// knows the system was charted and found barren, and can remove the post.
+		logger.Log("INFO", fmt.Sprintf("%s has no marketplaces — post is unserviceable; consider removing", post.SystemSymbol), map[string]interface{}{
+			"action":        "scout_post_unserviceable",
+			"system_symbol": post.SystemSymbol,
+		})
+		return nil
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Discovered %d market waypoint(s) in virgin system %s — repositioning now", len(markets), post.SystemSymbol), map[string]interface{}{
+		"action":        "scout_reposition_virgin_discovered",
+		"system_symbol": post.SystemSymbol,
+		"markets":       len(markets),
+	})
+	return markets
 }
 
 // selectNearestSatelliteByHops returns the index (into idleSats) of the satellite

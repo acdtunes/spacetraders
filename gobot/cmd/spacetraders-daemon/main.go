@@ -615,6 +615,12 @@ func run(cfg *config.Config) error {
 	// Manning stays in-system only (the sp-qxa4 invariant); repositioning just moves the
 	// hull there first. nil gate graph would leave the pre-s232 park behavior intact.
 	scoutPostCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-nn0y: wire the presence-free waypoint discoverer so a reposition target with no
+	// KNOWN market waypoint (a virgin frontier system) is charted via the API and serviced
+	// the same tick, instead of parking forever on the s232 bootstrap chicken-and-egg. Same
+	// graphService the `waypoint` verb and scout-markets planner use — one cache/graph,
+	// era-scoped persistence. nil would leave the pre-nn0y park behavior intact.
+	scoutPostCoordinatorHandler.SetGraphProvider(graphService)
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)

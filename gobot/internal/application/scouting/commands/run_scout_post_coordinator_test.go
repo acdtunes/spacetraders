@@ -15,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // scoutCaptureLogger implements common.ContainerLogger and records message text so
@@ -244,6 +245,32 @@ func (g *fakeGateGraph) Path(_ context.Context, from, to string, _ int) ([]strin
 	}
 	path[0], path[n] = from, to
 	return path, nil
+}
+
+// fakeGraphProvider stands in for the presence-free graph service (sp-nn0y). GetGraph
+// records the systems it was asked to discover and, on success, "charts" the system by
+// removing it from the paired fakeMarketProvider's emptySystems — mirroring the real
+// BuildSystemGraph→waypointRepo.Add→ListBySystemWithTrait round-trip (era-scoping is the
+// reused Add path's own invariant, sp-vapw). err simulates an API failure; a system left
+// in noMarkets stays marketless after discovery (charted but genuinely barren).
+type fakeGraphProvider struct {
+	mp        *fakeMarketProvider
+	requested []string
+	err       error
+	noMarkets map[string]bool
+}
+
+func (g *fakeGraphProvider) GetGraph(_ context.Context, systemSymbol string, _ bool, _ int) (*system.GraphLoadResult, error) {
+	g.requested = append(g.requested, systemSymbol)
+	if g.err != nil {
+		return nil, g.err
+	}
+	// Discovery charts the system: unless it is genuinely barren, it now has a marketplace
+	// waypoint the market provider will surface (the persisted era-scoped row).
+	if !g.noMarkets[systemSymbol] {
+		delete(g.mp.emptySystems, systemSymbol)
+	}
+	return &system.GraphLoadResult{Source: "api"}, nil
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -825,4 +852,100 @@ func TestScoutPost_Reposition_NoGateGraph_ParksUnchanged(t *testing.T) {
 	require.Empty(t, shipRepo.claims, "no satellite is claimed")
 	require.Empty(t, postRepo.find("X1-FAR").AssignedHull, "the post parks, exactly as before sp-s232")
 	require.True(t, logger.loggedContaining("X1-FAR", "no in-system satellite"), "the pre-s232 park reason is preserved")
+}
+
+// ---- tests: sp-nn0y virgin-system waypoint discovery ----------------------
+
+// Acceptance (sp-nn0y): a reposition target with NO known market waypoint (a virgin
+// frontier system — the s232 park-forever bug) is DISCOVERED presence-free via the API and
+// repositioned the SAME tick. The discovery charts the system (persisting its waypoints
+// era-scoped via the reused BuildSystemGraph→Add path), the re-read now surfaces a market,
+// and the routable satellite is relayed in — no satellite need already be in the system.
+func TestScoutPost_Reposition_VirginSystem_DiscoversAndDispatches(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-VIRGIN", Kind: domainScouting.PostKindSweepOnce}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1") // idle elsewhere, 1 hop from the virgin system
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMarketProvider{emptySystems: map[string]bool{"X1-VIRGIN": true}} // no KNOWN markets yet
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, mp, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-VIRGIN": 1}}
+	gp := &fakeGraphProvider{mp: mp}
+	handler.graphProvider = gp
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Equal(t, []string{"X1-VIRGIN"}, gp.requested, "the virgin system is discovered presence-free via the API")
+	require.Len(t, daemonClient.repositioned, 1, "the relay is dispatched the SAME tick discovery charts the system")
+	require.Len(t, shipRepo.claims, 1, "the routable satellite is claimed for the relay")
+	require.Equal(t, "SAT-1", shipRepo.claims[0].ship)
+	require.Equal(t, daemonClient.repositioned[0], postRepo.find("X1-VIRGIN").RepositionContainerID, "the post records the in-flight relay")
+	require.Empty(t, postRepo.find("X1-VIRGIN").AssignedHull, "the post is NOT manned during transit — manning stays in-system only")
+	require.True(t, logger.loggedContaining("X1-VIRGIN", "Discovered", "repositioning"), "the same-tick discovery+dispatch is logged honestly")
+}
+
+// A virgin system that discovery charts as GENUINELY marketless parks with a DISTINCT
+// 'unserviceable' reason — never the 'not yet scanned' park — so the captain can tell a
+// barren system apart from an unscanned one and remove the post. No relay is dispatched
+// (nothing to scan) and no satellite is claimed (sp-nn0y).
+func TestScoutPost_Reposition_VirginSystem_NoMarkets_ParksUnserviceable(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-BARREN", Kind: domainScouting.PostKindSweepOnce}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMarketProvider{emptySystems: map[string]bool{"X1-BARREN": true}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, mp, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-BARREN": 1}}
+	gp := &fakeGraphProvider{mp: mp, noMarkets: map[string]bool{"X1-BARREN": true}} // discovery succeeds, finds no marketplaces
+	handler.graphProvider = gp
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Equal(t, []string{"X1-BARREN"}, gp.requested, "discovery is attempted")
+	require.Empty(t, daemonClient.repositioned, "a genuinely marketless system dispatches no relay")
+	require.Empty(t, shipRepo.claims, "no satellite is claimed for an unserviceable post")
+	require.Empty(t, postRepo.find("X1-BARREN").RepositionContainerID, "no relay is recorded")
+	require.True(t, sat.IsIdle(), "the satellite stays idle")
+	require.True(t, logger.loggedContaining("X1-BARREN", "unserviceable"), "the DISTINCT unserviceable reason is logged, not 'not yet scanned'")
+}
+
+// A virgin discovery whose API call FAILS parks fail-closed (nothing spent, no relay) and
+// arms the reposition backoff, so the API is NOT re-probed every tick — the second tick
+// inside the window attempts no discovery at all (sp-nn0y / sp-py4n anti-hot-loop).
+func TestScoutPost_Reposition_VirginDiscoveryFails_ParksAndBacksOff(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-VIRGIN", Kind: domainScouting.PostKindSweepOnce}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMarketProvider{emptySystems: map[string]bool{"X1-VIRGIN": true}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, mp, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-VIRGIN": 1}}
+	gp := &fakeGraphProvider{mp: mp, err: fmt.Errorf("api down")}
+	handler.graphProvider = gp
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	// Tick 1: discovery fails → fail-closed park, backoff armed.
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	require.Len(t, gp.requested, 1, "tick 1 attempts discovery once")
+	require.Empty(t, daemonClient.repositioned, "a failed discovery dispatches no relay (fail-closed)")
+	require.Empty(t, shipRepo.claims, "no satellite is claimed")
+	require.Empty(t, postRepo.find("X1-VIRGIN").RepositionContainerID, "no relay is recorded")
+	require.True(t, sat.IsIdle(), "the satellite stays idle")
+	require.True(t, logger.loggedContaining("X1-VIRGIN", "fail-closed"), "the fail-closed park reason is logged")
+
+	// Tick 2 inside the backoff window (clock not advanced): the pass-2b backoff check fires
+	// FIRST, so NO second discovery is attempted — the API is not hammered every tick.
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	require.Len(t, gp.requested, 1, "no second discovery inside the backoff window (no per-tick API hammering)")
+	require.True(t, logger.loggedContaining("X1-VIRGIN", "backing off"), "the intervening tick parks via the backoff, not a fresh probe")
 }
