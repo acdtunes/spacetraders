@@ -400,8 +400,33 @@ func (r *ContainerRunner) execute() {
 		isStopping := r.containerEntity.IsStopping()
 		r.mu.RUnlock()
 
-		if !shouldContinue || isStopping {
+		// Budget exhaustion (a finite maxIterations reached) is the ONLY clean
+		// COMPLETION — fall through to finishCleanExit (COMPLETED) below. Checked
+		// FIRST so a container that both ran its budget to exhaustion AND was asked
+		// to stop still completes honestly.
+		if !shouldContinue {
 			break
+		}
+
+		// A stop/shutdown REQUEST is an INTERRUPTION, not a completion. The daemon's
+		// graceful shutdown flips the STOPPING flag via containerEntity.Stop()
+		// WITHOUT cancelling ctx (gracefulShutdownWithTimeout), so it surfaces HERE,
+		// between iterations, rather than as the ctx-cancellation handled below. A
+		// container that has NOT exhausted its budget must exit RESUMABLE so it is
+		// re-adopted at the next boot — mirroring the ctx-cancellation exits below and
+		// the clean between-iteration exit at the bottom of this loop, which is how
+		// every other container type (trade-route/scout/arb) survived the same
+		// restart. A -1 (infinite) container NEVER exhausts its budget, so the OLD
+		// `!shouldContinue || isStopping` break routed it through finishCleanExit and
+		// terminalized it COMPLETED; a COMPLETED row is not in the INTERRUPTED+RUNNING
+		// recovery set, so the container is silently lost at restart (sp-ovkn — the
+		// JP61 worker-less goods_factory container-loss incident; RULING #2 / sp-7yej
+		// invariant 4). Returning here leaves the row RUNNING for recovery to re-adopt
+		// (the force-interrupt path marks any still-RUNNING row INTERRUPTED; either
+		// status is recovered), and — unlike finishCleanExit — never writes COMPLETED.
+		if isStopping {
+			r.log("INFO", "Stop requested — exiting resumable (re-adopted at next boot)", nil)
+			return
 		}
 
 		// Execute single iteration
