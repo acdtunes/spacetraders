@@ -17,11 +17,24 @@ const (
 	EventContainerLost      EventType = "container.lost"
 	EventHeartbeatLost      EventType = "container.heartbeat_lost"
 	EventShipIdle           EventType = "ship.idle"
-	EventCreditsThreshold   EventType = "credits.threshold"
-	EventContractCompleted  EventType = "contract.completed"
-	EventContractFailed     EventType = "contract.failed"
-	EventIncomeStalled      EventType = "income.stalled"
-	EventStreamDown         EventType = "stream.down"
+
+	// EventPinnedHullContainerless (sp-v63s watchdog) fires when a hull with a
+	// standing fleet dedication (dedicated_fleet != '') has had NO running
+	// coordinator container for longer than a threshold. The continuous trade/tour
+	// engines run one container per dedicated hull across manifests, so a dedicated
+	// hull sitting containerless is an anomaly — the state signature of EVERY
+	// silent-death class (a container dropped from recovery, a crash that left no
+	// event, a claim that never re-formed), regardless of which code path caused it.
+	// Unlike ship.idle (a fleet-wide, deferred "this hull has nothing to do" signal),
+	// this is a targeted alarm for a hull the operator PINNED to earn — it is
+	// interrupt class, mirroring container.lost: a stranded revenue hull must wake
+	// the captain, not ride the next cadence.
+	EventPinnedHullContainerless EventType = "hull.containerless"
+	EventCreditsThreshold        EventType = "credits.threshold"
+	EventContractCompleted       EventType = "contract.completed"
+	EventContractFailed          EventType = "contract.failed"
+	EventIncomeStalled           EventType = "income.stalled"
+	EventStreamDown              EventType = "stream.down"
 
 	// EventDeployCompleted marks a daemon boot running a different commit than
 	// the last one recorded (sp-ess3): the one honest in-process "a deploy
@@ -88,6 +101,10 @@ func DefaultInterruptTypes() []EventType {
 		// the next cadence. By-design non-recoveries (coordinator-managed workers
 		// that respawn, dead-era universe-reset containers) never emit this event.
 		EventContainerLost,
+		// A hull PINNED to a fleet with no running container for >N min is a
+		// stranded revenue hull — like container.lost, it stays dead until someone
+		// acts, so it forces a wake rather than riding the next cadence (sp-v63s).
+		EventPinnedHullContainerless,
 		EventHeartbeatLost,
 		EventContractFailed,
 		EventIncomeStalled,

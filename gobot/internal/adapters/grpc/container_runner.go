@@ -485,8 +485,11 @@ func (r *ContainerRunner) execute() {
 			// UNRECOVERABLE ERROR: the container has truly crashed. Surface the crash
 			// signature at ERROR and record the strategic crash event here (not in
 			// handleError) so container.crashed counts true crashes, not every retry.
-			// Only NOW do we signal completion and release ships - completion is
-			// signaled AFTER the restart decision.
+			// Only NOW — after the restart decision came back "no more restarts" — do
+			// we persist the terminal FAILED row (sp-v63s: never before, or a live
+			// restarting container is dropped from recovery), then signal completion
+			// and release ships.
+			r.persistFailed(err.Error())
 			r.recordCrash(err)
 			r.signalCompletionWithStatus(false, err.Error())
 			r.releaseShipAssignments("failed")
@@ -536,11 +539,16 @@ func (r *ContainerRunner) finishCleanExit() {
 	r.mu.RUnlock()
 
 	if incomplete {
-		// handleError owns the shared failure bookkeeping: ERROR log, Fail()
-		// transition, failure metrics, FAILED row (exit code 1). Not a crash —
-		// recordCrash is deliberately NOT called (the run ended at a safe exit
-		// point; it just may not claim success).
-		r.handleError(fmt.Errorf("completion refused (honest-completion contract): %s", incompleteReason))
+		// handleError owns the shared in-memory failure bookkeeping: ERROR log,
+		// Fail() transition, failure metrics. Not a crash — recordCrash is
+		// deliberately NOT called (the run ended at a safe exit point; it just may
+		// not claim success). This IS a genuine terminal exit (a re-run cannot
+		// resume a dynamically-planned task), so persist the terminal FAILED row
+		// here — handleError no longer does (sp-v63s: it must not, or a restarting
+		// container would be dropped from recovery).
+		vetoErr := fmt.Errorf("completion refused (honest-completion contract): %s", incompleteReason)
+		r.handleError(vetoErr)
+		r.persistFailed(vetoErr.Error())
 
 		// Release before signaling, mirroring the completed path's ordering
 		// (the coordinator must never discover a still-claimed hull after the
@@ -739,26 +747,21 @@ func (r *ContainerRunner) handleError(err error) {
 	// Record failure metrics
 	metrics.RecordContainerCompletion(r.containerEntity)
 
-	// Persist failure to database
-	if r.containerRepo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
-		defer cancel()
-
-		now := time.Now()
-		exitCode := 1
-
-		if dbErr := r.containerRepo.UpdateStatus(
-			ctx,
-			r.containerEntity.ID(),
-			r.containerEntity.PlayerID(),
-			container.ContainerStatusFailed,
-			&now,
-			&exitCode,
-			err.Error(),
-		); dbErr != nil {
-			r.log("ERROR", fmt.Sprintf("Failed to persist FAILED status: %v", dbErr), nil)
-		}
-	}
+	// NOTE: the terminal FAILED row is intentionally NOT persisted here (sp-v63s).
+	// handleError runs on EVERY failed iteration, including transient ones the
+	// sp-h0kr restart loop is about to retry. That restart re-runs the container
+	// in-memory (ResetForRestart + containerEntity.Start()) but the only site that
+	// persists RUNNING is r.Start(), at initial boot — the restart path never
+	// re-persists it. Writing FAILED here would therefore leave a still-alive,
+	// restarted container carrying a stale FAILED row for the whole restart+backoff
+	// (up to ~2min). RecoverRunningContainers queries only INTERRUPTED+RUNNING rows,
+	// and the sp-tit8 lost-guard only diffs THAT candidate set, so a FAILED-but-alive
+	// container is neither recovered NOR flagged lost when the daemon redeploys — the
+	// hull is silently stranded idle-laden (RULING #2). The row instead stays at its
+	// last-persisted RUNNING across the restart loop (recovery re-adopts the live
+	// container); FAILED is persisted (via persistFailed) ONLY at a genuine terminal
+	// exit — restart exhaustion in execute() and the honest-completion veto in
+	// finishCleanExit — where it is always paired with the workflow.failed event.
 
 	// NOTE: container.crashed is intentionally NOT recorded here. handleError runs
 	// on every failed iteration, including transient errors that are retried and
@@ -768,6 +771,36 @@ func (r *ContainerRunner) handleError(err error) {
 	// NOTE: signalCompletion and releaseShipAssignments are NOT called here.
 	// They are called by execute() ONLY when the container is truly done (not restarting).
 	// This prevents the bug where completion is signaled before restart decision.
+}
+
+// persistFailed writes the terminal FAILED row (exit code 1) with reason. It is
+// called ONLY at a genuine terminal exit — restart-budget exhaustion (execute) and
+// the honest-completion veto (finishCleanExit) — never on a failed iteration the
+// restart loop will retry. Splitting the persist out of handleError is the sp-v63s
+// fix: the DB row must reflect whether the container is recoverable, so a
+// still-restarting container keeps its RUNNING row and only flips to FAILED once it
+// truly gives up (always alongside the workflow.failed event). Mirrors the
+// UpdateStatus shape of terminalizeClaimFailure and finishCleanExit's COMPLETED write.
+func (r *ContainerRunner) persistFailed(reason string) {
+	if r.containerRepo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
+	defer cancel()
+
+	now := time.Now()
+	exitCode := 1
+	if dbErr := r.containerRepo.UpdateStatus(
+		ctx,
+		r.containerEntity.ID(),
+		r.containerEntity.PlayerID(),
+		container.ContainerStatusFailed,
+		&now,
+		&exitCode,
+		reason,
+	); dbErr != nil {
+		r.log("ERROR", fmt.Sprintf("Failed to persist FAILED status: %v", dbErr), nil)
+	}
 }
 
 // recordCrash surfaces a true, unrecoverable container crash. It logs a single

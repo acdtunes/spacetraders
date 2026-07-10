@@ -201,18 +201,19 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 
 	// Synthetic events (state-derived): stale heartbeats, idle ships, credit crossings.
 	dcfg := DetectorConfig{
-		PlayerID:            s.cfg.PlayerID,
-		ShipIdle:            time.Duration(s.cfg.ShipIdleMinutes) * time.Minute,
-		StaleHeartbeat:      time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
-		CreditsThresholds:   s.cfg.CreditsThresholds,
-		LastCredits:         prevCredits,
-		CurrentCreditsValue: s.lastCredits,
-		IncomeStall:         time.Duration(s.cfg.IncomeStallHours) * time.Hour,
-		StreamDown:          time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
-		ExpectedStreams:     s.cfg.ExpectedStreams,
-		CrashLoopWindow:     defaultCrashLoopWindow,
-		CrashLoopThreshold:  defaultCrashLoopThreshold,
-		RegimeTripwires:     regimePolicy.Tripwires,
+		PlayerID:                s.cfg.PlayerID,
+		ShipIdle:                time.Duration(s.cfg.ShipIdleMinutes) * time.Minute,
+		StaleHeartbeat:          time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
+		CreditsThresholds:       s.cfg.CreditsThresholds,
+		LastCredits:             prevCredits,
+		CurrentCreditsValue:     s.lastCredits,
+		IncomeStall:             time.Duration(s.cfg.IncomeStallHours) * time.Hour,
+		StreamDown:              time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
+		ExpectedStreams:         s.cfg.ExpectedStreams,
+		CrashLoopWindow:         defaultCrashLoopWindow,
+		CrashLoopThreshold:      defaultCrashLoopThreshold,
+		RegimeTripwires:         regimePolicy.Tripwires,
+		PinnedHullContainerless: defaultPinnedHullContainerless,
 	}
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation

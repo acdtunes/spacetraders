@@ -3,7 +3,7 @@ package captain
 import "testing"
 
 // TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default
-// interrupt set to the eight event types the design approved: everything
+// interrupt set to the nine event types the design approved: everything
 // else (workflow.finished, contract.completed, credits.threshold, ship.idle,
 // and — per sp-no9i — the self-healing single container.crashed) is deferred
 // and rides the next wake's batch instead of forcing one. The actionable
@@ -14,17 +14,20 @@ import "testing"
 // this signal to "whichever wake fires next" would defeat it. container.lost
 // (sp-tit8) joined because a container that failed to come back at boot
 // recovery does not self-heal — it stays dead until someone acts, so a single
-// loss must force a wake.
+// loss must force a wake. hull.containerless (sp-v63s) joined for the same
+// reason: a fleet-pinned hull sitting with no container is a stranded revenue
+// hull that stays dead until someone acts.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
-		EventWorkflowFailed:       true,
-		EventContainerCrashLoop:   true,
-		EventContainerLost:        true,
-		EventHeartbeatLost:        true,
-		EventContractFailed:       true,
-		EventIncomeStalled:        true,
-		EventStreamDown:           true,
-		EventCoordinatorErrorLoop: true,
+		EventWorkflowFailed:          true,
+		EventContainerCrashLoop:      true,
+		EventContainerLost:           true,
+		EventPinnedHullContainerless: true,
+		EventHeartbeatLost:           true,
+		EventContractFailed:          true,
+		EventIncomeStalled:           true,
+		EventStreamDown:              true,
+		EventCoordinatorErrorLoop:    true,
 	}
 
 	got := DefaultInterruptTypes()
@@ -51,6 +54,7 @@ func TestIsInterruptUnderDefaultSet(t *testing.T) {
 		{"workflow.failed interrupts", EventWorkflowFailed, true},
 		{"container.crashloop interrupts", EventContainerCrashLoop, true},
 		{"container.lost interrupts (recovery-lost does not self-heal, sp-tit8)", EventContainerLost, true},
+		{"hull.containerless interrupts (stranded pinned hull, sp-v63s)", EventPinnedHullContainerless, true},
 		{"container.heartbeat_lost interrupts", EventHeartbeatLost, true},
 		{"contract.failed interrupts", EventContractFailed, true},
 		{"income.stalled interrupts", EventIncomeStalled, true},

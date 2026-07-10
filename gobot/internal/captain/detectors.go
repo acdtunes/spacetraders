@@ -39,6 +39,11 @@ type DetectorConfig struct {
 	// fresh each tick from RegimePolicy. Empty disables the price-regime
 	// detector entirely — no config means no scan.
 	RegimeTripwires []RegimeTripwire
+
+	// PinnedHullContainerless (sp-v63s watchdog): how long a fleet-dedicated hull
+	// may sit with no running container before it fires an interrupt-class
+	// hull.containerless event. <= 0 disables the detector.
+	PinnedHullContainerless time.Duration
 }
 
 // Crash-loop defaults wired by the supervisor until CaptainConfig grows tunable
@@ -49,6 +54,13 @@ const (
 	defaultCrashLoopThreshold = 3
 )
 
+// defaultPinnedHullContainerless is the sp-v63s watchdog threshold, wired by the
+// supervisor until CaptainConfig grows a tunable field (follow-up bead, mirrors the
+// crash-loop defaults above). Conservative: a normal daemon redeploy re-adopts a
+// dedicated hull's container within seconds, so five containerless minutes is well
+// past churn and squarely an anomaly worth an interrupt.
+const defaultPinnedHullContainerless = 5 * time.Minute
+
 // RunDetectors writes synthetic strategic events for conditions that are
 // state (not daemon events): stale heartbeats, idle ships, credit crossings.
 // Dedup: an event is skipped while an unprocessed twin exists.
@@ -57,6 +69,9 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 		return err
 	}
 	if err := detectIdleShips(ctx, db, store, cfg, now); err != nil {
+		return err
+	}
+	if err := detectContainerlessPinnedHulls(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
 	if err := detectIncomeStall(ctx, db, store, cfg, now); err != nil {
@@ -181,6 +196,71 @@ func detectIdleShips(ctx context.Context, db *gorm.DB, store captain.EventStore,
 		_ = store.Record(ctx, &captain.Event{
 			Type: captain.EventShipIdle, Ship: s.ShipSymbol, PlayerID: cfg.PlayerID,
 			Payload: fmt.Sprintf(`{"location":%q,"nav_status":%q}`, s.LocationSymbol, s.NavStatus),
+		})
+	}
+	return nil
+}
+
+// detectContainerlessPinnedHulls (sp-v63s watchdog) is the belt-and-suspenders
+// detector for EVERY silent-death class. A hull with a standing fleet dedication
+// (dedicated_fleet != ”) is meant to ALWAYS have a running coordinator container:
+// the continuous trade/tour engines run one container per hull across manifests, so
+// a dedicated hull with NO running container is an anomaly, never normal churn. The
+// root silent-death cause is fixed at the source (a live container carrying a stale
+// FAILED row, dropped from recovery), but any FUTURE defect that strands a pinned
+// hull — a dropped claim, an unlogged crash, a recovery miss — surfaces HERE as one
+// interrupt-class event naming the hull, cargo, and how long it has been stranded.
+//
+// Edge-triggered like detectIdleShips/detectStaleHeartbeats: the age gate
+// (containerless for >= threshold, anchored on the assignment's released_at)
+// tolerates the brief containerless window of a normal redeploy+recovery, and the
+// HasSince cooldown suppresses per-poll re-fire while the state persists (no o8wi
+// spam). A hull WITH a running container, an UNDEDICATED hull, and a dedicated hull
+// only briefly containerless all stay silent.
+func detectContainerlessPinnedHulls(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
+	if cfg.PinnedHullContainerless <= 0 {
+		return nil // disabled
+	}
+	cutoff := now.Add(-cfg.PinnedHullContainerless)
+
+	var ships []persistence.ShipModel
+	if err := db.WithContext(ctx).
+		Where("player_id = ? AND dedicated_fleet <> ''", cfg.PlayerID).
+		Find(&ships).Error; err != nil {
+		return err
+	}
+	for _, s := range ships {
+		// A RUNNING container referencing this hull → healthy, skip. Same quoted-
+		// symbol LIKE join detectIdleShips uses (config stores "ship_symbol":"X").
+		var busy int64
+		if err := db.WithContext(ctx).Model(&persistence.ContainerModel{}).
+			Where("player_id = ? AND status = ? AND config LIKE ?",
+				cfg.PlayerID, "RUNNING", "%\""+s.ShipSymbol+"\"%").
+			Count(&busy).Error; err != nil {
+			return err
+		}
+		if busy > 0 {
+			continue
+		}
+		// Age gate: only a hull containerless for >= threshold is anomalous. Anchor
+		// on released_at (when its last assignment ended). A dedicated hull that has
+		// never held an assignment (released_at NULL) is a launch/config concern, not
+		// a silent death — leave it to detectIdleShips rather than false-alarm here.
+		if s.ReleasedAt == nil || s.ReleasedAt.After(cutoff) {
+			continue
+		}
+		// Containerless is a persistent state, not an edge: cooldown on ANY recent
+		// twin (processed or not) so an interrupt-class event does not re-wake the
+		// captain every poll while the hull stays stranded (mirrors detectIdleShips).
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventPinnedHullContainerless, s.ShipSymbol, cutoff)
+		if err != nil || recent {
+			continue
+		}
+		containerlessMinutes := int(now.Sub(*s.ReleasedAt).Minutes())
+		_ = store.Record(ctx, &captain.Event{
+			Type: captain.EventPinnedHullContainerless, Ship: s.ShipSymbol, PlayerID: cfg.PlayerID,
+			Payload: fmt.Sprintf(`{"ship_symbol":%q,"dedicated_fleet":%q,"location":%q,"cargo_units":%d,"cargo_capacity":%d,"containerless_minutes":%d}`,
+				s.ShipSymbol, s.DedicatedFleet, s.LocationSymbol, s.CargoUnits, s.CargoCapacity, containerlessMinutes),
 		})
 	}
 	return nil
