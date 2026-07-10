@@ -364,6 +364,22 @@ const (
 	skipReasonLeash
 )
 
+// String names the skip reason for the per-candidate verdict line (sp-nw9v). It
+// mirrors the reason names the harvest-summary counters already use, so a
+// candidate's "skipped:<reason>" reads consistently with the cumulative totals.
+func (r idleArbSkipReason) String() string {
+	switch r {
+	case skipReasonBlacklist:
+		return "blacklist"
+	case skipReasonContractGood:
+		return "contract-good"
+	case skipReasonLeash:
+		return "leash"
+	default:
+		return "none"
+	}
+}
+
 // idleArbMinMargin (sp-uohe guard 1) is the effective per-unit floor a leg
 // hands the arb run's live-verify gate: the tighter of the absolute floor and
 // the relative one (ceil(fraction × quoted margin)). Passing THIS as the run's
@@ -384,8 +400,8 @@ func idleArbMinMargin(cfg IdleArbConfig, quotedMargin int) int {
 func (d *IdleArbDispatcher) Run(ctx context.Context) {
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", fmt.Sprintf(
-		"Idle-gap arb dispatcher running: fleet %q, reserve %d hull(s), hub radius %.0f, max spend %d/leg, min margin %d/unit, tick %s",
-		d.fleet, d.cfg.ReserveHulls, d.cfg.HubRadius, d.cfg.MaxSpendPerLeg, d.cfg.MinMarginPerUnit, d.cfg.Interval,
+		"Idle-gap arb dispatcher running: fleet %q, reserve %d hull(s), hub radius %.0f, leash radius %.0f, max leg %s, max spend %d/leg, min margin %d/unit, tick %s",
+		d.fleet, d.cfg.ReserveHulls, d.cfg.HubRadius, d.cfg.LeashRadius, d.cfg.MaxLegDuration, d.cfg.MaxSpendPerLeg, d.cfg.MinMarginPerUnit, d.cfg.Interval,
 	), nil)
 
 	for {
@@ -704,7 +720,19 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 				DestBid:       bid,
 			}
 
-			if reason := d.laneSkipReason(hubGood.Symbol(), distance, excludedContractGoods, hull.EngineSpeed()); reason != skipNone {
+			reason := d.laneSkipReason(hubGood.Symbol(), distance, excludedContractGoods, hull.EngineSpeed())
+
+			// Per-candidate verdict logging (sp-nw9v): emit one terse line for
+			// every positive-margin candidate with the COMPUTED distance the leash
+			// check used, the two endpoints (with coordinates) it measured between,
+			// the quoted margin, the buy/sell market read ages, and the verdict.
+			// This is the candidate list an all-pairs analyst scan is diffed
+			// against: a masked mis-pick (a wrong distance/endpoint pair, a stale
+			// cache row, an over-broad exclusion) is visible here per lane. Log
+			// only — it never alters the pick, a threshold, or a guard (RULINGS #4).
+			d.logCandidate(ctx, hull, lane, origin, coord, hubMarket, destMarket, reason)
+
+			if reason != skipNone {
 				if bestExcluded == nil || score > bestExcludedScore {
 					bestExcluded = lane
 					bestExcludedScore = score
@@ -726,6 +754,35 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 		return nil, bestExcludedReason
 	}
 	return nil, skipNone
+}
+
+// logCandidate emits one terse per-candidate verdict line in MESSAGE TEXT
+// (sp-nw9v observability; the CLI renderer drops metadata maps). It carries every
+// value the leash decision turned on so a masked mis-pick is impossible to hide:
+// the good, the buy/sell waypoints WITH the coordinates the distance was measured
+// between, that computed distance against the live leash/hub radii, the projected
+// CRUISE leg-time against the cap, the quoted margin (bid−ask), the buy/sell
+// market read ages, and the verdict (eligible, or skipped:<reason>). This is the
+// surface an all-pairs analyst scan is diffed against. It is LOG-ONLY: it reads
+// no new state and changes no pick, threshold, or guard (RULINGS #4).
+func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.Ship, lane *IdleArbLane, buy, sell *shared.Waypoint, buyMarket, sellMarket *market.Market, reason idleArbSkipReason) {
+	verdict := "eligible"
+	if reason != skipNone {
+		verdict = "skipped:" + reason.String()
+	}
+	now := d.clock.Now()
+	legSeconds := shared.FlightModeCruise.TravelTime(lane.Distance, hull.EngineSpeed())
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", fmt.Sprintf(
+		"Idle-arb candidate: %s %s buy@%s(%.0f,%.0f) -> sell@%s(%.0f,%.0f) dist %.0fu (leash %.0f, hub %.0f), leg %ds (cap %s), margin %d/u (bid %d - ask %d), age buy %s/sell %s, verdict %s",
+		hull.ShipSymbol(), lane.Good,
+		buy.Symbol, buy.X, buy.Y, sell.Symbol, sell.X, sell.Y,
+		lane.Distance, d.cfg.LeashRadius, d.cfg.HubRadius,
+		legSeconds, d.cfg.MaxLegDuration,
+		lane.MarginPerUnit, lane.DestBid, lane.SourceAsk,
+		now.Sub(buyMarket.LastUpdated()).Round(time.Second), now.Sub(sellMarket.LastUpdated()).Round(time.Second),
+		verdict,
+	), nil)
 }
 
 // laneSkipReason applies the dispatch-time exclusions to one (good, market)

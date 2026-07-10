@@ -514,6 +514,77 @@ func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
 	}
 }
 
+// sp-nw9v per-candidate verdict logging: every positive-margin candidate emits a
+// terse line carrying the COMPUTED distance the leash used, the two endpoints
+// (with coordinates) it measured between, the quoted margin, and the verdict — in
+// MESSAGE TEXT. This is the candidate list an all-pairs analyst scan is diffed
+// against; without it, a masked mis-pick (wrong distance, stale row, over-broad
+// exclusion) is invisible (the diagnosis that produced this observable had to be
+// reconstructed from the DB). An ELIGIBLE lane and a leash-SKIPPED lane both log.
+func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
+	// (a) An eligible in-leash candidate: hub(0,0)->near(0,50), margin 50, dist 50<80.
+	loggerA := &idleArbCapturingLogger{}
+	dA, _, _ := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
+	dA.DispatchOnce(common.WithLogger(context.Background(), loggerA))
+
+	eligible := loggerA.messageWithPrefix(t, "Idle-arb candidate:")
+	for _, want := range []string{
+		"MACHINERY", "buy@X1-HUB-E42(0,0)", "sell@X1-HUB-D40(0,50)",
+		"dist 50u", "leash 80", "margin 50/u", "bid 150 - ask 100", "verdict eligible",
+	} {
+		if !strings.Contains(eligible, want) {
+			t.Fatalf("eligible candidate line must carry %q in message TEXT, got: %s", want, eligible)
+		}
+	}
+
+	// (b) A leash-skipped candidate: hub(0,0)->mid(0,150), inside hub-radius 250 but
+	// beyond leash 80 — the exact masking shape (a profitable lane the distance
+	// pushes past the leash). The line must name the computed distance AND the
+	// verdict so the skip is attributable to distance, not guessed.
+	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
+	mid := idleArbWaypoint(t, "X1-HUB-M50", 0, 150)
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+		idleArbHull(t, "TORWIND-1", hub, testFleet),
+		idleArbHull(t, "TORWIND-2", hub, testFleet),
+	}}
+	graph := &fakeGraphProvider{waypoints: map[string]*shared.Waypoint{hub.Symbol: hub, mid.Symbol: mid}}
+	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
+		hub.Symbol: marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 90, 100)),
+		mid.Symbol: marketAt(t, mid.Symbol, tradeGood(t, "MACHINERY", 300, 320)),
+	}}
+	clock := shared.NewRealClock()
+	loggerB := &idleArbCapturingLogger{}
+	dB := NewIdleArbDispatcher(repo, markets, graph, &fakeIdleArbLauncher{repo: repo, clock: clock}, nil, nil,
+		clock, shared.MustNewPlayerID(1), testFleet, IdleArbConfig{ReserveHulls: 1, HubRadius: 250, LeashRadius: 80})
+	dB.DispatchOnce(common.WithLogger(context.Background(), loggerB))
+
+	skipped := loggerB.messageWithPrefix(t, "Idle-arb candidate:")
+	for _, want := range []string{"dist 150u", "leash 80", "verdict skipped:leash"} {
+		if !strings.Contains(skipped, want) {
+			t.Fatalf("leash-skipped candidate line must carry %q in message TEXT, got: %s", want, skipped)
+		}
+	}
+}
+
+// sp-nw9v: the dispatcher start-log must surface the LEASH radius (and max-leg
+// cap). Its omission is exactly what hid an effective-80 leash while the operator
+// believed a 150 retune was live — the retune had silently no-op'd, and the
+// start-log printed only the hub radius. Run logs the start line before its first
+// select, so an already-cancelled context exercises it without a tick.
+func TestIdleArb_StartLog_SurfacesLeashRadius(t *testing.T) {
+	logger := &idleArbCapturingLogger{}
+	ctx, cancel := context.WithCancel(common.WithLogger(context.Background(), logger))
+	cancel()
+
+	d, _, _ := idleArbHarness(t, 1, IdleArbConfig{ReserveHulls: 1, LeashRadius: 123})
+	d.Run(ctx)
+
+	start := logger.messageWithPrefix(t, "Idle-gap arb dispatcher running:")
+	if !strings.Contains(start, "leash radius 123") {
+		t.Fatalf("start-log must surface the leash radius (hidden leash was the masking vector), got: %s", start)
+	}
+}
+
 // --- sp-8bpr post-leg re-homing tests --------------------------------------
 
 // fakeShipHomer records the hulls the dispatcher asked to re-home, standing in
