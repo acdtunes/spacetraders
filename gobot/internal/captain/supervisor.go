@@ -208,6 +208,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		LastCredits:               prevCredits,
 		CurrentCreditsValue:       s.lastCredits,
 		IncomeStall:               time.Duration(s.cfg.IncomeStallHours) * time.Hour,
+		FactoryIncomeStall:        defaultFactoryIncomeStall,
 		StreamDown:                time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
 		ExpectedStreams:           s.cfg.ExpectedStreams,
 		CrashLoopWindow:           defaultCrashLoopWindow,

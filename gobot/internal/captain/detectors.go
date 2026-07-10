@@ -28,6 +28,18 @@ type DetectorConfig struct {
 	StreamDown      time.Duration // 0 disables stream-down detection
 	ExpectedStreams []string      // container-type prefixes expected to be RUNNING; empty disables
 
+	// FactoryIncomeStall (sp-7vos) is the per-goods-factory zero-income window,
+	// kept SEPARATE from IncomeStall on purpose (RULINGS #5). The aggregate/
+	// per-engine IncomeStall window (2h) is bounded below by lumpy CONTRACT
+	// payouts; goods factories are a different earner, so their window is its
+	// own knob and can be tuned without loosening contract detection. <= 0
+	// disables the per-factory detector. Because a factory's sale cadence is
+	// itself lumpy — it sells a batch, then spends an hour-plus reacquiring and
+	// re-manufacturing inputs before the next batch (observed healthy gaps reach
+	// ~2h) — this must stay comfortably above the normal inter-batch gap or it
+	// cries wolf; hence a conservative default (see defaultFactoryIncomeStall).
+	FactoryIncomeStall time.Duration
+
 	// Crash-loop detection (sp-no9i): a single container.crashed is self-healing
 	// (auto-restart+resume) and deferred; a container that dies CrashLoopThreshold
 	// times within CrashLoopWindow is a genuine loop worth an interrupt. Either
@@ -96,6 +108,17 @@ var defaultStandingCoordinatorFleets = []StandingCoordinatorFleet{
 	{Fleet: "contract", ContainerType: "CONTRACT_FLEET_COORDINATOR"},
 }
 
+// defaultFactoryIncomeStall is the sp-7vos per-factory window, wired by the
+// supervisor until CaptainConfig grows a tunable field (follow-up bead, mirrors
+// the crash-loop/pinned-hull defaults above). Calibrated against observed live
+// cadence: productive goods factories go quiet for up to ~2h between
+// manufacture-and-sell batches, so 3h leaves margin above the normal gap while
+// still catching a factory that is RUNNING yet has genuinely died (zero income
+// for three hours is not a slow cycle). Deliberately longer than IncomeStall's
+// 2h — the per-factory signal trades detection latency for a low false-positive
+// rate, the failure mode this detector must avoid.
+const defaultFactoryIncomeStall = 3 * time.Hour
+
 // RunDetectors writes synthetic strategic events for conditions that are
 // state (not daemon events): stale heartbeats, idle ships, credit crossings.
 // Dedup: an event is skipped while an unprocessed twin exists.
@@ -113,6 +136,9 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 		return err
 	}
 	if err := detectEngineIncomeStall(ctx, db, store, cfg, now); err != nil {
+		return err
+	}
+	if err := detectFactoryIncomeStall(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
 	if err := detectStreamDown(ctx, db, store, cfg, now); err != nil {
@@ -419,6 +445,7 @@ func detectIncomeStall(ctx context.Context, db *gorm.DB, store captain.EventStor
 type incomeEngine struct {
 	name           string   // dedup-key suffix ("income:<name>") and payload "engine" field
 	containerType  string   // container_type of this engine's top-level coordinator
+	commandType    string   // "" = gate on container_type alone; set to disambiguate engines that SHARE a container_type
 	category       string   // ledger category of this engine's income transactions
 	operationTypes []string // empty = category alone is unambiguous (contract)
 }
@@ -429,6 +456,15 @@ var incomeEngines = []incomeEngine{
 		operationTypes: []string{"trade_route"}},
 	{name: "manufacturing", containerType: "MANUFACTURING_COORDINATOR", category: "TRADING_REVENUE",
 		operationTypes: []string{"factory_workflow", "manufacturing"}},
+	// Tour sales are TRADING_REVENUE with operation_type="tour" (tour_run's buy/
+	// sell legs, sp-lgnh) — a stream the 'trading' line above deliberately EXCLUDES
+	// (it filters operation_type='trade_route'), so a tour-fleet collapse was
+	// invisible to every income detector (sp-7vos / v63s cross-check). The gate
+	// needs commandType: tour_run and trade_route containers share
+	// container_type="TRADING" (both are container.ContainerTypeTrading), so
+	// container_type alone would fire this line whenever ANY trade route is up.
+	{name: "tour", containerType: "TRADING", commandType: "tour_run", category: "TRADING_REVENUE",
+		operationTypes: []string{"tour"}},
 }
 
 // detectEngineIncomeStall runs detectIncomeStall's same "coordinator running
@@ -460,11 +496,16 @@ func detectEngineIncomeStall(ctx context.Context, db *gorm.DB, store captain.Eve
 	cutoff := now.Add(-cfg.IncomeStall)
 
 	for _, engine := range incomeEngines {
-		var runningCount int64
-		if err := db.WithContext(ctx).Model(&persistence.ContainerModel{}).
+		gate := db.WithContext(ctx).Model(&persistence.ContainerModel{}).
 			Where("player_id = ? AND status = ? AND container_type = ? AND started_at IS NOT NULL AND started_at <= ?",
-				cfg.PlayerID, "RUNNING", engine.containerType, cutoff).
-			Count(&runningCount).Error; err != nil {
+				cfg.PlayerID, "RUNNING", engine.containerType, cutoff)
+		if engine.commandType != "" {
+			// Engines sharing a container_type (tour_run and trade_route both
+			// persist container_type="TRADING") are separated by command_type.
+			gate = gate.Where("command_type = ?", engine.commandType)
+		}
+		var runningCount int64
+		if err := gate.Count(&runningCount).Error; err != nil {
 			return err
 		}
 		if runningCount == 0 {
@@ -506,6 +547,96 @@ func detectEngineIncomeStall(ctx context.Context, db *gorm.DB, store captain.Eve
 		}
 	}
 	return nil
+}
+
+// detectFactoryIncomeStall closes the aggregation gap the per-engine
+// 'manufacturing' line above cannot: that line gates on a single
+// MANUFACTURING_COORDINATOR and buckets ALL factory income together, so one dead
+// goods factory is masked by any sibling's sales (the real MEDICINE 100-min
+// outage rode through invisibly while other factories kept selling — sp-7vos /
+// sp-tit8). This detector treats EACH running goods_factory_coordinator as its
+// own earner and fires per factory.
+//
+// Attribution is by container identity, NOT by good. Every sale a factory makes
+// routes through the single ledger writer
+// (CargoTransactionHandler.recordCargoTransaction, cargo_transaction.go) under
+// the factory coordinator's operation context — run_factory_coordinator.go sets
+// NewOperationContext(cmd.ContainerID, "factory_workflow") — so the row's
+// related_entity_id IS the factory's container ID: an exact, dialect-portable
+// join needing no JSON or description parsing. A good-based join was rejected
+// after checking live data: a factory sells its intermediates too (the FOOD
+// factory posts FERTILIZERS sales, the LAB_INSTRUMENTS factory posts
+// ELECTRONICS), and two factories for the same good run concurrently, so a good
+// filter would both miss real income and let one factory mask another. The good
+// (config "target_good") is used only to NAME the event.
+//
+// Edge-triggered and windowed exactly like the sibling detectors: the factory
+// must have been RUNNING for the full window (started_at <= cutoff) so a
+// just-launched or just-restarted factory mid-first-cycle is exempt (RULINGS #2
+// resilience), and a per-container HasSince cooldown suppresses per-poll re-fire
+// while the stall persists. Dedup is per CONTAINER (not per good) because
+// same-good factories coexist — deduping on the good would silence a second
+// dead FOOD factory behind the first.
+func detectFactoryIncomeStall(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
+	if cfg.FactoryIncomeStall <= 0 {
+		return nil // disabled
+	}
+	cutoff := now.Add(-cfg.FactoryIncomeStall)
+
+	var factories []persistence.ContainerModel
+	if err := db.WithContext(ctx).
+		Where("player_id = ? AND status = ? AND container_type = ? AND started_at IS NOT NULL AND started_at <= ?",
+			cfg.PlayerID, "RUNNING", "goods_factory_coordinator", cutoff).
+		Find(&factories).Error; err != nil {
+		return err
+	}
+	for _, f := range factories {
+		var incoming int64
+		if err := db.WithContext(ctx).Model(&persistence.TransactionModel{}).
+			Where("player_id = ? AND amount > 0 AND related_entity_id = ? AND timestamp >= ?",
+				cfg.PlayerID, f.ID, cutoff).
+			Count(&incoming).Error; err != nil {
+			return err
+		}
+		if incoming > 0 {
+			continue
+		}
+		// Dedup per factory container: one interrupt while the stall persists,
+		// not one per poll (mirrors the sibling income detectors).
+		dedupKey := "income:factory:" + f.ID
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventIncomeStalled, dedupKey, now.Add(-cfg.FactoryIncomeStall))
+		if err != nil {
+			return err
+		}
+		if recent {
+			continue
+		}
+		good := factoryTargetGood(f.Config)
+		if good == "" {
+			good = f.ID // malformed config: still surface the stall, named by container
+		}
+		if err := store.Record(ctx, &captain.Event{
+			Type: captain.EventIncomeStalled, Ship: dedupKey, PlayerID: cfg.PlayerID,
+			Payload: fmt.Sprintf(`{"engine":"factory","good":%q,"container_id":%q,"stall_hours":%.1f}`,
+				good, f.ID, cfg.FactoryIncomeStall.Hours()),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// factoryTargetGood extracts a goods_factory_coordinator container's target good
+// from its config JSON (StartGoodsFactory persists metadata["target_good"], see
+// container_ops_goods.go). Returns "" when the config is absent or unparseable.
+func factoryTargetGood(config string) string {
+	var fc struct {
+		TargetGood string `json:"target_good"`
+	}
+	if err := json.Unmarshal([]byte(config), &fc); err != nil {
+		return ""
+	}
+	return fc.TargetGood
 }
 
 func detectStreamDown(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
