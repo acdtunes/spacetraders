@@ -68,6 +68,14 @@ This file exists so that class of miss cannot recur.)
     for the harbormaster/Admiral (docs, operational state). Dispatch briefs must quote the
     full gate invocation.
 
+14. **Contract operations are single-system.** (2026-07-10, origin: sp-9hu8 — the sourcing
+    optimizer selected cross-gate sources the serial contract pipeline can't afford to chase:
+    a ~30-min round trip on the one-active-contract clock needs ~200k+ savings to break even,
+    and the flat 25k penalty underpriced that ~8×.) Contract sourcing/delivery legs never
+    leave the worker's current system. Cross-system logistics belongs to the parallel trade
+    engine (tours pre-position goods home); the Admiral ruled the economically-gated
+    exception not worth the complexity.
+
 ## Maintenance
 
 New Admiral rulings are appended here (with date + origin) by the harbormaster/shipwright as
