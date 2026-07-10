@@ -62,6 +62,36 @@ func TestWaypointLiveReadsScopeToOpenEraWhileOldRowsStayReachableByEra(t *testin
 	require.Equal(t, []string{"X1-SYS-OLD"}, symbolsOf(historical))
 }
 
+// TestFindAllMarketsInSystemScopesToOpenEra guards the sp-vapw incident on the one
+// waypoint reader that hits the table directly (MarketRepositoryGORM.
+// FindAllMarketsInSystem) instead of going through the era-scoped repository. It
+// seeds the incident shape — a dead-era row in system X1-PZ28 carrying era_id from a
+// closed era — that also satisfies the market query (non-fuel type, MARKETPLACE
+// trait), plus a live-era marketplace in the same system. Only the live market may
+// surface; before the era filter both rows returned and the caller could chase a
+// ghost market in a system that no longer exists.
+func TestFindAllMarketsInSystemScopesToOpenEra(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	closedAt := time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 2}).Error)
+
+	var oldEra, openEra persistence.EraModel
+	require.NoError(t, db.Where("name = ?", "torwind").First(&oldEra).Error)
+	require.NoError(t, db.Where("name = ?", "orion").First(&openEra).Error)
+	oldID, openID := oldEra.EraID, openEra.EraID
+
+	const marketTraits = `["MARKETPLACE"]`
+	require.NoError(t, db.Create(&persistence.WaypointModel{WaypointSymbol: "X1-PZ28-I67", SystemSymbol: "X1-PZ28", Type: "ORBITAL_STATION", X: 1, Y: 1, Traits: marketTraits, EraID: &oldID}).Error)
+	require.NoError(t, db.Create(&persistence.WaypointModel{WaypointSymbol: "X1-PZ28-LIVE", SystemSymbol: "X1-PZ28", Type: "ORBITAL_STATION", X: 2, Y: 2, Traits: marketTraits, EraID: &openID}).Error)
+
+	repo := persistence.NewMarketRepository(db)
+	markets, err := repo.FindAllMarketsInSystem(context.Background(), "X1-PZ28", openEra.PlayerID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-PZ28-LIVE"}, markets)
+}
+
 func symbolsOf(waypoints []*shared.Waypoint) []string {
 	out := make([]string, 0, len(waypoints))
 	for _, w := range waypoints {

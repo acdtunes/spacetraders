@@ -367,13 +367,19 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 	var waypoints []string
 
 	// Query waypoints table for marketplaces excluding fuel stations
-	// Same filtering logic as scout operation (assign_scouting_fleet.go:216-219)
+	// Same filtering logic as scout operation (assign_scouting_fleet.go:216-219).
+	// Era-scoped (eraScopePredicate) exactly like GormWaypointRepository so a
+	// dead-era waypoint row (sp-vapw) can never surface as a live market: this
+	// query hits the waypoints table directly instead of going through the
+	// era-scoped repository, so it must apply the predicate itself.
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	err := r.db.WithContext(ctx).
 		Table("waypoints").
 		Select("waypoint_symbol").
 		Where("system_symbol = ?", systemSymbol).
 		Where("type != ?", "FUEL_STATION").
 		Where("traits LIKE ?", "%MARKETPLACE%").
+		Where(predicate, args...).
 		Pluck("waypoint_symbol", &waypoints).Error
 
 	if err != nil {
@@ -381,6 +387,20 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 	}
 
 	return waypoints, nil
+}
+
+// openEraID mirrors GormWaypointRepository.openEraID: the open era is the highest
+// era_id with no closed_at. nil (no open era yet) scopes the read to NULL era_id
+// rows, matching the pre-close transition window. FindAllMarketsInSystem needs its
+// own resolver because it queries the waypoints table directly rather than through
+// GormWaypointRepository.
+func (r *MarketRepositoryGORM) openEraID(ctx context.Context) *int {
+	var era EraModel
+	if err := r.db.WithContext(ctx).Where("closed_at IS NULL").Order("era_id DESC").First(&era).Error; err != nil {
+		return nil
+	}
+	id := era.EraID
+	return &id
 }
 
 // FindBestMarketForBuying finds the best market to buy a good from, scoring by trade type, supply, and activity.
