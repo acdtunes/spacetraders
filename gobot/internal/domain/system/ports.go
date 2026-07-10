@@ -100,6 +100,13 @@ type WaypointData struct {
 type GateEdge struct {
 	ConnectedSystem string
 	GateWaypoint    string
+	// UnderConstruction is true when the NEIGHBOR's own jump gate is still being
+	// built (the API's isUnderConstruction). A multi-jump route must never traverse
+	// INTO such an edge — a jump to an unbuilt gate fails at hop time (sp-8qhu: the
+	// BFS picked KA42→AF2(unbuilt)→UQ16→JP61 over the equal-hop valid PA3 route and
+	// the laden frigate crashed at hop 1). Resolved per-edge on refresh; fails
+	// CLOSED (treated true) when the neighbor's build state cannot be read.
+	UnderConstruction bool
 }
 
 // GateEdgeRepository persists the cross-system jump-gate adjacency (sp-7gr2).
@@ -121,7 +128,9 @@ type GateEdgeRepository interface {
 	// the open era and a fresh sync timestamp. An empty edges slice clears the
 	// system's rows (a system whose gate genuinely connects nowhere).
 	Replace(ctx context.Context, systemSymbol string, edges []GateEdge) error
-	// Adjacency returns every stored system's neighbor systems (era-scoped), for
-	// the `system gates` overview. Pure read — no live fetch-through.
-	Adjacency(ctx context.Context) (map[string][]string, error)
+	// Adjacency returns every stored system's neighbor edges (era-scoped), for the
+	// `system gates` overview. Edges carry UnderConstruction so the verb can mark
+	// unbuilt gates the captain must not chart a route through. Pure read — no live
+	// fetch-through.
+	Adjacency(ctx context.Context) (map[string][]GateEdge, error)
 }

@@ -13,11 +13,22 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
+
+// gateAPI is the narrow slice of the SpaceTraders API the gate graph needs: the
+// live gate-connections fetch, plus the per-gate construction probe that learns
+// whether a connected gate is still being built (sp-8qhu). Narrowing the
+// dependency (vs. the full ports.APIClient) states exactly what this service
+// touches and keeps the fetch-through path unit-testable with a tiny fake.
+type gateAPI interface {
+	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.JumpGateData, error)
+	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.WaypointDetail, error)
+}
 
 // MaxJumpPath bounds how many jumps a resolved route may contain. The charted
 // cluster is a handful of systems wide and the deepest known route (KA42→JP61)
@@ -37,7 +48,7 @@ var ErrUnroutable = errors.New("no jump-gate route")
 // store that makes the topology persistent and multi-hop-walkable.
 type Service struct {
 	store         system.GateEdgeRepository
-	apiClient     ports.APIClient
+	apiClient     gateAPI
 	graphProvider system.ISystemGraphProvider
 	playerRepo    player.PlayerRepository
 }
@@ -45,7 +56,7 @@ type Service struct {
 // NewService wires the gate-graph service.
 func NewService(
 	store system.GateEdgeRepository,
-	apiClient ports.APIClient,
+	apiClient gateAPI,
 	graphProvider system.ISystemGraphProvider,
 	playerRepo player.PlayerRepository,
 ) *Service {
@@ -99,6 +110,7 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		return nil, fmt.Errorf("failed to fetch jump gate connections for %s (%s): %w", systemSymbol, gateWaypoint, err)
 	}
 
+	logger := logging.LoggerFromContext(ctx)
 	seen := make(map[string]bool, len(gateData.Connections))
 	edges := make([]system.GateEdge, 0, len(gateData.Connections))
 	for _, connWaypoint := range gateData.Connections {
@@ -107,13 +119,37 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 			continue
 		}
 		seen[connSystem] = true
-		edges = append(edges, system.GateEdge{ConnectedSystem: connSystem, GateWaypoint: connWaypoint})
+		edges = append(edges, system.GateEdge{
+			ConnectedSystem:   connSystem,
+			GateWaypoint:      connWaypoint,
+			UnderConstruction: s.gateUnderConstruction(ctx, connSystem, connWaypoint, token, logger),
+		})
 	}
 
 	if err := s.store.Replace(ctx, systemSymbol, edges); err != nil {
 		return nil, err
 	}
 	return edges, nil
+}
+
+// gateUnderConstruction resolves a connected gate's build state with a per-gate
+// waypoint read (the API's jump-gate connections list carries symbols only). It
+// FAILS CLOSED: any read failure is treated as under-construction so an
+// unknown-state gate is never routed through (sp-8qhu — routing into an unbuilt
+// gate crashes a laden hull at the hop). The cause is logged verbatim so the
+// harbormaster can see why an edge went dark. The underlying API client applies
+// its own rate limiting, so the one-GET-per-edge refresh needs no extra throttle.
+func (s *Service) gateUnderConstruction(ctx context.Context, connSystem, gateWaypoint, token string, logger logging.ContainerLogger) bool {
+	detail, err := s.apiClient.GetWaypoint(ctx, connSystem, gateWaypoint, token)
+	if err != nil {
+		logger.Log("WARNING", "gate construction probe failed — treating edge as under construction (fail closed)", map[string]interface{}{
+			"system": connSystem,
+			"gate":   gateWaypoint,
+			"error":  err.Error(),
+		})
+		return true
+	}
+	return detail.IsUnderConstruction
 }
 
 // gateFromGraph finds systemSymbol's own jump-gate waypoint via its system graph
@@ -158,6 +194,15 @@ func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerI
 		}
 		neighbors := make([]string, 0, len(edges))
 		for _, e := range edges {
+			// Never traverse INTO an under-construction gate: a jump to an unbuilt
+			// gate fails at hop time (sp-8qhu — the BFS picked KA42→AF2(unbuilt)→…
+			// over the equal-hop valid PA3 route and the laden frigate crashed at
+			// hop 1). Filtering the forward targets is what keeps the search on a
+			// fully-built route; if that makes the dest unreachable, the caller gets
+			// ErrUnroutable and the pre-buy guard refuses the spend.
+			if e.UnderConstruction {
+				continue
+			}
 			neighbors = append(neighbors, e.ConnectedSystem)
 		}
 		return neighbors, nil
@@ -184,7 +229,7 @@ func (s *Service) Routable(ctx context.Context, fromSystem, toSystem string, pla
 
 // Adjacency returns the stored gate adjacency (era-scoped), for the `system
 // gates` overview. Pure store read — no fetch-through.
-func (s *Service) Adjacency(ctx context.Context) (map[string][]string, error) {
+func (s *Service) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
 	return s.store.Adjacency(ctx)
 }
 

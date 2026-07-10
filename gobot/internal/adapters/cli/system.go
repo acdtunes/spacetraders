@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
+	domainsystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -93,12 +94,7 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("failed to resolve gate connections for %s: %w", systemSymbol, err)
 				}
-				neighbors := make([]string, 0, len(edges))
-				for _, e := range edges {
-					neighbors = append(neighbors, e.ConnectedSystem)
-				}
-				sort.Strings(neighbors)
-				printGateAdjacency(map[string][]string{systemSymbol: neighbors})
+				printGateAdjacency(map[string][]domainsystem.GateEdge{systemSymbol: edges})
 				return nil
 			}
 
@@ -120,15 +116,18 @@ Examples:
 }
 
 // printGateAdjacency writes the rendered adjacency table to stdout.
-func printGateAdjacency(adjacency map[string][]string) {
+func printGateAdjacency(adjacency map[string][]domainsystem.GateEdge) {
 	fmt.Print(renderGateAdjacency(adjacency))
 }
 
 // renderGateAdjacency renders the adjacency as aligned `SYS <-> a,b,c` lines,
-// systems sorted for stable output and neighbors comma-joined — the sp-7gr2
-// topology-dump shape. Pure (returns the text) so the rendering is unit-testable
-// without capturing stdout.
-func renderGateAdjacency(adjacency map[string][]string) string {
+// systems sorted for stable output and neighbors sorted and comma-joined — the
+// sp-7gr2 topology-dump shape. An under-construction gate (sp-8qhu) is marked with
+// a trailing `*` and a legend line is appended whenever any are present: the
+// captain charts routes off this dump, so an unbuilt (unroutable) gate must read
+// as such at a glance. Pure (returns the text) so it is unit-testable without
+// capturing stdout.
+func renderGateAdjacency(adjacency map[string][]domainsystem.GateEdge) string {
 	systems := make([]string, 0, len(adjacency))
 	width := 0
 	for sys := range adjacency {
@@ -140,13 +139,30 @@ func renderGateAdjacency(adjacency map[string][]string) string {
 	sort.Strings(systems)
 
 	var b strings.Builder
+	anyUnderConstruction := false
 	for _, sys := range systems {
-		neighbors := adjacency[sys]
-		if len(neighbors) == 0 {
+		edges := adjacency[sys]
+		if len(edges) == 0 {
 			fmt.Fprintf(&b, "%-*s <-> (none)\n", width, sys)
 			continue
 		}
-		fmt.Fprintf(&b, "%-*s <-> %s\n", width, sys, strings.Join(neighbors, ","))
+		sorted := make([]domainsystem.GateEdge, len(edges))
+		copy(sorted, edges)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].ConnectedSystem < sorted[j].ConnectedSystem })
+
+		labels := make([]string, 0, len(sorted))
+		for _, e := range sorted {
+			label := e.ConnectedSystem
+			if e.UnderConstruction {
+				label += "*"
+				anyUnderConstruction = true
+			}
+			labels = append(labels, label)
+		}
+		fmt.Fprintf(&b, "%-*s <-> %s\n", width, sys, strings.Join(labels, ","))
+	}
+	if anyUnderConstruction {
+		b.WriteString("\n* = jump gate under construction — not routable (excluded from pathing)\n")
 	}
 	return b.String()
 }

@@ -7,6 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -152,7 +156,9 @@ func (f *freshStore) GateWaypointOf(ctx context.Context, s string) (string, bool
 	return "", false, nil
 }
 func (f *freshStore) Replace(ctx context.Context, s string, e []system.GateEdge) error { return nil }
-func (f *freshStore) Adjacency(ctx context.Context) (map[string][]string, error)       { return nil, nil }
+func (f *freshStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
+	return nil, nil
+}
 
 func edgesTo(systems ...string) []system.GateEdge {
 	edges := make([]system.GateEdge, 0, len(systems))
@@ -220,5 +226,173 @@ func TestService_Routable_SameSystem_True(t *testing.T) {
 	ok, err := svc.Routable(context.Background(), "X1-KA42", "X1-KA42", 1)
 	if err != nil || !ok {
 		t.Fatalf("same-system must be routable with no error, got ok=%v err=%v", ok, err)
+	}
+}
+
+// --- sp-8qhu: construction-aware routing ---
+
+// The incident, encoded as a Service-level route: from KA42 BOTH the AF2 leg and
+// the PA3 leg reach UQ16→JP61 at EQUAL hop count, but AF2 is UNDER CONSTRUCTION.
+// The old BFS picked KA42→AF2(unbuilt)→UQ16→JP61 and the laden frigate crashed at
+// hop 1; the fix must return the PA3 route and never traverse the unbuilt gate.
+func TestService_Path_SkipsUnderConstructionGate_IncidentRoute(t *testing.T) {
+	store := &freshStore{adjacency: map[string][]system.GateEdge{
+		"X1-KA42": {
+			{ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-GATE", UnderConstruction: true},
+			{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-GATE"},
+		},
+		"X1-AF2":  edgesTo("X1-UQ16"), // an equal-hop route to UQ16 — usable ONLY if AF2 were built
+		"X1-PA3":  edgesTo("X1-UQ16"),
+		"X1-UQ16": edgesTo("X1-JP61"),
+	}}
+	svc := NewService(store, nil, nil, nil)
+
+	got, err := svc.Path(context.Background(), "X1-KA42", "X1-JP61", 1)
+	if err != nil {
+		t.Fatalf("expected the PA3 route, got error: %v", err)
+	}
+	want := []string{"X1-KA42", "X1-PA3", "X1-UQ16", "X1-JP61"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("BFS must take the built PA3 route %v, never the unbuilt AF2 leg, got %v", want, got)
+	}
+}
+
+// When EVERY forward path to the destination crosses an under-construction gate,
+// the destination is unroutable — the pre-buy guard then refuses the spend (never
+// buys cargo it cannot deliver).
+func TestService_Path_AllRoutesUnbuilt_Unroutable(t *testing.T) {
+	store := &freshStore{adjacency: map[string][]system.GateEdge{
+		"X1-KA42": {
+			{ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-GATE", UnderConstruction: true},
+			{ConnectedSystem: "X1-QJ93", GateWaypoint: "X1-QJ93-GATE", UnderConstruction: true},
+		},
+		"X1-AF2":  edgesTo("X1-JP61"),
+		"X1-QJ93": edgesTo("X1-JP61"),
+	}}
+	svc := NewService(store, nil, nil, nil)
+
+	if _, err := svc.Path(context.Background(), "X1-KA42", "X1-JP61", 1); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("every route crosses an unbuilt gate → must be ErrUnroutable, got %v", err)
+	}
+}
+
+// --- sp-8qhu: fetch-through construction resolution (fake API) ---
+
+// missStore forces the fetch-through path: Edges always misses, GateWaypointOf
+// resolves the origin's own gate (so no system graph is needed), and Replace
+// captures what construction state the fetch resolved onto each edge.
+type missStore struct {
+	originGate string
+	replaced   map[string][]system.GateEdge
+}
+
+func (m *missStore) Edges(ctx context.Context, s string) ([]system.GateEdge, bool, error) {
+	return nil, false, nil
+}
+func (m *missStore) GateWaypointOf(ctx context.Context, s string) (string, bool, error) {
+	return m.originGate, true, nil
+}
+func (m *missStore) Replace(ctx context.Context, s string, e []system.GateEdge) error {
+	if m.replaced == nil {
+		m.replaced = map[string][]system.GateEdge{}
+	}
+	m.replaced[s] = e
+	return nil
+}
+func (m *missStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
+	return nil, nil
+}
+
+// fakeGateAPI serves a fixed connections list and per-gate construction state; a
+// gate whose waypoint is in waypointErr returns that error (the read failure).
+type fakeGateAPI struct {
+	connections       []string
+	underConstruction map[string]bool
+	waypointErr       map[string]error
+}
+
+func (f *fakeGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
+	return &ports.JumpGateData{Symbol: wp, Connections: f.connections}, nil
+}
+func (f *fakeGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
+	if err := f.waypointErr[wp]; err != nil {
+		return nil, err
+	}
+	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: f.underConstruction[wp]}, nil
+}
+
+type stubPlayerRepo struct{ token string }
+
+func (s *stubPlayerRepo) FindByID(ctx context.Context, id shared.PlayerID) (*player.Player, error) {
+	return &player.Player{Token: s.token}, nil
+}
+func (s *stubPlayerRepo) FindByAgentSymbol(ctx context.Context, a string) (*player.Player, error) {
+	return nil, nil
+}
+func (s *stubPlayerRepo) ListAll(ctx context.Context) ([]*player.Player, error) { return nil, nil }
+func (s *stubPlayerRepo) Add(ctx context.Context, p *player.Player) error       { return nil }
+
+// findEdge returns the stored edge to connSystem, or a zero edge if absent.
+func findEdge(edges []system.GateEdge, connSystem string) system.GateEdge {
+	for _, e := range edges {
+		if e.ConnectedSystem == connSystem {
+			return e
+		}
+	}
+	return system.GateEdge{}
+}
+
+// A successful fetch-through stamps each edge with the CONNECTED gate's real build
+// state: the unbuilt neighbor's edge is UnderConstruction, the built one is not.
+func TestService_FetchThrough_ReflectsWaypointConstructionState(t *testing.T) {
+	store := &missStore{originGate: "X1-KA42-GATE"}
+	api := &fakeGateAPI{
+		connections:       []string{"X1-AF2-GATE", "X1-PA3-GATE"},
+		underConstruction: map[string]bool{"X1-AF2-GATE": true}, // AF2 unbuilt, PA3 open
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	edges, err := svc.Connections(context.Background(), "X1-KA42", 1)
+	if err != nil {
+		t.Fatalf("fetch-through must succeed, got %v", err)
+	}
+	if !findEdge(edges, "X1-AF2").UnderConstruction {
+		t.Fatal("the AF2 edge must be marked under construction from the waypoint probe")
+	}
+	if findEdge(edges, "X1-PA3").UnderConstruction {
+		t.Fatal("the PA3 edge must be marked open (not under construction)")
+	}
+	// And the same state is what got persisted (Replace saw the resolved edges).
+	if !findEdge(store.replaced["X1-KA42"], "X1-AF2").UnderConstruction {
+		t.Fatal("the persisted AF2 edge must carry the under-construction flag")
+	}
+}
+
+// A waypoint-read FAILURE fails CLOSED: the edge is treated as under construction
+// so an unknown-state gate is never routed through (the whole point of sp-8qhu).
+func TestService_FetchThrough_ReadFailure_FailsClosedUnbuilt(t *testing.T) {
+	store := &missStore{originGate: "X1-KA42-GATE"}
+	api := &fakeGateAPI{
+		connections: []string{"X1-AF2-GATE"},
+		waypointErr: map[string]error{"X1-AF2-GATE": errors.New("api 500 reading waypoint")},
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	edges, err := svc.Connections(context.Background(), "X1-KA42", 1)
+	if err != nil {
+		t.Fatalf("a per-gate probe failure must not fail the whole fetch — it fails the edge closed; got %v", err)
+	}
+	if !findEdge(edges, "X1-AF2").UnderConstruction {
+		t.Fatal("a waypoint-read failure must mark the edge under construction (fail closed)")
+	}
+}
+
+// The fail-closed decision in isolation: a probe error yields true regardless of
+// what a (nil) detail would say.
+func TestService_GateUnderConstruction_ReadError_True(t *testing.T) {
+	svc := &Service{apiClient: &fakeGateAPI{waypointErr: map[string]error{"X1-AF2-GATE": errors.New("boom")}}}
+	got := svc.gateUnderConstruction(context.Background(), "X1-AF2", "X1-AF2-GATE", "tok", logging.LoggerFromContext(context.Background()))
+	if !got {
+		t.Fatal("a probe error must fail closed (true)")
 	}
 }

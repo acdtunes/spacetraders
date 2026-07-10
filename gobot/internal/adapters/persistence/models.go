@@ -7,7 +7,7 @@ import (
 // PlayerModel represents the players table
 // NOTE: Credits are NOT persisted in database - they're always fetched fresh from API
 type PlayerModel struct {
-	ID          int        `gorm:"column:id;primaryKey;autoIncrement"`
+	ID int `gorm:"column:id;primaryKey;autoIncrement"`
 	// AgentSymbol is intentionally NOT unique: the same agent symbol may be
 	// re-registered in a later universe era after a reset, producing
 	// multiple player rows that share a symbol (see migration 032).
@@ -501,6 +501,11 @@ type GateEdgeModel struct {
 	GateWaypoint    string `gorm:"column:gate_waypoint;not null"`
 	EraID           *int   `gorm:"column:era_id;index:idx_gate_edges_era"`
 	SyncedAt        string `gorm:"column:synced_at"` // ISO timestamp string
+	// UnderConstruction records whether the CONNECTED system's own jump gate was
+	// still being built at sync time (sp-8qhu). The routing BFS never traverses an
+	// under-construction edge, and such an edge refreshes on a SHORTER TTL than a
+	// healthy one so a completed build is noticed within the same era.
+	UnderConstruction bool `gorm:"column:under_construction;not null;default:false"`
 }
 
 func (GateEdgeModel) TableName() string {

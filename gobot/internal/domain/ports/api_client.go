@@ -55,6 +55,12 @@ type APIClient interface {
 
 	// Waypoint operations
 	ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error)
+	// GetWaypoint reads a single waypoint's detail, including whether it is still
+	// UNDER CONSTRUCTION. The gate graph uses this to learn a jump gate's build
+	// state (an unbuilt gate must never be routed through — sp-8qhu): the API's
+	// jump-gate connections list carries symbols only, so construction is resolved
+	// with a per-gate waypoint read.
+	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*WaypointDetail, error)
 
 	// Contract operations
 	NegotiateContract(ctx context.Context, shipSymbol, token string) (*ContractNegotiationResult, error)
@@ -186,6 +192,15 @@ type JumpResult struct {
 type JumpGateData struct {
 	Symbol      string
 	Connections []string
+}
+
+// WaypointDetail is the slice of a single waypoint's detail the gate graph needs:
+// its symbol and whether it is still under construction. An unbuilt jump gate
+// (IsUnderConstruction true) is a dead edge the multi-jump BFS must not traverse
+// (sp-8qhu) — a jump INTO it fails at hop time (API error 4262).
+type WaypointDetail struct {
+	Symbol              string
+	IsUnderConstruction bool
 }
 
 // Market DTOs

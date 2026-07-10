@@ -19,6 +19,14 @@ import (
 // long-running daemon without hammering the API on every routing lookup.
 const gateEdgeFreshWindow = 24 * time.Hour
 
+// gateEdgeUnderConstructionFreshWindow is the SHORTER freshness bound for an edge
+// whose neighbor gate is still under construction (sp-8qhu). A healthy edge is
+// effectively static within an era (24h), but a build COMPLETES on its own clock:
+// pinning an under-construction edge to a 2h window means the daemon re-probes it
+// and notices the completion same-era, instead of holding a "still building"
+// verdict stale for a full day and refusing an now-valid route.
+const gateEdgeUnderConstructionFreshWindow = 2 * time.Hour
+
 // GormGateEdgeRepository implements system.GateEdgeRepository over GORM. It is
 // the persisted gate-graph adjacency store (sp-7gr2). Every read is era-scoped
 // exactly like GormWaypointRepository (openEraID + eraScopePredicate) so
@@ -59,8 +67,9 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 	edges := make([]system.GateEdge, 0, len(models))
 	for _, m := range models {
 		edges = append(edges, system.GateEdge{
-			ConnectedSystem: m.ConnectedSystem,
-			GateWaypoint:    m.GateWaypoint,
+			ConnectedSystem:   m.ConnectedSystem,
+			GateWaypoint:      m.GateWaypoint,
+			UnderConstruction: m.UnderConstruction,
 		})
 	}
 	return edges, true, nil
@@ -106,11 +115,12 @@ func (r *GormGateEdgeRepository) Replace(ctx context.Context, systemSymbol strin
 		rows := make([]GateEdgeModel, 0, len(edges))
 		for _, e := range edges {
 			rows = append(rows, GateEdgeModel{
-				SystemSymbol:    systemSymbol,
-				ConnectedSystem: e.ConnectedSystem,
-				GateWaypoint:    e.GateWaypoint,
-				EraID:           eraID,
-				SyncedAt:        syncedAt,
+				SystemSymbol:      systemSymbol,
+				ConnectedSystem:   e.ConnectedSystem,
+				GateWaypoint:      e.GateWaypoint,
+				EraID:             eraID,
+				SyncedAt:          syncedAt,
+				UnderConstruction: e.UnderConstruction,
 			})
 		}
 		if err := tx.Create(&rows).Error; err != nil {
@@ -120,10 +130,11 @@ func (r *GormGateEdgeRepository) Replace(ctx context.Context, systemSymbol strin
 	})
 }
 
-// Adjacency returns every stored system's neighbor systems, era-scoped, sorted
-// for a stable `system gates` overview. Pure read; the service layer does any
-// live fetch-through for a specific system.
-func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]string, error) {
+// Adjacency returns every stored system's neighbor edges, era-scoped, sorted by
+// neighbor symbol for a stable `system gates` overview. Edges carry
+// UnderConstruction so the verb can flag unbuilt gates. Pure read; the service
+// layer does any live fetch-through for a specific system.
+func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
 	var models []GateEdgeModel
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	if err := r.db.WithContext(ctx).
@@ -132,30 +143,48 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]st
 		return nil, fmt.Errorf("failed to list gate adjacency: %w", err)
 	}
 
-	adjacency := make(map[string][]string)
+	adjacency := make(map[string][]system.GateEdge)
 	for _, m := range models {
-		adjacency[m.SystemSymbol] = append(adjacency[m.SystemSymbol], m.ConnectedSystem)
+		adjacency[m.SystemSymbol] = append(adjacency[m.SystemSymbol], system.GateEdge{
+			ConnectedSystem:   m.ConnectedSystem,
+			GateWaypoint:      m.GateWaypoint,
+			UnderConstruction: m.UnderConstruction,
+		})
 	}
-	for system := range adjacency {
-		sort.Strings(adjacency[system])
+	for sys := range adjacency {
+		sort.Slice(adjacency[sys], func(i, j int) bool {
+			return adjacency[sys][i].ConnectedSystem < adjacency[sys][j].ConnectedSystem
+		})
 	}
 	return adjacency, nil
 }
 
 // anyStale reports whether any row's synced_at is missing/unparseable or older
-// than gateEdgeFreshWindow. A system's edges are written in one Replace() with a
-// single timestamp, so any stale row means the whole set is stale.
+// than its freshness window. A system's edges are written in one Replace() with a
+// single timestamp, so any stale row means the whole set is stale. The window is
+// per-row: an under-construction edge uses the SHORTER window (sp-8qhu) so a build
+// completion is re-probed same-era, while a healthy edge keeps the 24h window.
 func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
 	for _, m := range models {
 		if m.SyncedAt == "" {
 			return true
 		}
 		syncedAt, err := time.Parse(time.RFC3339, m.SyncedAt)
-		if err != nil || time.Since(syncedAt) >= gateEdgeFreshWindow {
+		if err != nil || time.Since(syncedAt) >= freshWindowFor(m) {
 			return true
 		}
 	}
 	return false
+}
+
+// freshWindowFor is the freshness bound for one edge: the shorter
+// under-construction window when the neighbor gate is still building, the standard
+// window otherwise.
+func freshWindowFor(m GateEdgeModel) time.Duration {
+	if m.UnderConstruction {
+		return gateEdgeUnderConstructionFreshWindow
+	}
+	return gateEdgeFreshWindow
 }
 
 // openEraID mirrors GormWaypointRepository.openEraID: the open era is the highest

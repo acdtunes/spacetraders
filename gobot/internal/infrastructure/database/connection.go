@@ -99,9 +99,31 @@ func NewTestConnection() (*gorm.DB, error) {
 	return db, nil
 }
 
-// AutoMigrate runs auto-migration for all models (for tests)
+// AutoMigrate runs auto-migration for all models. It is additive (creates missing
+// tables/columns/indexes, never destructive), and also performs one-time cache
+// invalidations tied to a schema transition.
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(persistence.AllModels()...)
+	// sp-8qhu: detect whether the gate-graph construction column is being
+	// introduced by THIS migration. Pre-sp-8qhu gate_edges rows predate
+	// construction tracking and default to under_construction=false (open) — but a
+	// gate that was actually still building at their sync time would be routed
+	// through until the 24h TTL expired (the exact incident: KA42→AF2 unbuilt).
+	// When the column is newly added, invalidate the gate_edges cache (clear
+	// synced_at → next read is a miss → the re-fetch re-probes every edge's real
+	// build state). Idempotent: fires only on the migration that adds the column,
+	// and the gate graph is a pure cache, so this is safe and self-healing.
+	gateConstructionColumnExisted := db.Migrator().HasColumn(&persistence.GateEdgeModel{}, "under_construction")
+
+	if err := db.AutoMigrate(persistence.AllModels()...); err != nil {
+		return err
+	}
+
+	if !gateConstructionColumnExisted {
+		if err := db.Exec("UPDATE gate_edges SET synced_at = ''").Error; err != nil {
+			return fmt.Errorf("failed to invalidate gate_edges cache for construction re-probe: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close closes the database connection

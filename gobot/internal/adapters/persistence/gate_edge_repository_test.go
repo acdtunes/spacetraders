@@ -13,9 +13,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-func freshTS() string  { return time.Now().Format(time.RFC3339) }
-func staleTS() string  { return time.Now().Add(-48 * time.Hour).Format(time.RFC3339) }
-func intPtr(i int) *int { return &i }
+func freshTS() string              { return time.Now().Format(time.RFC3339) }
+func staleTS() string              { return time.Now().Add(-48 * time.Hour).Format(time.RFC3339) }
+func agoTS(d time.Duration) string { return time.Now().Add(-d).Format(time.RFC3339) }
+func intPtr(i int) *int            { return &i }
 
 // connectedSystems extracts the neighbor symbols from a GateEdge slice, sorted,
 // for order-insensitive assertions.
@@ -152,4 +153,74 @@ func TestGateEdgeRepository_Replace_PurgesOldAndDeadEraRows(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, []string{"X1-PA3"}, connectedSystems(edges), "dropped and dead-era neighbors must be gone")
+}
+
+// sp-8qhu: an edge's UnderConstruction flag round-trips through Replace/Edges, so
+// the routing BFS can read a neighbor gate's real build state from the cache.
+func TestGateEdgeRepository_UnderConstruction_RoundTrip(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Replace(ctx, "X1-KA42", []system.GateEdge{
+		{ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-I1", UnderConstruction: true},
+		{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51"},
+	}))
+
+	edges, ok, err := repo.Edges(ctx, "X1-KA42")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	bySystem := map[string]system.GateEdge{}
+	for _, e := range edges {
+		bySystem[e.ConnectedSystem] = e
+	}
+	require.True(t, bySystem["X1-AF2"].UnderConstruction, "the unbuilt neighbor's flag must persist")
+	require.False(t, bySystem["X1-PA3"].UnderConstruction, "the open neighbor must stay open")
+
+	// Adjacency carries the flag too (the verb reads it to annotate).
+	adjacency, err := repo.Adjacency(ctx)
+	require.NoError(t, err)
+	var af2 system.GateEdge
+	for _, e := range adjacency["X1-KA42"] {
+		if e.ConnectedSystem == "X1-AF2" {
+			af2 = e
+		}
+	}
+	require.True(t, af2.UnderConstruction, "Adjacency must expose the under-construction flag")
+}
+
+// sp-8qhu TTL split: an under-construction edge uses the SHORTER (2h) freshness
+// window while a healthy edge keeps 24h. At the SAME 3h age, the under-construction
+// set reads as a MISS (re-probe, so a completed build is noticed same-era) but the
+// healthy set is still a HIT — proving the window is per-row, not global.
+func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	// Both edge sets are 3h old: past the 2h under-construction window, well within
+	// the 24h healthy window.
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-BUILDING", ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-I1",
+		EraID: intPtr(1), SyncedAt: agoTS(3 * time.Hour), UnderConstruction: true,
+	}).Error)
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-HEALTHY", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
+		EraID: intPtr(1), SyncedAt: agoTS(3 * time.Hour), UnderConstruction: false,
+	}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	_, ok, err := repo.Edges(ctx, "X1-BUILDING")
+	require.NoError(t, err)
+	require.False(t, ok, "an under-construction edge older than 2h must read as a miss (re-probe)")
+
+	_, ok, err = repo.Edges(ctx, "X1-HEALTHY")
+	require.NoError(t, err)
+	require.True(t, ok, "a healthy edge at the same 3h age must still be fresh (24h window)")
 }

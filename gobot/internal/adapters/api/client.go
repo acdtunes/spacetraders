@@ -401,6 +401,31 @@ func (c *SpaceTradersClient) GetJumpGate(ctx context.Context, systemSymbol, wayp
 	}, nil
 }
 
+// GetWaypoint reads a single waypoint's detail. Only the fields the gate graph
+// needs are decoded: the symbol and isUnderConstruction (whether a jump gate is
+// still being built). The jump-gate connections list carries symbols only, so the
+// build state of a connected gate is resolved with this per-waypoint read
+// (sp-8qhu) — an unbuilt gate is a dead edge the BFS must never route through.
+func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.WaypointDetail, error) {
+	path := fmt.Sprintf("/systems/%s/waypoints/%s", systemSymbol, waypointSymbol)
+
+	var response struct {
+		Data struct {
+			Symbol              string `json:"symbol"`
+			IsUnderConstruction bool   `json:"isUnderConstruction"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to get waypoint %s: %w", waypointSymbol, err)
+	}
+
+	return &domainPorts.WaypointDetail{
+		Symbol:              response.Data.Symbol,
+		IsUnderConstruction: response.Data.IsUnderConstruction,
+	}, nil
+}
+
 // GetAgent retrieves agent information
 func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
 	path := "/my/agent"
