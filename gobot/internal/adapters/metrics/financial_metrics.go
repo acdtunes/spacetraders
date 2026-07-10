@@ -262,8 +262,18 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 
 		agentSymbol := playerEntity.AgentSymbol
 
-		// Update credits balance with database credits value
-		c.creditsBalance.WithLabelValues(playerIDStr, agentSymbol).Set(float64(playerEntity.Credits))
+		// player_credits_balance is intentionally NOT written here (sp-m1n2).
+		// playerRepo.FindByID never populates Credits from the DB - the
+		// credits column isn't persisted there; GormPlayerRepository.modelToPlayer
+		// always returns Credits: 0 and expects callers who need a real balance
+		// to fetch it live from the API and assign it themselves (see
+		// purchase_ship.go, register_player.go, get_player.go). This poller
+		// makes no such API call, so every 60s tick used to Set the gauge to a
+		// hardcoded 0, stomping the accurate value RecordTransaction had just
+		// written from the ledger's authoritative running balance - producing
+		// the observed 0<->balance oscillation. RecordTransaction (below) is
+		// this gauge's single writer; it fires on every ledger entry, far more
+		// often than this poll ever could, and never sees a phantom zero.
 
 		// Update revenue metrics by category
 		for category, amount := range plResponse.RevenueBreakdown {
