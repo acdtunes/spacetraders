@@ -368,6 +368,65 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				ContainerID: "tour-2",
 			},
 		},
+		{
+			// sp-dkj7: a restart-rebuilt arb_run must reload prior_attempt_cost — the
+			// RUNTIME buy cost a fresh run persisted into this config the moment it bought —
+			// so the resumed run reports honest P&L (RULINGS #2) instead of TotalCost=0.
+			// Round-tripped through JSON (int → float64), so this also pins the float
+			// coercion the persisted config forces.
+			name:        "arb_run with persisted prior cost",
+			commandType: "arb_run",
+			containerID: "arb-1",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":             "SHIP-A",
+				"container_id":            "arb-1",
+				"good":                    "WIDGET",
+				"buy_at":                  "X1-TR-EXPORT",
+				"sell_at":                 "X1-TR-IMPORT",
+				"max_units":               40,
+				"max_spend":               100000,
+				"min_margin":              500,
+				"working_capital_reserve": 50000,
+				"prior_attempt_cost":      80000,
+			},
+			want: &tradingCmd.RunArbCoordinatorCommand{
+				ShipSymbol:            "SHIP-A",
+				PlayerID:              playerID,
+				ContainerID:           "arb-1",
+				Good:                  "WIDGET",
+				BuyAt:                 "X1-TR-EXPORT",
+				SellAt:                "X1-TR-IMPORT",
+				MaxUnits:              40,
+				MaxSpend:              100000,
+				MinMargin:             500,
+				WorkingCapitalReserve: 50000,
+				PriorAttemptCost:      80000,
+			},
+		},
+		{
+			// A fresh arb_run (never persisted a cost) rebuilds with prior_attempt_cost=0 —
+			// the honest fail-open floor, so a resume that beat the persist under-reports
+			// rather than over-counts.
+			name:        "arb_run without persisted cost defaults to zero",
+			commandType: "arb_run",
+			containerID: "arb-2",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":  "SHIP-B",
+				"container_id": "arb-2",
+				"good":         "WIDGET",
+				"buy_at":       "X1-TR-EXPORT",
+				"sell_at":      "X1-TR-IMPORT",
+			},
+			want: &tradingCmd.RunArbCoordinatorCommand{
+				ShipSymbol:       "SHIP-B",
+				PlayerID:         playerID,
+				ContainerID:      "arb-2",
+				Good:             "WIDGET",
+				BuyAt:            "X1-TR-EXPORT",
+				SellAt:           "X1-TR-IMPORT",
+				PriorAttemptCost: 0,
+			},
+		},
 	}
 
 	for _, tc := range cases {

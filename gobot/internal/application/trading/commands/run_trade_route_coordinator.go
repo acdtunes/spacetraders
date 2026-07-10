@@ -326,6 +326,14 @@ type RunTradeRouteCoordinatorHandler struct {
 	// unaffected. The daemon injects a real, fetch-through GateGraph via
 	// SetGateGraph so a multi-hop gap (KA42→PA3→UQ16→JP61) is actually crossed.
 	gateGraph GateGraph
+	// eventSubscriber lets travel() wait out a hull that is already IN_TRANSIT
+	// before any movement (sp-8l3o): a run re-adopted mid-hop must ride the
+	// arrival out as a WAIT state, not attempt the jump/navigate now (which the
+	// API rejects 4214 'in-transit' and burns the container's restart budget on).
+	// Optional; nil skips the pre-movement wait so every existing caller/test is
+	// byte-for-byte unchanged (fail-open, matching gateGraph's optional-port
+	// contract). The daemon injects the shared ShipEventBus via SetEventSubscriber.
+	eventSubscriber navigation.ShipEventSubscriber
 }
 
 // GateGraph resolves multi-jump routes over the persisted cross-system gate
@@ -388,6 +396,16 @@ func (h *RunTradeRouteCoordinatorHandler) SetGateGraph(g GateGraph) {
 // travel() uses — one graph, one cache, one source of truth.
 func (h *RunTradeRouteCoordinatorHandler) gateGraphResolver() GateGraph {
 	return h.gateGraph
+}
+
+// SetEventSubscriber wires the ship-arrival event bus so travel() can wait out a
+// hull that is already IN_TRANSIT before attempting any movement (sp-8l3o). The
+// daemon injects the shared ShipEventBus (the same publisher the RouteExecutor
+// subscribes to). Left unset (nil), the pre-movement in-transit wait is skipped
+// entirely — every existing caller/test behaves exactly as before this lever
+// existed. Mirrors the SetGateGraph optional-injection idiom.
+func (h *RunTradeRouteCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
+	h.eventSubscriber = subscriber
 }
 
 // Handle executes the trade-route command.

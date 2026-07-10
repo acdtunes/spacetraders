@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -94,6 +95,22 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	destinationWaypoint string,
 	playerID int,
 ) (*navigation.Ship, error) {
+	// sp-8l3o — before ANY movement, ride out a hull that is still IN_TRANSIT. A
+	// run re-adopted mid-hop (the arb resume path: a hull mid in-system hop toward
+	// the source jump gate) is NOT idle — attempting the jump/navigate now returns
+	// API 4214 'Ship is currently in-transit' and the resulting iteration error
+	// burns the container's whole restart budget just riding out a routine arrival.
+	// An in-transit ship is a WAIT state, not an error: wait out the ETA-aligned
+	// arrival via the SAME evented mechanism the RouteExecutor's own idempotency
+	// path uses (WaitForShipArrival, sp-7yej), then continue from the freshly
+	// arrived state. No subscriber wired → the wait is skipped (fail-open) so the
+	// docked-then-travel circuit path is byte-for-byte unchanged.
+	arrived, err := h.waitForInTransitArrival(ctx, ship, playerID)
+	if err != nil {
+		return ship, err
+	}
+	ship = arrived
+
 	currentSystem := ship.CurrentLocation().SystemSymbol
 	destSystem := shared.ExtractSystemSymbol(destinationWaypoint)
 
@@ -194,6 +211,73 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 		}
 	}
 	return freshShip, nil
+}
+
+// waitForInTransitArrival rides out a hull that is still IN_TRANSIT before any
+// movement leg (sp-8l3o). It is the pre-movement mirror of the RouteExecutor's own
+// waitForCurrentTransit idempotency wait: the arb resume path re-adopts a hull mid
+// in-system hop (e.g. mid-flight toward the source jump gate), and attempting the
+// jump/navigate now returns API 4214 'in-transit' — a routine arrival dressed up as
+// an error that burns the container's restart budget. An in-transit ship is a WAIT
+// state: this waits out the ETA-aligned arrival via WaitForShipArrival (the shared
+// evented wait the whole codebase uses, sp-7yej/sp-pafv — event-driven, with a
+// resync/park backstop for a lost event), then reloads so the freshly-persisted
+// location (the hull now sitting on the gate/destination) drives the IsJumpGate
+// check and the rest of travel().
+//
+// A non-in-transit ship returns immediately (the common circuit case: the hull just
+// docked and bought, so this is a no-op). A nil eventSubscriber (no daemon wiring —
+// most tests, any non-circuit caller) also returns immediately, so behavior is
+// byte-for-byte unchanged where the lever is not wired. A wait that exhausts its
+// budget (a genuinely lost arrival event) surfaces the error so the iteration retries
+// rather than jumping blind — the same honest-wait discipline the RouteExecutor keeps.
+func (h *RunTradeRouteCoordinatorHandler) waitForInTransitArrival(
+	ctx context.Context,
+	ship *navigation.Ship,
+	playerID int,
+) (*navigation.Ship, error) {
+	if ship.NavStatus() != navigation.NavStatusInTransit {
+		return ship, nil
+	}
+	if h.eventSubscriber == nil {
+		return ship, nil
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	pid := shared.MustNewPlayerID(playerID)
+
+	// Mirror the RouteExecutor's waitForCurrentTransit ETA seed: the ship's own
+	// persisted ArrivalTime, if still in the future, sizes the wait budget (a nil or
+	// already-past ETA leaves it 0, which WaitForShipArrival floors with its own
+	// min-margin — the lost-event resync backstop still bounds it).
+	var waitTimeSeconds int
+	if arrival := ship.ArrivalTime(); arrival != nil {
+		if remaining := time.Until(*arrival); remaining > 0 {
+			waitTimeSeconds = int(remaining.Seconds())
+		}
+	}
+
+	logger.Log("INFO", fmt.Sprintf(
+		"Hull %s re-adopted mid-transit — waiting out arrival before movement (resume-safe: an in-transit ship is a wait, not a 4214 error to retry)",
+		ship.ShipSymbol(),
+	), map[string]interface{}{
+		"action": "arb_resume_transit_wait", "ship_symbol": ship.ShipSymbol(),
+		"expected_seconds": waitTimeSeconds, "destination_hint": ship.CurrentLocation().Symbol,
+	})
+
+	if werr := shipapp.WaitForShipArrival(ctx, h.shipRepo, h.eventSubscriber, ship, pid, waitTimeSeconds, logger); werr != nil {
+		return ship, fmt.Errorf("waiting out in-transit arrival for %s before movement failed: %w", ship.ShipSymbol(), werr)
+	}
+
+	// Reload so downstream (the IsJumpGate departure-hop check, and the same-system
+	// navigate) routes from the hull's freshly-persisted arrived location, not the
+	// stale pre-arrival pointer — the same reload-after-state-change discipline the
+	// post-jump path already uses.
+	fresh, ferr := h.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), pid)
+	if ferr != nil {
+		return ship, fmt.Errorf("reloading %s after in-transit arrival failed: %w", ship.ShipSymbol(), ferr)
+	}
+	return fresh, nil
 }
 
 // jumpPath resolves the ordered system hop path from fromSystem to destSystem

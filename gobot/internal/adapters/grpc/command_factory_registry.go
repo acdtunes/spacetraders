@@ -528,6 +528,13 @@ func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containe
 // max_units/max_spend/min_margin/working_capital_reserve default to 0 (the coordinator's
 // own "0 → unset/default" semantics for each guard), and are persisted as launch-config
 // knobs so a recovery rebuild resumes the same directed run with the same caps.
+//
+// prior_attempt_cost (sp-dkj7) is RUNTIME progress, not a launch knob: a fresh run
+// persists it into this same config the moment its buy succeeds, so a daemon-restart
+// rebuild reloads the already-incurred cost and the resumed run reports honest P&L
+// (RULINGS #2) rather than starting its accounting at TotalCost=0. Absent (a run that
+// crashed before buying, or never persisted) it defaults to 0 — the honest fail-open
+// floor, never an over-count.
 func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &tradingCmd.RunArbCoordinatorCommand{
 		ShipSymbol:            cfg.RequiredString("ship_symbol"),
@@ -540,6 +547,7 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 		MaxSpend:              cfg.OptionalInt("max_spend", 0),
 		MinMargin:             cfg.OptionalInt("min_margin", 0),
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
+		PriorAttemptCost:      cfg.OptionalInt("prior_attempt_cost", 0),
 	}
 }
 

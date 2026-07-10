@@ -581,6 +581,10 @@ func run(cfg *config.Config) error {
 		persistence.NewGormGateEdgeRepository(db), apiClient, graphService, playerRepo,
 	)
 	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-8l3o: the shared ship-arrival event bus lets travel() wait out a hull
+	// re-adopted mid-transit before any movement (jump/navigate) instead of 4214'ing
+	// and burning the container restart budget on a routine arrival.
+	tradeRouteCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
@@ -598,6 +602,15 @@ func run(cfg *config.Config) error {
 	// before-spend guard that would have refused the JP61 buy at the source instead of
 	// crashing laden at the home gate.
 	arbCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-8l3o: wait out a mid-transit re-adoption before the resume path's jump — the
+	// exact incident (arb-run-TORWIND-21 re-adopted mid in-system hop, jumped, 4214'd,
+	// then rode out the 5s/30s/120s restart backoff to self-heal, consuming the whole
+	// MaxRestartAttempts budget on a routine arrival).
+	arbCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	// sp-dkj7: durably record a fresh buy's cost into the container config so a
+	// restart-rebuilt resume reloads it and reports honest P&L (a resumed run skips the
+	// completed buy, which otherwise leaves TotalCost=0 and over-states NetProfit).
+	arbCoordinatorHandler.SetCostPersister(grpc.NewArbCostConfigPersister(containerRepo))
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunArbCoordinatorCommand](med, arbCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
 	}

@@ -114,6 +114,30 @@ func (r *ContainerRepositoryGORM) UpdateStatus(
 	return nil
 }
 
+// UpdateContainerConfig overwrites just the persisted config JSON of a container
+// (sp-dkj7). It is a SINGLE-COLUMN GORM Updates, so it never touches status,
+// heartbeat_at, or any other column the runner writes concurrently — and config has no
+// other writer during a run (it is set once at Add and only ever amended here), so a
+// caller's read-modify-write of the config map is race-free at the column level. Used by
+// the arb run to durably record its already-incurred buy cost so a restart-rebuilt
+// resume reports honest P&L (RULINGS #2).
+func (r *ContainerRepositoryGORM) UpdateContainerConfig(
+	ctx context.Context,
+	containerID string,
+	playerID int,
+	configJSON string,
+) error {
+	result := r.db.WithContext(ctx).
+		Model(&ContainerModel{}).
+		Where("id = ? AND player_id = ?", containerID, playerID).
+		Updates(map[string]interface{}{"config": configJSON})
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update container config: %w", result.Error)
+	}
+	return nil
+}
+
 // Get retrieves a single container by ID
 func (r *ContainerRepositoryGORM) Get(
 	ctx context.Context,

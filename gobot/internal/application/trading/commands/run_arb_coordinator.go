@@ -38,6 +38,14 @@ type RunArbCoordinatorCommand struct {
 	// WorkingCapitalReserve is the hard spend floor (mirrors sp-bp6f): the buy must
 	// not drop live treasury below this line. 0 → defaultWorkingCapitalReserve.
 	WorkingCapitalReserve int
+	// PriorAttemptCost carries a prior attempt's already-incurred buy cost across a
+	// resume so the completion P&L is honest (sp-dkj7). On a FRESH run it is 0 and the
+	// buy sets TotalCost live; the run then persists that cost (container config +
+	// this field) so a resume — the retry re-runs the whole Handle and skips the buy,
+	// which otherwise leaves TotalCost=0 and over-reports NetProfit by the full basis —
+	// reads it back here and reports the true net. It is REPORTING ONLY: no guard reads
+	// it (the spend caps read live state), so it can never gate or resize a buy.
+	PriorAttemptCost int
 }
 
 // RunArbCoordinatorResponse reports the realised one-shot economics and, when the run
@@ -113,6 +121,28 @@ type RunArbCoordinatorHandler struct {
 	// gate; nil skips the refresh and gates on the cached basis.
 	apiClient       domainPorts.APIClient
 	marketRefresher MarketRefresher
+	// costPersister durably records a fresh buy's cost so a resumed run reports honest
+	// P&L across a daemon restart (sp-dkj7, RULINGS #2). Optional; nil disables the
+	// persistence (a cross-restart resume then under-reports cost exactly as before this
+	// fix — fail-open, matching the sibling optional-port contract). The daemon injects a
+	// container-config-backed persister via SetCostPersister.
+	costPersister ArbCostPersister
+}
+
+// ArbCostPersister durably records a one-shot arb run's already-incurred buy cost
+// (keyed by container) so a resumed run — which skips the completed buy and would
+// otherwise start its P&L accounting at TotalCost=0 — can restore the prior attempt's
+// cost and report an honest NetProfit (sp-dkj7). It exists because the cost is NOT
+// otherwise recoverable on resume: cargo carries no cost basis and the launch config
+// holds only the lane/caps, so per RULINGS #2 the run must persist it and reload it on
+// boot. The daemon backs this with the container config (the same map recovery rebuilds
+// the command from). Reporting only — no guard consults the persisted value.
+type ArbCostPersister interface {
+	// PersistBuyCost records cost as the run's buy cost for the container, so a later
+	// resume (in-process retry OR a daemon-restart rebuild) reads it back. A returned
+	// error is advisory: the buy has already succeeded, so the caller logs and continues
+	// (a persistence failure degrades resume reporting, never fails a completed buy).
+	PersistBuyCost(ctx context.Context, containerID string, playerID, cost int) error
 }
 
 // NewRunArbCoordinatorHandler wires the one-shot arb coordinator with the same driven
@@ -144,6 +174,23 @@ func NewRunArbCoordinatorHandler(
 // existing caller or test changes. Mirrors the SetSpendLedger injection idiom.
 func (h *RunArbCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
+}
+
+// SetEventSubscriber wires the ship-arrival event bus into the delegated movement
+// handler so the resume path waits out a hull re-adopted mid-transit before
+// attempting the jump (sp-8l3o) instead of 4214'ing and burning the restart budget.
+// Left unset (nil), the pre-movement in-transit wait is skipped, so no existing
+// caller or test changes. Mirrors the SetGateGraph delegation.
+func (h *RunArbCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
+	h.legs.SetEventSubscriber(subscriber)
+}
+
+// SetCostPersister wires the durable buy-cost store (sp-dkj7) so a fresh run records its
+// tranche cost for an honest resume P&L. Left unset (nil), a resumed run reports NetProfit
+// without the prior attempt's cost, exactly as before this fix (fail-open). Mirrors the
+// SetGateGraph optional-injection idiom.
+func (h *RunArbCoordinatorHandler) SetCostPersister(p ArbCostPersister) {
+	h.costPersister = p
 }
 
 // Handle executes the one-shot arb. A guarded refusal returns a nil error with the
@@ -212,12 +259,20 @@ func (h *RunArbCoordinatorHandler) execute(
 	tranche := unitsOfGoodAboard(ship, cmd.Good)
 	if tranche > 0 {
 		response.UnitsTraded = tranche
+		// sp-dkj7 — the buy is DONE (its tranche is physically aboard), so restore the
+		// prior attempt's cost the run persisted before it was interrupted. Without this
+		// the resumed run's accounting starts at TotalCost=0 and the completion line
+		// reports NetProfit as the full sale revenue, silently omitting the basis it
+		// already paid. PriorAttemptCost is 0 only when the cost was never persisted (no
+		// persister wired, or the crash beat the persist) — the honest fail-open floor,
+		// the pre-fix behavior, never an over-count.
+		response.TotalCost = cmd.PriorAttemptCost
 		logger.Log("INFO", fmt.Sprintf(
-			"Resuming arb: %d units of %s already aboard from a prior attempt — skipping the buy, delivering to %s (retry-safe, no re-buy)",
-			tranche, cmd.Good, cmd.SellAt,
+			"Resuming arb: %d units of %s already aboard from a prior attempt — skipping the buy, delivering to %s (retry-safe, no re-buy; prior cost %d)",
+			tranche, cmd.Good, cmd.SellAt, cmd.PriorAttemptCost,
 		), map[string]interface{}{
 			"action": "arb_resume_no_rebuy", "ship_symbol": cmd.ShipSymbol,
-			"good": cmd.Good, "held": tranche, "dest": cmd.SellAt,
+			"good": cmd.Good, "held": tranche, "dest": cmd.SellAt, "prior_cost": cmd.PriorAttemptCost,
 		})
 	} else {
 		buyUnits, berr := h.guardAndBuy(ctx, cmd, response, reserve, ship)
@@ -228,6 +283,11 @@ func (h *RunArbCoordinatorHandler) execute(
 			return nil
 		}
 		tranche = buyUnits
+		// sp-dkj7 — the buy just succeeded; durably record its cost so if this run is
+		// interrupted before it sells, the resume (in-process retry or daemon-restart
+		// rebuild) restores it above and reports honest P&L. Reporting-only and
+		// best-effort: a persist failure never fails a completed buy.
+		h.persistBuyCostForResume(ctx, cmd, response.TotalCost)
 	}
 
 	// --- past the buy (fresh) or resuming a prior one: reload → travel → dock → sell ---
@@ -458,6 +518,35 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	response.UnitsTraded = buyResp.UnitsAdded
 	response.TotalCost = buyResp.TotalCost
 	return buyResp.UnitsAdded, nil
+}
+
+// persistBuyCostForResume durably records a fresh buy's cost so a resumed run reports
+// honest P&L (sp-dkj7). It writes to TWO places, covering both restart shapes:
+//
+//   - cmd.PriorAttemptCost, in memory, for an IN-PROCESS retry: the container runner
+//     re-runs the SAME command object on a backoff, so the next Handle's resume branch
+//     reads the cost straight off the command without touching the store.
+//   - the durable store (container config), for a DAEMON-RESTART rebuild: recovery
+//     reconstructs the command from persisted config, so the cost must survive there for
+//     buildArbCoordinatorCommand to reload it (RULINGS #2).
+//
+// It is strictly reporting bookkeeping and best-effort: a zero/negative cost or a missing
+// container ID is nothing to persist, a nil store means persistence is disabled, and a
+// store error is logged but NEVER propagated — the buy has already succeeded, and a
+// completed buy must never be reported as a failure over a P&L-durability miss.
+func (h *RunArbCoordinatorHandler) persistBuyCostForResume(ctx context.Context, cmd *RunArbCoordinatorCommand, cost int) {
+	cmd.PriorAttemptCost = cost
+	if h.costPersister == nil || cmd.ContainerID == "" || cost <= 0 {
+		return
+	}
+	if err := h.costPersister.PersistBuyCost(ctx, cmd.ContainerID, cmd.PlayerID, cost); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"could not persist arb buy cost %d for container %s - a cross-restart resume will under-report NetProfit by this basis: %v",
+			cost, cmd.ContainerID, err,
+		), map[string]interface{}{
+			"action": "arb_cost_persist_failed", "container_id": cmd.ContainerID, "cost": cost, "error": err.Error(),
+		})
+	}
 }
 
 // unitsOfGoodAboard reports how many units of good the hull currently holds (0 if the
