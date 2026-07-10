@@ -1374,3 +1374,321 @@ func TestScoutPost_MultiHull_RevertToSingleHullFreesSurplus(t *testing.T) {
 	require.Len(t, daemonClient.persistedTourCmds, 1)
 	require.Len(t, daemonClient.persistedTourCmds[0].Markets, 6, "the single probe tours all markets again")
 }
+
+// ---- tests: sp-ykhl market-set drift (debounced re-cut) -------------------
+//
+// enry's partition is stable on hull-count alone: it never re-cuts just because a tick
+// passed. But the market SET is a partition input too — nn0y virgin discovery keeps
+// adding markets to a system after a post's tours are already cut, and a market
+// discovered post-cut belongs to NO partition, so it goes permanently stale even though
+// the post reads fully manned. These tests cover the debounced fix: a partitioned
+// (hulls>1) post re-cuts once accumulated drift (additions AND removals, same set, no
+// special-casing) reaches a count threshold OR has been pending at least a max age —
+// whichever fires first — while an unchanged market set re-cuts exactly as rarely as an
+// unchanged hull budget does (never).
+
+// Debounced re-cut STABILITY: with both the hull budget AND the market set unchanged,
+// repeated reconcile ticks must NOT re-partition and must NOT even open a pending-drift
+// episode — the sp-enry "same hulls, same markets ⇒ zero re-cuts" invariant holds under
+// the new drift-aware code path, not just the old budget-only one.
+func TestScoutPost_MultiHull_MarketDriftStableWhenUnchanged(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls, "partitioned once on first sight of the 3-hull post")
+
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	}
+
+	require.Equal(t, 1, rc.calls, "an unchanged market set must never re-cut, across any number of ticks")
+	require.Empty(t, handler.driftPendingSince, "no drift episode is ever opened when the market set never differs from the partition union")
+}
+
+// Debounce COUNT floor: a market discovered post-cut, while still below BOTH the count
+// threshold and the age ceiling, must not trigger a re-cut yet — it is tracked as
+// pending, not silently dropped and not immediately fixed either.
+func TestScoutPost_MultiHull_MarketDriftBelowThresholdAndAgeNoRecut(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls)
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	// One new market appears — below the default count threshold (2) — no time passes.
+	mp.markets["X1-KA42"] = append(mp.markets["X1-KA42"], "X1-KA42-M7")
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 1, rc.calls, "one market below both the count threshold and the age ceiling must not re-cut")
+	_, perSlot := partitionOf(postRepo.find("X1-KA42"))
+	found := false
+	for _, p := range perSlot {
+		for _, m := range p {
+			if m == "X1-KA42-M7" {
+				found = true
+			}
+		}
+	}
+	require.False(t, found, "the new market is not yet in any partition — it is pending, not silently dropped")
+	require.NotEmpty(t, handler.driftPendingSince, "the drift is tracked as pending even though it hasn't fired yet")
+}
+
+// Debounce COUNT trigger: once the accumulated new-market count reaches the configured
+// threshold (default 2), the post re-cuts on that very tick — no time needs to pass —
+// and the new markets join the fresh partition exactly once each.
+func TestScoutPost_MultiHull_MarketDriftThresholdTriggersRecut(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls)
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	// Two new markets appear — reaching the default threshold — no time needs to pass.
+	mp.markets["X1-KA42"] = append(mp.markets["X1-KA42"], "X1-KA42-M7", "X1-KA42-M8")
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 2, rc.calls, "reaching the count threshold re-cuts exactly once")
+	got := postRepo.find("X1-KA42")
+	all, perSlot := partitionOf(got)
+	require.Equal(t, []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6", "X1-KA42-M7", "X1-KA42-M8"}, all,
+		"the re-cut partition covers the full new market set, disjointly")
+	m7Count, m8Count := 0, 0
+	for _, p := range perSlot {
+		for _, m := range p {
+			if m == "X1-KA42-M7" {
+				m7Count++
+			}
+			if m == "X1-KA42-M8" {
+				m8Count++
+			}
+		}
+	}
+	require.Equal(t, 1, m7Count, "the new market lands in exactly one partition")
+	require.Equal(t, 1, m8Count, "the new market lands in exactly one partition")
+	require.Empty(t, handler.driftPendingSince, "the re-cut resolves and clears the pending-drift episode")
+}
+
+// Debounce AGE trigger: a single new market that never reaches the count threshold on
+// its own still forces a re-cut once it has been pending at least the configured max age
+// (default 60m) — nn0y virgin discovery must not be able to strand a market forever just
+// by trickling markets in one at a time.
+func TestScoutPost_MultiHull_MarketDriftAgeTriggersRecut(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls)
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	// One new market appears — never reaches the count threshold on its own.
+	mp.markets["X1-KA42"] = append(mp.markets["X1-KA42"], "X1-KA42-M7")
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls, "one market below threshold does not yet re-cut")
+
+	clock.Advance(61 * time.Minute)
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 2, rc.calls, "a single market past the max age re-cuts even though it never reached the count threshold")
+	_, perSlot := partitionOf(postRepo.find("X1-KA42"))
+	found := false
+	for _, p := range perSlot {
+		for _, m := range p {
+			if m == "X1-KA42-M7" {
+				found = true
+			}
+		}
+	}
+	require.True(t, found, "the long-waiting market is now in a partition")
+	require.Empty(t, handler.driftPendingSince, "the re-cut resolves and clears the pending-drift episode")
+}
+
+// Debounce folds REMOVALS into the same drift check as additions: a market that
+// disappears from the discovered set just drops out of the union — no special casing —
+// and counts toward the same threshold/age trigger.
+func TestScoutPost_MultiHull_MarketRemovalTriggersDrift(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls)
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	// Two markets stop being discovered (e.g. no longer carry a marketplace trait) —
+	// removals reach the same default count threshold as additions.
+	mp.markets["X1-KA42"] = []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4"}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 2, rc.calls, "removals reaching the threshold re-cut exactly like additions")
+	got := postRepo.find("X1-KA42")
+	all, _ := partitionOf(got)
+	require.Equal(t, []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4"}, all,
+		"the removed markets are absent from every partition after the re-cut")
+	require.Empty(t, handler.driftPendingSince, "the re-cut resolves and clears the pending-drift episode")
+}
+
+// hulls=1 finding: a single-hull post's ensurePartitions is a pure no-op regardless of
+// how much its market set grows — it never opens a drift episode and never calls the VRP
+// partitioner. (The single probe's OWN tour still snapshots its market list once at
+// spawn rather than re-reading it per circuit — see scout_tour.go's rotateTourToStart /
+// ScoutTourCommand.Markets — so the SAME staleness this bead fixes for partitioned posts
+// can still occur for a single-hull post's tour. That snapshot is a different code path
+// than partitioning, out of this bead's explicit scope ("a partitioned (hulls>1) post"),
+// and is reported rather than fixed here.)
+func TestScoutPost_SingleHull_MarketGrowthNeverTriggersPartitionOrDrift(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding} // Hulls unset → single-hull
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-GZ7": {"X1-GZ7-M1", "X1-GZ7-M2"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 0, rc.calls)
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	// The market set grows well past both the count threshold and (via clock.Advance)
+	// the age ceiling — a partitioned post would re-cut; a single-hull post must not care.
+	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3", "X1-GZ7-M4", "X1-GZ7-M5")
+	clock.Advance(2 * time.Hour)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 0, rc.calls, "a single-hull post never partitions, no matter how much its market set grows")
+	got := postRepo.find("X1-GZ7")
+	require.Empty(t, got.ExtraSlots, "still no extra slots")
+	require.Empty(t, got.PrimaryPartition, "still no partition — the single probe tours all markets directly")
+	require.Empty(t, handler.driftPendingSince, "single-hull posts never open a drift episode")
+}

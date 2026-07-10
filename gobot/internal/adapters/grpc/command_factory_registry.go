@@ -378,13 +378,16 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 // reloads the posts table and respawns each post's tour. Like
 // contract_fleet_coordinator it loops forever inside one Handle() call, so the
 // container-level iteration budget is irrelevant and it is NOT a
-// CoordinatorOwnsIterations type. tick_interval_secs is optional (0 → the
-// coordinator's own default).
+// CoordinatorOwnsIterations type. tick_interval_secs, market_drift_threshold, and
+// market_drift_max_age_secs are all optional (0 → the coordinator's own default) —
+// the latter two bound the debounced market-set re-cut (sp-ykhl, RULINGS #5).
 func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.RunScoutPostCoordinatorCommand{
-		PlayerID:         shared.MustNewPlayerID(playerID),
-		ContainerID:      cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs: cfg.OptionalInt("tick_interval_secs", 0),
+		PlayerID:              shared.MustNewPlayerID(playerID),
+		ContainerID:           cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:      cfg.OptionalInt("tick_interval_secs", 0),
+		MarketDriftThreshold:  cfg.OptionalInt("market_drift_threshold", 0),
+		MarketDriftMaxAgeSecs: cfg.OptionalInt("market_drift_max_age_secs", 0),
 	}
 }
 

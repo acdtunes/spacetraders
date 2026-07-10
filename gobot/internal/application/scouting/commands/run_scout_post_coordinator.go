@@ -54,6 +54,21 @@ const (
 	// once per budget change, not re-optimized per tick.
 	partitionAnchorFuelCapacity = 400
 	partitionAnchorEngineSpeed  = 30
+
+	// defaultMarketDriftThreshold and defaultMarketDriftMaxAge bound the DEBOUNCED
+	// market-set re-cut when the launch config leaves them unset (sp-ykhl, RULINGS #5).
+	// The market SET is a partition input exactly like the hull budget: nn0y virgin
+	// discovery keeps adding markets to a system after a post's tours are already cut,
+	// and a market discovered post-cut belongs to NO partition — it goes permanently
+	// stale even though the post reads fully manned. A partitioned (hulls>1) post
+	// re-cuts — the SAME hull-budget re-partition path, sp-enry — once its discovered
+	// market set has DRIFTED from the union of its persisted partitions by at least
+	// defaultMarketDriftThreshold markets (additions AND removals both count, no
+	// special-casing a removal), OR the drift has been pending at least
+	// defaultMarketDriftMaxAge — whichever fires first. Mirrors the hull-count
+	// stability gate: same hulls + same markets is still zero re-cuts.
+	defaultMarketDriftThreshold = 2
+	defaultMarketDriftMaxAge    = 60 * time.Minute
 )
 
 // RunScoutPostCoordinatorCommand launches the standing scout-post coordinator for
@@ -64,6 +79,16 @@ type RunScoutPostCoordinatorCommand struct {
 	PlayerID         shared.PlayerID
 	ContainerID      string
 	TickIntervalSecs int
+
+	// MarketDriftThreshold and MarketDriftMaxAgeSecs bound the debounced market-set
+	// re-cut (sp-ykhl): a partitioned (hulls>1) post re-cuts once its discovered
+	// market set has drifted from its persisted partition union by at least
+	// MarketDriftThreshold markets, or the drift has been pending at least
+	// MarketDriftMaxAgeSecs seconds — whichever fires first. <= 0 uses the
+	// coordinator's own default (RULINGS #5: parametrized, not hardcoded at the call
+	// site) — mirrors TickIntervalSecs.
+	MarketDriftThreshold  int
+	MarketDriftMaxAgeSecs int
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -150,6 +175,20 @@ type RunScoutPostCoordinatorHandler struct {
 	// concurrently.
 	repositionMu           sync.Mutex
 	repositionBackoffUntil map[string]time.Time
+
+	// driftPendingSince tracks, per partitioned post (key playerID|system — driftKey,
+	// the same un-suffixed shape as backoffKey's primary form, since drift is a
+	// whole-post property), when its market set FIRST started differing from its
+	// persisted partition union (sp-ykhl) — the age half of the debounced re-cut
+	// trigger. Cleared once a re-cut resolves the drift, the drift resolves on its own
+	// (e.g. a flapping discovery), or the post reverts to single-hull. In-memory and
+	// reset on restart, mirroring repositionBackoffUntil: losing it only restarts the
+	// age countdown (the count trigger is stateless and still fires unaffected), never
+	// a stability violation — same hulls + same markets never populates this map, so
+	// the sp-enry "zero re-cuts when stable" guarantee is untouched. Guarded by
+	// driftMu for the same singleton-handler concurrency reason as repositionMu.
+	driftMu           sync.Mutex
+	driftPendingSince map[string]time.Time
 }
 
 // NewRunScoutPostCoordinatorHandler wires the coordinator. clock defaults to the
@@ -176,6 +215,7 @@ func NewRunScoutPostCoordinatorHandler(
 		marketProvider:         marketProvider,
 		clock:                  clock,
 		repositionBackoffUntil: make(map[string]time.Time),
+		driftPendingSince:      make(map[string]time.Time),
 	}
 }
 
@@ -521,11 +561,19 @@ func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScou
 // ensurePartitions materializes a multi-probe post's N DISJOINT market partitions
 // (sp-enry). It is a no-op for a single-hull post (HullBudget 1 → no partition, the
 // primary tours all markets) and for a multi-probe post ALREADY partitioned at its
-// current budget (len(ExtraSlots) == budget-1) — so it re-partitions ONLY on a
-// hull-budget change, never per tick. On a budget change of a running post it stops the
-// existing tours/relays (their markets change), reclaims their hulls, and rebuilds the
-// slots with fresh partitions; pass 2 re-mans them. Fails closed: no routing client, no
-// markets, or a VRP error leaves the post un-partitioned (it parks) and retries next tick.
+// current budget AND not yet drifted enough to re-cut — so it re-partitions on a
+// hull-budget change (unconditional, as before) or on a DEBOUNCED market-set drift
+// (sp-ykhl: nn0y virgin discovery adds markets to a system after a post's tours are
+// already cut, and a market discovered post-cut belongs to NO partition — it goes
+// permanently stale even though the post reads fully manned; removals fold into the
+// same check), never on every tick. On any re-cut of a running post it stops the
+// existing tours/relays (their markets change), reclaims their hulls, and rebuilds
+// the slots with fresh partitions; pass 2 re-mans them. Fails closed: no routing
+// client, no markets, or a VRP error leaves an UNPARTITIONED post un-partitioned (it
+// parks) and retries next tick — symmetrically, an ALREADY-stable-and-partitioned
+// post hitting one of those same conditions just keeps touring its existing
+// (possibly stale) partition rather than being torn down over a transient discovery
+// hiccup or a missing routing client.
 //
 // API-BUDGET INVARIANT (documented per the bead): partitioning changes WHERE probes scan,
 // not HOW MUCH. Total scans/hour ≈ markets / freshness-target regardless of N — N smaller
@@ -535,6 +583,7 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 	logger := common.LoggerFromContext(ctx)
 
 	budget := post.HullBudget()
+	key := driftKey(cmd.PlayerID.Value(), post.SystemSymbol)
 
 	if budget <= 1 {
 		// Single-hull (or sweep-once): a genuine single-hull post carries no partition
@@ -543,6 +592,7 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 		// extra slots / partition — tear them down so it reverts to the single-slot shape,
 		// freeing the surplus probes to the pool. Pass 2 then re-mans the primary over ALL
 		// markets.
+		h.clearDriftPending(key) // no longer partitioned — any pending drift episode is moot.
 		if len(post.ExtraSlots) > 0 || len(post.PrimaryPartition) > 0 {
 			h.tearDownSlots(ctx, cmd, post)
 			if err := h.postRepo.Upsert(ctx, post); err != nil {
@@ -556,11 +606,17 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 		}
 		return
 	}
-	if len(post.ExtraSlots) == budget-1 {
-		return // already partitioned at this budget — stable, no re-partition.
-	}
+
+	// stableAtBudget: already partitioned at this budget. A budget CHANGE always
+	// re-cuts unconditionally (below, as before sp-ykhl); a stable budget only re-cuts
+	// if the market SET has drifted enough to debounce-trigger — checked once the
+	// current market list is known.
+	stableAtBudget := len(post.ExtraSlots) == budget-1
 
 	if h.routingClient == nil {
+		if stableAtBudget {
+			return // can't check for drift without a routing client — the existing partition stands.
+		}
 		logger.Log("WARNING", fmt.Sprintf("Scout post %s wants %d hulls but no routing client is wired — cannot partition; parking", post.SystemSymbol, budget), map[string]interface{}{
 			"action":        "scout_post_partition_unavailable",
 			"system_symbol": post.SystemSymbol,
@@ -574,11 +630,61 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 		return
 	}
 	if len(markets) == 0 {
+		if stableAtBudget {
+			return // an already-partitioned post keeps touring its existing partition.
+		}
 		logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — cannot partition, post parks", post.SystemSymbol), map[string]interface{}{
 			"action":        "scout_post_partition_no_markets",
 			"system_symbol": post.SystemSymbol,
 		})
 		return
+	}
+
+	driftTrigger := ""
+	if stableAtBudget {
+		drifted, oldMarketCount := marketSetDrift(post, markets)
+		if len(drifted) == 0 {
+			h.clearDriftPending(key)
+			return // stable: same hulls, same markets — no re-cut (sp-enry invariant preserved).
+		}
+
+		threshold := cmd.MarketDriftThreshold
+		if threshold <= 0 {
+			threshold = defaultMarketDriftThreshold
+		}
+		maxAge := time.Duration(cmd.MarketDriftMaxAgeSecs) * time.Second
+		if maxAge <= 0 {
+			maxAge = defaultMarketDriftMaxAge
+		}
+		age := h.noteDriftPending(key)
+
+		switch {
+		case len(drifted) >= threshold:
+			driftTrigger = "threshold"
+		case age >= maxAge:
+			driftTrigger = "age"
+		default:
+			// Below both triggers — debounce. Keep touring the existing (now slightly
+			// stale) partition a while longer rather than thrash the fleet on every
+			// single new/removed market.
+			logger.Log("INFO", fmt.Sprintf("Scout post %s market set drifted (%d markets) — below re-cut threshold, waiting", post.SystemSymbol, len(drifted)), map[string]interface{}{
+				"action":         "scout_post_market_drift_pending",
+				"system_symbol":  post.SystemSymbol,
+				"drifted":        len(drifted),
+				"drift_age_secs": int(age.Seconds()),
+			})
+			return
+		}
+
+		logger.Log("INFO", fmt.Sprintf("Scout post %s market set drifted (%d markets, trigger=%s) — re-cutting partitions", post.SystemSymbol, len(drifted), driftTrigger), map[string]interface{}{
+			"action":           "scout_post_market_drift_detected",
+			"system_symbol":    post.SystemSymbol,
+			"trigger":          driftTrigger,
+			"drifted_markets":  len(drifted),
+			"old_market_count": oldMarketCount,
+			"new_market_count": len(markets),
+			"drift_age_secs":   int(age.Seconds()),
+		})
 	}
 
 	partitions, err := h.partitionMarkets(ctx, cmd, post.SystemSymbol, markets, budget)
@@ -604,10 +710,15 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 		logger.Log("WARNING", fmt.Sprintf("Partitioned post %s but failed to persist: %v", post.SystemSymbol, err), nil)
 		return
 	}
+	h.clearDriftPending(key)
 
 	action := "scout_post_partitioned"
 	verb := "Partitioned"
-	if repartition {
+	switch {
+	case driftTrigger != "":
+		action = "scout_post_repartitioned"
+		verb = fmt.Sprintf("Re-cut (market-set drift, trigger=%s)", driftTrigger)
+	case repartition:
 		action = "scout_post_repartitioned"
 		verb = "Re-partitioned (hull budget changed)"
 	}
@@ -617,6 +728,43 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 		"hulls":         budget,
 		"markets":       len(markets),
 	})
+}
+
+// marketSetDrift returns the symbols where a partitioned post's CURRENT discovered
+// market set differs from the union of its persisted partitions (sp-ykhl), plus the
+// size of that union (the "old market count" for the re-cut's observability log). A
+// market discovered after the post was last cut belongs to no partition (an
+// addition); a market still assigned to a partition but no longer discovered (a
+// removal) is included identically — both fold into ONE set so additions and
+// removals debounce the same way, with no special-casing (per the bead). Sorted for
+// a deterministic re-cut log and test assertions.
+func marketSetDrift(post *domainScouting.ScoutPost, currentMarkets []string) (drifted []string, unionSize int) {
+	union := make(map[string]bool, len(post.PrimaryPartition))
+	for _, m := range post.PrimaryPartition {
+		union[m] = true
+	}
+	for _, slot := range post.ExtraSlots {
+		for _, m := range slot.Partition {
+			union[m] = true
+		}
+	}
+	current := make(map[string]bool, len(currentMarkets))
+	for _, m := range currentMarkets {
+		current[m] = true
+	}
+
+	for _, m := range currentMarkets {
+		if !union[m] {
+			drifted = append(drifted, m) // discovered, but in no partition yet
+		}
+	}
+	for m := range union {
+		if !current[m] {
+			drifted = append(drifted, m) // partitioned, but no longer discovered
+		}
+	}
+	sort.Strings(drifted)
+	return drifted, len(union)
 }
 
 // tearDownSlots stops every slot's tour/relay container and reclaims its hull ahead of
@@ -1093,6 +1241,41 @@ func backoffKey(playerID int, system string, slotIndex int) string {
 		return fmt.Sprintf("%d|%s", playerID, system)
 	}
 	return fmt.Sprintf("%d|%s|%d", playerID, system, slotIndex)
+}
+
+// driftKey scopes market-drift debounce tracking to (playerID, system) — the same
+// un-suffixed shape as backoffKey's primary-slot form, since drift is a whole-post
+// property (the market SET, not any one slot) (sp-ykhl).
+func driftKey(playerID int, system string) string {
+	return fmt.Sprintf("%d|%s", playerID, system)
+}
+
+// noteDriftPending records the FIRST tick a post's market set was seen drifting
+// (sp-ykhl) and returns how long the drift episode has been pending. A key already
+// tracked keeps its original timestamp — the age accumulates across ticks until the
+// re-cut fires or the drift resolves on its own.
+func (h *RunScoutPostCoordinatorHandler) noteDriftPending(key string) time.Duration {
+	h.driftMu.Lock()
+	defer h.driftMu.Unlock()
+	if h.driftPendingSince == nil {
+		h.driftPendingSince = make(map[string]time.Time)
+	}
+	now := h.clock.Now()
+	since, ok := h.driftPendingSince[key]
+	if !ok {
+		h.driftPendingSince[key] = now
+		return 0
+	}
+	return now.Sub(since)
+}
+
+// clearDriftPending forgets a post's pending-drift episode (sp-ykhl): called once a
+// re-cut resolves it, the drift resolves on its own, or the post is no longer
+// partitioned (reverted to single-hull). A nil/absent entry is a harmless no-op.
+func (h *RunScoutPostCoordinatorHandler) clearDriftPending(key string) {
+	h.driftMu.Lock()
+	defer h.driftMu.Unlock()
+	delete(h.driftPendingSince, key)
 }
 
 // pickRepositionDestination chooses the reposition target waypoint from a post's
