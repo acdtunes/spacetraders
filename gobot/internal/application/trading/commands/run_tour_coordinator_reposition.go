@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -76,6 +77,11 @@ type repositionScore struct {
 	prerank     int
 	freshProfit int64
 	feasible    bool
+	// reason is WHY a non-feasible candidate was rejected, for the ranking log (sp-lxwn):
+	// the solver's OWN infeasibility reason (e.g. "no_profitable_tour"), a "planner-error"
+	// marker when the pre-flight CALL itself failed, or "" for a contender. Empty renders as
+	// the bare "infeasible" fallback so the pre-sp-lxwn line shape is preserved when unset.
+	reason string
 }
 
 // maybeReposition is the sp-zhii margins-death rescue. Instead of exiting the instant a
@@ -152,6 +158,12 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 				chosen := s
 				best = &chosen
 			}
+		} else {
+			// sp-lxwn: capture WHY this candidate is not a contender so the ranking log names
+			// it. The solver returns "no_profitable_tour" for a tapped/depleted ground (it built
+			// tours but none cleared profit>0) — distinct from a "planner-error" (the pre-flight
+			// CALL failed) which the pre-fix code silently folded into the same bare "infeasible".
+			s.reason = repositionCandidateReason(plan, perr)
 		}
 		evaluated = append(evaluated, s)
 	}
@@ -196,6 +208,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 // calls to the top-K. Fail-open throughout: an unreadable neighbor simply contributes no
 // candidate, never an aborted reposition.
 func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string) []repositionCandidate {
+	now := h.clock.Now()
 	seen := map[string]bool{currentSystem: true} // exclude the current (dead) ground
 	var candidates []repositionCandidate
 	for _, sys := range h.legs.neighborSystems(ctx, currentSystem, cmd.PlayerID) {
@@ -207,7 +220,19 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 		if err != nil || len(listings) == 0 {
 			continue // no cached market data → not a candidate (requirement: cached-data systems only)
 		}
-		waypoint, score := bestInSystemLane(listings)
+		// sp-lxwn: pre-rank only on FRESH listings — the same maxListingAge cap the solver's
+		// tour snapshot (BuildTourSnapshot) applies. The pre-rank ignored ObservedAt entirely
+		// (bestLaneForGood never checks it), so a candidate whose headline lane priced off a
+		// >75-min-stale market read HEALTHY here yet the solver, whose snapshot dropped that
+		// stale row, found no profitable tour (field: X1-ZC66 pre-ranked 157500 off a 131-min
+		// -stale source, solver-infeasible). Worse, a stale-inflated score could crowd a
+		// genuinely-fresh candidate out of the bounded top-K solver pre-flight. Aligning the
+		// pre-rank freshness with the snapshot keeps the top-K ordered by tradeable spread.
+		fresh := freshListings(listings, now, maxListingAge)
+		if len(fresh) == 0 {
+			continue // every cached row is stale → the solver would see no fresh data here either
+		}
+		waypoint, score := bestInSystemLane(fresh)
 		if waypoint == "" {
 			continue
 		}
@@ -237,6 +262,72 @@ func bestInSystemLane(listings []trading.GoodListing) (string, int) {
 		return lanes[0].SourceWaypoint, lanes[0].CappedSpread
 	}
 	return listings[0].Waypoint, 0
+}
+
+// freshListings drops cached rows older than maxAge relative to now, so the reposition
+// pre-rank scores candidates only on markets the solver's tour snapshot (BuildTourSnapshot,
+// same maxListingAge cap) would also admit (sp-lxwn). A zero ObservedAt means "unknown age"
+// and is kept — the fail-open GoodListing/BuildTourSnapshot convention (an unstamped row ranks
+// as fresh rather than being silently discarded).
+func freshListings(listings []trading.GoodListing, now time.Time, maxAge time.Duration) []trading.GoodListing {
+	fresh := make([]trading.GoodListing, 0, len(listings))
+	for _, l := range listings {
+		if l.ObservedAt.IsZero() || now.Sub(l.ObservedAt) <= maxAge {
+			fresh = append(fresh, l)
+		}
+	}
+	return fresh
+}
+
+// repositionCandidateReason renders WHY a pre-flight candidate is not a contender, for the
+// ranking log (sp-lxwn). It disambiguates the two failure classes the pre-fix bare "infeasible"
+// conflated:
+//   - the solver returned a verdict → its OWN infeasibility reason (e.g. "no_profitable_tour":
+//     tours were built but none cleared profit>0 — a tapped ground), plus the best rejected
+//     tour when the solver named one (barely-negative vs nothing-at-all is the diagnostic tell);
+//   - the pre-flight CALL itself failed (a gRPC/snapshot error) → a "planner-error" marker, a
+//     categorically different failure the old code silently swallowed as "infeasible".
+//
+// Commas and parentheses are neutralised and the result is length-bounded so the reason stays a
+// single well-formed token inside the comma-joined, paren-delimited ranking line. A feasible
+// plan is a contender, not a rejection, and yields "".
+func repositionCandidateReason(plan *routing.TourPlan, perr error) string {
+	switch {
+	case perr != nil:
+		return truncateReason("planner-error: " + sanitizeReasonToken(perr.Error()))
+	case plan == nil:
+		return "no-plan"
+	case plan.Feasible:
+		return ""
+	default:
+		reason := plan.InfeasibleReason
+		if reason == "" {
+			reason = "infeasible"
+		}
+		reason = sanitizeReasonToken(reason)
+		if len(plan.TopRejected) > 0 {
+			reason += "; best: " + sanitizeReasonToken(plan.TopRejected[0])
+		}
+		return truncateReason(reason)
+	}
+}
+
+// sanitizeReasonToken neutralises the delimiters the comma-joined, paren-delimited ranking line
+// relies on so an externally-sourced reason (solver reason, error text, rejected-tour summary)
+// can never fracture the greppable one-line format.
+func sanitizeReasonToken(s string) string {
+	return strings.NewReplacer(",", ";", "(", "", ")", "").Replace(s)
+}
+
+// truncateReason bounds a reason token so a chatty solver reason (a long rejected-tour path)
+// cannot blow up the ranking line, cutting on a rune boundary so a multibyte glyph (the "→"
+// in tour summaries) is never split into invalid UTF-8.
+func truncateReason(s string) string {
+	const max = 160
+	if r := []rune(s); len(r) > max {
+		return string(r[:max]) + "..."
+	}
+	return s
 }
 
 // planAtCandidate asks the planner for the tour the hull WOULD fly if it were already at
@@ -322,7 +413,14 @@ func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem 
 	for _, s := range evaluated {
 		switch {
 		case !s.feasible:
-			parts = append(parts, fmt.Sprintf("%s(prerank=%d,infeasible)", s.system, s.prerank))
+			// sp-lxwn: name the SPECIFIC rejection reason (the solver's own "no_profitable_tour",
+			// a "planner-error", etc.) instead of the pre-fix opaque bare "infeasible". Fall back
+			// to "infeasible" when no reason was captured, preserving the old line shape.
+			reason := s.reason
+			if reason == "" {
+				reason = "infeasible"
+			}
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d,%s)", s.system, s.prerank, reason))
 		case s.freshProfit < floor:
 			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d,below-floor)", s.system, s.prerank, s.freshProfit))
 		default:
