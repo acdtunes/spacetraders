@@ -146,6 +146,69 @@ func TestStartLeavesRowRunningWhenClaimSucceeds(t *testing.T) {
 	require.Equal(t, containerID, idleShip.ContainerID())
 }
 
+// sp-sg35: the legacy (non-operation) claim path must enforce the SAME
+// fleet-dedication guard as the atomic ClaimShip, closing the operation-key side
+// door — a container that never stamped an "operation" key (here a captain
+// navigate) must NOT be able to claim a hull pinned to a foreign fleet through
+// the legacy FindBySymbol+AssignToContainer+Save fallback. The rejection is the
+// standing ShipDedicatedToOtherFleetError, so it rides the same sp-cr86 terminal
+// path as any other permanent claim failure (row FAILED, hull untouched, no
+// zombie runner) and fails fast without entering the transient handoff retry.
+func TestStartFailsFastWhenLegacyClaimHitsForeignDedication(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	// SHIP-PINNED is dedicated to the "contract" fleet; the navigate container
+	// below carries no "operation" key, so it takes the legacy claim path.
+	pinned := newIdleTradeShip(t, "SHIP-PINNED", playerID)
+	pinned.SetDedicatedFleet("contract")
+	repo := &handoffRaceShipRepo{held: pinned, released: pinned, releaseAfterFinds: claimRetryMaxAttempts + 5}
+	s.shipRepo = repo
+
+	const containerID = "navigate-SHIP-PINNED"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-PINNED"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
+
+	err := runner.Start()
+
+	require.Error(t, err, "the legacy path must reject a foreign-fleet-dedicated hull")
+	var dedErr *shared.ShipDedicatedToOtherFleetError
+	require.ErrorAs(t, err, &dedErr, "must be the standing dedication rejection")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	require.Equal(t, 1, repo.findCount(), "a dedication rejection is permanent — it must not be retried")
+	require.False(t, pinned.IsAssigned(), "the pinned hull must not be claimed through the legacy side door")
+	require.Nil(t, s.registeredRunner(containerID))
+}
+
+// sp-sg35 regression: the new legacy-path dedication guard must leave an
+// UNDEDICATED hull entirely claimable — the common case (most hulls, and every
+// captain manual op on a general-pool hull) is unaffected. A navigate container
+// (no "operation" key) claiming a DedicatedFleet=="" hull still lands RUNNING
+// with the hull assigned.
+func TestStartLegacyClaimStillClaimsUndedicatedHull(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	idle := newIdleTradeShip(t, "SHIP-FREE", playerID) // DedicatedFleet == "" by construction
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"SHIP-FREE": idle}}
+
+	const containerID = "navigate-SHIP-FREE"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-FREE"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	defer runner.cancelFunc()
+
+	err := runner.Start()
+
+	require.NoError(t, err, "an undedicated hull must remain claimable on the legacy path")
+	requireContainerState(t, db, containerID, "RUNNING", "")
+	require.True(t, idle.IsAssigned())
+	require.Equal(t, containerID, idle.ContainerID())
+}
+
 // claimTestClock returns a MockClock whose Sleep advances virtual time instantly,
 // so the sp-ku8e claim-retry backoff adds no real delay to these tests while the
 // production RealClock still sleeps for real.

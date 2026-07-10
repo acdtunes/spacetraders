@@ -82,6 +82,16 @@ func (s *DaemonServer) StartTourRun(
 		"replan_limit":            replanLimit,
 		"working_capital_reserve": workingCapitalReserve,
 		"iterations":              iterations,
+		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
+		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
+		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip
+		// AND the legacy-path guard) would reject a tour from claiming its OWN
+		// hull, killing the entire trade-fleet on the next restart. Same constant
+		// and stamping pattern as container_ops_trade.go:95 / container_ops_idle_arb.go:69,
+		// persisted in the launch config so BOTH a fresh start and a recovery
+		// rebuild claim under operationTrade: a 'trade'-dedicated hull is permitted
+		// (operation == dedication) while a foreign-fleet hull is still rejected.
+		"operation": operationTrade,
 	}
 
 	// Build the tour command through the same factory recovery uses, so the launch

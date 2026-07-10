@@ -959,9 +959,13 @@ func (r *ContainerRunner) createShipAssignments() error {
 // (pre-change persisted rows, and every kind whose coordinator claims the hull
 // BEFORE starting the runner) keep the legacy read-modify-write path, where the
 // already-assigned-to-this-container check makes a recovered container's re-claim
-// a no-op. Both paths surface a transient *shared.ShipAlreadyAssignedError when
-// the hull is momentarily still held by a just-finished container; a permanent
-// rejection is returned unchanged for createShipAssignments to classify.
+// a no-op. That legacy path ALSO enforces the same fleet-dedication guard now
+// (sp-sg35): a hull pinned to a foreign fleet is rejected there too, so the
+// absence of an "operation" key is no longer a side door around ownership. Both
+// paths surface a transient *shared.ShipAlreadyAssignedError when the hull is
+// momentarily still held by a just-finished container; a permanent rejection
+// (foreign-fleet dedication, captain reservation) is returned unchanged for
+// createShipAssignments to classify.
 func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, playerID shared.PlayerID) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 	defer cancel()
@@ -983,6 +987,23 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, playerI
 	if ship.IsAssigned() && ship.ContainerID() == r.containerEntity.ID() {
 		r.log("INFO", fmt.Sprintf("Ship %s already assigned to this container (recovered)", shipSymbol), nil)
 		return nil
+	}
+
+	// sp-sg35: defense-in-depth — enforce the SAME fleet-dedication guard the
+	// atomic ClaimShip applies (ship_repository.go: DedicatedFleet != "" &&
+	// DedicatedFleet != operation), so a hull pinned to a foreign fleet can never
+	// be claimed through this operation-key side door. A container reaching the
+	// legacy path carries no verified fleet identity (operation is empty), so any
+	// dedicated hull is rejected — the same net effect as the atomic guard with an
+	// empty operation. Ordered exactly like ClaimShip's own idempotent-then-
+	// dedication sequence: the same-container recovery check above wins first
+	// (dedication governs the NEXT acquisition, never eviction of the current
+	// holder), and AssignToContainer's reservation/already-assigned guards run
+	// after. The rejection is the standing ShipDedicatedToOtherFleetError, so it
+	// fails fast (isTransientClaimError == false) and terminalizes the row like any
+	// other permanent claim rejection instead of retrying the handoff race.
+	if ship.DedicatedFleet() != "" && ship.DedicatedFleet() != operation {
+		return shared.NewShipDedicatedToOtherFleetError(shipSymbol, ship.DedicatedFleet(), operation)
 	}
 
 	if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
