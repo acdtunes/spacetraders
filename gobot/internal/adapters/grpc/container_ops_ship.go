@@ -35,6 +35,9 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"destination": destination,
+			// sp-sg35 BRIDGE: captain manual-op authority — this deliberate CLI op
+			// may operate a fleet-dedicated hull (audited override; see the const).
+			captainManualAuthorityKey: true,
 		},
 		nil, // Use default RealClock for production
 	)
@@ -75,6 +78,8 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
+			// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+			captainManualAuthorityKey: true,
 		},
 		nil, // Use default RealClock for production
 	)
@@ -113,6 +118,8 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
+			// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+			captainManualAuthorityKey: true,
 		},
 		nil, // Use default RealClock for production
 	)
@@ -146,6 +153,8 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 
 	metadata := map[string]interface{}{
 		"ship_symbol": shipSymbol,
+		// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+		captainManualAuthorityKey: true,
 	}
 	if units != nil {
 		metadata["units"] = *units
@@ -193,6 +202,8 @@ func (s *DaemonServer) JettisonCargo(ctx context.Context, shipSymbol string, pla
 		"ship_symbol": shipSymbol,
 		"good_symbol": goodSymbol,
 		"units":       units,
+		// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+		captainManualAuthorityKey: true,
 	}
 
 	containerEntity := container.NewContainer(

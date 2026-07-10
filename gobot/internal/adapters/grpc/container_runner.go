@@ -917,10 +917,14 @@ func (r *ContainerRunner) createShipAssignments() error {
 
 	playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
 	operation, _ := metadata["operation"].(string)
+	// captainManualAuthority (sp-sg35 BRIDGE) is set ONLY by the CLI manual-op path
+	// (container_ops_ship.go); it lets a deliberate captain op override the
+	// dedication guard on the legacy claim path. No automated coordinator sets it.
+	captainManualAuthority, _ := metadata[captainManualAuthorityKey].(bool)
 
 	backoff := claimRetryBaseBackoff
 	for attempt := 1; ; attempt++ {
-		err := r.attemptClaimShip(shipSymbol, operation, playerID)
+		err := r.attemptClaimShip(shipSymbol, operation, captainManualAuthority, playerID)
 		if err == nil {
 			if attempt > 1 {
 				r.log("INFO", fmt.Sprintf("Claimed ship %s on attempt %d — transient claim-handoff race cleared", shipSymbol, attempt), nil)
@@ -949,6 +953,17 @@ func (r *ContainerRunner) createShipAssignments() error {
 	}
 }
 
+// captainManualAuthorityKey (sp-sg35 BRIDGE) is the container-metadata flag that
+// marks a deliberate captain-initiated manual CLI op (navigate/dock/orbit/refuel/
+// jettison) permitted to operate a fleet-dedicated hull as an explicit, audited
+// override of the legacy-path dedication guard. It is set ONLY by the CLI
+// manual-op path (container_ops_ship.go); NO automated coordinator sets it, so the
+// dedication guard stays fully in force for every automated claim. Single-purpose
+// and deprecable: delete this const, the guard's override branch, its audit log,
+// and the container_ops_ship.go stamps together when hands-free manual
+// repositioning retires the need for it (sp-lxwn/sp-zhii).
+const captainManualAuthorityKey = "captain_manual_authority"
+
 // attemptClaimShip performs a single claim of the hull for this container — the
 // retryable unit of createShipAssignments. Containers carrying an "operation"
 // metadata key (the launcher's fleet identity, e.g. StartTradeRoute's "trade")
@@ -961,12 +976,15 @@ func (r *ContainerRunner) createShipAssignments() error {
 // already-assigned-to-this-container check makes a recovered container's re-claim
 // a no-op. That legacy path ALSO enforces the same fleet-dedication guard now
 // (sp-sg35): a hull pinned to a foreign fleet is rejected there too, so the
-// absence of an "operation" key is no longer a side door around ownership. Both
+// absence of an "operation" key is no longer a side door around ownership. The
+// SOLE exception is a captainAuthority claim (the captainManualAuthorityKey flag,
+// set only by the CLI manual-op path): a deliberate captain override may operate a
+// dedicated hull, audited on every use — automated paths never set the flag. Both
 // paths surface a transient *shared.ShipAlreadyAssignedError when the hull is
 // momentarily still held by a just-finished container; a permanent rejection
 // (foreign-fleet dedication, captain reservation) is returned unchanged for
 // createShipAssignments to classify.
-func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, playerID shared.PlayerID) error {
+func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captainAuthority bool, playerID shared.PlayerID) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 	defer cancel()
 
@@ -1003,7 +1021,28 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, playerI
 	// fails fast (isTransientClaimError == false) and terminalizes the row like any
 	// other permanent claim rejection instead of retrying the handoff race.
 	if ship.DedicatedFleet() != "" && ship.DedicatedFleet() != operation {
-		return shared.NewShipDedicatedToOtherFleetError(shipSymbol, ship.DedicatedFleet(), operation)
+		// CAPTAIN-AUTHORITY MANUAL OVERRIDE (sp-sg35 BRIDGE): a deliberate captain
+		// CLI op (navigate/dock/orbit/refuel/jettison) may operate a fleet-dedicated
+		// hull without unassigning it first — the captain ruled unassign-first is
+		// non-atomic and would strand a heavy unpinned during the high-restart
+		// window. This flag is set ONLY by container_ops_ship.go, so NO automated
+		// coordinator (tour/trade/contract/factory/scout/stocker/arb) can reach this
+		// branch — the guard is fully in force for every automated claim. Every use
+		// is logged for audit. DEPRECATE: delete this branch, the flag, and its log
+		// when hands-free manual repositioning lands (sp-lxwn/sp-zhii).
+		if !captainAuthority {
+			return shared.NewShipDedicatedToOtherFleetError(shipSymbol, ship.DedicatedFleet(), operation)
+		}
+		r.log("WARNING", fmt.Sprintf(
+			"Captain-authority override: manual op %s claims %s-dedicated hull %s without unassigning (bridge authority — deprecate with sp-lxwn/sp-zhii)",
+			r.containerEntity.Type(), ship.DedicatedFleet(), shipSymbol),
+			map[string]interface{}{
+				"action":          "captain_manual_authority_override",
+				"ship_symbol":     shipSymbol,
+				"op":              string(r.containerEntity.Type()),
+				"dedicated_fleet": ship.DedicatedFleet(),
+				"container_id":    r.containerEntity.ID(),
+			})
 	}
 
 	if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
