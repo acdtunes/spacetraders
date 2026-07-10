@@ -74,13 +74,21 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 			cmd.ToShip, toShip.CurrentLocation().Symbol)
 	}
 
-	// 5. Call API to transfer cargo
-	result, err := h.apiClient.TransferCargo(ctx, cmd.FromShip, cmd.ToShip, cmd.GoodSymbol, cmd.Units, token)
+	// 5. Align nav state, then transfer (sp-5qs1). This command is the warehouse
+	// DEPOSIT transfer: FromShip is the mobile visitor delivering cargo, ToShip is
+	// the stationary, coordinator-owned storage hull (the warehouse). SpaceTraders
+	// rejects the transfer with API 4271 unless both hulls share a nav state, so the
+	// visitor is orbited/docked to match the warehouse (which is never moved) before
+	// the transfer; a 4271 race is re-aligned and retried once rather than crashing.
+	result, alignedNav, err := common.AlignAndTransferCargo(ctx, h.apiClient, cmd.FromShip, cmd.ToShip, cmd.ToShip, cmd.GoodSymbol, cmd.Units, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transfer cargo: %w", err)
 	}
 
-	// 6. Update ships' cargo state using domain methods
+	// 6. Update ships' cargo state using domain methods. The visitor (FromShip) was
+	// orbited/docked to match the warehouse; reconcile its in-memory nav so the Save
+	// below persists the aligned state instead of the pre-alignment one.
+	reconcileNavStatus(fromShip, alignedNav)
 	_ = fromShip.RemoveCargo(cmd.GoodSymbol, result.UnitsTransferred)
 	_ = h.shipRepo.Save(ctx, fromShip)
 
@@ -91,4 +99,18 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 		UnitsTransferred: result.UnitsTransferred,
 		RemainingCargo:   result.RemainingCargo,
 	}, nil
+}
+
+// reconcileNavStatus best-effort updates the in-memory ship's nav state to match a
+// post-alignment target (DOCKED/IN_ORBIT), so a subsequent Save persists the aligned
+// state rather than the pre-alignment one. Both transitions are pure in-memory domain
+// moves and no-ops when the ship is already in the target state; an unexpected target
+// (e.g. IN_TRANSIT) leaves the ship untouched.
+func reconcileNavStatus(ship *navigation.Ship, target navigation.NavStatus) {
+	switch target {
+	case navigation.NavStatusDocked:
+		_, _ = ship.EnsureDocked()
+	case navigation.NavStatusInOrbit:
+		_, _ = ship.EnsureInOrbit()
+	}
 }

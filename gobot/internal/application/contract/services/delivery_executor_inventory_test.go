@@ -45,15 +45,46 @@ func (c *invFakeCoordinator) GetStorageShipsForOperation(operationID string) []*
 	return c.ships[operationID]
 }
 
-// invFakeAPI stubs APIClient.TransferCargo, recording the last call and flipping
-// the shared transferred flag so the paired ship repo can report the hauler as
-// loaded afterward.
+// invFakeAPI stubs the APIClient methods the withdrawal seam uses: TransferCargo
+// (recording the call and flipping the shared transferred flag) plus the nav-state
+// trio (GetShip/OrbitShip/DockShip) that AlignAndTransferCargo calls to align the
+// visitor to the warehouse hull before the transfer (sp-5qs1). Unset nav defaults to
+// IN_ORBIT, so a test that does not care about alignment sees a no-op align.
 type invFakeAPI struct {
 	domainPorts.APIClient
 	transferCalls int
 	lastUnits     int
 	transferErr   error
 	moved         *bool
+	nav           map[string]string // symbol -> nav status; empty => IN_ORBIT
+	orbitCalls    []string
+	dockCalls     []string
+}
+
+func (a *invFakeAPI) GetShip(_ context.Context, symbol, _ string) (*navigation.ShipData, error) {
+	st, ok := a.nav[symbol]
+	if !ok {
+		st = string(navigation.NavStatusInOrbit)
+	}
+	return &navigation.ShipData{Symbol: symbol, NavStatus: st}, nil
+}
+
+func (a *invFakeAPI) OrbitShip(_ context.Context, symbol, _ string) error {
+	a.orbitCalls = append(a.orbitCalls, symbol)
+	if a.nav == nil {
+		a.nav = map[string]string{}
+	}
+	a.nav[symbol] = string(navigation.NavStatusInOrbit)
+	return nil
+}
+
+func (a *invFakeAPI) DockShip(_ context.Context, symbol, _ string) error {
+	a.dockCalls = append(a.dockCalls, symbol)
+	if a.nav == nil {
+		a.nav = map[string]string{}
+	}
+	a.nav[symbol] = string(navigation.NavStatusDocked)
+	return nil
 }
 
 func (a *invFakeAPI) TransferCargo(_ context.Context, _, _, _ string, units int, _ string) (*domainPorts.TransferResult, error) {
@@ -174,6 +205,31 @@ func TestTrySourceFromInventory_CappedWithdrawal_TransfersNeedReleasesExcess(t *
 	require.Equal(t, 190, storageShip.GetAvailableCargo("IRON_ORE"), "10 moved, the other 190 reservation released for other workers")
 	require.True(t, infoContains(logger, "Sourced 10 IRON_ORE from warehouse"), "honest withdrawal log")
 	require.True(t, infoContains(logger, "market would have cost 1000"), "realized savings = market ask 100 × 10 units")
+}
+
+func TestTrySourceFromInventory_WarehouseDocked_DocksVisitorBeforeTransfer(t *testing.T) {
+	// The withdrawal seam must align the visitor to the warehouse's nav state, not
+	// assume orbit (sp-5qs1). A DOCKED warehouse hull docks the visitor before the
+	// transfer so the first-ever withdrawal cannot 4271.
+	hauler := buildShipWithIronOre(t, 0)
+	storageShip := storageShipWith(t, 200)
+	shipRepo := &reconcileFakeShipRepo{cached: hauler, server: hauler}
+	med := &invFakeMediator{navShip: hauler}
+	api := &invFakeAPI{nav: map[string]string{
+		"WH-HULL-1": string(navigation.NavStatusDocked),
+		"TORWIND-1": string(navigation.NavStatusInOrbit),
+	}}
+	finder := &invFakeFinder{src: &appContract.InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 200}}
+	coord := &invFakeCoordinator{ships: map[string][]*storage.StorageShip{"wh-1": {storageShip}}}
+	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo), WithInventorySource(finder, coord, api))
+	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
+
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil)
+
+	require.NoError(t, err)
+	require.True(t, withdrew)
+	require.Equal(t, []string{"TORWIND-1"}, api.dockCalls, "visitor docked to match the docked warehouse hull, not the warehouse moved")
+	require.Equal(t, 1, api.transferCalls)
 }
 
 func TestTrySourceFromInventory_DrainedMidFlight_FallsThroughToMarket(t *testing.T) {

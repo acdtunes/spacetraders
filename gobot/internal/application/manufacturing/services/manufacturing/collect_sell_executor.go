@@ -289,11 +289,15 @@ func (e *CollectSellExecutor) collectFromStorage(
 		"unitsReserved": unitsReserved,
 	})
 
-	// Transfer cargo from storage ship to hauler
-	_, err = e.apiClient.TransferCargo(
+	// Transfer cargo from storage ship (warehouse, stationary) to hauler (visitor).
+	// Align the visitor's nav state to the warehouse first so this withdrawal cannot
+	// 4271 on a dock-state mismatch, and retry once on a race (sp-5qs1).
+	_, _, err = common.AlignAndTransferCargo(
 		ctx,
-		storageShip.ShipSymbol(), // from
-		params.ShipSymbol,        // to
+		e.apiClient,
+		storageShip.ShipSymbol(), // from (warehouse)
+		params.ShipSymbol,        // to (visitor)
+		storageShip.ShipSymbol(), // warehouse hull — never moved
 		task.Good(),
 		unitsReserved,
 		token,

@@ -705,7 +705,12 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 
 	toMove := utils.Min(reserved, want)
 
-	if _, err := e.apiClient.TransferCargo(ctx, storageShip.ShipSymbol(), shipSymbol, good, toMove, token); err != nil {
+	// Align nav state before the ship-to-ship transfer (sp-5qs1). This is a WITHDRAWAL:
+	// the warehouse hull (storageShip) is the stationary source, the contract worker
+	// (shipSymbol) is the visitor. SpaceTraders rejects the transfer with API 4271 unless
+	// both hulls share a nav state, so the visitor is orbited/docked to match the warehouse
+	// (never moved); a 4271 race is re-aligned and retried once rather than crashing.
+	if _, _, err := common.AlignAndTransferCargo(ctx, e.apiClient, storageShip.ShipSymbol(), shipSymbol, storageShip.ShipSymbol(), good, toMove, token); err != nil {
 		// Release the whole reservation and fall through to market (fail-open).
 		if cancelErr := storageShip.CancelReservation(good, reserved); cancelErr != nil {
 			logger.Log("ERROR", "Inventory withdrawal: failed to cancel reservation after transfer error", map[string]interface{}{
