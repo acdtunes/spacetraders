@@ -50,6 +50,15 @@ api:
 routing:
   address: localhost:50051  # gRPC service address
 
+  # Path to the fitted market-model artifact the multi-hop tour executor reads at
+  # launch (sp-1ek0). Resolved to an absolute path against THIS config file's
+  # directory: leave empty to default to
+  # <config-dir>/services/routing-service/model_artifacts/market_model.json (correct
+  # in dev and deploy, since config.yaml and services/ ship together); a relative
+  # value resolves against the config dir; an absolute value is used as-is. This must
+  # be readable regardless of the daemon's working directory.
+  # model_artifact_path: ""
+
   # Operation timeouts
   timeout:
     connect: 10s        # Connection timeout

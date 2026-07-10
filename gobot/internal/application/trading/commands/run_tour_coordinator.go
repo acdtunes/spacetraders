@@ -130,6 +130,11 @@ type RunTourCoordinatorHandler struct {
 	// apiClient live-reads treasury for the default 25% max-spend; nil → no default
 	// cap (the per-buy working-capital floor still guards).
 	apiClient domainPorts.APIClient
+	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
+	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath
+	// (sp-wj0h). Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
+	// cmd.ModelArtifactPath (tests) still wins over this.
+	modelArtifactPath string
 }
 
 // NewRunTourCoordinatorHandler wires the tour coordinator with the same driven ports
@@ -168,6 +173,14 @@ func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
+// SetModelArtifactPath injects the daemon-configured (absolute) market-model artifact
+// path this coordinator reads at launch (sp-wj0h: resolved from cfg.Routing.ModelArtifactPath
+// so it is cwd-independent). Left unset, the coordinator falls back to the repo-relative
+// defaultModelArtifactPath. Mirrors the SetGateGraph optional-injection idiom.
+func (h *RunTourCoordinatorHandler) SetModelArtifactPath(path string) {
+	h.modelArtifactPath = path
+}
+
 // Handle executes the one-shot tour. A fail-open no-op and a stranded-cargo veto both
 // return a nil Go error (the veto is threaded through CompletionOutcome); an
 // operational failure mid-tour returns the underlying error so the runner can retry
@@ -192,8 +205,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	logger := common.LoggerFromContext(ctx)
 
 	// Bind the model version from the checked-in artifact (RULINGS #4: unreadable →
-	// fail OPEN to single-lane, never guess a version).
+	// fail OPEN to single-lane, never guess a version). Path precedence (sp-wj0h): an
+	// explicit per-run cmd.ModelArtifactPath (tests) → the daemon-configured absolute
+	// path (production, cwd-independent) → the repo-relative constant (pure-env fallback).
 	artifactPath := cmd.ModelArtifactPath
+	if artifactPath == "" {
+		artifactPath = h.modelArtifactPath
+	}
 	if artifactPath == "" {
 		artifactPath = defaultModelArtifactPath
 	}

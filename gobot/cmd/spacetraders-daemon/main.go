@@ -596,6 +596,10 @@ func run(cfg *config.Config) error {
 		routingClient, marketScanner, nil, apiClient,
 	)
 	tourCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-wj0h: inject the config-resolved ABSOLUTE artifact path so the executor reads
+	// the market model regardless of the daemon's cwd (the launchd daemon's cwd is not
+	// the repo root, which DOA'd the first tour on the old cwd-relative constant).
+	tourCoordinatorHandler.SetModelArtifactPath(cfg.Routing.ModelArtifactPath)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

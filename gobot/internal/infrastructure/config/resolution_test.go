@@ -103,3 +103,58 @@ func TestLoadConfig_ExecutableDirFallback(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "fromexecdir", cfg.Database.Host)
 }
+
+// sp-wj0h: the tour market-model artifact path resolves against the config file's dir
+// so the tour executor reads it regardless of the daemon's cwd. Pins all four branches.
+func TestResolveModelArtifactPath(t *testing.T) {
+	cfgFile := filepath.Join("/etc", "spacetraders", "config.yaml")
+	dir := filepath.Dir(cfgFile)
+
+	// empty → config-dir-derived absolute default
+	require.Equal(t,
+		filepath.Join(dir, "services", "routing-service", "model_artifacts", "market_model.json"),
+		resolveModelArtifactPath(cfgFile, ""))
+
+	// relative → resolved against the config file's dir
+	require.Equal(t, filepath.Join(dir, "custom", "model.json"),
+		resolveModelArtifactPath(cfgFile, filepath.Join("custom", "model.json")))
+
+	// absolute → unchanged
+	abs := filepath.Join("/opt", "models", "m.json")
+	require.Equal(t, abs, resolveModelArtifactPath(cfgFile, abs))
+
+	// no config file (pure-env boot) → unchanged, so the coordinator falls back to its constant
+	require.Equal(t, "", resolveModelArtifactPath("", ""))
+	require.Equal(t, "rel/path.json", resolveModelArtifactPath("", "rel/path.json"))
+}
+
+// End-to-end: LoadConfig resolves an empty model_artifact_path to the config-dir
+// absolute default (this is the exact path the deployed daemon feeds the tour executor).
+func TestLoadConfig_ResolvesModelArtifactPathToConfigDirDefault(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte("database:\n  host: h\n"), 0o644))
+	t.Setenv("SPACETRADERS_CONFIG", cfgFile)
+	t.Chdir(t.TempDir())
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	want := filepath.Join(filepath.Dir(cfgFile), "services", "routing-service", "model_artifacts", "market_model.json")
+	require.Equal(t, want, cfg.Routing.ModelArtifactPath)
+	require.True(t, filepath.IsAbs(cfg.Routing.ModelArtifactPath))
+}
+
+// A relative model_artifact_path in the config resolves against the config file's dir.
+func TestLoadConfig_ResolvesRelativeModelArtifactPathAgainstConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile,
+		[]byte("routing:\n  model_artifact_path: alt/m.json\n"), 0o644))
+	t.Setenv("SPACETRADERS_CONFIG", cfgFile)
+	t.Chdir(t.TempDir())
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dir, "alt", "m.json"), cfg.Routing.ModelArtifactPath)
+}

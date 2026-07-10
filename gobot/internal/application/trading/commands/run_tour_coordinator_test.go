@@ -412,3 +412,73 @@ func TestTour_StrandedCargoReportsFailure(t *testing.T) {
 		t.Fatalf("veto reason must name good+units+location, got %q", reason)
 	}
 }
+
+// sp-wj0h regression: the daemon does NOT set cmd.ModelArtifactPath — the coordinator
+// reads the artifact from its handler-configured (absolute) path. With no cmd path, a
+// readable handler path lets the tour plan and complete (proving the production wiring
+// that DOA'd on the old cwd-relative constant).
+func TestTour_UsesHandlerModelArtifactPathWhenCmdEmpty(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-B"}},
+		bid: map[string]map[string]int{"X1-S1-B": {"G": 200}},
+		ask: map[string]map[string]int{"X1-S1-A": {"G": 100}, "X1-S1-B": {"G": 200}},
+		tv:  map[string]map[string]int{"X1-S1-A": {"G": 1000}, "X1-S1-B": {"G": 1000}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{
+		Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S1-A", "X1-S1", buy("G", 40, 100)),
+			leg("X1-S1-B", "X1-S1", sell("G", 40, 200)),
+		},
+	}}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	h.SetModelArtifactPath(writeTourArtifact(t)) // production shape: handler-configured path, cmd empty
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-CFG", PlayerID: 1, ContainerID: "ctr-cfg", // NO ModelArtifactPath on the command
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+	if r.TourUnavailable {
+		t.Fatalf("handler-configured artifact path must be read; got unavailable: %s", r.TourUnavailableReason)
+	}
+	if planner.calls == 0 {
+		t.Fatalf("expected the planner to be called once the artifact was read via the handler path")
+	}
+	if !r.Completed {
+		t.Fatalf("expected a completed tour, got %+v", r)
+	}
+}
+
+// An unreadable handler artifact path (the sp-wj0h DOA symptom) fails OPEN cleanly: a
+// "tour unavailable" no-op, nil error, no planner call, no trades.
+func TestTour_UnreadableModelArtifactFailsClosed(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A"}},
+		bid:     map[string]map[string]int{}, ask: map[string]map[string]int{"X1-S1-A": {"G": 100}},
+		tv:      map[string]map[string]int{"X1-S1-A": {"G": 1000}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{Feasible: true}}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	h.SetModelArtifactPath(filepath.Join(t.TempDir(), "does-not-exist", "market_model.json"))
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-DOA", PlayerID: 1, ContainerID: "ctr-doa", // no cmd path → uses the unreadable handler path
+	})
+	if err != nil {
+		t.Fatalf("unreadable artifact must fail OPEN with a nil error, got %v", err)
+	}
+	r := tourResponse(t, resp)
+	if !r.TourUnavailable || !strings.Contains(r.TourUnavailableReason, "model artifact unreadable") {
+		t.Fatalf("expected fail-closed 'model artifact unreadable', got %+v", r)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("must not call the planner on an unreadable artifact, got %d calls", planner.calls)
+	}
+	if fx.buys != 0 || fx.sells != 0 {
+		t.Fatalf("must not trade on an unreadable artifact, got %d buys / %d sells", fx.buys, fx.sells)
+	}
+}

@@ -85,6 +85,12 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Apply defaults for any missing values
 	SetDefaults(&cfg)
 
+	// Resolve the tour market-model artifact path to an ABSOLUTE location relative to
+	// the config file's directory (sp-wj0h): the tour executor reads it at launch and
+	// the launchd daemon's cwd is not the repo root, so a cwd-relative path DOA's the
+	// engine on "no such file or directory".
+	cfg.Routing.ModelArtifactPath = resolveModelArtifactPath(v.ConfigFileUsed(), cfg.Routing.ModelArtifactPath)
+
 	// Validate configuration
 	if err := ValidateConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
@@ -112,6 +118,31 @@ func MustLoadConfig(configPath string) *Config {
 		panic(fmt.Sprintf("failed to load configuration: %v", err))
 	}
 	return cfg
+}
+
+// resolveModelArtifactPath resolves the tour market-model artifact path to an absolute
+// location so the tour executor can read it regardless of the daemon's cwd (sp-wj0h).
+// When a config file was used, its directory anchors the resolution — config.yaml lives
+// at gobot/config.yaml and the artifact at gobot/services/..., so a config-dir-relative
+// default is correct in dev AND deploy:
+//   - empty current    → <config-dir>/services/routing-service/model_artifacts/market_model.json
+//   - relative current → <config-dir>/<current>
+//   - absolute current → unchanged
+//
+// When no config file was used (pure-env boot), current is returned unchanged so the
+// coordinator falls back to its repo-relative constant (behavior unchanged for that path).
+func resolveModelArtifactPath(configFile, current string) string {
+	if configFile == "" {
+		return current
+	}
+	dir := filepath.Dir(configFile)
+	if current == "" {
+		return filepath.Join(dir, "services", "routing-service", "model_artifacts", "market_model.json")
+	}
+	if filepath.IsAbs(current) {
+		return current
+	}
+	return filepath.Join(dir, current)
 }
 
 // configSearch describes where viper should look for a config file. When file
