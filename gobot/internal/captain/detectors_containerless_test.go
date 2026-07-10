@@ -88,6 +88,100 @@ func TestContainerlessPinnedHull_WithRunningContainer_Silent(t *testing.T) {
 		"a pinned hull with a running container must stay silent")
 }
 
+// contractStandingCoordinatorFleets is the sp-jetm exemption config under test:
+// one entry, mirroring defaultStandingCoordinatorFleets.
+func contractStandingCoordinatorFleets() []StandingCoordinatorFleet {
+	return []StandingCoordinatorFleet{{Fleet: "contract", ContainerType: "CONTRACT_FLEET_COORDINATOR"}}
+}
+
+// A contract-fleet hull pooled-idle between claims (containerless well past the
+// threshold, no direct container) stays silent WHILE the contract fleet's pool
+// coordinator has a RUNNING container — pooled-idle is by design (sp-jetm). The
+// coordinator's config deliberately does NOT reference this ship's symbol: the
+// exemption is fleet-based (DedicatedFleet match), not a per-ship config join.
+func TestContainerlessPinnedHull_ContractFleetWithRunningCoordinator_Silent(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	released := now.Add(-30 * time.Minute)
+	insertDedicatedShip(t, db, playerID, "TORWIND-CF1", "contract", &released, 0, 40)
+
+	started := now.Add(-2 * time.Hour)
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "contract-fleet-coordinator-live", PlayerID: playerID, Status: "RUNNING",
+		ContainerType: "CONTRACT_FLEET_COORDINATOR",
+		Config:        `{"container_id":"contract-fleet-coordinator-live","dedicated_ships":[]}`,
+		StartedAt:     &started,
+	}).Error)
+
+	cfg := DetectorConfig{
+		PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour,
+		StandingCoordinatorFleets: contractStandingCoordinatorFleets(),
+	}
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
+
+	require.Empty(t, containerlessEvents(t, store, playerID),
+		"a contract-fleet hull pooled-idle between claims must stay silent while its coordinator runs")
+}
+
+// The SAME contract-fleet hull fires once its fleet's coordinator is no longer
+// RUNNING (here: dead/FAILED) — the coordinator dying is a genuine loss mode the
+// watchdog must still catch, not something the pool exemption should hide.
+func TestContainerlessPinnedHull_ContractFleetCoordinatorNotRunning_Fires(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	released := now.Add(-30 * time.Minute)
+	insertDedicatedShip(t, db, playerID, "TORWIND-CF2", "contract", &released, 0, 40)
+
+	started := now.Add(-2 * time.Hour)
+	stopped := now.Add(-20 * time.Minute)
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "contract-fleet-coordinator-dead", PlayerID: playerID, Status: "FAILED",
+		ContainerType: "CONTRACT_FLEET_COORDINATOR",
+		Config:        `{"container_id":"contract-fleet-coordinator-dead","dedicated_ships":[]}`,
+		StartedAt:     &started, StoppedAt: &stopped,
+	}).Error)
+
+	cfg := DetectorConfig{
+		PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour,
+		StandingCoordinatorFleets: contractStandingCoordinatorFleets(),
+	}
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
+
+	events := containerlessEvents(t, store, playerID)
+	require.Len(t, events, 1, "a contract-fleet hull must fire once its pool coordinator is no longer running")
+	require.Equal(t, "TORWIND-CF2", events[0].Ship)
+	require.Contains(t, events[0].Payload, "contract")
+}
+
+// A tour-pinned hull still fires even when StandingCoordinatorFleets is
+// configured (with "contract") AND a contract coordinator happens to be
+// RUNNING at the same time — the exemption must not leak across fleets
+// (regression: the v63s matrix stays green for the class it was built for).
+func TestContainerlessPinnedHull_TourFleetWithContractCoordinatorRunning_StillFires(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	released := now.Add(-12 * time.Minute)
+	insertDedicatedShip(t, db, playerID, "TORWIND-TR1", "tour", &released, 74, 225)
+
+	started := now.Add(-2 * time.Hour)
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "contract-fleet-coordinator-live", PlayerID: playerID, Status: "RUNNING",
+		ContainerType: "CONTRACT_FLEET_COORDINATOR",
+		Config:        `{"container_id":"contract-fleet-coordinator-live","dedicated_ships":[]}`,
+		StartedAt:     &started,
+	}).Error)
+
+	cfg := DetectorConfig{
+		PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour,
+		StandingCoordinatorFleets: contractStandingCoordinatorFleets(),
+	}
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
+
+	events := containerlessEvents(t, store, playerID)
+	require.Len(t, events, 1, "a tour-pinned hull must keep firing — the contract exemption must not leak to other fleets")
+	require.Equal(t, "TORWIND-TR1", events[0].Ship)
+}
+
 // An UNDEDICATED hull with no container is not the watchdog's concern (detectIdleShips
 // owns generic idleness) — silent here.
 func TestContainerlessPinnedHull_UndedicatedHull_Silent(t *testing.T) {

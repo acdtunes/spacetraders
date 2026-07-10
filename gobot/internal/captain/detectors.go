@@ -44,6 +44,29 @@ type DetectorConfig struct {
 	// may sit with no running container before it fires an interrupt-class
 	// hull.containerless event. <= 0 disables the detector.
 	PinnedHullContainerless time.Duration
+
+	// StandingCoordinatorFleets (sp-jetm) parametrizes which DedicatedFleet tags
+	// are pool-managed by a standing coordinator container rather than pinned
+	// 1:1 to a single always-running container (RULINGS #5). A hull pinned to
+	// one of these fleets legitimately sits containerless BETWEEN claims — the
+	// coordinator owns the pool and its own loss modes are covered by
+	// income-stall detection — so detectContainerlessPinnedHulls exempts it
+	// while that fleet's coordinator has a RUNNING container. Empty disables
+	// the exemption entirely (every dedicated hull is treated as 1:1-pinned,
+	// the original sp-v63s behavior). This cannot be derived from the
+	// containers table: the coordinator's launch config carries no fleet-name
+	// field (see run_fleet_coordinator.go's dedicatedFleetContract, an
+	// unexported Go constant, not persisted data) — so the association is
+	// asserted here as the well-known standing-coordinator fleet(s), the same
+	// shape as incomeEngines below.
+	StandingCoordinatorFleets []StandingCoordinatorFleet
+}
+
+// StandingCoordinatorFleet pairs a Ship.DedicatedFleet() tag with the
+// container_type of the standing coordinator that pools it (sp-jetm).
+type StandingCoordinatorFleet struct {
+	Fleet         string // ship.DedicatedFleet() value this exemption covers
+	ContainerType string // container_type of the fleet's pool-managing coordinator
 }
 
 // Crash-loop defaults wired by the supervisor until CaptainConfig grows tunable
@@ -60,6 +83,18 @@ const (
 // dedicated hull's container within seconds, so five containerless minutes is well
 // past churn and squarely an anomaly worth an interrupt.
 const defaultPinnedHullContainerless = 5 * time.Minute
+
+// defaultStandingCoordinatorFleets is the sp-jetm exemption list, wired by the
+// supervisor until CaptainConfig grows a tunable field (follow-up bead, mirrors
+// the crash-loop/pinned-hull defaults above). "contract" is the one fleet with a
+// pooling standing coordinator today — CONTRACT_FLEET_COORDINATOR, matching
+// dedicatedFleetContract in run_fleet_coordinator.go. Tour/trade pins are
+// deliberately absent: those hulls run one dedicated container each with no
+// pool, so a containerless tour/trade hull stays exactly the anomaly the
+// watchdog was built to catch.
+var defaultStandingCoordinatorFleets = []StandingCoordinatorFleet{
+	{Fleet: "contract", ContainerType: "CONTRACT_FLEET_COORDINATOR"},
+}
 
 // RunDetectors writes synthetic strategic events for conditions that are
 // state (not daemon events): stale heartbeats, idle ships, credit crossings.
@@ -217,11 +252,27 @@ func detectIdleShips(ctx context.Context, db *gorm.DB, store captain.EventStore,
 // HasSince cooldown suppresses per-poll re-fire while the state persists (no o8wi
 // spam). A hull WITH a running container, an UNDEDICATED hull, and a dedicated hull
 // only briefly containerless all stay silent.
+//
+// A hull pinned to a StandingCoordinatorFleets entry (sp-jetm) is a further
+// exemption, orthogonal to the age gate: a contract-fleet hull pooled-idle
+// between claims is by design, for as long as the pool's coordinator stays up
+// — not just briefly. It stays silent WHILE that fleet's coordinator container
+// is RUNNING; the moment the coordinator itself dies, the hull loses its
+// exemption and the watchdog fires exactly as it would for any other pin (the
+// coordinator-died case SHOULD alarm — that loss mode is real).
 func detectContainerlessPinnedHulls(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
 	if cfg.PinnedHullContainerless <= 0 {
 		return nil // disabled
 	}
 	cutoff := now.Add(-cfg.PinnedHullContainerless)
+
+	// Precompute once per sweep (not per-ship) which configured fleets currently
+	// have a RUNNING pool coordinator — one query per configured fleet, mirroring
+	// inTransitShipSymbols's "compute the exemption set up front" shape.
+	pooledFleets, err := runningStandingCoordinatorFleets(ctx, db, cfg.PlayerID, cfg.StandingCoordinatorFleets)
+	if err != nil {
+		return err
+	}
 
 	var ships []persistence.ShipModel
 	if err := db.WithContext(ctx).
@@ -240,6 +291,12 @@ func detectContainerlessPinnedHulls(ctx context.Context, db *gorm.DB, store capt
 			return err
 		}
 		if busy > 0 {
+			continue
+		}
+		// Pool-managed fleet with its coordinator up → containerless is by design,
+		// regardless of how long. Skip before the age gate so a pool hull idle for
+		// hours between claims never fires (see doc comment above).
+		if pooledFleets[s.DedicatedFleet] {
 			continue
 		}
 		// Age gate: only a hull containerless for >= threshold is anomalous. Anchor
@@ -264,6 +321,30 @@ func detectContainerlessPinnedHulls(ctx context.Context, db *gorm.DB, store capt
 		})
 	}
 	return nil
+}
+
+// runningStandingCoordinatorFleets returns the set of DedicatedFleet tags
+// (sp-jetm) whose configured pool coordinator currently has a RUNNING
+// container. Empty fleets means the exemption is off entirely — the query
+// loop below simply does not run — so a DetectorConfig that never sets
+// StandingCoordinatorFleets reproduces the original sp-v63s behavior exactly.
+func runningStandingCoordinatorFleets(ctx context.Context, db *gorm.DB, playerID int, fleets []StandingCoordinatorFleet) (map[string]bool, error) {
+	if len(fleets) == 0 {
+		return nil, nil
+	}
+	pooled := make(map[string]bool, len(fleets))
+	for _, f := range fleets {
+		var running int64
+		if err := db.WithContext(ctx).Model(&persistence.ContainerModel{}).
+			Where("player_id = ? AND status = ? AND container_type = ?", playerID, "RUNNING", f.ContainerType).
+			Count(&running).Error; err != nil {
+			return nil, err
+		}
+		if running > 0 {
+			pooled[f.Fleet] = true
+		}
+	}
+	return pooled, nil
 }
 
 const incomeStallStreamKey = "income"
