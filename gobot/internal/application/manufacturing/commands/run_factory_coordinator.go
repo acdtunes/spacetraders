@@ -227,9 +227,11 @@ func (h *RunFactoryCoordinatorHandler) backoffNoWork(ctx context.Context, contai
 // shared.Clock has no cancellation of its own - RealClock.Sleep is a plain
 // blocking time.Sleep - so the actual sleep runs on a background goroutine
 // and this races it against ctx.Done(). A cancelled container therefore
-// returns immediately instead of hanging for up to noWorkIterationDelay; the
-// abandoned goroutine finishes sleeping in the background and exits cleanly
-// on its own, holding no resources worth cancelling.
+// returns immediately instead of hanging for up to d - whether d is the
+// sp-2q2o no-work backoff (noWorkIterationDelay) or the sp-l709 idle-hauler
+// park-poll wait (shipDiscoveryInterval); the abandoned goroutine finishes
+// sleeping in the background and exits cleanly on its own, holding no
+// resources worth cancelling.
 func (h *RunFactoryCoordinatorHandler) sleepInterruptibly(ctx context.Context, d time.Duration) {
 	done := make(chan struct{})
 	go func() {
@@ -427,7 +429,11 @@ func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
 			"system_symbol": systemSymbol,
 			"poll_interval": shipDiscoveryInterval.String(),
 		})
-		h.clock.Sleep(shipDiscoveryInterval)
+		// sp-l709: sleepInterruptibly (not a bare h.clock.Sleep) so a container
+		// shutdown mid-poll is noticed the instant ctx is cancelled instead of up
+		// to shipDiscoveryInterval (30s) late - the top-of-loop cancellation check
+		// above then returns ctx.Err() on the very next iteration.
+		h.sleepInterruptibly(ctx, shipDiscoveryInterval)
 	}
 }
 
