@@ -305,7 +305,25 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 		"destination_gate_waypoint": destinationGateWaypointSymbol,
 	})
 
-	jumpResult, err := h.apiClient.JumpShip(ctx, cmd.ShipSymbol, destinationGateWaypointSymbol, playerEntity.Token)
+	// A jump requires the hull IN ORBIT, but a cross-system leg refuels at the
+	// gate on arrival (route_executor.handlePostArrivalRefueling docks to refuel
+	// and does not re-orbit), so the hull can reach here still DOCKED — and the
+	// live jump API then hard-rejects it with 400 code 4236 "not currently in
+	// orbit", killing the tour (sp-28n2, a class distinct from the wc5h
+	// cooldown-409). Every navigate path already orbits before departing
+	// (navigate_direct's EnsureInOrbit, RouteExecutor.ensureShipInOrbit); the jump
+	// path was the one mover that did not. Orbit proactively when we already read
+	// the hull as DOCKED (no wasted jump attempt), and reactively in
+	// jumpWithOrbitRetry if the API still reports not-in-orbit under a raced
+	// nav_status. Orbit is idempotent and free, so a hull already in orbit (the
+	// common case) skips the call entirely.
+	if ship.NavStatus() == domainNavigation.NavStatusDocked {
+		if err := h.shipRepo.Orbit(ctx, ship, playerID); err != nil {
+			return nil, fmt.Errorf("failed to orbit %s at gate %s before jump: %w", cmd.ShipSymbol, ship.CurrentLocation().Symbol, err)
+		}
+	}
+
+	jumpResult, err := h.jumpWithOrbitRetry(ctx, ship, cmd, destinationGateWaypointSymbol, playerEntity.Token, playerID)
 	if err != nil {
 		// The server reports error 4262 when the destination system's jump
 		// gate is still under construction. Surface this as a clean,
@@ -345,6 +363,50 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	}, nil
 }
 
+// maxJumpOrbitRetries bounds how many times jumpWithOrbitRetry re-orbits and
+// retries a jump the live API rejected as not-in-orbit (4236). One retry clears
+// the realistic case (a single stale nav_status), and the bound guarantees a
+// jump that keeps 4236-ing for any OTHER reason surfaces the error instead of
+// looping forever.
+const maxJumpOrbitRetries = 2
+
+// jumpWithOrbitRetry executes the live jump, riding out a not-in-orbit rejection
+// (400 code 4236) instead of hard-failing on it (sp-28n2). Handle's proactive
+// guard already orbits a hull it READ as docked; this covers the residual race
+// where the persisted nav_status lagged a server-side dock, so the hull is
+// docked on the server while the daemon believed it orbited. It mirrors how the
+// trade-route coordinator rides a cooldown-409 (wc5h jumpHop): classify the one
+// recoverable error, take the corrective action (orbit live), retry — bounded,
+// with every other error propagated on the first attempt so a genuine jump
+// failure (4262, a missing gate connection, an auth error) is never masked as a
+// stale orbit.
+func (h *JumpShipHandler) jumpWithOrbitRetry(
+	ctx context.Context,
+	ship *domainNavigation.Ship,
+	cmd *JumpShipCommand,
+	destinationGateWaypointSymbol, token string,
+	playerID shared.PlayerID,
+) (*ports.JumpResult, error) {
+	logger := common.LoggerFromContext(ctx)
+	for attempt := 0; ; attempt++ {
+		jumpResult, err := h.apiClient.JumpShip(ctx, cmd.ShipSymbol, destinationGateWaypointSymbol, token)
+		if err == nil {
+			return jumpResult, nil
+		}
+		if !isNotInOrbitError(err) || attempt >= maxJumpOrbitRetries {
+			return nil, err
+		}
+		logger.Log("WARNING", "Jump rejected as not-in-orbit (4236) — orbiting live and retrying (raced nav_status; resume-safe, sp-28n2)", map[string]interface{}{
+			"ship_symbol":        cmd.ShipSymbol,
+			"destination_system": cmd.DestinationSystem,
+			"attempt":            attempt + 1,
+		})
+		if oerr := h.shipRepo.Orbit(ctx, ship, playerID); oerr != nil {
+			return nil, fmt.Errorf("failed to orbit %s after a not-in-orbit jump rejection: %w", cmd.ShipSymbol, oerr)
+		}
+	}
+}
+
 // isDestinationGateUnderConstructionError reports whether the API rejected a
 // jump because the destination system's jump gate is still under
 // construction (error 4262). Mirrors isAlreadyAtDestinationError's
@@ -355,6 +417,18 @@ func isDestinationGateUnderConstructionError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "4262") || strings.Contains(msg, "under construction")
+}
+
+// isNotInOrbitError reports whether the API rejected an action because the ship
+// is not in orbit (error 4236). Mirrors isDestinationGateUnderConstructionError's
+// string-matching approach — the wire form is
+// `API error (status 400): {"error":{"code":4236,"message":"Ship ... is not currently in orbit ..."}}`.
+func isNotInOrbitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "4236") || strings.Contains(msg, "not currently in orbit")
 }
 
 // destinationGateWaypoint finds the connection in a jump gate's connections
