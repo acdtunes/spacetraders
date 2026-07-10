@@ -464,3 +464,138 @@ func TestService_Path_InvalidatedOriginRow_ReprobesBeforeRouting(t *testing.T) {
 		t.Fatal("the re-probe must persist AF2 as under construction, not the stale open default")
 	}
 }
+
+// --- sp-qxa4: one unreadable gate must not abort an unrelated route ---
+
+// perSystemMissStore forces fetch-through for every system and resolves each
+// system's own gate as "<system>-GATE" (so GateWaypointOf never needs a system
+// graph). It records which systems were persisted, so a test can prove an unreadable
+// system is left UNPERSISTED (to re-probe next fetch).
+type perSystemMissStore struct {
+	replaced map[string][]system.GateEdge
+}
+
+func (m *perSystemMissStore) Edges(ctx context.Context, s string) ([]system.GateEdge, bool, error) {
+	return nil, false, nil
+}
+func (m *perSystemMissStore) GateWaypointOf(ctx context.Context, s string) (string, bool, error) {
+	return s + "-GATE", true, nil
+}
+func (m *perSystemMissStore) Replace(ctx context.Context, s string, e []system.GateEdge) error {
+	if m.replaced == nil {
+		m.replaced = map[string][]system.GateEdge{}
+	}
+	m.replaced[s] = e
+	return nil
+}
+func (m *perSystemMissStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
+	return nil, nil
+}
+
+// perSystemGateAPI serves each origin system's own connection list and can fail
+// GetJumpGate for a specific gate waypoint (the unreadable frontier gate). Every
+// probed waypoint reads as built unless listed under construction.
+type perSystemGateAPI struct {
+	connectionsBySystem map[string][]string // origin system -> connected gate waypoints
+	jumpGateErr         map[string]error    // gate waypoint -> live-fetch error (unreadable)
+	underConstruction   map[string]bool
+}
+
+func (f *perSystemGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
+	if err := f.jumpGateErr[wp]; err != nil {
+		return nil, err
+	}
+	return &ports.JumpGateData{Symbol: wp, Connections: f.connectionsBySystem[sys]}, nil
+}
+func (f *perSystemGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
+	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: f.underConstruction[wp]}, nil
+}
+
+// captureLogger records log messages so a test can assert the honest skip line.
+type captureLogger struct{ messages []string }
+
+func (l *captureLogger) Log(_, message string, _ map[string]interface{}) {
+	l.messages = append(l.messages, message)
+}
+
+// The incident (TORWIND-21 DP51→KA42): DP51 gates to BOTH X1-XX56 (an unswept
+// frontier system whose live gate fetch 400s — "no ship present") and X1-MID (which
+// reaches KA42). One unreadable sibling gate must NOT abort the route — the BFS
+// excludes XX56 and routes DP51→MID→KA42, leaves XX56 unpersisted so it re-probes
+// next fetch, and logs the skip honestly.
+func TestService_Path_UnreadableSiblingGate_RoutesAround(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{
+		connectionsBySystem: map[string][]string{
+			"X1-DP51": {"X1-XX56-GATE", "X1-MID-GATE"}, // XX56 listed first → expanded first
+			"X1-MID":  {"X1-KA42-GATE"},
+		},
+		jumpGateErr: map[string]error{
+			"X1-XX56-GATE": errors.New("api 400: waypoint X1-XX56-GATE not accessible, no ship present"),
+		},
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	logger := &captureLogger{}
+	ctx := logging.WithLogger(context.Background(), logger)
+	got, err := svc.Path(ctx, "X1-DP51", "X1-KA42", 1)
+	if err != nil {
+		t.Fatalf("one unreadable sibling gate must not abort the route, got error: %v", err)
+	}
+	want := []string{"X1-DP51", "X1-MID", "X1-KA42"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected the route around the unreadable gate %v, got %v", want, got)
+	}
+	// XX56 was NOT persisted — left stale/unverified to re-probe next fetch.
+	if _, persisted := store.replaced["X1-XX56"]; persisted {
+		t.Fatal("the unreadable system must not be persisted (leave it to re-probe next fetch)")
+	}
+	// The skip is logged honestly, naming the excluded gate.
+	found := false
+	for _, m := range logger.messages {
+		if strings.Contains(m, "X1-XX56") && strings.Contains(m, "unreadable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the excluded gate must be logged honestly, got messages: %v", logger.messages)
+	}
+}
+
+// When the ONLY path to the destination runs through the unreadable gate, fail-closed
+// holds: the route is an honest ErrUnroutable, never silently rerouted through the
+// unverified gate.
+func TestService_Path_UnreadableGateRequired_Unroutable(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{
+		connectionsBySystem: map[string][]string{
+			"X1-DP51": {"X1-XX56-GATE"}, // the only way out of DP51 is the unreadable gate
+		},
+		jumpGateErr: map[string]error{
+			"X1-XX56-GATE": errors.New("api 400: not accessible, no ship present"),
+		},
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	if _, err := svc.Path(context.Background(), "X1-DP51", "X1-KA42", 1); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("a route that requires the unreadable gate must be ErrUnroutable (fail-closed), got %v", err)
+	}
+}
+
+// A live GetJumpGate failure surfaces as ErrGateUnreadable — distinct from a store
+// error — and the system is NOT persisted, so the next fetch re-probes it.
+func TestService_Connections_GetJumpGateFailure_UnreadableAndUnpersisted(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{
+		jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("api 400: no ship present")},
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	_, err := svc.Connections(context.Background(), "X1-XX56", 1)
+	if !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("a live gate-fetch failure must be ErrGateUnreadable, got %v", err)
+	}
+	if _, persisted := store.replaced["X1-XX56"]; persisted {
+		t.Fatal("an unreadable system must not be persisted")
+	}
+}

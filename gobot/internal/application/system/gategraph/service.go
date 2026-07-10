@@ -42,6 +42,17 @@ const MaxJumpPath = 5
 // only the latter is an operational error.
 var ErrUnroutable = errors.New("no jump-gate route")
 
+// ErrGateUnreadable marks a live gate-connections fetch that failed for ONE system
+// — e.g. a frontier gate the API refuses with 400 "not accessible, no ship present"
+// (sp-qxa4). It is deliberately distinct from a store/DB failure: the BFS treats an
+// unreadable system as a DEAD-END and continues over the readable subgraph (one
+// unreadable frontier gate must never abort an unrelated route), whereas a store
+// error still fails the whole search closed. The system is left UNPERSISTED so the
+// next fetch re-probes it. Fail-closed is preserved: an unreadable node is never
+// routed THROUGH (its onward gates are unverified), so a route that genuinely
+// requires it ends ErrUnroutable.
+var ErrGateUnreadable = errors.New("jump-gate connections unreadable")
+
 // Service resolves and caches gate routes. Its dependencies mirror
 // GetJumpGateConnectionsHandler's (apiClient for the live gate fetch, graphProvider
 // to find a charted system's own gate, playerRepo for the token) plus the edge
@@ -107,7 +118,11 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 
 	gateData, err := s.apiClient.GetJumpGate(ctx, systemSymbol, gateWaypoint, token)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch jump gate connections for %s (%s): %w", systemSymbol, gateWaypoint, err)
+		// A per-system fetch failure (a frontier gate the API refuses, 400 "no ship
+		// present") is NOT a whole-route failure: tag it ErrGateUnreadable so the BFS
+		// excludes just this node and continues (sp-qxa4). We return BEFORE Replace, so
+		// nothing is persisted and the next fetch re-probes this system.
+		return nil, fmt.Errorf("%w for %s (%s): %v", ErrGateUnreadable, systemSymbol, gateWaypoint, err)
 	}
 
 	logger := logging.LoggerFromContext(ctx)
@@ -183,13 +198,32 @@ func (s *Service) token(ctx context.Context, playerID int) (string, error) {
 
 // Path returns the ordered system hop path from fromSystem to toSystem inclusive
 // (a single element when they are equal; ≥2 for a real cross-system route),
-// resolved by a bounded BFS over the fetch-through adjacency. It returns an
-// ErrUnroutable-wrapped error naming both systems when no route exists within
-// MaxJumpPath, or the underlying store/fetch error otherwise.
+// resolved by a bounded BFS over the fetch-through adjacency. A single unreadable
+// gate (ErrGateUnreadable — a frontier gate the API refuses) is excluded from the
+// build and the search continues on the readable subgraph (sp-qxa4); it is never
+// routed through. Path returns an ErrUnroutable-wrapped error naming both systems
+// when no route exists within MaxJumpPath (including when the only route required an
+// excluded gate), or an underlying store/token error otherwise (fail closed).
 func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error) {
+	logger := logging.LoggerFromContext(ctx)
 	return bfsPath(fromSystem, toSystem, MaxJumpPath, func(systemSymbol string) ([]string, error) {
 		edges, err := s.Connections(ctx, systemSymbol, playerID)
 		if err != nil {
+			// One system's gate is unreadable (sp-qxa4 — a frontier gate the API
+			// refuses, "no ship present"). Exclude it as a routing-THROUGH node —
+			// fail-closed, since its onward gates are unverified — but CONTINUE the
+			// search over the readable subgraph instead of aborting the whole build.
+			// A route that genuinely REQUIRES this node then ends ErrUnroutable (an
+			// honest no-path), never silently rerouted through the unverified gate.
+			// Any OTHER error (store/DB, token) still fails the whole search closed.
+			if errors.Is(err, ErrGateUnreadable) {
+				logger.Log("INFO", fmt.Sprintf("gate %s unreadable — edge excluded this build, will re-probe next fetch", systemSymbol), map[string]interface{}{
+					"action": "gate_graph_unreadable_edge_excluded",
+					"system": systemSymbol,
+					"error":  err.Error(),
+				})
+				return nil, nil
+			}
 			return nil, err
 		}
 		neighbors := make([]string, 0, len(edges))
