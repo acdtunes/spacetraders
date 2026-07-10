@@ -111,7 +111,16 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	// weighting is applied here via shipCapacity instead. targetDest (sp-xwa1)
 	// waives the cross-system penalty for the operator-directed lane only —
 	// see rankLanesWithGatePenalty's doc.
-	return rankLanesWithGatePenalty(trading.RankSpreads(listings), shipCapacity, targetDest), nil
+	//
+	// The absorption consult (sp-78ai L4) runs as its own step BEFORE
+	// rankLanesWithGatePenalty, not folded into it: rankLanesWithGatePenalty is a
+	// pure reorder (every input lane comes back out, just resequenced), while the
+	// consult REMOVES lanes outright — mixing the two would make the reorder step
+	// silently lossy. READ-ONLY (trade-analyst Q1: "circuits write nothing").
+	ranked := trading.RankSpreads(listings)
+	consult := h.readAbsorption(ctx, playerID)
+	ranked = h.filterShadowedLanes(ctx, ranked, consult, shipCapacity)
+	return rankLanesWithGatePenalty(ranked, shipCapacity, targetDest), nil
 }
 
 // collectSystemListings reads every cached market in one system into flat

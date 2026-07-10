@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -329,6 +330,17 @@ type RunTradeRouteCoordinatorHandler struct {
 	// byte-for-byte unchanged (fail-open, matching gateGraph's optional-port
 	// contract). The daemon injects the shared ShipEventBus via SetEventSubscriber.
 	eventSubscriber navigation.ShipEventSubscriber
+	// absorptionLedger is the cross-engine market-absorption ledger (sp-78ai L4).
+	// scanLanes consults it READ-ONLY (trade-analyst Q1: "circuits write nothing") to
+	// exclude a lane whose sell side is shadowed or whose reserved depth can't absorb
+	// a circuit tranche. Optional; nil leaves the consult fully inert (pre-L4
+	// behavior), the same optional-port contract gateGraph/eventSubscriber use. The
+	// daemon injects the shared ledger instance via SetAbsorptionLedger.
+	absorptionLedger absorption.Ledger
+	// absorptionConsultDisabled is the operator kill-switch (config
+	// absorption.trade_route_consult_disabled): true skips the consult read entirely
+	// and restores pre-L4 ranking byte-identically, even with a ledger wired.
+	absorptionConsultDisabled bool
 }
 
 // GateGraph resolves multi-jump routes over the persisted cross-system gate
@@ -401,6 +413,17 @@ func (h *RunTradeRouteCoordinatorHandler) gateGraphResolver() GateGraph {
 // existed. Mirrors the SetGateGraph optional-injection idiom.
 func (h *RunTradeRouteCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
 	h.eventSubscriber = subscriber
+}
+
+// SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L4), the same
+// optional-port idiom the other coordinator dependencies use. A nil ledger leaves the
+// consult inert (pre-L4 behavior, byte-for-byte). consultDisabled is the operator
+// kill-switch — unlike idle-arb's L2 SetAbsorptionLedger, there is no recording to
+// keep alive when disabled, since trade-route circuits never write to the ledger
+// (trade-analyst Q1: "circuits write nothing").
+func (h *RunTradeRouteCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool) {
+	h.absorptionLedger = ledger
+	h.absorptionConsultDisabled = consultDisabled
 }
 
 // Handle executes the trade-route command.

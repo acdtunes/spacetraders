@@ -22,4 +22,11 @@ type AbsorptionConfig struct {
 	// runs, so the ledger keeps serving other engines) — the operator escape hatch if
 	// the consult ever over-skips. Default false (consult on).
 	IdleArbConsultDisabled bool `mapstructure:"idle_arb_consult_disabled"`
+	// TradeRouteConsultDisabled kills the trade-route scanLanes absorption consult
+	// (sp-78ai L4) entirely — the read-only ledger lookup is skipped and lane ranking
+	// reverts to pre-L4 behavior byte-for-byte. Circuits have no write path here
+	// (trade-analyst Q1: "circuits write nothing"), so unlike IdleArbConsultDisabled
+	// there is no recording to keep alive. The operator escape hatch if the consult
+	// ever over-excludes. Default false (consult on).
+	TradeRouteConsultDisabled bool `mapstructure:"trade_route_consult_disabled"`
 }

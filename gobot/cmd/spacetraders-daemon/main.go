@@ -621,6 +621,12 @@ func run(cfg *config.Config) error {
 	// re-adopted mid-transit before any movement (jump/navigate) instead of 4214'ing
 	// and burning the container restart budget on a routine arrival.
 	tradeRouteCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	// sp-78ai L4: read-only absorption consult (trade-analyst Q1: "circuits write
+	// nothing") — scanLanes excludes a lane whose sell side is shadowed or whose
+	// reserved depth can't absorb a circuit tranche. Shares the SAME ledger instance
+	// L2 (idle-arb) writes to, above; TradeRouteConsultDisabled is the independent
+	// operator kill-switch for this read path only.
+	tradeRouteCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TradeRouteConsultDisabled)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
