@@ -28,6 +28,23 @@ const (
 	OperationTypeWarehouse OperationType = "WAREHOUSE"
 )
 
+// AllOperationTypes returns every OperationType constant. sp-cu42: the
+// schema_enum_drift_test.go gate derives its valid_operation_type
+// migration-coverage check from this list instead of a hand-copied constant
+// list, so a new operation type here is checked against the storage_operations
+// CHECK constraint automatically. Keep this in sync with the const block above
+// — it is the ONE place that must be updated when adding a type (versus the
+// two-hop miss that shipped WAREHOUSE without a migration: a new constant here
+// plus a separate, easy-to-forget copy in a distant test file).
+func AllOperationTypes() []OperationType {
+	return []OperationType{
+		OperationTypeGasSiphon,
+		OperationTypeMining,
+		OperationTypeCustom,
+		OperationTypeWarehouse,
+	}
+}
+
 // OperationStatus represents the lifecycle state of a storage operation
 type OperationStatus string
 

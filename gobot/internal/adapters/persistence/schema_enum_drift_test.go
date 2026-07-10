@@ -105,14 +105,18 @@ func registeredEnumConstraints() []enumConstraint {
 			},
 		},
 		{
+			// sp-cu42: domain is derived from storage.AllOperationTypes() rather
+			// than hand-copied here. The Lane C WAREHOUSE addition drifted
+			// undetected because this list was a separate, easy-to-forget copy of
+			// the domain constants — it stayed at the original three values while
+			// operation.go grew a fourth, so this test had nothing to check the
+			// new value against and passed vacuously. Deriving from the domain
+			// package's own canonical list collapses that two-hop miss into a
+			// single place (operation.go) that must be updated.
 			constraint: "valid_operation_type",
 			table:      "storage_operations",
 			column:     "operation_type",
-			domain: []string{
-				string(storage.OperationTypeGasSiphon),
-				string(storage.OperationTypeMining),
-				string(storage.OperationTypeCustom),
-			},
+			domain:     allOperationTypeStrings(),
 		},
 		{
 			constraint: "valid_storage_status",
@@ -361,5 +365,17 @@ func keys(set map[string]struct{}) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// allOperationTypeStrings stringifies storage.AllOperationTypes() for use as
+// the valid_operation_type domain list (sp-cu42) — see the registration
+// comment above for why this is derived rather than hand-copied.
+func allOperationTypeStrings() []string {
+	types := storage.AllOperationTypes()
+	out := make([]string, len(types))
+	for i, t := range types {
+		out[i] = string(t)
+	}
 	return out
 }
