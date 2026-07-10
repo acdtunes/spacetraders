@@ -236,3 +236,84 @@ def test_solver_property_capacity_and_spend():
                     spend += t["units"] * t["expected_unit_price"]
             assert 0 <= held <= hold, f"trial {trial}: hold {held}/{hold} breached"
         assert spend <= max_spend, f"trial {trial}: spend {spend} > cap {max_spend}"
+
+
+def _peak_hold_and_goods(out):
+    """Peak hold occupancy and the set of goods bought, from OUTPUT legs — the
+    observable manifest, dock-ordered sells-before-buys within each leg."""
+    held, peak, bought = 0, 0, set()
+    for leg in out["legs"]:
+        for t in leg["trades"]:
+            if not t["is_buy"]:
+                held -= t["units"]
+        for t in leg["trades"]:
+            if t["is_buy"]:
+                held += t["units"]
+                bought.add(t["good_symbol"])
+        peak = max(peak, held)
+    return peak, bought
+
+
+def _loop_a_board():
+    # The analyst's certified Loop-A shape plus the crowding distractor that made
+    # it fail in the field. Five cluster goods whose SRC (source) and SNK (sink)
+    # markets together fill a 225-hold heavy — moderate per-good spreads, vol-30
+    # sinks, so NO single good fills the hold; only packing across all five does.
+    # The distractor is many THIN SHIP_PARTS markets: a rich per-unit spread over
+    # vol-6 sinks the OLD single-good beam bound over-valued (spread × FULL hold)
+    # and crowded the scoring pool with, planning a 7%-hold single-good manifest
+    # on a heavy hull. The ship starts AT a distractor (P00), so surfacing the
+    # cluster is the beam's job, not a gift of the start position.
+    cluster = [("PARTS", 300, 2600), ("PLATING", 250, 2700),
+               ("ADV_CIRCUITRY", 500, 4200), ("CLOTHING", 200, 2300),
+               ("FOODSTUFFS", 150, 1800)]
+    rows = []
+    for g, ask, bid in cluster:
+        rows.append(snap("SRC", "S1", g, ask=ask, bid=ask - 10, tv=30))
+        rows.append(snap("SNK", "S1", g, ask=bid + 400, bid=bid, tv=30))
+    for i in range(18):
+        side = dict(ask=100, bid=95) if i % 2 == 0 else dict(ask=9999, bid=5000)
+        rows.append(snap(f"P{i:02d}", "S1", "SHIP_PARTS", tv=6, **side))
+    return rows
+
+
+def _plan_loop_a(hold, max_hops=6):
+    ship = dict(ship_symbol="H", current_waypoint="P00", current_system="S1",
+                hold_capacity=hold, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(max_hops=max_hops, max_spend=5_000_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    return solve_tour(_loop_a_board(), ship, cons, MODEL)
+
+
+def test_solver_packs_hold_across_goods_loop_a():
+    # sp-gm00 proving fixture: a 225-hold heavy on the Loop-A board must fill its
+    # hold across ≥4 goods instead of planning a thin single-good SHIP_PARTS
+    # manifest. (Guards the beam fix: on the old single-good bound this plans
+    # 12/225 = 5% utilization.)
+    out = _plan_loop_a(225)
+    assert out["feasible"], out
+    peak, bought = _peak_hold_and_goods(out)
+    assert peak >= 0.9 * 225, f"hold {peak}/225 = {peak / 225:.0%} < 90% utilization"
+    assert len(bought) >= 4, f"packed only {bought}, need ≥4 distinct goods"
+    # A hold-filling multi-good manifest dwarfs the ~111k single-good class the
+    # bead reports; assert the class, not an exact credit figure.
+    assert out["projected_profit"] > 400_000, out["projected_profit"]
+
+
+def test_solver_profit_scales_with_hull_size():
+    # sp-gm00 acceptance: on the SAME board a bigger hull plans MORE profit. The
+    # bead's core defect was a 225-hold heavy planning the same ~15-unit manifest
+    # as an 80-hold light ("hull size barely matters"). Packing must make the
+    # heavy fill its hold across goods and out-earn the light. (Guards the beam
+    # fix: on the old bound both hulls plan the same thin manifest — profit and
+    # peak occupancy are equal and this assertion fails.)
+    light, heavy = _plan_loop_a(80), _plan_loop_a(225)
+    assert light["feasible"] and heavy["feasible"], (light, heavy)
+    light_peak, _ = _peak_hold_and_goods(light)
+    heavy_peak, heavy_goods = _peak_hold_and_goods(heavy)
+    assert heavy_peak > light_peak, (light_peak, heavy_peak)          # hull fills more
+    assert len(heavy_goods) >= 4, heavy_goods                          # across goods
+    assert heavy["projected_profit"] > light["projected_profit"], \
+        (light["projected_profit"], heavy["projected_profit"])

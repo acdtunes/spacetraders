@@ -3,7 +3,10 @@
 Two-stage solve per the approved design (spec decision #4):
 
 1. `beam_sequences` — beam search over hop sequences (width BEAM_WIDTH),
-   ranked by an optimistic single-tranche spread bound. A tour touches at
+   ranked by an optimistic multi-good hold-PACKING bound (sp-gm00: the bound
+   fills the hold across every good tradeable on a hop, each capped at its
+   A-cap tranche depth, so a diverse cluster that fills a heavy hull out-ranks
+   a thin single good a vol-6 sink could never fill). A tour touches at
    most MAX_TOUR_SYSTEMS distinct systems INCLUDING the ship's start system
    (Admiral simplification 2026-07-09: start system + one gate neighbor).
    Gate-adjacency itself is delegated to `allowed_systems` — the Go caller
@@ -348,9 +351,27 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
 def beam_sequences(markets, ship, constraints, travel_fn):
     """Beam search over hop sequences; every prefix is a candidate tour.
 
-    Ranking uses an optimistic bound (undecayed best single-good spread ×
-    hold capacity per appended hop, plus launch-cargo liquidation value) —
-    cheap and never pessimistic, so pruning keeps the profitable shapes.
+    Ranking uses an optimistic MULTI-GOOD hold-packing bound (sp-gm00): for
+    each appended hop, `pack_gain` fills the hold with every good profitably
+    buyable at an earlier stop and sellable here — best undecayed spread
+    first, each good capped at its A-cap tranche depth
+    (MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE × trade_volume), the same
+    ceiling the allocator can realize. The prior bound credited only the
+    single best good over the FULL hold; that (a) over-valued a thin single
+    good a shallow (e.g. vol-6) sink can never fill and (b) never surfaced a
+    diverse cluster — which fills a heavy hull only by summing several goods —
+    into the FULL_SCORE_TOP_N cut, so heavy hulls planned the same 7%-hold
+    single-good manifests as light ones. The bound stays never-pessimistic:
+    realized units per (good, buy-leg, sell-leg) can't exceed the A-cap depth,
+    and the undecayed spread dominates every decayed tranche margin.
+
+    Seeds are pruned by their best OUTGOING pack (a one-hop lookahead), not by
+    their at-rest liquidation value alone: a rich cluster's SOURCE liquidates
+    to nothing (empty hold, nothing to sell there) and would otherwise lose the
+    width-BEAM_WIDTH seed cut to alphabetically-earlier thin markets, so the
+    cluster would never be explored. The lookahead ranks the cut only — the
+    stored beam score stays the real liquidation value, so a bare 1-hop seed
+    never crowds the top-N scoring pool on lookahead credit it can't realize.
     Returns candidate sequences (tuples) sorted best-bound-first.
     """
     max_hops = constraints.get("max_hops") or MAX_HOPS_DEFAULT
@@ -358,32 +379,55 @@ def beam_sequences(markets, ship, constraints, travel_fn):
     start_system = ship["current_system"]
     initial = {c["good_symbol"]: c["units"] for c in ship.get("cargo") or []}
     wps = sorted(markets)
+    hold = ship["hold_capacity"]
 
     def liquidation_gain(wp):
         goods = markets[wp]["goods"]
         return sum(units * goods[g]["bid"] for g, units in initial.items()
                    if g in goods and goods[g]["bid"] > 0)
 
-    def pair_gain(wp_from, wp_to):
-        best = 0
+    def pack_gain(wp_from, wp_to):
+        """Optimistic multi-good packing value for one hop (see docstring)."""
         goods_to = markets[wp_to]["goods"]
+        spreads = []
         for good, brow in markets[wp_from]["goods"].items():
             srow = goods_to.get(good)
             if srow and brow["ask"] > 0 and srow["bid"] > brow["ask"]:
-                best = max(best, (srow["bid"] - brow["ask"]) * ship["hold_capacity"])
+                depth = MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * max(
+                    1, min(brow["trade_volume"], srow["trade_volume"]))
+                spreads.append((srow["bid"] - brow["ask"], depth))
+        spreads.sort(reverse=True)
+        gain, cap = 0, hold
+        for spread, depth in spreads:
+            if cap <= 0:
+                break
+            units = min(cap, depth)
+            gain += spread * units
+            cap -= units
+        return gain
+
+    def within_cap(*systems):
+        return len(frozenset((start_system, *systems))) <= MAX_TOUR_SYSTEMS
+
+    def seed_lookahead(wp):
+        best = 0
+        sys_from = markets[wp]["system"]
+        for wp2 in wps:
+            if wp2 != wp and within_cap(sys_from, markets[wp2]["system"]):
+                g = pack_gain(wp, wp2)
+                if g > best:
+                    best = g
         return best
 
-    beam = []
-    pool = []
+    beam, pool = [], []
     for wp in wps:
-        systems = frozenset({start_system, markets[wp]["system"]})
-        if len(systems) > MAX_TOUR_SYSTEMS:
+        if not within_cap(markets[wp]["system"]):
             continue
-        state = ((wp,), systems, liquidation_gain(wp))
-        beam.append(state)
-        pool.append(state)
-    beam.sort(key=lambda s: (-s[2], s[0]))
+        beam.append(((wp,), frozenset({start_system, markets[wp]["system"]}),
+                     liquidation_gain(wp)))
+    beam.sort(key=lambda s: (-(s[2] + seed_lookahead(s[0][0])), s[0]))
     beam = beam[:BEAM_WIDTH]
+    pool.extend(beam)
 
     for _ in range(1, max_hops):
         nxt = []
@@ -394,7 +438,7 @@ def beam_sequences(markets, ship, constraints, travel_fn):
                 new_systems = systems | {markets[wp]["system"]}
                 if len(new_systems) > MAX_TOUR_SYSTEMS:
                     continue
-                gain = max(pair_gain(prev_wp, wp) for prev_wp in seq)
+                gain = max(pack_gain(prev_wp, wp) for prev_wp in seq)
                 nxt.append((seq + (wp,), new_systems, score + gain))
         nxt.sort(key=lambda s: (-s[2], s[0]))
         beam = nxt[:BEAM_WIDTH]
