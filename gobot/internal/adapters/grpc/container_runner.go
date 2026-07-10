@@ -38,6 +38,37 @@ const (
 	claimRetryMaxBackoff  = 3 * time.Second
 )
 
+// restartBackoffSchedule is the escalating wait applied BEFORE each automatic
+// restart of a failed container (sp-h0kr). Without it, a dependency that fails
+// instantly — routing down means an immediate connection-refused on localhost —
+// burns all container.MaxRestartAttempts restarts in milliseconds, so the
+// container terminalizes (and, under supervisor doctrine, stays dead) even
+// though the dependency self-heals minutes later. The schedule is indexed by the
+// number of restarts already taken (0 before the first restart); it sums to
+// ~2m35s across the default three restarts, converting "burn three restarts in
+// milliseconds" into riding out a multi-minute outage. The wait is clock-injected
+// and ctx-interruptible (see sleepOrCancel), so a Stop/shutdown never waits it
+// out and tests advance virtual time instantly.
+var restartBackoffSchedule = []time.Duration{
+	5 * time.Second,
+	30 * time.Second,
+	120 * time.Second,
+}
+
+// restartBackoffFor returns the backoff to wait before the restart that follows
+// restartsTaken prior restarts. Attempts past the end of the schedule reuse its
+// final (longest) entry, so a larger container.MaxRestartAttempts can never index
+// out of range.
+func restartBackoffFor(restartsTaken int) time.Duration {
+	if restartsTaken < 0 {
+		restartsTaken = 0
+	}
+	if restartsTaken >= len(restartBackoffSchedule) {
+		return restartBackoffSchedule[len(restartBackoffSchedule)-1]
+	}
+	return restartBackoffSchedule[restartsTaken]
+}
+
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
 type ContainerRunner struct {
@@ -350,10 +381,12 @@ func (r *ContainerRunner) execute() {
 	jitter := time.Duration(rand.Intn(5000)) * time.Millisecond
 	r.log("INFO", fmt.Sprintf("Startup jitter: waiting %v before first API call", jitter), nil)
 
-	select {
-	case <-time.After(jitter):
-		// Jitter complete, continue to execution
-	case <-r.ctx.Done():
+	// sp-h0kr: route the startup jitter through the injectable clock (a real
+	// 0-5s wait under RealClock, instant under the test MockClock) via the same
+	// ctx-interruptible primitive as the restart backoff. A shutdown during jitter
+	// still exits promptly, and execute()'s restart loop becomes testable without
+	// wall-waiting.
+	if err := r.sleepOrCancel(jitter); err != nil {
 		// Context canceled during jitter, exit immediately
 		r.log("INFO", "Context canceled during startup jitter", nil)
 		return
@@ -388,11 +421,31 @@ func (r *ContainerRunner) execute() {
 			// Check if we should retry
 			r.mu.RLock()
 			canRestart := r.containerEntity.CanRestart()
+			restartsSoFar := r.containerEntity.RestartCount()
 			r.mu.RUnlock()
 
 			if canRestart {
-				r.log("INFO", fmt.Sprintf("Retrying after error (attempt %d)",
-					r.containerEntity.RestartCount()+1), nil)
+				// sp-h0kr: wait an escalating, ctx-interruptible backoff BEFORE
+				// restarting. A dependency that fails instantly (routing down =>
+				// immediate connection-refused on localhost) would otherwise burn
+				// every restart in milliseconds and terminalize a container that a
+				// self-healing dependency would have let recover. restartsSoFar is
+				// the number of restarts already taken (0 before the first), so it
+				// indexes the schedule directly.
+				backoff := restartBackoffFor(restartsSoFar)
+				r.log("INFO", fmt.Sprintf("Retrying after error in %s (attempt %d)",
+					backoff, restartsSoFar+1), nil)
+
+				// A Stop/shutdown during the wait must exit promptly, not hang up to
+				// the full backoff. Mirror the ctx-canceled-during-iteration path
+				// above: signal graceful completion and release the hull.
+				if waitErr := r.sleepOrCancel(backoff); waitErr != nil {
+					r.log("INFO", "Restart backoff canceled by stop/shutdown", nil)
+					r.signalCompletion()
+					r.releaseShipAssignments("canceled")
+					return
+				}
+
 				r.mu.Lock()
 				r.containerEntity.ResetForRestart()
 				r.containerEntity.Start()
@@ -827,7 +880,7 @@ func (r *ContainerRunner) createShipAssignments() error {
 		r.log("INFO", fmt.Sprintf("Ship %s lost the claim-handoff race (attempt %d/%d), retrying in %s: %v",
 			shipSymbol, attempt, claimRetryMaxAttempts, backoff, err), nil)
 
-		if waitErr := r.waitBeforeClaimRetry(backoff); waitErr != nil {
+		if waitErr := r.sleepOrCancel(backoff); waitErr != nil {
 			return fmt.Errorf("failed to claim ship %s: retry canceled: %w", shipSymbol, waitErr)
 		}
 
@@ -898,13 +951,15 @@ func isTransientClaimError(err error) bool {
 	return errors.As(err, &alreadyAssigned)
 }
 
-// waitBeforeClaimRetry blocks for one claim-retry backoff, returning early if the
-// container's context is canceled (Stop). r.clock.Sleep is instant under the test
-// MockClock and a real sleep in production; racing it against ctx.Done keeps a
-// Stop during the claim window from having to wait the backoff out (sp-ku8e). The
-// detached sleeper goroutine outlives an early return by at most one backoff
-// before exiting, so it cannot leak.
-func (r *ContainerRunner) waitBeforeClaimRetry(d time.Duration) error {
+// sleepOrCancel blocks for d, returning early with the context error if the
+// container's context is canceled (Stop/shutdown) before the sleep completes.
+// r.clock.Sleep is instant under the test MockClock and a real sleep in
+// production; racing it against ctx.Done keeps a Stop from having to wait the full
+// duration out — whether that is the sp-ku8e claim-retry backoff, the sp-h0kr
+// restart backoff (up to 120s), or the startup jitter. The detached sleeper
+// goroutine outlives an early return by at most one sleep before exiting, so it
+// cannot leak.
+func (r *ContainerRunner) sleepOrCancel(d time.Duration) error {
 	slept := make(chan struct{})
 	go func() {
 		r.clock.Sleep(d)
