@@ -231,15 +231,47 @@ type ShipData struct {
 	CargoUnits         int
 	EngineSpeed        int
 	FrameSymbol        string       // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	ModuleSlots        int          // Frame's total module slot capacity - fixed for the life of the hull
+	MountingPoints     int          // Frame's total mounting point capacity - fixed for the life of the hull
 	Role               string       // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
 	Modules            []ModuleData // Installed ship modules (jump drives, mining equipment, etc.)
-	Cargo              *CargoData
+	Mounts             []MountData  // Installed ship mounts (mining lasers, gas siphons, sensor arrays, etc.)
+	// Reactor* fields describe the hull's fixed power budget. Reactors have no
+	// swap/upgrade endpoint in the SpaceTraders API - ReactorPowerOutput is
+	// permanent for the life of the ship (sp-el60).
+	ReactorSymbol       string
+	ReactorName         string
+	ReactorPowerOutput  int
+	ReactorRequirements RequirementsData
+	CrewCurrent         int
+	CrewRequired        int
+	CrewCapacity        int
+	Cargo               *CargoData
 }
 
 type ModuleData struct {
-	Symbol   string
-	Capacity int
-	Range    int
+	Symbol       string
+	Capacity     int
+	Range        int
+	Requirements RequirementsData
+}
+
+// MountData represents an installed mount (mining lasers, gas siphons,
+// sensor arrays, weapons, etc.).
+type MountData struct {
+	Symbol       string
+	Name         string
+	Strength     int
+	Deposits     []string
+	Requirements RequirementsData
+}
+
+// RequirementsData captures the power/crew/slot cost declared by a module,
+// mount, or reactor (SpaceTraders API schema: ShipRequirements).
+type RequirementsData struct {
+	Power int
+	Crew  int
+	Slots int
 }
 
 type CargoData struct {

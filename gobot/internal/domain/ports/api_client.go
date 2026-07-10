@@ -167,6 +167,14 @@ type ModuleInfo struct {
 	// modules that grant no capacity.
 	Capacity int
 	Range    int
+	// Power, Crew, and Slots are the module's own install requirements
+	// (sp-el60) - what installing it draws from the ship's reactor power
+	// budget, crew capacity, and module-slot budget respectively. Previously
+	// dropped by every caller that builds a ModuleInfo from the API's
+	// modules responses, leaving outfitting feasibility uncomputable.
+	Power int
+	Crew  int
+	Slots int
 }
 
 // ModuleModificationResult is the outcome of installing or removing a ship

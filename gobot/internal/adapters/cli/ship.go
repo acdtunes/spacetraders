@@ -385,6 +385,8 @@ Examples:
 			fmt.Printf("Cargo:          %d / %d units\n", s.CargoUnits, s.CargoCapacity)
 			fmt.Printf("Engine Speed:   %d\n", s.EngineSpeed)
 
+			printShipPowerSlots(s)
+
 			// Show cargo contents if any
 			if s.CargoUnits > 0 {
 				fmt.Printf("\nCargo Contents:\n")
@@ -400,6 +402,24 @@ Examples:
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
 
 	return cmd
+}
+
+// printShipPowerSlots prints a ship's reactor power / module slot / mounting
+// point / crew budget (sp-el60), computed offline from cached ship state.
+// Reactors, frames, and crew capacity have no swap endpoint in the
+// SpaceTraders API, so this budget is permanent for the life of the hull.
+func printShipPowerSlots(s *pb.ShipDetail) {
+	fmt.Printf("\nPower / Slots\n")
+	fmt.Printf("-------------\n")
+	fmt.Printf("Reactor:        %s (%s)\n", s.ReactorSymbol, s.ReactorName)
+	fmt.Printf("Power:          %d / %d used (%d free)\n",
+		s.PowerUsed, s.ReactorPowerOutput, s.ReactorPowerOutput-s.PowerUsed)
+	fmt.Printf("Module Slots:   %d / %d used (%d free)\n",
+		s.ModuleSlotsUsed, s.ModuleSlots, s.ModuleSlots-s.ModuleSlotsUsed)
+	fmt.Printf("Mounting Points: %d / %d used (%d free)\n",
+		s.MountingPointsUsed, s.MountingPoints, s.MountingPoints-s.MountingPointsUsed)
+	fmt.Printf("Crew:           %d current, %d required, %d capacity\n",
+		s.CrewCurrent, s.CrewRequired, s.CrewCapacity)
 }
 
 // newShipRefreshCommand creates the ship refresh subcommand
@@ -458,6 +478,8 @@ Examples:
 			fmt.Printf("Fuel:           %d / %d\n", s.FuelCurrent, s.FuelCapacity)
 			fmt.Printf("Cargo:          %d / %d units\n", s.CargoUnits, s.CargoCapacity)
 			fmt.Printf("Engine Speed:   %d\n", s.EngineSpeed)
+
+			printShipPowerSlots(s)
 
 			if s.CargoUnits > 0 {
 				fmt.Printf("\nCargo Contents:\n")

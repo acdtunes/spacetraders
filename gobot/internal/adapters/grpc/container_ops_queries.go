@@ -8,6 +8,7 @@ import (
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
@@ -85,16 +86,27 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 
 	// Build ship detail
 	shipDetail := &pb.ShipDetail{
-		Symbol:         domainShip.ShipSymbol(),
-		Location:       domainShip.CurrentLocation().Symbol,
-		NavStatus:      string(domainShip.NavStatus()),
-		FuelCurrent:    int32(domainShip.Fuel().Current),
-		FuelCapacity:   int32(domainShip.Fuel().Capacity),
-		CargoUnits:     int32(domainShip.CargoUnits()),
-		CargoCapacity:  int32(domainShip.CargoCapacity()),
-		CargoInventory: cargoItems,
-		EngineSpeed:    int32(domainShip.EngineSpeed()),
-		Role:           domainShip.Role(),
+		Symbol:             domainShip.ShipSymbol(),
+		Location:           domainShip.CurrentLocation().Symbol,
+		NavStatus:          string(domainShip.NavStatus()),
+		FuelCurrent:        int32(domainShip.Fuel().Current),
+		FuelCapacity:       int32(domainShip.Fuel().Capacity),
+		CargoUnits:         int32(domainShip.CargoUnits()),
+		CargoCapacity:      int32(domainShip.CargoCapacity()),
+		CargoInventory:     cargoItems,
+		EngineSpeed:        int32(domainShip.EngineSpeed()),
+		Role:               domainShip.Role(),
+		ReactorSymbol:      domainShip.ReactorSymbol(),
+		ReactorName:        domainShip.ReactorName(),
+		ReactorPowerOutput: int32(domainShip.ReactorPowerOutput()),
+		PowerUsed:          int32(navigation.PowerUsed(domainShip)),
+		ModuleSlots:        int32(domainShip.ModuleSlots()),
+		ModuleSlotsUsed:    int32(navigation.ModuleSlotsUsed(domainShip)),
+		MountingPoints:     int32(domainShip.MountingPoints()),
+		MountingPointsUsed: int32(navigation.MountingPointsUsed(domainShip)),
+		CrewCurrent:        int32(domainShip.CrewCurrent()),
+		CrewRequired:       int32(domainShip.CrewRequired()),
+		CrewCapacity:       int32(domainShip.CrewCapacity()),
 	}
 
 	return shipDetail, nil
@@ -136,16 +148,27 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 
 	// Build ship detail
 	shipDetail := &pb.ShipDetail{
-		Symbol:         domainShip.ShipSymbol(),
-		Location:       domainShip.CurrentLocation().Symbol,
-		NavStatus:      string(domainShip.NavStatus()),
-		FuelCurrent:    int32(domainShip.Fuel().Current),
-		FuelCapacity:   int32(domainShip.Fuel().Capacity),
-		CargoUnits:     int32(domainShip.CargoUnits()),
-		CargoCapacity:  int32(domainShip.CargoCapacity()),
-		CargoInventory: cargoItems,
-		EngineSpeed:    int32(domainShip.EngineSpeed()),
-		Role:           domainShip.Role(),
+		Symbol:             domainShip.ShipSymbol(),
+		Location:           domainShip.CurrentLocation().Symbol,
+		NavStatus:          string(domainShip.NavStatus()),
+		FuelCurrent:        int32(domainShip.Fuel().Current),
+		FuelCapacity:       int32(domainShip.Fuel().Capacity),
+		CargoUnits:         int32(domainShip.CargoUnits()),
+		CargoCapacity:      int32(domainShip.CargoCapacity()),
+		CargoInventory:     cargoItems,
+		EngineSpeed:        int32(domainShip.EngineSpeed()),
+		Role:               domainShip.Role(),
+		ReactorSymbol:      domainShip.ReactorSymbol(),
+		ReactorName:        domainShip.ReactorName(),
+		ReactorPowerOutput: int32(domainShip.ReactorPowerOutput()),
+		PowerUsed:          int32(navigation.PowerUsed(domainShip)),
+		ModuleSlots:        int32(domainShip.ModuleSlots()),
+		ModuleSlotsUsed:    int32(navigation.ModuleSlotsUsed(domainShip)),
+		MountingPoints:     int32(domainShip.MountingPoints()),
+		MountingPointsUsed: int32(navigation.MountingPointsUsed(domainShip)),
+		CrewCurrent:        int32(domainShip.CrewCurrent()),
+		CrewRequired:       int32(domainShip.CrewRequired()),
+		CrewCapacity:       int32(domainShip.CrewCapacity()),
 	}
 
 	return shipDetail, nil

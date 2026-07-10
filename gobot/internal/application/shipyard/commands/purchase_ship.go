@@ -561,7 +561,8 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 	// Convert modules
 	var modules []*navigation.ShipModule
 	for _, mod := range shipData.Modules {
-		module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range)
+		requirements := navigation.NewShipRequirements(mod.Requirements.Power, mod.Requirements.Crew, mod.Requirements.Slots)
+		module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range, requirements)
 		modules = append(modules, module)
 	}
 
@@ -582,6 +583,24 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ship: %w", err)
 	}
+
+	// Enrich with power/slot/crew data (sp-el60) from the fresh API payload so
+	// a newly purchased hull is immediately outfit-feasibility computable
+	// rather than waiting on the next full sync.
+	mounts := make([]*navigation.ShipMount, len(shipData.Mounts))
+	for i, mnt := range shipData.Mounts {
+		mountRequirements := navigation.NewShipRequirements(mnt.Requirements.Power, mnt.Requirements.Crew, mnt.Requirements.Slots)
+		mounts[i] = navigation.NewShipMount(mnt.Symbol, mnt.Name, mnt.Strength, mnt.Deposits, mountRequirements)
+	}
+	ship.SetMounts(mounts)
+	ship.SetSlots(shipData.ModuleSlots, shipData.MountingPoints)
+	reactorRequirements := navigation.NewShipRequirements(
+		shipData.ReactorRequirements.Power,
+		shipData.ReactorRequirements.Crew,
+		shipData.ReactorRequirements.Slots,
+	)
+	ship.SetReactor(shipData.ReactorSymbol, shipData.ReactorName, shipData.ReactorPowerOutput, reactorRequirements)
+	ship.SetCrew(shipData.CrewCurrent, shipData.CrewRequired, shipData.CrewCapacity)
 
 	return ship, nil
 }

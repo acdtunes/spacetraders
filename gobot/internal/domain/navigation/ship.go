@@ -68,6 +68,21 @@ type Ship struct {
 	assignment      *ShipAssignment // Container assignment state (persisted to DB)
 	fuelService     *ShipFuelService
 
+	// Power/slot/crew data (sp-el60). Reactors and frames have no swap/upgrade
+	// endpoint in the SpaceTraders API - reactorPowerOutput, moduleSlots, and
+	// mountingPoints are fixed for the life of the hull. Only modules/mounts
+	// can be installed or removed to fit within these permanent budgets.
+	reactorSymbol       string
+	reactorName         string
+	reactorPowerOutput  int
+	reactorRequirements ShipRequirements
+	moduleSlots         int
+	mountingPoints      int
+	mounts              []*ShipMount // Installed ship mounts (mining lasers, gas siphons, sensor arrays, etc.)
+	crewCurrent         int
+	crewRequired        int
+	crewCapacity        int
+
 	// DB-as-source-of-truth fields
 	flightMode         string     // Current flight mode (CRUISE, DRIFT, BURN, STEALTH)
 	arrivalTime        *time.Time // When IN_TRANSIT ship will arrive
@@ -268,6 +283,65 @@ func (s *Ship) GetJumpDriveRange() int {
 // Excludes EXCAVATOR and other mining/hauling roles
 func (s *Ship) IsScoutType() bool {
 	return s.role == roleSatellite
+}
+
+// Power/Slot/Crew Queries (sp-el60)
+
+// ReactorSymbol returns the reactor type symbol (e.g., "REACTOR_SOLAR_I").
+func (s *Ship) ReactorSymbol() string {
+	return s.reactorSymbol
+}
+
+// ReactorName returns the reactor's display name.
+func (s *Ship) ReactorName() string {
+	return s.reactorName
+}
+
+// ReactorPowerOutput returns the hull's total power budget. Reactors have no
+// swap/upgrade endpoint in the SpaceTraders API - this value is permanent for
+// the life of the ship.
+func (s *Ship) ReactorPowerOutput() int {
+	return s.reactorPowerOutput
+}
+
+// ReactorRequirements returns the reactor's own power/crew/slot requirements.
+func (s *Ship) ReactorRequirements() ShipRequirements {
+	return s.reactorRequirements
+}
+
+// ModuleSlots returns the frame's total module slot capacity. Frames have no
+// swap/upgrade endpoint - this value is permanent for the life of the ship.
+func (s *Ship) ModuleSlots() int {
+	return s.moduleSlots
+}
+
+// MountingPoints returns the frame's total mounting point capacity. Frames
+// have no swap/upgrade endpoint - this value is permanent for the life of
+// the ship.
+func (s *Ship) MountingPoints() int {
+	return s.mountingPoints
+}
+
+// Mounts returns the ship's installed mounts (mining lasers, gas siphons,
+// sensor arrays, weapons, etc.).
+func (s *Ship) Mounts() []*ShipMount {
+	return s.mounts
+}
+
+// CrewCurrent returns the ship's current crew count.
+func (s *Ship) CrewCurrent() int {
+	return s.crewCurrent
+}
+
+// CrewRequired returns the crew required to operate the ship at its current
+// module/mount loadout.
+func (s *Ship) CrewRequired() int {
+	return s.crewRequired
+}
+
+// CrewCapacity returns the maximum crew the ship can carry.
+func (s *Ship) CrewCapacity() int {
+	return s.crewCapacity
 }
 
 // Navigation Status Management
@@ -697,6 +771,40 @@ func (s *Ship) SetNavStatus(status NavStatus) {
 	s.navStatus = status
 }
 
+// SetReactor sets the ship's reactor data (symbol, name, power output, and
+// the reactor's own requirements). Used by repositories when loading from
+// database and when enriching a ship from a fresh API sync. Reactors have no
+// swap/upgrade endpoint in the SpaceTraders API - powerOutput is permanent
+// for the life of the hull (sp-el60).
+func (s *Ship) SetReactor(symbol, name string, powerOutput int, requirements ShipRequirements) {
+	s.reactorSymbol = symbol
+	s.reactorName = name
+	s.reactorPowerOutput = powerOutput
+	s.reactorRequirements = requirements
+}
+
+// SetSlots sets the frame's fixed module slot and mounting point budgets.
+// Frames have no swap/upgrade endpoint - these values are permanent for the
+// life of the hull (sp-el60).
+func (s *Ship) SetSlots(moduleSlots, mountingPoints int) {
+	s.moduleSlots = moduleSlots
+	s.mountingPoints = mountingPoints
+}
+
+// SetMounts sets the ship's installed mounts.
+// Used by repositories when loading from database.
+func (s *Ship) SetMounts(mounts []*ShipMount) {
+	s.mounts = mounts
+}
+
+// SetCrew sets the ship's crew current/required/capacity counts.
+// Used by repositories when loading from database.
+func (s *Ship) SetCrew(current, required, capacity int) {
+	s.crewCurrent = current
+	s.crewRequired = required
+	s.crewCapacity = capacity
+}
+
 // ReconstructShip creates a Ship from persisted state (used by repository)
 // This is used when loading a ship from the database.
 func ReconstructShip(
@@ -717,26 +825,46 @@ func ReconstructShip(
 	cooldownExpiration *time.Time,
 	assignment *ShipAssignment,
 	dedicatedFleet string,
+	reactorSymbol string,
+	reactorName string,
+	reactorPowerOutput int,
+	reactorRequirements ShipRequirements,
+	moduleSlots int,
+	mountingPoints int,
+	mounts []*ShipMount,
+	crewCurrent int,
+	crewRequired int,
+	crewCapacity int,
 ) (*Ship, error) {
 	s := &Ship{
-		shipSymbol:         shipSymbol,
-		playerID:           playerID,
-		currentLocation:    currentLocation,
-		fuel:               fuel,
-		fuelCapacity:       fuelCapacity,
-		cargoCapacity:      cargoCapacity,
-		cargo:              cargo,
-		engineSpeed:        engineSpeed,
-		frameSymbol:        frameSymbol,
-		role:               role,
-		modules:            modules,
-		navStatus:          navStatus,
-		flightMode:         flightMode,
-		arrivalTime:        arrivalTime,
-		cooldownExpiration: cooldownExpiration,
-		assignment:         assignment,
-		dedicatedFleet:     dedicatedFleet,
-		fuelService:        NewShipFuelService(),
+		shipSymbol:          shipSymbol,
+		playerID:            playerID,
+		currentLocation:     currentLocation,
+		fuel:                fuel,
+		fuelCapacity:        fuelCapacity,
+		cargoCapacity:       cargoCapacity,
+		cargo:               cargo,
+		engineSpeed:         engineSpeed,
+		frameSymbol:         frameSymbol,
+		role:                role,
+		modules:             modules,
+		navStatus:           navStatus,
+		flightMode:          flightMode,
+		arrivalTime:         arrivalTime,
+		cooldownExpiration:  cooldownExpiration,
+		assignment:          assignment,
+		dedicatedFleet:      dedicatedFleet,
+		reactorSymbol:       reactorSymbol,
+		reactorName:         reactorName,
+		reactorPowerOutput:  reactorPowerOutput,
+		reactorRequirements: reactorRequirements,
+		moduleSlots:         moduleSlots,
+		mountingPoints:      mountingPoints,
+		mounts:              mounts,
+		crewCurrent:         crewCurrent,
+		crewRequired:        crewRequired,
+		crewCapacity:        crewCapacity,
+		fuelService:         NewShipFuelService(),
 	}
 
 	if err := s.validate(); err != nil {

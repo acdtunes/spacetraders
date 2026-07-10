@@ -11,17 +11,19 @@ import "strings"
 // - Symbol must be non-empty
 // - Capacity and Range cannot be negative
 type ShipModule struct {
-	symbol   string
-	capacity int
-	range_   int // use range_ to avoid Go keyword
+	symbol       string
+	capacity     int
+	range_       int // use range_ to avoid Go keyword
+	requirements ShipRequirements
 }
 
 // NewShipModule creates a new ShipModule value object
-func NewShipModule(symbol string, capacity, range_ int) *ShipModule {
+func NewShipModule(symbol string, capacity, range_ int, requirements ShipRequirements) *ShipModule {
 	return &ShipModule{
-		symbol:   symbol,
-		capacity: capacity,
-		range_:   range_,
+		symbol:       symbol,
+		capacity:     capacity,
+		range_:       range_,
+		requirements: requirements,
 	}
 }
 
@@ -38,6 +40,11 @@ func (m *ShipModule) Capacity() int {
 // Range returns the module's range (if applicable)
 func (m *ShipModule) Range() int {
 	return m.range_
+}
+
+// Requirements returns the module's power/crew/slot cost.
+func (m *ShipModule) Requirements() ShipRequirements {
+	return m.requirements
 }
 
 // IsJumpDrive checks if this module is a jump drive

@@ -287,6 +287,27 @@ message ShipModuleInfo {
   // modules that grant no capacity.
   int32 capacity = 3;
   int32 range = 4;
+  // power, crew, and slots are the module's own install requirements
+  // (sp-el60) - what installing it draws from the ship's reactor power
+  // budget, crew capacity, and module-slot budget respectively.
+  int32 power = 5;
+  int32 crew = 6;
+  int32 slots = 7;
+}
+
+// ModuleFeasibility reports whether a named candidate module can be
+// installed on a ship given its current power/slot/crew budget, computed
+// offline from cached ship state - no live trial-and-error install required
+// (sp-el60). Populated on ListShipModulesResponse only when the request
+// carried a candidate_symbol.
+message ModuleFeasibility {
+  string candidate_symbol = 1;
+  // can_install is true only when power_short, slot_short, and crew_short
+  // are all 0.
+  bool can_install = 2;
+  int32 power_short = 3;
+  int32 slot_short = 4;
+  int32 crew_short = 5;
 }
 
 // InstallModuleRequest installs a module from the ship's cargo onto the ship.
@@ -337,12 +358,35 @@ message ListShipModulesRequest {
   string ship_symbol = 1;
   int32 player_id = 2;
   optional string agent_symbol = 3;
+  // candidate_symbol, when set, requests an offline feasibility check for a
+  // not-yet-installed module against this ship's current power/slot/crew
+  // budget (sp-el60). candidate_power/crew/slots are the candidate module's
+  // own install requirements - there is no catalog of unowned module specs
+  // in this codebase or the SpaceTraders API, so the caller supplies them.
+  optional string candidate_symbol = 4;
+  optional int32 candidate_power = 5;
+  optional int32 candidate_crew = 6;
+  optional int32 candidate_slots = 7;
 }
 
 message ListShipModulesResponse {
   string ship_symbol = 1;
   repeated ShipModuleInfo modules = 2;
   string error = 3;
+  // Fields 4-12 are the ship's power/slot/crew budget summary (sp-el60),
+  // computed offline from cached ship state - reactors, frames, and crew
+  // capacity have no swap endpoint, so these budgets are permanent per hull.
+  int32 reactor_power_output = 4;
+  int32 power_used = 5;
+  int32 module_slots = 6;
+  int32 module_slots_used = 7;
+  int32 mounting_points = 8;
+  int32 mounting_points_used = 9;
+  int32 crew_current = 10;
+  int32 crew_required = 11;
+  int32 crew_capacity = 12;
+  // feasibility is populated only when the request carried a candidate_symbol.
+  optional ModuleFeasibility feasibility = 13;
 }
 
 // BatchContractWorkflowRequest initiates batch contract workflow
@@ -801,6 +845,20 @@ message ShipDetail {
   repeated CargoItem cargo_inventory = 8;
   int32 engine_speed = 9;
   string role = 10;
+  // Fields 11-21 are the ship's reactor/power/slot/crew budget (sp-el60).
+  // Reactors, frames, and crew capacity have no swap endpoint in the
+  // SpaceTraders API, so these are permanent for the life of the hull.
+  string reactor_symbol = 11;
+  string reactor_name = 12;
+  int32 reactor_power_output = 13;
+  int32 power_used = 14;
+  int32 module_slots = 15;
+  int32 module_slots_used = 16;
+  int32 mounting_points = 17;
+  int32 mounting_points_used = 18;
+  int32 crew_current = 19;
+  int32 crew_required = 20;
+  int32 crew_capacity = 21;
 }
 
 // PurchaseShipRequest requests purchase of a single ship

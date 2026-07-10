@@ -5,6 +5,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// requirementsDTO mirrors the SpaceTraders API's ShipRequirements schema
+// (power/crew/slots). It is shared by ShipReactor, ShipModule, and ShipMount
+// - every module/mount/reactor declares its own cost against the hull's
+// fixed power, slot, and crew budgets (sp-el60).
+type requirementsDTO struct {
+	Power int `json:"power"`
+	Crew  int `json:"crew"`
+	Slots int `json:"slots"`
+}
+
 type shipDTO struct {
 	Symbol       string `json:"symbol"`
 	Registration struct {
@@ -41,12 +51,41 @@ type shipDTO struct {
 	} `json:"engine"`
 	Frame struct {
 		Symbol string `json:"symbol"`
+		// ModuleSlots/MountingPoints are the frame's fixed budgets - frames
+		// have no swap/upgrade endpoint, so these are permanent for the life
+		// of the hull (sp-el60).
+		ModuleSlots    int `json:"moduleSlots"`
+		MountingPoints int `json:"mountingPoints"`
 	} `json:"frame"`
+	// Reactor is the hull's fixed power budget. Reactors have no
+	// swap/upgrade endpoint in the SpaceTraders API - PowerOutput is
+	// permanent for the life of the ship (sp-el60).
+	Reactor struct {
+		Symbol       string           `json:"symbol"`
+		Name         string           `json:"name"`
+		PowerOutput  int              `json:"powerOutput"`
+		Requirements requirementsDTO  `json:"requirements"`
+	} `json:"reactor"`
+	Crew struct {
+		Current  int `json:"current"`
+		Required int `json:"required"`
+		Capacity int `json:"capacity"`
+	} `json:"crew"`
 	Modules []struct {
-		Symbol   string `json:"symbol"`
-		Capacity int    `json:"capacity"`
-		Range    int    `json:"range"`
+		Symbol       string          `json:"symbol"`
+		Capacity     int             `json:"capacity"`
+		Range        int             `json:"range"`
+		Requirements requirementsDTO `json:"requirements"`
 	} `json:"modules"`
+	// Mounts are installed mounts (mining lasers, gas siphons, sensor
+	// arrays, weapons, etc.) - sp-el60.
+	Mounts []struct {
+		Symbol       string          `json:"symbol"`
+		Name         string          `json:"name"`
+		Strength     int             `json:"strength"`
+		Deposits     []string        `json:"deposits"`
+		Requirements requirementsDTO `json:"requirements"`
+	} `json:"mounts"`
 }
 
 func (d *shipDTO) toShipData() *navigation.ShipData {
@@ -72,6 +111,26 @@ func (d *shipDTO) toShipData() *navigation.ShipData {
 			Symbol:   module.Symbol,
 			Capacity: module.Capacity,
 			Range:    module.Range,
+			Requirements: navigation.RequirementsData{
+				Power: module.Requirements.Power,
+				Crew:  module.Requirements.Crew,
+				Slots: module.Requirements.Slots,
+			},
+		}
+	}
+
+	mounts := make([]navigation.MountData, len(d.Mounts))
+	for i, mount := range d.Mounts {
+		mounts[i] = navigation.MountData{
+			Symbol:   mount.Symbol,
+			Name:     mount.Name,
+			Strength: mount.Strength,
+			Deposits: mount.Deposits,
+			Requirements: navigation.RequirementsData{
+				Power: mount.Requirements.Power,
+				Crew:  mount.Requirements.Crew,
+				Slots: mount.Requirements.Slots,
+			},
 		}
 	}
 
@@ -98,8 +157,22 @@ func (d *shipDTO) toShipData() *navigation.ShipData {
 		CargoUnits:         d.Cargo.Units,
 		EngineSpeed:        d.Engine.Speed,
 		FrameSymbol:        d.Frame.Symbol,
+		ModuleSlots:        d.Frame.ModuleSlots,
+		MountingPoints:     d.Frame.MountingPoints,
 		Role:               d.Registration.Role,
 		Modules:            modules,
-		Cargo:              cargo,
+		Mounts:             mounts,
+		ReactorSymbol:      d.Reactor.Symbol,
+		ReactorName:        d.Reactor.Name,
+		ReactorPowerOutput: d.Reactor.PowerOutput,
+		ReactorRequirements: navigation.RequirementsData{
+			Power: d.Reactor.Requirements.Power,
+			Crew:  d.Reactor.Requirements.Crew,
+			Slots: d.Reactor.Requirements.Slots,
+		},
+		CrewCurrent:  d.Crew.Current,
+		CrewRequired: d.Crew.Required,
+		CrewCapacity: d.Crew.Capacity,
+		Cargo:        cargo,
 	}
 }

@@ -145,6 +145,26 @@ type ShipModel struct {
 	// silently wiped and a staged module is re-exposed to coordinator liquidation.
 	ReservationOverrides string `gorm:"column:reservation_overrides;type:jsonb;default:'{}'"`
 
+	// Power/slot/crew data (sp-el60). Reactor and frame-slot fields are fixed
+	// for the life of the hull - reactors/frames have no swap endpoint in the
+	// SpaceTraders API. Flattened into columns (not JSON) to mirror the
+	// existing single-value fields above (FuelCurrent/EngineSpeed/FrameSymbol
+	// etc.); Mounts is a JSON list like Modules since it's a collection.
+	// Additive columns only - no CHECK constraints on this model, so
+	// AutoMigrate creates them with no manual migration required.
+	ReactorSymbol            string `gorm:"column:reactor_symbol"`
+	ReactorName              string `gorm:"column:reactor_name"`
+	ReactorPowerOutput       int    `gorm:"column:reactor_power_output;default:0"`
+	ReactorRequirementsPower int    `gorm:"column:reactor_requirements_power;default:0"`
+	ReactorRequirementsCrew  int    `gorm:"column:reactor_requirements_crew;default:0"`
+	ReactorRequirementsSlots int    `gorm:"column:reactor_requirements_slots;default:0"`
+	ModuleSlots              int    `gorm:"column:module_slots;default:0"`
+	MountingPoints           int    `gorm:"column:mounting_points;default:0"`
+	Mounts                   string `gorm:"column:mounts;type:jsonb;default:'[]'"`
+	CrewCurrent              int    `gorm:"column:crew_current;default:0"`
+	CrewRequired             int    `gorm:"column:crew_required;default:0"`
+	CrewCapacity             int    `gorm:"column:crew_capacity;default:0"`
+
 	// Sync metadata
 	SyncedAt time.Time `gorm:"column:synced_at;autoCreateTime"`
 	Version  int       `gorm:"column:version;default:1"`
@@ -164,9 +184,29 @@ type CargoItemJSON struct {
 
 // ModuleJSON is a JSON helper type for ship modules
 type ModuleJSON struct {
-	Symbol   string `json:"symbol"`
-	Capacity int    `json:"capacity"`
-	Range    int    `json:"range"`
+	Symbol       string           `json:"symbol"`
+	Capacity     int              `json:"capacity"`
+	Range        int              `json:"range"`
+	Requirements RequirementsJSON `json:"requirements"`
+}
+
+// MountJSON is a JSON helper type for installed ship mounts (mining lasers,
+// gas siphons, sensor arrays, weapons, etc.) - sp-el60.
+type MountJSON struct {
+	Symbol       string           `json:"symbol"`
+	Name         string           `json:"name"`
+	Strength     int              `json:"strength"`
+	Deposits     []string         `json:"deposits"`
+	Requirements RequirementsJSON `json:"requirements"`
+}
+
+// RequirementsJSON is a JSON helper type for the power/crew/slot cost
+// declared by a module or mount (SpaceTraders API schema: ShipRequirements) -
+// sp-el60.
+type RequirementsJSON struct {
+	Power int `json:"power"`
+	Crew  int `json:"crew"`
+	Slots int `json:"slots"`
 }
 
 // SystemGraphModel represents the system_graphs table

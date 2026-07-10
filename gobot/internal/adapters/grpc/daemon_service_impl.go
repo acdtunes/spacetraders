@@ -307,7 +307,9 @@ func (s *daemonServiceImpl) RemoveModule(ctx context.Context, req *pb.RemoveModu
 	}, nil
 }
 
-// ListShipModules lists the modules installed on a ship (read-only).
+// ListShipModules lists the modules installed on a ship (read-only), plus
+// the ship's power/slot/crew budget summary and, when the request carries a
+// candidate_symbol, an offline install-feasibility verdict (sp-el60).
 func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShipModulesRequest) (*pb.ListShipModulesResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
 	if err != nil {
@@ -315,8 +317,12 @@ func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShi
 	}
 
 	cmd := &shipOutfit.ListShipModulesQuery{
-		ShipSymbol: req.ShipSymbol,
-		PlayerID:   &playerID,
+		ShipSymbol:      req.ShipSymbol,
+		PlayerID:        &playerID,
+		CandidateSymbol: req.GetCandidateSymbol(),
+		CandidatePower:  int(req.GetCandidatePower()),
+		CandidateCrew:   int(req.GetCandidateCrew()),
+		CandidateSlots:  int(req.GetCandidateSlots()),
 	}
 
 	result, err := s.daemon.mediator.Send(ctx, cmd)
@@ -328,10 +334,30 @@ func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShi
 		return &pb.ListShipModulesResponse{ShipSymbol: req.ShipSymbol, Error: "unexpected response type from ListShipModulesQuery"}, nil
 	}
 
-	return &pb.ListShipModulesResponse{
-		ShipSymbol: resp.ShipSymbol,
-		Modules:    toProtoShipModules(resp.Modules),
-	}, nil
+	out := &pb.ListShipModulesResponse{
+		ShipSymbol:         resp.ShipSymbol,
+		Modules:            toProtoShipModules(resp.Modules),
+		ReactorPowerOutput: int32(resp.ReactorPowerOutput),
+		PowerUsed:          int32(resp.PowerUsed),
+		ModuleSlots:        int32(resp.ModuleSlots),
+		ModuleSlotsUsed:    int32(resp.ModuleSlotsUsed),
+		MountingPoints:     int32(resp.MountingPoints),
+		MountingPointsUsed: int32(resp.MountingPointsUsed),
+		CrewCurrent:        int32(resp.CrewCurrent),
+		CrewRequired:       int32(resp.CrewRequired),
+		CrewCapacity:       int32(resp.CrewCapacity),
+	}
+	if resp.Feasibility != nil {
+		out.Feasibility = &pb.ModuleFeasibility{
+			CandidateSymbol: resp.Feasibility.CandidateSymbol,
+			CanInstall:      resp.Feasibility.CanInstall,
+			PowerShort:      int32(resp.Feasibility.PowerShort),
+			SlotShort:       int32(resp.Feasibility.SlotShort),
+			CrewShort:       int32(resp.Feasibility.CrewShort),
+		}
+	}
+
+	return out, nil
 }
 
 // toProtoShipModules maps the application-layer module list to the proto shape.
@@ -343,6 +369,9 @@ func toProtoShipModules(modules []ports.ModuleInfo) []*pb.ShipModuleInfo {
 			Name:     m.Name,
 			Capacity: int32(m.Capacity),
 			Range:    int32(m.Range),
+			Power:    int32(m.Power),
+			Crew:     int32(m.Crew),
+			Slots:    int32(m.Slots),
 		})
 	}
 	return out

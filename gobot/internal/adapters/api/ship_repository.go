@@ -490,7 +490,8 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 	// Convert modules
 	var modules []*navigation.ShipModule
 	for _, mod := range data.Modules {
-		module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range)
+		requirements := navigation.NewShipRequirements(mod.Requirements.Power, mod.Requirements.Crew, mod.Requirements.Slots)
+		module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range, requirements)
 		modules = append(modules, module)
 	}
 
@@ -498,7 +499,7 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 	navStatus := navigation.NavStatus(data.NavStatus)
 
 	// Create ship domain entity
-	return navigation.NewShip(
+	ship, err := navigation.NewShip(
 		data.Symbol,
 		playerID,
 		location,
@@ -512,6 +513,28 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 		modules,
 		navStatus,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Enrich with power/slot/crew data (sp-el60) so a ship built straight
+	// from a fresh API payload is immediately outfit-feasibility computable.
+	mounts := make([]*navigation.ShipMount, len(data.Mounts))
+	for i, mnt := range data.Mounts {
+		mountRequirements := navigation.NewShipRequirements(mnt.Requirements.Power, mnt.Requirements.Crew, mnt.Requirements.Slots)
+		mounts[i] = navigation.NewShipMount(mnt.Symbol, mnt.Name, mnt.Strength, mnt.Deposits, mountRequirements)
+	}
+	ship.SetMounts(mounts)
+	ship.SetSlots(data.ModuleSlots, data.MountingPoints)
+	reactorRequirements := navigation.NewShipRequirements(
+		data.ReactorRequirements.Power,
+		data.ReactorRequirements.Crew,
+		data.ReactorRequirements.Slots,
+	)
+	ship.SetReactor(data.ReactorSymbol, data.ReactorName, data.ReactorPowerOutput, reactorRequirements)
+	ship.SetCrew(data.CrewCurrent, data.CrewRequired, data.CrewCapacity)
+
+	return ship, nil
 }
 
 // isAlreadyDockedError checks if the error is due to ship already being docked
@@ -697,15 +720,55 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	// Modules
 	moduleItems := make([]persistence.ModuleJSON, 0)
 	for _, mod := range ship.Modules() {
+		req := mod.Requirements()
 		moduleItems = append(moduleItems, persistence.ModuleJSON{
 			Symbol:   mod.Symbol(),
 			Capacity: mod.Capacity(),
 			Range:    mod.Range(),
+			Requirements: persistence.RequirementsJSON{
+				Power: req.Power(),
+				Crew:  req.Crew(),
+				Slots: req.Slots(),
+			},
 		})
 	}
 	if modulesJSON, err := json.Marshal(moduleItems); err == nil {
 		model.Modules = string(modulesJSON)
 	}
+
+	// Mounts (sp-el60)
+	mountItems := make([]persistence.MountJSON, 0)
+	for _, mnt := range ship.Mounts() {
+		req := mnt.Requirements()
+		mountItems = append(mountItems, persistence.MountJSON{
+			Symbol:   mnt.Symbol(),
+			Name:     mnt.Name(),
+			Strength: mnt.Strength(),
+			Deposits: mnt.Deposits(),
+			Requirements: persistence.RequirementsJSON{
+				Power: req.Power(),
+				Crew:  req.Crew(),
+				Slots: req.Slots(),
+			},
+		})
+	}
+	if mountsJSON, err := json.Marshal(mountItems); err == nil {
+		model.Mounts = string(mountsJSON)
+	}
+
+	// Reactor/slots/crew (sp-el60): fixed for the life of the hull.
+	model.ReactorSymbol = ship.ReactorSymbol()
+	model.ReactorName = ship.ReactorName()
+	model.ReactorPowerOutput = ship.ReactorPowerOutput()
+	reactorReq := ship.ReactorRequirements()
+	model.ReactorRequirementsPower = reactorReq.Power()
+	model.ReactorRequirementsCrew = reactorReq.Crew()
+	model.ReactorRequirementsSlots = reactorReq.Slots()
+	model.ModuleSlots = ship.ModuleSlots()
+	model.MountingPoints = ship.MountingPoints()
+	model.CrewCurrent = ship.CrewCurrent()
+	model.CrewRequired = ship.CrewRequired()
+	model.CrewCapacity = ship.CrewCapacity()
 
 	// Cooldown
 	model.CooldownExpiration = ship.CooldownExpiration()
@@ -1283,14 +1346,34 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		var modulesJSON []persistence.ModuleJSON
 		if err := json.Unmarshal([]byte(model.Modules), &modulesJSON); err == nil {
 			for _, mod := range modulesJSON {
-				module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range)
+				requirements := navigation.NewShipRequirements(mod.Requirements.Power, mod.Requirements.Crew, mod.Requirements.Slots)
+				module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range, requirements)
 				modules = append(modules, module)
+			}
+		}
+	}
+
+	// Parse mounts from JSON (sp-el60)
+	var mounts []*navigation.ShipMount
+	if model.Mounts != "" && model.Mounts != "[]" {
+		var mountsJSON []persistence.MountJSON
+		if err := json.Unmarshal([]byte(model.Mounts), &mountsJSON); err == nil {
+			for _, mnt := range mountsJSON {
+				requirements := navigation.NewShipRequirements(mnt.Requirements.Power, mnt.Requirements.Crew, mnt.Requirements.Slots)
+				mounts = append(mounts, navigation.NewShipMount(mnt.Symbol, mnt.Name, mnt.Strength, mnt.Deposits, requirements))
 			}
 		}
 	}
 
 	// Build assignment from model
 	assignment := r.modelToAssignment(model)
+
+	// Reactor requirements (sp-el60)
+	reactorRequirements := navigation.NewShipRequirements(
+		model.ReactorRequirementsPower,
+		model.ReactorRequirementsCrew,
+		model.ReactorRequirementsSlots,
+	)
 
 	// Create ship using reconstruction constructor
 	ship, err := navigation.ReconstructShip(
@@ -1311,6 +1394,16 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		model.CooldownExpiration,
 		assignment,
 		model.DedicatedFleet,
+		model.ReactorSymbol,
+		model.ReactorName,
+		model.ReactorPowerOutput,
+		reactorRequirements,
+		model.ModuleSlots,
+		model.MountingPoints,
+		mounts,
+		model.CrewCurrent,
+		model.CrewRequired,
+		model.CrewCapacity,
 	)
 	if err != nil {
 		return nil, err
@@ -1431,11 +1524,48 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 			Symbol:   mod.Symbol,
 			Capacity: mod.Capacity,
 			Range:    mod.Range,
+			Requirements: persistence.RequirementsJSON{
+				Power: mod.Requirements.Power,
+				Crew:  mod.Requirements.Crew,
+				Slots: mod.Requirements.Slots,
+			},
 		})
 	}
 	if modulesJSON, err := json.Marshal(moduleItems); err == nil {
 		model.Modules = string(modulesJSON)
 	}
+
+	// Mounts (sp-el60)
+	mountItems := make([]persistence.MountJSON, 0)
+	for _, mnt := range data.Mounts {
+		mountItems = append(mountItems, persistence.MountJSON{
+			Symbol:   mnt.Symbol,
+			Name:     mnt.Name,
+			Strength: mnt.Strength,
+			Deposits: mnt.Deposits,
+			Requirements: persistence.RequirementsJSON{
+				Power: mnt.Requirements.Power,
+				Crew:  mnt.Requirements.Crew,
+				Slots: mnt.Requirements.Slots,
+			},
+		})
+	}
+	if mountsJSON, err := json.Marshal(mountItems); err == nil {
+		model.Mounts = string(mountsJSON)
+	}
+
+	// Reactor/slots/crew (sp-el60): fixed for the life of the hull.
+	model.ReactorSymbol = data.ReactorSymbol
+	model.ReactorName = data.ReactorName
+	model.ReactorPowerOutput = data.ReactorPowerOutput
+	model.ReactorRequirementsPower = data.ReactorRequirements.Power
+	model.ReactorRequirementsCrew = data.ReactorRequirements.Crew
+	model.ReactorRequirementsSlots = data.ReactorRequirements.Slots
+	model.ModuleSlots = data.ModuleSlots
+	model.MountingPoints = data.MountingPoints
+	model.CrewCurrent = data.CrewCurrent
+	model.CrewRequired = data.CrewRequired
+	model.CrewCapacity = data.CrewCapacity
 
 	return model, nil
 }

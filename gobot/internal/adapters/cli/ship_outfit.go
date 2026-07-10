@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -154,15 +155,32 @@ Examples:
 }
 
 func newShipOutfitListCommand() *cobra.Command {
-	var shipSymbol string
+	var (
+		shipSymbol      string
+		candidateSymbol string
+		candidatePower  int
+		candidateCrew   int
+		candidateSlots  int
+	)
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List the modules installed on a ship",
-		Long: `List the modules currently installed on a ship.
+		Long: `List the modules currently installed on a ship, along with its
+reactor power / module slot / crew budget summary.
+
+Power, slots, and crew are computed offline from the ship's last-synced
+state (sp-el60) - reactors, frames, and crew capacity have no swap endpoint
+in the SpaceTraders API, so these budgets are permanent for the life of the
+hull and don't require a live trial-and-error install to check.
+
+Pass --candidate (with its --power/--crew/--slots install requirements) to
+check offline whether that not-yet-installed module would fit.
 
 Examples:
-  spacetraders ship outfit list --ship ENDURANCE-1 --agent ENDURANCE`,
+  spacetraders ship outfit list --ship ENDURANCE-1 --agent ENDURANCE
+  spacetraders ship outfit list --ship ENDURANCE-1 --agent ENDURANCE \
+    --candidate MODULE_CARGO_HOLD_III --power 1 --crew 0 --slots 1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if shipSymbol == "" {
 				return fmt.Errorf("--ship flag is required")
@@ -182,7 +200,8 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			result, err := client.ListShipModules(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			result, err := client.ListShipModules(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol,
+				candidateSymbol, candidatePower, candidateCrew, candidateSlots)
 			if err != nil {
 				return fmt.Errorf("list modules failed: %w", err)
 			}
@@ -193,10 +212,17 @@ Examples:
 			fmt.Printf("Modules on %s:\n", result.ShipSymbol)
 			if len(result.Modules) == 0 {
 				fmt.Println("  (none)")
-				return nil
+			} else {
+				for _, m := range result.Modules {
+					printModuleLine(m)
+				}
 			}
-			for _, m := range result.Modules {
-				printModuleLine(m)
+
+			printPowerSlotsSummary(result)
+
+			if result.Feasibility != nil {
+				fmt.Println("Feasibility:")
+				fmt.Printf("    %s\n", formatFeasibility(result.Feasibility))
 			}
 
 			return nil
@@ -204,8 +230,46 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol whose modules to list (required)")
+	cmd.Flags().StringVar(&candidateSymbol, "candidate", "", "Symbol of a not-yet-installed module to check offline install feasibility for")
+	cmd.Flags().IntVar(&candidatePower, "power", 0, "Candidate module's power requirement (used with --candidate)")
+	cmd.Flags().IntVar(&candidateCrew, "crew", 0, "Candidate module's crew requirement (used with --candidate)")
+	cmd.Flags().IntVar(&candidateSlots, "slots", 0, "Candidate module's module-slot requirement (used with --candidate)")
 
 	return cmd
+}
+
+// printPowerSlotsSummary prints the ship's reactor power / module slot /
+// mounting point / crew budget (sp-el60), computed offline from cached ship
+// state.
+func printPowerSlotsSummary(result *ShipModulesResponse) {
+	fmt.Println("Power / slots:")
+	fmt.Printf("    Power:           %d/%d used (%d free)\n",
+		result.PowerUsed, result.ReactorPowerOutput, result.ReactorPowerOutput-result.PowerUsed)
+	fmt.Printf("    Module slots:    %d/%d used (%d free)\n",
+		result.ModuleSlotsUsed, result.ModuleSlots, result.ModuleSlots-result.ModuleSlotsUsed)
+	fmt.Printf("    Mounting points: %d/%d used (%d free)\n",
+		result.MountingPointsUsed, result.MountingPoints, result.MountingPoints-result.MountingPointsUsed)
+	fmt.Printf("    Crew:            %d current, %d required, %d capacity\n",
+		result.CrewCurrent, result.CrewRequired, result.CrewCapacity)
+}
+
+// formatFeasibility renders an offline install-feasibility verdict as a
+// single CAN-INSTALL / *-SHORT-N line (sp-el60).
+func formatFeasibility(f *ModuleFeasibilityDTO) string {
+	if f.CanInstall {
+		return fmt.Sprintf("%s: CAN-INSTALL", f.CandidateSymbol)
+	}
+	var gaps []string
+	if f.PowerShort > 0 {
+		gaps = append(gaps, fmt.Sprintf("POWER-SHORT-%d", f.PowerShort))
+	}
+	if f.SlotShort > 0 {
+		gaps = append(gaps, fmt.Sprintf("SLOT-SHORT-%d", f.SlotShort))
+	}
+	if f.CrewShort > 0 {
+		gaps = append(gaps, fmt.Sprintf("CREW-SHORT-%d", f.CrewShort))
+	}
+	return fmt.Sprintf("%s: %s", f.CandidateSymbol, strings.Join(gaps, ", "))
 }
 
 // printModuleList prints a header followed by one line per module (or "(none)").
@@ -220,11 +284,34 @@ func printModuleList(header string, modules []ModuleInfoDTO) {
 	}
 }
 
-// printModuleLine prints a single module, including its capacity bonus when non-zero.
+// printModuleLine prints a single module, including its capacity bonus (when
+// non-zero) and its power/crew/slots install requirements (sp-el60, when any
+// are non-zero).
 func printModuleLine(m ModuleInfoDTO) {
+	suffix := ""
+	if req := formatModuleRequirements(m); req != "" {
+		suffix = "  requires: " + req
+	}
 	if m.Capacity > 0 {
-		fmt.Printf("    - %s (capacity %d)  %s\n", m.Symbol, m.Capacity, m.Name)
+		fmt.Printf("    - %s (capacity %d)  %s%s\n", m.Symbol, m.Capacity, m.Name, suffix)
 		return
 	}
-	fmt.Printf("    - %s  %s\n", m.Symbol, m.Name)
+	fmt.Printf("    - %s  %s%s\n", m.Symbol, m.Name, suffix)
+}
+
+// formatModuleRequirements renders a module's power/crew/slots install
+// requirements as a compact "power N, crew N, slots N" fragment, omitting
+// any that are zero. Returns "" when all three are zero.
+func formatModuleRequirements(m ModuleInfoDTO) string {
+	var parts []string
+	if m.Power > 0 {
+		parts = append(parts, fmt.Sprintf("power %d", m.Power))
+	}
+	if m.Crew > 0 {
+		parts = append(parts, fmt.Sprintf("crew %d", m.Crew))
+	}
+	if m.Slots > 0 {
+		parts = append(parts, fmt.Sprintf("slots %d", m.Slots))
+	}
+	return strings.Join(parts, ", ")
 }

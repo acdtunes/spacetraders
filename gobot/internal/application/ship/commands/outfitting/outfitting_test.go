@@ -365,7 +365,10 @@ func TestListShipModules_ReturnsModules(t *testing.T) {
 	}
 	handler, db, pid := newOutfitHarness(t, fake)
 
-	require.NoError(t, db.Create(&persistence.ShipModel{ShipSymbol: "SHIP-1", PlayerID: pid, AssignmentStatus: "idle"}).Error)
+	// EngineSpeed must be positive - handleList now also reconstructs the
+	// domain Ship (via FindBySymbol) to compute the offline power/slot/crew
+	// budget summary (sp-el60), not just the live GetShipModules listing.
+	require.NoError(t, db.Create(&persistence.ShipModel{ShipSymbol: "SHIP-1", PlayerID: pid, EngineSpeed: 9, AssignmentStatus: "idle"}).Error)
 
 	pidInt := pid
 	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{ShipSymbol: "SHIP-1", PlayerID: &pidInt})
@@ -376,4 +379,84 @@ func TestListShipModules_ReturnsModules(t *testing.T) {
 	require.Len(t, listResp.Modules, 1)
 	require.Equal(t, cargoHold3, listResp.Modules[0].Symbol)
 	require.Equal(t, 120, listResp.Modules[0].Capacity)
+}
+
+// frigateProcessorsJSON is the two installed 1-power/1-slot processors from
+// the empirical frigate power gate that motivated sp-el60: reactor
+// powerOutput 31 vs 33 required (gap 2) blocked installing
+// MODULE_CARGO_HOLD_III until both were removed.
+const frigateProcessorsJSON = `[` +
+	`{"symbol":"MODULE_MINERAL_PROCESSOR_I","capacity":0,"range":0,"requirements":{"power":1,"crew":0,"slots":1}},` +
+	`{"symbol":"MODULE_GAS_PROCESSOR_I","capacity":0,"range":0,"requirements":{"power":1,"crew":0,"slots":1}}` +
+	`]`
+
+// TestListShipModules_FrigateEmpiricalCase_OfflineFeasibility encodes the
+// empirical ledger that motivated sp-el60 (reactor powerOutput 31 vs 33
+// required, gap 2) end to end through handleList: given a candidate symbol
+// plus its power/crew/slots requirements, the offline feasibility verdict
+// and the power/slot/crew budget summary must both be computed from the
+// DB-cached ship state alone - no live trial-and-error install required.
+func TestListShipModules_FrigateEmpiricalCase_OfflineFeasibility(t *testing.T) {
+	fake := &outfitFakeAPIClient{}
+	handler, db, pid := newOutfitHarness(t, fake)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-1", PlayerID: pid,
+		NavStatus: "DOCKED", LocationSymbol: "X1-JP61-A1", SystemSymbol: "X1-JP61", EngineSpeed: 10,
+		FrameSymbol: "FRAME_FRIGATE", Role: "EXCAVATOR",
+		CargoCapacity: 40, CargoInventory: "[]",
+		Modules: frigateProcessorsJSON, Mounts: "[]",
+		ReactorSymbol: "REACTOR_FISSION_I", ReactorName: "Fission Reactor I", ReactorPowerOutput: 31,
+		ModuleSlots: 5, MountingPoints: 5,
+		CrewCurrent: 0, CrewRequired: 0, CrewCapacity: 10,
+		AssignmentStatus: "idle",
+	}).Error)
+
+	pidInt := pid
+	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{
+		ShipSymbol: "SHIP-1", PlayerID: &pidInt,
+		CandidateSymbol: cargoHold3, CandidatePower: 31, CandidateCrew: 0, CandidateSlots: 1,
+	})
+	require.NoError(t, err)
+
+	listResp, ok := resp.(*ListShipModulesResponse)
+	require.True(t, ok)
+
+	require.Equal(t, 31, listResp.ReactorPowerOutput)
+	require.Equal(t, 2, listResp.PowerUsed, "the two 1-power processors must sum to 2")
+	require.Equal(t, 5, listResp.ModuleSlots)
+	require.Equal(t, 2, listResp.ModuleSlotsUsed)
+	require.Equal(t, 10, listResp.CrewCapacity)
+
+	require.NotNil(t, listResp.Feasibility, "a CandidateSymbol must produce a feasibility verdict")
+	require.Equal(t, cargoHold3, listResp.Feasibility.CandidateSymbol)
+	require.False(t, listResp.Feasibility.CanInstall, "31 reactor vs 33 required (2 installed + 31 candidate) must not fit")
+	require.Equal(t, 2, listResp.Feasibility.PowerShort, "gap must be exactly 2 (31 reactor vs 33 required)")
+	require.Equal(t, 0, listResp.Feasibility.SlotShort)
+	require.Equal(t, 0, listResp.Feasibility.CrewShort)
+}
+
+// TestListShipModules_NoCandidate_FeasibilityOmitted guards against a
+// regression where Feasibility is populated even without a candidate: the
+// field must stay nil so CLI/gRPC callers can tell "no check requested"
+// apart from "checked and it fits".
+func TestListShipModules_NoCandidate_FeasibilityOmitted(t *testing.T) {
+	fake := &outfitFakeAPIClient{}
+	handler, db, pid := newOutfitHarness(t, fake)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-1", PlayerID: pid, EngineSpeed: 9,
+		ReactorPowerOutput: 31, ModuleSlots: 5, MountingPoints: 5, CrewCapacity: 10,
+		Modules: "[]", Mounts: "[]", CargoInventory: "[]",
+		AssignmentStatus: "idle",
+	}).Error)
+
+	pidInt := pid
+	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{ShipSymbol: "SHIP-1", PlayerID: &pidInt})
+	require.NoError(t, err)
+
+	listResp, ok := resp.(*ListShipModulesResponse)
+	require.True(t, ok)
+	require.Nil(t, listResp.Feasibility, "Feasibility must stay nil when no CandidateSymbol was supplied")
+	require.Equal(t, 31, listResp.ReactorPowerOutput, "the budget summary must still be populated")
 }

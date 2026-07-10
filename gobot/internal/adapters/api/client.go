@@ -729,10 +729,15 @@ func (c *SpaceTradersClient) modifyShipModule(ctx context.Context, action, shipS
 				Credits int `json:"credits"`
 			} `json:"agent"`
 			Modules []struct {
-				Symbol   string `json:"symbol"`
-				Name     string `json:"name"`
-				Capacity int    `json:"capacity"`
-				Range    int    `json:"range"`
+				Symbol       string `json:"symbol"`
+				Name         string `json:"name"`
+				Capacity     int    `json:"capacity"`
+				Range        int    `json:"range"`
+				Requirements struct {
+					Power int `json:"power"`
+					Crew  int `json:"crew"`
+					Slots int `json:"slots"`
+				} `json:"requirements"`
 			} `json:"modules"`
 			Cargo struct {
 				Capacity int `json:"capacity"`
@@ -759,6 +764,9 @@ func (c *SpaceTradersClient) modifyShipModule(ctx context.Context, action, shipS
 			Name:     m.Name,
 			Capacity: m.Capacity,
 			Range:    m.Range,
+			Power:    m.Requirements.Power,
+			Crew:     m.Requirements.Crew,
+			Slots:    m.Requirements.Slots,
 		})
 	}
 	if response.Data.Agent != nil {
@@ -774,10 +782,15 @@ func (c *SpaceTradersClient) GetShipModules(ctx context.Context, shipSymbol, tok
 
 	var response struct {
 		Data []struct {
-			Symbol   string `json:"symbol"`
-			Name     string `json:"name"`
-			Capacity int    `json:"capacity"`
-			Range    int    `json:"range"`
+			Symbol       string `json:"symbol"`
+			Name         string `json:"name"`
+			Capacity     int    `json:"capacity"`
+			Range        int    `json:"range"`
+			Requirements struct {
+				Power int `json:"power"`
+				Crew  int `json:"crew"`
+				Slots int `json:"slots"`
+			} `json:"requirements"`
 		} `json:"data"`
 	}
 
@@ -792,6 +805,9 @@ func (c *SpaceTradersClient) GetShipModules(ctx context.Context, shipSymbol, tok
 			Name:     m.Name,
 			Capacity: m.Capacity,
 			Range:    m.Range,
+			Power:    m.Requirements.Power,
+			Crew:     m.Requirements.Crew,
+			Slots:    m.Requirements.Slots,
 		})
 	}
 	return modules, nil

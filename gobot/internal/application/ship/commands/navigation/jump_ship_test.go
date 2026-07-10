@@ -129,7 +129,7 @@ func (s *stubJumpConstructionRepo) FindByWaypoint(_ context.Context, _ string, _
 
 func newJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *domainNavigation.Ship {
 	t.Helper()
-	jumpDrive := domainNavigation.NewShipModule("MODULE_JUMP_DRIVE_I", 0, 500)
+	jumpDrive := domainNavigation.NewShipModule("MODULE_JUMP_DRIVE_I", 0, 500, domainNavigation.NewShipRequirements(0, 0, 0))
 	return newJumpTestShipWithModules(t, symbol, location, []*domainNavigation.ShipModule{jumpDrive})
 }
 

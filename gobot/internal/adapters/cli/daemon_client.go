@@ -342,6 +342,12 @@ type ModuleInfoDTO struct {
 	Name     string
 	Capacity int
 	Range    int
+	// Power, Crew, and Slots are the module's own install requirements
+	// (sp-el60) - what installing it draws from the ship's reactor power
+	// budget, crew capacity, and module-slot budget respectively.
+	Power int
+	Crew  int
+	Slots int
 }
 
 // ModuleModificationResponse is the CLI-side result of an install or remove.
@@ -356,11 +362,37 @@ type ModuleModificationResponse struct {
 	Error         string
 }
 
-// ShipModulesResponse is the CLI-side result of listing a ship's modules.
+// ModuleFeasibilityDTO is the CLI-side offline install-feasibility verdict
+// for a candidate module (sp-el60), populated only when the list request
+// carried a candidate symbol.
+type ModuleFeasibilityDTO struct {
+	CandidateSymbol string
+	CanInstall      bool
+	PowerShort      int
+	SlotShort       int
+	CrewShort       int
+}
+
+// ShipModulesResponse is the CLI-side result of listing a ship's modules,
+// plus its power/slot/crew budget summary (sp-el60) computed offline from
+// the DB-cached ship state.
 type ShipModulesResponse struct {
 	ShipSymbol string
 	Modules    []ModuleInfoDTO
 	Error      string
+
+	ReactorPowerOutput int
+	PowerUsed          int
+	ModuleSlots        int
+	ModuleSlotsUsed    int
+	MountingPoints     int
+	MountingPointsUsed int
+	CrewCurrent        int
+	CrewRequired       int
+	CrewCapacity       int
+
+	// Feasibility is populated only when the caller supplied a candidate symbol.
+	Feasibility *ModuleFeasibilityDTO
 }
 
 func protoToModuleDTOs(modules []*pb.ShipModuleInfo) []ModuleInfoDTO {
@@ -371,6 +403,9 @@ func protoToModuleDTOs(modules []*pb.ShipModuleInfo) []ModuleInfoDTO {
 			Name:     m.Name,
 			Capacity: int(m.Capacity),
 			Range:    int(m.Range),
+			Power:    int(m.Power),
+			Crew:     int(m.Crew),
+			Slots:    int(m.Slots),
 		})
 	}
 	return out
@@ -444,12 +479,21 @@ func (c *DaemonClient) RemoveModule(
 	}, nil
 }
 
-// ListShipModules lists the modules installed on a ship.
+// ListShipModules lists the modules installed on a ship, along with its
+// power/slot/crew budget summary computed offline from cached ship state
+// (sp-el60). When candidateSymbol is non-empty, the response also carries an
+// offline install-feasibility verdict for that not-yet-installed module —
+// candidatePower/Crew/Slots are the candidate's own install requirements,
+// supplied by the caller since no catalog of unowned module specs exists.
 func (c *DaemonClient) ListShipModules(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
 	agentSymbol string,
+	candidateSymbol string,
+	candidatePower int,
+	candidateCrew int,
+	candidateSlots int,
 ) (*ShipModulesResponse, error) {
 	req := &pb.ListShipModulesRequest{
 		ShipSymbol: shipSymbol,
@@ -458,17 +502,48 @@ func (c *DaemonClient) ListShipModules(
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
+	if candidateSymbol != "" {
+		power := int32(candidatePower)
+		crew := int32(candidateCrew)
+		slots := int32(candidateSlots)
+		req.CandidateSymbol = &candidateSymbol
+		req.CandidatePower = &power
+		req.CandidateCrew = &crew
+		req.CandidateSlots = &slots
+	}
 
 	resp, err := c.client.ListShipModules(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
-	return &ShipModulesResponse{
+	out := &ShipModulesResponse{
 		ShipSymbol: resp.ShipSymbol,
 		Modules:    protoToModuleDTOs(resp.Modules),
 		Error:      resp.Error,
-	}, nil
+
+		ReactorPowerOutput: int(resp.ReactorPowerOutput),
+		PowerUsed:          int(resp.PowerUsed),
+		ModuleSlots:        int(resp.ModuleSlots),
+		ModuleSlotsUsed:    int(resp.ModuleSlotsUsed),
+		MountingPoints:     int(resp.MountingPoints),
+		MountingPointsUsed: int(resp.MountingPointsUsed),
+		CrewCurrent:        int(resp.CrewCurrent),
+		CrewRequired:       int(resp.CrewRequired),
+		CrewCapacity:       int(resp.CrewCapacity),
+	}
+
+	if f := resp.Feasibility; f != nil {
+		out.Feasibility = &ModuleFeasibilityDTO{
+			CandidateSymbol: f.CandidateSymbol,
+			CanInstall:      f.CanInstall,
+			PowerShort:      int(f.PowerShort),
+			SlotShort:       int(f.SlotShort),
+			CrewShort:       int(f.CrewShort),
+		}
+	}
+
+	return out, nil
 }
 
 // JettisonCargo jettisons cargo from a ship
