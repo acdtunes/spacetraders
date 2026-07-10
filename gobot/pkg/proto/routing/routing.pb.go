@@ -1736,8 +1736,18 @@ type TourTrade struct {
 	Units             int32                  `protobuf:"varint,2,opt,name=units,proto3" json:"units,omitempty"`
 	IsBuy             bool                   `protobuf:"varint,3,opt,name=is_buy,json=isBuy,proto3" json:"is_buy,omitempty"`
 	ExpectedUnitPrice int32                  `protobuf:"varint,4,opt,name=expected_unit_price,json=expectedUnitPrice,proto3" json:"expected_unit_price,omitempty"` // curve-adjusted
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// is_deposit marks a SELL-side tranche that is a haul-to-storage DEPOSIT into
+	// the home warehouse (sp-dchv Lane C), not a market sale. expected_unit_price
+	// is the synthetic bid (= home_ask, the contract-savings value the deposit
+	// sink was priced at), NOT a market price — the executor deposits via
+	// ReserveSpace/TransferCargo/ConfirmDeposit and books ZERO revenue, and skips
+	// the live-price re-verify (there is no market bid to drift against). is_buy is
+	// always false for a deposit. Additive to the m5kv sell/launch-liquidation
+	// shape (a deposit is a sell-with-no-buy whose "revenue" is inventory value,
+	// not cash); existing sell semantics untouched.
+	IsDeposit     bool `protobuf:"varint,5,opt,name=is_deposit,json=isDeposit,proto3" json:"is_deposit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TourTrade) Reset() {
@@ -1796,6 +1806,13 @@ func (x *TourTrade) GetExpectedUnitPrice() int32 {
 		return x.ExpectedUnitPrice
 	}
 	return 0
+}
+
+func (x *TourTrade) GetIsDeposit() bool {
+	if x != nil {
+		return x.IsDeposit
+	}
+	return false
 }
 
 // TradeTourLeg is one market stop of the planned tour.
@@ -2003,19 +2020,109 @@ func (x *TourWaypoint) GetY() int32 {
 	return 0
 }
 
+// DepositCandidate is one home-warehouse pre-positioning offer (sp-dchv Lane C):
+// a good the contract history recurrently needs, which is cheaper in a reachable
+// foreign system, may be DEPOSITED into the home warehouse instead of arb-sold.
+// The Go daemon assembles these from the Lane A demand miner + the running
+// warehouse op, capped Go-side by remaining contract demand, remaining warehouse
+// space, and the pre-positioning capital ceiling (10% of live treasury, fail
+// closed). The solver treats (storage_waypoint, good_symbol) as a synthetic SINK
+// with a flat bid = synthetic_bid (no depth decay — an inventory transfer has no
+// market price impact — and no A-cap), absorbing at most units_wanted units, and
+// prices deposit legs against real arb sells so hold space goes to whichever
+// earns more (the emergent opportunity-cost property).
+type DepositCandidate struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	GoodSymbol      string                 `protobuf:"bytes,1,opt,name=good_symbol,json=goodSymbol,proto3" json:"good_symbol,omitempty"`
+	UnitsWanted     int32                  `protobuf:"varint,2,opt,name=units_wanted,json=unitsWanted,proto3" json:"units_wanted,omitempty"`            // max units the sink absorbs (Go-side demand/space/ceiling cap)
+	SyntheticBid    int32                  `protobuf:"varint,3,opt,name=synthetic_bid,json=syntheticBid,proto3" json:"synthetic_bid,omitempty"`         // flat sink price = home_ask (the contract-savings value)
+	StorageWaypoint string                 `protobuf:"bytes,4,opt,name=storage_waypoint,json=storageWaypoint,proto3" json:"storage_waypoint,omitempty"` // the warehouse hull's waypoint (the sink node)
+	StorageSystem   string                 `protobuf:"bytes,5,opt,name=storage_system,json=storageSystem,proto3" json:"storage_system,omitempty"`       // system the warehouse is in (home; makes the sink routable)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *DepositCandidate) Reset() {
+	*x = DepositCandidate{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DepositCandidate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DepositCandidate) ProtoMessage() {}
+
+func (x *DepositCandidate) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DepositCandidate.ProtoReflect.Descriptor instead.
+func (*DepositCandidate) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *DepositCandidate) GetGoodSymbol() string {
+	if x != nil {
+		return x.GoodSymbol
+	}
+	return ""
+}
+
+func (x *DepositCandidate) GetUnitsWanted() int32 {
+	if x != nil {
+		return x.UnitsWanted
+	}
+	return 0
+}
+
+func (x *DepositCandidate) GetSyntheticBid() int32 {
+	if x != nil {
+		return x.SyntheticBid
+	}
+	return 0
+}
+
+func (x *DepositCandidate) GetStorageWaypoint() string {
+	if x != nil {
+		return x.StorageWaypoint
+	}
+	return ""
+}
+
+func (x *DepositCandidate) GetStorageSystem() string {
+	if x != nil {
+		return x.StorageSystem
+	}
+	return ""
+}
+
 type OptimizeTradeTourRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Snapshot      []*MarketGoodSnapshot  `protobuf:"bytes,1,rep,name=snapshot,proto3" json:"snapshot,omitempty"`
-	Ship          *TourShip              `protobuf:"bytes,2,opt,name=ship,proto3" json:"ship,omitempty"`
-	Constraints   *TourConstraints       `protobuf:"bytes,3,opt,name=constraints,proto3" json:"constraints,omitempty"`
-	Waypoints     []*TourWaypoint        `protobuf:"bytes,4,rep,name=waypoints,proto3" json:"waypoints,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Snapshot    []*MarketGoodSnapshot  `protobuf:"bytes,1,rep,name=snapshot,proto3" json:"snapshot,omitempty"`
+	Ship        *TourShip              `protobuf:"bytes,2,opt,name=ship,proto3" json:"ship,omitempty"`
+	Constraints *TourConstraints       `protobuf:"bytes,3,opt,name=constraints,proto3" json:"constraints,omitempty"`
+	Waypoints   []*TourWaypoint        `protobuf:"bytes,4,rep,name=waypoints,proto3" json:"waypoints,omitempty"`
+	// deposit_candidates offers haul-to-storage sinks (sp-dchv Lane C). Empty (the
+	// pre-sp-dchv shape) → no deposit legs, the solver plans pure arb unchanged.
+	DepositCandidates []*DepositCandidate `protobuf:"bytes,5,rep,name=deposit_candidates,json=depositCandidates,proto3" json:"deposit_candidates,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *OptimizeTradeTourRequest) Reset() {
 	*x = OptimizeTradeTourRequest{}
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[22]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2027,7 +2134,7 @@ func (x *OptimizeTradeTourRequest) String() string {
 func (*OptimizeTradeTourRequest) ProtoMessage() {}
 
 func (x *OptimizeTradeTourRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[22]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2040,7 +2147,7 @@ func (x *OptimizeTradeTourRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptimizeTradeTourRequest.ProtoReflect.Descriptor instead.
 func (*OptimizeTradeTourRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{22}
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *OptimizeTradeTourRequest) GetSnapshot() []*MarketGoodSnapshot {
@@ -2071,6 +2178,13 @@ func (x *OptimizeTradeTourRequest) GetWaypoints() []*TourWaypoint {
 	return nil
 }
 
+func (x *OptimizeTradeTourRequest) GetDepositCandidates() []*DepositCandidate {
+	if x != nil {
+		return x.DepositCandidates
+	}
+	return nil
+}
+
 type OptimizeTradeTourResponse struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	Feasible                bool                   `protobuf:"varint,1,opt,name=feasible,proto3" json:"feasible,omitempty"`
@@ -2091,13 +2205,24 @@ type OptimizeTradeTourResponse struct {
 	// and liquidation revenue apart, and leaves the door open to re-weight
 	// selection later without re-plumbing the wire.
 	HeldLiquidation int64 `protobuf:"varint,8,opt,name=held_liquidation,json=heldLiquidation,proto3" json:"held_liquidation,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// deposit_value is the portion of projected_profit that is SYNTHETIC savings
+	// value from haul-to-storage DEPOSIT legs (sp-dchv Lane C): sum of
+	// units*synthetic_bid over deposit tranches, where synthetic_bid = home_ask.
+	// It is NOT cash — a deposit books zero revenue in the executor's realized
+	// P&L; the value is realized later when a contract sources the good from
+	// inventory at zero ask. projected_profit stays the TOTAL (fresh cash arb +
+	// this synthetic savings) so the solver ranks deposit legs against real arb
+	// sells; this field lets the planned-manifest log report fresh cash profit
+	// (projected_profit - held_liquidation - deposit_value) apart from the
+	// synthetic pre-positioning value (mirrors held_liquidation, sp-bc27).
+	DepositValue  int64 `protobuf:"varint,9,opt,name=deposit_value,json=depositValue,proto3" json:"deposit_value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OptimizeTradeTourResponse) Reset() {
 	*x = OptimizeTradeTourResponse{}
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[23]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2109,7 +2234,7 @@ func (x *OptimizeTradeTourResponse) String() string {
 func (*OptimizeTradeTourResponse) ProtoMessage() {}
 
 func (x *OptimizeTradeTourResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[23]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2122,7 +2247,7 @@ func (x *OptimizeTradeTourResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptimizeTradeTourResponse.ProtoReflect.Descriptor instead.
 func (*OptimizeTradeTourResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{23}
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *OptimizeTradeTourResponse) GetFeasible() bool {
@@ -2177,6 +2302,13 @@ func (x *OptimizeTradeTourResponse) GetModelVersion() string {
 func (x *OptimizeTradeTourResponse) GetHeldLiquidation() int64 {
 	if x != nil {
 		return x.HeldLiquidation
+	}
+	return 0
+}
+
+func (x *OptimizeTradeTourResponse) GetDepositValue() int64 {
+	if x != nil {
+		return x.DepositValue
 	}
 	return 0
 }
@@ -2346,13 +2478,15 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x17working_capital_reserve\x18\x04 \x01(\x03R\x15workingCapitalReserve\x12'\n" +
 	"\x0fallowed_systems\x18\x05 \x03(\tR\x0eallowedSystems\x127\n" +
 	"\x18max_snapshot_age_minutes\x18\x06 \x01(\x05R\x15maxSnapshotAgeMinutes\x124\n" +
-	"\x16expected_model_version\x18\a \x01(\tR\x14expectedModelVersion\"\x89\x01\n" +
+	"\x16expected_model_version\x18\a \x01(\tR\x14expectedModelVersion\"\xa8\x01\n" +
 	"\tTourTrade\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
 	"\x05units\x18\x02 \x01(\x05R\x05units\x12\x15\n" +
 	"\x06is_buy\x18\x03 \x01(\bR\x05isBuy\x12.\n" +
-	"\x13expected_unit_price\x18\x04 \x01(\x05R\x11expectedUnitPrice\"\xf3\x01\n" +
+	"\x13expected_unit_price\x18\x04 \x01(\x05R\x11expectedUnitPrice\x12\x1d\n" +
+	"\n" +
+	"is_deposit\x18\x05 \x01(\bR\tisDeposit\"\xf3\x01\n" +
 	"\fTradeTourLeg\x12'\n" +
 	"\x0fwaypoint_symbol\x18\x01 \x01(\tR\x0ewaypointSymbol\x12#\n" +
 	"\rsystem_symbol\x18\x02 \x01(\tR\fsystemSymbol\x12*\n" +
@@ -2366,12 +2500,20 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12#\n" +
 	"\rsystem_symbol\x18\x02 \x01(\tR\fsystemSymbol\x12\f\n" +
 	"\x01x\x18\x03 \x01(\x05R\x01x\x12\f\n" +
-	"\x01y\x18\x04 \x01(\x05R\x01y\"\xeb\x01\n" +
+	"\x01y\x18\x04 \x01(\x05R\x01y\"\xcd\x01\n" +
+	"\x10DepositCandidate\x12\x1f\n" +
+	"\vgood_symbol\x18\x01 \x01(\tR\n" +
+	"goodSymbol\x12!\n" +
+	"\funits_wanted\x18\x02 \x01(\x05R\vunitsWanted\x12#\n" +
+	"\rsynthetic_bid\x18\x03 \x01(\x05R\fsyntheticBid\x12)\n" +
+	"\x10storage_waypoint\x18\x04 \x01(\tR\x0fstorageWaypoint\x12%\n" +
+	"\x0estorage_system\x18\x05 \x01(\tR\rstorageSystem\"\xb5\x02\n" +
 	"\x18OptimizeTradeTourRequest\x127\n" +
 	"\bsnapshot\x18\x01 \x03(\v2\x1b.routing.MarketGoodSnapshotR\bsnapshot\x12%\n" +
 	"\x04ship\x18\x02 \x01(\v2\x11.routing.TourShipR\x04ship\x12:\n" +
 	"\vconstraints\x18\x03 \x01(\v2\x18.routing.TourConstraintsR\vconstraints\x123\n" +
-	"\twaypoints\x18\x04 \x03(\v2\x15.routing.TourWaypointR\twaypoints\"\x81\x03\n" +
+	"\twaypoints\x18\x04 \x03(\v2\x15.routing.TourWaypointR\twaypoints\x12H\n" +
+	"\x12deposit_candidates\x18\x05 \x03(\v2\x19.routing.DepositCandidateR\x11depositCandidates\"\xa6\x03\n" +
 	"\x19OptimizeTradeTourResponse\x12\x1a\n" +
 	"\bfeasible\x18\x01 \x01(\bR\bfeasible\x12+\n" +
 	"\x11infeasible_reason\x18\x02 \x01(\tR\x10infeasibleReason\x12)\n" +
@@ -2380,7 +2522,8 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x1aprojected_credits_per_hour\x18\x05 \x01(\x01R\x17projectedCreditsPerHour\x128\n" +
 	"\ftop_rejected\x18\x06 \x03(\v2\x15.routing.RejectedTourR\vtopRejected\x12#\n" +
 	"\rmodel_version\x18\a \x01(\tR\fmodelVersion\x12)\n" +
-	"\x10held_liquidation\x18\b \x01(\x03R\x0fheldLiquidation*]\n" +
+	"\x10held_liquidation\x18\b \x01(\x03R\x0fheldLiquidation\x12#\n" +
+	"\rdeposit_value\x18\t \x01(\x03R\fdepositValue*]\n" +
 	"\vRouteAction\x12\x1c\n" +
 	"\x18ROUTE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13ROUTE_ACTION_TRAVEL\x10\x01\x12\x17\n" +
@@ -2405,7 +2548,7 @@ func file_pkg_proto_routing_routing_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_proto_routing_routing_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pkg_proto_routing_routing_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_pkg_proto_routing_routing_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_pkg_proto_routing_routing_proto_goTypes = []any{
 	(RouteAction)(0),                   // 0: routing.RouteAction
 	(*PlanRouteRequest)(nil),           // 1: routing.PlanRouteRequest
@@ -2430,10 +2573,11 @@ var file_pkg_proto_routing_routing_proto_goTypes = []any{
 	(*TradeTourLeg)(nil),               // 20: routing.TradeTourLeg
 	(*RejectedTour)(nil),               // 21: routing.RejectedTour
 	(*TourWaypoint)(nil),               // 22: routing.TourWaypoint
-	(*OptimizeTradeTourRequest)(nil),   // 23: routing.OptimizeTradeTourRequest
-	(*OptimizeTradeTourResponse)(nil),  // 24: routing.OptimizeTradeTourResponse
-	nil,                                // 25: routing.PartitionFleetRequest.ShipConfigsEntry
-	nil,                                // 26: routing.PartitionFleetResponse.AssignmentsEntry
+	(*DepositCandidate)(nil),           // 23: routing.DepositCandidate
+	(*OptimizeTradeTourRequest)(nil),   // 24: routing.OptimizeTradeTourRequest
+	(*OptimizeTradeTourResponse)(nil),  // 25: routing.OptimizeTradeTourResponse
+	nil,                                // 26: routing.PartitionFleetRequest.ShipConfigsEntry
+	nil,                                // 27: routing.PartitionFleetResponse.AssignmentsEntry
 }
 var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	2,  // 0: routing.PlanRouteRequest.waypoints:type_name -> routing.Waypoint
@@ -2444,9 +2588,9 @@ var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	2,  // 5: routing.OptimizeFueledTourRequest.all_waypoints:type_name -> routing.Waypoint
 	9,  // 6: routing.OptimizeFueledTourResponse.legs:type_name -> routing.TourLeg
 	10, // 7: routing.TourLeg.intermediate_stops:type_name -> routing.IntermediateStop
-	25, // 8: routing.PartitionFleetRequest.ship_configs:type_name -> routing.PartitionFleetRequest.ShipConfigsEntry
+	26, // 8: routing.PartitionFleetRequest.ship_configs:type_name -> routing.PartitionFleetRequest.ShipConfigsEntry
 	2,  // 9: routing.PartitionFleetRequest.all_waypoints:type_name -> routing.Waypoint
-	26, // 10: routing.PartitionFleetResponse.assignments:type_name -> routing.PartitionFleetResponse.AssignmentsEntry
+	27, // 10: routing.PartitionFleetResponse.assignments:type_name -> routing.PartitionFleetResponse.AssignmentsEntry
 	4,  // 11: routing.ShipTour.route_steps:type_name -> routing.RouteStep
 	17, // 12: routing.TourShip.cargo:type_name -> routing.TourCargoItem
 	19, // 13: routing.TradeTourLeg.trades:type_name -> routing.TourTrade
@@ -2454,25 +2598,26 @@ var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	16, // 15: routing.OptimizeTradeTourRequest.ship:type_name -> routing.TourShip
 	18, // 16: routing.OptimizeTradeTourRequest.constraints:type_name -> routing.TourConstraints
 	22, // 17: routing.OptimizeTradeTourRequest.waypoints:type_name -> routing.TourWaypoint
-	20, // 18: routing.OptimizeTradeTourResponse.legs:type_name -> routing.TradeTourLeg
-	21, // 19: routing.OptimizeTradeTourResponse.top_rejected:type_name -> routing.RejectedTour
-	12, // 20: routing.PartitionFleetRequest.ShipConfigsEntry.value:type_name -> routing.ShipConfig
-	14, // 21: routing.PartitionFleetResponse.AssignmentsEntry.value:type_name -> routing.ShipTour
-	1,  // 22: routing.RoutingService.PlanRoute:input_type -> routing.PlanRouteRequest
-	5,  // 23: routing.RoutingService.OptimizeTour:input_type -> routing.OptimizeTourRequest
-	7,  // 24: routing.RoutingService.OptimizeFueledTour:input_type -> routing.OptimizeFueledTourRequest
-	11, // 25: routing.RoutingService.PartitionFleet:input_type -> routing.PartitionFleetRequest
-	23, // 26: routing.RoutingService.OptimizeTradeTour:input_type -> routing.OptimizeTradeTourRequest
-	3,  // 27: routing.RoutingService.PlanRoute:output_type -> routing.PlanRouteResponse
-	6,  // 28: routing.RoutingService.OptimizeTour:output_type -> routing.OptimizeTourResponse
-	8,  // 29: routing.RoutingService.OptimizeFueledTour:output_type -> routing.OptimizeFueledTourResponse
-	13, // 30: routing.RoutingService.PartitionFleet:output_type -> routing.PartitionFleetResponse
-	24, // 31: routing.RoutingService.OptimizeTradeTour:output_type -> routing.OptimizeTradeTourResponse
-	27, // [27:32] is the sub-list for method output_type
-	22, // [22:27] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	23, // 18: routing.OptimizeTradeTourRequest.deposit_candidates:type_name -> routing.DepositCandidate
+	20, // 19: routing.OptimizeTradeTourResponse.legs:type_name -> routing.TradeTourLeg
+	21, // 20: routing.OptimizeTradeTourResponse.top_rejected:type_name -> routing.RejectedTour
+	12, // 21: routing.PartitionFleetRequest.ShipConfigsEntry.value:type_name -> routing.ShipConfig
+	14, // 22: routing.PartitionFleetResponse.AssignmentsEntry.value:type_name -> routing.ShipTour
+	1,  // 23: routing.RoutingService.PlanRoute:input_type -> routing.PlanRouteRequest
+	5,  // 24: routing.RoutingService.OptimizeTour:input_type -> routing.OptimizeTourRequest
+	7,  // 25: routing.RoutingService.OptimizeFueledTour:input_type -> routing.OptimizeFueledTourRequest
+	11, // 26: routing.RoutingService.PartitionFleet:input_type -> routing.PartitionFleetRequest
+	24, // 27: routing.RoutingService.OptimizeTradeTour:input_type -> routing.OptimizeTradeTourRequest
+	3,  // 28: routing.RoutingService.PlanRoute:output_type -> routing.PlanRouteResponse
+	6,  // 29: routing.RoutingService.OptimizeTour:output_type -> routing.OptimizeTourResponse
+	8,  // 30: routing.RoutingService.OptimizeFueledTour:output_type -> routing.OptimizeFueledTourResponse
+	13, // 31: routing.RoutingService.PartitionFleet:output_type -> routing.PartitionFleetResponse
+	25, // 32: routing.RoutingService.OptimizeTradeTour:output_type -> routing.OptimizeTradeTourResponse
+	28, // [28:33] is the sub-list for method output_type
+	23, // [23:28] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_pkg_proto_routing_routing_proto_init() }
@@ -2494,7 +2639,7 @@ func file_pkg_proto_routing_routing_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_routing_routing_proto_rawDesc), len(file_pkg_proto_routing_routing_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   26,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

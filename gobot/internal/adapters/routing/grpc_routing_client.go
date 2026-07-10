@@ -324,8 +324,9 @@ func (c *GRPCRoutingClient) OptimizeTradeTour(
 	waypoints []domainRouting.TourWaypoint,
 	ship domainRouting.TourShipState,
 	cons domainRouting.TourConstraints,
+	deposits []domainRouting.TourDepositCandidate,
 ) (*domainRouting.TourPlan, error) {
-	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons))
+	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons, deposits))
 	if err != nil {
 		return nil, fmt.Errorf("gRPC OptimizeTradeTour failed: %w", err)
 	}
@@ -340,6 +341,7 @@ func buildTourRequest(
 	waypoints []domainRouting.TourWaypoint,
 	ship domainRouting.TourShipState,
 	cons domainRouting.TourConstraints,
+	deposits []domainRouting.TourDepositCandidate,
 ) *pb.OptimizeTradeTourRequest {
 	pbSnapshot := make([]*pb.MarketGoodSnapshot, len(snapshot))
 	for i, s := range snapshot {
@@ -370,6 +372,26 @@ func buildTourRequest(
 	}
 	sort.Slice(pbCargo, func(i, j int) bool { return pbCargo[i].GoodSymbol < pbCargo[j].GoodSymbol })
 
+	// Deposit candidates (sp-dchv Lane C): the haul-to-storage sinks the daemon
+	// assembled and capped. Emitted in a deterministic (waypoint, good) order so
+	// request payloads and their logs are reproducible.
+	pbDeposits := make([]*pb.DepositCandidate, 0, len(deposits))
+	for _, d := range deposits {
+		pbDeposits = append(pbDeposits, &pb.DepositCandidate{
+			GoodSymbol:      d.Good,
+			UnitsWanted:     int32(d.UnitsWanted),
+			SyntheticBid:    int32(d.SyntheticBid),
+			StorageWaypoint: d.StorageWaypoint,
+			StorageSystem:   d.StorageSystem,
+		})
+	}
+	sort.Slice(pbDeposits, func(i, j int) bool {
+		if pbDeposits[i].StorageWaypoint != pbDeposits[j].StorageWaypoint {
+			return pbDeposits[i].StorageWaypoint < pbDeposits[j].StorageWaypoint
+		}
+		return pbDeposits[i].GoodSymbol < pbDeposits[j].GoodSymbol
+	})
+
 	return &pb.OptimizeTradeTourRequest{
 		Snapshot: pbSnapshot,
 		Ship: &pb.TourShip{
@@ -391,7 +413,8 @@ func buildTourRequest(
 			MaxSnapshotAgeMinutes: int32(cons.MaxSnapshotAgeMinutes),
 			ExpectedModelVersion:  cons.ExpectedModelVersion,
 		},
-		Waypoints: pbWaypoints,
+		Waypoints:         pbWaypoints,
+		DepositCandidates: pbDeposits,
 	}
 }
 
@@ -405,6 +428,7 @@ func tourPlanFromPb(resp *pb.OptimizeTradeTourResponse) *domainRouting.TourPlan 
 		ProjectedProfit:         resp.GetProjectedProfit(),
 		ProjectedCreditsPerHour: resp.GetProjectedCreditsPerHour(),
 		HeldLiquidation:         resp.GetHeldLiquidation(),
+		DepositValue:            resp.GetDepositValue(),
 		ModelVersion:            resp.GetModelVersion(),
 	}
 	for _, leg := range resp.GetLegs() {
@@ -420,6 +444,7 @@ func tourPlanFromPb(resp *pb.OptimizeTradeTourResponse) *domainRouting.TourPlan 
 				Units:             int(tr.GetUnits()),
 				ExpectedUnitPrice: int(tr.GetExpectedUnitPrice()),
 				IsBuy:             tr.GetIsBuy(),
+				IsDeposit:         tr.GetIsDeposit(),
 			})
 		}
 		plan.Legs = append(plan.Legs, domainLeg)

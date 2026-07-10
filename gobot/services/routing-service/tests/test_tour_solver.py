@@ -361,3 +361,153 @@ def test_solver_profit_scales_with_hull_size():
     assert len(heavy_goods) >= 4, heavy_goods                          # across goods
     assert heavy["projected_profit"] > light["projected_profit"], \
         (light["projected_profit"], heavy["projected_profit"])
+
+
+# --- sp-dchv Lane C: haul-to-storage deposit sinks -------------------------
+
+def _dc_cons(**over):
+    base = dict(max_hops=4, max_spend=1_000_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    base.update(over)
+    return base
+
+
+def _dc_ship(hold=80, cargo=None):
+    return dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=hold, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=cargo or [])
+
+
+def _deposit(good, units_wanted, synthetic_bid, wp="W", system="S1"):
+    return dict(good_symbol=good, units_wanted=units_wanted,
+                synthetic_bid=synthetic_bid, storage_waypoint=wp,
+                storage_system=system)
+
+
+def test_deposit_beats_weak_arb_sell():
+    # Buy G cheap at A (ask 100). A WEAK market sink at B (bid 150, margin 50) and a
+    # home warehouse DEPOSIT sink at W (synthetic bid 600, margin 500). The source
+    # is scarce — tv=20 caps the foreign buy pool at 40u total (A-cap 2*tv) — so the
+    # two sinks COMPETE for it, and the higher-margin deposit must win the space
+    # (the emergent opportunity-cost property: hold goes to whichever earns more).
+    snapshot = [
+        snap("A", "S1", "G", ask=100, bid=90, tv=20),   # scarce foreign source
+        snap("B", "S1", "G", ask=999, bid=150, tv=40),  # weak arb sink
+    ]
+    out = solve_tour(snapshot, _dc_ship(hold=40), _dc_cons(), MODEL,
+                     deposit_candidates=[_deposit("G", 40, 600)])
+    assert out["feasible"], out
+    deposits = [(l["waypoint_symbol"], t["units"]) for l in out["legs"]
+                for t in l["trades"] if t.get("is_deposit")]
+    arb_sells = sum(t["units"] for l in out["legs"] for t in l["trades"]
+                    if not t["is_buy"] and not t.get("is_deposit"))
+    assert ("W", 40) in deposits, out           # depositing beat the weak arb sell
+    assert arb_sells == 0, out                  # nothing left for the market sink
+    assert out["deposit_value"] == 40 * 600, out
+
+
+def test_strong_arb_beats_weak_deposit():
+    # Mirror: a STRONG market sink (bid 900, margin 800) beats a WEAK deposit
+    # (synthetic 150, margin 50) when the source is scarce (tv=20 → 40u total). The
+    # solver's own profit-max prices the deposit against the arb sell and picks the
+    # arb — the deposit is not stocked.
+    snapshot = [
+        snap("A", "S1", "G", ask=100, bid=90, tv=20),   # scarce foreign source
+        snap("B", "S1", "G", ask=999, bid=900, tv=40),  # strong arb sink
+    ]
+    out = solve_tour(snapshot, _dc_ship(hold=40), _dc_cons(), MODEL,
+                     deposit_candidates=[_deposit("G", 40, 150)])
+    assert out["feasible"], out
+    deposits = sum(t["units"] for l in out["legs"] for t in l["trades"]
+                   if t.get("is_deposit"))
+    arb_sells = [(l["waypoint_symbol"], t["units"]) for l in out["legs"]
+                 for t in l["trades"] if not t["is_buy"] and not t.get("is_deposit")]
+    assert deposits == 0, out                   # weak deposit lost to the strong arb
+    assert ("B", 40) in arb_sells, out
+    assert out["deposit_value"] == 0, out
+
+
+def test_deposit_respects_units_wanted_cap():
+    # Hold (80) and foreign supply (2*40=80 via the A-cap) allow 80u, but the sink
+    # only wants 25 (the Go-side demand/space/ceiling cap). The plan deposits 25.
+    snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40)]
+    out = solve_tour(snapshot, _dc_ship(hold=80), _dc_cons(), MODEL,
+                     deposit_candidates=[_deposit("G", 25, 600)])
+    assert out["feasible"], out
+    dep = sum(t["units"] for l in out["legs"] for t in l["trades"]
+              if t.get("is_deposit"))
+    assert dep == 25, out                       # capped at units_wanted
+
+
+def test_deposit_sink_has_no_a_cap_and_flat_price():
+    # A market sink is A-capped at 2*trade_volume tranches AND decays per tranche.
+    # The deposit sink has NEITHER: it absorbs units_wanted in ONE flat tranche at
+    # the synthetic bid. Foreign source tv=40 (2-tranche cap 80) + hold 80 supply
+    # 60u; the sink wants 60 and takes all 60 at a flat 600.
+    snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40)]
+    out = solve_tour(snapshot, _dc_ship(hold=80), _dc_cons(), MODEL,
+                     deposit_candidates=[_deposit("G", 60, 600)])
+    assert out["feasible"], out
+    dep_units = sum(t["units"] for l in out["legs"] for t in l["trades"]
+                    if t.get("is_deposit"))
+    dep_prices = {t["expected_unit_price"] for l in out["legs"]
+                  for t in l["trades"] if t.get("is_deposit")}
+    assert dep_units == 60, out                 # 60 absorbed, no A-cap
+    assert dep_prices == {600}, out             # flat synthetic price, no decay
+
+
+def test_launch_cargo_liquidates_at_market_never_deposited():
+    # The hull launches holding 40 G with NO profitable foreign source (ask 999).
+    # Even though the warehouse deposit sink pays far more (600) than the market
+    # (100), launch cargo is NEVER deposited — a deposit requires a real buy leg, so
+    # the held load liquidates at the market (m5kv). This keeps held-liquidation
+    # accounting clean and lets bought-for-deposit cargo strand-sell if a deposit
+    # fails at execution (the Go re-plan then sells it as held cargo).
+    snapshot = [snap("B", "S1", "G", ask=999, bid=100, tv=40)]  # market sink only
+    out = solve_tour(snapshot,
+                     _dc_ship(hold=80, cargo=[dict(good_symbol="G", units=40)]),
+                     _dc_cons(), MODEL,
+                     deposit_candidates=[_deposit("G", 40, 600)])
+    assert out["feasible"], out
+    deposits = sum(t["units"] for l in out["legs"] for t in l["trades"]
+                   if t.get("is_deposit"))
+    market_sells = [(l["waypoint_symbol"], t["units"]) for l in out["legs"]
+                    for t in l["trades"] if not t["is_buy"] and not t.get("is_deposit")]
+    assert deposits == 0, out                          # launch cargo NOT deposited
+    assert ("B", 40) in market_sells, out              # it liquidated at the market
+    assert out["deposit_value"] == 0, out
+    assert out["held_liquidation"] == 40 * 100, out    # launch liquidation, not deposit
+
+
+def test_no_deposit_candidates_leaves_deposit_value_zero():
+    # The pre-sp-dchv shape: no deposit_candidates -> deposit_value 0 and no trade
+    # ever flagged is_deposit (existing arb planning byte-identical).
+    snapshot = [snap("A", "S1", "G", 100, 90, tv=40),
+                snap("B", "S1", "G", 999, 300, tv=40)]
+    out = solve_tour(snapshot, _dc_ship(hold=40), _dc_cons(), MODEL)
+    assert out["feasible"], out
+    assert out["deposit_value"] == 0, out
+    assert all(not t.get("is_deposit") for l in out["legs"] for t in l["trades"]), out
+
+
+def test_deposit_value_split_and_projected_profit_total():
+    # A pure pre-positioning tour: buy 40 G foreign @100, deposit @600. deposit_value
+    # is the synthetic revenue (40*600); projected_profit is the TOTAL that ranks the
+    # tour (synthetic value - foreign spend = the savings). Fresh cash profit
+    # (projected_profit - held_liquidation - deposit_value) is the NEGATIVE foreign
+    # outlay — honest: a deposit realizes no cash, only future contract-sourcing
+    # savings.
+    snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40)]
+    out = solve_tour(snapshot, _dc_ship(hold=40), _dc_cons(), MODEL,
+                     deposit_candidates=[_deposit("G", 40, 600)])
+    assert out["feasible"], out
+    dep_rev = sum(t["units"] * t["expected_unit_price"] for l in out["legs"]
+                  for t in l["trades"] if t.get("is_deposit"))
+    spend = sum(t["units"] * t["expected_unit_price"] for l in out["legs"]
+                for t in l["trades"] if t["is_buy"])
+    assert out["deposit_value"] == dep_rev == 40 * 600, out
+    assert out["projected_profit"] == dep_rev - spend, out      # total = synthetic - spend
+    assert out["held_liquidation"] == 0, out
+    fresh = out["projected_profit"] - out["held_liquidation"] - out["deposit_value"]
+    assert fresh == -spend, out                                 # honest negative cash outlay

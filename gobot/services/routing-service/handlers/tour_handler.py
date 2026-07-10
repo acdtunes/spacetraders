@@ -93,9 +93,18 @@ class TourHandlerMixin:
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)
                          for w in request.waypoints]
+            # sp-dchv Lane C: haul-to-storage deposit sinks the Go daemon assembled
+            # and capped. Absent (pre-sp-dchv shape) -> [] -> pure-arb planning.
+            deposit_candidates = [dict(good_symbol=d.good_symbol,
+                                       units_wanted=d.units_wanted,
+                                       synthetic_bid=d.synthetic_bid,
+                                       storage_waypoint=d.storage_waypoint,
+                                       storage_system=d.storage_system)
+                                  for d in request.deposit_candidates]
 
             result = solve_tour(snapshot, ship, constraints, self.tour_model,
-                                waypoints=waypoints)
+                                waypoints=waypoints,
+                                deposit_candidates=deposit_candidates)
 
             response = routing_pb2.OptimizeTradeTourResponse(
                 feasible=result["feasible"],
@@ -105,7 +114,7 @@ class TourHandlerMixin:
                     system_symbol=leg["system_symbol"],
                     trades=[routing_pb2.TourTrade(
                         good_symbol=t["good_symbol"], units=t["units"],
-                        is_buy=t["is_buy"],
+                        is_buy=t["is_buy"], is_deposit=t["is_deposit"],
                         expected_unit_price=t["expected_unit_price"])
                         for t in leg["trades"]],
                     projected_leg_profit=leg["projected_leg_profit"],
@@ -114,6 +123,7 @@ class TourHandlerMixin:
                 projected_profit=result["projected_profit"],
                 projected_credits_per_hour=result["projected_credits_per_hour"],
                 held_liquidation=result["held_liquidation"],
+                deposit_value=result["deposit_value"],
                 top_rejected=[routing_pb2.RejectedTour(
                     summary=r["summary"], reason=r["reason"])
                     for r in result["top_rejected"]],

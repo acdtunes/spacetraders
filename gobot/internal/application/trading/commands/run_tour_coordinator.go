@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -19,6 +20,7 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -56,6 +58,11 @@ const (
 	// no-plan on the VERY FIRST tour (nothing earned yet) is the existing fail-open
 	// "tour unavailable" instead, so the single-lane fallback stands.
 	tourStarvationLimit = 3
+	// defaultDepositCeilingPct is the pre-positioning capital ceiling as a percent
+	// of live treasury when the captain leaves capital_ceiling_pct at 0 (sp-dchv
+	// Lane C). Junior to the working-capital reserve; an unreadable balance yields
+	// ZERO candidates (fail closed, RULINGS #4).
+	defaultDepositCeilingPct = 10
 )
 
 // exitReason* enumerates why the continuous tour loop stopped, surfaced on the
@@ -82,11 +89,11 @@ const (
 // with no captain in the loop, turning capital velocity from captain-cadence into
 // engine-cadence. See Iterations for the loop semantics.
 type RunTourCoordinatorCommand struct {
-	ShipSymbol string
-	PlayerID   int
-	MaxHops    int   // 0 → maxTourHops
-	MaxSpend   int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
-	MinMargin  int
+	ShipSymbol  string
+	PlayerID    int
+	MaxHops     int   // 0 → maxTourHops
+	MaxSpend    int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
+	MinMargin   int
 	ReplanLimit int // 0 → tourMaxReplansDefault (PER TOUR)
 	// Iterations is the tour count (sp-m5kv), unifying the container iteration
 	// semantics (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new
@@ -179,6 +186,19 @@ type RunTourCoordinatorHandler struct {
 	// (sp-wj0h). Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
 	// cmd.ModelArtifactPath (tests) still wins over this.
 	modelArtifactPath string
+
+	// mediator dispatches the cargo TransferCargoCommand for haul-to-storage deposit
+	// legs (sp-dchv Lane C). Same mediator the delegated legs use.
+	mediator common.Mediator
+	// Pre-positioning deposit dependencies (sp-dchv Lane C), all optional and
+	// injected via SetPrePositioning AFTER the storage subsystem is wired (main.go).
+	// When any is nil or prePositioning.Enabled is false, no deposit legs are
+	// offered or executed and the tour behaves exactly as pre-sp-dchv.
+	storageCoordinator storage.StorageCoordinator
+	warehouseFinder    tradingsvc.WarehouseOperationFinder
+	demandMiner        tradingsvc.DepositDemandMiner
+	prePositioning     tradingsvc.DepositCandidateConfig
+	depositCeilingPct  int
 }
 
 // NewRunTourCoordinatorHandler wires the tour coordinator with the same driven ports
@@ -207,7 +227,28 @@ func NewRunTourCoordinatorHandler(
 		planner:      planner,
 		clock:        clock,
 		apiClient:    apiClient,
+		mediator:     mediator,
 	}
+}
+
+// SetPrePositioning wires the optional haul-to-storage deposit subsystem (sp-dchv
+// Lane C): the shared storage coordinator (deposit protocol + warehouse space
+// reads), the warehouse-op finder, the Lane A demand miner, the resolved config,
+// and the capital-ceiling percent. Called from main.go AFTER the storage subsystem
+// is constructed (the tour coordinator is wired earlier). Left unset, no deposit
+// legs are ever offered or executed — the tour plans and flies pure arb.
+func (h *RunTourCoordinatorHandler) SetPrePositioning(
+	coordinator storage.StorageCoordinator,
+	warehouses tradingsvc.WarehouseOperationFinder,
+	miner tradingsvc.DepositDemandMiner,
+	cfg tradingsvc.DepositCandidateConfig,
+	capitalCeilingPct int,
+) {
+	h.storageCoordinator = coordinator
+	h.warehouseFinder = warehouses
+	h.demandMiner = miner
+	h.prePositioning = cfg
+	h.depositCeilingPct = capitalCeilingPct
 }
 
 // SetGateGraph wires the multi-jump gate-graph resolver into the delegated movement
@@ -440,16 +481,19 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		return false, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), nil
 	}
 	response.LegsPlanned += len(plan.Legs)
-	// Honest projection split (sp-bc27, Admiral ruling C): projected profit is the
-	// TOTAL that ranked this tour; fresh-trade profit and held-cargo liquidation
-	// revenue are reported apart so a laden-hull plan's margin is not read as pure
-	// fresh-trade profit. Fresh = total - liquidation (liquidation has no acquisition
-	// cost in the plan).
-	freshProfit := plan.ProjectedProfit - plan.HeldLiquidation
-	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (fresh %d, liquidation %d) (model %s)", len(plan.Legs), plan.ProjectedProfit, freshProfit, plan.HeldLiquidation, modelVersion), map[string]interface{}{
+	// Honest projection split (sp-bc27 + sp-dchv Lane C): projected profit is the
+	// TOTAL that ranked this tour; fresh cash profit, held-cargo liquidation revenue,
+	// and synthetic haul-to-storage DEPOSIT value are reported apart so a laden-hull
+	// or pre-positioning plan's margin is not read as pure fresh-trade profit.
+	// Fresh cash = total - liquidation - deposit_value (liquidation has no
+	// acquisition cost; a deposit books no cash — its value is future contract
+	// savings, not revenue).
+	freshProfit := plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
+	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (fresh %d, liquidation %d, deposit %d) (model %s)", len(plan.Legs), plan.ProjectedProfit, freshProfit, plan.HeldLiquidation, plan.DepositValue, modelVersion), map[string]interface{}{
 		"legs": len(plan.Legs), "projected_profit": plan.ProjectedProfit,
 		"projected_fresh_profit": freshProfit, "projected_held_liquidation": plan.HeldLiquidation,
-		"cph": plan.ProjectedCreditsPerHour, "model": modelVersion,
+		"projected_deposit_value": plan.DepositValue,
+		"cph":                     plan.ProjectedCreditsPerHour, "model": modelVersion,
 	})
 
 	// Execute plan legs; on degradation, re-plan from current position/cargo (bounded
@@ -557,6 +601,14 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	maxSpend, reserve int64,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
+
+	// sp-dchv Lane C: a DEPOSIT tranche is a haul-to-storage transfer, not a market
+	// trade — there is no live market bid to re-verify (its value is the synthetic
+	// bid). Route it straight to the warehouse deposit path, BYPASSING the
+	// live-price observe + tolerance gate the market trades below run.
+	if trade.IsDeposit {
+		return h.executeDeposit(ctx, cmd, leg, legIdx, trade, response, netBought)
+	}
 
 	live, oerr := h.legs.observeGood(ctx, leg.Waypoint, trade.Good, cmd.PlayerID)
 	if oerr != nil {
@@ -700,6 +752,118 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	return true, nil
 }
 
+// executeDeposit deposits a haul-to-storage tranche into the home warehouse
+// (sp-dchv Lane C) using the gas-proven protocol: ReserveSpaceForDeposit →
+// TransferCargo (API) → ConfirmDeposit, releasing the reservation on transfer
+// failure. It runs NO live-price re-verify (the value is the synthetic bid, not a
+// market price) and books ZERO revenue — a deposit is an inventory transfer, not a
+// sale, so no ledger transaction row is written (recordLeg is deliberately NOT
+// called) and realized P&L is not inflated; the synthetic savings value is logged
+// for observability only.
+//
+// Honest-completion composure (RULINGS #1 / sp-7yej): a successful deposit
+// decrements netBought (the good LEFT the hull into inventory — not stranded). A
+// deposit that cannot complete (no warehouse, warehouse full/gone) returns a SKIP
+// (executed=false) so the leg degrades and the tour re-plans; the un-deposited
+// cargo is then carried as held cargo and the next plan liquidates it at market
+// (m5kv) rather than stranding it. An API transfer failure returns an error the
+// runner retries (it re-plans cargo-aware from the current hold).
+func (h *RunTourCoordinatorHandler) executeDeposit(
+	ctx context.Context,
+	cmd *RunTourCoordinatorCommand,
+	leg routing.TourLeg,
+	legIdx int,
+	trade routing.TourTrade,
+	response *RunTourCoordinatorResponse,
+	netBought map[string]int,
+) (bool, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.storageCoordinator == nil || h.warehouseFinder == nil || h.mediator == nil {
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: deposit of %s planned but storage subsystem unwired - degrading to re-plan (held cargo will liquidate)", legIdx, trade.Good), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
+		})
+		return false, nil
+	}
+
+	op := h.warehouseAt(ctx, cmd.PlayerID, leg.Waypoint)
+	if op == nil {
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no running warehouse at %s for %s deposit - degrading to re-plan (held cargo will liquidate)", legIdx, leg.Waypoint, trade.Good), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
+		})
+		return false, nil
+	}
+
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return false, err
+	}
+	held := 0
+	if c := ship.Cargo(); c != nil {
+		held = c.GetItemUnits(trade.Good)
+	}
+	units := trade.Units
+	if held < units {
+		units = held
+	}
+	if units <= 0 {
+		return false, nil // nothing to deposit (cargo already gone) — not a degrade
+	}
+
+	// Reserve space atomically, then transfer, then confirm (Lane B / siphon protocol).
+	storageShip, reserved, ok := h.storageCoordinator.ReserveSpaceForDeposit(op.ID(), units)
+	if !ok || storageShip == nil {
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: warehouse %s has no space for %d %s - degrading to re-plan (held cargo will liquidate at market)", legIdx, op.ID(), units, trade.Good), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "units": units, "warehouse": op.ID(),
+		})
+		return false, nil // full → degrade → next plan liquidates the held cargo (m5kv)
+	}
+	if reserved < units {
+		units = reserved
+	}
+
+	if _, terr := h.mediator.Send(ctx, &gasCmd.TransferCargoCommand{
+		FromShip:   cmd.ShipSymbol,
+		ToShip:     storageShip.ShipSymbol(),
+		GoodSymbol: trade.Good,
+		Units:      units,
+		PlayerID:   shared.MustNewPlayerID(cmd.PlayerID),
+	}); terr != nil {
+		h.storageCoordinator.ReleaseReservedSpace(storageShip.ShipSymbol(), reserved)
+		return false, fmt.Errorf("deposit transfer of %d %s to warehouse hull %s failed: %w", units, trade.Good, storageShip.ShipSymbol(), terr)
+	}
+	h.storageCoordinator.ConfirmDeposit(storageShip.ShipSymbol(), trade.Good, units)
+
+	response.TradesExecuted++
+	netBought[trade.Good] -= units // left the hull into inventory — not stranded
+	savingsValue := units * trade.ExpectedUnitPrice
+	logger.Log("INFO", fmt.Sprintf("Tour leg %d: deposited %d %s into warehouse %s (savings value %d, no revenue)", legIdx, units, trade.Good, storageShip.WaypointSymbol(), savingsValue), map[string]interface{}{
+		"leg": legIdx, "good": trade.Good, "units": units, "warehouse": op.ID(),
+		"storage_ship": storageShip.ShipSymbol(), "savings_value": savingsValue,
+		"operation_type": "warehouse_deposit",
+	})
+	return true, nil
+}
+
+// warehouseAt returns the RUNNING warehouse operation parked at waypoint (the
+// storage anchor the planner routed a deposit leg to), or nil if none is running
+// there (warehouse stopped/gone since plan time — the caller degrades).
+func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
+	if h.warehouseFinder == nil {
+		return nil
+	}
+	ops, err := h.warehouseFinder.FindRunning(ctx, playerID)
+	if err != nil {
+		return nil
+	}
+	for _, op := range ops {
+		if op.OperationType() == storage.OperationTypeWarehouse && op.WaypointSymbol() == waypoint {
+			return op
+		}
+	}
+	return nil
+}
+
 // plan assembles the market snapshot + era-scoped coordinates over the tour graph
 // (home system + fresh gate neighbors) and calls the depth-aware planner. The
 // constraint carries the resolved model version so the solver fails closed on a
@@ -717,6 +881,11 @@ func (h *RunTourCoordinatorHandler) plan(
 	if err != nil {
 		return nil, err
 	}
+	// sp-dchv Lane C: assemble haul-to-storage deposit candidates for the planner to
+	// price against arb sells. Empty when pre-positioning is off, no warehouse is in
+	// the tour graph, or the capital ceiling is unreadable (fail closed) — the tour
+	// then plans pure arb, unchanged.
+	deposits := h.depositCandidates(ctx, allowedSystems, cmd.PlayerID, reserve)
 	cons := routing.TourConstraints{
 		MaxHops:               maxHops,
 		MinMarginPerUnit:      cmd.MinMargin,
@@ -726,7 +895,57 @@ func (h *RunTourCoordinatorHandler) plan(
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
 	}
-	return h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, h.tourShipState(ship), cons)
+	return h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, h.tourShipState(ship), cons, deposits)
+}
+
+// depositCandidates assembles the haul-to-storage deposit sinks for the planner
+// (sp-dchv Lane C), resolving the pre-positioning capital ceiling from live
+// treasury first. Returns nil (no deposit legs) when pre-positioning is disabled,
+// the storage subsystem is unwired, or the live balance is unreadable — all of
+// which leave the tour to plan pure arb.
+func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, allowedSystems []string, playerID int, reserve int64) []routing.TourDepositCandidate {
+	if !h.prePositioning.Enabled || h.storageCoordinator == nil || h.warehouseFinder == nil || h.demandMiner == nil {
+		return nil
+	}
+	ceiling, known := h.depositCapitalCeiling(ctx, reserve)
+	return tradingsvc.BuildDepositCandidates(
+		ctx, h.demandMiner, h.warehouseFinder, h.storageCoordinator,
+		allowedSystems, playerID, ceiling, known, h.prePositioning,
+	)
+}
+
+// depositCapitalCeiling resolves the pre-positioning capital ceiling:
+// depositCeilingPct (default 10) percent of LIVE treasury, held JUNIOR to the
+// working-capital reserve (never tie up capital that would breach it). Returns
+// known=false when the live balance is UNREADABLE — the assembler then offers no
+// candidates (fail closed, RULINGS #4: money guards never spend on an unreadable
+// balance). The foreign buys the deposits fund still pass the per-buy
+// working-capital floor and the cumulative max-spend cap at execution; this
+// ceiling is the pre-positioning-specific budget layered on top.
+func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, reserve int64) (int64, bool) {
+	if h.apiClient == nil {
+		return 0, false
+	}
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return 0, false
+	}
+	agent, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, false
+	}
+	pct := int64(h.depositCeilingPct)
+	if pct <= 0 {
+		pct = defaultDepositCeilingPct
+	}
+	ceiling := int64(agent.Credits) * pct / 100
+	if avail := int64(agent.Credits) - reserve; avail < ceiling {
+		ceiling = avail // junior to the working-capital reserve
+	}
+	if ceiling < 0 {
+		ceiling = 0
+	}
+	return ceiling, true
 }
 
 // tourSystems is the default tour graph: the hull's current system plus every system

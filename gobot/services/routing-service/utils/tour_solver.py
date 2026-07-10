@@ -160,6 +160,35 @@ def _build_markets(rows):
     return markets
 
 
+def _build_deposit_sinks(deposit_candidates, markets, allowed_systems):
+    """Index deposit candidates as synthetic sinks and make each storage waypoint
+    a routable node in `markets` (sp-dchv Lane C).
+
+    Returns {(waypoint, good): {"bid": synthetic_bid, "units_wanted": n}}. A
+    candidate with a non-positive units_wanted or bid is dropped (nothing to
+    absorb / no savings value), as is one whose storage system is outside the
+    tour's allowed set (the sink would be unreachable — fail closed). The storage
+    waypoint is added to `markets` as an empty-goods node when it is not already a
+    scanned market so the beam search can route to it; the deposit good is NOT
+    written into markets[wp]["goods"] — it lives only in the returned sink map so a
+    real market row and the deposit sink coexist at the same waypoint.
+    """
+    sinks = {}
+    for c in deposit_candidates or []:
+        wp = c.get("storage_waypoint")
+        good = c.get("good_symbol")
+        units = c.get("units_wanted", 0)
+        bid = c.get("synthetic_bid", 0)
+        system = c.get("storage_system", "")
+        if not wp or not good or units <= 0 or bid <= 0:
+            continue
+        if system and system not in allowed_systems:
+            continue  # sink outside the tour graph — unreachable, fail closed
+        sinks[(wp, good)] = {"bid": bid, "units_wanted": units}
+        markets.setdefault(wp, {"system": system, "goods": {}})
+    return sinks
+
+
 def _make_travel_fn(constraints, markets, ship, waypoints=None):
     """Travel-seconds fn(a, b). Precedence: caller-supplied `_travel_fn`
     hook > coordinate mode (CRUISE formula on request-carried TourWaypoint
@@ -202,16 +231,24 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
     return hop
 
 
-def score_sequence(seq, markets, ship, constraints, model, travel_fn):
+def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None):
     """Greedy tranche allocation over one hop sequence (the LP stage).
 
-    Returns dict(profit, spend, seconds, cph, legs) where legs carry only
-    the market stops with at least one trade (no-trade hops are pruned and
-    travel re-chained). Hold accounting: a unit bought at leg i and sold at
-    leg j occupies hold slots [i, j); launch cargo occupies from the start
-    until its sell leg. Slot occupancy never exceeds hold_capacity, which is
-    exactly the sells-then-buys dock order the executor uses.
+    Returns dict(profit, spend, seconds, cph, legs, held_liquidation,
+    deposit_value) where legs carry only the market stops with at least one
+    trade (no-trade hops are pruned and travel re-chained). Hold accounting: a
+    unit bought at leg i and sold at leg j occupies hold slots [i, j); launch
+    cargo occupies from the start until its sell leg. Slot occupancy never
+    exceeds hold_capacity, which is exactly the sells-then-buys dock order the
+    executor uses.
+
+    `deposit_sinks` (sp-dchv Lane C) maps (waypoint, good) -> {"bid", "units_wanted"}
+    for haul-to-storage DEPOSIT sinks at the home warehouse. A deposit sink
+    absorbs a foreign-bought good at a flat synthetic bid (= home_ask) with no
+    depth decay and no A-cap, competing with real arb sells on margin so the
+    greedy allocator hands hold space to whichever earns more.
     """
+    deposit_sinks = deposit_sinks or {}
     n = len(seq)
     hold_cap = ship["hold_capacity"]
     initial = {}
@@ -240,32 +277,71 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
                 quote, row["trade_volume"], _tier_of(row), model, is_buy, capped))
         return pools[pkey]
 
+    # Deposit sinks reachable at each leg's waypoint (sp-dchv Lane C).
+    deposit_by_wp = {}
+    for (wp, good), sink in deposit_sinks.items():
+        deposit_by_wp.setdefault(wp, {})[good] = sink
+
+    deposit_pools = {}
+
+    def deposit_pool(wp, good):
+        pkey = (wp, good)
+        if pkey not in deposit_pools:
+            sink = deposit_sinks[(wp, good)]
+            # Flat single tranche: NO depth decay (an inventory transfer is not a
+            # market sale — no price impact) and NO A-cap (depth = units_wanted,
+            # already bounded Go-side by remaining contract demand, warehouse
+            # space, and the capital ceiling). Shared per (waypoint, good) across
+            # revisits, exactly like the market pools.
+            deposit_pools[pkey] = _TranchePool([(sink["units_wanted"], sink["bid"])])
+        return deposit_pools[pkey]
+
     # Candidate pairings. Buys and sells at repeat visits of the same market
     # share one pool per (waypoint, good) — depth is a property of the market,
-    # not of the leg index.
-    pairs = []  # (good, buy_leg or None for launch cargo, sell_leg)
+    # not of the leg index. Each pairing carries a kind: "market" (arb sell or
+    # launch liquidation) or "deposit" (sp-dchv haul-to-storage sink).
+    pairs = []  # (good, buy_leg or None for launch cargo, sell_leg, kind)
     for j in range(n):
         for good, row in markets[seq[j]]["goods"].items():
             if row["bid"] <= 0:
                 continue
             if initial.get(good):
-                pairs.append((good, None, j))
+                pairs.append((good, None, j, "market"))
             for i in range(j):
                 brow = markets[seq[i]]["goods"].get(good)
                 if brow and brow["ask"] > 0:
-                    pairs.append((good, i, j))
+                    pairs.append((good, i, j, "market"))
+        # Deposit pairings (sp-dchv): a foreign-bought depositable good pairs a
+        # real buy leg i with a DEPOSIT into the home warehouse sink at leg j
+        # (flat synthetic bid = home_ask). Launch cargo is NEVER deposited (no
+        # (None, j) deposit pair) — a deposit always carries a real acquisition
+        # cost, so held-liquidation accounting stays clean and a deposit that
+        # fails at execution strand-sells as held cargo (m5kv), never at the
+        # synthetic price.
+        for good in deposit_by_wp.get(seq[j], ()):
+            for i in range(j):
+                brow = markets[seq[i]]["goods"].get(good)
+                if brow and brow["ask"] > 0:
+                    pairs.append((good, i, j, "deposit"))
 
     occ = [total_initial] * n   # hold occupancy per travel slot
     initial_left = dict(initial)
     spend = 0
     revenue = 0
-    allocations = []            # (good, buy_leg, sell_leg, units, buy_price, sell_price)
+    allocations = []            # (good, buy_leg, sell_leg, units, buy_price, sell_price, kind)
     alive = list(pairs)
+
+    def sink_for(kind, j, good):
+        # A deposit pairing draws from the flat synthetic warehouse pool; every
+        # other pairing draws from the decaying, A-capped market sell pool.
+        if kind == "deposit":
+            return deposit_pool(seq[j], good)
+        return pool(sell_pools, seq[j], good, is_buy=False)
 
     while True:
         best = None
-        for good, i, j in alive:
-            sell_rem, sell_price = pool(sell_pools, seq[j], good, is_buy=False).head()
+        for good, i, j, kind in alive:
+            sell_rem, sell_price = sink_for(kind, j, good).head()
             if sell_rem <= 0:
                 continue
             if i is None:
@@ -289,11 +365,11 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
                 continue
             key = (margin, -j, -(i if i is not None else -1))
             if best is None or key > best[0]:
-                best = (key, good, i, j, units, buy_price, sell_price)
+                best = (key, good, i, j, units, buy_price, sell_price, kind)
         if best is None:
             break
-        _, good, i, j, units, buy_price, sell_price = best
-        pool(sell_pools, seq[j], good, is_buy=False).take(units)
+        _, good, i, j, units, buy_price, sell_price, kind = best
+        sink_for(kind, j, good).take(units)
         if i is None:
             initial_left[good] -= units
             for k in range(j, n):
@@ -304,7 +380,7 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
             for k in range(i, j):
                 occ[k] += units
         revenue += units * sell_price
-        allocations.append((good, i, j, units, buy_price, sell_price))
+        allocations.append((good, i, j, units, buy_price, sell_price, kind))
 
     profit = revenue - spend
     # Held-liquidation revenue (sp-bc27, Admiral ruling C): the revenue from
@@ -314,16 +390,27 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
     # (profit - held_liquidation) and liquidation revenue apart. Selection still
     # ranks on total `profit`, so pure-liquidation tours stay feasible.
     held_liquidation = sum(units * sell_price
-                           for _good, i, _j, units, _buy_price, sell_price in allocations
+                           for _good, i, _j, units, _buy_price, sell_price, _kind in allocations
                            if i is None)
+    # Deposit value (sp-dchv Lane C): synthetic savings from haul-to-storage
+    # deposit legs (units*synthetic_bid, synthetic_bid = home_ask). It is a subset
+    # of `revenue`/`profit` — the sink priced each deposit at home_ask so the
+    # solver ranks it against real arb sells — but it is NOT cash: the executor
+    # books zero revenue and realizes the value later when a contract sources the
+    # good from inventory. Reported apart (like held_liquidation) so a projection
+    # can show fresh cash profit and pre-positioning value separately. Deposits
+    # never have buy_leg=None, so they are disjoint from held_liquidation.
+    deposit_value = sum(units * sell_price
+                        for _good, _i, _j, units, _buy_price, sell_price, kind in allocations
+                        if kind == "deposit")
 
     # Assemble per-leg trades, then prune hops where nothing happens.
-    leg_trades = [{} for _ in range(n)]  # (good, is_buy, price) -> units
-    for good, i, j, units, buy_price, sell_price in allocations:
+    leg_trades = [{} for _ in range(n)]  # (good, is_buy, is_deposit, price) -> units
+    for good, i, j, units, buy_price, sell_price, kind in allocations:
         if i is not None:
-            k = (good, True, buy_price)
+            k = (good, True, False, buy_price)
             leg_trades[i][k] = leg_trades[i].get(k, 0) + units
-        k = (good, False, sell_price)
+        k = (good, False, kind == "deposit", sell_price)
         leg_trades[j][k] = leg_trades[j].get(k, 0) + units
 
     legs = []
@@ -332,11 +419,11 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
             continue
         trades = []
         entries = leg_trades[idx].items()
-        for (good, is_buy, price), units in sorted(
-                entries, key=lambda e: (e[0][1], e[0][0], e[0][2])):
+        for (good, is_buy, is_deposit, price), units in sorted(
+                entries, key=lambda e: (e[0][1], e[0][0], e[0][2], e[0][3])):
             # sells (is_buy=False) sort first: dock order frees hold before buys
             trades.append(dict(good_symbol=good, units=units, is_buy=is_buy,
-                               expected_unit_price=price))
+                               is_deposit=is_deposit, expected_unit_price=price))
         leg_profit = sum(t["units"] * t["expected_unit_price"] * (-1 if t["is_buy"] else 1)
                          for t in trades)
         legs.append(dict(waypoint_symbol=seq[idx],
@@ -355,10 +442,10 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
 
     cph = profit / (seconds / 3600.0) if seconds > 0 else 0.0
     return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs,
-                held_liquidation=held_liquidation)
+                held_liquidation=held_liquidation, deposit_value=deposit_value)
 
 
-def beam_sequences(markets, ship, constraints, travel_fn):
+def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None):
     """Beam search over hop sequences; every prefix is a candidate tour.
 
     Ranking uses an optimistic MULTI-GOOD hold-packing bound (sp-gm00): for
@@ -384,6 +471,7 @@ def beam_sequences(markets, ship, constraints, travel_fn):
     never crowds the top-N scoring pool on lookahead credit it can't realize.
     Returns candidate sequences (tuples) sorted best-bound-first.
     """
+    deposit_sinks = deposit_sinks or {}
     max_hops = constraints.get("max_hops") or MAX_HOPS_DEFAULT
     max_hops = min(max_hops, MAX_HOPS_DEFAULT)
     start_system = ship["current_system"]
@@ -406,6 +494,14 @@ def beam_sequences(markets, ship, constraints, travel_fn):
                 depth = MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * max(
                     1, min(brow["trade_volume"], srow["trade_volume"]))
                 spreads.append((srow["bid"] - brow["ask"], depth))
+            # Deposit sink at wp_to (sp-dchv): a synthetic sink priced at home_ask
+            # absorbs up to units_wanted with no depth decay. Credit it in the
+            # packing bound so the beam explores sequences that reach the warehouse
+            # to deposit cheap foreign buys — otherwise a rich foreign source whose
+            # only profitable sink is the warehouse never survives the beam cut.
+            dsink = deposit_sinks.get((wp_to, good))
+            if dsink and brow["ask"] > 0 and dsink["bid"] > brow["ask"]:
+                spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"]))
         spreads.sort(reverse=True)
         gain, cap = 0, hold
         for spread, depth in spreads:
@@ -463,15 +559,20 @@ def beam_sequences(markets, ship, constraints, travel_fn):
 def _infeasible(reason, model_version, top_rejected=None):
     return dict(feasible=False, infeasible_reason=reason, legs=[],
                 projected_profit=0, projected_credits_per_hour=0.0,
-                held_liquidation=0,
+                held_liquidation=0, deposit_value=0,
                 top_rejected=top_rejected or [], model_version=model_version)
 
 
-def solve_tour(snapshot, ship, constraints, model, waypoints=None):
+def solve_tour(snapshot, ship, constraints, model, waypoints=None,
+               deposit_candidates=None):
     """Plan the best multi-hop trade tour for one hull. Pure; proto-shaped dicts.
 
     `waypoints` mirrors OptimizeTradeTourRequest.waypoints (coords for the
     real travel matrix); None/empty -> degraded flat travel with a warning.
+
+    `deposit_candidates` mirrors OptimizeTradeTourRequest.deposit_candidates
+    (sp-dchv Lane C): each is a haul-to-storage sink offer the Go daemon assembled
+    and capped. None/empty -> no deposit legs, pure-arb planning unchanged.
 
     Fail-loud contract: missing artifact or version mismatch are structured
     infeasible reasons, never a silent fallback (spec error-handling table).
@@ -499,18 +600,26 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None):
         return _infeasible("no_fresh_market_data", model_version)
 
     markets = _build_markets(rows)
+    # Deposit sinks (sp-dchv Lane C): index the candidates and make each storage
+    # waypoint a routable node in `markets` (as an empty-goods node when it is not
+    # itself a scanned market). The deposit goods live in the sink map, NOT in
+    # markets[wp]["goods"], so real market rows and the deposit sink coexist at the
+    # same waypoint without collision and are priced independently.
+    deposit_sinks = _build_deposit_sinks(deposit_candidates, markets, allowed)
     travel_fn = _make_travel_fn(constraints, markets, ship, waypoints)
-    candidates = beam_sequences(markets, ship, constraints, travel_fn)
+    candidates = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks)
     if not candidates:
         return _infeasible("no_candidate_tours", model_version)
 
     scored = []
     seen = set()
     for seq in candidates[:FULL_SCORE_TOP_N]:
-        result = score_sequence(seq, markets, ship, constraints, model, travel_fn)
+        result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
+                                deposit_sinks)
         signature = tuple((l["waypoint_symbol"],
                            tuple((t["good_symbol"], t["units"], t["is_buy"],
-                                  t["expected_unit_price"]) for t in l["trades"]))
+                                  t["is_deposit"], t["expected_unit_price"])
+                                 for t in l["trades"]))
                           for l in result["legs"])
         if signature in seen:
             continue
@@ -547,5 +656,6 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None):
                 projected_profit=best["profit"],
                 projected_credits_per_hour=best["cph"],
                 held_liquidation=best["held_liquidation"],
+                deposit_value=best["deposit_value"],
                 top_rejected=rejected(scored[1:], winner=best),
                 model_version=model_version)

@@ -103,6 +103,9 @@ def test_golden_tour(tmp_path):
     # sp-bc27: an empty-hold tour has no launch-liquidation revenue, so the split
     # field is 0 and projected_profit is all fresh-trade profit.
     assert resp.held_liquidation == 0
+    # sp-dchv: no deposit_candidates on this request -> no deposit legs, deposit_value 0.
+    assert resp.deposit_value == 0
+    assert all(not t.is_deposit for l in resp.legs for t in l.trades)
 
     # 2-system cap held even though S3's fat bid was allowed by constraints.
     assert all(l.system_symbol in ("S1", "S2") for l in resp.legs)
@@ -111,3 +114,36 @@ def test_golden_tour(tmp_path):
     assert 1 <= len(resp.top_rejected) <= 3
     assert all(r.reason for r in resp.top_rejected)
     assert all(r.summary for r in resp.top_rejected)
+
+
+def test_deposit_candidate_round_trips_to_deposit_leg(tmp_path):
+    # sp-dchv Lane C: a request carrying a deposit candidate produces a DEPOSIT leg
+    # at the storage waypoint (is_deposit=True, priced at the synthetic bid) and a
+    # non-zero deposit_value — the proto plumbing the Go executor reads. Buy G cheap
+    # at A, deposit into the warehouse W; no market sink, so pre-positioning is the
+    # only profitable move.
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+    req = routing_pb2.OptimizeTradeTourRequest(
+        snapshot=[snap("A", "S1", "G", ask=100, bid=90, tv=40)],
+        ship=routing_pb2.TourShip(
+            ship_symbol="HULL-1", current_waypoint="A", current_system="S1",
+            hold_capacity=80, fuel_current=400, fuel_capacity=400, engine_speed=30),
+        constraints=routing_pb2.TourConstraints(
+            max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+            working_capital_reserve=0, allowed_systems=["S1"],
+            max_snapshot_age_minutes=75, expected_model_version="1@goldene"),
+        waypoints=[routing_pb2.TourWaypoint(symbol="A", system_symbol="S1", x=0, y=0)],
+        deposit_candidates=[routing_pb2.DepositCandidate(
+            good_symbol="G", units_wanted=40, synthetic_bid=600,
+            storage_waypoint="W", storage_system="S1")])
+
+    resp = handler.OptimizeTradeTour(req, None)
+    assert resp.feasible
+    deposit_trades = [(l.waypoint_symbol, t.units, t.expected_unit_price)
+                      for l in resp.legs for t in l.trades if t.is_deposit]
+    assert ("W", 40, 600) in deposit_trades, deposit_trades   # deposited at synthetic bid
+    assert resp.deposit_value == 40 * 600
+    # The deposit books no cash: projected_profit is the synthetic value minus the
+    # foreign buy spend (the savings), and the fresh-cash remainder is negative.
+    assert resp.projected_profit == resp.deposit_value - (40 * 100 + 0)
+    assert resp.held_liquidation == 0

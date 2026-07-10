@@ -374,6 +374,16 @@ message TourTrade {
   int32 units = 2;
   bool is_buy = 3;
   int32 expected_unit_price = 4;   // curve-adjusted
+  // is_deposit marks a SELL-side tranche that is a haul-to-storage DEPOSIT into
+  // the home warehouse (sp-dchv Lane C), not a market sale. expected_unit_price
+  // is the synthetic bid (= home_ask, the contract-savings value the deposit
+  // sink was priced at), NOT a market price — the executor deposits via
+  // ReserveSpace/TransferCargo/ConfirmDeposit and books ZERO revenue, and skips
+  // the live-price re-verify (there is no market bid to drift against). is_buy is
+  // always false for a deposit. Additive to the m5kv sell/launch-liquidation
+  // shape (a deposit is a sell-with-no-buy whose "revenue" is inventory value,
+  // not cash); existing sell semantics untouched.
+  bool is_deposit = 5;
 }
 
 // TradeTourLeg is one market stop of the planned tour.
@@ -402,11 +412,33 @@ message TourWaypoint {
   int32 y = 4;
 }
 
+// DepositCandidate is one home-warehouse pre-positioning offer (sp-dchv Lane C):
+// a good the contract history recurrently needs, which is cheaper in a reachable
+// foreign system, may be DEPOSITED into the home warehouse instead of arb-sold.
+// The Go daemon assembles these from the Lane A demand miner + the running
+// warehouse op, capped Go-side by remaining contract demand, remaining warehouse
+// space, and the pre-positioning capital ceiling (10% of live treasury, fail
+// closed). The solver treats (storage_waypoint, good_symbol) as a synthetic SINK
+// with a flat bid = synthetic_bid (no depth decay — an inventory transfer has no
+// market price impact — and no A-cap), absorbing at most units_wanted units, and
+// prices deposit legs against real arb sells so hold space goes to whichever
+// earns more (the emergent opportunity-cost property).
+message DepositCandidate {
+  string good_symbol = 1;
+  int32 units_wanted = 2;      // max units the sink absorbs (Go-side demand/space/ceiling cap)
+  int32 synthetic_bid = 3;     // flat sink price = home_ask (the contract-savings value)
+  string storage_waypoint = 4; // the warehouse hull's waypoint (the sink node)
+  string storage_system = 5;   // system the warehouse is in (home; makes the sink routable)
+}
+
 message OptimizeTradeTourRequest {
   repeated MarketGoodSnapshot snapshot = 1;
   TourShip ship = 2;
   TourConstraints constraints = 3;
   repeated TourWaypoint waypoints = 4;
+  // deposit_candidates offers haul-to-storage sinks (sp-dchv Lane C). Empty (the
+  // pre-sp-dchv shape) → no deposit legs, the solver plans pure arb unchanged.
+  repeated DepositCandidate deposit_candidates = 5;
 }
 
 message OptimizeTradeTourResponse {
@@ -428,4 +460,15 @@ message OptimizeTradeTourResponse {
   // and liquidation revenue apart, and leaves the door open to re-weight
   // selection later without re-plumbing the wire.
   int64 held_liquidation = 8;
+  // deposit_value is the portion of projected_profit that is SYNTHETIC savings
+  // value from haul-to-storage DEPOSIT legs (sp-dchv Lane C): sum of
+  // units*synthetic_bid over deposit tranches, where synthetic_bid = home_ask.
+  // It is NOT cash — a deposit books zero revenue in the executor's realized
+  // P&L; the value is realized later when a contract sources the good from
+  // inventory at zero ask. projected_profit stays the TOTAL (fresh cash arb +
+  // this synthetic savings) so the solver ranks deposit legs against real arb
+  // sells; this field lets the planned-manifest log report fresh cash profit
+  // (projected_profit - held_liquidation - deposit_value) apart from the
+  // synthetic pre-positioning value (mirrors held_liquidation, sp-bc27).
+  int64 deposit_value = 9;
 }

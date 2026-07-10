@@ -12,12 +12,16 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -117,6 +121,13 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.sellOpTypes = append(m.fx.sellOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
 		m.fx.mu.Unlock()
 		return &shipCargo.SellCargoResponse{TotalRevenue: units * price, UnitsSold: units, TransactionCount: 1}, nil
+	case *gasCmd.TransferCargoCommand:
+		// A haul-to-storage deposit transfer (sp-dchv): the good LEAVES the hull
+		// into the warehouse — model it like a sell with no revenue.
+		m.fx.mu.Lock()
+		m.fx.cargo[cmd.GoodSymbol] -= cmd.Units
+		m.fx.mu.Unlock()
+		return &gasCmd.TransferCargoResponse{UnitsTransferred: cmd.Units}, nil
 	default:
 		return nil, nil // dock, orbit, etc. succeed silently
 	}
@@ -207,7 +218,7 @@ type tourFakeRoutingClient struct {
 	cancelOnCall int
 }
 
-func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints) (*routing.TourPlan, error) {
+func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate) (*routing.TourPlan, error) {
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	held := map[string]int{}
@@ -283,6 +294,46 @@ func buy(good string, units, price int) routing.TourTrade {
 }
 func sell(good string, units, price int) routing.TourTrade {
 	return routing.TourTrade{Good: good, Units: units, ExpectedUnitPrice: price, IsBuy: false}
+}
+
+// deposit is a haul-to-storage DEPOSIT tranche (sp-dchv Lane C): a sell-side trade
+// (IsBuy=false) flagged IsDeposit, priced at the synthetic bid (= home_ask).
+func deposit(good string, units, syntheticBid int) routing.TourTrade {
+	return routing.TourTrade{Good: good, Units: units, ExpectedUnitPrice: syntheticBid, IsBuy: false, IsDeposit: true}
+}
+
+// fakeRunningFinder returns canned running storage operations (the warehouse-op
+// finder port the deposit path discovers the warehouse through).
+type fakeRunningFinder struct{ ops []*storage.StorageOperation }
+
+func (f *fakeRunningFinder) FindRunning(_ context.Context, _ int) ([]*storage.StorageOperation, error) {
+	return f.ops, nil
+}
+
+// wireWarehouse registers a warehouse hull with a real in-memory coordinator and
+// wires the tour handler's deposit subsystem to it (Lane B harness pattern). The
+// assembler is left off (Enabled=false) — these tests drive the EXECUTOR through
+// canned deposit legs, not the plan-time candidate assembly.
+func wireWarehouse(t *testing.T, h *RunTourCoordinatorHandler, opID, waypoint string, capacity int, goods []string) *storageApp.InMemoryStorageCoordinator {
+	t.Helper()
+	coord := storageApp.NewInMemoryStorageCoordinator()
+	whShip, err := storage.NewStorageShip(opID+"-WH", waypoint, opID, capacity, nil)
+	if err != nil {
+		t.Fatalf("storage ship: %v", err)
+	}
+	if err := coord.RegisterStorageShip(whShip); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	op, err := storage.NewWarehouseOperation(opID, 1, waypoint, []string{opID + "-WH"}, goods, shared.NewRealClock())
+	if err != nil {
+		t.Fatalf("warehouse op: %v", err)
+	}
+	if err := op.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.SetPrePositioning(coord, &fakeRunningFinder{ops: []*storage.StorageOperation{op}}, nil,
+		tradingsvc.DepositCandidateConfig{}, 10)
+	return coord
 }
 
 // A 3-leg tour that fills the hold both ways executes every buy and sell, records one
@@ -560,5 +611,111 @@ func TestTour_TagsBuyAndSellWritesAsTourOperationType(t *testing.T) {
 		if got != "tour" {
 			t.Errorf("sell #%d dispatched under operation_type %q, want \"tour\"", i, got)
 		}
+	}
+}
+
+// sp-dchv Lane C: a DEPOSIT leg deposits the foreign-bought good into the home
+// warehouse via the reserve→transfer→confirm protocol, books ZERO revenue (an
+// inventory transfer, not a sale), and — because the cargo left the hull into
+// inventory — does NOT strand. The foreign buy's cost is still recorded.
+func TestTour_DepositLeg_DepositsIntoWarehouseAndBooksNoRevenue(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 80,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-W"}},
+		ask:     map[string]map[string]int{"X1-S1-A": {"ELECTRONICS": 744}},
+		bid:     map[string]map[string]int{"X1-S1-A": {"ELECTRONICS": 700}},
+		tv:      map[string]map[string]int{"X1-S1-A": {"ELECTRONICS": 40}},
+	}
+	// Buy 40 ELECTRONICS cheap at A, then DEPOSIT them at the warehouse W.
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{
+		Feasible: true, ProjectedProfit: 90240, DepositValue: 120000,
+		Legs: []routing.TourLeg{
+			leg("X1-S1-A", "X1-S1", buy("ELECTRONICS", 40, 744)),
+			leg("X1-S1-W", "X1-S1", deposit("ELECTRONICS", 40, 3000)),
+		},
+	}}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	coord := wireWarehouse(t, h, "wh-op", "X1-S1-W", 1000, []string{"ELECTRONICS"})
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if got := coord.GetTotalCargoAvailable("wh-op", "ELECTRONICS"); got != 40 {
+		t.Fatalf("warehouse should hold 40 deposited ELECTRONICS, got %d", got)
+	}
+	if r.TotalRevenue != 0 {
+		t.Fatalf("a deposit books NO revenue (only the foreign buy spent), got revenue %d", r.TotalRevenue)
+	}
+	if r.TotalSpent != 40*744 {
+		t.Fatalf("the foreign buy cost must still be recorded, got spent %d", r.TotalSpent)
+	}
+	if r.CargoStranded {
+		t.Fatalf("deposited cargo left the hull — must not strand: %s", r.CargoStrandedReason)
+	}
+	if !r.Completed {
+		t.Fatalf("tour should complete cleanly, got %+v", r)
+	}
+}
+
+// sp-dchv Lane C (stranded-veto composure, ruling #5): a deposit that CANNOT land
+// (warehouse full) degrades and re-plans; the re-plan liquidates the held cargo at
+// a real market (m5kv), so bought-for-deposit cargo is never silently stranded.
+func TestTour_FailedDeposit_ReplansAndLiquidatesAsHeldCargo(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 80,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-W", "X1-S1-B"}},
+		ask: map[string]map[string]int{
+			"X1-S1-A": {"ELECTRONICS": 744}, "X1-S1-B": {"ELECTRONICS": 9999}},
+		bid: map[string]map[string]int{
+			"X1-S1-A": {"ELECTRONICS": 700}, "X1-S1-B": {"ELECTRONICS": 3200}},
+		tv: map[string]map[string]int{
+			"X1-S1-A": {"ELECTRONICS": 40}, "X1-S1-B": {"ELECTRONICS": 40}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{
+		// Plan 1: buy 40 at A, deposit at W — but W is full, so the deposit fails.
+		{Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S1-A", "X1-S1", buy("ELECTRONICS", 40, 744)),
+			leg("X1-S1-W", "X1-S1", deposit("ELECTRONICS", 40, 3000)),
+		}},
+		// Plan 2 (re-plan): the hull now HOLDS 40 ELECTRONICS → liquidate at market B.
+		{Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S1-B", "X1-S1", sell("ELECTRONICS", 40, 3200)),
+		}},
+	}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	// Warehouse hull with ZERO capacity → no space → every deposit reservation fails.
+	coord := wireWarehouse(t, h, "wh-op", "X1-S1-W", 0, []string{"ELECTRONICS"})
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-2", PlayerID: 1, ContainerID: "ctr-2", ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if coord.GetTotalCargoAvailable("wh-op", "ELECTRONICS") != 0 {
+		t.Fatalf("the full warehouse must hold nothing — deposit should have failed")
+	}
+	if r.Replans < 1 {
+		t.Fatalf("a failed deposit must trigger a re-plan, got %d replans", r.Replans)
+	}
+	fx.mu.Lock()
+	sells := fx.sells
+	timeline := strings.Join(fx.timeline, ",")
+	fx.mu.Unlock()
+	if sells != 1 || !strings.Contains(timeline, "SELL:ELECTRONICS") {
+		t.Fatalf("held cargo should liquidate at market on the re-plan, timeline=%q", timeline)
+	}
+	if r.CargoStranded {
+		t.Fatalf("re-plan liquidated the held cargo — must not strand: %s", r.CargoStrandedReason)
+	}
+	if r.TotalRevenue != 40*3200 {
+		t.Fatalf("expected the market liquidation revenue, got %d", r.TotalRevenue)
 	}
 }

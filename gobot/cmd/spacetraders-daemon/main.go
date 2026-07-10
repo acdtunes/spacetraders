@@ -46,6 +46,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -777,6 +778,30 @@ func run(cfg *config.Config) error {
 		storageOperationRepo,
 		apiClient,
 		storageCoordinator,
+	)
+
+	// Wire the tour coordinator's haul-to-storage pre-positioning subsystem (sp-dchv
+	// Lane C), now that the shared storage coordinator + operation repo exist. The
+	// coordinator was constructed earlier (above), so this injects the deps via a
+	// setter: the Lane A demand miner (over the same db), the warehouse-op finder
+	// (storageOperationRepo), and the resolved config from cfg.Contract.PrePositioning.
+	// Live-config (sp-ts82 pattern): the daemon reads these knobs from config.yaml at
+	// every boot, so a captain retunes by editing config.yaml and restarting. OFF
+	// unless enabled AND a warehouse hull is running in the tour's home system.
+	pp := cfg.Contract.PrePositioning
+	tourCoordinatorHandler.SetPrePositioning(
+		storageCoordinator,
+		storageOperationRepo,
+		persistence.NewDemandMiner(db),
+		tradingSvc.DepositCandidateConfig{
+			Enabled:           pp.Enabled,
+			TopN:              pp.TopN,
+			MinRecurrence:     pp.MinRecurrence,
+			MinSavingsPerUnit: pp.MinSavingsPerUnit,
+			Allowlist:         pp.Allowlist,
+			Blocklist:         pp.Blocklist,
+		},
+		pp.CapitalCeilingPct,
 	)
 
 	// Manufacturing task worker handler

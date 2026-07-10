@@ -31,6 +31,9 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 			MaxSpend: 250000, WorkingCapitalReserve: 50000,
 			AllowedSystems: []string{"X1-NK36", "X1-GQ92"}, ExpectedModelVersion: "1@torwind-2026-07-05",
 		},
+		[]domainRouting.TourDepositCandidate{
+			{Good: "ELECTRONICS", UnitsWanted: 120, SyntheticBid: 3400, StorageWaypoint: "X1-NK36-H1", StorageSystem: "X1-NK36"},
+		},
 	)
 
 	if len(req.Snapshot) != 1 {
@@ -70,6 +73,17 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 	if len(c.AllowedSystems) != 2 || c.AllowedSystems[0] != "X1-NK36" || c.AllowedSystems[1] != "X1-GQ92" {
 		t.Fatalf("allowed systems wrong: %+v", c.AllowedSystems)
 	}
+
+	// sp-dchv Lane C: deposit candidates map onto the request 1:1 so the planner
+	// can offer haul-to-storage sinks.
+	if len(req.DepositCandidates) != 1 {
+		t.Fatalf("expected 1 deposit candidate, got %d", len(req.DepositCandidates))
+	}
+	d := req.DepositCandidates[0]
+	if d.GoodSymbol != "ELECTRONICS" || d.UnitsWanted != 120 || d.SyntheticBid != 3400 ||
+		d.StorageWaypoint != "X1-NK36-H1" || d.StorageSystem != "X1-NK36" {
+		t.Fatalf("deposit candidate mapping wrong: %+v", d)
+	}
 }
 
 // tourPlanFromPb parses the ordered legs (trades in planner-emitted execution
@@ -80,6 +94,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 		ProjectedProfit:         123456,
 		ProjectedCreditsPerHour: 78910.5,
 		HeldLiquidation:         44444,
+		DepositValue:            33333,
 		ModelVersion:            "1@torwind-2026-07-05",
 		Legs: []*pb.TradeTourLeg{{
 			WaypointSymbol:        "X1-GQ92-A1",
@@ -88,6 +103,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 			TravelSecondsFromPrev: 420,
 			Trades: []*pb.TourTrade{
 				{GoodSymbol: "MEDICINE", Units: 40, ExpectedUnitPrice: 1800, IsBuy: false},
+				{GoodSymbol: "ELECTRONICS", Units: 25, ExpectedUnitPrice: 3400, IsBuy: false, IsDeposit: true},
 				{GoodSymbol: "FABRICS", Units: 30, ExpectedUnitPrice: 120, IsBuy: true},
 			},
 		}},
@@ -100,7 +116,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 	plan := tourPlanFromPb(resp)
 
 	if !plan.Feasible || plan.ProjectedProfit != 123456 || plan.ProjectedCreditsPerHour != 78910.5 ||
-		plan.HeldLiquidation != 44444 || plan.ModelVersion != "1@torwind-2026-07-05" {
+		plan.HeldLiquidation != 44444 || plan.DepositValue != 33333 || plan.ModelVersion != "1@torwind-2026-07-05" {
 		t.Fatalf("plan totals wrong: %+v", plan)
 	}
 	if len(plan.Legs) != 1 {
@@ -111,11 +127,16 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 		leg.ProjectedLegProfit != 60000 || leg.TravelSecondsFromPrev != 420 {
 		t.Fatalf("leg fields wrong: %+v", leg)
 	}
-	if len(leg.Trades) != 2 || leg.Trades[0].IsBuy || leg.Trades[0].Good != "MEDICINE" ||
-		leg.Trades[0].Units != 40 || leg.Trades[0].ExpectedUnitPrice != 1800 {
+	if len(leg.Trades) != 3 || leg.Trades[0].IsBuy || leg.Trades[0].Good != "MEDICINE" ||
+		leg.Trades[0].Units != 40 || leg.Trades[0].ExpectedUnitPrice != 1800 || leg.Trades[0].IsDeposit {
 		t.Fatalf("sell trade wrong (sells must come first): %+v", leg.Trades)
 	}
-	if !leg.Trades[1].IsBuy || leg.Trades[1].Good != "FABRICS" || leg.Trades[1].Units != 30 {
+	// sp-dchv: the deposit tranche round-trips its IsDeposit flag and synthetic price.
+	if leg.Trades[1].IsBuy || !leg.Trades[1].IsDeposit || leg.Trades[1].Good != "ELECTRONICS" ||
+		leg.Trades[1].Units != 25 || leg.Trades[1].ExpectedUnitPrice != 3400 {
+		t.Fatalf("deposit trade wrong: %+v", leg.Trades)
+	}
+	if !leg.Trades[2].IsBuy || leg.Trades[2].Good != "FABRICS" || leg.Trades[2].Units != 30 || leg.Trades[2].IsDeposit {
 		t.Fatalf("buy trade wrong: %+v", leg.Trades)
 	}
 	if len(plan.TopRejected) != 2 || plan.TopRejected[0] != "GQ92→NK36 medicine dump — ladders bid below floor" ||
@@ -129,7 +150,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 // phantom trade.
 func TestMockRoutingClient_OptimizeTradeTour_Configurable(t *testing.T) {
 	mock := NewMockRoutingClient()
-	plan, err := mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{})
+	plan, err := mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +159,7 @@ func TestMockRoutingClient_OptimizeTradeTour_Configurable(t *testing.T) {
 	}
 
 	mock.CannedTourPlan = &domainRouting.TourPlan{Feasible: true, ProjectedProfit: 999}
-	plan, err = mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{})
+	plan, err = mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil)
 	if err != nil || !plan.Feasible || plan.ProjectedProfit != 999 {
 		t.Fatalf("canned plan not returned: plan=%+v err=%v", plan, err)
 	}

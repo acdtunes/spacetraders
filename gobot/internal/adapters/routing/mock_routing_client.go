@@ -185,6 +185,7 @@ func (c *MockRoutingClient) OptimizeTradeTour(
 	waypoints []domainRouting.TourWaypoint,
 	ship domainRouting.TourShipState,
 	cons domainRouting.TourConstraints,
+	deposits []domainRouting.TourDepositCandidate,
 ) (*domainRouting.TourPlan, error) {
 	if c.TourErr != nil {
 		return nil, c.TourErr

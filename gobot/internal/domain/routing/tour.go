@@ -69,11 +69,35 @@ type TourConstraints struct {
 // TourTrade is one buy or sell tranche at a leg. ExpectedUnitPrice is the
 // curve-adjusted price the planner projected for this tranche; the executor
 // re-verifies it live before trading.
+//
+// IsDeposit marks a SELL-side tranche that is a haul-to-storage DEPOSIT into the
+// home warehouse (sp-dchv Lane C), not a market sale: ExpectedUnitPrice is the
+// synthetic bid (= home_ask, the contract-savings value), the executor deposits
+// via ReserveSpace/TransferCargo/ConfirmDeposit and books ZERO revenue, and it
+// skips the live-price re-verify (no market bid exists to drift against). IsBuy
+// is always false for a deposit.
 type TourTrade struct {
 	Good              string
 	Units             int
 	ExpectedUnitPrice int
 	IsBuy             bool
+	IsDeposit         bool
+}
+
+// TourDepositCandidate is one home-warehouse pre-positioning offer the daemon
+// assembles for the planner (sp-dchv Lane C): a good the contract history
+// recurrently needs, cheaper in a reachable foreign system, that may be
+// DEPOSITED into the home warehouse instead of arb-sold. UnitsWanted is the
+// Go-side cap (min of remaining contract demand, remaining warehouse space, and
+// the pre-positioning capital ceiling); SyntheticBid is the flat sink price
+// (= home_ask). The solver treats (StorageWaypoint, Good) as a no-decay,
+// no-A-cap synthetic sink absorbing at most UnitsWanted units.
+type TourDepositCandidate struct {
+	Good            string
+	UnitsWanted     int
+	SyntheticBid    int
+	StorageWaypoint string
+	StorageSystem   string
 }
 
 // TourLeg is one market stop of the planned tour. Trades are ordered for
@@ -106,6 +130,16 @@ type TourPlan struct {
 	// split fresh-trade profit (ProjectedProfit - HeldLiquidation) from
 	// liquidation revenue.
 	HeldLiquidation int64
-	ModelVersion    string
-	TopRejected     []string
+	// DepositValue is the slice of ProjectedProfit that is SYNTHETIC savings value
+	// from haul-to-storage DEPOSIT legs (sp-dchv Lane C): sum of units*SyntheticBid
+	// over deposit tranches (SyntheticBid = home_ask). It is NOT cash — a deposit
+	// books zero realized revenue; the value is realized later when a contract
+	// sources the good from inventory. ProjectedProfit stays the TOTAL (fresh cash
+	// arb + this synthetic value) so the solver ranks deposit legs against arb
+	// sells; this field lets the planned-manifest log report fresh cash profit
+	// (ProjectedProfit - HeldLiquidation - DepositValue) apart from pre-positioning
+	// value (mirrors HeldLiquidation, sp-bc27).
+	DepositValue int64
+	ModelVersion string
+	TopRejected  []string
 }

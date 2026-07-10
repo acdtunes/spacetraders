@@ -162,3 +162,33 @@ contract:
     # blacklist entirely.
     blacklist:
       - ELECTRONICS
+
+  # Contract-goods pre-positioning (sp-dchv Lane C): the trade-tour engine buys
+  # goods the contract history recurrently needs — where they are CHEAP in a
+  # reachable foreign system — and DEPOSITS them into the home warehouse (Lane B),
+  # so home-system contract workers later source inventory-first at zero ask. The
+  # solver prices each deposit against real arb sells (synthetic bid = home_ask),
+  # so hold space goes to whichever earns more. Deposits book NO cash revenue —
+  # the value is the future contract-sourcing saving.
+  #
+  # THIS SECTION IS LIVE (sp-ts82 pattern): the daemon resolves these knobs from
+  # THIS file when it builds the tour coordinator — edit a value, restart the
+  # daemon. OFF by default; a dedicated warehouse hull (Lane B) must be running in
+  # the tour's home system for any deposit candidate to be offered.
+  pre_positioning:
+    enabled: false             # true turns deposit legs on (default OFF)
+    top_n: 5                   # max stock-eligible goods offered as deposit candidates (default 5)
+    min_recurrence: 2          # a good must be demanded by >= this many contracts (default 2; RULINGS #6)
+    # Pre-positioning capital ceiling — % of LIVE treasury tied up in warehouse
+    # inventory. Fail CLOSED: an unreadable balance => ceiling 0 => no candidates.
+    # Junior to the non-tunable 50k reserve and the sp-w3he cross-container cap.
+    capital_ceiling_pct: 10    # default 10% of live treasury
+    min_savings_per_unit: 1    # home_ask - foreign_ask must clear this per unit (default 1)
+    # allowlist: restrict deposits to exactly these goods (after eligibility).
+    # Absent => every stock-eligible good qualifies. Example:
+    # allowlist:
+    #   - ELECTRONICS
+    #   - EQUIPMENT
+    # blocklist: goods NEVER deposited (wins over allowlist). Absent => none.
+    # blocklist:
+    #   - FUEL
