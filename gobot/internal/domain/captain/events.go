@@ -14,6 +14,7 @@ const (
 	EventWorkflowFailed     EventType = "workflow.failed"
 	EventContainerCrashed   EventType = "container.crashed"
 	EventContainerCrashLoop EventType = "container.crashloop"
+	EventContainerLost      EventType = "container.lost"
 	EventHeartbeatLost      EventType = "container.heartbeat_lost"
 	EventShipIdle           EventType = "ship.idle"
 	EventCreditsThreshold   EventType = "credits.threshold"
@@ -77,6 +78,16 @@ func DefaultInterruptTypes() []EventType {
 		// is deferred; the interrupt-class crash signal is the crash LOOP below
 		// (N true deaths of one container in a window — see detectCrashLoops).
 		EventContainerCrashLoop,
+		// container.lost is emitted at boot recovery for a container that was
+		// RUNNING/INTERRUPTED before shutdown but did NOT come back (recovery
+		// error, or a candidate that fell out of the pass uncategorized). Unlike
+		// a single container.crashed it is interrupt class: a crash auto-restarts
+		// and resumes, but a recovery-lost container just stays dead until someone
+		// acts (the sp-tit8 incident: a +200k/hr MEDICINE factory dead ~100 min,
+		// caught only by eyeball). A single loss must wake the captain, not ride
+		// the next cadence. By-design non-recoveries (coordinator-managed workers
+		// that respawn, dead-era universe-reset containers) never emit this event.
+		EventContainerLost,
 		EventHeartbeatLost,
 		EventContractFailed,
 		EventIncomeStalled,

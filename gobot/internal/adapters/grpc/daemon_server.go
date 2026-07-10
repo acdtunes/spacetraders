@@ -20,6 +20,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -717,16 +718,28 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		return fmt.Errorf("failed to resolve open era for container recovery: %w", err)
 	}
 
-	recoveredCount := 0
-	failedCount := 0
+	// sp-tit8: track the outcome of every candidate so the pass can diff the
+	// expected-running set (the INTERRUPTED+RUNNING rows loaded above) against
+	// what actually ended running, and announce anything that silently fell out.
+	// A container terminalizing unseen is the incident this guards against (a
+	// +200k/hr MEDICINE factory dead ~100 min, caught only by eyeball): silence
+	// is the enemy, so any expected-but-missing hull that is NOT a by-design skip
+	// becomes a loud, interrupt-class captain event (see collectAndAnnounceLostContainers).
+	recovered := make(map[string]bool)          // ended the pass as a running container
+	exempt := make(map[string]bool)             // deliberately not running (respawn / dead-era) — no alarm
+	failReason := make(map[string]recoveryLoss) // explicitly failed, with a captured reason
+	coordinatorSkipCount := 0
 	deadEraCount := 0
 
 	for _, containerModel := range allContainers {
 		// sp-njpu: skip any container whose player is not the open-era player. This
 		// runs before the worker-adoption checks so an entire dead-era subtree
 		// (coordinators AND their workers) stays down instead of being resurrected.
+		// Dead-era is a deliberate universe-reset skip, not a loss — exempt from the
+		// diff so a reset does not fire a storm of false lost-events (sp-tit8).
 		if openEra == nil || containerModel.PlayerID != openEra.PlayerID {
 			s.markContainerDeadEra(ctx, containerModel, openEra)
+			exempt[containerModel.ID] = true
 			deadEraCount++
 			continue
 		}
@@ -736,25 +749,34 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
 			fmt.Printf("Container %s: Failed to parse config JSON, marking as FAILED: %v\n", containerModel.ID, err)
 			s.markContainerFailed(ctx, containerModel, "invalid_config", fmt.Sprintf("JSON parse error: %v", err))
-			failedCount++
+			failReason[containerModel.ID] = recoveryLoss{
+				id: containerModel.ID, commandType: containerModel.CommandType,
+				playerID: containerModel.PlayerID,
+				reason:   fmt.Sprintf("invalid_config: %v", err),
+			}
 			continue
 		}
 
-		// Skip worker containers (those with parent container)
-		// Workers are managed by their parent coordinator and should not be recovered independently
-		// Check: 1) coordinator_id in config 2) ParentContainerID field 3) known worker command types
-		// IMPORTANT: Mark as interrupted but DON'T release ship assignments - the coordinator will handle them
-		// Releasing assignments here breaks SELL tasks that have cargo on the ship
+		// Skip worker containers — managed by their parent coordinator, not recovered
+		// independently. Detected 3 ways: 1) coordinator_id in config 2) ParentContainerID
+		// field 3) known worker command types. markWorkerInterrupted marks them FAILED but
+		// deliberately does NOT release ship assignments (the coordinator resets those on
+		// its own recovery; releasing here would break SELL tasks holding cargo).
+		// sp-tit8: a worker is respawned by its coordinator by design, so it is NOT
+		// expected to end this pass running — exempt from the loss diff (a lost-event here
+		// would false-alarm on every restart) and counted separately, not as a failure.
 		if coordinatorID, hasCoordinator := config["coordinator_id"].(string); hasCoordinator && coordinatorID != "" {
 			fmt.Printf("Container %s: Skipping recovery (worker container managed by coordinator %s)\n", containerModel.ID, coordinatorID)
 			s.markWorkerInterrupted(ctx, containerModel, coordinatorID)
-			failedCount++
+			exempt[containerModel.ID] = true
+			coordinatorSkipCount++
 			continue
 		}
 		if containerModel.ParentContainerID != nil && *containerModel.ParentContainerID != "" {
 			fmt.Printf("Container %s: Skipping recovery (worker container managed by parent %s)\n", containerModel.ID, *containerModel.ParentContainerID)
 			s.markWorkerInterrupted(ctx, containerModel, *containerModel.ParentContainerID)
-			failedCount++
+			exempt[containerModel.ID] = true
+			coordinatorSkipCount++
 			continue
 		}
 		// Skip known worker container types that should be managed by their parent coordinator
@@ -762,7 +784,8 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		if spec, hasSpec := s.containerSpecs[containerModel.CommandType]; hasSpec && spec.IsWorker {
 			fmt.Printf("Container %s: Skipping recovery (worker container type '%s' managed by coordinator)\n", containerModel.ID, containerModel.CommandType)
 			s.markWorkerInterrupted(ctx, containerModel, "")
-			failedCount++
+			exempt[containerModel.ID] = true
+			coordinatorSkipCount++
 			continue
 		}
 
@@ -770,14 +793,87 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		if err := s.recoverContainer(ctx, containerModel, config); err != nil {
 			fmt.Printf("Container %s: Recovery failed: %v\n", containerModel.ID, err)
 			s.markContainerFailed(ctx, containerModel, "recovery_failed", err.Error())
-			failedCount++
+			failReason[containerModel.ID] = recoveryLoss{
+				id: containerModel.ID, commandType: containerModel.CommandType,
+				playerID: containerModel.PlayerID,
+				reason:   fmt.Sprintf("recovery_failed: %v", err),
+			}
 		} else {
-			recoveredCount++
+			recovered[containerModel.ID] = true
 		}
 	}
 
-	fmt.Printf("Container recovery complete: %d recovered, %d failed, %d dead-era skipped\n", recoveredCount, failedCount, deadEraCount)
+	// sp-tit8: diff expected-vs-recovered and announce every candidate that
+	// neither ended running nor was a by-design skip. The summary NAMES each
+	// loss so an operator never has to guess which container "N failed" was.
+	lost := s.collectAndAnnounceLostContainers(allContainers, recovered, exempt, failReason)
+
+	fmt.Printf("Container recovery complete: %d recovered, %d lost%s, %d coordinator-managed skipped, %d dead-era skipped\n",
+		len(recovered), len(lost), formatLostSummary(lost), coordinatorSkipCount, deadEraCount)
 	return nil
+}
+
+// recoveryLoss identifies a container that was expected to be RUNNING after boot
+// recovery but is not — carrying the id, type, and why for the loud captain event
+// and the named summary line (sp-tit8).
+type recoveryLoss struct {
+	id          string
+	commandType string
+	playerID    int
+	reason      string
+}
+
+// collectAndAnnounceLostContainers diffs the loaded candidate set against what
+// ended running (or was a by-design skip) and, for every container that fell
+// out, records an interrupt-class captain.EventContainerLost (which wakes the
+// captain via the watchkeeper) and logs a loud, greppable line naming it. This
+// is the sp-tit8 guarantee: a container that terminalizes unseen is impossible —
+// whatever the cause (recovery error, or a candidate that fell through every
+// branch uncategorized), the hull announces itself. Explicitly-failed candidates
+// carry their captured reason; an uncategorized one is reported as an unexpected
+// terminal (a guard against a future refactor adding a silent `continue`).
+func (s *DaemonServer) collectAndAnnounceLostContainers(
+	candidates []*persistence.ContainerModel,
+	recovered, exempt map[string]bool,
+	failReason map[string]recoveryLoss,
+) []recoveryLoss {
+	var lost []recoveryLoss
+	for _, cm := range candidates {
+		if recovered[cm.ID] || exempt[cm.ID] {
+			continue
+		}
+		loss, ok := failReason[cm.ID]
+		if !ok {
+			loss = recoveryLoss{
+				id: cm.ID, commandType: cm.CommandType, playerID: cm.PlayerID,
+				reason: "unexpected_terminal: recovery pass did not account for this container",
+			}
+		}
+		lost = append(lost, loss)
+	}
+	for _, loss := range lost {
+		fmt.Printf("CONTAINER LOST at recovery: %s [%s] — %s\n", loss.id, loss.commandType, loss.reason)
+		recordCaptainEvent(captain.EventContainerLost, loss.id, loss.playerID, map[string]any{
+			"container_id":   loss.id,
+			"container_type": loss.commandType,
+			"reason":         loss.reason,
+		})
+	}
+	return lost
+}
+
+// formatLostSummary renders the named-failure detail appended to the recovery
+// summary line, so "N lost" is never anonymous (sp-tit8). Empty when nothing
+// was lost.
+func formatLostSummary(lost []recoveryLoss) string {
+	if len(lost) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(lost))
+	for _, loss := range lost {
+		parts = append(parts, fmt.Sprintf("%s [%s]: %s", loss.id, loss.commandType, loss.reason))
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
 }
 
 // markContainerDeadEra marks a container FAILED because it belongs to a player whose

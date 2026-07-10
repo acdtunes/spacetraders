@@ -3,7 +3,7 @@ package captain
 import "testing"
 
 // TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default
-// interrupt set to the seven event types the design approved: everything
+// interrupt set to the eight event types the design approved: everything
 // else (workflow.finished, contract.completed, credits.threshold, ship.idle,
 // and — per sp-no9i — the self-healing single container.crashed) is deferred
 // and rides the next wake's batch instead of forcing one. The actionable
@@ -11,11 +11,15 @@ import "testing"
 // death. coordinator.error_loop (sp-e2l1) joined the set because its entire
 // purpose is surfacing a coordinator that is silently stuck — the
 // 2026-07-05 negotiate-nil incident ran 18h emitting nothing, so deferring
-// this signal to "whichever wake fires next" would defeat it.
+// this signal to "whichever wake fires next" would defeat it. container.lost
+// (sp-tit8) joined because a container that failed to come back at boot
+// recovery does not self-heal — it stays dead until someone acts, so a single
+// loss must force a wake.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
 		EventWorkflowFailed:       true,
 		EventContainerCrashLoop:   true,
+		EventContainerLost:        true,
 		EventHeartbeatLost:        true,
 		EventContractFailed:       true,
 		EventIncomeStalled:        true,
@@ -46,6 +50,7 @@ func TestIsInterruptUnderDefaultSet(t *testing.T) {
 	}{
 		{"workflow.failed interrupts", EventWorkflowFailed, true},
 		{"container.crashloop interrupts", EventContainerCrashLoop, true},
+		{"container.lost interrupts (recovery-lost does not self-heal, sp-tit8)", EventContainerLost, true},
 		{"container.heartbeat_lost interrupts", EventHeartbeatLost, true},
 		{"contract.failed interrupts", EventContractFailed, true},
 		{"income.stalled interrupts", EventIncomeStalled, true},
