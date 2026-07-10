@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -118,4 +119,68 @@ func TestRunContractGetNotFoundReturnsError(t *testing.T) {
 
 	_, err := getContractDetail(context.Background(), store, "missing")
 	require.Error(t, err)
+}
+
+type fakeDemandMiner struct {
+	candidates []persistence.DemandCandidate
+	gotHome    string
+	gotOpts    persistence.DemandMinerOptions
+}
+
+func (f *fakeDemandMiner) Mine(ctx context.Context, homeSystem string, playerID int, eraID *int, opts persistence.DemandMinerOptions) ([]persistence.DemandCandidate, error) {
+	f.gotHome = homeSystem
+	f.gotOpts = opts
+	return f.candidates, nil
+}
+
+func TestRunContractDemandRendersTableWithEligibilityAndUnknownHomeAsk(t *testing.T) {
+	miner := &fakeDemandMiner{candidates: []persistence.DemandCandidate{
+		{Good: "IRON_ORE", ContractCount: 3, DemandUnits: 300, RecurrenceWindowDays: 4,
+			ForeignMarket: "X1-FOREIGN-B1", ForeignSystem: "X1-FOREIGN", ForeignAsk: 40,
+			HomeAsk: 90, HomeAskKnown: true, ProjectedSavingsPerUnit: 50, StockEligible: true},
+		{Good: "COPPER_ORE", ContractCount: 2, DemandUnits: 40,
+			ForeignMarket: "X1-ORE-C1", ForeignSystem: "X1-ORE", ForeignAsk: 20, HomeAskKnown: false},
+	}}
+
+	var buf bytes.Buffer
+	err := runContractDemand(context.Background(), miner, &buf, "X1-HOME", 1, nil,
+		persistence.DemandMinerOptions{MinRecurrence: 2}, false)
+	require.NoError(t, err)
+
+	out := buf.String()
+	require.Contains(t, out, "X1-HOME")
+	require.Contains(t, out, "IRON_ORE")
+	require.Contains(t, out, "X1-FOREIGN-B1")
+	require.Contains(t, out, "COPPER_ORE")
+	require.Contains(t, out, "yes") // IRON_ORE is stock-eligible
+	require.Contains(t, out, "no")  // COPPER_ORE (home ask unknown) is not
+
+	// The renderer forwards the home system and options to the miner.
+	require.Equal(t, "X1-HOME", miner.gotHome)
+	require.Equal(t, 2, miner.gotOpts.MinRecurrence)
+}
+
+func TestRunContractDemandJSONOutput(t *testing.T) {
+	miner := &fakeDemandMiner{candidates: []persistence.DemandCandidate{
+		{Good: "IRON_ORE", ForeignAsk: 40, HomeAsk: 90, HomeAskKnown: true, ProjectedSavingsPerUnit: 50, StockEligible: true},
+	}}
+
+	var buf bytes.Buffer
+	err := runContractDemand(context.Background(), miner, &buf, "X1-HOME", 1, nil,
+		persistence.DemandMinerOptions{}, true)
+	require.NoError(t, err)
+
+	out := buf.String()
+	require.Contains(t, out, "\"good\": \"IRON_ORE\"")
+	require.Contains(t, out, "\"stock_eligible\": true")
+}
+
+func TestRunContractDemandEmptyMessage(t *testing.T) {
+	miner := &fakeDemandMiner{candidates: nil}
+
+	var buf bytes.Buffer
+	err := runContractDemand(context.Background(), miner, &buf, "X1-HOME", 1, nil,
+		persistence.DemandMinerOptions{}, false)
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "No recurring contract demand")
 }

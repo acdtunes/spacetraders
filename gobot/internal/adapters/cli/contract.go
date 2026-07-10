@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -52,6 +54,28 @@ func newContractStoreAndPlayerRepo() (contractStore, player.PlayerRepository, er
 	}
 
 	return &gormContractStore{db: db}, persistence.NewGormPlayerRepository(db), nil
+}
+
+// demandMinerProvider is the read-only demand miner surface `contract demand` renders.
+// Implemented by *persistence.DemandMiner; an interface so the renderer is unit-testable
+// with a fake (mirrors the historyProvider seam).
+type demandMinerProvider interface {
+	Mine(ctx context.Context, homeSystem string, playerID int, eraID *int, opts persistence.DemandMinerOptions) ([]persistence.DemandCandidate, error)
+}
+
+// newDemandMinerAndPlayerRepo builds the demand miner and a player repository over one
+// DB connection, so `contract demand` can resolve the default player and mine without
+// opening a second connection (mirrors newContractStoreAndPlayerRepo).
+func newDemandMinerAndPlayerRepo() (*persistence.DemandMiner, player.PlayerRepository, error) {
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load config: %w", err)
+	}
+	db, err := database.NewConnection(&cfg.Database)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	return persistence.NewDemandMiner(db), persistence.NewGormPlayerRepository(db), nil
 }
 
 func (s *gormContractStore) ListContracts(ctx context.Context, playerID int) ([]persistence.ContractModel, error) {
@@ -318,6 +342,7 @@ Examples:
 	cmd.AddCommand(newContractStartCommand())
 	cmd.AddCommand(newContractListCommand())
 	cmd.AddCommand(newContractGetCommand())
+	cmd.AddCommand(newContractDemandCommand())
 
 	return cmd
 }
@@ -386,6 +411,102 @@ Examples:
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// newContractDemandCommand creates the `contract demand` subcommand (sp-dchv Lane A):
+// the read-only pre-positioning demand signal — the goods contract history keeps
+// needing in one HOME system, joined to where they are cheap abroad.
+func newContractDemandCommand() *cobra.Command {
+	var (
+		homeSystem    string
+		minRecurrence int
+		topN          int
+		eraFlag       string
+		jsonOut       bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "demand --system <SYSTEM>",
+		Short: "Recurring contract demand joined to cheapest foreign markets (pre-positioning candidates)",
+		Long: `Mine contract history for the goods a HOME system's contracts repeatedly need,
+join each to the cheapest FOREIGN market that sells it and (when the home system
+sells it) the home ask, and rank the pre-positioning candidates by projected savings.
+
+Read-only: no spending, no dispatch. The home system is an explicit --system flag —
+there is no global "home" anchor. Goods with no reachable foreign source are dropped;
+goods the home system does not sell are shown but flagged not stock-eligible.
+
+Examples:
+  spacetraders contract demand --system X1-KA42
+  spacetraders contract demand --system X1-KA42 --min-recurrence 3 --top 10
+  spacetraders contract demand --system X1-KA42 --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if homeSystem == "" {
+				return fmt.Errorf("--system is required (the home system to pre-position for)")
+			}
+			eraID, err := parseEraFlag(eraFlag)
+			if err != nil {
+				return err
+			}
+
+			miner, playerRepo, err := newDemandMinerAndPlayerRepo()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			resolved, err := resolveDefaultPlayer(ctx, playerRepo)
+			if err != nil {
+				return err
+			}
+
+			opts := persistence.DemandMinerOptions{MinRecurrence: minRecurrence, TopN: topN}
+			return runContractDemand(ctx, miner, os.Stdout, homeSystem, resolved.ID.Value(), eraID, opts, jsonOut)
+		},
+	}
+
+	cmd.Flags().StringVar(&homeSystem, "system", "", "Home system to pre-position for, e.g. X1-KA42 [required]")
+	cmd.Flags().IntVar(&minRecurrence, "min-recurrence", persistence.DefaultMinRecurrence, "Minimum distinct contracts demanding a good before it counts as recurring")
+	cmd.Flags().IntVar(&topN, "top", persistence.DefaultTopN, "Cap on ranked candidate rows")
+	cmd.Flags().StringVar(&eraFlag, "era", "", "Era ID (default: all eras; the home-system filter already confines to the current universe)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
+
+	return cmd
+}
+
+// runContractDemand renders the ranked demand candidates as a message-friendly table
+// or JSON. Split from the command wiring so it is unit-testable with a fake miner.
+func runContractDemand(ctx context.Context, miner demandMinerProvider, out io.Writer, homeSystem string, playerID int, eraID *int, opts persistence.DemandMinerOptions, jsonOut bool) error {
+	candidates, err := miner.Mine(ctx, homeSystem, playerID, eraID, opts)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return writeJSON(out, candidates)
+	}
+	if len(candidates) == 0 {
+		fmt.Fprintf(out, "No recurring contract demand with a reachable foreign source for home system %s.\n", homeSystem)
+		return nil
+	}
+
+	fmt.Fprintf(out, "Contract demand for home system %s (pre-positioning candidates)\n", homeSystem)
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "GOOD\tCONTRACTS\tUNITS\tWINDOW(d)\tFOREIGN MKT\tFOREIGN SYS\tF.ASK\tHOME ASK\tSAV/U\tSTOCK?")
+	for _, c := range candidates {
+		homeAsk, savings := "-", "-"
+		if c.HomeAskKnown {
+			homeAsk = strconv.Itoa(c.HomeAsk)
+			savings = strconv.Itoa(c.ProjectedSavingsPerUnit)
+		}
+		stock := "no"
+		if c.StockEligible {
+			stock = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%.1f\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			c.Good, c.ContractCount, c.DemandUnits, c.RecurrenceWindowDays,
+			c.ForeignMarket, c.ForeignSystem, c.ForeignAsk, homeAsk, savings, stock)
+	}
+	w.Flush()
+	return nil
 }
 
 // newContractStartCommand creates the contract start subcommand

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"gorm.io/gorm"
 )
 
@@ -55,6 +56,20 @@ type ContractsEraStat struct {
 	FulfillmentRate        float64        `json:"fulfillment_rate"`
 	AvgAcceptSlackHours    float64        `json:"avg_accept_slack_hours"`
 	PayoutPerDeliveredUnit float64        `json:"payout_per_delivered_unit"`
+}
+
+// ContractGoodDemand is the units-aware, recurrence-windowed demand for a single
+// good aggregated across an era's contracts, optionally scoped to deliveries bound
+// for one system (home pre-positioning, sp-dchv). Unlike ContractsEraStat.ByGood —
+// a per-era frequency count — this carries the total UNITS the contracts required
+// (the quantity signal the economics guard needs) plus the observation window that
+// makes "recurrence" measurable rather than a raw count.
+type ContractGoodDemand struct {
+	Good          string    `json:"good"`
+	ContractCount int       `json:"contract_count"` // distinct contracts requiring the good
+	UnitsRequired int       `json:"units_required"` // summed UnitsRequired across matching deliveries
+	FirstSeen     time.Time `json:"first_seen"`     // earliest contributing contract observation
+	LastSeen      time.Time `json:"last_seen"`      // latest contributing contract observation
 }
 
 type PnLBucket struct {
@@ -254,8 +269,10 @@ func (r *HistoryRepository) GoodsStats(ctx context.Context, good string, eraID *
 }
 
 type contractDelivery struct {
-	TradeSymbol    string `json:"TradeSymbol"`
-	UnitsFulfilled int    `json:"UnitsFulfilled"`
+	TradeSymbol       string `json:"TradeSymbol"`
+	DestinationSymbol string `json:"DestinationSymbol"`
+	UnitsRequired     int    `json:"UnitsRequired"`
+	UnitsFulfilled    int    `json:"UnitsFulfilled"`
 }
 
 func (r *HistoryRepository) ContractsStats(ctx context.Context, eraID *int, good *string) ([]ContractsEraStat, error) {
@@ -352,6 +369,97 @@ func (r *HistoryRepository) ContractsStats(ctx context.Context, eraID *int, good
 			PayoutPerDeliveredUnit: divOrZero(totalPayout, totalDeliveredUnits),
 		}
 		out = append(out, stat)
+	}
+	return out, nil
+}
+
+// ContractGoodDemand aggregates per-good contract demand across the eras selected
+// by eraID (nil = all eras), optionally scoped to deliveries whose destination is in
+// deliverySystem (nil = all systems). It is the units-aware companion to
+// ContractsStats: the demand miner (sp-dchv Lane A) home-scopes it and joins the
+// result against market asks to rank pre-positioning candidates.
+//
+// UNITS AGGREGATION PATH: load-and-aggregate in Go, not SQL JSON extraction. Units
+// live inside DeliveriesJSON with no SQL column, and ContractsStats already loads
+// every era-scoped contract and unmarshals that JSON in Go; the contract row count is
+// bounded (one era's contracts — a few hundred), so a second dialect-specific
+// json_extract path (fragile across the sqlite test dialect and the prod dialect)
+// would buy nothing. This reuses the identical load-and-unmarshal already proven here.
+//
+// A good is counted ONCE per contract (matching ByGood's per-contract dedup) but its
+// UnitsRequired is summed across every matching delivery. The observation window comes
+// from each contract's LastUpdated (RFC3339); a contract whose timestamp does not
+// parse still contributes to the count and units but not to the window.
+func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, deliverySystem *string) ([]ContractGoodDemand, error) {
+	playerIDs, _, err := r.eraPlayerIDs(ctx, eraID)
+	if err != nil {
+		return nil, err
+	}
+	if len(playerIDs) == 0 {
+		return nil, nil
+	}
+
+	var rows []ContractModel
+	if err := r.db.WithContext(ctx).Where("player_id IN ?", playerIDs).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to query contracts: %w", err)
+	}
+
+	type demandAgg struct {
+		contracts     map[string]bool
+		unitsRequired int
+		firstSeen     time.Time
+		lastSeen      time.Time
+	}
+	byGood := map[string]*demandAgg{}
+
+	for _, row := range rows {
+		var deliveries []contractDelivery
+		_ = json.Unmarshal([]byte(row.DeliveriesJSON), &deliveries)
+
+		observed := time.Time{}
+		tsOK := false
+		if t, perr := time.Parse(time.RFC3339, row.LastUpdated); perr == nil {
+			observed, tsOK = t, true
+		}
+
+		for _, d := range deliveries {
+			if deliverySystem != nil && shared.ExtractSystemSymbol(d.DestinationSymbol) != *deliverySystem {
+				continue
+			}
+			a := byGood[d.TradeSymbol]
+			if a == nil {
+				a = &demandAgg{contracts: map[string]bool{}}
+				byGood[d.TradeSymbol] = a
+			}
+			a.contracts[row.ID] = true
+			a.unitsRequired += d.UnitsRequired
+			if tsOK {
+				if a.firstSeen.IsZero() || observed.Before(a.firstSeen) {
+					a.firstSeen = observed
+				}
+				if observed.After(a.lastSeen) {
+					a.lastSeen = observed
+				}
+			}
+		}
+	}
+
+	goods := make([]string, 0, len(byGood))
+	for g := range byGood {
+		goods = append(goods, g)
+	}
+	sort.Strings(goods)
+
+	out := make([]ContractGoodDemand, 0, len(goods))
+	for _, g := range goods {
+		a := byGood[g]
+		out = append(out, ContractGoodDemand{
+			Good:          g,
+			ContractCount: len(a.contracts),
+			UnitsRequired: a.unitsRequired,
+			FirstSeen:     a.firstSeen,
+			LastSeen:      a.lastSeen,
+		})
 	}
 	return out, nil
 }

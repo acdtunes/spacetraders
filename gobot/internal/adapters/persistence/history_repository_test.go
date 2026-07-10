@@ -176,6 +176,94 @@ func TestContractsStatsComputesPerEraAggregatesWithGoodFilterAndEraIsolation(t *
 	require.Equal(t, 1, filtered[0].ByGood["IRON_ORE"])
 }
 
+// seedContractDemandFixture seeds one era's player with contracts whose deliveries
+// span home and foreign systems, multiple goods, and a good repeated across two
+// deliveries of one contract — the cases ContractGoodDemand's units + distinct-count
+// + window aggregation must get right. FK-on: the player and era parents exist first.
+func seedContractDemandFixture(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	registered := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	seedPlayer(t, db, 1, "TORWIND")
+	require.NoError(t, db.Create(&persistence.EraModel{
+		Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, RegisteredAt: &registered,
+	}).Error)
+
+	// IRON_ORE demanded home by c-a (100) and c-b (200); c-c's 999 is FOREIGN and must
+	// be excluded when home-scoped. COPPER_ORE home by c-a only. GOLD home by c-d in TWO
+	// deliveries of the same contract (10+5 units, counted once).
+	contracts := []struct {
+		id         string
+		deliveries string
+		updated    string
+	}{
+		{"c-a", `[{"TradeSymbol":"IRON_ORE","DestinationSymbol":"X1-HOME-A1","UnitsRequired":100,"UnitsFulfilled":0},{"TradeSymbol":"COPPER_ORE","DestinationSymbol":"X1-HOME-A1","UnitsRequired":50,"UnitsFulfilled":0}]`, "2026-05-01T00:00:00Z"},
+		{"c-b", `[{"TradeSymbol":"IRON_ORE","DestinationSymbol":"X1-HOME-A2","UnitsRequired":200,"UnitsFulfilled":10}]`, "2026-05-05T00:00:00Z"},
+		{"c-c", `[{"TradeSymbol":"IRON_ORE","DestinationSymbol":"X1-FOREIGN-B1","UnitsRequired":999,"UnitsFulfilled":0}]`, "2026-05-03T00:00:00Z"},
+		{"c-d", `[{"TradeSymbol":"GOLD","DestinationSymbol":"X1-HOME-A1","UnitsRequired":10,"UnitsFulfilled":0},{"TradeSymbol":"GOLD","DestinationSymbol":"X1-HOME-A3","UnitsRequired":5,"UnitsFulfilled":0}]`, "2026-05-02T00:00:00Z"},
+	}
+	for _, c := range contracts {
+		require.NoError(t, db.Create(&persistence.ContractModel{
+			ID: c.id, PlayerID: 1, FactionSymbol: "COSMIC", Type: "PROCUREMENT",
+			Accepted: true, Fulfilled: false,
+			DeadlineToAccept: "2026-05-01T00:00:00Z", Deadline: "2026-05-10T00:00:00Z",
+			DeliveriesJSON: c.deliveries, LastUpdated: c.updated,
+		}).Error)
+	}
+}
+
+func TestContractGoodDemandHomeScopesUnitsCountsAndWindow(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedContractDemandFixture(t, db)
+
+	repo := persistence.NewHistoryRepository(db)
+	home := "X1-HOME"
+	rows, err := repo.ContractGoodDemand(context.Background(), nil, &home)
+	require.NoError(t, err)
+
+	byGood := map[string]persistence.ContractGoodDemand{}
+	for _, r := range rows {
+		byGood[r.Good] = r
+	}
+	// Sorted by good name.
+	require.Equal(t, []string{"COPPER_ORE", "GOLD", "IRON_ORE"}, []string{rows[0].Good, rows[1].Good, rows[2].Good})
+
+	// IRON_ORE: two distinct HOME contracts (c-a, c-b); the foreign c-c is excluded.
+	iron := byGood["IRON_ORE"]
+	require.Equal(t, 2, iron.ContractCount)
+	require.Equal(t, 300, iron.UnitsRequired) // 100 + 200, foreign 999 excluded
+	require.Equal(t, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), iron.FirstSeen)
+	require.Equal(t, time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC), iron.LastSeen)
+
+	// COPPER_ORE: one contract, 50 units.
+	require.Equal(t, 1, byGood["COPPER_ORE"].ContractCount)
+	require.Equal(t, 50, byGood["COPPER_ORE"].UnitsRequired)
+
+	// GOLD: one contract, two deliveries summed to 15 units, counted once.
+	require.Equal(t, 1, byGood["GOLD"].ContractCount)
+	require.Equal(t, 15, byGood["GOLD"].UnitsRequired)
+}
+
+func TestContractGoodDemandUnscopedIncludesForeignDeliveries(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedContractDemandFixture(t, db)
+
+	repo := persistence.NewHistoryRepository(db)
+	rows, err := repo.ContractGoodDemand(context.Background(), nil, nil)
+	require.NoError(t, err)
+
+	var iron persistence.ContractGoodDemand
+	for _, r := range rows {
+		if r.Good == "IRON_ORE" {
+			iron = r
+		}
+	}
+	// Nil deliverySystem keeps the foreign c-c: 3 contracts, 100+200+999 units.
+	require.Equal(t, 3, iron.ContractCount)
+	require.Equal(t, 1299, iron.UnitsRequired)
+}
+
 func TestPnLGroupsByCategoryAndByOperationWithEraIsolation(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
