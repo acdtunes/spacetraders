@@ -50,6 +50,18 @@ const (
 	// negotiate-nil incident ran 18h and emitted nothing) must force a wake
 	// instead of riding the next one.
 	EventCoordinatorErrorLoop EventType = "coordinator.error_loop"
+
+	// EventWakeWatch is the synthetic marker emitted by the watchkeeper when a
+	// captain-armed one-shot wake watch fires (sp-oyer): a watched ship arrived,
+	// a watched container reached a terminal state, or the watch's deadline
+	// passed. It is ALWAYS interrupt class — a targeted wake the captain
+	// explicitly asked for must never be downgraded to deferred — and that is
+	// enforced in the watchkeeper's partitionEvents rather than here: it is
+	// deliberately NOT in DefaultInterruptTypes because a captain-declared
+	// --interrupt-types override REPLACES that set (see IsInterrupt), which would
+	// silently drop this marker exactly when a watch fires. The watch payload
+	// carries which watch fired and whether it was matched or deadline-fired.
+	EventWakeWatch EventType = "wake.watch"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force

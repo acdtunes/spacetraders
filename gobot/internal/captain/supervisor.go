@@ -226,6 +226,19 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		return false, err
 	}
 
+	// One-shot wake watches (sp-oyer) are evaluated BEFORE the wake gate's type
+	// filtering: a watched ship's arrival is a deferred workflow.finished
+	// fleet-wide, but for a WATCHED ship it elevates to an interrupt here. A
+	// fired watch records a synthetic wake.watch interrupt event, so re-read the
+	// batch to pick it up for this same tick's wake decision (mirrors how the
+	// detectors above record events that the FindUnprocessed batch then carries).
+	if s.evaluateWatches(ctx, now, events) {
+		events, err = s.store.FindUnprocessed(ctx, s.cfg.PlayerID, eventBatchLimit)
+		if err != nil {
+			return false, err
+		}
+	}
+
 	// Re-read the captain-declared wake policy fresh every tick (not cached
 	// at construction) so `spacetraders captain wake set` takes effect on
 	// the very next poll without a restart.

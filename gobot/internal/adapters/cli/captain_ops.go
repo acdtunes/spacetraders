@@ -316,6 +316,7 @@ func newCaptainWakeCommand() *cobra.Command {
 
 	cmd.AddCommand(newCaptainWakeSetCommand())
 	cmd.AddCommand(newCaptainWakeShowCommand())
+	cmd.AddCommand(newCaptainWatchCommand())
 
 	return cmd
 }

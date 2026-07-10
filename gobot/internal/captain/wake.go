@@ -346,6 +346,14 @@ func composeWakeMail(playerID int, events []*captain.Event, now time.Time) (subj
 	for _, e := range events {
 		age := now.Sub(e.CreatedAt).Round(time.Minute)
 		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\n", e.ID, e.Type, e.Ship, age)
+		// A fired one-shot watch (sp-oyer) rides this mail as a wake.watch
+		// event; annotate it with which watch tripped and whether it matched or
+		// deadline-fired, so the tag is visible instead of buried in the payload.
+		if e.Type == captain.EventWakeWatch {
+			if desc := describeWatchFire(e.Payload); desc != "" {
+				fmt.Fprintf(&b, "\t↳ %s\n", desc)
+			}
+		}
 		ids = append(ids, strconv.FormatInt(e.ID, 10))
 	}
 	fmt.Fprintf(&b, "\nack: spacetraders captain events ack --player-id %d --ids %s\n",

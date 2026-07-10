@@ -74,13 +74,15 @@ type RegimePolicy struct {
 // process never re-treats an already-armed cadence as immediately due: a
 // restart must never fire an immediate wake or survey nudge.
 //
-// The struct has three independent owners sharing one file: the supervisor
+// The struct has four independent owners sharing one file: the supervisor
 // writes the cadence fields (LastSession, LastSurveyorNudge, Renudges,
 // Escalated, LastCredits) via saveCadenceState, the captain CLI writes the
-// embedded WakePolicy via SaveWakePolicy, and the captain CLI separately
-// writes the embedded RegimePolicy via SaveRegimePolicy. Each writer reads
-// the current file, mutates only its own fields, and writes back atomically,
-// so no writer clobbers another's most recent write.
+// embedded WakePolicy via SaveWakePolicy, the captain CLI separately writes
+// the embedded RegimePolicy via SaveRegimePolicy, and the supervisor+CLI
+// share the embedded WatchPolicy via SaveWatchPolicy (sp-oyer one-shot
+// watches). Each writer reads the current file, mutates only its own fields,
+// and writes back atomically, so no writer clobbers another's most recent
+// write.
 type supervisorState struct {
 	LastSession       time.Time      `json:"last_session"`
 	LastSurveyorNudge time.Time      `json:"last_surveyor_nudge"`
@@ -95,6 +97,7 @@ type supervisorState struct {
 
 	WakePolicy
 	RegimePolicy
+	WatchPolicy
 }
 
 // StatePath returns where the supervisor's durable scheduling state lives
@@ -234,4 +237,28 @@ func LoadRegimePolicy(path string) (RegimePolicy, error) {
 		return RegimePolicy{}, err
 	}
 	return st.RegimePolicy, nil
+}
+
+// SaveWatchPolicy updates only the one-shot wake-watch fields (sp-oyer),
+// preserving the supervisor's cadence bookkeeping and the independently
+// declared WakePolicy/RegimePolicy untouched. This is what `spacetraders
+// captain wake watch add|clear` calls, and what the supervisor calls to
+// persist the surviving (not-yet-fired) watches after a fire disarms one.
+func SaveWatchPolicy(path string, policy WatchPolicy) error {
+	return atomicUpdateState(path, func(st *supervisorState) {
+		st.WatchPolicy = policy
+	})
+}
+
+// LoadWatchPolicy returns the captain-declared one-shot wake watches, or the
+// zero value (no watches armed) if none has been declared yet. This is what
+// `spacetraders captain wake watch list` calls, and what the supervisor
+// re-reads at the top of every Tick to evaluate armed watches against the
+// event batch and the wall clock.
+func LoadWatchPolicy(path string) (WatchPolicy, error) {
+	st, err := loadSupervisorState(path)
+	if err != nil {
+		return WatchPolicy{}, err
+	}
+	return st.WatchPolicy, nil
 }

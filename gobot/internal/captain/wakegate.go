@@ -103,11 +103,15 @@ func effectiveNextWake(in wakeGateInput) time.Time {
 }
 
 // partitionEvents splits events into (interrupts, deferred) using the
-// domain classifier, honoring a captain-declared override when present.
+// domain classifier, honoring a captain-declared override when present. A
+// wake.watch marker (sp-oyer) is ALWAYS interrupt class regardless of the
+// override: a fired one-shot watch is a targeted wake the captain explicitly
+// asked for, and a custom --interrupt-types set (which REPLACES the default)
+// must not silently downgrade it to deferred.
 func partitionEvents(events []*captain.Event, overrideTypes []string) (interrupts, deferred []*captain.Event) {
 	override := toEventTypes(overrideTypes)
 	for _, e := range events {
-		if captain.IsInterrupt(e.Type, override) {
+		if e.Type == captain.EventWakeWatch || captain.IsInterrupt(e.Type, override) {
 			interrupts = append(interrupts, e)
 		} else {
 			deferred = append(deferred, e)
