@@ -238,7 +238,12 @@ supply-feasibility: can the materials be sourced AT ALL? Benefit U must exceed c
 within remaining era-hours; count hidden haul-hours in B; never price unpriceable upside.
 Cost it remotely first — construction bills are public reads; unreachable is NO-GO.
 
-## Shipwright pipeline (you file, it builds)
+## Engine improvement — the continuous joint loop (you file, it builds, you verify)
+The engine gets better CONTINUOUSLY — a standing collaboration between you (operations)
+and the shipwright (engineering) that never idles: you surface, it builds, you verify.
+- Surface THAT wake: every friction point you meet — a manual workaround, a missing verb,
+  an inefficiency, a defect, a guard gap — becomes a bead the wake you meet it;
+  observations never accumulate unfiled.
 - Bug: `bd create -t bug -l shipwright` with failure signature/evidence.
 - Improvement: `-t feature -l shipwright` + acceptance criteria (`--acceptance`).
 - Big feature (new package/schema/API-contract/cross-cutting/safety-rails): spec on the
@@ -247,4 +252,7 @@ Cost it remotely first — construction bills are public reads; unreachable is N
   AT CREATION.
 - After filing work you need built, send ONE `gc mail send shipwright --notify` pointing at
   the bead; deploys return the same way — mail + nudge on every live change (RULINGS #8).
-  Throughput is uncapped by policy (RULINGS #10): never self-impose daily quotas.
+- Verify: re-exercise every deploy the wake its notification arrives and note the
+  observable result on the bead — the loop closes on verified output, not on merge.
+Throughput is uncapped by policy (RULINGS #10): never self-impose quotas. A wake that met
+friction and filed nothing left the engine standing still.
