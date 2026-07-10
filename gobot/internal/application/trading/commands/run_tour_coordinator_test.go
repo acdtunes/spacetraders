@@ -43,6 +43,12 @@ type tourFixture struct {
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
 	buys     int
 	sells    int
+
+	// Normalized operation_type carried on ctx at each buy/sell dispatch — the exact
+	// value the real cargo-tx path stamps onto the ledger row (sp-lgnh). Captured at
+	// the mediator seam so a test can prove the coordinator threads "tour".
+	buyOpTypes  []string
+	sellOpTypes []string
 }
 
 func (fx *tourFixture) buildShip(t *testing.T, symbol string) *navigation.Ship {
@@ -95,6 +101,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.cargo[cmd.GoodSymbol] += units
 		m.fx.timeline = append(m.fx.timeline, "BUY:"+cmd.GoodSymbol)
 		m.fx.buys++
+		m.fx.buyOpTypes = append(m.fx.buyOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
 		m.fx.mu.Unlock()
 		return &shipCargo.PurchaseCargoResponse{TotalCost: units * price, UnitsAdded: units, TransactionCount: 1}, nil
 	case *shipCargo.SellCargoCommand:
@@ -107,6 +114,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.cargo[cmd.GoodSymbol] -= units
 		m.fx.timeline = append(m.fx.timeline, "SELL:"+cmd.GoodSymbol)
 		m.fx.sells++
+		m.fx.sellOpTypes = append(m.fx.sellOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
 		m.fx.mu.Unlock()
 		return &shipCargo.SellCargoResponse{TotalRevenue: units * price, UnitsSold: units, TransactionCount: 1}, nil
 	default:
@@ -421,9 +429,9 @@ func TestTour_UsesHandlerModelArtifactPathWhenCmdEmpty(t *testing.T) {
 	fx := &tourFixture{
 		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
 		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-B"}},
-		bid: map[string]map[string]int{"X1-S1-B": {"G": 200}},
-		ask: map[string]map[string]int{"X1-S1-A": {"G": 100}, "X1-S1-B": {"G": 200}},
-		tv:  map[string]map[string]int{"X1-S1-A": {"G": 1000}, "X1-S1-B": {"G": 1000}},
+		bid:     map[string]map[string]int{"X1-S1-B": {"G": 200}},
+		ask:     map[string]map[string]int{"X1-S1-A": {"G": 100}, "X1-S1-B": {"G": 200}},
+		tv:      map[string]map[string]int{"X1-S1-A": {"G": 1000}, "X1-S1-B": {"G": 1000}},
 	}
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{
 		Feasible: true, Legs: []routing.TourLeg{
@@ -459,7 +467,7 @@ func TestTour_UnreadableModelArtifactFailsClosed(t *testing.T) {
 		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
 		markets: map[string][]string{"X1-S1": {"X1-S1-A"}},
 		bid:     map[string]map[string]int{}, ask: map[string]map[string]int{"X1-S1-A": {"G": 100}},
-		tv:      map[string]map[string]int{"X1-S1-A": {"G": 1000}},
+		tv: map[string]map[string]int{"X1-S1-A": {"G": 1000}},
 	}
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{Feasible: true}}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
@@ -480,5 +488,54 @@ func TestTour_UnreadableModelArtifactFailsClosed(t *testing.T) {
 	}
 	if fx.buys != 0 || fx.sells != 0 {
 		t.Fatalf("must not trade on an unreadable artifact, got %d buys / %d sells", fx.buys, fx.sells)
+	}
+}
+
+// sp-lgnh: every buy and sell a tour executes is dispatched under an operation
+// context that normalizes to "tour", so the shared cargo-tx path stamps
+// operation_type="tour" on the ledger row. Captured at the mediator seam — the exact
+// point the real CargoTransactionHandler reads the context — this proves the
+// coordinator threads the tag to BOTH trade directions itself (the incoming ctx here
+// carries no operation context), so the graduation baseline (net trade credits
+// filtered operation_type<>'tour') never measures the tour against its own trades.
+func TestTour_TagsBuyAndSellWritesAsTourOperationType(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-B"}},
+		bid:     map[string]map[string]int{"X1-S1-B": {"G1": 200}},
+		ask:     map[string]map[string]int{"X1-S1-A": {"G1": 100}, "X1-S1-B": {"G1": 200}},
+		tv:      map[string]map[string]int{"X1-S1-A": {"G1": 1000}, "X1-S1-B": {"G1": 1000}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{
+		Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S1-A", "X1-S1", buy("G1", 40, 100)),
+			leg("X1-S1-B", "X1-S1", sell("G1", 40, 200)),
+		},
+	}}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-TAG", PlayerID: 1, ContainerID: "ctr-tag", ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	if !tourResponse(t, resp).Completed {
+		t.Fatalf("expected a completed tour")
+	}
+
+	if len(fx.buyOpTypes) == 0 || len(fx.sellOpTypes) == 0 {
+		t.Fatalf("expected at least one buy and one sell dispatch, got %d buys / %d sells",
+			len(fx.buyOpTypes), len(fx.sellOpTypes))
+	}
+	for i, got := range fx.buyOpTypes {
+		if got != "tour" {
+			t.Errorf("buy #%d dispatched under operation_type %q, want \"tour\"", i, got)
+		}
+	}
+	for i, got := range fx.sellOpTypes {
+		if got != "tour" {
+			t.Errorf("sell #%d dispatched under operation_type %q, want \"tour\"", i, got)
+		}
 	}
 }

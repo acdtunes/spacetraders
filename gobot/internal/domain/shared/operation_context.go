@@ -72,6 +72,7 @@ func (c *OperationContext) String() string {
 //   - balance_ship_position → fleet rebalancing
 //   - goods_factory_coordinator → factory
 //   - manufacturing_worker → manufacturing
+//   - tour_run → tour
 func (c *OperationContext) NormalizedOperationType() string {
 	if c == nil || c.OperationType == "" {
 		return ""
@@ -88,6 +89,11 @@ func (c *OperationContext) NormalizedOperationType() string {
 		return "factory"
 	case "manufacturing_worker":
 		return "manufacturing"
+	case "tour_run":
+		// The tour_run container's buy/sell legs; the graduation baseline
+		// (tour_report.go) excludes these rows via operation_type <> 'tour' so
+		// the tour is never measured against its own trades (sp-lgnh).
+		return "tour"
 	default:
 		// Return as-is for unknown types
 		return c.OperationType

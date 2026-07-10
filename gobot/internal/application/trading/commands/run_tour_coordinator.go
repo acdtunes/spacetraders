@@ -204,6 +204,15 @@ func (h *RunTourCoordinatorHandler) Handle(ctx context.Context, request common.R
 func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse) error {
 	logger := common.LoggerFromContext(ctx)
 
+	// Stamp every ledger row this run's buy/sell legs write with operation_type=
+	// "tour" (sp-lgnh). The delegated cargo-tx path reads this operation context
+	// off ctx and persists opCtx.NormalizedOperationType() ("tour_run" → "tour");
+	// without it, tour trades land under the default and contaminate the very
+	// single-lane baseline the graduation gate measures the tour against (the
+	// baseline filters operation_type <> 'tour'). Mirrors how every coordinator
+	// tags its writes at the boundary (run_trade_route_coordinator.go's "trade_route").
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "tour_run"))
+
 	// Bind the model version from the checked-in artifact (RULINGS #4: unreadable →
 	// fail OPEN to single-lane, never guess a version). Path precedence (sp-wj0h): an
 	// explicit per-run cmd.ModelArtifactPath (tests) → the daemon-configured absolute
