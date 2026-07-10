@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
@@ -164,8 +165,18 @@ func run(cfg *config.Config) error {
 		fmt.Printf("Connecting to routing service at %s...\n", cfg.Routing.Address)
 		grpcClient, err := routing.NewGRPCRoutingClient(cfg.Routing.Address)
 		if err != nil {
-			return fmt.Errorf("failed to connect to routing service: %w", err)
+			return fmt.Errorf("failed to create routing client: %w", err)
 		}
+		// Boot-time reachability probe (sp-g5ct): the daemon does NOT depend on the
+		// routing service being up — the lazy gRPC conn reconnects on its own — but
+		// operators should see routing state at startup. Bounded and non-fatal either way.
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if probeErr := grpcClient.WaitForReady(probeCtx); probeErr != nil {
+			fmt.Printf("Routing service UNREACHABLE at boot (%s) — continuing, will reconnect (route planning degraded until it returns)\n", cfg.Routing.Address)
+		} else {
+			fmt.Printf("Routing service reachable at %s\n", cfg.Routing.Address)
+		}
+		probeCancel()
 		routingClient = grpcClient
 		fmt.Println("Routing client initialized (gRPC OR-Tools service)")
 	} else {

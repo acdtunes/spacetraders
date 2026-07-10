@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -25,18 +25,25 @@ type GRPCRoutingClient struct {
 	client pb.RoutingServiceClient
 }
 
-// NewGRPCRoutingClient creates a new gRPC routing client
+// NewGRPCRoutingClient creates a new gRPC routing client.
+//
+// The ClientConn is created lazily (grpc.NewClient): it is constructed here with
+// no network I/O, the transport connects on the first RPC, and gRPC transparently
+// reconnects for the life of the process. The daemon therefore boots even when the
+// routing service is down — RPCs issued during an outage fail fast with
+// codes.Unavailable and self-heal once the service returns (sp-g5ct). The
+// constructor only errors on a malformed target/credentials, never on the service
+// being unreachable.
+//
+// Note: grpc.NewClient uses the "dns" resolver by default (the deprecated
+// DialContext used "passthrough"). The configured address is a host:port such as
+// localhost:50051, which the dns resolver resolves correctly.
 func NewGRPCRoutingClient(address string) (*GRPCRoutingClient, error) {
-	// Connect to routing service with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, address,
+	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to routing service at %s: %w", address, err)
+		return nil, fmt.Errorf("failed to create routing client for %s: %w", address, err)
 	}
 
 	client := pb.NewRoutingServiceClient(conn)
@@ -45,6 +52,24 @@ func NewGRPCRoutingClient(address string) (*GRPCRoutingClient, error) {
 		conn:   conn,
 		client: client,
 	}, nil
+}
+
+// WaitForReady nudges the lazy connection out of IDLE and blocks until it reaches
+// READY or ctx expires, returning nil on success and an error naming the last
+// observed state otherwise. It is a boot-time observability probe only: nothing in
+// the engine depends on it, and a failed probe simply means route planning is
+// degraded until the service returns (the conn reconnects on its own). (sp-g5ct)
+func (c *GRPCRoutingClient) WaitForReady(ctx context.Context) error {
+	c.conn.Connect()
+	for {
+		state := c.conn.GetState()
+		if state == connectivity.Ready {
+			return nil
+		}
+		if !c.conn.WaitForStateChange(ctx, state) {
+			return fmt.Errorf("routing service at %s not ready (last state: %s)", c.conn.Target(), state)
+		}
+	}
 }
 
 // Close closes the gRPC connection
