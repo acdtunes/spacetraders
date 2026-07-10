@@ -12,6 +12,16 @@ import (
 	"gorm.io/gorm"
 )
 
+// seedPlayer inserts a players row with an explicit id so FK-bearing child rows
+// (market_price_history, contracts, transactions, captain_events) can reference
+// it — required now that the sp-55aa harness enforces foreign keys.
+func seedPlayer(t *testing.T, db *gorm.DB, id int, symbol string) {
+	t.Helper()
+	require.NoError(t, db.Create(&persistence.PlayerModel{
+		ID: id, AgentSymbol: symbol, Token: "tok", CreatedAt: time.Now(),
+	}).Error)
+}
+
 func seedTwoEraHistoryFixture(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
@@ -19,6 +29,11 @@ func seedTwoEraHistoryFixture(t *testing.T, db *gorm.DB) {
 	era1Registered := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	era2Registered := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
 	final1 := int64(1_000_000)
+
+	// eras carry a player_id but no FK; the era-scoped child rows below do, so the
+	// referenced players must exist under the FK-enforcing harness (sp-55aa).
+	seedPlayer(t, db, 1, "TORWIND")
+	seedPlayer(t, db, 2, "ORION")
 
 	require.NoError(t, db.Create(&persistence.EraModel{
 		Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1,

@@ -96,6 +96,18 @@ func NewTestConnection() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to auto-migrate test database: %w", err)
 	}
 
+	// sp-55aa: enforce foreign keys in the test harness by DEFAULT. SQLite leaves
+	// PRAGMA foreign_keys OFF unless asked, so every real-DB test silently tolerated
+	// FK violations that production Postgres rejects — that gap shipped sp-1hp9 DOA
+	// (idle-arb wrote a ships.container_id claim before the container row existed →
+	// FK 23503 in prod, green in every test). Enabled AFTER AutoMigrate: enforcement
+	// during a migration that rebuilds tables could trip on transient states. The
+	// sqlite pool is pinned to one physical connection (see NewConnection), so this
+	// one pragma sticks for the connection's lifetime.
+	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+		return nil, fmt.Errorf("failed to enable foreign key enforcement for test database: %w", err)
+	}
+
 	return db, nil
 }
 

@@ -75,6 +75,7 @@ func TestAssignFleet_DoesNotEvictActiveClaim(t *testing.T) {
 	repo, db, playerID := newDedicationTestRepo(t)
 
 	containerID := "mfg-worker-1"
+	seedContainerParent(t, db, containerID, playerID.Value())
 	require.NoError(t, db.Create(&persistence.ShipModel{
 		ShipSymbol:       "TORWIND-7",
 		PlayerID:         playerID.Value(),

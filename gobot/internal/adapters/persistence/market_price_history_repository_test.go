@@ -24,6 +24,7 @@ func TestRecordPriceChangeAndGetPriceHistory_RoundTripsTier(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	repo := persistence.NewGormMarketPriceHistoryRepository(db)
+	seedPlayer(t, db, 1, "TEST-AGENT")
 
 	playerID := shared.MustNewPlayerID(1)
 	supply := "LIMITED"
@@ -53,6 +54,7 @@ func TestRecordPriceChangeAndGetPriceHistory_RoundTripsTier(t *testing.T) {
 func TestGetPriceHistory_LegacyRowsWithNullTierReadBackCleanly(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
+	seedPlayer(t, db, 1, "TEST-AGENT")
 
 	require.NoError(t, db.Create(&persistence.MarketPriceHistoryModel{
 		WaypointSymbol: "X1-NK36-D39", GoodSymbol: "MEDICINE", PlayerID: 1,

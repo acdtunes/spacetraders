@@ -22,6 +22,17 @@ func setupShipAssignmentRepo(t *testing.T) (*persistence.ShipAssignmentRepositor
 	return persistence.NewShipAssignmentRepository(db), player.ID, db
 }
 
+// seedContainerParent inserts the parent containers row a real coordinator creates
+// before a hull is claimed into it. A ship carrying a container_id references it
+// through the composite FK (container_id, player_id) -> containers(id, player_id);
+// with the sp-55aa harness enforcing foreign keys that parent must exist.
+func seedContainerParent(t *testing.T, db *gorm.DB, id string, playerID int) {
+	t.Helper()
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: id, PlayerID: playerID, Status: "RUNNING",
+	}).Error)
+}
+
 func TestListActiveReturnsRoleAssignmentAndSyncedAtForEveryShip(t *testing.T) {
 	repo, playerID, db := setupShipAssignmentRepo(t)
 	ctx := context.Background()
@@ -29,6 +40,7 @@ func TestListActiveReturnsRoleAssignmentAndSyncedAtForEveryShip(t *testing.T) {
 	assignedAt := time.Now().Add(-90 * time.Second)
 	idleSyncedAt := time.Now().Add(-4100 * time.Second)
 	containerID := "CTR-1"
+	seedContainerParent(t, db, containerID, playerID)
 
 	require.NoError(t, db.Create(&persistence.ShipModel{
 		ShipSymbol: "SHIP-1", PlayerID: playerID, Role: "HAULER",
@@ -121,6 +133,7 @@ func TestReleaseAllActiveExcludesCaptainReservations(t *testing.T) {
 	ctx := context.Background()
 
 	containerID := "CTR-1"
+	seedContainerParent(t, db, containerID, playerID)
 	require.NoError(t, db.Create(&persistence.ShipModel{
 		ShipSymbol: "SHIP-CONTAINER", PlayerID: playerID, Role: "HAULER",
 		ContainerID: &containerID, AssignmentStatus: "active", SyncedAt: time.Now(),

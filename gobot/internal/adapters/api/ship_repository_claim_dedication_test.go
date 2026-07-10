@@ -27,6 +27,20 @@ func newDedicationTestRepo(t *testing.T) (*ShipRepository, *gorm.DB, shared.Play
 	return NewShipRepository(nil, nil, nil, nil, db, nil), db, shared.MustNewPlayerID(player.ID)
 }
 
+// seedContainerParent inserts the parent containers row that a real coordinator
+// creates (via ContainerRepository) BEFORE it claims a hull into it — the sp-1hp9
+// ordering. ClaimShip writes ships.container_id, checked by the composite FK
+// (container_id, player_id) -> containers(id, player_id); with the sp-55aa harness
+// enforcing foreign keys that parent must exist. Keyed by (id, player_id) to match
+// the FK — the coordinator-shape columns a real producer also sets are irrelevant
+// to the claim behavior under test.
+func seedContainerParent(t *testing.T, db *gorm.DB, id string, playerID int) {
+	t.Helper()
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: id, PlayerID: playerID, Status: "RUNNING",
+	}).Error)
+}
+
 // The atomic layer-2 guard (sp-l7h2): a FREE hull dedicated to another fleet
 // must be rejected inside the claim transaction itself — the discovery-time
 // exclude filter is only a pre-check and can race a concurrent `fleet assign`.
@@ -68,6 +82,8 @@ func TestClaimShip_OwnFleetOperationClaimsDedicatedHull(t *testing.T) {
 		DedicatedFleet:   "contract",
 	}).Error)
 
+	seedContainerParent(t, db, "contract-worker-1", playerID.Value())
+
 	require.NoError(t, repo.ClaimShip(context.Background(), "TORWIND-4", "contract-worker-1", playerID, "contract"))
 
 	var model persistence.ShipModel
@@ -94,6 +110,7 @@ func TestClaimShip_SameContainerReclaimSurvivesRededication(t *testing.T) {
 
 	// The contract worker takes the hull, then the captain re-dedicates it
 	// to bulk_circuit while the job is still running.
+	seedContainerParent(t, db, "contract-worker-1", playerID.Value())
 	require.NoError(t, repo.ClaimShip(context.Background(), "TORWIND-4", "contract-worker-1", playerID, "contract"))
 	require.NoError(t, repo.AssignFleet(context.Background(), "TORWIND-4", "bulk_circuit", playerID))
 
@@ -128,6 +145,7 @@ func TestClaimShip_UndedicatedHullOpenToAllOperations(t *testing.T) {
 		DedicatedFleet:   "contract",
 	}).Error)
 
+	seedContainerParent(t, db, "legacy-worker-1", playerID.Value())
 	require.NoError(t, repo.ClaimShip(context.Background(), "TORWIND-1", "legacy-worker-1", playerID, ""),
 		"an undeclared operation must still claim general-pool hulls (additive change)")
 
@@ -150,6 +168,8 @@ func TestClaimShip_ReleasedHullHonorsNewDedication(t *testing.T) {
 		DedicatedFleet:   "contract",
 	}).Error)
 
+	seedContainerParent(t, db, "contract-worker-1", playerID.Value())
+	seedContainerParent(t, db, "bulk-worker-1", playerID.Value())
 	require.NoError(t, repo.ClaimShip(context.Background(), "TORWIND-4", "contract-worker-1", playerID, "contract"))
 	require.NoError(t, repo.AssignFleet(context.Background(), "TORWIND-4", "bulk_circuit", playerID))
 	released, err := repo.ReleaseAllActive(context.Background(), playerID, "job complete")

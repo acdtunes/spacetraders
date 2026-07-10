@@ -30,6 +30,7 @@ func TestReleaseAllActiveScopesToPlayer(t *testing.T) {
 	require.NoError(t, db.Create(&playerB).Error)
 
 	containerID := "CTR-1"
+	seedContainerParent(t, db, containerID, playerA.ID)
 	require.NoError(t, db.Create(&persistence.ShipModel{
 		ShipSymbol:       "SHIP-A",
 		PlayerID:         playerA.ID,
@@ -76,6 +77,7 @@ func TestReleaseAllActiveExcludesCaptainReservations(t *testing.T) {
 	require.NoError(t, db.Create(&player).Error)
 
 	containerID := "CTR-1"
+	seedContainerParent(t, db, containerID, player.ID)
 	require.NoError(t, db.Create(&persistence.ShipModel{
 		ShipSymbol:       "SHIP-CONTAINER",
 		PlayerID:         player.ID,
