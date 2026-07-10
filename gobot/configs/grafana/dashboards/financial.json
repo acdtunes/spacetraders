@@ -1132,7 +1132,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Trailing moving average of hourly operating profit (ex-capex), 3h and 6h windows, to read trend through the lumpy tour buy/sell texture. Input window is widened by 6h (the largest window) then clipped to the visible range, so the leading buckets average over real history instead of dipping.",
+      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr over 15-minute buckets: 3h = 12-point, 6h = 24-point trailing mean. Reads the trend through the lumpy tour buy/sell texture (raw 15m rate swings by millions; the 24-point mean's median step-to-step move is ~47k). Each 15m bucket SUM is x4 to stay in cr/hr. The moving average is computed over a 6h-widened input in a first CTE then clipped to the visible range in the outer query (so the leftmost points average over real prior history rather than a starved frame), and the current incomplete 15m bucket is excluded so the right edge does not dive.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1178,7 +1178,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH buckets AS (SELECT date_trunc('hour', created_at) AS b, SUM(amount) AS hourly FROM transactions WHERE created_at > $__timeFrom()::timestamptz - INTERVAL '6 hours' AND created_at < $__timeTo()::timestamptz AND category != 'SHIP_INVESTMENTS' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1) SELECT b AS \"time\", AVG(hourly) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS \"operating 3h avg\", AVG(hourly) OVER (ORDER BY b ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS \"operating 6h avg\" FROM buckets WHERE b >= date_trunc('hour', $__timeFrom()::timestamptz) ORDER BY b",
+          "rawSql": "WITH buckets AS (SELECT date_bin('15 minutes', created_at, TIMESTAMPTZ '2001-01-01') AS b, SUM(amount) * 4 AS rate FROM transactions WHERE created_at > $__timeFrom()::timestamptz - INTERVAL '6 hours' AND created_at < $__timeTo()::timestamptz AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') AND category != 'SHIP_INVESTMENTS' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1), smoothed AS (SELECT b, AVG(rate) OVER (ORDER BY b ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS \"operating 3h avg\", AVG(rate) OVER (ORDER BY b ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS \"operating 6h avg\" FROM buckets) SELECT b AS \"time\", \"operating 3h avg\", \"operating 6h avg\" FROM smoothed WHERE b >= date_bin('15 minutes', $__timeFrom()::timestamptz, TIMESTAMPTZ '2001-01-01') ORDER BY b",
           "refId": "A"
         }
       ],
