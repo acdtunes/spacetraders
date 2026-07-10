@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -468,6 +469,117 @@ func TestTravel_CrossSystem_AlreadyAtGate_SkipsDepartureHop(t *testing.T) {
 	}
 	if got != reloaded {
 		t.Fatal("expected travel() to return the RELOADED ship")
+	}
+}
+
+// --- sp-7gr2 multi-jump BFS ---
+
+// fakeGateGraph is a canned GateGraph: Path returns a fixed hop path (or an
+// error), Routable derives from it. It lets travel()'s multi-jump execution be
+// tested without a store, API, or graph provider.
+type fakeGateGraph struct {
+	path    []string
+	pathErr error
+}
+
+func (f *fakeGateGraph) Path(ctx context.Context, from, to string, playerID int) ([]string, error) {
+	return f.path, f.pathErr
+}
+
+func (f *fakeGateGraph) Routable(ctx context.Context, from, to string, playerID int) (bool, error) {
+	if f.pathErr != nil {
+		return false, f.pathErr
+	}
+	return len(f.path) > 0, nil
+}
+
+// A THREE-jump destination (the incident: JP61 is KA42→PA3→UQ16→JP61, not one
+// edge) must execute every hop in order, wait the cooldown BETWEEN each
+// consecutive jump (three jumps → three settle waits on the fake clock), fly the
+// departure hop ONCE at the source and the arrival hop ONCE at the final system,
+// and return the reloaded hull. This is the core of the fix: travel() no longer
+// assumes origin→dest is a single edge.
+func TestTravel_MultiJump_ExecutesEveryHopWithCooldownWaits(t *testing.T) {
+	ship := newTravelShipAt(t, "HAULER-1", "X1-KA42-DOCK")
+	reloaded := newTravelShipAt(t, "HAULER-1", "X1-JP61-GATE")
+	mediator := &travelMediator{
+		gateResp: gateResponseAt(t, "X1-KA42-GATE"),
+		jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60},
+	}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	handler.SetGateGraph(&fakeGateGraph{path: []string{"X1-KA42", "X1-PA3", "X1-UQ16", "X1-JP61"}})
+
+	got, err := handler.travel(context.Background(), ship, "X1-JP61-MARKET", 1)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Three jumps, in path order, each opting out of its own claim.
+	if len(mediator.jumps) != 3 {
+		t.Fatalf("expected exactly three JumpShipCommands (KA42→PA3→UQ16→JP61), got %d", len(mediator.jumps))
+	}
+	wantDest := []string{"X1-PA3", "X1-UQ16", "X1-JP61"}
+	for i, jump := range mediator.jumps {
+		if jump.DestinationSystem != wantDest[i] {
+			t.Fatalf("hop %d: expected jump to %s, got %s", i+1, wantDest[i], jump.DestinationSystem)
+		}
+		if !jump.SkipClaim {
+			t.Fatalf("hop %d: expected SkipClaim=true (coordinator holds the claim)", i+1)
+		}
+	}
+
+	// A cooldown settle follows EVERY jump (the wait is what lets the next jump
+	// proceed) — three jumps, three waits, each the ETA-scaled budget.
+	wantBudget := calculateCooldownWaitBudget(60*time.Second, DefaultCooldownMarginFactor, DefaultCooldownMinMargin)
+	if len(clock.slept) != 3 {
+		t.Fatalf("expected three cooldown waits (one per jump), got %d: %v", len(clock.slept), clock.slept)
+	}
+	for i, slept := range clock.slept {
+		if slept != wantBudget {
+			t.Fatalf("wait %d: expected %v, got %v", i+1, wantBudget, slept)
+		}
+	}
+
+	// Exactly ONE departure hop (source waypoint→gate) and ONE arrival hop (final
+	// gate→destination waypoint) — intermediate hops land ON gates, needing no
+	// navigate.
+	if len(mediator.gateQueries) != 1 {
+		t.Fatalf("expected exactly one departure-hop gate lookup, got %d", len(mediator.gateQueries))
+	}
+	if len(mediator.navigates) != 2 {
+		t.Fatalf("expected exactly two navigates (departure + arrival), got %d", len(mediator.navigates))
+	}
+	if mediator.navigates[0].Destination != "X1-KA42-GATE" {
+		t.Fatalf("departure hop must target the SOURCE gate X1-KA42-GATE, got %q", mediator.navigates[0].Destination)
+	}
+	if mediator.navigates[1].Destination != "X1-JP61-MARKET" {
+		t.Fatalf("arrival hop must target the destination waypoint X1-JP61-MARKET, got %q", mediator.navigates[1].Destination)
+	}
+	if got != reloaded {
+		t.Fatal("expected travel() to return the reloaded hull after the final jump")
+	}
+}
+
+// An UNROUTABLE destination (the gate graph has no path) must abort travel() with
+// the resolver's error and never dispatch a jump or wait a cooldown — the safety
+// net behind the pre-buy routability guard.
+func TestTravel_MultiJump_Unroutable_AbortsBeforeAnyJump(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-KA42-GATE")
+	mediator := &travelMediator{jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60}}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{}, nil, nil, clock, nil)
+	handler.SetGateGraph(&fakeGateGraph{pathErr: errors.New("no jump-gate route from X1-KA42 to X1-ZZZ within 5 jumps")})
+
+	_, err := handler.travel(context.Background(), ship, "X1-ZZZ-MARKET", 1)
+	if err == nil {
+		t.Fatal("expected an error when the destination is unroutable")
+	}
+	if len(mediator.jumps) != 0 {
+		t.Fatalf("an unroutable destination must never dispatch a jump, got %d", len(mediator.jumps))
+	}
+	if len(clock.slept) != 0 {
+		t.Fatalf("an unroutable destination must never reach a cooldown wait, got %d", len(clock.slept))
 	}
 }
 

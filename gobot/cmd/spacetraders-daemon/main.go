@@ -39,6 +39,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
@@ -542,6 +543,15 @@ func run(cfg *config.Config) error {
 	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
+	// sp-7gr2: the persisted, fetch-through gate-graph resolver. travel() BFS-walks
+	// it to cross a multi-hop gap (KA42→PA3→UQ16→JP61 — the single-edge assumption
+	// that crashed a laden frigate at the home gate), and the arb pre-buy guard
+	// route-checks a cross-system sell leg through it BEFORE spending. Shared by
+	// both the trade-route circuit and the one-shot arb so they see one cache/graph.
+	gateGraphService := gategraph.NewService(
+		persistence.NewGormGateEdgeRepository(db), apiClient, graphService, playerRepo,
+	)
+	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
@@ -555,6 +565,10 @@ func run(cfg *config.Config) error {
 	arbCoordinatorHandler := tradeRouteCmd.NewRunArbCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
+	// sp-7gr2: same gate graph — enables multi-jump travel AND the routability-check-
+	// before-spend guard that would have refused the JP61 buy at the source instead of
+	// crashing laden at the home gate.
+	arbCoordinatorHandler.SetGateGraph(gateGraphService)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunArbCoordinatorCommand](med, arbCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
 	}

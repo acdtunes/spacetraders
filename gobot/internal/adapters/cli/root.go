@@ -59,6 +59,7 @@ Examples:
 	rootCmd.AddCommand(NewFleetCommand())
 	rootCmd.AddCommand(NewCaptainCommand())
 	rootCmd.AddCommand(NewWaypointCommand())
+	rootCmd.AddCommand(NewSystemCommand())
 	rootCmd.AddCommand(NewShipyardCommand())
 	rootCmd.AddCommand(NewMarketCommand())
 	rootCmd.AddCommand(NewContractCommand())

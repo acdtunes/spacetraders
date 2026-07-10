@@ -306,6 +306,78 @@ func TestArbCoordinator_LocationGuardAbortsWhenNotAtSource(t *testing.T) {
 	}
 }
 
+// --- sp-7gr2: routability-check-before-spend ---
+
+// The acceptance criterion: an unroutable cross-system --sell-at refuses the buy
+// BEFORE spending, with a clear message naming both systems. This inverts the
+// incident order (buy at C37, fly to the home gate, THEN discover no route to
+// JP61 and crash laden): with the gate graph wired, a sell leg in a system we
+// cannot reach is refused pre-buy, and ZERO cargo is purchased.
+func TestArbCoordinator_UnroutableSellAt_RefusesBeforeBuy(t *testing.T) {
+	ship := newTradeHauler(t, "ARB-9") // docked at trSource (system X1-TR)
+	h, mediator := newArbHandler(ship, nil)
+	// The gate graph reports NO path (empty) from X1-TR to X1-JP61.
+	h.SetGateGraph(&fakeGateGraph{path: nil})
+
+	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		Good:       trGood,
+		BuyAt:      trSource,          // the hull IS here, so only routability can abort
+		SellAt:     "X1-JP61-MARKET",  // a different, unreachable system
+		PlayerID:   1,
+	})
+	if err != nil {
+		t.Fatalf("a guarded refusal must not be a Go error, got: %v", err)
+	}
+	arb := arbResponse(t, resp)
+
+	if !arb.Aborted || !arb.RoutabilityAbort {
+		t.Fatalf("expected a routability abort, got %+v", arb)
+	}
+	if len(mediator.purchases) != 0 {
+		t.Fatalf("expected ZERO buys when the sell leg is unroutable, got %d", len(mediator.purchases))
+	}
+	if !strings.Contains(arb.AbortReason, "X1-TR") || !strings.Contains(arb.AbortReason, "X1-JP61") {
+		t.Fatalf("the refusal must name both systems, got %q", arb.AbortReason)
+	}
+	if arb.Completed {
+		t.Fatal("an unroutable refusal is a did-not-trade abort, not a completed run")
+	}
+}
+
+// A cross-system lane that IS routable must clear the routability guard — the
+// guard refuses only the genuinely unreachable, it does not veto every
+// cross-system buy. Here the graph reports a route, so the run proceeds past
+// Guard 0 to the location guard (which aborts, since ARB-9 is not at the far
+// buy-at) — proving routability did NOT abort.
+func TestArbCoordinator_RoutableCrossSystem_PassesRoutabilityGuard(t *testing.T) {
+	ship := newTradeHauler(t, "ARB-9") // docked at trSource (system X1-TR)
+	h, mediator := newArbHandler(ship, nil)
+	h.SetGateGraph(&fakeGateGraph{path: []string{"X1-KA42", "X1-JP61"}}) // a real route exists
+
+	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		Good:       trGood,
+		BuyAt:      "X1-KA42-DOCK",   // hull is NOT here → location guard will catch it
+		SellAt:     "X1-JP61-MARKET", // routable per the graph above
+		PlayerID:   1,
+	})
+	if err != nil {
+		t.Fatalf("guarded refusal must not be a Go error, got: %v", err)
+	}
+	arb := arbResponse(t, resp)
+
+	if arb.RoutabilityAbort {
+		t.Fatalf("a routable cross-system lane must NOT trip the routability guard, got %+v", arb)
+	}
+	if !arb.LocationAbort {
+		t.Fatalf("expected the run to proceed to the location guard, got %+v", arb)
+	}
+	if len(mediator.purchases) != 0 {
+		t.Fatalf("the location guard should still prevent any buy, got %d", len(mediator.purchases))
+	}
+}
+
 // --- sp-5nqx: retry never re-buys, stranded cargo is a failure ---
 
 // arbFaultMediator drives the buy→travel→sell legs for the retry-safety cases. Unlike

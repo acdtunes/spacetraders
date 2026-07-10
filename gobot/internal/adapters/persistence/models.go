@@ -481,6 +481,32 @@ func (SpendReservationModel) TableName() string {
 	return "factory_spend_reservations"
 }
 
+// GateEdgeModel is one directed cross-system jump-gate connection — the persisted
+// substrate of the gate-graph adjacency store (sp-7gr2). travel()'s multi-jump BFS
+// and the routability-check-before-spend guard both read this table instead of the
+// broken single-edge assumption that crashed a laden frigate at the home gate
+// (KA42→JP61 is 3 jumps: PA3→UQ16→JP61, not one). GateWaypoint carries the
+// CONNECTED system's own gate waypoint (the raw API connection symbol), so an
+// uncharted neighbor can be expanded without first charting its system graph.
+//
+// EraID + SyncedAt mirror WaypointModel exactly: reads are era-scoped
+// (eraScopePredicate) so dead-era rows (sp-vapw) never leak into live routing, and
+// SyncedAt (RFC3339) drives the lazy 24h refresh. The (system_symbol,
+// connected_system) pair is the primary key — a system's whole edge set is
+// REPLACED on each sync (delete-then-insert), so a since-severed connection cannot
+// linger and a re-sync also purges any dead-era row for that system.
+type GateEdgeModel struct {
+	SystemSymbol    string `gorm:"column:system_symbol;primaryKey"`
+	ConnectedSystem string `gorm:"column:connected_system;primaryKey"`
+	GateWaypoint    string `gorm:"column:gate_waypoint;not null"`
+	EraID           *int   `gorm:"column:era_id;index:idx_gate_edges_era"`
+	SyncedAt        string `gorm:"column:synced_at"` // ISO timestamp string
+}
+
+func (GateEdgeModel) TableName() string {
+	return "gate_edges"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -507,5 +533,6 @@ func AllModels() []any {
 		&ManufacturingFactoryStateModel{},
 		&EraModel{},
 		&SpendReservationModel{},
+		&GateEdgeModel{},
 	}
 }

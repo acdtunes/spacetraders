@@ -104,6 +104,19 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 		return ship, nil
 	}
 
+	// Resolve the ordered jump path over the gate graph (sp-7gr2). travel() used
+	// to assume origin→dest was a SINGLE edge and honestly crashed a laden frigate
+	// at the home gate when it wasn't — JP61 is THREE jumps from KA42
+	// (PA3→UQ16→JP61), and the direct jump 4262'd four times. With a gate graph
+	// wired, BFS returns every intermediate system to hop through; an unroutable
+	// dest returns the wrapped error (naming both systems) BEFORE any flying.
+	// Without one, jumpPath falls back to the legacy single directly-connected
+	// jump so existing callers/tests are byte-for-byte unchanged.
+	path, err := h.jumpPath(ctx, currentSystem, destSystem, playerID)
+	if err != nil {
+		return ship, err
+	}
+
 	// sp-5nqx departure hop — the SOURCE-side mirror of the sp-vzxu gate->waypoint
 	// arrival hop below. The jump verb requires a DRIVELESS hull (which the arb/
 	// trade haulers are) to already be sitting ON a jump gate: jump_ship.go rejects
@@ -131,21 +144,36 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 		}
 	}
 
-	resp, err := h.mediator.Send(ctx, &navCmd.JumpShipCommand{
-		ShipSymbol:        ship.ShipSymbol(),
-		DestinationSystem: destSystem,
-		PlayerID:          &playerID,
-		SkipClaim:         true,
-	})
-	if err != nil {
-		return ship, fmt.Errorf("jump %s to %s failed: %w", ship.ShipSymbol(), destSystem, err)
+	// Execute the path hop-by-hop. Each hop is ONE directly-connected jump: the
+	// jump verb resolves the next gate from the ORIGIN gate's live connections and
+	// lands the hull ON the next system's gate, already positioned for the
+	// following jump — so intermediate hops need no waypoint→gate navigate, only
+	// the terminal arrival hop below. A cooldown wait follows EVERY jump (the old
+	// single-jump path waited too): the wait is precisely what lets the NEXT jump
+	// proceed, and after the final jump it is a harmless bounded settle before the
+	// arrival hop. SkipClaim: the coordinator already holds this hull claimed for
+	// the whole circuit (sp-wlev). path[0] is the current system; jump to each
+	// subsequent hop. The jump dispatches by SYMBOL and re-reads the hull's
+	// freshly-persisted location each time, so no per-hop reload of `ship` is
+	// needed — only the single post-path reload below, for the arrival hop.
+	totalHops := len(path) - 1
+	for i := 1; i < len(path); i++ {
+		nextSystem := path[i]
+		resp, jerr := h.mediator.Send(ctx, &navCmd.JumpShipCommand{
+			ShipSymbol:        ship.ShipSymbol(),
+			DestinationSystem: nextSystem,
+			PlayerID:          &playerID,
+			SkipClaim:         true,
+		})
+		if jerr != nil {
+			return ship, fmt.Errorf("jump %s to %s (hop %d of %d toward %s) failed: %w", ship.ShipSymbol(), nextSystem, i, totalHops, destSystem, jerr)
+		}
+		jumpResp, ok := resp.(*navCmd.JumpShipResponse)
+		if !ok {
+			return ship, fmt.Errorf("unexpected jump response type %T", resp)
+		}
+		h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds)
 	}
-	jumpResp, ok := resp.(*navCmd.JumpShipResponse)
-	if !ok {
-		return ship, fmt.Errorf("unexpected jump response type %T", resp)
-	}
-
-	h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds)
 
 	freshShip, err := h.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))
 	if err != nil {
@@ -166,6 +194,20 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 		}
 	}
 	return freshShip, nil
+}
+
+// jumpPath resolves the ordered system hop path from fromSystem to destSystem
+// inclusive (the caller has already established they differ). With a gate graph
+// wired (sp-7gr2) it BFS-walks the persisted adjacency — the fix for the
+// single-edge assumption. Without one it returns the legacy [from, dest]: assume
+// dest is one directly-connected jump away, preserving every existing
+// caller/test that never wires a graph. A gate-graph error (unroutable, or a
+// store/fetch failure) propagates so travel() aborts rather than fly blind.
+func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSystem, destSystem string, playerID int) ([]string, error) {
+	if h.gateGraph == nil {
+		return []string{fromSystem, destSystem}, nil
+	}
+	return h.gateGraph.Path(ctx, fromSystem, destSystem, playerID)
 }
 
 // --- cross-system ranking penalty (sp-wlev) ---

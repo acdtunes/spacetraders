@@ -90,3 +90,38 @@ type WaypointData struct {
 	Y       float64
 	HasFuel bool
 }
+
+// GateEdge is one directed jump-gate connection: from a system to a neighbor
+// system reachable in a single jump, tagged with that NEIGHBOR's own jump-gate
+// waypoint (the raw API connection symbol, e.g. "X1-PA3-I51"). Storing the
+// neighbor's gate (not the origin's) is what lets a multi-jump BFS expand an
+// UNCHARTED neighbor without first charting its system graph — the whole point
+// of sp-7gr2 (satellites pushing outward past the charted frontier).
+type GateEdge struct {
+	ConnectedSystem string
+	GateWaypoint    string
+}
+
+// GateEdgeRepository persists the cross-system jump-gate adjacency (sp-7gr2).
+// Every read is era-scoped (sp-vapw: dead-era rows must never leak into live
+// routing); writes stamp the open era and REPLACE a system's whole edge set so
+// a connection that has since disappeared cannot linger. The gate graph is the
+// API's own truth, cached here and refreshed lazily on miss/staleness.
+type GateEdgeRepository interface {
+	// Edges returns systemSymbol's stored neighbor edges, era-scoped. ok=false on
+	// a genuine miss OR when the stored rows are older than the freshness window
+	// (both are lazy-refresh signals the caller resolves by fetching live).
+	Edges(ctx context.Context, systemSymbol string) (edges []GateEdge, ok bool, err error)
+	// GateWaypointOf returns systemSymbol's OWN jump-gate waypoint if any stored
+	// edge points AT it (a charted neighbor recorded it as a connection). This is
+	// the reverse lookup that lets an uncharted system be fetched without its
+	// system graph. ok=false when no neighbor has recorded it yet.
+	GateWaypointOf(ctx context.Context, systemSymbol string) (gateWaypoint string, ok bool, err error)
+	// Replace atomically swaps systemSymbol's stored edge set for edges, stamping
+	// the open era and a fresh sync timestamp. An empty edges slice clears the
+	// system's rows (a system whose gate genuinely connects nowhere).
+	Replace(ctx context.Context, systemSymbol string, edges []GateEdge) error
+	// Adjacency returns every stored system's neighbor systems (era-scoped), for
+	// the `system gates` overview. Pure read — no live fetch-through.
+	Adjacency(ctx context.Context) (map[string][]string, error)
+}

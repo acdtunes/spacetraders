@@ -1,0 +1,155 @@
+package persistence_test
+
+import (
+	"context"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
+)
+
+func freshTS() string  { return time.Now().Format(time.RFC3339) }
+func staleTS() string  { return time.Now().Add(-48 * time.Hour).Format(time.RFC3339) }
+func intPtr(i int) *int { return &i }
+
+// connectedSystems extracts the neighbor symbols from a GateEdge slice, sorted,
+// for order-insensitive assertions.
+func connectedSystems(edges []system.GateEdge) []string {
+	out := make([]string, 0, len(edges))
+	for _, e := range edges {
+		out = append(out, e.ConnectedSystem)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Replace round-trips through the store: the written edge set reads back
+// (era-scoped, fresh), and each neighbor's own gate waypoint is preserved for the
+// reverse lookup that lets an uncharted system be fetched later.
+func TestGateEdgeRepository_ReplaceThenEdges_RoundTrip(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Replace(ctx, "X1-KA42", []system.GateEdge{
+		{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51"},
+		{ConnectedSystem: "X1-GQ92", GateWaypoint: "X1-GQ92-I77"},
+	}))
+
+	edges, ok, err := repo.Edges(ctx, "X1-KA42")
+	require.NoError(t, err)
+	require.True(t, ok, "freshly written edges must be a hit")
+	require.Equal(t, []string{"X1-GQ92", "X1-PA3"}, connectedSystems(edges))
+
+	// The reverse lookup returns a neighbor's OWN gate waypoint (recorded as the
+	// connection symbol) so that uncharted neighbor can later be fetched.
+	gate, ok, err := repo.GateWaypointOf(ctx, "X1-PA3")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "X1-PA3-I51", gate)
+}
+
+// Era filtering (sp-vapw): a dead-era edge (fresh timestamp, but a CLOSED era's
+// id) must never leak into a live read — not from Edges, not from Adjacency. This
+// is the exact class of bug the PZ28 ghost-gate row caused.
+func TestGateEdgeRepository_DeadEraRow_IgnoredByLiveReads(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	closedAt := time.Now().Add(-24 * time.Hour)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 2}).Error)
+
+	// era_id 1 = closed (torwind), era_id 2 = open (orion).
+	deadEra := 1
+
+	// A dead-era edge, deliberately FRESH-timestamped so only ERA scoping (not TTL)
+	// can exclude it.
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-PZ28", ConnectedSystem: "X1-GHOST", GateWaypoint: "X1-GHOST-I1",
+		EraID: intPtr(deadEra), SyncedAt: freshTS(),
+	}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	// A live system written this (open) era.
+	require.NoError(t, repo.Replace(ctx, "X1-KA42", []system.GateEdge{{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51"}}))
+
+	// The dead-era system reads as a MISS — its ghost row is scoped out.
+	_, ok, err := repo.Edges(ctx, "X1-PZ28")
+	require.NoError(t, err)
+	require.False(t, ok, "a dead-era edge must not be a live hit")
+
+	// The reverse lookup must not resolve a ghost either.
+	_, ok, err = repo.GateWaypointOf(ctx, "X1-GHOST")
+	require.NoError(t, err)
+	require.False(t, ok, "a dead-era ghost must not resolve a gate waypoint")
+
+	// The overview shows only the live system, never the dead-era one.
+	adjacency, err := repo.Adjacency(ctx)
+	require.NoError(t, err)
+	require.Contains(t, adjacency, "X1-KA42")
+	require.NotContains(t, adjacency, "X1-PZ28")
+}
+
+// A stale edge set (older than the freshness window) reads as a MISS so the
+// caller re-fetches — the lazy-refresh signal.
+func TestGateEdgeRepository_StaleRows_ReadAsMiss(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	// A row in the OPEN era but with an expired sync timestamp.
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-KA42", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
+		EraID: intPtr(1), SyncedAt: staleTS(),
+	}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	_, ok, err := repo.Edges(context.Background(), "X1-KA42")
+	require.NoError(t, err)
+	require.False(t, ok, "an edge set older than the freshness window must read as a miss")
+}
+
+// Replace is a REPLACE, not a merge: a connection dropped from the new set
+// disappears, AND a re-sync purges any dead-era row for that system (delete-then-
+// insert across all eras).
+func TestGateEdgeRepository_Replace_PurgesOldAndDeadEraRows(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	closedAt := time.Now().Add(-24 * time.Hour)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 2}).Error)
+
+	// A dead-era row for KA42 that a re-sync should purge.
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-KA42", ConnectedSystem: "X1-DEAD", GateWaypoint: "X1-DEAD-I1",
+		EraID: intPtr(1), SyncedAt: freshTS(),
+	}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Replace(ctx, "X1-KA42", []system.GateEdge{
+		{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51"},
+		{ConnectedSystem: "X1-UQ16", GateWaypoint: "X1-UQ16-I9"},
+	}))
+	// Re-sync with a smaller set: UQ16 has since dropped away.
+	require.NoError(t, repo.Replace(ctx, "X1-KA42", []system.GateEdge{
+		{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51"},
+	}))
+
+	edges, ok, err := repo.Edges(ctx, "X1-KA42")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, []string{"X1-PA3"}, connectedSystems(edges), "dropped and dead-era neighbors must be gone")
+}

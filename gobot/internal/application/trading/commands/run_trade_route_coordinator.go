@@ -134,6 +134,12 @@ const (
 	// CompletionOutcome vetoes the runner's success=true (sp-7yej invariant 2);
 	// see CargoStranded/CargoStrandedUnits/CargoStrandedReason.
 	exitReasonCargoStranded = "cargo_stranded"
+	// exitReasonUnroutable: an operator-directed (--dest) cross-system lane was
+	// selected but its sell system is not reachable over the gate graph (sp-7gr2).
+	// The run stops CLEANLY and EMPTY before the circuit's first buy — refusing to
+	// buy a tranche it cannot deliver — rather than crashing laden at the gate the
+	// way the arb-run incident did; see RoutabilityAbort.
+	exitReasonUnroutable = "unroutable"
 )
 
 // minFreeCargoForCircuit is the smallest free hold (in units) a hull must have
@@ -246,6 +252,12 @@ type RunTradeRouteCoordinatorResponse struct {
 	// amendment: circuits loop until a margin-exit or starvation-exit, never
 	// one-and-done). See the exitReason* constants for the full set.
 	ExitReason string
+	// RoutabilityAbort is set when an operator-directed (--dest) cross-system lane
+	// was selected but its sell system is unreachable over the gate graph (sp-7gr2),
+	// so the run stopped EMPTY before the first buy rather than buying a tranche it
+	// could not deliver. AbortReason carries the operator-facing prose naming both
+	// systems; ExitReason is exitReasonUnroutable.
+	RoutabilityAbort bool
 	// Circuits counts how many distinct lanes the outer loop committed to and
 	// attempted this run, regardless of whether each one was productive.
 	Circuits int
@@ -308,6 +320,24 @@ type RunTradeRouteCoordinatorHandler struct {
 	// defaulting to a real client the way clock defaults to RealClock — a caller
 	// that cannot supply one (e.g. most tests) simply runs without the guard.
 	apiClient domainPorts.APIClient
+	// gateGraph resolves multi-jump routes over the persisted cross-system gate
+	// adjacency (sp-7gr2). Optional; nil keeps travel()'s legacy single-jump
+	// assumption (a direct origin→dest edge) so every existing caller/test is
+	// unaffected. The daemon injects a real, fetch-through GateGraph via
+	// SetGateGraph so a multi-hop gap (KA42→PA3→UQ16→JP61) is actually crossed.
+	gateGraph GateGraph
+}
+
+// GateGraph resolves multi-jump routes over the persisted cross-system gate
+// adjacency (sp-7gr2). travel() walks Path hop-by-hop (each hop a single
+// directly-connected jump); the composing arb coordinator's pre-buy guard uses
+// Routable to refuse a cross-system buy whose sell leg is unreachable BEFORE
+// spending (the incident bought first, then crashed laden at the home gate with
+// no route to JP61). Path returns the ordered system hop path inclusive of both
+// ends, or a gategraph.ErrUnroutable-wrapped error naming both systems.
+type GateGraph interface {
+	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
+	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. It does not own a
@@ -341,6 +371,23 @@ func NewRunTradeRouteCoordinatorHandler(
 		clock:           clock,
 		apiClient:       apiClient,
 	}
+}
+
+// SetGateGraph wires the multi-jump gate-graph resolver (sp-7gr2). The daemon
+// injects a persisted, fetch-through GateGraph so travel() can cross a multi-hop
+// gap and the composing arb coordinator can pre-check routability. Left unset
+// (nil), travel() keeps the legacy single-jump behavior (one direct origin→dest
+// edge), so no existing caller or test changes. Mirrors the SetSpendLedger
+// optional-injection idiom rather than churning the constructor signature.
+func (h *RunTradeRouteCoordinatorHandler) SetGateGraph(g GateGraph) {
+	h.gateGraph = g
+}
+
+// gateGraphResolver exposes the wired resolver (or nil) so the composing arb
+// coordinator runs its pre-buy routability guard through the SAME instance
+// travel() uses — one graph, one cache, one source of truth.
+func (h *RunTradeRouteCoordinatorHandler) gateGraphResolver() GateGraph {
+	return h.gateGraph
 }
 
 // Handle executes the trade-route command.
@@ -461,6 +508,40 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 				"circuits_flown":        response.Circuits,
 			})
 			break
+		}
+
+		// Routability guard (sp-7gr2), directed lane only: an operator who pins a
+		// cross-system --dest must not have the hull buy a tranche it then cannot
+		// deliver — the arb-run incident (bought, flew to the gate, found no route to
+		// JP61, crashed laden) in the circuit's directed form. Verify the selected
+		// lane's sell system is reachable over the gate graph BEFORE the circuit's
+		// first buy; unroutable (or an unverifiable check → fail closed) stops the run
+		// CLEANLY and EMPTY. Scoped to the directed path (TargetDest set): the
+		// undirected auto-scan re-ranks and would just re-select the same lane, and its
+		// cross-system lanes are already ranking-penalized + caught honestly by
+		// travel()/liquidation if flown. No gate graph wired skips the guard (fail-open
+		// on the missing port, matching travel()'s own single-jump fallback).
+		if cmd.TargetDest != "" && h.gateGraph != nil {
+			laneSrcSystem := shared.ExtractSystemSymbol(lane.SourceWaypoint)
+			laneDstSystem := shared.ExtractSystemSymbol(lane.DestWaypoint)
+			if laneSrcSystem != laneDstSystem {
+				routable, rerr := h.gateGraph.Routable(ctx, laneSrcSystem, laneDstSystem, playerID)
+				if rerr != nil || !routable {
+					response.RoutabilityAbort = true
+					if rerr != nil {
+						response.AbortReason = fmt.Sprintf("could not verify a jump-gate route from %s to %s for directed lane %s - not committing the buy (fail-closed): %v", laneSrcSystem, laneDstSystem, lane.Good, rerr)
+					} else {
+						response.AbortReason = fmt.Sprintf("no jump-gate route from %s (buy %s) to %s (sell %s) for directed lane %s - not committing a buy that cannot be delivered", laneSrcSystem, lane.SourceWaypoint, laneDstSystem, lane.DestWaypoint, lane.Good)
+					}
+					logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+						"ship_symbol": cmd.ShipSymbol, "good": lane.Good,
+						"source": lane.SourceWaypoint, "dest": lane.DestWaypoint,
+						"source_system": laneSrcSystem, "dest_system": laneDstSystem,
+					})
+					exitReason = exitReasonUnroutable
+					break
+				}
+			}
 		}
 
 		// Pre-flight cargo gate (sp-xwa1): a hull with no free hold cannot buy a

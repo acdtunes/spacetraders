@@ -85,6 +85,13 @@ type RunArbCoordinatorResponse struct {
 	LocationAbort    bool
 	ExpectedLocation string
 	ActualLocation   string
+
+	// Routability guard (sp-7gr2): set when a cross-system sell leg was refused
+	// pre-buy because no jump-gate route from the buy system to the sell system
+	// exists (or could not be verified). The incident bought first and discovered
+	// the missing route only after crashing laden at the home gate; this refuses
+	// the buy BEFORE spending. AbortReason names both systems.
+	RoutabilityAbort bool
 }
 
 // RunArbCoordinatorHandler runs the one-shot guarded arb. It composes the proven
@@ -127,6 +134,16 @@ func NewRunArbCoordinatorHandler(
 		apiClient:       apiClient,
 		marketRefresher: marketRefresher,
 	}
+}
+
+// SetGateGraph wires the multi-jump gate-graph resolver (sp-7gr2) into the
+// delegated movement handler (so travel crosses multi-hop gaps) AND enables this
+// coordinator's pre-buy routability guard, which route-checks a cross-system
+// sell leg through the SAME instance before spending. Left unset (nil), both the
+// legacy single-jump travel and the guard's fail-open skip stay in place, so no
+// existing caller or test changes. Mirrors the SetSpendLedger injection idiom.
+func (h *RunArbCoordinatorHandler) SetGateGraph(g GateGraph) {
+	h.legs.SetGateGraph(g)
 }
 
 // Handle executes the one-shot arb. A guarded refusal returns a nil error with the
@@ -285,6 +302,40 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	ship *navigation.Ship,
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
+
+	// Guard 0 — routability (sp-7gr2): never buy a tranche whose sell leg sits in a
+	// system we cannot reach. The incident bought at C37, flew to the home gate, then
+	// discovered there was NO jump route to JP61 and crashed laden — spend first, learn
+	// unroutable after. This inverts that order: a cross-system sell leg is route-checked
+	// over the gate graph BEFORE the buy and refuses it (fail CLOSED) if unroutable OR if
+	// the check itself cannot be completed. A same-system lane needs no jump and skips the
+	// check; no gate graph wired skips it too (fail-open on the missing port, matching the
+	// sibling guards' optional-port contract).
+	if gateGraph := h.legs.gateGraphResolver(); gateGraph != nil {
+		buySystem := shared.ExtractSystemSymbol(cmd.BuyAt)
+		sellSystem := shared.ExtractSystemSymbol(cmd.SellAt)
+		if buySystem != sellSystem {
+			routable, rerr := gateGraph.Routable(ctx, buySystem, sellSystem, cmd.PlayerID)
+			if rerr != nil {
+				response.Aborted = true
+				response.RoutabilityAbort = true
+				response.AbortReason = fmt.Sprintf("could not verify a jump-gate route from %s to %s - aborting before buy (fail-closed): %v", buySystem, sellSystem, rerr)
+				logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+					"buy_system": buySystem, "sell_system": sellSystem, "buy_at": cmd.BuyAt, "sell_at": cmd.SellAt, "error": rerr.Error(),
+				})
+				return 0, nil
+			}
+			if !routable {
+				response.Aborted = true
+				response.RoutabilityAbort = true
+				response.AbortReason = fmt.Sprintf("no jump-gate route from %s (buy %s) to %s (sell %s) - refusing to buy cargo that cannot be delivered", buySystem, cmd.BuyAt, sellSystem, cmd.SellAt)
+				logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+					"buy_system": buySystem, "sell_system": sellSystem, "buy_at": cmd.BuyAt, "sell_at": cmd.SellAt,
+				})
+				return 0, nil
+			}
+		}
+	}
 
 	// Guard 1 — location: never buy unless the hull is actually at BuyAt. A hull that
 	// drifted (or was mis-specified) must not silently buy at the wrong market.
