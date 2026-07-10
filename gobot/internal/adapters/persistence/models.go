@@ -562,15 +562,20 @@ func (TourLegTelemetryModel) TableName() string {
 // player_id is a plain indexed column the reads scope to, and a hard FK would only
 // add fixture friction to the coordinator tests that write these rows.
 type ScoutPostModel struct {
-	ID                     int       `gorm:"column:id;primaryKey;autoIncrement"`
-	PlayerID               int       `gorm:"column:player_id;not null;uniqueIndex:idx_scout_posts_player_system,priority:1;index:idx_scout_posts_player"`
-	SystemSymbol           string    `gorm:"column:system_symbol;not null;uniqueIndex:idx_scout_posts_player_system,priority:2"`
-	FreshnessTargetSeconds int       `gorm:"column:freshness_target_seconds;not null"`
-	Kind                   string    `gorm:"column:kind;not null"`
-	AssignedHull           *string   `gorm:"column:assigned_hull"`
-	TourContainerID        *string   `gorm:"column:tour_container_id"`
-	EraID                  *int      `gorm:"column:era_id;index:idx_scout_posts_era"`
-	CreatedAt              time.Time `gorm:"column:created_at;not null"`
+	ID                     int     `gorm:"column:id;primaryKey;autoIncrement"`
+	PlayerID               int     `gorm:"column:player_id;not null;uniqueIndex:idx_scout_posts_player_system,priority:1;index:idx_scout_posts_player"`
+	SystemSymbol           string  `gorm:"column:system_symbol;not null;uniqueIndex:idx_scout_posts_player_system,priority:2"`
+	FreshnessTargetSeconds int     `gorm:"column:freshness_target_seconds;not null"`
+	Kind                   string  `gorm:"column:kind;not null"`
+	AssignedHull           *string `gorm:"column:assigned_hull"`
+	TourContainerID        *string `gorm:"column:tour_container_id"`
+	// RepositionContainerID (sp-s232) is the in-flight cross-gate relay jump-routing
+	// a satellite toward this post. Nullable — set only while a relay is airborne,
+	// cleared when it lands (the next tick mans the post in-system) or dies. GORM
+	// AutoMigrate adds the column in place; existing rows read it as NULL → "".
+	RepositionContainerID *string   `gorm:"column:reposition_container_id"`
+	EraID                 *int      `gorm:"column:era_id;index:idx_scout_posts_era"`
+	CreatedAt             time.Time `gorm:"column:created_at;not null"`
 }
 
 func (ScoutPostModel) TableName() string {

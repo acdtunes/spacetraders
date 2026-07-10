@@ -607,6 +607,19 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
 
+	// sp-s232: wire the scout-post coordinator for cross-gate satellite repositioning.
+	// It shares the SAME persisted gate graph as the trade circuit (one cache/graph) to
+	// BFS-rank the fleet-wide nearest idle satellite for an unmanned frontier post, and
+	// dispatches the relay as a scout_reposition worker whose handler REUSES the trade
+	// coordinator's multi-jump travel() (RepositionToWaypoint) — no new jump logic.
+	// Manning stays in-system only (the sp-qxa4 invariant); repositioning just moves the
+	// hull there first. nil gate graph would leave the pre-s232 park behavior intact.
+	scoutPostCoordinatorHandler.SetGateGraph(gateGraphService)
+	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
+	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
+		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)
+	}
+
 	// Arb-run coordinator (sp-p4ua): a one-shot, captain-directed, guarded arbitrage run
 	// (buy@source → cross-gate → sell@dest, ONCE, capped + floor-guarded). Wired with the
 	// same ports as trade-route so its buy/sell/navigate legs resolve to the identical

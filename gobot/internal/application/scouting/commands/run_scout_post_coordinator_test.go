@@ -163,21 +163,26 @@ func (r *fakeScoutShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 // fakeScoutDaemonClient records the worker lifecycle calls the coordinator makes.
 type fakeScoutDaemonClient struct {
 	daemon.DaemonClient
-	persisted  []string // container IDs persisted (scout_tour workers)
-	started    []string
-	stopped    []string
-	startErr   error
-	persistErr error
+	persisted    []string // container IDs persisted (scout_tour workers)
+	repositioned []string // container IDs persisted (scout_reposition relays, sp-s232)
+	started      []string
+	stopped      []string
+	startErr     error
+	persistErr   error
 }
 
 func (c *fakeScoutDaemonClient) PersistContainer(_ context.Context, kind daemon.ContainerKind, containerID string, _ uint, _ interface{}) error {
 	if c.persistErr != nil {
 		return c.persistErr
 	}
-	if kind != daemon.ContainerKindScoutTour {
+	switch kind {
+	case daemon.ContainerKindScoutTour:
+		c.persisted = append(c.persisted, containerID)
+	case daemon.ContainerKindScoutReposition:
+		c.repositioned = append(c.repositioned, containerID)
+	default:
 		return fmt.Errorf("unexpected kind %q", kind)
 	}
-	c.persisted = append(c.persisted, containerID)
 	return nil
 }
 
@@ -218,6 +223,27 @@ func (m *fakeMarketProvider) ListBySystemWithTrait(_ context.Context, systemSymb
 		return nil, err
 	}
 	return []*shared.Waypoint{wp}, nil
+}
+
+// fakeGateGraph resolves jump-hop distances from a fixed "from->to" → hop-count table
+// (sp-s232). A missing entry is UNROUTABLE (mirrors gategraph's ErrUnroutable / fetch
+// failure — the coordinator skips the candidate either way). Path returns a slice of
+// hops+1 systems; only its length feeds the coordinator's nearest-by-hops selection.
+type fakeGateGraph struct {
+	hops map[string]int // "FROM->TO" → jump hops
+}
+
+func (g *fakeGateGraph) Path(_ context.Context, from, to string, _ int) ([]string, error) {
+	n, ok := g.hops[from+"->"+to]
+	if !ok {
+		return nil, fmt.Errorf("no jump-gate route from %s to %s", from, to)
+	}
+	path := make([]string, n+1) // n hops → n+1 systems inclusive
+	for i := range path {
+		path[i] = fmt.Sprintf("%s#%d", from, i)
+	}
+	path[0], path[n] = from, to
+	return path, nil
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -606,4 +632,197 @@ func TestScoutPost_InSystemArrival_SelfHeals(t *testing.T) {
 	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
 	require.Equal(t, "SAT-1A", postRepo.find("X1-PA3").AssignedHull, "tick 2: in-system arrival self-heals the post")
 	require.Len(t, shipRepo.claims, 1, "tick 2: the now-in-system satellite is claimed")
+}
+
+// ---- tests: sp-s232 cross-gate repositioning ------------------------------
+
+// Acceptance (sp-s232): a post with no in-system satellite but a routable idle one
+// elsewhere gets that satellite JUMP-ROUTED to it — the FEWEST-hops candidate is
+// chosen (not the first-sorted), claimed for the relay (poach-guarded), and the post
+// records the in-flight relay while staying UNMANNED (manning is still in-system only).
+func TestScoutPost_Reposition_DispatchesNearestByHops(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	satFar := newScoutTestSatellite(t, "SAT-A", "X1-DISTANT-A1") // sorts FIRST, but 3 hops away
+	satNear := newScoutTestSatellite(t, "SAT-Z", "X1-NEAR-A1")   // sorts LAST, but 1 hop away
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{satFar, satNear}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{
+		"X1-NEAR->X1-FAR":    1,
+		"X1-DISTANT->X1-FAR": 3,
+	}}
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.repositioned, 1, "exactly one reposition relay is dispatched")
+	require.Len(t, daemonClient.started, 1, "the relay is started")
+	require.Len(t, shipRepo.claims, 1, "the chosen satellite is claimed for the relay")
+	require.Equal(t, "SAT-Z", shipRepo.claims[0].ship, "the FEWEST-hops satellite is chosen, not the first-sorted")
+	require.Equal(t, scoutPostFleet, shipRepo.claims[0].operation, "claimed under the scout fleet op (poach-guarded, RULINGS #7)")
+	require.Equal(t, daemonClient.repositioned[0], shipRepo.claims[0].container, "the claim binds the satellite to the relay container")
+	require.Equal(t, daemonClient.repositioned[0], postRepo.find("X1-FAR").RepositionContainerID, "the post records the in-flight relay")
+	require.Empty(t, postRepo.find("X1-FAR").AssignedHull, "the post is NOT manned during transit — manning stays in-system only")
+	require.True(t, satFar.IsIdle(), "the farther satellite is untouched")
+	require.True(t, logger.loggedContaining("X1-FAR", "repositioning SAT-Z", "1 jump"), "the dispatch logs the honest relay reason with hop count")
+}
+
+// One relay per post: while a relay is airborne (its container RUNNING) the coordinator
+// dispatches no second relay and claims no other hull for the same post (sp-s232).
+func TestScoutPost_Reposition_OneRelayPerPost_NoSecondDispatch(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding, RepositionContainerID: "relay-inflight"}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-NEAR-A1") // idle, routable — but a relay is already airborne
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "relay-inflight", ContainerType: "SCOUT_REPOSITION", Status: "RUNNING"}},
+	}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, cq, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-NEAR->X1-FAR": 1}}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Empty(t, daemonClient.repositioned, "no second relay while one is airborne")
+	require.Empty(t, shipRepo.claims, "the idle satellite is not claimed for a duplicate relay")
+	require.Equal(t, "relay-inflight", postRepo.find("X1-FAR").RepositionContainerID, "the in-flight relay reference is preserved")
+	require.True(t, sat.IsIdle(), "the idle satellite stays idle — one relay per post")
+}
+
+// Fail-closed: when no idle satellite can be jump-routed to the post, the coordinator
+// dispatches NO relay and parks the post honest — never flies a hull it cannot route
+// (sp-s232).
+func TestScoutPost_Reposition_Unroutable_ParksFailClosed(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-ISLAND", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-MAINLAND-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{}} // no route MAINLAND->ISLAND
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Empty(t, daemonClient.repositioned, "an unroutable post dispatches no relay (fail-closed)")
+	require.Empty(t, shipRepo.claims, "no satellite is claimed for an un-routable relay")
+	require.Empty(t, postRepo.find("X1-ISLAND").AssignedHull, "the post parks unmanned")
+	require.Empty(t, postRepo.find("X1-ISLAND").RepositionContainerID, "no relay is recorded")
+	require.True(t, sat.IsIdle(), "the unreachable satellite stays idle")
+	require.True(t, logger.loggedContaining("X1-ISLAND", "no jump-routable satellite"), "the fail-closed park reason is logged")
+}
+
+// A relay that ended (failed or restart-interrupted, hull still claimed) is reclaimed
+// and its reference cleared; the per-post backoff armed at dispatch then prevents an
+// immediate re-dispatch, so a fast-failing relay never hot-loops (sp-s232 / sp-py4n).
+func TestScoutPost_Reposition_RelayEnded_ReclaimsAndBacksOff(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
+		{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding},
+	}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-FAR": 2}}
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	// Tick 1: dispatch the relay (arms the per-post backoff).
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	require.Len(t, daemonClient.repositioned, 1, "tick 1 dispatches the relay")
+	require.Equal(t, daemonClient.repositioned[0], postRepo.find("X1-FAR").RepositionContainerID)
+	require.False(t, sat.IsIdle(), "the satellite is claimed to the relay")
+
+	// The relay ends with the claim still on the hull (restart-interrupted) and is NOT
+	// in the RUNNING set. The clock does NOT advance → still inside the backoff window.
+	// Tick 2: reclaim the hull, clear the relay, and DO NOT re-dispatch.
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Contains(t, shipRepo.releases, "SAT-1", "the ended relay's hull is reclaimed (recoverable)")
+	require.Empty(t, postRepo.find("X1-FAR").RepositionContainerID, "the ended relay reference is cleared")
+	require.Len(t, daemonClient.repositioned, 1, "NO second relay inside the backoff window (no hot-loop)")
+	require.True(t, logger.loggedContaining("X1-FAR", "backing off"), "the backoff park reason is logged")
+}
+
+// Arrival → in-system manning: once a relay lands its satellite idle in the post's
+// system (relay no longer RUNNING), the next tick clears the relay and mans the post
+// IN-SYSTEM via a tour — proving the sp-qxa4 manning invariant is untouched: reposition
+// only moved the hull there first (sp-s232).
+func TestScoutPost_Reposition_ArrivalMansInSystem(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding, RepositionContainerID: "relay-landed"}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-FAR-A1") // the relay landed it in the post's system, idle
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	// relay-landed is NOT in RUNNING → the relay completed; the hull is idle in-system.
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{}} // irrelevant: manning is in-system
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	got := postRepo.find("X1-FAR")
+	require.Equal(t, "SAT-1", got.AssignedHull, "the arrived satellite mans the post in-system (qxa4 invariant)")
+	require.Empty(t, got.RepositionContainerID, "the landed relay reference is cleared")
+	require.NotEmpty(t, got.TourContainerID, "a tour is spawned in-system")
+	require.Len(t, daemonClient.persisted, 1, "the in-system tour is persisted (not another relay)")
+	require.Empty(t, daemonClient.repositioned, "no new relay — the satellite arrived, it is manned locally")
+	require.Len(t, shipRepo.claims, 1, "the satellite is claimed for the tour")
+	require.Equal(t, "SAT-1", shipRepo.claims[0].ship)
+}
+
+// In-system manning ALWAYS wins over repositioning for the same satellite (sp-s232):
+// all in-system manning (2a) runs before any reposition (2b), so an idle satellite in a
+// post's own system is manned there — never relayed away to a higher-priority post that
+// could reach it. X1-AAA (sorts first, needs a relay) does NOT steal X1-BBB's local hull.
+func TestScoutPost_Reposition_InSystemManningWinsOverReposition(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
+		{PlayerID: 1, SystemSymbol: "X1-AAA", Kind: domainScouting.PostKindStanding}, // sorts FIRST, no in-system sat
+		{PlayerID: 1, SystemSymbol: "X1-BBB", Kind: domainScouting.PostKindStanding}, // has the only idle sat in-system
+	}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-BBB-A1") // idle in BBB — the ONLY idle satellite
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-BBB->X1-AAA": 1}} // SAT-1 COULD relay to AAA
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, "SAT-1", postRepo.find("X1-BBB").AssignedHull, "the in-system satellite mans its own post (2a)")
+	require.NotEmpty(t, postRepo.find("X1-BBB").TourContainerID, "manned via a tour")
+	require.Empty(t, daemonClient.repositioned, "the in-system satellite is NEVER repositioned away — manning wins over relaying")
+	require.Empty(t, postRepo.find("X1-AAA").AssignedHull, "the cross-system post parks this tick (its candidate was manned locally)")
+	require.Empty(t, postRepo.find("X1-AAA").RepositionContainerID, "no relay for AAA — no idle satellite remained after in-system manning")
+	require.Len(t, shipRepo.claims, 1, "exactly one claim — the in-system tour, not a relay")
+	require.Equal(t, scoutPostFleet, shipRepo.claims[0].operation)
+}
+
+// With no gate graph wired, repositioning is DISABLED: a satellite-less post parks with
+// the pre-s232 in-system reason and no relay is ever dispatched (sp-s232 fail-open).
+func TestScoutPost_Reposition_NoGateGraph_ParksUnchanged(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-NEAR-A1") // idle elsewhere — but no gate graph to route it
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	logger := &scoutCaptureLogger{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	// gateGraph deliberately left nil.
+
+	ctx := common.WithLogger(context.Background(), logger)
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Empty(t, daemonClient.repositioned, "no relay is dispatched without a gate graph")
+	require.Empty(t, shipRepo.claims, "no satellite is claimed")
+	require.Empty(t, postRepo.find("X1-FAR").AssignedHull, "the post parks, exactly as before sp-s232")
+	require.True(t, logger.loggedContaining("X1-FAR", "no in-system satellite"), "the pre-s232 park reason is preserved")
 }

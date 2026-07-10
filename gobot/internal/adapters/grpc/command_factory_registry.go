@@ -236,7 +236,13 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 //	                                                            coordinator_id) is skipped and
 //	                                                            respawned by scout_post_coordinator
 //	scout_post_coordinator      ∞ internal loop   coordinator   re-adopts; reloads posts +
-//	                                                            assignments, respawns tours (cxpq)
+//	                                                            assignments, respawns tours (cxpq),
+//	                                                            re-dispatches interrupted relays (s232)
+//	scout_reposition            one cross-gate    coordinator   worker (coordinator_id): skipped +
+//	                            relay             (parent)      markWorkerInterrupted preserves the
+//	                                                            claim; scout_post_coordinator re-
+//	                                                            dispatches from current position —
+//	                                                            travel() re-plans the hops (s232)
 //	contract_workflow           one contract      coordinator   re-adopts standalone; worker
 //	                                                            (coordinator_id) waits for parent
 //	contract_fleet_coordinator  ∞ internal loop   coordinator   re-adopts
@@ -282,6 +288,7 @@ func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
 		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
+		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
@@ -369,6 +376,22 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		PlayerID:         shared.MustNewPlayerID(playerID),
 		ContainerID:      cfg.RequiredNonEmptyString("container_id"),
 		TickIntervalSecs: cfg.OptionalInt("tick_interval_secs", 0),
+	}
+}
+
+// buildScoutRepositionCommand rebuilds a one-shot cross-gate reposition relay from its
+// persisted launch config so restart recovery re-adopts it (sp-s232). A coordinator-
+// spawned relay (coordinator_id present) is skipped by recovery and re-dispatched by
+// the scout_post_coordinator, but the command is still rebuilt here so the coordinator's
+// StartScoutReposition path can reconstruct it. Re-running after a restart is safe:
+// travel() waits out any in-transit leg (sp-8l3o) and re-plans the gate path from the
+// hull's CURRENT position, so a mid-relay restart resumes rather than strands.
+func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &scoutingCmd.ScoutRepositionCommand{
+		PlayerID:            shared.MustNewPlayerID(playerID),
+		ShipSymbol:          cfg.RequiredString("ship_symbol"),
+		DestinationWaypoint: cfg.RequiredString("destination"),
+		CoordinatorID:       cfg.OptionalString("coordinator_id"),
 	}
 }
 

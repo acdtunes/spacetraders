@@ -122,19 +122,21 @@ func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
 		Kind:                   string(p.Kind),
 		AssignedHull:           stringToPtr(p.AssignedHull),
 		TourContainerID:        stringToPtr(p.TourContainerID),
+		RepositionContainerID:  stringToPtr(p.RepositionContainerID),
 		CreatedAt:              p.CreatedAt,
 	}
 }
 
 func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 	return &domainScouting.ScoutPost{
-		ID:              m.ID,
-		PlayerID:        m.PlayerID,
-		SystemSymbol:    m.SystemSymbol,
-		FreshnessTarget: time.Duration(m.FreshnessTargetSeconds) * time.Second,
-		Kind:            domainScouting.PostKind(m.Kind),
-		AssignedHull:    derefString(m.AssignedHull),
-		TourContainerID: derefString(m.TourContainerID),
-		CreatedAt:       m.CreatedAt,
+		ID:                    m.ID,
+		PlayerID:              m.PlayerID,
+		SystemSymbol:          m.SystemSymbol,
+		FreshnessTarget:       time.Duration(m.FreshnessTargetSeconds) * time.Second,
+		Kind:                  domainScouting.PostKind(m.Kind),
+		AssignedHull:          derefString(m.AssignedHull),
+		TourContainerID:       derefString(m.TourContainerID),
+		RepositionContainerID: derefString(m.RepositionContainerID),
+		CreatedAt:             m.CreatedAt,
 	}
 }

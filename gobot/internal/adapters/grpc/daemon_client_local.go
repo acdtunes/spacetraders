@@ -84,6 +84,12 @@ func (c *DaemonClientLocal) PersistContainer(
 			return daemon.ErrInvalidCommandType
 		}
 		return c.server.PersistScoutTourWorker(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID), cmd.CoordinatorID)
+	case daemon.ContainerKindScoutReposition:
+		cmd, ok := command.(*scoutingCmd.ScoutRepositionCommand)
+		if !ok {
+			return daemon.ErrInvalidCommandType
+		}
+		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }
@@ -104,6 +110,8 @@ func (c *DaemonClientLocal) StartContainer(
 		return c.server.StartStorageShipContainer(ctx, containerID)
 	case daemon.ContainerKindScoutTour:
 		return c.server.StartScoutTour(ctx, containerID)
+	case daemon.ContainerKindScoutReposition:
+		return c.server.StartScoutReposition(ctx, containerID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }

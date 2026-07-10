@@ -333,6 +333,30 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	return freshShip, nil
 }
 
+// RepositionToWaypoint moves shipSymbol to destinationWaypoint, crossing system
+// boundaries via the coordinator's own multi-jump travel() primitive (sp-7gr2 gate
+// BFS + per-hop cooldown waits + the source/arrival gate hops). It is the exported
+// seam the scout-post coordinator's reposition worker (sp-s232) rides to jump-route
+// an idle satellite to an unmanned frontier post WITHOUT duplicating jump logic
+// (RULINGS: reuse the shared travel machinery, do not re-implement it).
+//
+// The caller (the reposition container) already holds shipSymbol claimed — travel()'s
+// jumps set SkipClaim, trusting that claim, exactly as the trade/arb circuits do. Any
+// travel error is returned verbatim so the worker fails HONESTLY: the runner then
+// releases the claim and the coordinator re-parks the post for a bounded retry rather
+// than a silent strand. It is a pure movement primitive: it never buys, sells, or
+// touches the posts table — the coordinator owns all reposition bookkeeping.
+func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypoint(ctx context.Context, shipSymbol, destinationWaypoint string, playerID int) error {
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return fmt.Errorf("failed to load ship %s for reposition to %s: %w", shipSymbol, destinationWaypoint, err)
+	}
+	if _, err := h.travel(ctx, ship, destinationWaypoint, playerID); err != nil {
+		return fmt.Errorf("reposition of %s to %s failed: %w", shipSymbol, destinationWaypoint, err)
+	}
+	return nil
+}
+
 // waitForInTransitArrival rides out a hull that is still IN_TRANSIT before any
 // movement leg (sp-8l3o). It is the pre-movement mirror of the RouteExecutor's own
 // waitForCurrentTransit idempotency wait: the arb resume path re-adopts a hull mid

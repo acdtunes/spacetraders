@@ -40,7 +40,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 		containerID,
 		container.ContainerTypeScout,
 		playerID,
-		1, // one iteration = the whole tour run; the command owns "iterations"
+		1,   // one iteration = the whole tour run; the command owns "iterations"
 		nil, // No parent container
 		config,
 		nil, // Use default RealClock for production
@@ -139,6 +139,94 @@ func (s *DaemonServer) StartScoutTour(ctx context.Context, containerID string) e
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
 		1, // one iteration = the whole tour run; the command owns "iterations"
+		containerModel.ParentContainerID,
+		config,
+		nil,
+	)
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
+}
+
+// PersistScoutRepositionWorker persists (but does NOT start) a scout_reposition
+// container the scout_post_coordinator manages (sp-s232). Like a scout_tour worker it
+// carries a coordinator_id and a parent link, so daemon restart recovery SKIPS it
+// (marks it worker_interrupted, preserving the ship claim) and leaves re-dispatch to
+// the coordinator's reconcile pass. It wraps exactly ONE iteration — the whole relay —
+// and the coordinator owns re-dispatch (CoordinatorOwnsIterations in the registry).
+func (s *DaemonServer) PersistScoutRepositionWorker(
+	ctx context.Context,
+	containerID string,
+	shipSymbol string,
+	destinationWaypoint string,
+	playerID int,
+	coordinatorID string,
+) error {
+	config := map[string]interface{}{
+		"ship_symbol":    shipSymbol,
+		"destination":    destinationWaypoint,
+		"coordinator_id": coordinatorID,
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeScoutReposition,
+		playerID,
+		1, // one iteration = the whole relay; the coordinator owns re-dispatch
+		&coordinatorID,
+		config,
+		nil, // Use default RealClock for production
+	)
+
+	if err := s.containerRepo.Add(ctx, containerEntity, "scout_reposition"); err != nil {
+		return fmt.Errorf("failed to persist scout reposition worker: %w", err)
+	}
+	return nil
+}
+
+// StartScoutReposition starts a previously persisted scout_reposition container (the
+// coordinator-managed relay path). Mirrors StartScoutTour: load the persisted model,
+// rebuild the command from its config, and run it.
+func (s *DaemonServer) StartScoutReposition(ctx context.Context, containerID string) error {
+	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var containerModel *persistence.ContainerModel
+	for _, c := range allContainers {
+		if c.ID == containerID {
+			containerModel = c
+			break
+		}
+	}
+	if containerModel == nil {
+		return fmt.Errorf("container %s not found", containerID)
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	cmd, err := s.buildCommandForType("scout_reposition", config, containerModel.PlayerID, containerModel.ID)
+	if err != nil {
+		return fmt.Errorf("failed to create command: %w", err)
+	}
+
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		1, // one iteration = the whole relay
 		containerModel.ParentContainerID,
 		config,
 		nil,

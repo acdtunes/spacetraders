@@ -40,18 +40,37 @@ func (k PostKind) Valid() bool {
 // idle satellite for it on its next tick. Both the assignment and the tour
 // container id are persisted so a daemon restart re-adopts the same hull onto
 // the same post (RULINGS #2).
+//
+// RepositionContainerID (sp-s232) tracks an in-flight cross-gate RELAY that is
+// jump-routing an idle satellite from another system TO this post — the fleet-wide
+// half of manning that sp-qxa4 deliberately left out. It is mutually exclusive with
+// AssignedHull: a repositioning post is NOT manned (the hull is still in transit, so
+// IsManned stays false and the in-system repair pass never touches it), and manning
+// clears any relay first. Persisted so a daemon restart re-adopts the same relay
+// (RULINGS #2) — recovery marks the worker interrupted (claim preserved) and the
+// coordinator re-dispatches from the hull's current position.
 type ScoutPost struct {
-	ID              int
-	PlayerID        int
-	SystemSymbol    string
-	FreshnessTarget time.Duration
-	Kind            PostKind
-	AssignedHull    string
-	TourContainerID string
-	CreatedAt       time.Time
+	ID                    int
+	PlayerID              int
+	SystemSymbol          string
+	FreshnessTarget       time.Duration
+	Kind                  PostKind
+	AssignedHull          string
+	TourContainerID       string
+	RepositionContainerID string
+	CreatedAt             time.Time
 }
 
-// IsManned reports whether a hull is currently assigned to this post.
+// IsManned reports whether a hull is currently assigned to this post. A post with a
+// reposition relay in flight is NOT manned — its satellite is still crossing gates
+// (AssignedHull is empty until the relay lands and the next in-system tick mans it).
 func (p *ScoutPost) IsManned() bool {
 	return p.AssignedHull != ""
+}
+
+// IsRepositioning reports whether a cross-gate relay is currently jump-routing a
+// satellite toward this post (sp-s232). While true the coordinator neither re-mans
+// nor re-dispatches the post — the relay owns it until it lands or dies.
+func (p *ScoutPost) IsRepositioning() bool {
+	return p.RepositionContainerID != ""
 }
