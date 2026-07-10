@@ -139,11 +139,24 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// bounded by this coordinator's ctx, and it is inert when no dedicated
 	// fleet exists or no launcher is wired.
 	if h.idleArbLauncher != nil && !cmd.IdleArbDisabled {
+		// Post-leg re-homing (sp-8bpr): the dispatcher sends an arb hull that
+		// finished off-station back to standby through the coordinator's OWN
+		// balanced-standby homing (HomeShipCommand, l7h2 Phase 3) — the same
+		// stations and fleet-peer list the contract-handoff homing below uses,
+		// never a parallel homing path (RULINGS #7). Empty StandbyStations leaves
+		// re-homing off, exactly as it leaves the contract-handoff homing off.
+		homer := &mediatorShipHomer{
+			mediator:        h.fleetPoolManager.GetMediator(),
+			playerID:        cmd.PlayerID,
+			standbyStations: cmd.StandbyStations,
+			fleetShips:      cmd.DedicatedShips,
+		}
 		dispatcher := appContract.NewIdleArbDispatcher(
 			h.shipRepo,
 			h.marketRepo,
 			h.graphProvider,
 			h.idleArbLauncher,
+			homer,
 			appContract.NewActiveContractGoods(h.contractRepo),
 			h.clock,
 			cmd.PlayerID,
@@ -158,6 +171,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				// Percent → fraction (0 → WithDefaults applies the 0.80 default).
 				MarginVerifyFraction: float64(cmd.IdleArbMarginVerifyPct) / 100.0,
 				Blacklist:            cmd.IdleArbBlacklist,
+				StandbyStations:      cmd.StandbyStations,
 				Interval:             time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
 			},
 		)
@@ -652,6 +666,50 @@ func reconcileDedicatedFleet(
 		}
 		logger.Log("INFO", fmt.Sprintf("Ship %s reconciled into dedicated %s fleet", symbol, fleetName), nil)
 	}
+}
+
+// mediatorShipHomer implements appContract.ShipHomer (sp-8bpr) by dispatching
+// the EXISTING balanced-standby HomeShipCommand (l7h2 Phase 3) through the
+// mediator — the idle-arb dispatcher's post-leg re-home reuses the coordinator's
+// own homing machinery verbatim, with the same standby-station set and
+// fleet-peer list the contract-handoff homing uses (RULINGS #7: no parallel
+// homing algorithm).
+//
+// Navigation runs FIRE-AND-FORGET, mirroring the coordinator's own
+// `go func(){ Send(homeCmd) }` at the contract-handoff hook: HomeShipCommand
+// blocks until the hull arrives (navigate_route executes the whole route), so a
+// synchronous call would stall the dispatcher tick for the full flight. HomeShip
+// returns as soon as the home is DISPATCHED; the detached goroutine carries the
+// container logger on a background context that outlives the request ctx,
+// exactly as the coordinator's homing goroutine does, and logs a homing failure
+// at WARNING rather than surfacing it (re-homing is best-effort).
+type mediatorShipHomer struct {
+	mediator        common.Mediator
+	playerID        shared.PlayerID
+	standbyStations []string
+	fleetShips      []string
+}
+
+var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
+
+func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string) error {
+	logger := common.LoggerFromContext(ctx)
+	homeCmd := &HomeShipCommand{
+		ShipSymbol:      shipSymbol,
+		PlayerID:        m.playerID,
+		StandbyStations: m.standbyStations,
+		FleetShips:      m.fleetShips,
+	}
+	go func() {
+		// Background context (the dispatch ctx may be cancelled when the
+		// coordinator stops) carrying the container logger, mirroring the
+		// contract-handoff homing goroutine.
+		homeCtx := common.WithLogger(context.Background(), logger)
+		if _, err := m.mediator.Send(homeCtx, homeCmd); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Idle-arb re-home: homing %s failed: %v", shipSymbol, err), nil)
+		}
+	}()
+	return nil
 }
 
 // isDedicatedShip reports whether shipSymbol is one of the operator's

@@ -193,7 +193,7 @@ func idleArbHarnessGoods(t *testing.T, hulls int, cfg IdleArbConfig, contractGoo
 
 	clock := shared.NewRealClock()
 	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
-	dispatcher := NewIdleArbDispatcher(repo, markets, graph, launcher, contractGoods, clock, shared.MustNewPlayerID(1), testFleet, cfg)
+	dispatcher := NewIdleArbDispatcher(repo, markets, graph, launcher, nil, contractGoods, clock, shared.MustNewPlayerID(1), testFleet, cfg)
 	return dispatcher, repo, launcher
 }
 
@@ -469,7 +469,7 @@ func TestIdleArb_Leash_SkipsBeyondRadiusAndLegTime(t *testing.T) {
 		}}
 		clock := shared.NewRealClock()
 		launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
-		return NewIdleArbDispatcher(repo, markets, graph, launcher, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg), launcher
+		return NewIdleArbDispatcher(repo, markets, graph, launcher, nil, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg), launcher
 	}
 
 	leashed, launcher := build(IdleArbConfig{ReserveHulls: 1, HubRadius: 250, LeashRadius: 80})
@@ -511,6 +511,189 @@ func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("harvest summary must carry %q in message TEXT, got: %s", want, summary)
 		}
+	}
+}
+
+// --- sp-8bpr post-leg re-homing tests --------------------------------------
+
+// fakeShipHomer records the hulls the dispatcher asked to re-home, standing in
+// for the coordinator's mediator-backed HomeShipCommand dispatch. failNext lets
+// a test simulate a homing dispatch that could not even be initiated.
+type fakeShipHomer struct {
+	homed    []string
+	failNext bool
+}
+
+func (f *fakeShipHomer) HomeShip(_ context.Context, shipSymbol string) error {
+	if f.failNext {
+		f.failNext = false
+		return fmt.Errorf("home dispatch refused for %s", shipSymbol)
+	}
+	f.homed = append(f.homed, shipSymbol)
+	return nil
+}
+
+// idleArbRehomeHarness builds a dispatcher wired with a fake homer over a
+// two-market layout where BOTH the hub (0,0) and near (0,50) markets have a
+// profitable outbound MACHINERY lane, so an idle hull at EITHER waypoint has a
+// lane the arb loop would take absent re-homing. Tests pre-populate repo.ships
+// (placing hulls on- or off-station) and pass the standby-station set; the
+// dispatcher's cfg.StandbyStations is set from it.
+func idleArbRehomeHarness(t *testing.T, repo *idleArbFakeShipRepo, standby []string, cfg IdleArbConfig) (*IdleArbDispatcher, *fakeIdleArbLauncher, *fakeShipHomer) {
+	t.Helper()
+
+	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+
+	graph := &fakeGraphProvider{waypoints: map[string]*shared.Waypoint{
+		hub.Symbol: hub, near.Symbol: near,
+	}}
+	// Both markets buy MACHINERY at 150 vs a 100 sell — a profitable lane out of
+	// hub (hub->near) AND out of near (near->hub), so an idle hull at either end
+	// would be arbed if re-homing didn't hold it back.
+	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
+		hub.Symbol:  marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 150, 100)),
+		near.Symbol: marketAt(t, near.Symbol, tradeGood(t, "MACHINERY", 150, 100)),
+	}}
+
+	cfg.StandbyStations = standby
+	clock := shared.NewRealClock()
+	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
+	homer := &fakeShipHomer{}
+	d := NewIdleArbDispatcher(repo, markets, graph, launcher, homer, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg)
+	return d, launcher, homer
+}
+
+// The core gap (sp-8bpr): a hull left idle OFF-station after a leg is re-homed to
+// its standby station and is NOT re-arbed from the drift position that pass,
+// while an ON-station hull still arbs normally. One pass proves both.
+func TestIdleArb_DriftedHullReHomed_OnStationHullStillArbs(t *testing.T) {
+	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+		idleArbHull(t, "AT-HUB", hub, testFleet),   // on-station: arb candidate
+		idleArbHull(t, "DRIFTED", near, testFleet), // off-station post-leg: re-home
+	}}
+
+	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{hub.Symbol}, IdleArbConfig{ReserveHulls: 1})
+	d.DispatchOnce(context.Background())
+
+	// The drifted hull is homed, not re-arbed...
+	if len(homer.homed) != 1 || homer.homed[0] != "DRIFTED" {
+		t.Fatalf("expected the off-station hull DRIFTED to be re-homed, got %v", homer.homed)
+	}
+	// ...and the on-station hull still flew an arb leg (from the hub), so
+	// re-homing did not suppress the harvest for hulls that are already home.
+	if len(launcher.launches) != 1 {
+		t.Fatalf("expected exactly one arb launch (the on-station hull), got %d", len(launcher.launches))
+	}
+	if launcher.launches[0].ShipSymbol != "AT-HUB" {
+		t.Fatalf("the arb leg must be the on-station hull AT-HUB, never the drifted one, got %s", launcher.launches[0].ShipSymbol)
+	}
+	if launcher.launches[0].BuyAt != hub.Symbol {
+		t.Fatalf("the arb leg must buy at the hub the hull sits on, got %s", launcher.launches[0].BuyAt)
+	}
+}
+
+// A hull already parked at a configured standby station is left alone — no
+// re-home dispatch — so the balancer isn't re-run every tick shuffling home
+// hulls between stations (churn).
+func TestIdleArb_HullAtStandby_NotReHomed(t *testing.T) {
+	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+		idleArbHull(t, "AT-HUB", hub, testFleet),
+	}}
+
+	d, _, homer := idleArbRehomeHarness(t, repo, []string{hub.Symbol}, IdleArbConfig{ReserveHulls: 0})
+	d.DispatchOnce(context.Background())
+
+	if len(homer.homed) != 0 {
+		t.Fatalf("a hull already at a standby station must not be re-homed, got %v", homer.homed)
+	}
+}
+
+// Re-homing is inert with no standby stations configured (mirroring
+// HomeShipCommand's own contract): the drifted hull is left for the arb loop,
+// which harvests it exactly as before this change.
+func TestIdleArb_NoStandbyStations_ReHomeOff_ArbUnchanged(t *testing.T) {
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+		idleArbHull(t, "DRIFTED-1", near, testFleet),
+		idleArbHull(t, "DRIFTED-2", near, testFleet),
+	}}
+
+	// Empty standby set → homing disabled even though a homer is wired.
+	d, launcher, homer := idleArbRehomeHarness(t, repo, nil, IdleArbConfig{ReserveHulls: 1})
+	d.DispatchOnce(context.Background())
+
+	if len(homer.homed) != 0 {
+		t.Fatalf("no standby stations means no re-home dispatch, got %v", homer.homed)
+	}
+	if len(launcher.launches) != 1 {
+		t.Fatalf("with re-homing off the arb harvest is unchanged: expected 1 launch, got %d", len(launcher.launches))
+	}
+}
+
+// RULINGS #7 / requirement: re-homing never touches a hull with an active claim.
+// A claimed hull is invisible to FindIdleShipsByFleet, so the sweep never even
+// sees it — the atomic ownership model is upheld by reusing the same idle
+// discovery every other flow uses.
+func TestIdleArb_ClaimedHull_NeverReHomed(t *testing.T) {
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+	claimed := idleArbHull(t, "CLAIMED", near, testFleet)
+	if err := claimed.AssignToContainer("worker-1", shared.NewRealClock()); err != nil {
+		t.Fatalf("AssignToContainer: %v", err)
+	}
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{claimed}}
+
+	d, _, homer := idleArbRehomeHarness(t, repo, []string{"X1-HUB-E42"}, IdleArbConfig{ReserveHulls: 0})
+	d.DispatchOnce(context.Background())
+
+	if len(homer.homed) != 0 {
+		t.Fatalf("a claimed hull must never be re-homed (active-claim wins, RULINGS #7), got %v", homer.homed)
+	}
+}
+
+// A failed home dispatch leaves the hull for the next pass AND does not exclude
+// it from arb (it was never actually sent home), so a transient homing failure
+// can't strand a hull.
+func TestIdleArb_HomeDispatchFails_HullNotExcludedFromArb(t *testing.T) {
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+		idleArbHull(t, "DRIFTED-1", near, testFleet),
+		idleArbHull(t, "DRIFTED-2", near, testFleet),
+	}}
+
+	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{"X1-HUB-E42"}, IdleArbConfig{ReserveHulls: 1})
+	homer.failNext = true // the first home dispatch is refused
+	d.DispatchOnce(context.Background())
+
+	// One hull's home dispatch failed (recorded nothing); the other homed. The
+	// failed one was NOT excluded from arb, so the harvest still ran a leg.
+	if len(homer.homed) != 1 {
+		t.Fatalf("expected exactly one successful home dispatch (the second hull), got %v", homer.homed)
+	}
+	if len(launcher.launches) != 1 {
+		t.Fatalf("a hull whose home dispatch failed stays arb-eligible: expected 1 launch, got %d", len(launcher.launches))
+	}
+}
+
+// Re-home activity surfaces in the guard-5 harvest summary message text, so the
+// captain's acceptance can read it (the CLI renderer drops metadata maps).
+func TestIdleArb_ReHome_CountedInHarvestSummary(t *testing.T) {
+	logger := &idleArbCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+		idleArbHull(t, "DRIFTED", near, testFleet),
+	}}
+	d, _, _ := idleArbRehomeHarness(t, repo, []string{"X1-HUB-E42"}, IdleArbConfig{ReserveHulls: 0})
+	d.DispatchOnce(ctx)
+
+	summary := logger.messageWithPrefix(t, "Idle-arb harvest:")
+	if !strings.Contains(summary, "re-homed") {
+		t.Fatalf("harvest summary must carry the re-home count in message TEXT, got: %s", summary)
 	}
 }
 

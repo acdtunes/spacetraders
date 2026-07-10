@@ -99,6 +99,15 @@ type IdleArbConfig struct {
 	// The captain flips a good back by editing config and restarting (no code
 	// redeploy). RULINGS #5.
 	Blacklist []string
+	// StandbyStations (sp-8bpr) are the operator's standby waypoint symbols — the
+	// SAME --standby-stations set the contract coordinator's contract-handoff
+	// homing uses (l7h2 Phase 3). The post-leg re-home (rehomeDriftedHulls) sends
+	// any idle dedicated hull NOT sitting at one of these back to its balanced
+	// standby station, so an arb leg that ends off-station doesn't dead-idle at
+	// the sell waypoint. Empty (or a nil homer) disables re-homing entirely,
+	// mirroring HomeShipCommand's own "empty stations = no relocation" contract.
+	// RULINGS #5: the tunable is the station set, already an operator flag.
+	StandbyStations []string
 	// Interval is the dispatch tick.
 	Interval time.Duration
 }
@@ -189,6 +198,25 @@ type IdleArbLauncher interface {
 	LaunchIdleArb(ctx context.Context, spec IdleArbSpec) (containerID string, err error)
 }
 
+// ShipHomer re-homes ONE idle dedicated hull to its balanced standby station
+// through the EXISTING HomeShipCommand path (sp-d3kd / l7h2 Phase 3) — never a
+// parallel homing algorithm (RULINGS #7). A narrow port, implemented by the
+// coordinator over the mediator and faked trivially in tests, that keeps the
+// dispatcher a pure decision loop.
+//
+// The implementation dispatches the homing FIRE-AND-FORGET: HomeShipCommand
+// navigates synchronously and blocks until the hull arrives (navigate_route
+// executes the whole route), so a blocking call would stall an entire dispatch
+// tick for a full flight. HomeShip therefore returns as soon as the home is
+// DISPATCHED, not when the hull lands — exactly as the coordinator's own
+// contract-handoff homing goroutine behaves. The hull is marked in-transit
+// within a hop, so the next discovery pass excludes it (FindIdleShipsByFleet
+// skips in-transit hulls); a returned error means the home could not even be
+// dispatched, and the dispatcher leaves the hull for the next pass.
+type ShipHomer interface {
+	HomeShip(ctx context.Context, shipSymbol string) error
+}
+
 // ContractGoodsProvider lists the delivery goods of the player's OPEN contracts
 // (sp-uohe guard 3) so the dispatcher never dispatches an arb leg on a good we
 // are actively sourcing for a contract — the idle harvest must never compete
@@ -240,16 +268,18 @@ type IdleArbLane struct {
 // IdleArbDispatcher runs the idle-gap harvest for one coordinator's dedicated
 // fleet.
 type IdleArbDispatcher struct {
-	shipRepo      navigation.ShipRepository
-	marketRepo    market.MarketRepository
-	graphProvider system.ISystemGraphProvider
-	launcher      IdleArbLauncher
-	contractGoods ContractGoodsProvider
-	clock         shared.Clock
-	playerID      shared.PlayerID
-	fleet         string
-	cfg           IdleArbConfig
-	blacklist     map[string]struct{} // upper-cased cfg.Blacklist, built once
+	shipRepo        navigation.ShipRepository
+	marketRepo      market.MarketRepository
+	graphProvider   system.ISystemGraphProvider
+	launcher        IdleArbLauncher
+	homer           ShipHomer // sp-8bpr: post-leg re-homing (nil → re-home off)
+	contractGoods   ContractGoodsProvider
+	clock           shared.Clock
+	playerID        shared.PlayerID
+	fleet           string
+	cfg             IdleArbConfig
+	blacklist       map[string]struct{} // upper-cased cfg.Blacklist, built once
+	standbyStations map[string]struct{} // sp-8bpr: cfg.StandbyStations as a set, for the at-home filter
 
 	// Observability counters (sp-uohe guard 5). In-memory and reset on restart
 	// by design: they measure THIS process's harvest rate, not operational
@@ -263,6 +293,7 @@ type IdleArbDispatcher struct {
 	skipBlacklist    int // legs skipped: good on the blacklist
 	skipContractGood int // legs skipped: good under an open contract
 	skipLeash        int // legs skipped: only profit was beyond the leash/leg-time
+	rehomed          int // sp-8bpr: hulls re-homed post-leg (cumulative)
 }
 
 // NewIdleArbDispatcher wires a dispatcher for the given dedicated fleet. A nil
@@ -273,6 +304,7 @@ func NewIdleArbDispatcher(
 	marketRepo market.MarketRepository,
 	graphProvider system.ISystemGraphProvider,
 	launcher IdleArbLauncher,
+	homer ShipHomer,
 	contractGoods ContractGoodsProvider,
 	clock shared.Clock,
 	playerID shared.PlayerID,
@@ -289,18 +321,29 @@ func NewIdleArbDispatcher(
 	for _, g := range cfg.Blacklist {
 		blacklist[strings.ToUpper(strings.TrimSpace(g))] = struct{}{}
 	}
+	// Pre-build the standby-station lookup once (sp-8bpr): the at-home filter in
+	// rehomeDriftedHulls asks "is this hull's waypoint a standby station?" per
+	// hull per tick. Waypoint symbols are case-exact, so no case-folding here.
+	standbyStations := make(map[string]struct{}, len(cfg.StandbyStations))
+	for _, s := range cfg.StandbyStations {
+		if s = strings.TrimSpace(s); s != "" {
+			standbyStations[s] = struct{}{}
+		}
+	}
 	return &IdleArbDispatcher{
-		shipRepo:      shipRepo,
-		marketRepo:    marketRepo,
-		graphProvider: graphProvider,
-		launcher:      launcher,
-		contractGoods: contractGoods,
-		clock:         clock,
-		playerID:      playerID,
-		fleet:         fleet,
-		cfg:           cfg,
-		blacklist:     blacklist,
-		startTime:     clock.Now(),
+		shipRepo:        shipRepo,
+		marketRepo:      marketRepo,
+		graphProvider:   graphProvider,
+		launcher:        launcher,
+		homer:           homer,
+		contractGoods:   contractGoods,
+		clock:           clock,
+		playerID:        playerID,
+		fleet:           fleet,
+		cfg:             cfg,
+		blacklist:       blacklist,
+		standbyStations: standbyStations,
+		startTime:       clock.Now(),
 	}
 }
 
@@ -362,10 +405,22 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 
 	launched := 0
 	passSkips := 0 // dispatch-time guard skips THIS pass (guard-5 summary trigger)
+
+	// POST-LEG RE-HOMING (sp-8bpr): send every idle dedicated hull that finished
+	// off-station back to its balanced standby station FIRST — before the arb
+	// loop, and before the guard-3 contract-goods read below (which is arb-only
+	// and fail-closed) so a contract-read failure never skips the re-home. This
+	// returns the hulls homed THIS pass; the arb loop excludes them so a hull is
+	// never re-arbed from a drift position the same tick it is being sent home
+	// (chained legs would drift past the leash, which is measured from the hull's
+	// CURRENT waypoint). Inert when re-homing is off (nil homer / no stations).
+	homingThisPass := d.rehomeDriftedHulls(ctx)
+	rehomedThisPass := len(homingThisPass)
+
 	// Emit the harvest summary (guard 5) on every return path of a pass that did
-	// something, so the captain's acceptance can read the attempt rate and the
-	// per-reason skip pressure from message text.
-	defer func() { d.logHarvestSummary(ctx, launched, passSkips) }()
+	// something, so the captain's acceptance can read the attempt rate, the
+	// per-reason skip pressure, and the re-home count from message text.
+	defer func() { d.logHarvestSummary(ctx, launched, passSkips, rehomedThisPass) }()
 
 	// Guard 3 dependency: the goods under the player's OPEN contracts. Read ONCE
 	// per pass (not per hull) and fail CLOSED — a contract-read failure skips the
@@ -400,7 +455,11 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 
 		var candidates []*navigation.Ship
 		for _, s := range idleShips {
-			if !tried[s.ShipSymbol()] {
+			// A hull sent home this pass (sp-8bpr) is off-limits to arb: it is
+			// being repositioned to standby, and its in-transit mark can lag the
+			// homer's fire-and-forget return, so exclude it explicitly rather than
+			// trust the recount to have caught it yet.
+			if !tried[s.ShipSymbol()] && !homingThisPass[s.ShipSymbol()] {
 				candidates = append(candidates, s)
 			}
 		}
@@ -472,6 +531,75 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			"container_id": containerID,
 		})
 	}
+}
+
+// rehomeDriftedHulls (sp-8bpr) sends every idle dedicated hull that is NOT
+// sitting at one of the configured standby stations back to its balanced standby
+// station via the EXISTING HomeShipCommand (l7h2 Phase 3), and returns the set
+// of hulls homed this pass so the caller keeps them out of the arb loop.
+//
+// THE GAP IT CLOSES: an idle-arb leg (sp-1z2h) ends with the hull idle at the
+// SELL waypoint — within a hop of its hub, but off-station. Nothing repositions
+// it until a contract-handoff homing or another balance pass happens to catch
+// it, so it dead-idles at a random market. This pass re-homes it directly, which
+// also keeps the hub-local leash honest: the leash (sp-uohe) is measured from
+// the hull's CURRENT waypoint, so a hull left at a drift position could chain
+// legs arbitrarily far from home; returning it to standby between legs makes
+// "leash-from-current" equal "leash-from-hub" again.
+//
+// WHY ONLY OFF-STATION HULLS: a hull already parked at ANY standby station is
+// left alone. Re-firing HomeShipCommand on it would chase the balancer's
+// least-occupied target and shuffle home hulls station-to-station every tick
+// (churn); the balancer only needs to run when a hull is actually being brought
+// back. Claimed and in-transit hulls never appear here — FindIdleShipsByFleet
+// already excludes them — so an active contract claim or an in-flight leg is
+// never disturbed (RULINGS #7); and if a contract claim lands on a hull the
+// instant it finishes homing, that claim wins, exactly as it does for the
+// coordinator's own contract-handoff homing (homing never holds a claim).
+//
+// Best-effort and inert when re-homing is off (nil homer or no standby stations
+// configured — matching HomeShipCommand's own "empty stations disables
+// relocation" contract), so the harvest behaves exactly as before when the
+// operator has not configured standby stations.
+func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]bool {
+	homed := map[string]bool{}
+	if d.homer == nil || len(d.standbyStations) == 0 {
+		return homed
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	idleShips, _, err := FindIdleShipsByFleet(ctx, d.playerID, d.shipRepo, d.fleet)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Idle-arb re-home: idle discovery failed, skipping re-home this pass: %v", err), nil)
+		return homed
+	}
+
+	for _, hull := range idleShips {
+		loc := hull.CurrentLocation()
+		if loc == nil {
+			continue
+		}
+		if _, atStandby := d.standbyStations[loc.Symbol]; atStandby {
+			continue // already home — re-firing would chase balance and churn
+		}
+		if err := d.homer.HomeShip(ctx, hull.ShipSymbol()); err != nil {
+			logger.Log("WARNING", fmt.Sprintf(
+				"Idle-arb re-home: could not dispatch homing for %s from %s: %v", hull.ShipSymbol(), loc.Symbol, err), nil)
+			continue
+		}
+		homed[hull.ShipSymbol()] = true
+		d.rehomed++
+		logger.Log("INFO", fmt.Sprintf(
+			"Idle-arb re-home: %s idle off-station at %s - homing to balanced standby", hull.ShipSymbol(), loc.Symbol),
+			map[string]interface{}{
+				"action":      "idle_arb_rehome",
+				"ship_symbol": hull.ShipSymbol(),
+				"from":        loc.Symbol,
+			})
+	}
+
+	return homed
 }
 
 // pickHubLocalLane scores every (good, sell-market) pair reachable from the
@@ -648,8 +776,8 @@ func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
 // summed here because the dispatcher's launch is fire-and-forget and never
 // observes the run's outcome. Emitted only when the pass did something, to keep
 // idle ticks quiet.
-func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisPass, skipsThisPass int) {
-	if launchedThisPass == 0 && skipsThisPass == 0 {
+func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisPass, skipsThisPass, rehomedThisPass int) {
+	if launchedThisPass == 0 && skipsThisPass == 0 && rehomedThisPass == 0 {
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
@@ -658,9 +786,9 @@ func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisP
 		rate = float64(d.attempts) / elapsed
 	}
 	logger.Log("INFO", fmt.Sprintf(
-		"Idle-arb harvest: %d leg(s) launched this pass; %d attempt(s) total at %.1f/hr; "+
-			"skipped legs - blacklist %d, contract-good %d, leash %d (cumulative; margin-aborts logged per-leg by the arb run)",
-		launchedThisPass, d.attempts, rate,
-		d.skipBlacklist, d.skipContractGood, d.skipLeash,
+		"Idle-arb harvest: %d leg(s) launched this pass; %d hull(s) re-homed this pass; %d attempt(s) total at %.1f/hr; "+
+			"skipped legs - blacklist %d, contract-good %d, leash %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
+		launchedThisPass, rehomedThisPass, d.attempts, rate,
+		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.rehomed,
 	), nil)
 }
