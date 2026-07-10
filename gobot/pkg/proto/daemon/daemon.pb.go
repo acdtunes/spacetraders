@@ -7001,10 +7001,11 @@ type StartTourRunRequest struct {
 	ShipSymbol            string                 `protobuf:"bytes,2,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"` // Idle hull to fly the tour
 	AgentSymbol           *string                `protobuf:"bytes,3,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
 	MaxHops               *int32                 `protobuf:"varint,4,opt,name=max_hops,json=maxHops,proto3,oneof" json:"max_hops,omitempty"`                                             // 0/unset = planner default (6)
-	MaxSpend              *int64                 `protobuf:"varint,5,opt,name=max_spend,json=maxSpend,proto3,oneof" json:"max_spend,omitempty"`                                          // 0/unset = 25% of live treasury at launch
+	MaxSpend              *int64                 `protobuf:"varint,5,opt,name=max_spend,json=maxSpend,proto3,oneof" json:"max_spend,omitempty"`                                          // 0/unset = 25% of live treasury (re-resolved per tour when iterations != 0/1)
 	MinMargin             *int32                 `protobuf:"varint,6,opt,name=min_margin,json=minMargin,proto3,oneof" json:"min_margin,omitempty"`                                       // Per-unit margin floor passed to the planner
-	ReplanLimit           *int32                 `protobuf:"varint,7,opt,name=replan_limit,json=replanLimit,proto3,oneof" json:"replan_limit,omitempty"`                                 // 0/unset = coordinator default (2)
+	ReplanLimit           *int32                 `protobuf:"varint,7,opt,name=replan_limit,json=replanLimit,proto3,oneof" json:"replan_limit,omitempty"`                                 // 0/unset = coordinator default (2), PER TOUR
 	WorkingCapitalReserve *int64                 `protobuf:"varint,8,opt,name=working_capital_reserve,json=workingCapitalReserve,proto3,oneof" json:"working_capital_reserve,omitempty"` // Hard spend floor (0/unset = coordinator default)
+	Iterations            *int32                 `protobuf:"varint,9,opt,name=iterations,proto3,oneof" json:"iterations,omitempty"`                                                      // sp-m5kv: -1 = CONTINUOUS (tour until margins die), N>0 = N tours, 0/unset = one tour
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -7091,6 +7092,13 @@ func (x *StartTourRunRequest) GetReplanLimit() int32 {
 func (x *StartTourRunRequest) GetWorkingCapitalReserve() int64 {
 	if x != nil && x.WorkingCapitalReserve != nil {
 		return *x.WorkingCapitalReserve
+	}
+	return 0
+}
+
+func (x *StartTourRunRequest) GetIterations() int32 {
+	if x != nil && x.Iterations != nil {
+		return *x.Iterations
 	}
 	return 0
 }
@@ -8626,7 +8634,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x06buy_at\x18\x04 \x01(\tR\x05buyAt\x12\x17\n" +
 	"\asell_at\x18\x05 \x01(\tR\x06sellAt\x12\x16\n" +
 	"\x06status\x18\x06 \x01(\tR\x06status\x12\x18\n" +
-	"\amessage\x18\a \x01(\tR\amessage\"\xae\x03\n" +
+	"\amessage\x18\a \x01(\tR\amessage\"\xe2\x03\n" +
 	"\x13StartTourRunRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +
@@ -8637,14 +8645,18 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"min_margin\x18\x06 \x01(\x05H\x03R\tminMargin\x88\x01\x01\x12&\n" +
 	"\freplan_limit\x18\a \x01(\x05H\x04R\vreplanLimit\x88\x01\x01\x12;\n" +
-	"\x17working_capital_reserve\x18\b \x01(\x03H\x05R\x15workingCapitalReserve\x88\x01\x01B\x0f\n" +
+	"\x17working_capital_reserve\x18\b \x01(\x03H\x05R\x15workingCapitalReserve\x88\x01\x01\x12#\n" +
+	"\n" +
+	"iterations\x18\t \x01(\x05H\x06R\n" +
+	"iterations\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\v\n" +
 	"\t_max_hopsB\f\n" +
 	"\n" +
 	"_max_spendB\r\n" +
 	"\v_min_marginB\x0f\n" +
 	"\r_replan_limitB\x1a\n" +
-	"\x18_working_capital_reserve\"\x8c\x01\n" +
+	"\x18_working_capital_reserveB\r\n" +
+	"\v_iterations\"\x8c\x01\n" +
 	"\x14StartTourRunResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +

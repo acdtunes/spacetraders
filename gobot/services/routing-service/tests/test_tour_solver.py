@@ -117,6 +117,76 @@ def test_solver_cap_reshapes_revisit_ladder():
     assert out["projected_profit"] == 23_880
 
 
+def test_solver_held_cargo_liquidates_without_buy_leg():
+    # sp-m5kv acceptance (2): a laden hull's held cargo appears as SELL legs in the
+    # plan, WITHOUT a buy leg (cash recovery of pre-held inventory). This is the
+    # laden-exit->manual-rescue class the continuous tour kills: even with NO fresh
+    # trade affordable (max_spend 0), the held load is planned for liquidation.
+    snapshot = [snap("B", "S1", "MEDICINE", ask=999, bid=1800, tv=40)]  # a sink for the held load
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[dict(good_symbol="MEDICINE", units=40)])
+    cons = dict(max_hops=4, max_spend=0, min_margin_per_unit=1,  # nothing to BUY
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"], out
+    sells = [(l["waypoint_symbol"], t["units"]) for l in out["legs"]
+             for t in l["trades"] if not t["is_buy"] and t["good_symbol"] == "MEDICINE"]
+    buys = [t for l in out["legs"] for t in l["trades"] if t["is_buy"]]
+    assert ("B", 40) in sells, out                       # held cargo -> sell leg
+    assert not buys, f"held-cargo liquidation plans no buy leg, got {buys}"
+
+
+def test_solver_held_cargo_sells_ordered_before_buys():
+    # Held cargo enters the manifest as sell-capable inventory and is dock-ordered
+    # FIRST: a full hold of MEDICINE must be sold to free the hold before a fresh
+    # FABRICS tranche is bought, and within every leg sells precede buys.
+    snapshot = [
+        snap("B", "S1", "MEDICINE", ask=999, bid=1800, tv=40),
+        snap("B", "S1", "FABRICS", ask=100, bid=90, tv=40),
+        snap("C", "S1", "FABRICS", ask=999, bid=300, tv=40),
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=40, fuel_current=400, fuel_capacity=400,  # FULL of held cargo
+                engine_speed=30, cargo=[dict(good_symbol="MEDICINE", units=40)])
+    cons = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"], out
+    med_sold = any(t["good_symbol"] == "MEDICINE" and not t["is_buy"]
+                   for l in out["legs"] for t in l["trades"])
+    assert med_sold, out                                 # the held load is liquidated
+    for l in out["legs"]:                                # dock order: sells before buys
+        seen_buy = False
+        for t in l["trades"]:
+            if t["is_buy"]:
+                seen_buy = True
+            else:
+                assert not seen_buy, f"sell after buy at {l['waypoint_symbol']}: {l['trades']}"
+
+
+def test_solver_empty_hold_plans_no_launch_liquidation():
+    # Regression (sp-m5kv): an EMPTY hull is unchanged by held-cargo support — it
+    # plans a normal buy->sell arb and never fabricates a launch-liquidation sell, so
+    # sold units never exceed bought units.
+    snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40),
+                snap("B", "S1", "G", ask=999, bid=200, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=40, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])                # empty hold
+    cons = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"], out
+    total_buys = sum(t["units"] for l in out["legs"] for t in l["trades"] if t["is_buy"])
+    total_sells = sum(t["units"] for l in out["legs"] for t in l["trades"] if not t["is_buy"])
+    assert total_buys > 0 and total_sells > 0, out
+    assert total_sells <= total_buys, out                # nothing to liquidate from an empty hold
+
+
 def test_solver_property_capacity_and_spend():
     # Randomized snapshots (seeded): the plan never overfills the hold at any
     # point of the tour and never spends past max_spend. Reconstructed from the

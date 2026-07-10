@@ -995,10 +995,11 @@ message StartTourRunRequest {
   string ship_symbol = 2;                      // Idle hull to fly the tour
   optional string agent_symbol = 3;
   optional int32 max_hops = 4;                 // 0/unset = planner default (6)
-  optional int64 max_spend = 5;                // 0/unset = 25% of live treasury at launch
+  optional int64 max_spend = 5;                // 0/unset = 25% of live treasury (re-resolved per tour when iterations != 0/1)
   optional int32 min_margin = 6;               // Per-unit margin floor passed to the planner
-  optional int32 replan_limit = 7;             // 0/unset = coordinator default (2)
+  optional int32 replan_limit = 7;             // 0/unset = coordinator default (2), PER TOUR
   optional int64 working_capital_reserve = 8;  // Hard spend floor (0/unset = coordinator default)
+  optional int32 iterations = 9;               // sp-m5kv: -1 = CONTINUOUS (tour until margins die), N>0 = N tours, 0/unset = one tour
 }
 
 message StartTourRunResponse {

@@ -15,10 +15,15 @@ type TourRunOperationResult struct {
 	ShipSymbol  string
 }
 
-// StartTourRun launches a ONE-SHOT, captain-directed, guarded multi-hop trade tour
-// (sp-1ek0) as a recovery-safe daemon container — arb-run's twin. Unlike arb-run it
-// does not name a lane: it asks the depth-aware planner for a tour, flies it leg by
-// leg with prices re-verified live at every dock, re-plans on drift, and stops.
+// StartTourRun launches a captain-directed, guarded multi-hop trade tour (sp-1ek0) as
+// a recovery-safe daemon container — arb-run's twin. Unlike arb-run it does not name a
+// lane: it asks the depth-aware planner for a tour, flies it leg by leg with prices
+// re-verified live at every dock, and re-plans on drift.
+//
+// iterations (sp-m5kv) makes it CONTINUOUS: -1 = tour, re-plan from the new position,
+// tour again until margins die/starvation/stop (engine-cadence capital velocity);
+// N>0 = exactly N tours; 0/unset = one tour (the original one-shot). The coordinator
+// owns this loop (CoordinatorOwnsIterations), so the container still runs one iteration.
 //
 // It reuses arb-run's exact start machinery so it inherits the same safety properties:
 //
@@ -30,8 +35,8 @@ type TourRunOperationResult struct {
 //     path, so the hull is never stranded.
 //   - Recovery-safe: the row is created RUNNING and "tour_run" is registered in the
 //     command factory (sp-7yej invariant 4), so a daemon restart rebuilds the run from
-//     its launch config (a cargo-aware re-plan from current state) or cleanly releases
-//     the hull.
+//     its launch config (a cargo-aware re-plan from current state — a persisted -1
+//     resumes continuous) or cleanly releases the hull.
 //
 // max_spend=0 is persisted as-is; the coordinator resolves the 25%-of-treasury default
 // at launch (RULINGS #6) with the working-capital floor guarding every buy regardless.
@@ -44,6 +49,7 @@ func (s *DaemonServer) StartTourRun(
 	replanLimit int,
 	workingCapitalReserve int64,
 	agentSymbol string,
+	iterations int,
 	playerID int,
 ) (*TourRunOperationResult, error) {
 	if shipSymbol == "" {
@@ -72,6 +78,7 @@ func (s *DaemonServer) StartTourRun(
 		"min_margin":              minMargin,
 		"replan_limit":            replanLimit,
 		"working_capital_reserve": workingCapitalReserve,
+		"iterations":              iterations,
 	}
 
 	// Build the tour command through the same factory recovery uses, so the launch
@@ -81,13 +88,17 @@ func (s *DaemonServer) StartTourRun(
 		return nil, fmt.Errorf("failed to create tour-run command: %w", err)
 	}
 
-	// A one-shot tour plans, flies its legs (re-planning at most ReplanLimit times), and
-	// completes (the runner then releases the hull): iterations=1, never a loop.
+	// The coordinator owns the tour loop (CoordinatorOwnsIterations, sp-m5kv): whether
+	// this is one tour or a continuous --iterations -1 run, the container runs Handle()
+	// exactly ONCE and the coordinator loops internally, so the container's own
+	// iteration budget stays 1 (re-entering it would double-loop the run). The
+	// persisted "iterations" config drives the coordinator's loop and survives a
+	// recovery rebuild, so a -1 run resumes continuous after a restart.
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeTrading,
 		playerID,
-		1,   // single one-shot run
+		1,   // coordinator owns iterations; the runner invokes Handle() once
 		nil, // no parent — top-level, recovered independently
 		config,
 		nil, // default RealClock

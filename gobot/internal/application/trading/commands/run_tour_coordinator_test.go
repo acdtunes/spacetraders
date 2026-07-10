@@ -191,11 +191,34 @@ type tourFakeRoutingClient struct {
 	plans []*routing.TourPlan
 	err   error
 	calls int
+	// positions and cargos capture the hull state the coordinator planned FROM on
+	// each call (sp-m5kv: proving a continuous tour re-plans from the NEW position and
+	// carries held cargo forward as planner input). errAfter, when >0, makes the
+	// planner start returning err only from that call onward (a mid-run planner blip /
+	// margin-death simulation) while earlier calls return plans.
+	positions []string
+	cargos    []map[string]int
+	errAfter  int
+	// cancel + cancelOnCall simulate a daemon stop: when the call count reaches
+	// cancelOnCall the planner cancels the run's context (as interruptAllContainers
+	// does), so a test can prove a continuous run exits RESUMABLE at the tour boundary
+	// rather than COMPLETING via the starvation streak (sp-ovkn).
+	cancel       context.CancelFunc
+	cancelOnCall int
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints) (*routing.TourPlan, error) {
 	c.calls++
-	if c.err != nil {
+	c.positions = append(c.positions, ship.CurrentWaypoint)
+	held := map[string]int{}
+	for g, u := range ship.Cargo {
+		held[g] = u
+	}
+	c.cargos = append(c.cargos, held)
+	if c.cancel != nil && c.calls == c.cancelOnCall {
+		c.cancel()
+	}
+	if c.err != nil && (c.errAfter == 0 || c.calls >= c.errAfter) {
 		return nil, c.err
 	}
 	idx := c.calls - 1

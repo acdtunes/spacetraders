@@ -354,7 +354,28 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 			},
 		},
 		{
-			// Bare config → the coordinator's own "0 → default" semantics per knob.
+			// sp-m5kv: a CONTINUOUS tour (iterations=-1) must round-trip through the
+			// launch config so a restart rebuilds the run STILL continuous (RULINGS #2)
+			// — the coordinator re-plans from the recovered position/cargo and keeps
+			// touring until margins die, rather than collapsing to a single tour.
+			name:        "tour_run continuous",
+			commandType: "tour_run",
+			containerID: "tour-inf",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":  "SHIP-C",
+				"container_id": "tour-inf",
+				"iterations":   -1,
+			},
+			want: &tradingCmd.RunTourCoordinatorCommand{
+				ShipSymbol:  "SHIP-C",
+				PlayerID:    playerID,
+				ContainerID: "tour-inf",
+				Iterations:  -1,
+			},
+		},
+		{
+			// Bare config → the coordinator's own "0 → default" semantics per knob
+			// (iterations 0 → one tour, normalized inside the coordinator's loop).
 			name:        "tour_run defaults",
 			commandType: "tour_run",
 			containerID: "tour-2",

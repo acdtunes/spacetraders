@@ -1073,8 +1073,14 @@ func (s *daemonServiceImpl) StartTourRun(ctx context.Context, req *pb.StartTourR
 	if req.AgentSymbol != nil {
 		agentSymbol = *req.AgentSymbol
 	}
+	// iterations (sp-m5kv): -1 = continuous, N>0 = N tours, unset/0 = one tour. Passed
+	// through verbatim; the coordinator normalizes 0 → one tour.
+	iterations := 0
+	if req.Iterations != nil {
+		iterations = int(*req.Iterations)
+	}
 
-	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, agentSymbol, playerID)
+	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, agentSymbol, iterations, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start tour-run: %w", err)
 	}

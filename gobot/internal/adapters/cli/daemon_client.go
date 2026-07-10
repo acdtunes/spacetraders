@@ -1048,10 +1048,12 @@ type StartTourRunResult struct {
 	Message     string
 }
 
-// StartTourRun asks the daemon to launch a one-shot, captain-directed, guarded multi-hop
-// trade tour as a recovery-safe container (sp-1ek0). maxHops/maxSpend/minMargin/replanLimit/
-// workingCapitalReserve are optional: pass nil to leave each unset (the coordinator's own
-// default semantics apply — max_hops→6, max_spend→25% of treasury, replan_limit→2).
+// StartTourRun asks the daemon to launch a captain-directed, guarded multi-hop trade
+// tour as a recovery-safe container (sp-1ek0). maxHops/maxSpend/minMargin/replanLimit/
+// workingCapitalReserve/iterations are optional: pass nil to leave each unset (the
+// coordinator's own default semantics apply — max_hops→6, max_spend→25% of treasury,
+// replan_limit→2, iterations→one tour). iterations=-1 makes it CONTINUOUS (sp-m5kv):
+// tour, re-plan from the new position, tour again until margins die.
 func (c *DaemonClient) StartTourRun(
 	ctx context.Context,
 	shipSymbol string,
@@ -1062,6 +1064,7 @@ func (c *DaemonClient) StartTourRun(
 	minMargin *int32,
 	replanLimit *int32,
 	workingCapitalReserve *int64,
+	iterations *int32,
 ) (*StartTourRunResult, error) {
 	resp, err := c.client.StartTourRun(ctx, &pb.StartTourRunRequest{
 		PlayerId:              int32(playerID),
@@ -1072,6 +1075,7 @@ func (c *DaemonClient) StartTourRun(
 		MinMargin:             minMargin,
 		ReplanLimit:           replanLimit,
 		WorkingCapitalReserve: workingCapitalReserve,
+		Iterations:            iterations,
 	})
 	if err != nil {
 		return nil, err

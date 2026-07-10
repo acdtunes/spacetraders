@@ -43,24 +43,59 @@ const (
 	// version), never a phantom trade.
 	defaultModelArtifactPath = "gobot/services/routing-service/model_artifacts/market_model.json"
 	// tourDefaultMaxSpendTreasuryPct sizes the default cumulative spend cap when the
-	// captain leaves --max-spend at 0: 25% of live treasury at launch (RULINGS #6).
+	// captain leaves --max-spend at 0: 25% of live treasury (RULINGS #6). With
+	// --iterations -1 this is re-resolved against LIVE treasury at EACH tour's plan
+	// (an explicit --max-spend stays constant per tour); see execute's loop.
 	tourDefaultMaxSpendTreasuryPct = 25
+	// tourStarvationLimit bounds how many CONSECUTIVE no-progress tours (planner
+	// returns no profitable tour, or a feasible plan executes zero trades) a
+	// continuous run (--iterations -1) tolerates before it calls margins dead and
+	// exits HONESTLY (the container completes). Mirrors the trade-route circuit
+	// loop's noProgressStarvationLimit: one no-plan can be a transient live-recheck
+	// miss, several in a row means the system has nothing left worth touring. A
+	// no-plan on the VERY FIRST tour (nothing earned yet) is the existing fail-open
+	// "tour unavailable" instead, so the single-lane fallback stands.
+	tourStarvationLimit = 3
 )
 
-// RunTourCoordinatorCommand is a ONE-SHOT, captain-directed, guarded multi-hop
-// trade-tour run (sp-1ek0): plan a depth-aware tour for THIS hull, fly it leg by
-// leg with prices re-verified live at every dock, re-plan at most ReplanLimit times
-// when reality drifts past tolerance, and stop. Like the arb one-shot it never
-// loops or auto-selects a lane beyond the planner's answer; unlike it, the route is
-// dynamically planned, so honest completion is a response VETO (not a Go error) —
-// a re-run cannot resume a planner-chosen route.
+// exitReason* enumerates why the continuous tour loop stopped, surfaced on the
+// response for observability (mirrors the trade-route coordinator's ExitReason).
+const (
+	// tourExitIterations: a finite --iterations budget was consumed (every tour flew).
+	tourExitIterations = "iterations_exhausted"
+	// tourExitStarvation: tourStarvationLimit consecutive tours found no profitable
+	// tour (or flew zero trades) — margins died. An HONEST completion.
+	tourExitStarvation = "starvation"
+	// tourExitUnavailable: the very first tour found no plan and nothing was earned —
+	// the fail-open no-op (single-lane fallback stands).
+	tourExitUnavailable = "tour_unavailable"
+)
+
+// RunTourCoordinatorCommand is a captain-directed, guarded multi-hop trade-tour run
+// (sp-1ek0): plan a depth-aware tour for THIS hull, fly it leg by leg with prices
+// re-verified live at every dock, re-plan at most ReplanLimit times when reality
+// drifts past tolerance. The route is dynamically planned, so honest completion is a
+// response VETO (not a Go error) — a re-run cannot resume a planner-chosen route.
+//
+// Iterations makes it a CONTINUOUS engine (sp-m5kv): on manifest completion it
+// re-plans from the hull's CURRENT position + live market and flies the next tour
+// with no captain in the loop, turning capital velocity from captain-cadence into
+// engine-cadence. See Iterations for the loop semantics.
 type RunTourCoordinatorCommand struct {
-	ShipSymbol            string
-	PlayerID              int
-	MaxHops               int   // 0 → maxTourHops
-	MaxSpend              int64 // 0 → 25% of live treasury at launch
-	MinMargin             int
-	ReplanLimit           int // 0 → tourMaxReplansDefault
+	ShipSymbol string
+	PlayerID   int
+	MaxHops    int   // 0 → maxTourHops
+	MaxSpend   int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
+	MinMargin  int
+	ReplanLimit int // 0 → tourMaxReplansDefault (PER TOUR)
+	// Iterations is the tour count (sp-m5kv), unifying the container iteration
+	// semantics (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new
+	// position, tour again — until margins die/starvation/stop), N>0 = exactly N
+	// tours, 0 = the one-tour default (the original one-shot behavior, so every
+	// pre-sp-m5kv caller and test is byte-for-byte unchanged). The coordinator owns
+	// this loop internally (CoordinatorOwnsIterations); the container runs Handle()
+	// once.
+	Iterations            int
 	AgentSymbol           string
 	ContainerID           string // the tour id; groups this run's telemetry legs
 	WorkingCapitalReserve int64  // 0 → defaultWorkingCapitalReserve
@@ -86,6 +121,15 @@ type RunTourCoordinatorResponse struct {
 	NetProfit    int64
 	ModelVersion string
 	Completed    bool
+
+	// ToursCompleted counts how many tours flew >=1 trade this run (sp-m5kv). 1 for
+	// the one-shot default; >1 for a continuous (--iterations) run. TradesExecuted is
+	// the run's total executed buy+sell tranches (the per-tour progress signal the
+	// starvation guard reads). ExitReason (a tourExit* constant) explains why a
+	// continuous loop stopped; empty on the one-shot path.
+	ToursCompleted int
+	TradesExecuted int
+	ExitReason     string
 
 	// TourUnavailable marks a fail-open exit: no trading happened, the single-lane
 	// fallback remains. A CLEAN completion (not a failure), never a phantom trade.
@@ -228,6 +272,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	if err != nil {
 		response.TourUnavailable = true
 		response.TourUnavailableReason = fmt.Sprintf("tour unavailable: model artifact unreadable (%s): %v", artifactPath, err)
+		response.ExitReason = tourExitUnavailable
 		logger.Log("WARNING", response.TourUnavailableReason, map[string]interface{}{
 			"artifact": artifactPath, "error": err.Error(),
 		})
@@ -243,47 +288,170 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	if maxHops <= 0 || maxHops > maxTourHops {
 		maxHops = maxTourHops
 	}
-	replansLeft := cmd.ReplanLimit
-	if replansLeft <= 0 {
-		replansLeft = tourMaxReplansDefault
+	replanLimit := cmd.ReplanLimit
+	if replanLimit <= 0 {
+		replanLimit = tourMaxReplansDefault
 	}
-	maxSpend := cmd.MaxSpend
-	if maxSpend == 0 {
-		maxSpend = h.defaultMaxSpend(ctx) // 0 → no explicit cap (floor still guards)
+
+	// Iteration budget (sp-m5kv): 0 → the one-tour default (the original one-shot,
+	// so every pre-sp-m5kv caller/test is unchanged); -1 → continuous until margins
+	// die; N>0 → exactly N tours.
+	iterations := cmd.Iterations
+	if iterations == 0 {
+		iterations = 1
 	}
+	continuous := iterations < 0
+
+	// netBought is CUMULATIVE across every tour this run: the honest-completion
+	// stranded veto (sp-7yej invariant 2) is checked ONCE, at the final exit. A tour
+	// ending with held cargo is NOT stranded mid-run — the next tour re-plans from the
+	// hull's current cargo and (sp-m5kv part 2) the solver sells it as launch
+	// inventory. Only cargo BOUGHT this run and never sold survives to veto the final
+	// completion; pre-held cargo (never in netBought) drives it negative, so
+	// liquidating the captain's pre-existing load is a bonus, never a false veto.
+	netBought := map[string]int{}
+
+	// The budget counts PRODUCTIVE tours (ToursCompleted), not attempts: "N tours"
+	// means N tours actually flown, so a transient no-plan mid-run is retried (bounded
+	// by the starvation streak) rather than silently burning a tour slot.
+	noProgressStreak := 0
+	for continuous || response.ToursCompleted < iterations {
+		// A stop/shutdown cancels ctx (interruptAllContainers escalates the STOPPING
+		// flag to a ctx cancel). Exit RESUMABLE at the tour boundary by returning the
+		// ctx error, which the runner routes through its ctx.Err() path (re-adopted at
+		// next boot) — never let a cancel be misread as a swallowed planner no-plan and,
+		// via the starvation streak, COMPLETE a -1 container (the sp-ovkn trap: a
+		// COMPLETED row is dropped from the recovery set and the hull is lost).
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		// RULINGS #6: an explicit --max-spend is a constant per-tour cap; --max-spend
+		// 0/omitted re-resolves 25% of LIVE treasury at EACH tour's plan, so a
+		// continuous run sizes each tour to the treasury it has grown into. The per-buy
+		// working-capital floor guards every spend regardless.
+		tourMaxSpend := cmd.MaxSpend
+		if tourMaxSpend == 0 {
+			tourMaxSpend = h.defaultMaxSpend(ctx)
+		}
+
+		tradesBefore := response.TradesExecuted
+		feasible, reason, terr := h.runOneTour(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, replanLimit, modelVersion)
+		if terr != nil {
+			return terr
+		}
+
+		if !feasible {
+			// Nothing earned yet AND no plan → the fail-open no-op (single-lane
+			// fallback stands): the original one-shot behavior, preserved exactly.
+			if response.ToursCompleted == 0 {
+				response.TourUnavailable = true
+				response.TourUnavailableReason = reason
+				response.ExitReason = tourExitUnavailable
+				logger.Log("INFO", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "model": modelVersion})
+				return nil
+			}
+			// Already earned: a no-plan from the current position is margin-death.
+			// Confirm tourStarvationLimit in a row, then exit HONEST (container completes).
+			noProgressStreak++
+			if noProgressStreak >= tourStarvationLimit {
+				response.ExitReason = tourExitStarvation
+				logger.Log("INFO", fmt.Sprintf("Continuous tour stopping - margins died (%d consecutive tours found no profitable plan) after %d productive tour(s)", noProgressStreak, response.ToursCompleted), map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "reason": reason,
+				})
+				break
+			}
+			continue
+		}
+
+		// A feasible plan that flew ZERO trades (every leg degraded, re-plans
+		// exhausted) is also no-progress — bound how many in a row a -1 loop tolerates
+		// so a persistently-unexecutable plan can't spin forever (mirrors the
+		// trade-route zero-visit starvation).
+		if response.TradesExecuted == tradesBefore {
+			noProgressStreak++
+			if noProgressStreak >= tourStarvationLimit {
+				response.ExitReason = tourExitStarvation
+				logger.Log("INFO", fmt.Sprintf("Continuous tour stopping - %d consecutive tours flew zero trades after %d productive tour(s)", noProgressStreak, response.ToursCompleted), map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
+				})
+				break
+			}
+			continue
+		}
+
+		noProgressStreak = 0
+		response.ToursCompleted++
+	}
+	if response.ExitReason == "" {
+		response.ExitReason = tourExitIterations
+	}
+
+	// Honest-completion check (FINAL exit only, sp-m5kv boundary): any cargo bought
+	// this run and still aboard after the whole loop is a stranded veto — the
+	// container is terminalized FAILED (sp-7yej invariant 2). A mid-run held load is
+	// deliberately NOT checked here; it was carried forward to the next tour's plan.
+	if reason, stranded := h.strandedReason(ctx, cmd, netBought); stranded {
+		response.CargoStranded = true
+		response.CargoStrandedReason = reason
+		logger.Log("ERROR", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol})
+		return nil
+	}
+
+	response.NetProfit = response.TotalRevenue - response.TotalSpent
+	logger.Log("INFO", "Tour run complete", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "exit_reason": response.ExitReason,
+		"legs_executed": response.LegsExecuted, "trades_executed": response.TradesExecuted, "replans": response.Replans,
+		"spent": response.TotalSpent, "revenue": response.TotalRevenue, "net": response.NetProfit,
+	})
+	return nil
+}
+
+// runOneTour plans and flies ONE tour from the hull's CURRENT position and cargo,
+// accumulating economics into response and cargo bought into netBought (cumulative
+// across the run). It returns feasible=false with a fail-open reason when the planner
+// found no profitable tour (the caller decides fail-open vs margin-death), and a
+// non-nil error only on an operational failure the runner should retry (a retry
+// re-plans from current position/cargo — cargo-aware, never a blind re-buy). This is
+// the per-tour body the continuous loop repeats; the original one-shot run is exactly
+// one call of it.
+func (h *RunTourCoordinatorHandler) runOneTour(
+	ctx context.Context,
+	cmd *RunTourCoordinatorCommand,
+	response *RunTourCoordinatorResponse,
+	netBought map[string]int,
+	maxHops int,
+	maxSpend, reserve int64,
+	replanLimit int,
+	modelVersion string,
+) (bool, string, error) {
+	logger := common.LoggerFromContext(ctx)
 
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 
 	plan, err := h.plan(ctx, ship, maxHops, maxSpend, reserve, cmd, modelVersion)
 	if err != nil {
-		response.TourUnavailable = true
-		response.TourUnavailableReason = fmt.Sprintf("tour unavailable: planner error: %v", err)
-		logger.Log("WARNING", response.TourUnavailableReason, map[string]interface{}{"error": err.Error()})
-		return nil
+		return false, fmt.Sprintf("tour unavailable: planner error: %v", err), nil
 	}
 	if !plan.Feasible {
-		response.TourUnavailable = true
-		response.TourUnavailableReason = fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason)
-		logger.Log("INFO", response.TourUnavailableReason, map[string]interface{}{
-			"reason": plan.InfeasibleReason, "model": modelVersion,
-		})
-		return nil
+		return false, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), nil
 	}
-	response.LegsPlanned = len(plan.Legs)
+	response.LegsPlanned += len(plan.Legs)
 	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (model %s)", len(plan.Legs), plan.ProjectedProfit, modelVersion), map[string]interface{}{
 		"legs": len(plan.Legs), "projected_profit": plan.ProjectedProfit, "cph": plan.ProjectedCreditsPerHour, "model": modelVersion,
 	})
 
-	// Execute plan legs; on degradation, re-plan from current position/cargo (bounded).
-	netBought := map[string]int{}
+	// Execute plan legs; on degradation, re-plan from current position/cargo (bounded
+	// by replanLimit PER TOUR).
+	replansLeft := replanLimit
 	var cumulativeSpend int64
 	for {
 		degraded, execErr := h.executePlan(ctx, cmd, plan, response, netBought, &cumulativeSpend, maxSpend, reserve)
 		if execErr != nil {
-			return execErr
+			return false, "", execErr
 		}
 		if !degraded {
 			break
@@ -298,7 +466,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		response.Replans++
 		ship, err = h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
-			return err
+			return false, "", err
 		}
 		budget := remainingSpend(maxSpend, cumulativeSpend)
 		plan, err = h.plan(ctx, ship, maxHops, budget, reserve, cmd, modelVersion)
@@ -309,21 +477,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			break
 		}
 	}
-
-	// Honest-completion check: any tour-bought cargo still aboard is a stranded veto.
-	if reason, stranded := h.strandedReason(ctx, cmd, netBought); stranded {
-		response.CargoStranded = true
-		response.CargoStrandedReason = reason
-		logger.Log("ERROR", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol})
-		return nil
-	}
-
-	response.NetProfit = response.TotalRevenue - response.TotalSpent
-	logger.Log("INFO", "Tour complete", map[string]interface{}{
-		"ship_symbol": cmd.ShipSymbol, "legs_executed": response.LegsExecuted, "replans": response.Replans,
-		"spent": response.TotalSpent, "revenue": response.TotalRevenue, "net": response.NetProfit,
-	})
-	return nil
+	return true, "", nil
 }
 
 // executePlan flies the legs of a single plan. It returns degraded=true when a
@@ -487,6 +641,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	}
 	*cumulativeSpend += int64(buyResp.TotalCost)
 	response.TotalSpent += int64(buyResp.TotalCost)
+	response.TradesExecuted++
 	netBought[trade.Good] += buyResp.UnitsAdded
 	h.recordLeg(ctx, cmd, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: bought %d %s at %s (cost %d)", legIdx, buyResp.UnitsAdded, trade.Good, leg.Waypoint, buyResp.TotalCost), nil)
@@ -530,6 +685,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 		return false, fmt.Errorf("sell of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
 	}
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
+	response.TradesExecuted++
 	netBought[trade.Good] -= sellResp.UnitsSold
 	h.recordLeg(ctx, cmd, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: sold %d %s at %s (revenue %d)", legIdx, sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.TotalRevenue), nil)

@@ -226,6 +226,11 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 //	gas_coordinator             ∞ internal loop   coordinator   re-adopts
 //	trade_route                 visit budget      coordinator   re-adopts; laden exit is a
 //	                            (max_visits)                    FAILURE (sp-1hj5, invariant 2)
+//	tour_run                    tour count        coordinator   re-adopts; re-plans from current
+//	                            (iterations:      (owns loop)   position/cargo. -1 = continuous
+//	                            -1/N/0→1)                       (re-plan+fly until margins die/
+//	                                                            starvation); laden exit is a
+//	                                                            FAILURE (sp-m5kv, invariant 2)
 //	arb_run                     one directed leg  coordinator   re-adopts; resumes past the buy
 //	                                                            (sp-5nqx), strand = failure
 //	navigate_ship               one route         coordinator   re-adopts; RouteExecutor waits
@@ -557,8 +562,12 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 // mirroring arb_run/trade_route so the operation context and the runner's ship claim stay
 // pinned across a restart. ship_symbol is required; the guard knobs default to 0 (the
 // coordinator's own "0 → default" semantics: max_hops→6, max_spend→25% of treasury,
-// replan_limit→2, working_capital_reserve→50k). A restart re-plans from current
-// position/cargo, so recovery is cargo-aware, never a blind re-buy.
+// replan_limit→2, working_capital_reserve→50k). iterations drives the CONTINUOUS-tour
+// loop (sp-m5kv): -1 = tour until margins die, N>0 = N tours, 0/absent → the one-tour
+// default (unchanged one-shot behavior). The coordinator owns this loop
+// (CoordinatorOwnsIterations); the container still runs Handle() once. A restart
+// re-plans from current position/cargo — cargo-aware, never a blind re-buy — and a
+// persisted iterations survives the rebuild so a -1 run resumes continuous.
 func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &tradingCmd.RunTourCoordinatorCommand{
 		ShipSymbol:            cfg.RequiredString("ship_symbol"),
@@ -570,5 +579,6 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		MinMargin:             cfg.OptionalInt("min_margin", 0),
 		ReplanLimit:           cfg.OptionalInt("replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("working_capital_reserve", 0)),
+		Iterations:            cfg.OptionalInt("iterations", 0),
 	}
 }
