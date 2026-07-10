@@ -34,6 +34,7 @@ import (
 	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipOutfit "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/outfitting"
 	shipTactics "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -284,6 +285,21 @@ func run(cfg *config.Config) error {
 	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, api.NewConstructionSiteRepository(apiClient, playerRepo), nil) // constructionRepo enables the at-complete-gate driveless-jump check; nil clock = RealClock
 	if err := mediator.RegisterHandler[*shipNav.JumpShipCommand](med, jumpShipHandler); err != nil {
 		return fmt.Errorf("failed to register JumpShip handler: %w", err)
+	}
+
+	// Ship outfitting handlers (sp-wh0t): install/remove/list modules. One
+	// handler backs all three commands. The op atomically claims the hull
+	// (RULING #3/#7) and gates the modification fee on the working-capital
+	// reserve (RULING #4).
+	outfittingHandler := shipOutfit.NewOutfittingHandler(shipRepo, playerRepo, apiClient, containerRepo, nil) // nil clock = RealClock
+	if err := mediator.RegisterHandler[*shipOutfit.InstallModuleCommand](med, outfittingHandler); err != nil {
+		return fmt.Errorf("failed to register InstallModule handler: %w", err)
+	}
+	if err := mediator.RegisterHandler[*shipOutfit.RemoveModuleCommand](med, outfittingHandler); err != nil {
+		return fmt.Errorf("failed to register RemoveModule handler: %w", err)
+	}
+	if err := mediator.RegisterHandler[*shipOutfit.ListShipModulesQuery](med, outfittingHandler); err != nil {
+		return fmt.Errorf("failed to register ListShipModules handler: %w", err)
 	}
 
 	// Market scouting handlers

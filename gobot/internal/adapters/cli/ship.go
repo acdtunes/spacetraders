@@ -57,6 +57,7 @@ Examples:
 	cmd.AddCommand(newShipSellCommand())
 	cmd.AddCommand(newShipBuyCommand())
 	cmd.AddCommand(newShipJettisonCommand())
+	cmd.AddCommand(newShipOutfitCommand())
 
 	return cmd
 }

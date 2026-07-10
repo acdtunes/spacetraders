@@ -24,6 +24,9 @@ const (
 	DaemonService_OrbitShip_FullMethodName                             = "/daemon.DaemonService/OrbitShip"
 	DaemonService_RefuelShip_FullMethodName                            = "/daemon.DaemonService/RefuelShip"
 	DaemonService_JumpShip_FullMethodName                              = "/daemon.DaemonService/JumpShip"
+	DaemonService_InstallModule_FullMethodName                         = "/daemon.DaemonService/InstallModule"
+	DaemonService_RemoveModule_FullMethodName                          = "/daemon.DaemonService/RemoveModule"
+	DaemonService_ListShipModules_FullMethodName                       = "/daemon.DaemonService/ListShipModules"
 	DaemonService_BatchContractWorkflow_FullMethodName                 = "/daemon.DaemonService/BatchContractWorkflow"
 	DaemonService_ContractFleetCoordinator_FullMethodName              = "/daemon.DaemonService/ContractFleetCoordinator"
 	DaemonService_ScoutTour_FullMethodName                             = "/daemon.DaemonService/ScoutTour"
@@ -85,6 +88,18 @@ type DaemonServiceClient interface {
 	RefuelShip(ctx context.Context, in *RefuelShipRequest, opts ...grpc.CallOption) (*RefuelShipResponse, error)
 	// JumpShip executes a jump to a different star system via jump gate
 	JumpShip(ctx context.Context, in *JumpShipRequest, opts ...grpc.CallOption) (*JumpShipResponse, error)
+	// InstallModule installs a module (e.g. MODULE_CARGO_HOLD_III) from the ship's
+	// cargo onto the ship. Single-writer daemon op (RULING #3): atomically claims
+	// the hull, verifies the module is in cargo, gates the modification fee on the
+	// working-capital floor (RULING #4), docks, installs, and persists the ship's
+	// new cargo capacity. Synchronous — returns the post-install capacity + fee.
+	InstallModule(ctx context.Context, in *InstallModuleRequest, opts ...grpc.CallOption) (*InstallModuleResponse, error)
+	// RemoveModule removes an installed module from the ship back into its cargo.
+	// Mirror image of InstallModule (same claim/fee/persist guarantees).
+	RemoveModule(ctx context.Context, in *RemoveModuleRequest, opts ...grpc.CallOption) (*RemoveModuleResponse, error)
+	// ListShipModules lists the modules currently installed on a ship (read-only,
+	// no claim).
+	ListShipModules(ctx context.Context, in *ListShipModulesRequest, opts ...grpc.CallOption) (*ListShipModulesResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(ctx context.Context, in *BatchContractWorkflowRequest, opts ...grpc.CallOption) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -233,6 +248,36 @@ func (c *daemonServiceClient) JumpShip(ctx context.Context, in *JumpShipRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(JumpShipResponse)
 	err := c.cc.Invoke(ctx, DaemonService_JumpShip_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) InstallModule(ctx context.Context, in *InstallModuleRequest, opts ...grpc.CallOption) (*InstallModuleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InstallModuleResponse)
+	err := c.cc.Invoke(ctx, DaemonService_InstallModule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RemoveModule(ctx context.Context, in *RemoveModuleRequest, opts ...grpc.CallOption) (*RemoveModuleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveModuleResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RemoveModule_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListShipModules(ctx context.Context, in *ListShipModulesRequest, opts ...grpc.CallOption) (*ListShipModulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListShipModulesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListShipModules_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -676,6 +721,18 @@ type DaemonServiceServer interface {
 	RefuelShip(context.Context, *RefuelShipRequest) (*RefuelShipResponse, error)
 	// JumpShip executes a jump to a different star system via jump gate
 	JumpShip(context.Context, *JumpShipRequest) (*JumpShipResponse, error)
+	// InstallModule installs a module (e.g. MODULE_CARGO_HOLD_III) from the ship's
+	// cargo onto the ship. Single-writer daemon op (RULING #3): atomically claims
+	// the hull, verifies the module is in cargo, gates the modification fee on the
+	// working-capital floor (RULING #4), docks, installs, and persists the ship's
+	// new cargo capacity. Synchronous — returns the post-install capacity + fee.
+	InstallModule(context.Context, *InstallModuleRequest) (*InstallModuleResponse, error)
+	// RemoveModule removes an installed module from the ship back into its cargo.
+	// Mirror image of InstallModule (same claim/fee/persist guarantees).
+	RemoveModule(context.Context, *RemoveModuleRequest) (*RemoveModuleResponse, error)
+	// ListShipModules lists the modules currently installed on a ship (read-only,
+	// no claim).
+	ListShipModules(context.Context, *ListShipModulesRequest) (*ListShipModulesResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -794,6 +851,15 @@ func (UnimplementedDaemonServiceServer) RefuelShip(context.Context, *RefuelShipR
 }
 func (UnimplementedDaemonServiceServer) JumpShip(context.Context, *JumpShipRequest) (*JumpShipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method JumpShip not implemented")
+}
+func (UnimplementedDaemonServiceServer) InstallModule(context.Context, *InstallModuleRequest) (*InstallModuleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InstallModule not implemented")
+}
+func (UnimplementedDaemonServiceServer) RemoveModule(context.Context, *RemoveModuleRequest) (*RemoveModuleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveModule not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListShipModules(context.Context, *ListShipModulesRequest) (*ListShipModulesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListShipModules not implemented")
 }
 func (UnimplementedDaemonServiceServer) BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BatchContractWorkflow not implemented")
@@ -1028,6 +1094,60 @@ func _DaemonService_JumpShip_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).JumpShip(ctx, req.(*JumpShipRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_InstallModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallModuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).InstallModule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_InstallModule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).InstallModule(ctx, req.(*InstallModuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RemoveModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveModuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RemoveModule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RemoveModule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RemoveModule(ctx, req.(*RemoveModuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListShipModules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListShipModulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListShipModules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListShipModules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListShipModules(ctx, req.(*ListShipModulesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1814,6 +1934,18 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "JumpShip",
 			Handler:    _DaemonService_JumpShip_Handler,
+		},
+		{
+			MethodName: "InstallModule",
+			Handler:    _DaemonService_InstallModule_Handler,
+		},
+		{
+			MethodName: "RemoveModule",
+			Handler:    _DaemonService_RemoveModule_Handler,
+		},
+		{
+			MethodName: "ListShipModules",
+			Handler:    _DaemonService_ListShipModules_Handler,
 		},
 		{
 			MethodName: "BatchContractWorkflow",

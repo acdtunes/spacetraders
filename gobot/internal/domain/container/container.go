@@ -58,6 +58,7 @@ const (
 	ContainerTypeGasSiphonWorker          ContainerType = "GAS_SIPHON_WORKER"
 	ContainerTypeStorageShip              ContainerType = "STORAGE_SHIP"
 	ContainerTypeJump                     ContainerType = "JUMP"
+	ContainerTypeOutfitting               ContainerType = "OUTFITTING"
 )
 
 const (

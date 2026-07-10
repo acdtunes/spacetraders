@@ -9,7 +9,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipOutfit "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/outfitting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -234,6 +236,116 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 		Message:           resp.Message,
 		Error:             "",
 	}, nil
+}
+
+// InstallModule installs a module (from the ship's cargo) onto the ship. It
+// dispatches the daemon-side outfitting op through the mediator (RULING #3: the
+// daemon is the single writer of ship state) and returns the ship's new cargo
+// capacity synchronously.
+func (s *daemonServiceImpl) InstallModule(ctx context.Context, req *pb.InstallModuleRequest) (*pb.InstallModuleResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return &pb.InstallModuleResponse{Error: fmt.Sprintf("failed to resolve player: %v", err)}, nil
+	}
+
+	cmd := &shipOutfit.InstallModuleCommand{
+		ShipSymbol:   req.ShipSymbol,
+		ModuleSymbol: req.ModuleSymbol,
+		PlayerID:     &playerID,
+	}
+
+	result, err := s.daemon.mediator.Send(ctx, cmd)
+	if err != nil {
+		return &pb.InstallModuleResponse{ShipSymbol: req.ShipSymbol, ModuleSymbol: req.ModuleSymbol, Error: err.Error()}, nil
+	}
+	resp, ok := result.(*shipOutfit.InstallModuleResponse)
+	if !ok {
+		return &pb.InstallModuleResponse{ShipSymbol: req.ShipSymbol, ModuleSymbol: req.ModuleSymbol, Error: "unexpected response type from InstallModuleCommand"}, nil
+	}
+
+	return &pb.InstallModuleResponse{
+		Success:       resp.Success,
+		ShipSymbol:    resp.ShipSymbol,
+		ModuleSymbol:  resp.ModuleSymbol,
+		CargoCapacity: int32(resp.CargoCapacity),
+		Fee:           int32(resp.Fee),
+		Modules:       toProtoShipModules(resp.Modules),
+		Message:       resp.Message,
+	}, nil
+}
+
+// RemoveModule removes an installed module from the ship back into its cargo.
+func (s *daemonServiceImpl) RemoveModule(ctx context.Context, req *pb.RemoveModuleRequest) (*pb.RemoveModuleResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return &pb.RemoveModuleResponse{Error: fmt.Sprintf("failed to resolve player: %v", err)}, nil
+	}
+
+	cmd := &shipOutfit.RemoveModuleCommand{
+		ShipSymbol:   req.ShipSymbol,
+		ModuleSymbol: req.ModuleSymbol,
+		PlayerID:     &playerID,
+	}
+
+	result, err := s.daemon.mediator.Send(ctx, cmd)
+	if err != nil {
+		return &pb.RemoveModuleResponse{ShipSymbol: req.ShipSymbol, ModuleSymbol: req.ModuleSymbol, Error: err.Error()}, nil
+	}
+	resp, ok := result.(*shipOutfit.RemoveModuleResponse)
+	if !ok {
+		return &pb.RemoveModuleResponse{ShipSymbol: req.ShipSymbol, ModuleSymbol: req.ModuleSymbol, Error: "unexpected response type from RemoveModuleCommand"}, nil
+	}
+
+	return &pb.RemoveModuleResponse{
+		Success:       resp.Success,
+		ShipSymbol:    resp.ShipSymbol,
+		ModuleSymbol:  resp.ModuleSymbol,
+		CargoCapacity: int32(resp.CargoCapacity),
+		Fee:           int32(resp.Fee),
+		Modules:       toProtoShipModules(resp.Modules),
+		Message:       resp.Message,
+	}, nil
+}
+
+// ListShipModules lists the modules installed on a ship (read-only).
+func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShipModulesRequest) (*pb.ListShipModulesResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return &pb.ListShipModulesResponse{Error: fmt.Sprintf("failed to resolve player: %v", err)}, nil
+	}
+
+	cmd := &shipOutfit.ListShipModulesQuery{
+		ShipSymbol: req.ShipSymbol,
+		PlayerID:   &playerID,
+	}
+
+	result, err := s.daemon.mediator.Send(ctx, cmd)
+	if err != nil {
+		return &pb.ListShipModulesResponse{ShipSymbol: req.ShipSymbol, Error: err.Error()}, nil
+	}
+	resp, ok := result.(*shipOutfit.ListShipModulesResponse)
+	if !ok {
+		return &pb.ListShipModulesResponse{ShipSymbol: req.ShipSymbol, Error: "unexpected response type from ListShipModulesQuery"}, nil
+	}
+
+	return &pb.ListShipModulesResponse{
+		ShipSymbol: resp.ShipSymbol,
+		Modules:    toProtoShipModules(resp.Modules),
+	}, nil
+}
+
+// toProtoShipModules maps the application-layer module list to the proto shape.
+func toProtoShipModules(modules []ports.ModuleInfo) []*pb.ShipModuleInfo {
+	out := make([]*pb.ShipModuleInfo, 0, len(modules))
+	for _, m := range modules {
+		out = append(out, &pb.ShipModuleInfo{
+			Symbol:   m.Symbol,
+			Name:     m.Name,
+			Capacity: int32(m.Capacity),
+			Range:    int32(m.Range),
+		})
+	}
+	return out
 }
 
 // BatchContractWorkflow executes batch contract workflow

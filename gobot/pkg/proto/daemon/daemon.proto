@@ -22,6 +22,21 @@ service DaemonService {
   // JumpShip executes a jump to a different star system via jump gate
   rpc JumpShip(JumpShipRequest) returns (JumpShipResponse);
 
+  // InstallModule installs a module (e.g. MODULE_CARGO_HOLD_III) from the ship's
+  // cargo onto the ship. Single-writer daemon op (RULING #3): atomically claims
+  // the hull, verifies the module is in cargo, gates the modification fee on the
+  // working-capital floor (RULING #4), docks, installs, and persists the ship's
+  // new cargo capacity. Synchronous — returns the post-install capacity + fee.
+  rpc InstallModule(InstallModuleRequest) returns (InstallModuleResponse);
+
+  // RemoveModule removes an installed module from the ship back into its cargo.
+  // Mirror image of InstallModule (same claim/fee/persist guarantees).
+  rpc RemoveModule(RemoveModuleRequest) returns (RemoveModuleResponse);
+
+  // ListShipModules lists the modules currently installed on a ship (read-only,
+  // no claim).
+  rpc ListShipModules(ListShipModulesRequest) returns (ListShipModulesResponse);
+
   // BatchContractWorkflow executes batch contract workflow operations
   rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
 
@@ -252,6 +267,72 @@ message JumpShipResponse {
   int32 cooldown_seconds = 5;
   string message = 6;
   string error = 7;
+}
+
+// ShipModuleInfo describes a single ship module (installed or listed).
+message ShipModuleInfo {
+  string symbol = 1;
+  string name = 2;
+  // capacity is the bonus the module grants (e.g. cargo hold size); 0 for
+  // modules that grant no capacity.
+  int32 capacity = 3;
+  int32 range = 4;
+}
+
+// InstallModuleRequest installs a module from the ship's cargo onto the ship.
+message InstallModuleRequest {
+  string ship_symbol = 1;
+  string module_symbol = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message InstallModuleResponse {
+  bool success = 1;
+  string ship_symbol = 2;
+  string module_symbol = 3;
+  // cargo_capacity is the ship's cargo hold capacity AFTER the install — the
+  // whole point of a CARGO_HOLD upgrade.
+  int32 cargo_capacity = 4;
+  // fee is the shipyard modification fee charged for the install.
+  int32 fee = 5;
+  // modules is the ship's full installed-module list after the install.
+  repeated ShipModuleInfo modules = 6;
+  string message = 7;
+  string error = 8;
+}
+
+// RemoveModuleRequest removes an installed module from the ship back into cargo.
+message RemoveModuleRequest {
+  string ship_symbol = 1;
+  string module_symbol = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message RemoveModuleResponse {
+  bool success = 1;
+  string ship_symbol = 2;
+  string module_symbol = 3;
+  // cargo_capacity is the ship's cargo hold capacity AFTER the removal.
+  int32 cargo_capacity = 4;
+  int32 fee = 5;
+  repeated ShipModuleInfo modules = 6;
+  string message = 7;
+  string error = 8;
+}
+
+// ListShipModulesRequest lists the modules installed on a ship.
+message ListShipModulesRequest {
+  string ship_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message ListShipModulesResponse {
+  string ship_symbol = 1;
+  repeated ShipModuleInfo modules = 2;
+  string error = 3;
 }
 
 // BatchContractWorkflowRequest initiates batch contract workflow

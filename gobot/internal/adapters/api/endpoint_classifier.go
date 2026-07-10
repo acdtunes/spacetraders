@@ -33,6 +33,9 @@ var endpointNameMap = map[string]string{
 	"/my/ships/*/mounts":             "Get Mounts",
 	"/my/ships/*/mounts/install":     "Install Mount",
 	"/my/ships/*/mounts/remove":      "Remove Mount",
+	"/my/ships/*/modules":            "Get Modules",
+	"/my/ships/*/modules/install":    "Install Module",
+	"/my/ships/*/modules/remove":     "Remove Module",
 
 	// Contracts
 	"/my/contracts":           "List Contracts",

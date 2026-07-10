@@ -175,6 +175,8 @@ func TestOpenAPIContract_ClientPayloadsMatchSpec(t *testing.T) {
 		func() { _, _ = client.PurchaseCargo(ctx, "SHIP-1", "IRON_ORE", 5, tok) },
 		func() { _, _ = client.SellCargo(ctx, "SHIP-1", "IRON_ORE", 5, tok) },
 		func() { _ = client.JettisonCargo(ctx, "SHIP-1", "IRON_ORE", 5, tok) },
+		func() { _, _ = client.InstallShipModule(ctx, "SHIP-1", "MODULE_CARGO_HOLD_III", tok) },
+		func() { _, _ = client.RemoveShipModule(ctx, "SHIP-1", "MODULE_CARGO_HOLD_III", tok) },
 		func() { _, _ = client.TransferCargo(ctx, "SHIP-1", "SHIP-2", "IRON_ORE", 5, tok) },
 		func() { _, _ = client.PurchaseShip(ctx, "SHIP_MINING_DRONE", "X1-AB12-C34", tok) },
 		func() { _, _ = client.DeliverContract(ctx, "CONTRACT-1", "SHIP-1", "IRON_ORE", 5, tok) },

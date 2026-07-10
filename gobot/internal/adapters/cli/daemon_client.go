@@ -333,6 +333,141 @@ func (c *DaemonClient) JumpShip(
 	}, nil
 }
 
+// ModuleInfoDTO is a single ship module in a CLI response.
+type ModuleInfoDTO struct {
+	Symbol   string
+	Name     string
+	Capacity int
+	Range    int
+}
+
+// ModuleModificationResponse is the CLI-side result of an install or remove.
+type ModuleModificationResponse struct {
+	Success       bool
+	ShipSymbol    string
+	ModuleSymbol  string
+	CargoCapacity int
+	Fee           int
+	Modules       []ModuleInfoDTO
+	Message       string
+	Error         string
+}
+
+// ShipModulesResponse is the CLI-side result of listing a ship's modules.
+type ShipModulesResponse struct {
+	ShipSymbol string
+	Modules    []ModuleInfoDTO
+	Error      string
+}
+
+func protoToModuleDTOs(modules []*pb.ShipModuleInfo) []ModuleInfoDTO {
+	out := make([]ModuleInfoDTO, 0, len(modules))
+	for _, m := range modules {
+		out = append(out, ModuleInfoDTO{
+			Symbol:   m.Symbol,
+			Name:     m.Name,
+			Capacity: int(m.Capacity),
+			Range:    int(m.Range),
+		})
+	}
+	return out
+}
+
+// InstallModule installs a module (which must be in the ship's cargo) onto the ship.
+func (c *DaemonClient) InstallModule(
+	ctx context.Context,
+	shipSymbol string,
+	moduleSymbol string,
+	playerID int,
+	agentSymbol string,
+) (*ModuleModificationResponse, error) {
+	req := &pb.InstallModuleRequest{
+		ShipSymbol:   shipSymbol,
+		ModuleSymbol: moduleSymbol,
+		PlayerId:     int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.InstallModule(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &ModuleModificationResponse{
+		Success:       resp.Success,
+		ShipSymbol:    resp.ShipSymbol,
+		ModuleSymbol:  resp.ModuleSymbol,
+		CargoCapacity: int(resp.CargoCapacity),
+		Fee:           int(resp.Fee),
+		Modules:       protoToModuleDTOs(resp.Modules),
+		Message:       resp.Message,
+		Error:         resp.Error,
+	}, nil
+}
+
+// RemoveModule removes an installed module from the ship back into its cargo.
+func (c *DaemonClient) RemoveModule(
+	ctx context.Context,
+	shipSymbol string,
+	moduleSymbol string,
+	playerID int,
+	agentSymbol string,
+) (*ModuleModificationResponse, error) {
+	req := &pb.RemoveModuleRequest{
+		ShipSymbol:   shipSymbol,
+		ModuleSymbol: moduleSymbol,
+		PlayerId:     int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.RemoveModule(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &ModuleModificationResponse{
+		Success:       resp.Success,
+		ShipSymbol:    resp.ShipSymbol,
+		ModuleSymbol:  resp.ModuleSymbol,
+		CargoCapacity: int(resp.CargoCapacity),
+		Fee:           int(resp.Fee),
+		Modules:       protoToModuleDTOs(resp.Modules),
+		Message:       resp.Message,
+		Error:         resp.Error,
+	}, nil
+}
+
+// ListShipModules lists the modules installed on a ship.
+func (c *DaemonClient) ListShipModules(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+	agentSymbol string,
+) (*ShipModulesResponse, error) {
+	req := &pb.ListShipModulesRequest{
+		ShipSymbol: shipSymbol,
+		PlayerId:   int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.ListShipModules(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &ShipModulesResponse{
+		ShipSymbol: resp.ShipSymbol,
+		Modules:    protoToModuleDTOs(resp.Modules),
+		Error:      resp.Error,
+	}, nil
+}
+
 // JettisonCargo jettisons cargo from a ship
 func (c *DaemonClient) JettisonCargo(
 	ctx context.Context,

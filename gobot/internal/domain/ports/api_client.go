@@ -73,6 +73,13 @@ type APIClient interface {
 	PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*PurchaseResult, error)
 	SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellResult, error)
 	JettisonCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) error
+
+	// Ship outfitting operations (modules). Install requires the module to be
+	// in the ship's cargo; remove places the module back into cargo. Both
+	// return the ship's post-modification cargo capacity and the shipyard fee.
+	InstallShipModule(ctx context.Context, shipSymbol, moduleSymbol, token string) (*ModuleModificationResult, error)
+	RemoveShipModule(ctx context.Context, shipSymbol, moduleSymbol, token string) (*ModuleModificationResult, error)
+	GetShipModules(ctx context.Context, shipSymbol, token string) ([]ModuleInfo, error)
 	TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*TransferResult, error)
 
 	// Mining operations
@@ -149,6 +156,32 @@ type SellResult struct {
 	// AgentCredits is the agent's credit balance as reported in-band by the
 	// sell response (data.agent.credits). Nil if the response omitted it.
 	// It is the authoritative post-transaction balance for the ledger.
+	AgentCredits *int
+}
+
+// ModuleInfo describes a single ship module (installed or in a modules list).
+type ModuleInfo struct {
+	Symbol string
+	Name   string
+	// Capacity is the bonus the module grants (e.g. cargo hold size). 0 for
+	// modules that grant no capacity.
+	Capacity int
+	Range    int
+}
+
+// ModuleModificationResult is the outcome of installing or removing a ship
+// module. Both endpoints return the updated agent, the ship's post-modification
+// modules list and cargo, and a transaction carrying the modification fee.
+type ModuleModificationResult struct {
+	// Fee is the shipyard modification fee charged (transaction.totalPrice).
+	Fee int
+	// CargoCapacity is the ship's cargo hold capacity AFTER the modification —
+	// the load-bearing field for a CARGO_HOLD upgrade.
+	CargoCapacity int
+	// Modules is the ship's full installed-module list after the modification.
+	Modules []ModuleInfo
+	// AgentCredits is the agent's authoritative post-transaction balance
+	// (data.agent.credits). Nil if the response omitted it.
 	AgentCredits *int
 }
 

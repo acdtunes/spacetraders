@@ -695,6 +695,108 @@ func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, good
 	return result, nil
 }
 
+// InstallShipModule installs a module (which must already be in the ship's
+// cargo) onto the ship. Mirrors PurchaseCargo's payload-bearing write shape.
+// The API response carries the updated agent, the ship's post-install modules
+// list and cargo (the new cargo.capacity is the whole point of a CARGO_HOLD
+// upgrade), and a transaction whose totalPrice is the shipyard modification fee.
+func (c *SpaceTradersClient) InstallShipModule(ctx context.Context, shipSymbol, moduleSymbol, token string) (*domainPorts.ModuleModificationResult, error) {
+	return c.modifyShipModule(ctx, "install", shipSymbol, moduleSymbol, token)
+}
+
+// RemoveShipModule removes an installed module from the ship; the API places
+// the module back into the ship's cargo. Mirror image of InstallShipModule.
+func (c *SpaceTradersClient) RemoveShipModule(ctx context.Context, shipSymbol, moduleSymbol, token string) (*domainPorts.ModuleModificationResult, error) {
+	return c.modifyShipModule(ctx, "remove", shipSymbol, moduleSymbol, token)
+}
+
+// modifyShipModule is the shared install/remove implementation. action is
+// "install" or "remove"; both endpoints share the request body ({"symbol":...})
+// and the 201 response shape ({agent, modules[], cargo, transaction}).
+func (c *SpaceTradersClient) modifyShipModule(ctx context.Context, action, shipSymbol, moduleSymbol, token string) (*domainPorts.ModuleModificationResult, error) {
+	path := fmt.Sprintf("/my/ships/%s/modules/%s", shipSymbol, action)
+
+	body := map[string]interface{}{
+		"symbol": moduleSymbol,
+	}
+
+	var response struct {
+		Data struct {
+			// Agent is a pointer so an omitted block is distinguishable from a
+			// real zero balance; the in-band credits are the authoritative
+			// post-transaction balance (mirrors PurchaseCargo).
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
+			Modules []struct {
+				Symbol   string `json:"symbol"`
+				Name     string `json:"name"`
+				Capacity int    `json:"capacity"`
+				Range    int    `json:"range"`
+			} `json:"modules"`
+			Cargo struct {
+				Capacity int `json:"capacity"`
+				Units    int `json:"units"`
+			} `json:"cargo"`
+			Transaction struct {
+				TotalPrice int `json:"totalPrice"`
+			} `json:"transaction"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
+		return nil, fmt.Errorf("failed to %s ship module: %w", action, err)
+	}
+
+	result := &domainPorts.ModuleModificationResult{
+		Fee:           response.Data.Transaction.TotalPrice,
+		CargoCapacity: response.Data.Cargo.Capacity,
+		Modules:       make([]domainPorts.ModuleInfo, 0, len(response.Data.Modules)),
+	}
+	for _, m := range response.Data.Modules {
+		result.Modules = append(result.Modules, domainPorts.ModuleInfo{
+			Symbol:   m.Symbol,
+			Name:     m.Name,
+			Capacity: m.Capacity,
+			Range:    m.Range,
+		})
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		result.AgentCredits = &credits
+	}
+	return result, nil
+}
+
+// GetShipModules lists the modules currently installed on a ship.
+func (c *SpaceTradersClient) GetShipModules(ctx context.Context, shipSymbol, token string) ([]domainPorts.ModuleInfo, error) {
+	path := fmt.Sprintf("/my/ships/%s/modules", shipSymbol)
+
+	var response struct {
+		Data []struct {
+			Symbol   string `json:"symbol"`
+			Name     string `json:"name"`
+			Capacity int    `json:"capacity"`
+			Range    int    `json:"range"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to get ship modules: %w", err)
+	}
+
+	modules := make([]domainPorts.ModuleInfo, 0, len(response.Data))
+	for _, m := range response.Data {
+		modules = append(modules, domainPorts.ModuleInfo{
+			Symbol:   m.Symbol,
+			Name:     m.Name,
+			Capacity: m.Capacity,
+			Range:    m.Range,
+		})
+	}
+	return modules, nil
+}
+
 // SellCargo sells cargo from the ship
 func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*domainPorts.SellResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/sell", shipSymbol)
