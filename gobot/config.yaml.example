@@ -131,8 +131,17 @@ contract:
   # Idle-gap arbitrage harvest (sp-1z2h / sp-uohe): the contract fleet's
   # dedicated hulls sit idle ~89% of wall-time; this harvests that idle time
   # with hub-local one-shot guarded arb legs. Every value below is OPTIONAL —
-  # an unset key takes the documented default. Editing these and restarting the
-  # daemon retunes the harvest with no code redeploy (RULINGS #2/#5).
+  # an unset key takes the documented default.
+  #
+  # THIS SECTION IS LIVE (sp-ts82). The daemon resolves these knobs from THIS
+  # file every time it builds the contract coordinator command — at creation AND
+  # at restart recovery. So the retune path is: edit a value here, restart the
+  # daemon. That is all — even an already-running coordinator picks up the change
+  # on the next boot; you never recreate the coordinator. (Before sp-ts82 a
+  # recovered coordinator re-adopted its stale persisted knobs and the edit
+  # silently no-op'd.) config.yaml is the single source of truth; the values the
+  # daemon persists into the coordinator's launch config are dead. No hot-reload:
+  # a running daemon does not watch this file — the edit lands on restart.
   idle_arb:
     # disabled: true turns the harvest off entirely (default: on wherever a
     # dedicated contract fleet exists).

@@ -165,12 +165,11 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		"dedicated_ships":  dedicatedShips,
 		"standby_stations": standbyStations,
 	}
-	// Inject the idle-arb harvest knobs from config.yaml (sp-1z2h / sp-uohe) so
-	// they persist into the launch config and survive restart recovery
-	// (buildContractFleetCoordinatorCommand reads them back). Only keys the
-	// captain actually set are written; the rest defer to the contract package's
-	// documented defaults.
-	s.injectIdleArbConfig(config)
+	// The idle-arb harvest knobs are NOT injected here. buildCommandForType
+	// resolves them from LIVE config.yaml on every coordinator build — creation
+	// AND restart recovery alike (sp-ts82) — so config.yaml is the single source
+	// of truth and a retune (config edit + daemon restart) actually reaches a
+	// recovered coordinator. The persisted idle_arb_* keys are dead.
 
 	// Create contract fleet coordinator command from the launch config
 	cmd, err := s.buildCommandForType("contract_fleet_coordinator", config, playerID, containerID)
@@ -208,6 +207,45 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	return containerID, nil
 }
 
+// idleArbConfigKeys enumerates every launch-config key the idle-arb harvest
+// knobs occupy. resolveIdleArbConfig clears these before re-injecting the live
+// values, so a stale persisted copy from a prior boot can never shadow the
+// current config.yaml (sp-ts82). Keep in lockstep with injectIdleArbConfig and
+// buildContractFleetCoordinatorCommand's reads.
+var idleArbConfigKeys = []string{
+	"idle_arb_disabled",
+	"idle_arb_reserve_hulls",
+	"idle_arb_hub_radius",
+	"idle_arb_leash_radius",
+	"idle_arb_max_leg_secs",
+	"idle_arb_max_spend",
+	"idle_arb_min_margin",
+	"idle_arb_margin_verify_pct",
+	"idle_arb_interval_secs",
+	"idle_arb_blacklist",
+}
+
+// resolveIdleArbConfig makes config.yaml the single LIVE source of truth for the
+// contract coordinator's idle-arb harvest knobs (sp-ts82). It clears any idle_arb_*
+// keys already in the launch config (stale copies persisted at a prior boot) and
+// re-injects the daemon's boot-loaded values, so the rebuilt command reflects the
+// CURRENT config.yaml on every build — creation and restart recovery alike.
+//
+// This is what finally makes the documented retune path (edit config.yaml +
+// restart daemon) take effect on a RECOVERED coordinator. Before it, recovery
+// re-adopted the stale persisted knobs untouched and the retune silently no-op'd
+// (the sp-nw9v incident: a leash-150 retune ran leash-80 for hours). No coordinator
+// recreate is ever needed for these knobs now. The clear is essential to honesty:
+// dropping a knob from config.yaml must fall back to the WithDefaults default, and
+// that can only happen if the stale persisted key is removed rather than left to
+// shadow the now-absent live value.
+func (s *DaemonServer) resolveIdleArbConfig(config map[string]interface{}) {
+	for _, key := range idleArbConfigKeys {
+		delete(config, key)
+	}
+	s.injectIdleArbConfig(config)
+}
+
 // injectIdleArbConfig writes the idle-arb harvest knobs from config.yaml
 // (s.contractConfig.IdleArb) into a coordinator container's launch config
 // (sp-1z2h / sp-uohe). Only keys the captain actually set (non-zero) are
@@ -217,7 +255,8 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 // list is omitted so the default [ELECTRONICS] applies, while an explicit
 // (non-nil) list — including an empty one that disables the blacklist — is
 // injected verbatim so a captain's config whitelist-flip takes effect on the
-// next daemon start with no code change.
+// next daemon start with no code change. Callers go through resolveIdleArbConfig
+// so any stale persisted keys are cleared first (sp-ts82).
 func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
 	ia := s.contractConfig.IdleArb
 	if ia.Disabled {

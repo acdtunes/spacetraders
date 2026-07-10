@@ -297,6 +297,17 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if !exists {
 		return nil, fmt.Errorf("unknown command type '%s'", commandType)
 	}
+	// sp-ts82: the contract coordinator's idle-arb harvest knobs are resolved LIVE
+	// from the daemon's boot-loaded config.yaml on EVERY build. Both creation
+	// (ContractFleetCoordinator) and restart recovery (recoverContainer) funnel
+	// through here, so a config.yaml retune + daemon restart actually retunes a
+	// recovered coordinator — the documented path (sp-uohe) finally true. The
+	// persisted idle_arb_* keys are dead: resolveIdleArbConfig clears them and
+	// re-injects the live values, making config.yaml the one source of truth. No
+	// coordinator recreate is ever needed for these knobs.
+	if commandType == "contract_fleet_coordinator" {
+		s.resolveIdleArbConfig(config)
+	}
 	return spec.BuildCommand(config, playerID, containerID)
 }
 
@@ -423,9 +434,10 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		DedicatedShips:  cfg.OptionalStringSlice("dedicated_ships"),
 		StandbyStations: cfg.OptionalStringSlice("standby_stations"),
 		// Idle-gap arb knobs (sp-1z2h): absent keys → 0 → the contract
-		// package's documented defaults (IdleArbConfig.WithDefaults). The
-		// escape hatch and every parameter live in the persisted launch
-		// config so a restart recovers the same harvest behavior.
+		// package's documented defaults (IdleArbConfig.WithDefaults). These
+		// keys are resolved LIVE from config.yaml by resolveIdleArbConfig on
+		// every build (sp-ts82) — the persisted copies are dead — so a config
+		// edit + daemon restart retunes the harvest, recovery included.
 		IdleArbDisabled:     cfg.OptionalBool("idle_arb_disabled"),
 		IdleArbReserveHulls: cfg.OptionalInt("idle_arb_reserve_hulls", 0),
 		IdleArbHubRadius:    float64(cfg.OptionalInt("idle_arb_hub_radius", 0)),
