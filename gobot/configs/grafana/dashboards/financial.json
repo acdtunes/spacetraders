@@ -35,8 +35,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "description": "Live agent credits from the daemon gauge.",
       "fieldConfig": {
@@ -92,13 +92,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "max(spacetraders_daemon_player_credits_balance)",
           "refId": "A",
-          "instant": true,
-          "range": false
+          "rawSql": "SELECT balance_after AS \"treasury\" FROM transactions WHERE player_id=(SELECT MAX(id) FROM players) ORDER BY created_at DESC LIMIT 1",
+          "format": "table",
+          "rawQuery": true
         }
       ],
       "title": "Treasury (live)",

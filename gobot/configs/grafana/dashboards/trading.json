@@ -327,7 +327,7 @@
           "refId": "A"
         }
       ],
-      "title": "Fleet Now — Relaunch Watchlist",
+      "title": "Fleet Now \u2014 Relaunch Watchlist",
       "type": "table"
     },
     {
@@ -348,7 +348,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Trade-fleet TRADING_REVENUE booked in the trailing 1h — already a per-hour rate (no extrapolation).",
+      "description": "Trade-fleet TRADING_REVENUE booked in the trailing 1h \u2014 already a per-hour rate (no extrapolation).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -825,7 +825,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "tour_run containers that reached COMPLETED in the last 24h (by stopped_at). Includes margins-death — an HONEST completion, not a failure.",
+      "description": "tour_run containers that reached COMPLETED in the last 24h (by stopped_at). Includes margins-death \u2014 an HONEST completion, not a failure.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -888,7 +888,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "tour_run corpses. Travel/claim/crash classes — not margins-death (that is a COMPLETED exit). Duplicated from financial.json.",
+      "description": "tour_run corpses. Travel/claim/crash classes \u2014 not margins-death (that is a COMPLETED exit). Duplicated from financial.json.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1026,7 +1026,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Proxy for margins-death / no-op exits: share of COMPLETED tour_run containers (last 6h) with zero tour-tagged transactions in their [started_at, stopped_at] window. The true ExitReason enum (tourExitStarvation / tourExitUnavailable / tourExitIterations) is only in structured logs and gRPC responses, not Postgres — this is an honest approximation, not the literal classification. A high value here is EXPECTED and not itself a problem (margins-death is a correct no-trade decision, not a failure).",
+      "description": "Proxy for margins-death / no-op exits: share of COMPLETED tour_run containers (last 6h) with zero tour-tagged transactions in their [started_at, stopped_at] window. The true ExitReason enum (tourExitStarvation / tourExitUnavailable / tourExitIterations) is only in structured logs and gRPC responses, not Postgres \u2014 this is an honest approximation, not the literal classification. A high value here is EXPECTED and not itself a problem (margins-death is a correct no-trade decision, not a failure).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1328,7 +1328,7 @@
           "refId": "A"
         }
       ],
-      "title": "Market Freshness — Systems Hosting Trade Fleet",
+      "title": "Market Freshness \u2014 Systems Hosting Trade Fleet",
       "type": "table"
     },
     {
@@ -1346,8 +1346,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "description": "Live agent credits from the daemon gauge. Duplicated from financial.json.",
       "fieldConfig": {
@@ -1403,13 +1403,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "max(spacetraders_daemon_player_credits_balance)",
           "refId": "A",
-          "instant": true,
-          "range": false
+          "rawSql": "SELECT balance_after AS \"treasury\" FROM transactions WHERE player_id=(SELECT MAX(id) FROM players) ORDER BY created_at DESC LIMIT 1",
+          "format": "table",
+          "rawQuery": true
         }
       ],
       "title": "Treasury (live)",
@@ -1491,7 +1491,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Per-tour spend (TRADING_COSTS + FUEL_COSTS) vs a 25%-of-treasury-at-start proxy for the coordinator's defaultMaxSpend() resolution (RULINGS #6). The cap is resolved once per tour from live treasury at plan time and is not itself persisted to Postgres — 'Treasury@Start' is the last known balance_after at or before started_at, so 'Cap Proxy' approximates but is not guaranteed to equal the value the coordinator actually used. Last 6h, most recent first.",
+      "description": "Per-tour spend (TRADING_COSTS + FUEL_COSTS) vs a 25%-of-treasury-at-start proxy for the coordinator's defaultMaxSpend() resolution (RULINGS #6). The cap is resolved once per tour from live treasury at plan time and is not itself persisted to Postgres \u2014 'Treasury@Start' is the last known balance_after at or before started_at, so 'Cap Proxy' approximates but is not guaranteed to equal the value the coordinator actually used. Last 6h, most recent first.",
       "fieldConfig": {
         "defaults": {
           "color": {
