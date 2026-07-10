@@ -18,9 +18,16 @@ import (
 // state — every pass recomputes from the live contract + market cache, so a
 // daemon restart re-derives the same decision, RULINGS #2):
 //
-//   1. Cheapest REACHABLE market: candidates now include cross-gate export
-//      markets (travel() is jump-capable both directions). Weighting is
-//      deliberately simple and documented on CrossGateSourcingPenalty below.
+//   1. Cheapest REACHABLE market: cross-gate export markets are candidates ONLY
+//      when the caller proves the consumer can route there (the
+//      SystemReachability predicate). Contract sourcing is SINGLE-SYSTEM by
+//      standing ruling (RULINGS #14, origin sp-9hu8: the serial one-active-
+//      contract clock can't afford cross-gate round trips — cross-system
+//      logistics belongs to the parallel trade engine, not the contract worker),
+//      so both contract call sites pass in-system-only and a cross-gate source
+//      can never be selected for a contract — an unreachable source is
+//      UNSELECTABLE, not dispatched then crashed ('waypoint not found in cache').
+//      Weighting is documented on CrossGateSourcingPenalty below.
 //   2. DEFER-while-negative: a sourcing run whose projected net is worse than
 //      −SourcingDeferThresholdPct of the payout is parked (not skipped —
 //      RULINGS #1) until asks revert, re-checked every coordinator pass,
@@ -85,6 +92,23 @@ type CrossSystemMarketFinder interface {
 // only the cheapest market per system, and a handful of systems have data.
 const crossSystemCandidateLimit = 25
 
+// SystemReachability reports whether a candidate source SYSTEM can be reached by
+// the consumer of the plan. Only CROSS-system candidates are gated by it — the
+// in-system candidate (the delivery system, which the consumer must reach to
+// deliver at all) is always kept. A nil SystemReachability means IN-SYSTEM ONLY:
+// the cross-system scan is skipped entirely and no cross-gate source can be
+// selected. That is the contract worker's mode (sp-9hu8) — its trip is in-system
+// NavigateAndDock/NavigateRouteCommand with zero jump capability, so a
+// cross-system source is unreachable and must be UNSELECTABLE, not
+// dispatched-then-crashed ('waypoint not found in cache'). Contract sourcing is
+// single-system by standing ruling (RULINGS #14), so both contract call sites
+// pass nil permanently; the predicate parameter exists so a jump-capable,
+// non-contract consumer could gate cross-system candidates by GateGraph
+// routability (fail closed on unknown systems). nil also fails closed: a caller
+// that forgets to pass a predicate gets in-system-only, never an unreachable
+// pick.
+type SystemReachability func(system string) bool
+
 // SourcingPlan is the chosen sourcing decision for a contract's first
 // unfulfilled delivery: where to buy, at what cached ask, and what the run is
 // projected to cost including the travel penalty term.
@@ -101,26 +125,31 @@ type SourcingPlan struct {
 
 // PlanSourcing picks the cheapest REACHABLE market for the contract's first
 // unfulfilled delivery and returns the costed plan. Candidates are the cheapest
-// market inside the delivery system plus, when the repository supports it, the
-// cheapest market in each other scanned system; each candidate is weighed as
+// market inside the delivery system plus, when the caller supplies a
+// SystemReachability predicate AND the repository supports the wider scan, the
+// cheapest reachable market in each other scanned system; each candidate is
+// weighed as
 //
 //	effective cost = units × ask + travel penalty
 //
 // (see CrossGateSourcingPenalty for why the penalty is flat). Ties go to the
-// in-system candidate. An error means no market anywhere sells the good yet —
-// callers treat that exactly like the old FindPurchaseMarket miss (wait for
-// scouts).
+// in-system candidate. A nil reachable scopes selection to the delivery system —
+// contract sourcing is single-system by ruling (RULINGS #14, origin sp-9hu8). An
+// error means no REACHABLE market sells the good yet — callers treat that exactly
+// like the old FindPurchaseMarket miss (wait for scouts / re-project next pass),
+// never a skip (RULINGS #1).
 func PlanSourcing(
 	ctx context.Context,
 	contract *domainContract.Contract,
 	marketRepo market.MarketRepository,
 	playerID int,
+	reachable SystemReachability,
 ) (*SourcingPlan, error) {
 	for _, delivery := range contract.Terms().Deliveries {
 		if delivery.UnitsRequired-delivery.UnitsFulfilled == 0 {
 			continue
 		}
-		return PlanDeliverySourcing(ctx, delivery, marketRepo, playerID)
+		return PlanDeliverySourcing(ctx, delivery, marketRepo, playerID, reachable)
 	}
 
 	return nil, fmt.Errorf("no unfulfilled deliveries found in contract")
@@ -129,19 +158,23 @@ func PlanSourcing(
 // PlanDeliverySourcing costs and picks the cheapest reachable market for ONE
 // delivery (see PlanSourcing for the weighting). Exposed separately so the
 // worker's profitability evaluation can price each delivery of a multi-delivery
-// contract at its own chosen market.
+// contract at its own chosen market. A nil reachable scopes candidates to the
+// delivery system — the worker's in-system-only reality (sp-9hu8) — so the
+// projection here matches what the executor can actually fly.
 func PlanDeliverySourcing(
 	ctx context.Context,
 	delivery domainContract.Delivery,
 	marketRepo market.MarketRepository,
 	playerID int,
+	reachable SystemReachability,
 ) (*SourcingPlan, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
 	deliverySystem := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
 
-	// In-system candidate (the pre-sp-1z2h behavior).
+	// In-system candidate: always reachable (the consumer must reach the
+	// delivery system to deliver at all), so it is never gated by reachable.
 	inSystem, err := marketRepo.FindCheapestMarketSelling(ctx, delivery.TradeSymbol, deliverySystem, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find market for %s: %w", delivery.TradeSymbol, err)
@@ -149,26 +182,35 @@ func PlanDeliverySourcing(
 
 	best := candidateOrNil(inSystem, unitsRemaining, deliverySystem)
 
-	// Cross-gate candidates, when the repository supports the wider scan.
-	if finder, ok := marketRepo.(CrossSystemMarketFinder); ok {
-		all, err := finder.FindCheapestMarketsSellingAllSystems(ctx, delivery.TradeSymbol, playerID, crossSystemCandidateLimit)
-		if err != nil {
-			// The wider scan failing must not break sourcing — fall back to
-			// the in-system candidate and say so.
-			logger.Log("WARNING", fmt.Sprintf(
-				"Cross-system market scan for %s failed - sourcing candidates limited to delivery system %s: %v",
-				delivery.TradeSymbol, deliverySystem, err), nil)
-		} else {
-			seenSystems := map[string]bool{deliverySystem: true}
-			for i := range all {
-				sys := shared.ExtractSystemSymbol(all[i].WaypointSymbol)
-				if seenSystems[sys] {
-					continue // rows are cheapest-first; first row per system wins
-				}
-				seenSystems[sys] = true
-				c := candidateOrNil(&all[i], unitsRemaining, deliverySystem)
-				if c != nil && (best == nil || c.EffectiveCost < best.EffectiveCost) {
-					best = c
+	// Cross-gate candidates, only when the caller proves the consumer can route
+	// cross-system (nil reachable ⇒ in-system only: the worker cannot jump yet,
+	// sp-9hu8) AND the repository supports the wider scan. An unreachable source
+	// is never considered — it must be UNSELECTABLE, not dispatched then crashed
+	// ('waypoint not found in cache for system ...').
+	if reachable != nil {
+		if finder, ok := marketRepo.(CrossSystemMarketFinder); ok {
+			all, err := finder.FindCheapestMarketsSellingAllSystems(ctx, delivery.TradeSymbol, playerID, crossSystemCandidateLimit)
+			if err != nil {
+				// The wider scan failing must not break sourcing — fall back to
+				// the in-system candidate and say so.
+				logger.Log("WARNING", fmt.Sprintf(
+					"Cross-system market scan for %s failed - sourcing candidates limited to delivery system %s: %v",
+					delivery.TradeSymbol, deliverySystem, err), nil)
+			} else {
+				seenSystems := map[string]bool{deliverySystem: true}
+				for i := range all {
+					sys := shared.ExtractSystemSymbol(all[i].WaypointSymbol)
+					if seenSystems[sys] {
+						continue // rows are cheapest-first; first row per system wins
+					}
+					seenSystems[sys] = true
+					if !reachable(sys) {
+						continue // unreachable source — never selectable (sp-9hu8)
+					}
+					c := candidateOrNil(&all[i], unitsRemaining, deliverySystem)
+					if c != nil && (best == nil || c.EffectiveCost < best.EffectiveCost) {
+						best = c
+					}
 				}
 			}
 		}

@@ -344,11 +344,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// Find the cheapest REACHABLE purchase market for the contract —
-		// in-system plus cross-gate candidates, weighed by effective cost
-		// (sp-1z2h sourcing cost-optimizer).
-		logger.Log("INFO", "Planning sourcing (cheapest reachable market)...", nil)
-		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value())
+		// Find the cheapest WORKER-REACHABLE purchase market for the contract
+		// (sp-1z2h sourcing cost-optimizer). nil reachability = in-system only:
+		// contract sourcing is single-system by ruling (RULINGS #14), and the
+		// worker's trip is in-system NavigateAndDock with zero jump capability, so
+		// a cross-system source it can't reach must be excluded, not
+		// selected-then-crashed ('waypoint not found in cache' — sp-9hu8).
+		logger.Log("INFO", "Planning sourcing (cheapest in-system market)...", nil)
+		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value(), nil)
 		if err != nil {
 			// Market data not yet available - this is expected while scouts are scanning
 			logger.Log("INFO", "Purchase market not yet available - waiting for scouts to scan market data", map[string]interface{}{

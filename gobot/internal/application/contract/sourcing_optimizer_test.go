@@ -89,6 +89,11 @@ func homeAsk(price int) *market.CheapestMarketResult {
 	}
 }
 
+// allReachable is the "consumer can route to any scanned system" reachability —
+// exercises the cross-gate weighting logic. Production callers pass nil
+// (in-system only, sp-9hu8) until the worker adopts multi-jump travel().
+func allReachable(string) bool { return true }
+
 // --- PlanSourcing: market selection & weighting ---------------------------
 
 func TestPlanSourcing_InSystemOnly_PicksInSystemMarket(t *testing.T) {
@@ -97,7 +102,7 @@ func TestPlanSourcing_InSystemOnly_PicksInSystemMarket(t *testing.T) {
 	}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1)
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil)
 	if err != nil {
 		t.Fatalf("PlanSourcing: %v", err)
 	}
@@ -123,7 +128,7 @@ func TestPlanSourcing_CrossGateWins_WhenSavingExceedsPenalty(t *testing.T) {
 	}
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1)
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, allReachable)
 	if err != nil {
 		t.Fatalf("PlanSourcing: %v", err)
 	}
@@ -150,7 +155,7 @@ func TestPlanSourcing_InSystemWins_WhenSavingBelowPenalty(t *testing.T) {
 	}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1)
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, allReachable)
 	if err != nil {
 		t.Fatalf("PlanSourcing: %v", err)
 	}
@@ -168,7 +173,7 @@ func TestPlanSourcing_NoInSystemMarket_FallsThroughToCrossGate(t *testing.T) {
 	}
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 200)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1)
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, allReachable)
 	if err != nil {
 		t.Fatalf("PlanSourcing: %v", err)
 	}
@@ -186,7 +191,7 @@ func TestPlanSourcing_CrossScanError_FallsBackToInSystem(t *testing.T) {
 	}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1)
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, allReachable)
 	if err != nil {
 		t.Fatalf("PlanSourcing should fall back on scan error, got: %v", err)
 	}
@@ -199,9 +204,115 @@ func TestPlanSourcing_NoMarketAnywhere_ErrorsLikeTheOldMiss(t *testing.T) {
 	repo := &fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	_, err := PlanSourcing(context.Background(), c, repo, 1)
+	_, err := PlanSourcing(context.Background(), c, repo, 1, nil)
 	if err == nil || !strings.Contains(err.Error(), "no market found selling") {
 		t.Fatalf("expected the wait-for-scouts error class, got: %v", err)
+	}
+}
+
+// --- sp-9hu8: nil reachability excludes worker-unreachable sources ----------
+
+// The failure class: the optimizer picked a cheaper CROSS-system source, the
+// worker's in-system navigation could not reach it, and the container crashed
+// on 'waypoint not found in cache'. In nil (in-system-only) mode a cheaper
+// foreign source must be UNSELECTABLE — the in-system market wins even though it
+// is dearer.
+func TestPlanSourcing_NilReachability_ExcludesCheaperForeignSource(t *testing.T) {
+	repo := &fakeCrossSystemRepo{
+		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{
+			"X1-HOME": homeAsk(6000),
+		}},
+		allSystems: []market.CheapestMarketResult{
+			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", SellPrice: 2367}, // cheaper, unreachable
+			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", SellPrice: 6000},
+		},
+	}
+	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)
+
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil)
+	if err != nil {
+		t.Fatalf("PlanSourcing: %v", err)
+	}
+	if plan.CrossSystem || plan.Market != "X1-HOME-H51" || plan.UnitAsk != 6000 {
+		t.Fatalf("in-system-only mode must exclude the cheaper foreign source, got %+v", plan)
+	}
+}
+
+// The other half of the fix: when there is NO in-system market but a cheaper
+// foreign one exists, nil mode must ERROR (wait-for-scouts / re-project next
+// pass) rather than return the unreachable foreign market. Returning it is what
+// crashed the worker; erroring parks the contract without skipping it (RULINGS
+// #1 — the coordinator retries every pass).
+func TestPlanSourcing_NilReachability_NoInSystemMarket_ErrorsRatherThanReturnForeign(t *testing.T) {
+	repo := &fakeCrossSystemRepo{
+		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{}}, // none in-system
+		allSystems: []market.CheapestMarketResult{
+			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", SellPrice: 2367},
+		},
+	}
+	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 200)
+
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil)
+	if err == nil || !strings.Contains(err.Error(), "no market found selling") {
+		t.Fatalf("in-system-only with no reachable market must error like the old miss, got plan=%+v err=%v", plan, err)
+	}
+}
+
+// The defer projection must re-project on the ask the worker can actually pay —
+// the in-system ask — not the excluded (cheaper) foreign one. Composing
+// PlanSourcing(nil) → EvaluateSourcingDefer proves the projection basis.
+func TestPlanSourcing_NilReachability_DeferReprojectsOnInSystemAsk(t *testing.T) {
+	repo := &fakeCrossSystemRepo{
+		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{
+			"X1-HOME": homeAsk(6000),
+		}},
+		allSystems: []market.CheapestMarketResult{
+			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", SellPrice: 2367}, // excluded in nil mode
+			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", SellPrice: 6000},
+		},
+	}
+	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)
+	now := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC) // 7 days runway
+
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil)
+	if err != nil {
+		t.Fatalf("PlanSourcing: %v", err)
+	}
+	if plan.EffectiveCost != 6000*804 {
+		t.Fatalf("projection basis must be the in-system ask (6000), not the excluded foreign 2367: %+v", plan)
+	}
+	d := EvaluateSourcingDefer(plan, c, now)
+	if d.ProjectedNet != 120_000-6000*804 {
+		t.Fatalf("defer must re-project on the in-system ask, got net %d", d.ProjectedNet)
+	}
+	if !d.Defer {
+		t.Fatalf("deep-negative in-system projection with runway must defer, got %+v", d)
+	}
+}
+
+// Per-system gating (the shape the feature's GateGraph-routable predicate will
+// use): a reachability that admits one foreign system but not another selects
+// the reachable candidate and excludes the cheaper unreachable one.
+func TestPlanSourcing_Reachability_GatesPerSystem(t *testing.T) {
+	repo := &fakeCrossSystemRepo{
+		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{
+			"X1-HOME": homeAsk(6000),
+		}},
+		allSystems: []market.CheapestMarketResult{
+			{WaypointSymbol: "X1-BADSYS-B1", TradeSymbol: "ELECTRONICS", SellPrice: 1000},  // cheapest, unreachable
+			{WaypointSymbol: "X1-GOODSYS-G1", TradeSymbol: "ELECTRONICS", SellPrice: 2000}, // reachable
+			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", SellPrice: 6000},
+		},
+	}
+	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 100)
+
+	reachable := func(sys string) bool { return sys == "X1-GOODSYS" }
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, reachable)
+	if err != nil {
+		t.Fatalf("PlanSourcing: %v", err)
+	}
+	if plan.Market != "X1-GOODSYS-G1" || !plan.CrossSystem {
+		t.Fatalf("must select the reachable foreign market, never the cheaper unreachable one, got %+v", plan)
 	}
 }
 
