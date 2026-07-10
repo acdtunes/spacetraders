@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -111,12 +112,34 @@ type capturedLogEntry struct {
 // container log stream. The renderer prints only level+message and DROPS the
 // metadata map (container_runner.go), so a cause hidden in metadata never reaches
 // an operator - the entire point of this regression.
+//
+// The manufacturing coordinator fans out parallel worker goroutines plus a
+// background shipPoolRefresher, all sharing one ContainerLogger pulled from
+// context, so Log is called concurrently. Every real implementation
+// (ContainerRunner.Log) guards its buffer with a mutex; this test double must
+// honor the same contract or -race fires (sp-8t30). Callers read entries via
+// snapshot(), never the field directly.
 type capturingLogger struct {
+	mu      sync.Mutex
 	entries []capturedLogEntry
 }
 
 func (l *capturingLogger) Log(level, message string, _ map[string]interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.entries = append(l.entries, capturedLogEntry{level: level, message: message})
+}
+
+// snapshot returns a copy of the recorded entries under lock. Reads must go
+// through this rather than touching entries directly: the shipPoolRefresher
+// goroutine outlives its cancel signal by up to one scheduling quantum, so it
+// can still append a "stopped" line while a test reads the assertions.
+func (l *capturingLogger) snapshot() []capturedLogEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]capturedLogEntry, len(l.entries))
+	copy(out, l.entries)
+	return out
 }
 
 // A non-construction task that fails must surface the underlying error VERBATIM in the
@@ -159,13 +182,14 @@ func TestWorker_SurfacesTaskFailureErrorVerbatim(t *testing.T) {
 	}
 
 	var found bool
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if e.level == "ERROR" && strings.Contains(e.message, underlyingErr.Error()) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected an ERROR log whose MESSAGE contains the verbatim cause %q; got entries=%+v", underlyingErr.Error(), logger.entries)
+		t.Fatalf("expected an ERROR log whose MESSAGE contains the verbatim cause %q; got entries=%+v", underlyingErr.Error(), entries)
 	}
 }

@@ -728,13 +728,14 @@ func TestFactoryCoordinator_OnlyOutOfSystemHaulers_NoClaim_ParksWithReason(t *te
 		t.Fatalf("out-of-system hull must never be claimed by an in-system factory, got claims: %+v", shipRepo.claims)
 	}
 	found := false
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if strings.Contains(e.message, "No in-system worker") && strings.Contains(e.message, testSystem) {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected a park-with-reason log naming system %q in the MESSAGE TEXT (not only metadata), got entries: %+v", testSystem, logger.entries)
+		t.Fatalf("expected a park-with-reason log naming system %q in the MESSAGE TEXT (not only metadata), got entries: %+v", testSystem, entries)
 	}
 }
 

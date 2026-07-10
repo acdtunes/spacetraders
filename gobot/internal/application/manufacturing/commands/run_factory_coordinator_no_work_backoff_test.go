@@ -92,13 +92,14 @@ func TestFactoryCoordinator_NoWorkIteration_BacksOffAndLogsOnce(t *testing.T) {
 	}
 
 	waitingLines := 0
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if strings.Contains(e.message, "waiting for workers") {
 			waitingLines++
 		}
 	}
 	if waitingLines != 1 {
-		t.Fatalf("expected exactly one 'waiting for workers' log line, got %d (entries: %+v)", waitingLines, logger.entries)
+		t.Fatalf("expected exactly one 'waiting for workers' log line, got %d (entries: %+v)", waitingLines, entries)
 	}
 }
 
@@ -127,9 +128,10 @@ func TestFactoryCoordinator_WorkFoundIteration_NoBackoffAdded(t *testing.T) {
 		t.Fatalf("expected NoWorkReason empty for a productive iteration, got %q", coordResp.NoWorkReason)
 	}
 
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if strings.Contains(e.message, "waiting for workers") {
-			t.Fatalf("expected no no-work backoff log line for a productive iteration, got: %+v", logger.entries)
+			t.Fatalf("expected no no-work backoff log line for a productive iteration, got: %+v", entries)
 		}
 	}
 }

@@ -49,7 +49,8 @@ func TestExecuteLevelParallel_RefuelUnrecoverable_LogsDistinctParkWarning(t *tes
 
 	foundParkWarning := false
 	foundGenericFailure := false
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if e.level == "WARNING" && strings.Contains(e.message, "unrecoverable refuel") {
 			foundParkWarning = true
 		}
@@ -58,10 +59,10 @@ func TestExecuteLevelParallel_RefuelUnrecoverable_LogsDistinctParkWarning(t *tes
 		}
 	}
 	if !foundParkWarning {
-		t.Fatalf("expected a distinct WARNING naming the unrecoverable refuel, got entries: %+v", logger.entries)
+		t.Fatalf("expected a distinct WARNING naming the unrecoverable refuel, got entries: %+v", entries)
 	}
 	if foundGenericFailure {
-		t.Fatalf("expected the generic 'Worker failed' ERROR log replaced by the distinct park WARNING for this error type, got entries: %+v", logger.entries)
+		t.Fatalf("expected the generic 'Worker failed' ERROR log replaced by the distinct park WARNING for this error type, got entries: %+v", entries)
 	}
 }
 
@@ -90,12 +91,13 @@ func TestExecuteLevelParallel_OrdinaryWorkerFailure_KeepsGenericErrorLog(t *test
 	}
 
 	foundGenericFailure := false
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if e.level == "ERROR" && e.message == "Worker failed" {
 			foundGenericFailure = true
 		}
 	}
 	if !foundGenericFailure {
-		t.Fatalf("expected the generic 'Worker failed' ERROR log preserved for a non-refuel failure, got entries: %+v", logger.entries)
+		t.Fatalf("expected the generic 'Worker failed' ERROR log preserved for a non-refuel failure, got entries: %+v", entries)
 	}
 }

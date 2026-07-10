@@ -57,13 +57,14 @@ func TestRefreshShipPoolOnce_IdleShipsAlreadyTracked_LogsClarifyingReason(t *tes
 	handler.refreshShipPoolOnce(ctx, shared.MustNewPlayerID(1), testSystem, shipPool, shipsUsed, &mu, 0)
 
 	found := false
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if strings.Contains(e.message, "already claimed") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected a clarifying log when idle haulers were found but already tracked, got entries: %+v", logger.entries)
+		t.Fatalf("expected a clarifying log when idle haulers were found but already tracked, got entries: %+v", entries)
 	}
 	if len(shipPool) != 0 {
 		t.Fatalf("an already-tracked ship must not be re-added to the pool, got pool len %d", len(shipPool))
@@ -110,12 +111,13 @@ func TestRefreshShipPoolOnce_NewIdleShip_AddedToPoolAndLogged(t *testing.T) {
 	}
 
 	found := false
-	for _, e := range logger.entries {
+	entries := logger.snapshot()
+	for _, e := range entries {
 		if strings.Contains(e.message, "Added new ships to pool") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected the existing 'Added new ships to pool' log preserved after extraction, got entries: %+v", logger.entries)
+		t.Fatalf("expected the existing 'Added new ships to pool' log preserved after extraction, got entries: %+v", entries)
 	}
 }
