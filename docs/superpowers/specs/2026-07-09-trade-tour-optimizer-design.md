@@ -136,6 +136,11 @@ boundary of the tour graph (see prereqs: probe flock, st-wisp-onno).
    Profit-primary is the safe proxy; the graduation gate still measures REALIZED $/hr
    in the field. Recovery-externality pricing (charging dump tranches their fitted
    recovery time) is deferred to Phase 2 alongside absorption reservations.
+   Addendum (2026-07-10): pure profit-primary with revisits still PLANS ladders
+   (return-to-sink, tranches 3-4 on the second visit — agent exhibit). Interim
+   constraint: `maxPlannedTranchesPerMarketGoodSide = 2` per tour (named tunable) —
+   the D39 shape is unplannable; relaxes to the economics when Phase-2
+   recovery-externality pricing lands.
 
 **Response:** ordered legs (waypoint, buys[], sells[], expected unit prices per tranche,
 projected leg P&L), tour totals ($ and $/hr), **top-3 rejected alternative tours with
