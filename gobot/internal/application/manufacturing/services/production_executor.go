@@ -63,15 +63,54 @@ const productionDwellWarnThreshold = 5 * time.Minute
 // so a healthy sink is never over-restricted.
 const minOutputSellMarginFactor = 1.0
 
-// defaultWorkingCapitalReserve is the hard working-capital spend floor applied to
-// factory INPUT purchases (sp-9aoc): a factory input buy must never drop live
-// treasury below this. It mirrors bp6f's trade-circuit floor (the identically-named
-// const in run_trade_route_coordinator.go) and closes the same drain class one layer
-// over — re-enabling 4 goods factories at ~848k drained the float to 23k in ~1min
-// because bp6f guarded trade circuits but NOT factory input buys. Hard floor, not
-// tunable per-run: the incident was a concurrent-factory drain, and a per-run knob is
-// exactly the lever an over-eager re-enable would zero out.
+// defaultWorkingCapitalReserve is the IMMUTABLE lower bound of the working-capital
+// spend floor applied to factory INPUT purchases (sp-9aoc). It mirrors bp6f's
+// trade-circuit floor (the identically-named const in run_trade_route_coordinator.go)
+// and closes the same drain class one layer over — re-enabling 4 goods factories at
+// ~848k drained the float to 23k in ~1min because bp6f guarded trade circuits but NOT
+// factory input buys.
+//
+// sp-agzj unifies this with the fleet's per-run working-capital reserve (the
+// working_capital_reserve launch-config key the tour/trade/arb coordinators already
+// run): the EFFECTIVE floor is effectiveReserveFloor's max(50000, configured). A
+// factory that ran this stale 50k while the fleet reserved 1M legally rode the balance
+// to a ~617k trough (the sp-agzj incident's second half). Config-level unification is
+// allowed; per-run WEAKENING below 50k is not (RULINGS #5) — a configured reserve under
+// 50k is clamped UP, so this stays the non-tunable floor an over-eager re-enable can
+// never zero out.
 const defaultWorkingCapitalReserve = 50000
+
+// reserveCtxKey carries the per-run configured working-capital reserve from the factory
+// coordinator (RunFactoryCoordinatorCommand.WorkingCapitalReserve, resolved from the
+// working_capital_reserve launch-config key) down to the point of spend. It rides on ctx
+// because the ProductionExecutor is a SINGLETON shared across every concurrent factory
+// container (main.go constructs it once) — a struct field would be a data race between
+// sibling factories running different reserves; ctx is per-Handle and race-free.
+type reserveCtxKey struct{}
+
+// WithConfiguredReserve stamps the per-run working-capital reserve onto ctx (sp-agzj).
+// The floor actually enforced is effectiveReserveFloor's max(defaultWorkingCapitalReserve,
+// configured); a 0/absent value simply leaves the immutable 50k floor in force.
+func WithConfiguredReserve(ctx context.Context, reserve int) context.Context {
+	return context.WithValue(ctx, reserveCtxKey{}, reserve)
+}
+
+// effectiveReserveFloor resolves the working-capital floor to enforce at a factory input
+// buy: the GREATER of the immutable defaultWorkingCapitalReserve (50k) and the per-run
+// configured reserve carried on ctx (sp-agzj). A configured reserve BELOW 50k is clamped
+// UP to 50k — the floor may be unified with the fleet's config or RAISED, never weakened
+// below its non-tunable lower bound (RULINGS #5). A reserve ABOVE it (the fleet's 1M) is
+// honored, so the factory input floor tracks the same reserve the rest of the fleet runs.
+func effectiveReserveFloor(ctx context.Context) int {
+	configured := 0
+	if v, ok := ctx.Value(reserveCtxKey{}).(int); ok {
+		configured = v
+	}
+	if configured > defaultWorkingCapitalReserve {
+		return configured
+	}
+	return defaultWorkingCapitalReserve
+}
 
 // SpendReservationLedger is the cross-container concurrent factory-input spend cap
 // (sp-w3he). The per-buy floor (sp-9aoc) checks live treasury per container, but N factory
@@ -293,7 +332,7 @@ func (e *ProductionExecutor) buyGood(
 		// (full-hold skip, empty-tranche skip). The numbers go IN THE MESSAGE too
 		// (sp-iqyq) — the container log renderer drops the metadata map, so a park
 		// hidden only in {"projected_cost": ...} never reaches an operator.
-		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, defaultWorkingCapitalReserve), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
 			"good":           node.Good,
 			"market":         marketResult.WaypointSymbol,
 			"projected_cost": projectedCost,
@@ -390,6 +429,10 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		return false
 	}
 
+	// Effective floor = max(50k, per-run configured reserve) (sp-agzj): unified with
+	// the fleet's working_capital_reserve, 50k an immutable lower bound (RULINGS #5).
+	reserve := effectiveReserveFloor(ctx)
+
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		// Numbers/cause in the MESSAGE (sp-iqyq): the container log renderer drops the
@@ -408,9 +451,9 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		return true
 	}
 
-	if agentData.Credits-projectedCost < defaultWorkingCapitalReserve {
-		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, defaultWorkingCapitalReserve), map[string]interface{}{
-			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": defaultWorkingCapitalReserve,
+	if agentData.Credits-projectedCost < reserve {
+		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, reserve), map[string]interface{}{
+			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
 		})
 		return true
 	}
@@ -439,6 +482,11 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		return "", false
 	}
 
+	// Same unified floor as the per-buy check (sp-agzj): the concurrent cap must serialize
+	// against the SAME reserve the per-container floor enforces, or the two guards would
+	// disagree on where the line is. max(50k, configured), 50k immutable (RULINGS #5).
+	reserve := effectiveReserveFloor(ctx)
+
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
@@ -463,7 +511,7 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		containerID = opCtx.ContainerID
 	}
 
-	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, agentData.Credits, defaultWorkingCapitalReserve)
+	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, agentData.Credits, reserve)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Factory concurrent-spend-cap ledger error — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
@@ -474,12 +522,12 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		// Numbers in the MESSAGE (sp-iqyq): the container log renderer drops the metadata map,
 		// so the cause — combined in-flight factory spend breaching the reserve — must be legible
 		// in the text or an operator never sees why this factory parked.
-		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: live treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, agentData.Credits, defaultWorkingCapitalReserve, projectedCost), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: live treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, agentData.Credits, reserve, projectedCost), map[string]interface{}{
 			"good":           good,
 			"market":         market,
 			"projected_cost": projectedCost,
 			"treasury":       agentData.Credits,
-			"reserve":        defaultWorkingCapitalReserve,
+			"reserve":        reserve,
 			"action":         "factory_parked",
 			"reason":         "concurrent_spend_cap",
 		})

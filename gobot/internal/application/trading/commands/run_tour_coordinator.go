@@ -850,13 +850,41 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 		return false, nil
 	}
 
-	// Working-capital spend floor (RULINGS #4), reusing the delegated guard.
-	projectedCost := units * liveAsk
-	if h.legs.spendFloorBreached(ctx, projectedCost, int(reserve), &RunTradeRouteCoordinatorResponse{}) {
-		logger.Log("WARNING", fmt.Sprintf("Buy of %d %s @ %d would breach working-capital floor %d - skipping", units, trade.Good, liveAsk, reserve), map[string]interface{}{
-			"good": trade.Good, "units": units, "ask": liveAsk, "reserve": reserve,
+	// Working-capital spend floor at BUY time (sp-agzj / RULINGS #4). Re-read the
+	// LIVE balance immediately before the purchase and SHRINK this tranche to the
+	// units the reserve can still afford, rather than the old all-or-nothing skip —
+	// a floor that binds should still buy what fits beneath it. Skip only if even
+	// one unit pierces the floor; fail CLOSED (no spend, re-plan) if the balance
+	// can't be read; proceed unconstrained when no live client is wired (the guard's
+	// optional-port contract, which every nil-apiClient test relies on). This shares
+	// the circuit's live-treasury seam (reserveHeadroom) rather than forking a
+	// parallel read. NOTE: the read is live but not atomic with the purchase, so
+	// concurrent hulls draining the shared treasury in the read→buy window remain a
+	// residual (sp-78ai); this binds the floor at execution, it does not lock it.
+	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, int(reserve))
+	if guardOn && !readable {
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: live balance unreadable at buy time for %d %s @ %d (reserve %d) - not spending, will re-plan (fail-closed)",
+			legIdx, units, trade.Good, liveAsk, reserve), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "reserve": reserve,
 		})
 		return false, nil
+	}
+	if guardOn {
+		floorMaxUnits := headroom / liveAsk // floor-respecting max; headroom may be <= 0 (skip)
+		if floorMaxUnits <= 0 {
+			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy of %d %s @ %d would breach working-capital floor - live balance %d, reserve %d, even 1 unit pierces - skipping, will re-plan",
+				legIdx, units, trade.Good, liveAsk, liveBalance, reserve), map[string]interface{}{
+				"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
+			})
+			return false, nil
+		}
+		if floorMaxUnits < units {
+			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units @ %d to respect working-capital floor (live balance %d, reserve %d)",
+				legIdx, trade.Good, units, floorMaxUnits, liveAsk, liveBalance, reserve), map[string]interface{}{
+				"leg": legIdx, "good": trade.Good, "planned_units": units, "floor_max_units": floorMaxUnits, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
+			})
+			units = floorMaxUnits
+		}
 	}
 
 	plannedAt := h.clock.Now()

@@ -259,6 +259,13 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		ctx = shared.WithOperationContext(ctx, opContext)
 	}
 
+	// sp-agzj: thread the per-run working-capital reserve to the point of spend so the
+	// factory input-buy floor tracks the fleet reserve (effective floor = max(50k,
+	// configured)) instead of the stale hardcoded 50k. Stamped ONCE here — the
+	// ProductionExecutor is a singleton shared across concurrent factory containers, so
+	// ctx (per-Handle) carries it race-free to every parallel worker's buyGood.
+	ctx = mfgServices.WithConfiguredReserve(ctx, cmd.WorkingCapitalReserve)
+
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,
 		"target_good":   cmd.TargetGood,

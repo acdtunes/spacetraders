@@ -9,9 +9,51 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
+// reserveHeadroom performs the single live-treasury read that BOTH working-capital
+// money guards share (sp-agzj): the circuit's spendFloorBreached (abort-on-breach)
+// and the tour's buy-time tranche shrink (executeBuy). It reports how many credits
+// may be spent right now while keeping live treasury at or above reserve, so the two
+// call sites make the same live read against the same fail-open/fail-closed contract
+// rather than each rolling its own.
+//
+// Three outcomes, mirroring the original spendFloorBreached optional-port contract:
+//   - available=false                 → no apiClient wired (guard disabled, the
+//     contract most tests rely on); the caller proceeds UNCONSTRAINED.
+//   - available=true, readable=false  → a client IS wired but the live read FAILED
+//     (unresolvable token, or GetAgent itself erroring); the caller MUST fail CLOSED
+//     — never spend on a balance it could not read (RULINGS #4). The read-failure
+//     cause is logged here; the caller logs the action it took.
+//   - available=true, readable=true   → headroom = liveBalance - reserve (may be
+//     <= 0), and liveBalance is the live treasury the decision was made against.
+func (h *RunTradeRouteCoordinatorHandler) reserveHeadroom(ctx context.Context, reserve int) (headroom, liveBalance int, available, readable bool) {
+	logger := common.LoggerFromContext(ctx)
+	if h.apiClient == nil {
+		return 0, 0, false, false
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		logger.Log("WARNING", "Could not resolve player token for working-capital spend-floor check (fail-closed)", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0, 0, true, false
+	}
+
+	agentData, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		logger.Log("WARNING", "Could not read live treasury for working-capital spend-floor check (fail-closed)", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0, 0, true, false
+	}
+
+	return agentData.Credits - reserve, agentData.Credits, true, true
+}
+
 // spendFloorBreached live-checks whether spending projectedCost right now would
 // drop treasury below reserve (sp-bp6f), setting the abort fields on response
-// and returning true if so — the caller must not proceed with the buy.
+// and returning true if so — the caller must not proceed with the buy. It is the
+// circuit's abort-on-breach reading of the shared reserveHeadroom seam (sp-agzj).
 //
 // Fails OPEN when no apiClient is wired (h.apiClient == nil): the guard is
 // simply unavailable, the same optional-port contract staleAskAborts already
@@ -30,36 +72,25 @@ func (h *RunTradeRouteCoordinatorHandler) spendFloorBreached(
 	response *RunTradeRouteCoordinatorResponse,
 ) bool {
 	logger := common.LoggerFromContext(ctx)
-	if h.apiClient == nil {
-		return false
+	headroom, liveBalance, available, readable := h.reserveHeadroom(ctx, reserve)
+	if !available {
+		return false // no apiClient — guard unavailable, fail OPEN
 	}
-
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		logger.Log("WARNING", "Could not resolve player token for spend-floor check - aborting circuit (fail-closed)", map[string]interface{}{
-			"error": err.Error(),
-		})
+	if !readable {
+		// reserveHeadroom already logged the read-failure cause; record the
+		// circuit-level decision (a guard that went blind never trades past the floor).
+		logger.Log("WARNING", "Working-capital spend-floor check went blind - aborting circuit (fail-closed)", nil)
 		response.SpendFloorAbort = true
 		response.ReserveFloor = reserve
 		return true
 	}
 
-	agentData, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		logger.Log("WARNING", "Could not read live treasury for spend-floor check - aborting circuit (fail-closed)", map[string]interface{}{
-			"error": err.Error(),
-		})
-		response.SpendFloorAbort = true
-		response.ReserveFloor = reserve
-		return true
-	}
-
-	if agentData.Credits-projectedCost < reserve {
+	if headroom < projectedCost {
 		logger.Log("WARNING", "Buy would breach the working-capital reserve floor - aborting circuit before spending", map[string]interface{}{
-			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
+			"treasury": liveBalance, "projected_cost": projectedCost, "reserve": reserve,
 		})
 		response.SpendFloorAbort = true
-		response.TreasuryAtAbort = agentData.Credits
+		response.TreasuryAtAbort = liveBalance
 		response.ReserveFloor = reserve
 		return true
 	}

@@ -45,6 +45,13 @@ type RunFactoryCoordinatorCommand struct {
 	// fix — a harvesting factory bought back its own 149 FAB_MATS and froze the fill
 	// (sp-q02m). Default (false) preserves the original harvest-the-output behavior.
 	InputsOnly bool
+	// WorkingCapitalReserve unifies the factory input-buy spend floor with the fleet's
+	// per-run reserve (sp-agzj): the effective floor enforced at each input buy is
+	// max(50000, WorkingCapitalReserve), the 50k an immutable lower bound (RULINGS #5).
+	// 0/absent leaves the standing 50k floor. Fed from the goods_factory launch config's
+	// working_capital_reserve key, the same knob the tour/trade/arb coordinators run — so
+	// a fleet reserving 1M no longer leaves its factories draining to 50k.
+	WorkingCapitalReserve int
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation
