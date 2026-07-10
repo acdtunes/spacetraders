@@ -127,7 +127,15 @@ boundary of the tour graph (see prereqs: probe flock, st-wisp-onno).
 3. Per sequence: tranche-LP over the piecewise curves — decide buy/sell units per good per
    hop, respecting hold capacity flow conservation, tradeVolume tranche ceilings, spend
    constraints, and curve-decayed marginal prices.
-4. Objective: **credits/hour** (net profit ÷ (travel + dwell time)).
+4. Objective (**revised 2026-07-10, Admiral decision**): **maximum projected profit**,
+   with every hop required to add positive marginal profit; credits/hour is computed,
+   reported, and used as the tiebreak between equal-profit tours. Rationale: a single
+   tour's $/hr rate prefers concentrated sink-dumps whenever travel is expensive —
+   the exact laddering this epic exists to kill — because per-tour rate ignores the
+   sink-recovery externality (~4h RESTRICTED / ~23h WEAK, per the fitted model).
+   Profit-primary is the safe proxy; the graduation gate still measures REALIZED $/hr
+   in the field. Recovery-externality pricing (charging dump tranches their fitted
+   recovery time) is deferred to Phase 2 alongside absorption reservations.
 
 **Response:** ordered legs (waypoint, buys[], sells[], expected unit prices per tranche,
 projected leg P&L), tour totals ($ and $/hr), **top-3 rejected alternative tours with
