@@ -44,6 +44,11 @@ var (
 	// Set by SetGlobalManufacturingCollector() when metrics are enabled
 	globalManufacturingCollector *ManufacturingMetricsCollector
 
+	// globalAbsorptionCollector is the singleton absorption burn-in collector (sp-8cz9).
+	// Set by SetGlobalAbsorptionCollector() when metrics are enabled; the tour
+	// coordinator emits the cap-binding + ladder-incident counters through it.
+	globalAbsorptionCollector *AbsorptionMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -261,6 +266,34 @@ func RecordManufacturingRevenue(playerID int, amount int) {
 func RecordManufacturingTaskAssignment(playerID int, taskType string) {
 	if globalManufacturingCollector != nil {
 		globalManufacturingCollector.RecordTaskAssignment(playerID, taskType)
+	}
+}
+
+// SetGlobalAbsorptionCollector sets the global absorption burn-in collector (sp-8cz9).
+func SetGlobalAbsorptionCollector(collector *AbsorptionMetricsCollector) {
+	globalAbsorptionCollector = collector
+}
+
+// GetGlobalAbsorptionCollector returns the global absorption burn-in collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalAbsorptionCollector() *AbsorptionMetricsCollector {
+	return globalAbsorptionCollector
+}
+
+// RecordAbsorptionCapBinding records one accepted-plan cap-binding classification
+// globally (sp-8cz9 P1). No-op when metrics are disabled, so a metrics miss never
+// touches the trade path (RULINGS #4).
+func RecordAbsorptionCapBinding(playerID int, side, outcome string) {
+	if globalAbsorptionCollector != nil {
+		globalAbsorptionCollector.RecordCapBinding(playerID, side, outcome)
+	}
+}
+
+// RecordAbsorptionLadderIncident records one cross-plan ladder incident globally
+// (sp-8cz9 P2). No-op when metrics are disabled.
+func RecordAbsorptionLadderIncident(playerID int, goodSymbol string) {
+	if globalAbsorptionCollector != nil {
+		globalAbsorptionCollector.RecordLadderIncident(playerID, goodSymbol)
 	}
 }
 

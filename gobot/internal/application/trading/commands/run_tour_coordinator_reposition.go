@@ -374,9 +374,9 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	shipState.FuelCurrent = shipState.FuelCapacity
 	allowedSystems := h.tourSystemsFrom(ctx, cand.system, cmd.PlayerID)
 	// The pre-flight only PRICES a candidate ground (it reserves nothing — no plan is
-	// committed here, sp-78ai L3); the snapshot the netting/reserve path would need is
-	// discarded.
-	plan, _, err := h.planForState(ctx, shipState, allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
+	// committed here, sp-78ai L3); the snapshot and netted absorption the reserve/accept
+	// path would need are discarded (no plan is accepted here, so no burn-in emission).
+	plan, _, _, err := h.planForState(ctx, shipState, allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
 	return plan, err
 }
 

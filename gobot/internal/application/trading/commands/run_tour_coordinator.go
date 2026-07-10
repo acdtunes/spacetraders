@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
@@ -689,7 +690,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	// all-or-nothing. A reservation breach (another container claimed a sink between the
 	// netting snapshot and the reserve) is a normal re-plan, NOT a failure — planAndReserve
 	// retries against fresh ledger state, and only a persistent contention exits infeasible.
-	plan, reason, feasible, err := h.planAndReserve(ctx, cmd, ship, maxHops, maxSpend, reserve, modelVersion)
+	plan, shadowSinks, reason, feasible, err := h.planAndReserve(ctx, cmd, ship, maxHops, maxSpend, reserve, modelVersion)
 	if err != nil {
 		return false, "", err
 	}
@@ -717,7 +718,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	replansLeft := replanLimit
 	var cumulativeSpend int64
 	for {
-		degraded, execErr := h.executePlan(ctx, cmd, plan, response, netBought, &cumulativeSpend, maxSpend, reserve)
+		degraded, execErr := h.executePlan(ctx, cmd, plan, shadowSinks, response, netBought, &cumulativeSpend, maxSpend, reserve)
 		if execErr != nil {
 			return false, "", execErr
 		}
@@ -741,7 +742,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		// fresh (planAndReserve), so the replacement plan never double-counts the old
 		// one's holds and converted recovery shadows persist (sp-78ai L3).
 		var replanFeasible bool
-		plan, _, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
+		plan, shadowSinks, _, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
 		if err != nil {
 			return false, "", err
 		}
@@ -763,6 +764,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
 	plan *routing.TourPlan,
+	shadowSinks map[shadowSinkKey]bool,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
 	cumulativeSpend *int64,
@@ -797,7 +799,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range sellsBeforeBuys(leg.Trades) {
-			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
+			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, shadowSinks, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
 			if terr != nil {
 				return false, terr
 			}
@@ -825,6 +827,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	leg routing.TourLeg,
 	legIdx int,
 	trade routing.TourTrade,
+	shadowSinks map[shadowSinkKey]bool,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
 	cumulativeSpend *int64,
@@ -866,7 +869,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	}
 
 	if trade.IsBuy {
-		return h.executeBuy(ctx, cmd, leg, legIdx, trade, live, response, netBought, cumulativeSpend, maxSpend, reserve)
+		return h.executeBuy(ctx, cmd, leg, legIdx, trade, shadowSinks, live, response, netBought, cumulativeSpend, maxSpend, reserve)
 	}
 	return h.executeSell(ctx, cmd, leg, legIdx, trade, live, response, netBought, legSells)
 }
@@ -877,6 +880,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	leg routing.TourLeg,
 	legIdx int,
 	trade routing.TourTrade,
+	shadowSinks map[shadowSinkKey]bool,
 	live *market.TradeGood,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
@@ -978,6 +982,13 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	netBought[trade.Good] += buyResp.UnitsAdded
 	h.recordLeg(ctx, cmd, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: bought %d %s at %s (cost %d)", legIdx, buyResp.UnitsAdded, trade.Good, leg.Waypoint, buyResp.TotalCost), nil)
+	// sp-8cz9 P2: a buy that LANDED on ground carrying an outstanding EXECUTED recovery
+	// shadow is a cross-plan ladder incident — the fleet re-buying into a market still
+	// recovering from its own dump. Pure observation off the plan-time probe set; a
+	// nil-map read is false, so this is inert when no shadows were netted.
+	if buyResp.UnitsAdded > 0 && shadowSinks[shadowSinkKey{leg.Waypoint, trade.Good}] {
+		metrics.RecordAbsorptionLadderIncident(cmd.PlayerID, trade.Good)
+	}
 	return true, nil
 }
 
@@ -1196,7 +1207,7 @@ func (h *RunTourCoordinatorHandler) plan(
 	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
 	modelVersion string,
-) (*routing.TourPlan, []routing.TourGoodSnapshot, error) {
+) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
 	allowedSystems := h.tourSystems(ctx, ship, cmd.PlayerID)
 	return h.planForState(ctx, h.tourShipState(ship), allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
 }
@@ -1215,10 +1226,10 @@ func (h *RunTourCoordinatorHandler) planForState(
 	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
 	modelVersion string,
-) (*routing.TourPlan, []routing.TourGoodSnapshot, error) {
+) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
 	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), maxListingAge)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// sp-dchv Lane C: assemble haul-to-storage deposit candidates for the planner to
 	// price against arb sells. Empty when pre-positioning is off, no warehouse is in
@@ -1241,9 +1252,13 @@ func (h *RunTourCoordinatorHandler) planForState(
 	}
 	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return plan, snapshot, nil
+	// absorptionView is returned so the accept path can score cap-binding + ladder
+	// incidents (sp-8cz9) off the SAME netted depth the solver planned against — no
+	// re-read of the ledger. Nil when the ledger is unwired / consult killed, which
+	// simply yields no burn-in samples.
+	return plan, snapshot, absorptionView, nil
 }
 
 // depositCandidates assembles the haul-to-storage deposit sinks for the planner

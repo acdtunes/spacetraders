@@ -77,19 +77,19 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	maxHops int,
 	maxSpend, reserve int64,
 	modelVersion string,
-) (*routing.TourPlan, string, bool, error) {
+) (*routing.TourPlan, map[shadowSinkKey]bool, string, bool, error) {
 	// Clear this container's stale in-flight intent before (re)planning: a prior tour's
 	// leftover holds, or pre-restart rows that liveness re-adopted. EXECUTED recovery
 	// shadows are left untouched (real damage still recovering — the plan must avoid them).
 	h.releaseTourReservations(ctx, cmd)
 
 	for attempt := 0; attempt <= tourReserveMaxRetries; attempt++ {
-		plan, snapshot, err := h.plan(ctx, ship, maxHops, maxSpend, reserve, cmd, modelVersion)
+		plan, snapshot, absorptionView, err := h.plan(ctx, ship, maxHops, maxSpend, reserve, cmd, modelVersion)
 		if err != nil {
-			return nil, fmt.Sprintf("tour unavailable: planner error: %v", err), false, nil
+			return nil, nil, fmt.Sprintf("tour unavailable: planner error: %v", err), false, nil
 		}
 		if !plan.Feasible {
-			return nil, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), false, nil
+			return nil, nil, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), false, nil
 		}
 		reserved, rerr := h.reserveTourPlan(ctx, cmd, plan, snapshot)
 		if rerr == nil && reserved {
@@ -98,12 +98,16 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 			// accumulates from this log; a live shadow-priced objective is gated on
 			// offline replay, not switched on here).
 			h.logRecoveryBurden(ctx, cmd, plan, snapshot)
-			return plan, "", true, nil
+			// sp-8cz9 burn-in: score cap-binding on this accepted plan and hand the
+			// execution path the ladder-probe set — both derived from the SAME netted
+			// depth already read, both pure observation (never gate a trade, RULINGS #4).
+			h.recordCapBinding(ctx, cmd, plan, snapshot, absorptionView)
+			return plan, shadowSinksFromAbsorption(absorptionView), "", true, nil
 		}
 		// Breach (ok=false) or a ledger-gate error (fail-closed for THIS attempt): re-plan
 		// against fresh ledger state — the contested sink now shows occupied to the netting.
 	}
-	return nil, "tour unavailable: could not reserve tour depth (sinks contended by other containers)", false, nil
+	return nil, nil, "tour unavailable: could not reserve tour depth (sinks contended by other containers)", false, nil
 }
 
 // reserveTourPlan reserves the plan's per-(waypoint, good, side) tranches. In the default

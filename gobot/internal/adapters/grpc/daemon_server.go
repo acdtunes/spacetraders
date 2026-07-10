@@ -83,6 +83,7 @@ type DaemonServer struct {
 	commandMetricsCollector       *metrics.CommandMetricsCollector
 	marketMetricsCollector        *metrics.MarketMetricsCollector
 	manufacturingMetricsCollector *metrics.ManufacturingMetricsCollector
+	absorptionMetricsCollector    *metrics.AbsorptionMetricsCollector
 
 	// contractConfig carries the idle-arb harvest knobs (sp-1z2h / sp-uohe)
 	// from config.yaml. ContractFleetCoordinator injects them into the
@@ -319,6 +320,21 @@ func NewDaemonServer(
 
 		// Store reference for lifecycle management
 		server.manufacturingMetricsCollector = mfgCollector
+
+		// Create absorption burn-in collector (sp-8cz9): the tour coordinator emits the
+		// cap-binding + ladder-incident counters through the global set here. Event-driven
+		// (no polling goroutine), so registration + the global wire is the whole lifecycle.
+		absorptionCollector := metrics.NewAbsorptionMetricsCollector()
+		if err := absorptionCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register absorption metrics collector: %w", err)
+		}
+
+		// Set global absorption collector for the tour coordinator to record through
+		metrics.SetGlobalAbsorptionCollector(absorptionCollector)
+
+		// Store reference for lifecycle management
+		server.absorptionMetricsCollector = absorptionCollector
 	}
 
 	// Register container specs for launch and recovery
