@@ -67,6 +67,7 @@ const (
 	DaemonService_StartWarehouse_FullMethodName                        = "/daemon.DaemonService/StartWarehouse"
 	DaemonService_StartArbRun_FullMethodName                           = "/daemon.DaemonService/StartArbRun"
 	DaemonService_StartTourRun_FullMethodName                          = "/daemon.DaemonService/StartTourRun"
+	DaemonService_StartStocker_FullMethodName                          = "/daemon.DaemonService/StartStocker"
 	DaemonService_StartConstructionPipeline_FullMethodName             = "/daemon.DaemonService/StartConstructionPipeline"
 	DaemonService_GetConstructionStatus_FullMethodName                 = "/daemon.DaemonService/GetConstructionStatus"
 	DaemonService_StopConstructionPipeline_FullMethodName              = "/daemon.DaemonService/StopConstructionPipeline"
@@ -192,6 +193,11 @@ type DaemonServiceClient interface {
 	// (sp-1ek0): plan a depth-aware tour for one idle hull, fly it leg by leg with prices
 	// re-verified live, re-plan on drift, and stop.
 	StartTourRun(ctx context.Context, in *StartTourRunRequest, opts ...grpc.CallOption) (*StartTourRunResponse, error)
+	// StartStocker launches the STOCKER LOOP (sp-zdwg): a dedicated hull that fills a home
+	// warehouse the tours rationally won't (sp-dchv). Each round-trip it need-ranks the
+	// most-needed stock good, buys it at the cheapest foreign market (live-verified,
+	// fail-closed), hauls home, and deposits — until nothing is left to stock.
+	StartStocker(ctx context.Context, in *StartStockerRequest, opts ...grpc.CallOption) (*StartStockerResponse, error)
 	// StartConstructionPipeline starts a pipeline to supply materials to a construction site
 	StartConstructionPipeline(ctx context.Context, in *StartConstructionPipelineRequest, opts ...grpc.CallOption) (*StartConstructionPipelineResponse, error)
 	// GetConstructionStatus retrieves the status of a construction site
@@ -688,6 +694,16 @@ func (c *daemonServiceClient) StartTourRun(ctx context.Context, in *StartTourRun
 	return out, nil
 }
 
+func (c *daemonServiceClient) StartStocker(ctx context.Context, in *StartStockerRequest, opts ...grpc.CallOption) (*StartStockerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartStockerResponse)
+	err := c.cc.Invoke(ctx, DaemonService_StartStocker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) StartConstructionPipeline(ctx context.Context, in *StartConstructionPipelineRequest, opts ...grpc.CallOption) (*StartConstructionPipelineResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartConstructionPipelineResponse)
@@ -838,6 +854,11 @@ type DaemonServiceServer interface {
 	// (sp-1ek0): plan a depth-aware tour for one idle hull, fly it leg by leg with prices
 	// re-verified live, re-plan on drift, and stop.
 	StartTourRun(context.Context, *StartTourRunRequest) (*StartTourRunResponse, error)
+	// StartStocker launches the STOCKER LOOP (sp-zdwg): a dedicated hull that fills a home
+	// warehouse the tours rationally won't (sp-dchv). Each round-trip it need-ranks the
+	// most-needed stock good, buys it at the cheapest foreign market (live-verified,
+	// fail-closed), hauls home, and deposits — until nothing is left to stock.
+	StartStocker(context.Context, *StartStockerRequest) (*StartStockerResponse, error)
 	// StartConstructionPipeline starts a pipeline to supply materials to a construction site
 	StartConstructionPipeline(context.Context, *StartConstructionPipelineRequest) (*StartConstructionPipelineResponse, error)
 	// GetConstructionStatus retrieves the status of a construction site
@@ -997,6 +1018,9 @@ func (UnimplementedDaemonServiceServer) StartArbRun(context.Context, *StartArbRu
 }
 func (UnimplementedDaemonServiceServer) StartTourRun(context.Context, *StartTourRunRequest) (*StartTourRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartTourRun not implemented")
+}
+func (UnimplementedDaemonServiceServer) StartStocker(context.Context, *StartStockerRequest) (*StartStockerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartStocker not implemented")
 }
 func (UnimplementedDaemonServiceServer) StartConstructionPipeline(context.Context, *StartConstructionPipelineRequest) (*StartConstructionPipelineResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartConstructionPipeline not implemented")
@@ -1892,6 +1916,24 @@ func _DaemonService_StartTourRun_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_StartStocker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartStockerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).StartStocker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_StartStocker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).StartStocker(ctx, req.(*StartStockerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_StartConstructionPipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StartConstructionPipelineRequest)
 	if err := dec(in); err != nil {
@@ -2144,6 +2186,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartTourRun",
 			Handler:    _DaemonService_StartTourRun_Handler,
+		},
+		{
+			MethodName: "StartStocker",
+			Handler:    _DaemonService_StartStocker_Handler,
 		},
 		{
 			MethodName: "StartConstructionPipeline",

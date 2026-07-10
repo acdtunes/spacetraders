@@ -474,6 +474,77 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				PriorAttemptCost: 0,
 			},
 		},
+		{
+			// sp-zdwg: a RUNNING stocker container must rebuild from its launch config on
+			// restart (invariant 4) so the loop resumes deposit-first (RULINGS #2) instead
+			// of orphaning the hull. ship_symbol + warehouse_waypoint are required; the
+			// caps round-trip through their config keys (JSON int → float64 coercion pinned).
+			name:        "stocker",
+			commandType: "stocker",
+			containerID: "stocker-1",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":             "SHIP-A",
+				"warehouse_waypoint":      "X1-GZ7-H1",
+				"container_id":            "stocker-1",
+				"agent_symbol":            "ENDURANCE",
+				"budget_per_leg":          200000,
+				"working_capital_reserve": 60000,
+				"iterations":              5,
+				"max_market_age_minutes":  60,
+				"target_per_good":         120,
+			},
+			want: &tradingCmd.RunStockerCoordinatorCommand{
+				ShipSymbol:            "SHIP-A",
+				WarehouseWaypoint:     "X1-GZ7-H1",
+				PlayerID:              playerID,
+				ContainerID:           "stocker-1",
+				AgentSymbol:           "ENDURANCE",
+				BudgetPerLeg:          200000,
+				WorkingCapitalReserve: 60000,
+				Iterations:            5,
+				MaxMarketAgeMinutes:   60,
+				TargetPerGood:         120,
+			},
+		},
+		{
+			// A CONTINUOUS stocker (iterations=-1) round-trips STILL continuous (RULINGS #2)
+			// — a restart resumes filling until nothing is left to stock, not one round-trip.
+			name:        "stocker continuous",
+			commandType: "stocker",
+			containerID: "stocker-inf",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":        "SHIP-C",
+				"warehouse_waypoint": "X1-GZ7-H1",
+				"container_id":       "stocker-inf",
+				"iterations":         -1,
+			},
+			want: &tradingCmd.RunStockerCoordinatorCommand{
+				ShipSymbol:        "SHIP-C",
+				WarehouseWaypoint: "X1-GZ7-H1",
+				PlayerID:          playerID,
+				ContainerID:       "stocker-inf",
+				Iterations:        -1,
+			},
+		},
+		{
+			// Bare config → the coordinator's own "0 → default" semantics per knob
+			// (budget → no cap, reserve → 50k, iterations 0 → one round-trip, freshness → 75m,
+			// target → the miner's measured demand).
+			name:        "stocker defaults",
+			commandType: "stocker",
+			containerID: "stocker-2",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":        "SHIP-B",
+				"warehouse_waypoint": "X1-GZ7-H1",
+				"container_id":       "stocker-2",
+			},
+			want: &tradingCmd.RunStockerCoordinatorCommand{
+				ShipSymbol:        "SHIP-B",
+				WarehouseWaypoint: "X1-GZ7-H1",
+				PlayerID:          playerID,
+				ContainerID:       "stocker-2",
+			},
+		},
 	}
 
 	for _, tc := range cases {

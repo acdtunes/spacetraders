@@ -828,6 +828,37 @@ func run(cfg *config.Config) error {
 		pp.CapitalCeilingPct,
 	)
 
+	// Stocker coordinator (sp-zdwg): a dedicated hull that fills the home warehouse the
+	// tours rationally won't (sp-dchv — deposit legs lose to direct sells at every re-plan;
+	// the stocker dedicates capacity instead of distorting tour objectives). Wired with the
+	// same ports as tour/arb/trade-route (so its buy/navigate legs resolve to the identical
+	// RouteExecutor-backed daemon handlers, and it inherits the shared gate graph for
+	// multi-jump travel + the arrival event bus for the resume-safe in-transit wait) PLUS
+	// the shared storage coordinator (deposit protocol + warehouse reads), the warehouse-op
+	// finder (storageOperationRepo), and the Lane A demand miner (over the same db). The
+	// pre-positioning economics (min-recurrence/min-savings/allow-block/ceiling-pct) come
+	// from the same cfg.Contract.PrePositioning the tour reads; the stocker is launched
+	// explicitly (a dedicated hull), so it runs its economics regardless of pp.Enabled (the
+	// tour's opportunistic-deposit switch). DaemonServer.StartStocker launches the container.
+	stockerCoordinatorHandler := tradeRouteCmd.NewRunStockerCoordinatorHandler(
+		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
+		storageCoordinator, storageOperationRepo, persistence.NewDemandMiner(db),
+		tradingSvc.DepositCandidateConfig{
+			Enabled:           pp.Enabled,
+			TopN:              pp.TopN,
+			MinRecurrence:     pp.MinRecurrence,
+			MinSavingsPerUnit: pp.MinSavingsPerUnit,
+			Allowlist:         pp.Allowlist,
+			Blocklist:         pp.Blocklist,
+		},
+		pp.CapitalCeilingPct,
+	)
+	stockerCoordinatorHandler.SetGateGraph(gateGraphService)
+	stockerCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunStockerCoordinatorCommand](med, stockerCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register StockerCoordinator handler: %w", err)
+	}
+
 	// Manufacturing task worker handler
 	manufacturingTaskWorkerHandler := tradingCmd.NewRunManufacturingTaskWorkerHandler(
 		taskExecutorRegistry,

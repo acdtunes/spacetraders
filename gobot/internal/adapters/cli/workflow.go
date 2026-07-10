@@ -33,6 +33,7 @@ Examples:
 	cmd.AddCommand(newWorkflowArbRunCommand())
 	cmd.AddCommand(newWorkflowTourRunCommand())
 	cmd.AddCommand(newWorkflowWarehouseCommand())
+	cmd.AddCommand(newWorkflowStockerCommand())
 
 	return cmd
 }

@@ -1304,6 +1304,58 @@ func (c *DaemonClient) StartArbRun(
 	}, nil
 }
 
+// StartStockerResult reports the container started for a stocker loop (sp-zdwg).
+type StartStockerResult struct {
+	ContainerID       string
+	ShipSymbol        string
+	WarehouseWaypoint string
+	Status            string
+	Message           string
+}
+
+// StartStocker asks the daemon to launch the STOCKER LOOP (sp-zdwg) as a recovery-safe
+// container: a dedicated hull fills a home warehouse with contract-recurrent goods bought
+// cheap at foreign markets, live-verified and fail-closed. budgetPerLeg/workingCapitalReserve/
+// iterations/maxMarketAgeMinutes/targetPerGood are optional: pass nil to leave each unset
+// (the coordinator's own default semantics apply — no per-leg cap, 50k reserve, one
+// round-trip, 75-min freshness, the miner's measured demand target). iterations=-1 makes
+// it CONTINUOUS: fill until nothing is left to stock.
+func (c *DaemonClient) StartStocker(
+	ctx context.Context,
+	shipSymbol string,
+	warehouseWaypoint string,
+	playerID int,
+	agentSymbol *string,
+	budgetPerLeg *int32,
+	workingCapitalReserve *int64,
+	iterations *int32,
+	maxMarketAgeMinutes *int32,
+	targetPerGood *int32,
+) (*StartStockerResult, error) {
+	resp, err := c.client.StartStocker(ctx, &pb.StartStockerRequest{
+		PlayerId:              int32(playerID),
+		ShipSymbol:            shipSymbol,
+		WarehouseWaypoint:     warehouseWaypoint,
+		AgentSymbol:           agentSymbol,
+		BudgetPerLeg:          budgetPerLeg,
+		WorkingCapitalReserve: workingCapitalReserve,
+		Iterations:            iterations,
+		MaxMarketAgeMinutes:   maxMarketAgeMinutes,
+		TargetPerGood:         targetPerGood,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StartStockerResult{
+		ContainerID:       resp.ContainerId,
+		ShipSymbol:        resp.ShipSymbol,
+		WarehouseWaypoint: resp.WarehouseWaypoint,
+		Status:            resp.Status,
+		Message:           resp.Message,
+	}, nil
+}
+
 func (c *DaemonClient) StartGoodsFactory(
 	ctx context.Context,
 	targetGood string,

@@ -1241,6 +1241,59 @@ func (s *daemonServiceImpl) StartTourRun(ctx context.Context, req *pb.StartTourR
 	}, nil
 }
 
+func (s *daemonServiceImpl) StartStocker(ctx context.Context, req *pb.StartStockerRequest) (*pb.StartStockerResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+	if req.ShipSymbol == "" {
+		return nil, fmt.Errorf("ship_symbol is required")
+	}
+	if req.WarehouseWaypoint == "" {
+		return nil, fmt.Errorf("warehouse_waypoint is required")
+	}
+
+	budgetPerLeg := 0
+	if req.BudgetPerLeg != nil {
+		budgetPerLeg = int(*req.BudgetPerLeg)
+	}
+	var workingCapitalReserve int64
+	if req.WorkingCapitalReserve != nil {
+		workingCapitalReserve = *req.WorkingCapitalReserve
+	}
+	// iterations: -1 = continuous, N>0 = N round-trips, unset/0 = one round-trip. Passed
+	// through verbatim; the coordinator normalizes 0 → one round-trip.
+	iterations := 0
+	if req.Iterations != nil {
+		iterations = int(*req.Iterations)
+	}
+	maxMarketAgeMinutes := 0
+	if req.MaxMarketAgeMinutes != nil {
+		maxMarketAgeMinutes = int(*req.MaxMarketAgeMinutes)
+	}
+	targetPerGood := 0
+	if req.TargetPerGood != nil {
+		targetPerGood = int(*req.TargetPerGood)
+	}
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	result, err := s.daemon.StartStocker(ctx, req.ShipSymbol, req.WarehouseWaypoint, budgetPerLeg, workingCapitalReserve, iterations, maxMarketAgeMinutes, targetPerGood, agentSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start stocker: %w", err)
+	}
+
+	return &pb.StartStockerResponse{
+		ContainerId:       result.ContainerID,
+		ShipSymbol:        result.ShipSymbol,
+		WarehouseWaypoint: result.WarehouseWaypoint,
+		Status:            "RUNNING",
+		Message:           fmt.Sprintf("Stocker started for %s filling warehouse %s", req.ShipSymbol, req.WarehouseWaypoint),
+	}, nil
+}
+
 // StopGoodsFactory implements the StopGoodsFactory RPC
 func (s *daemonServiceImpl) StopGoodsFactory(ctx context.Context, req *pb.StopGoodsFactoryRequest) (*pb.StopGoodsFactoryResponse, error) {
 	// Resolve player ID

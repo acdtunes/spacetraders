@@ -266,6 +266,12 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 //	                                                            FAILURE (sp-m5kv, invariant 2)
 //	arb_run                     one directed leg  coordinator   re-adopts; resumes past the buy
 //	                                                            (sp-5nqx), strand = failure
+//	stocker                     round-trip        coordinator   re-adopts; a laden hull resumes
+//	                            (iterations:      (owns loop)   deposit-first. -1 = continuous
+//	                            -1/N/0→1)                       (fill until nothing left to
+//	                                                            stock/starvation); undeposited
+//	                                                            exit is a FAILURE (sp-zdwg,
+//	                                                            invariant 2)
 //	navigate_ship               one route         coordinator   re-adopts; RouteExecutor waits
 //	                                                            out / resumes the live transit
 //	dock_ship / orbit_ship /    one ship op       coordinator   re-adopts; the op is idempotent
@@ -301,6 +307,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "stocker", build: buildStockerCoordinatorCommand, CoordinatorOwnsIterations: true},
 		// One-shot ship operations (sp-7yej invariant 4): these were created by
 		// container_ops_ship.go but never registered, so a daemon restart
 		// mid-operation marked them FAILED ("unknown command type") and dropped
@@ -669,5 +676,31 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		ReplanLimit:           cfg.OptionalInt("replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("working_capital_reserve", 0)),
 		Iterations:            cfg.OptionalInt("iterations", 0),
+	}
+}
+
+// buildStockerCoordinatorCommand rebuilds the stocker loop command (sp-zdwg) from a
+// persisted launch config so restart recovery can resume a RUNNING stocker container.
+// ContainerID comes from the recovery-supplied containerID (the persisted row's ID),
+// mirroring tour_run so the operation context and the runner's ship claim stay pinned
+// across a restart. ship_symbol + warehouse_waypoint are required (the dedicated hull and
+// the deposit anchor); the caps default to 0 (the coordinator's own "0 → default"
+// semantics: budget_per_leg → no cap, working_capital_reserve → 50k, iterations → one
+// round-trip, max_market_age_minutes → 75, target_per_good → the miner's demand). The
+// coordinator owns the round-trip loop (CoordinatorOwnsIterations); the container runs
+// Handle() once. A restart re-plans from the hull's current cargo — a laden hull resumes
+// deposit-first, never a blind re-buy (RULINGS #2).
+func buildStockerCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunStockerCoordinatorCommand{
+		ShipSymbol:            cfg.RequiredNonEmptyString("ship_symbol"),
+		WarehouseWaypoint:     cfg.RequiredNonEmptyString("warehouse_waypoint"),
+		PlayerID:              playerID,
+		ContainerID:           containerID,
+		AgentSymbol:           cfg.OptionalString("agent_symbol"),
+		BudgetPerLeg:          cfg.OptionalInt("budget_per_leg", 0),
+		WorkingCapitalReserve: int64(cfg.OptionalInt("working_capital_reserve", 0)),
+		Iterations:            cfg.OptionalInt("iterations", 0),
+		MaxMarketAgeMinutes:   cfg.OptionalInt("max_market_age_minutes", 0),
+		TargetPerGood:         cfg.OptionalInt("target_per_good", 0),
 	}
 }

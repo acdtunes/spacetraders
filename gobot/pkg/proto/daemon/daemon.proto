@@ -168,6 +168,12 @@ service DaemonService {
   // re-verified live, re-plan on drift, and stop.
   rpc StartTourRun(StartTourRunRequest) returns (StartTourRunResponse);
 
+  // StartStocker launches the STOCKER LOOP (sp-zdwg): a dedicated hull that fills a home
+  // warehouse the tours rationally won't (sp-dchv). Each round-trip it need-ranks the
+  // most-needed stock good, buys it at the cheapest foreign market (live-verified,
+  // fail-closed), hauls home, and deposits — until nothing is left to stock.
+  rpc StartStocker(StartStockerRequest) returns (StartStockerResponse);
+
   // StartConstructionPipeline starts a pipeline to supply materials to a construction site
   rpc StartConstructionPipeline(StartConstructionPipelineRequest) returns (StartConstructionPipelineResponse);
 
@@ -1117,6 +1123,29 @@ message StartTourRunResponse {
   string ship_symbol = 2;
   string status = 3;
   string message = 4;
+}
+
+// StartStockerRequest starts the STOCKER LOOP (sp-zdwg): a dedicated hull fills a home
+// warehouse with contract-recurrent goods bought cheap at foreign markets. All caps and
+// floors are optional (0/unset = coordinator default).
+message StartStockerRequest {
+  int32 player_id = 1;
+  string ship_symbol = 2;                      // Dedicated hull to fly the stocker loop
+  string warehouse_waypoint = 3;               // Home warehouse waypoint to deposit into (its system is the demand anchor)
+  optional string agent_symbol = 4;
+  optional int32 budget_per_leg = 5;           // Per-buy-leg spend cap in credits (0/unset = no explicit per-leg cap)
+  optional int64 working_capital_reserve = 6;  // Hard spend floor (0/unset = coordinator default, 50k)
+  optional int32 iterations = 7;               // -1 = CONTINUOUS (fill until nothing left to stock), N>0 = N round-trips, 0/unset = one round-trip
+  optional int32 max_market_age_minutes = 8;   // Freshness cap on the foreign ask (0/unset = 75)
+  optional int32 target_per_good = 9;          // Fill-target override per good (0/unset = the miner's measured demand units)
+}
+
+message StartStockerResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string warehouse_waypoint = 3;
+  string status = 4;
+  string message = 5;
 }
 
 // GasExtractionOperationRequest starts a gas extraction operation with siphon and transport ships
