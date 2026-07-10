@@ -33,6 +33,11 @@ go.work
 /bin/spacetraders
 /bin/spacetraders-daemon
 
+# Generated man pages (make man) — packaging/install-time output, not
+# reviewable diffs. The markdown CLI reference (make cli-docs) is committed
+# instead, at docs/cli/ — see Makefile.
+/build/
+
 # IDE
 .vscode/
 .idea/

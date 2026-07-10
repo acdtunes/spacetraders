@@ -1,4 +1,4 @@
-.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli launchd install-launchd deploy assert-live-stamp
+.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man
 
 # ---- Build stamp (sp-898q) --------------------------------------------------
 # Injected into internal/infrastructure/buildinfo at LINK time so every binary's
@@ -137,6 +137,47 @@ deploy: build install-launchd
 # Regenerate the captain CLI reference from the spacetraders binary help tree
 cli-reference: build-cli
 	@./scripts/gen-cli-reference.sh ./bin/spacetraders ../captain/CLI_REFERENCE.md
+
+# ---- CLI docs: man pages + markdown reference (sp-fie6) ---------------------
+# Generated from the live cobra tree via the hidden `spacetraders docs`
+# command (internal/adapters/cli/docs.go) — the help tree is complete by
+# construction (every command already carries Use/Short/Long/flags for
+# --help), so these can never drift from the binary the way a hand-maintained
+# doc could. Separate from cli-reference above: that target produces one
+# concatenated --help dump for the captain session; these produce one file
+# per command for browsing (docs/cli/) and for `man` (build/man/man1/).
+MAN_DIR      := build/man/man1
+CLI_DOCS_DIR := docs/cli
+
+# Generate man pages (section 1), one per command, into build/man/man1.
+# build/ is gitignored (like /bin/, /dist/, /mcp/build/) — man pages are
+# packaging/install-time output, not reviewable diffs.
+man: build-cli
+	@./bin/spacetraders docs man --dir $(MAN_DIR)
+	@echo "View without installing: man -M $(CURDIR)/build/man spacetraders-ship-list"
+	@echo "  (or: MANPATH=\"$(CURDIR)/build/man:\$$MANPATH\" man spacetraders-ship-list)"
+	@echo "Install to your user manpath: make install-man"
+
+# Generate the markdown reference, one file per command, into docs/cli/.
+# Committed (unlike build/man/ above): this repo already commits generated
+# CLI docs (captain/CLI_REFERENCE.md via cli-reference), and per-command
+# markdown is reviewable diffable text, not build output.
+cli-docs: build-cli
+	@./bin/spacetraders docs markdown --dir $(CLI_DOCS_DIR)
+
+# Install man pages into ~/.local/share/man/man1 — no sudo required, and (for
+# any shell where ~/.local/bin is on $PATH, as install-cli above assumes)
+# already on the effective manpath via the OS's bin->man auto-mapping, same
+# as install-cli's ~/.local/bin. /usr/local/share/man/man1 is root-owned on a
+# stock macOS/Homebrew install, so we deliberately don't target it — no
+# sudo-requiring targets (see `man` target's MANPATH fallback above for
+# machines where this isn't picked up automatically).
+USER_MAN_DIR := $(HOME)/.local/share/man/man1
+install-man: man
+	@mkdir -p $(USER_MAN_DIR)
+	@cp $(MAN_DIR)/*.1 $(USER_MAN_DIR)/
+	@echo "Installed $$(ls $(MAN_DIR)/*.1 | wc -l | tr -d ' ') man pages to $(USER_MAN_DIR)"
+	@echo "Try: man spacetraders-ship-list"
 
 # Run all tests
 # Note: LC_DYSYMTAB warning is a known macOS/Go 1.24 issue and is harmless
@@ -322,6 +363,9 @@ help:
 	@echo "  run-cli              - Run CLI (use CMD='...' to pass commands)"
 	@echo "  dev-setup            - Set up development environment"
 	@echo "  docker-build         - Build Docker images"
+	@echo "  man                  - Generate man pages into build/man/man1 (gitignored)"
+	@echo "  install-man          - Generate + install man pages to ~/.local/share/man/man1 (no sudo)"
+	@echo "  cli-docs             - Generate markdown CLI reference into docs/cli/ (committed)"
 	@echo "  launchd              - Render launchd plists from templates into deploy/launchd/build (safe)"
 	@echo "  install-launchd      - Render + install plists into ~/Library/LaunchAgents and reload (deploy)"
 	@echo "  deploy               - Build stamped binaries, install launchd, restart, assert live stamp (deploy)"

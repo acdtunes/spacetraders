@@ -75,6 +75,7 @@ Examples:
 	rootCmd.AddCommand(NewHistoryCommand())
 	rootCmd.AddCommand(NewTourCommand())
 	rootCmd.AddCommand(NewVersionCommand())
+	rootCmd.AddCommand(NewDocsCommand())
 
 	return rootCmd
 }
