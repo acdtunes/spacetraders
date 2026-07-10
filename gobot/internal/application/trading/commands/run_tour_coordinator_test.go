@@ -15,6 +15,7 @@ import (
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -42,6 +43,14 @@ type tourFixture struct {
 	bid     map[string]map[string]int // waypoint -> good -> bid (PurchasePrice, sell revenue)
 	ask     map[string]map[string]int // waypoint -> good -> ask (SellPrice, buy cost)
 	tv      map[string]map[string]int // waypoint -> good -> tradeVolume
+
+	// neighbors maps a system to the systems one jump-gate hop away (the fake's answer to
+	// GetJumpGateConnectionsQuery). Drives both the tour graph's neighbor scan and the
+	// sp-zhii reposition candidate set. Absent → no neighbors (home-only), the pre-sp-zhii
+	// default every existing test relies on. jumps records each JumpShipCommand's
+	// destination system so a reposition test can assert the hull actually jumped.
+	neighbors map[string][]string
+	jumps     []string
 
 	sellCap  map[string]int // per-good cap on units a sell absorbs (stranded test); 0 = uncapped
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
@@ -128,6 +137,32 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.cargo[cmd.GoodSymbol] -= cmd.Units
 		m.fx.mu.Unlock()
 		return &gasCmd.TransferCargoResponse{UnitsTransferred: cmd.Units}, nil
+	case *shipQueries.GetJumpGateConnectionsQuery:
+		// Jump-gate neighbor scan (tour graph + sp-zhii reposition candidate set).
+		m.fx.mu.Lock()
+		defer m.fx.mu.Unlock()
+		return &shipQueries.GetJumpGateConnectionsResponse{ConnectedSystems: m.fx.neighbors[cmd.SystemSymbol]}, nil
+	case *shipQueries.FindNearestJumpGateQuery:
+		// The sp-5nqx departure hop resolves the source system's gate before a jump; the
+		// fake returns a synthetic gate for whatever system the hull is currently in.
+		m.fx.mu.Lock()
+		sys := shared.ExtractSystemSymbol(m.fx.location)
+		m.fx.mu.Unlock()
+		wp, err := shared.NewWaypoint(sys+"-GATE", 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		wp.Type = "JUMP_GATE"
+		return &shipQueries.FindNearestJumpGateResponse{JumpGate: wp, SystemSymbol: sys}, nil
+	case *navCmd.JumpShipCommand:
+		// A cross-system jump (sp-zhii reposition rides the shared travel machinery): land
+		// the hull on the destination system's gate and record the hop. CooldownSeconds=0
+		// so the post-jump settle wait is a no-op under the instant fake clock.
+		m.fx.mu.Lock()
+		m.fx.jumps = append(m.fx.jumps, cmd.DestinationSystem)
+		m.fx.location = cmd.DestinationSystem + "-GATE"
+		m.fx.mu.Unlock()
+		return &navCmd.JumpShipResponse{Success: true, DestinationSystem: cmd.DestinationSystem, CooldownSeconds: 0}, nil
 	default:
 		return nil, nil // dock, orbit, etc. succeed silently
 	}
@@ -226,6 +261,12 @@ type tourFakeRoutingClient struct {
 	// rather than COMPLETING via the starvation streak (sp-ovkn).
 	cancel       context.CancelFunc
 	cancelOnCall int
+	// planFn, when set, fully computes the plan for a call from the (synthetic or live)
+	// ship state — used by sp-zhii reposition tests that must return different plans per
+	// SYSTEM (home goes dead, a candidate is alive) and per call, which the flat
+	// index-based plans slice cannot express because planAtCandidate's pre-flight calls
+	// interleave with the loop's own re-plans. Takes precedence over the plans slice.
+	planFn func(ship routing.TourShipState) *routing.TourPlan
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate) (*routing.TourPlan, error) {
@@ -242,6 +283,9 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	}
 	if c.err != nil && (c.errAfter == 0 || c.calls >= c.errAfter) {
 		return nil, c.err
+	}
+	if c.planFn != nil {
+		return c.planFn(ship), nil
 	}
 	if c.infeasibleOnZeroSpend && cons.MaxSpend == 0 {
 		return &routing.TourPlan{Feasible: false, InfeasibleReason: "spend_cap_zero"}, nil

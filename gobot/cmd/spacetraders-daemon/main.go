@@ -673,6 +673,10 @@ func run(cfg *config.Config) error {
 	// the market model regardless of the daemon's cwd (the launchd daemon's cwd is not
 	// the repo root, which DOA'd the first tour on the old cwd-relative constant).
 	tourCoordinatorHandler.SetModelArtifactPath(cfg.Routing.ModelArtifactPath)
+	// sp-zhii: durably record an in-flight margins-death reposition (its target
+	// system+waypoint) into the container config so a restart-rebuilt resume completes the
+	// jump toward the same ground instead of re-planning at an intermediate hop (RULINGS #2).
+	tourCoordinatorHandler.SetRepositionPersister(grpc.NewTourRepositionConfigPersister(containerRepo))
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

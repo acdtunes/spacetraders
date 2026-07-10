@@ -416,6 +416,39 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 			},
 		},
 		{
+			// sp-zhii: the reposition-on-margins-death knobs round-trip through the launch
+			// config — the kill-switch + floor + K (captain-set) AND the RUNTIME
+			// restart-resume state (in_progress + target system/waypoint the coordinator
+			// persists mid-jump), so a restart rebuilds a run that resumes the jump toward
+			// the same fresh ground rather than re-planning at an intermediate hop (RULINGS #2).
+			name:        "tour_run with reposition state",
+			commandType: "tour_run",
+			containerID: "tour-rpz",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":                "SHIP-R",
+				"container_id":               "tour-rpz",
+				"iterations":                 -1,
+				"reposition_disabled":        true,
+				"reposition_min_margin":      40000,
+				"reposition_max_candidates":  2,
+				"reposition_in_progress":     true,
+				"reposition_target_system":   "X1-S2",
+				"reposition_target_waypoint": "X1-S2-A",
+			},
+			want: &tradingCmd.RunTourCoordinatorCommand{
+				ShipSymbol:               "SHIP-R",
+				PlayerID:                 playerID,
+				ContainerID:              "tour-rpz",
+				Iterations:               -1,
+				RepositionDisabled:       true,
+				RepositionMinMargin:      40000,
+				RepositionMaxCandidates:  2,
+				RepositionInProgress:     true,
+				RepositionTargetSystem:   "X1-S2",
+				RepositionTargetWaypoint: "X1-S2-A",
+			},
+		},
+		{
 			// sp-dkj7: a restart-rebuilt arb_run must reload prior_attempt_cost — the
 			// RUNTIME buy cost a fresh run persisted into this config the moment it bought —
 			// so the resumed run reports honest P&L (RULINGS #2) instead of TotalCost=0.

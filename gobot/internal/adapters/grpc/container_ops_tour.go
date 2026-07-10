@@ -2,8 +2,11 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -123,4 +126,55 @@ func (s *DaemonServer) StartTourRun(
 		ContainerID: containerID,
 		ShipSymbol:  shipSymbol,
 	}, nil
+}
+
+// TourRepositionConfigPersister backs the tour coordinator's
+// tradingCmd.RepositionStatePersister with the container config (sp-zhii). When a
+// continuous tour commits a margins-death reposition it merges the in-flight destination
+// (reposition_in_progress + reposition_target_system/waypoint) into the SAME persisted
+// config the recovery rebuild reads (buildTourCoordinatorCommand), and clears it once the
+// jump lands — so a daemon restart mid-jump resumes toward the same ground instead of
+// re-planning at whatever intermediate hop it was re-adopted on (RULINGS #2). Like
+// ArbCostConfigPersister it is a read-modify-write of the config map guarded to those
+// keys, and the config has no other writer during a run, so it never clobbers the
+// status/heartbeat columns the runner updates concurrently.
+type TourRepositionConfigPersister struct {
+	containerRepo *persistence.ContainerRepositoryGORM
+}
+
+// NewTourRepositionConfigPersister wires the config-backed reposition-state store for the
+// tour coordinator (sp-zhii).
+func NewTourRepositionConfigPersister(containerRepo *persistence.ContainerRepositoryGORM) *TourRepositionConfigPersister {
+	return &TourRepositionConfigPersister{containerRepo: containerRepo}
+}
+
+// PersistRepositionState merges the reposition episode into the container's persisted
+// config, preserving every launch knob the rebuild also needs. On InProgress=false it
+// writes the cleared state (empty target) so a restart after the jump landed does NOT
+// re-resume a completed reposition. A missing container row (already terminalized) is an
+// error the caller logs and swallows: this is resume durability, never a movement guard.
+func (p *TourRepositionConfigPersister) PersistRepositionState(ctx context.Context, containerID string, playerID int, ep tradingCmd.RepositionEpisode) error {
+	model, err := p.containerRepo.Get(ctx, containerID, playerID)
+	if err != nil {
+		return fmt.Errorf("load container %s to persist reposition state: %w", containerID, err)
+	}
+	if model == nil {
+		return fmt.Errorf("container %s not found - cannot persist reposition state", containerID)
+	}
+
+	config := map[string]interface{}{}
+	if model.Config != "" {
+		if uerr := json.Unmarshal([]byte(model.Config), &config); uerr != nil {
+			return fmt.Errorf("deserialize container %s config to persist reposition state: %w", containerID, uerr)
+		}
+	}
+	config["reposition_in_progress"] = ep.InProgress
+	config["reposition_target_system"] = ep.TargetSystem
+	config["reposition_target_waypoint"] = ep.TargetWaypoint
+
+	merged, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("serialize container %s config after merging reposition state: %w", containerID, err)
+	}
+	return p.containerRepo.UpdateContainerConfig(ctx, containerID, playerID, string(merged))
 }

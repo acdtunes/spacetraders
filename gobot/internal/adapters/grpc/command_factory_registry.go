@@ -676,6 +676,18 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		ReplanLimit:           cfg.OptionalInt("replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("working_capital_reserve", 0)),
 		Iterations:            cfg.OptionalInt("iterations", 0),
+		// Reposition-on-margins-death knobs (sp-zhii). reposition_disabled defaults to
+		// false → the feature is ON for continuous runs (the captain filed sp-zhii to end
+		// the whack-a-mole); the floor/K default to 0 → the coordinator's own
+		// reposition{MinMargin,MaxCandidates}Default. reposition_in_progress / _target_*
+		// are RUNTIME state the coordinator persists mid-jump (RULINGS #2), reloaded here
+		// so a restart resumes the jump instead of re-planning at an intermediate hop.
+		RepositionDisabled:       cfg.OptionalBool("reposition_disabled"),
+		RepositionMinMargin:      cfg.OptionalInt("reposition_min_margin", 0),
+		RepositionMaxCandidates:  cfg.OptionalInt("reposition_max_candidates", 0),
+		RepositionInProgress:     cfg.OptionalBool("reposition_in_progress"),
+		RepositionTargetSystem:   cfg.OptionalString("reposition_target_system"),
+		RepositionTargetWaypoint: cfg.OptionalString("reposition_target_waypoint"),
 	}
 }
 

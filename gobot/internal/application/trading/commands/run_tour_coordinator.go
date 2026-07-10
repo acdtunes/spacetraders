@@ -120,6 +120,39 @@ type RunTourCoordinatorCommand struct {
 	// ModelArtifactPath overrides defaultModelArtifactPath (tests point it at a temp
 	// artifact); empty → the default repo-relative path.
 	ModelArtifactPath string
+
+	// --- Reposition-on-margins-death (sp-zhii) ---
+	// When a CONTINUOUS (--iterations -1) tour's margins die (tourStarvationLimit
+	// consecutive no-plans after >=1 productive tour), the coordinator RANKS
+	// jump-reachable systems by expected tour margin and JUMPS to the best one before
+	// exiting — a hull stranded on its own freshly-sold-out ground rotates to a fresh
+	// renewable one instead of dying on it and burning a captain relaunch. Bounded to
+	// ONE reposition per margins-death episode (no infinite hop-scotching).
+
+	// RepositionDisabled is the kill-switch. false (the zero value / absent config) →
+	// reposition is ON for continuous runs (the captain filed sp-zhii to END the
+	// whack-a-mole, so ON is the default); true disables it and a margins-died tour
+	// exits exactly as pre-sp-zhii.
+	RepositionDisabled bool
+	// RepositionMinMargin is the fresh-profit floor (RULINGS #5) a candidate's planned
+	// tour must clear to justify the jump: a jump costs antimatter + fuel + a one-way
+	// hop the hull spends not trading, so a marginal destination isn't worth relocating
+	// for. 0 → repositionMinMarginDefault.
+	RepositionMinMargin int
+	// RepositionMaxCandidates bounds the solver fan-out: at most K pre-ranked candidate
+	// systems get a real planner call per margins-death episode. 0 →
+	// repositionMaxCandidatesDefault.
+	RepositionMaxCandidates int
+	// RepositionInProgress / RepositionTargetSystem / RepositionTargetWaypoint are the
+	// restart-resume state (RULINGS #2): persisted into the container config the instant
+	// a reposition jump is committed and cleared once it lands, so a daemon restart
+	// mid-jump resumes toward the SAME ground through the shared cooldown-riding travel
+	// machinery (sp-wc5h) rather than re-planning at whatever intermediate hop it was
+	// re-adopted on. Set by the recovery rebuild from the persisted config; a fresh
+	// launch leaves them zero.
+	RepositionInProgress     bool
+	RepositionTargetSystem   string
+	RepositionTargetWaypoint string
 }
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
@@ -148,6 +181,15 @@ type RunTourCoordinatorResponse struct {
 	ToursCompleted int
 	TradesExecuted int
 	ExitReason     string
+
+	// Repositions counts how many times this run rotated the hull to a fresh ground on
+	// margins-death (sp-zhii). ExitDetail is the human-readable exit explanation the
+	// ExitReason constant abbreviates — on a reposition-then-death it NAMES BOTH the
+	// origin and the destination system ("repositioned X -> Y ... margins died there
+	// too"), so a captain reading a completed continuous tour sees the full rotation
+	// story, not just the machine-readable "starvation".
+	Repositions int
+	ExitDetail  string
 
 	// TourUnavailable marks a fail-open exit: no trading happened, the single-lane
 	// fallback remains. A CLEAN completion (not a failure), never a phantom trade.
@@ -197,6 +239,15 @@ type RunTourCoordinatorHandler struct {
 	// (sp-wj0h). Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
 	// cmd.ModelArtifactPath (tests) still wins over this.
 	modelArtifactPath string
+
+	// repositionPersister durably records an in-flight margins-death reposition (its
+	// target system+waypoint) into the container config so a daemon restart mid-jump
+	// resumes toward the SAME ground (sp-zhii, RULINGS #2). Optional; nil disables
+	// persistence (a restart mid-jump then re-plans at the hull's current position
+	// rather than resuming the reposition — fail-open, matching the sibling optional-port
+	// contract). The daemon injects a container-config-backed persister via
+	// SetRepositionPersister.
+	repositionPersister RepositionStatePersister
 
 	// mediator dispatches the cargo TransferCargoCommand for haul-to-storage deposit
 	// legs (sp-dchv Lane C). Same mediator the delegated legs use.
@@ -275,6 +326,38 @@ func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 // defaultModelArtifactPath. Mirrors the SetGateGraph optional-injection idiom.
 func (h *RunTourCoordinatorHandler) SetModelArtifactPath(path string) {
 	h.modelArtifactPath = path
+}
+
+// RepositionEpisode is the durable slice of a margins-death reposition (sp-zhii): the
+// destination the hull is jumping to. It is persisted into the container config the
+// instant the jump is committed and cleared (InProgress=false) once it lands, so a daemon
+// restart mid-jump (RULINGS #2) resumes toward the SAME ground through the shared
+// cooldown-riding travel machinery (sp-wc5h) rather than re-planning at whatever
+// intermediate hop it was re-adopted on.
+type RepositionEpisode struct {
+	InProgress     bool
+	TargetSystem   string
+	TargetWaypoint string
+}
+
+// RepositionStatePersister durably records an in-flight reposition's destination (keyed
+// by container) so a restart-rebuilt run resumes the jump instead of re-planning at an
+// intermediate position (sp-zhii, RULINGS #2). The daemon backs this with the container
+// config — the same map the recovery rebuild reads (buildTourCoordinatorCommand's
+// reposition_* keys). Mirrors the arb ArbCostPersister contract: a returned error is
+// advisory (persistence durability, never a spend/movement guard), so the caller logs and
+// continues.
+type RepositionStatePersister interface {
+	PersistRepositionState(ctx context.Context, containerID string, playerID int, episode RepositionEpisode) error
+}
+
+// SetRepositionPersister wires the durable reposition-state store (sp-zhii) so a margins-
+// death reposition survives a daemon restart mid-jump (RULINGS #2). Left unset (nil), a
+// restart mid-jump re-plans at the hull's current position rather than resuming the
+// reposition, exactly as if the feature carried no persistence (fail-open). Mirrors the
+// arb SetCostPersister optional-injection idiom.
+func (h *RunTourCoordinatorHandler) SetRepositionPersister(p RepositionStatePersister) {
+	h.repositionPersister = p
 }
 
 // Handle executes the one-shot tour. A fail-open no-op and a stranded-cargo veto both
@@ -367,6 +450,33 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// means N tours actually flown, so a transient no-plan mid-run is retried (bounded
 	// by the starvation streak) rather than silently burning a tour slot.
 	noProgressStreak := 0
+
+	// episode tracks the current margins-death reposition (sp-zhii): whether this run has
+	// already spent its ONE reposition since the last productive tour, and the systems
+	// involved (for the honest "margins died at X, repositioned to Y, died there too"
+	// exit). A productive tour clears it — a fresh ground earned means a LATER death may
+	// rotate again (grounds are renewable flows), which is the whole point; the
+	// one-per-episode bound only stops hop-scotching WITHOUT trading in between.
+	var episode repositionEpisode
+
+	// RULINGS #2 restart-resume: a continuous run re-adopted mid-jump (the reposition was
+	// in flight when the daemon restarted) resumes toward the SAME destination through the
+	// shared cooldown-riding travel machinery (sp-wc5h rides any leftover jump cooldown),
+	// then clears the persisted flag — so the hull lands on the ground it was rotating to
+	// rather than re-planning at whatever intermediate hop it was re-adopted on. It counts
+	// as the episode's spent reposition so a fresh 3-strike at the destination exits
+	// honestly instead of hop-scotching across the restart boundary.
+	if continuous && cmd.RepositionInProgress && cmd.RepositionTargetWaypoint != "" {
+		logger.Log("INFO", fmt.Sprintf("Reposition resume: re-adopted mid-jump toward %s (%s) after a restart - completing the jump before re-planning (RULINGS #2)", cmd.RepositionTargetSystem, cmd.RepositionTargetWaypoint), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "target_system": cmd.RepositionTargetSystem, "target_waypoint": cmd.RepositionTargetWaypoint,
+		})
+		if rerr := h.legs.RepositionToWaypoint(ctx, cmd.ShipSymbol, cmd.RepositionTargetWaypoint, cmd.PlayerID); rerr != nil {
+			return rerr // resumable — the persisted in-progress flag stays set so a re-restart retries the resume
+		}
+		h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})
+		episode = repositionEpisode{repositioned: true, toSystem: cmd.RepositionTargetSystem}
+	}
+
 	for continuous || response.ToursCompleted < iterations {
 		// A stop/shutdown cancels ctx (interruptAllContainers escalates the STOPPING
 		// flag to a ctx cancel). Exit RESUMABLE at the tour boundary by returning the
@@ -417,47 +527,67 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			return terr
 		}
 
-		if !feasible {
-			// Nothing earned yet AND no plan → the fail-open no-op (single-lane
-			// fallback stands): the original one-shot behavior, preserved exactly.
-			if response.ToursCompleted == 0 {
-				response.TourUnavailable = true
-				response.TourUnavailableReason = reason
-				response.ExitReason = tourExitUnavailable
-				logger.Log("INFO", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "model": modelVersion})
-				return nil
-			}
-			// Already earned: a no-plan from the current position is margin-death.
-			// Confirm tourStarvationLimit in a row, then exit HONEST (container completes).
-			noProgressStreak++
-			if noProgressStreak >= tourStarvationLimit {
-				response.ExitReason = tourExitStarvation
-				logger.Log("INFO", fmt.Sprintf("Continuous tour stopping - margins died (%d consecutive tours found no profitable plan) after %d productive tour(s)", noProgressStreak, response.ToursCompleted), map[string]interface{}{
-					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "reason": reason,
-				})
-				break
-			}
+		// A PRODUCTIVE tour (feasible AND flew >=1 trade) resets the starvation streak and
+		// ENDS any reposition episode: a fresh ground earned, so a later death may rotate
+		// again (sp-zhii — the one-per-episode bound only prevents hop-scotching WITHOUT
+		// trading in between).
+		if feasible && response.TradesExecuted > tradesBefore {
+			noProgressStreak = 0
+			response.ToursCompleted++
+			episode = repositionEpisode{}
 			continue
 		}
 
-		// A feasible plan that flew ZERO trades (every leg degraded, re-plans
-		// exhausted) is also no-progress — bound how many in a row a -1 loop tolerates
-		// so a persistently-unexecutable plan can't spin forever (mirrors the
-		// trade-route zero-visit starvation).
-		if response.TradesExecuted == tradesBefore {
-			noProgressStreak++
-			if noProgressStreak >= tourStarvationLimit {
-				response.ExitReason = tourExitStarvation
-				logger.Log("INFO", fmt.Sprintf("Continuous tour stopping - %d consecutive tours flew zero trades after %d productive tour(s)", noProgressStreak, response.ToursCompleted), map[string]interface{}{
-					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
-				})
-				break
-			}
+		// No progress this tour. On the VERY FIRST tour with no plan, nothing was earned →
+		// the fail-open no-op (single-lane fallback stands): the original one-shot behavior,
+		// preserved exactly.
+		if !feasible && response.ToursCompleted == 0 {
+			response.TourUnavailable = true
+			response.TourUnavailableReason = reason
+			response.ExitReason = tourExitUnavailable
+			logger.Log("INFO", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "model": modelVersion})
+			return nil
+		}
+
+		// Already earned but this tour made no progress (no plan, or a feasible plan that
+		// flew zero trades — every leg degraded, re-plans exhausted). Bound how many in a
+		// row a -1 loop tolerates so a transient miss is retried but a genuinely dead
+		// ground is caught (mirrors the trade-route zero-visit starvation).
+		noProgressStreak++
+		starvationDetail := fmt.Sprintf("margins died (%d consecutive tours found no profitable plan) after %d productive tour(s)", noProgressStreak, response.ToursCompleted)
+		if feasible {
+			starvationDetail = fmt.Sprintf("%d consecutive tours flew zero trades after %d productive tour(s)", noProgressStreak, response.ToursCompleted)
+		}
+		if noProgressStreak < tourStarvationLimit {
 			continue
 		}
 
-		noProgressStreak = 0
-		response.ToursCompleted++
+		// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
+		// renewable ground (sp-zhii): rank jump-reachable systems by expected tour margin,
+		// jump to the best one that clears the reposition floor, and let the loop re-plan
+		// there. Only CONTINUOUS (-1) runs that have earned >=1 tour reposition — a
+		// finite/one-shot run, or a run that never executed a first tour, exits as today.
+		if continuous && response.ToursCompleted > 0 {
+			repositioned, rerr := h.maybeReposition(ctx, cmd, response, &episode, maxHops, tourMaxSpend, reserve, modelVersion)
+			if rerr != nil {
+				return rerr
+			}
+			if repositioned {
+				noProgressStreak = 0
+				continue
+			}
+		}
+
+		// No ground was worth the jump (or reposition is off/already spent this episode) —
+		// exit HONEST (the container completes). The detail NAMES BOTH systems when a
+		// reposition was already spent this episode (RULINGS: name origin and destination).
+		response.ExitReason = tourExitStarvation
+		response.ExitDetail = starvationExitDetail(episode, starvationDetail)
+		logger.Log("INFO", "Continuous tour stopping - "+response.ExitDetail, map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
+			"repositions": response.Repositions, "reason": reason,
+		})
+		break
 	}
 	if response.ExitReason == "" {
 		response.ExitReason = tourExitIterations
@@ -478,7 +608,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	logger.Log("INFO", "Tour run complete", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "exit_reason": response.ExitReason,
 		"legs_executed": response.LegsExecuted, "trades_executed": response.TradesExecuted, "replans": response.Replans,
-		"spent": response.TotalSpent, "revenue": response.TotalRevenue, "net": response.NetProfit,
+		"repositions": response.Repositions, "spent": response.TotalSpent, "revenue": response.TotalRevenue, "net": response.NetProfit,
 	})
 	return nil
 }
@@ -941,6 +1071,24 @@ func (h *RunTourCoordinatorHandler) plan(
 	modelVersion string,
 ) (*routing.TourPlan, error) {
 	allowedSystems := h.tourSystems(ctx, ship, cmd.PlayerID)
+	return h.planForState(ctx, h.tourShipState(ship), allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
+}
+
+// planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
+// and calls the depth-aware planner for the given ship state. It is the plan core shared
+// by the live tour (plan, above — ship state + tour graph derived from the hull's real
+// position) and the sp-zhii reposition pre-flight (planAtCandidate — a SYNTHETIC ship
+// state positioned at a candidate system, over that candidate's tour graph, to price the
+// tour the hull WOULD fly there without moving it first).
+func (h *RunTourCoordinatorHandler) planForState(
+	ctx context.Context,
+	shipState routing.TourShipState,
+	allowedSystems []string,
+	maxHops int,
+	maxSpend, reserve int64,
+	cmd *RunTourCoordinatorCommand,
+	modelVersion string,
+) (*routing.TourPlan, error) {
 	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), maxListingAge)
 	if err != nil {
 		return nil, err
@@ -959,7 +1107,7 @@ func (h *RunTourCoordinatorHandler) plan(
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
 	}
-	return h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, h.tourShipState(ship), cons, deposits)
+	return h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits)
 }
 
 // depositCandidates assembles the haul-to-storage deposit sinks for the planner
@@ -1029,7 +1177,15 @@ func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, r
 // maxTourSystems=2 within this allowed set). Neighbor discovery fails open to
 // home-only.
 func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navigation.Ship, playerID int) []string {
-	home := ship.CurrentLocation().SystemSymbol
+	return h.tourSystemsFrom(ctx, ship.CurrentLocation().SystemSymbol, playerID)
+}
+
+// tourSystemsFrom is tourSystems generalized to an arbitrary home system: the given
+// system plus every system one gate hop away with fresh market data. The live tour
+// centers it on the hull's current system; the sp-zhii reposition pre-flight centers it
+// on a candidate system to build that candidate's tour graph. Neighbor discovery fails
+// open to home-only.
+func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, playerID int) []string {
 	systems := []string{home}
 	seen := map[string]bool{home: true}
 	for _, n := range h.legs.neighborSystems(ctx, home, playerID) {
