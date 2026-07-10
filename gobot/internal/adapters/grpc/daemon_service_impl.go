@@ -316,13 +316,14 @@ func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShi
 		return &pb.ListShipModulesResponse{Error: fmt.Sprintf("failed to resolve player: %v", err)}, nil
 	}
 
+	// req.CandidatePower/Crew/Slots are deprecated and intentionally ignored
+	// (sp-el60 acceptance fix): the candidate's requirements are always
+	// resolved server-side via ShipRepository.FindModuleRequirements, never
+	// taken from caller input. See ListShipModulesRequest's proto comment.
 	cmd := &shipOutfit.ListShipModulesQuery{
 		ShipSymbol:      req.ShipSymbol,
 		PlayerID:        &playerID,
 		CandidateSymbol: req.GetCandidateSymbol(),
-		CandidatePower:  int(req.GetCandidatePower()),
-		CandidateCrew:   int(req.GetCandidateCrew()),
-		CandidateSlots:  int(req.GetCandidateSlots()),
 	}
 
 	result, err := s.daemon.mediator.Send(ctx, cmd)
@@ -349,11 +350,15 @@ func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShi
 	}
 	if resp.Feasibility != nil {
 		out.Feasibility = &pb.ModuleFeasibility{
-			CandidateSymbol: resp.Feasibility.CandidateSymbol,
-			CanInstall:      resp.Feasibility.CanInstall,
-			PowerShort:      int32(resp.Feasibility.PowerShort),
-			SlotShort:       int32(resp.Feasibility.SlotShort),
-			CrewShort:       int32(resp.Feasibility.CrewShort),
+			CandidateSymbol:   resp.Feasibility.CandidateSymbol,
+			CanInstall:        resp.Feasibility.CanInstall,
+			PowerShort:        int32(resp.Feasibility.PowerShort),
+			SlotShort:         int32(resp.Feasibility.SlotShort),
+			CrewShort:         int32(resp.Feasibility.CrewShort),
+			RequirementsKnown: resp.Feasibility.RequirementsKnown,
+			RequirementsPower: int32(resp.Feasibility.RequirementsPower),
+			RequirementsCrew:  int32(resp.Feasibility.RequirementsCrew),
+			RequirementsSlots: int32(resp.Feasibility.RequirementsSlots),
 		}
 	}
 

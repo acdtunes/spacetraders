@@ -1773,3 +1773,50 @@ func (r *ShipRepository) FindWithFutureCooldown(ctx context.Context) ([]*navigat
 
 	return r.modelsToShips(ctx, models), nil
 }
+
+// FindModuleRequirements resolves symbol's own power/crew/slot requirements
+// by scanning every ship's installed module list for a match (sp-el60
+// acceptance fix). There is no catalog of unowned module specs anywhere in
+// this codebase or the SpaceTraders API, so a candidate's requirements can
+// only come from having been observed installed somewhere - the same module
+// symbol has identical requirements on every hull that carries it. Unscoped
+// by player, mirroring FindInTransitWithPastArrival and the other
+// background-updater queries above.
+//
+// Scans and unmarshals modules JSON in Go rather than using a Postgres
+// jsonb operator (e.g. @>) because the modules column is queried against
+// both SQLite (test harness, database.NewTestConnection) and Postgres
+// (production) - a jsonb-only operator would work in production but break
+// every test using the real repository. A row with corrupt/unparseable
+// modules JSON is skipped, not treated as a fatal error, so one bad row
+// cannot hide a real match on another ship.
+//
+// The bool return is false only when no ship anywhere has ever carried
+// symbol; callers must treat that as "requirements unknown" (see
+// UnknownRequirementsFeasibility), never substitute a zero-valued
+// ShipRequirements for a real one.
+func (r *ShipRepository) FindModuleRequirements(ctx context.Context, symbol string) (navigation.ShipRequirements, bool, error) {
+	var zero navigation.ShipRequirements
+
+	var models []persistence.ShipModel
+	if err := r.db.WithContext(ctx).Find(&models).Error; err != nil {
+		return zero, false, err
+	}
+
+	for _, model := range models {
+		if model.Modules == "" || model.Modules == "[]" {
+			continue
+		}
+		var modulesJSON []persistence.ModuleJSON
+		if err := json.Unmarshal([]byte(model.Modules), &modulesJSON); err != nil {
+			continue // corrupt row - skip, don't fail the whole lookup
+		}
+		for _, mod := range modulesJSON {
+			if mod.Symbol == symbol {
+				return navigation.NewShipRequirements(mod.Requirements.Power, mod.Requirements.Crew, mod.Requirements.Slots), true, nil
+			}
+		}
+	}
+
+	return zero, false, nil
+}

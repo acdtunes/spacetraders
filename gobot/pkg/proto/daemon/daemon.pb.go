@@ -831,14 +831,28 @@ func (x *ShipModuleInfo) GetSlots() int32 {
 type ModuleFeasibility struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	CandidateSymbol string                 `protobuf:"bytes,1,opt,name=candidate_symbol,json=candidateSymbol,proto3" json:"candidate_symbol,omitempty"`
-	// can_install is true only when power_short, slot_short, and crew_short
-	// are all 0.
-	CanInstall    bool  `protobuf:"varint,2,opt,name=can_install,json=canInstall,proto3" json:"can_install,omitempty"`
-	PowerShort    int32 `protobuf:"varint,3,opt,name=power_short,json=powerShort,proto3" json:"power_short,omitempty"`
-	SlotShort     int32 `protobuf:"varint,4,opt,name=slot_short,json=slotShort,proto3" json:"slot_short,omitempty"`
-	CrewShort     int32 `protobuf:"varint,5,opt,name=crew_short,json=crewShort,proto3" json:"crew_short,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// can_install is true only when requirements_known is true and
+	// power_short, slot_short, and crew_short are all 0. A candidate whose
+	// requirements could not be resolved from a real data source always
+	// reports can_install = false (sp-el60 acceptance fix) - there is no
+	// zero-filled-requirements path that can produce a false "fits" verdict.
+	CanInstall bool  `protobuf:"varint,2,opt,name=can_install,json=canInstall,proto3" json:"can_install,omitempty"`
+	PowerShort int32 `protobuf:"varint,3,opt,name=power_short,json=powerShort,proto3" json:"power_short,omitempty"`
+	SlotShort  int32 `protobuf:"varint,4,opt,name=slot_short,json=slotShort,proto3" json:"slot_short,omitempty"`
+	CrewShort  int32 `protobuf:"varint,5,opt,name=crew_short,json=crewShort,proto3" json:"crew_short,omitempty"`
+	// requirements_known is true only when the candidate's own power/crew/slot
+	// requirements were actually resolved - from another ship in the fleet
+	// that has candidate_symbol installed, since there is no catalog of
+	// unowned module specs anywhere (sp-el60 acceptance fix). When false, the
+	// requirements_power/crew/slots fields below are unset/zero and MUST be
+	// presented to the user as "unknown", never as a real zero-cost spec, and
+	// can_install is always false regardless of the ship's free budget.
+	RequirementsKnown bool  `protobuf:"varint,6,opt,name=requirements_known,json=requirementsKnown,proto3" json:"requirements_known,omitempty"`
+	RequirementsPower int32 `protobuf:"varint,7,opt,name=requirements_power,json=requirementsPower,proto3" json:"requirements_power,omitempty"`
+	RequirementsCrew  int32 `protobuf:"varint,8,opt,name=requirements_crew,json=requirementsCrew,proto3" json:"requirements_crew,omitempty"`
+	RequirementsSlots int32 `protobuf:"varint,9,opt,name=requirements_slots,json=requirementsSlots,proto3" json:"requirements_slots,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ModuleFeasibility) Reset() {
@@ -902,6 +916,34 @@ func (x *ModuleFeasibility) GetSlotShort() int32 {
 func (x *ModuleFeasibility) GetCrewShort() int32 {
 	if x != nil {
 		return x.CrewShort
+	}
+	return 0
+}
+
+func (x *ModuleFeasibility) GetRequirementsKnown() bool {
+	if x != nil {
+		return x.RequirementsKnown
+	}
+	return false
+}
+
+func (x *ModuleFeasibility) GetRequirementsPower() int32 {
+	if x != nil {
+		return x.RequirementsPower
+	}
+	return 0
+}
+
+func (x *ModuleFeasibility) GetRequirementsCrew() int32 {
+	if x != nil {
+		return x.RequirementsCrew
+	}
+	return 0
+}
+
+func (x *ModuleFeasibility) GetRequirementsSlots() int32 {
+	if x != nil {
+		return x.RequirementsSlots
 	}
 	return 0
 }
@@ -1257,15 +1299,20 @@ type ListShipModulesRequest struct {
 	AgentSymbol *string                `protobuf:"bytes,3,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
 	// candidate_symbol, when set, requests an offline feasibility check for a
 	// not-yet-installed module against this ship's current power/slot/crew
-	// budget (sp-el60). candidate_power/crew/slots are the candidate module's
-	// own install requirements - there is no catalog of unowned module specs
-	// in this codebase or the SpaceTraders API, so the caller supplies them.
+	// budget (sp-el60).
 	CandidateSymbol *string `protobuf:"bytes,4,opt,name=candidate_symbol,json=candidateSymbol,proto3,oneof" json:"candidate_symbol,omitempty"`
-	CandidatePower  *int32  `protobuf:"varint,5,opt,name=candidate_power,json=candidatePower,proto3,oneof" json:"candidate_power,omitempty"`
-	CandidateCrew   *int32  `protobuf:"varint,6,opt,name=candidate_crew,json=candidateCrew,proto3,oneof" json:"candidate_crew,omitempty"`
-	CandidateSlots  *int32  `protobuf:"varint,7,opt,name=candidate_slots,json=candidateSlots,proto3,oneof" json:"candidate_slots,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// candidate_power/crew/slots are DEPRECATED and ignored server-side as of
+	// the sp-el60 acceptance fix: a caller-supplied value silently defaulted
+	// to 0 when omitted, which trivially satisfied every budget check and
+	// misreported CAN-INSTALL. The candidate's requirements are now always
+	// resolved server-side from another ship in the fleet that has
+	// candidate_symbol installed (see ModuleFeasibility.requirements_known).
+	// Fields kept, unread, for wire compatibility with older clients.
+	CandidatePower *int32 `protobuf:"varint,5,opt,name=candidate_power,json=candidatePower,proto3,oneof" json:"candidate_power,omitempty"`
+	CandidateCrew  *int32 `protobuf:"varint,6,opt,name=candidate_crew,json=candidateCrew,proto3,oneof" json:"candidate_crew,omitempty"`
+	CandidateSlots *int32 `protobuf:"varint,7,opt,name=candidate_slots,json=candidateSlots,proto3,oneof" json:"candidate_slots,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListShipModulesRequest) Reset() {
@@ -9242,7 +9289,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x05range\x18\x04 \x01(\x05R\x05range\x12\x14\n" +
 	"\x05power\x18\x05 \x01(\x05R\x05power\x12\x12\n" +
 	"\x04crew\x18\x06 \x01(\x05R\x04crew\x12\x14\n" +
-	"\x05slots\x18\a \x01(\x05R\x05slots\"\xbe\x01\n" +
+	"\x05slots\x18\a \x01(\x05R\x05slots\"\xf8\x02\n" +
 	"\x11ModuleFeasibility\x12)\n" +
 	"\x10candidate_symbol\x18\x01 \x01(\tR\x0fcandidateSymbol\x12\x1f\n" +
 	"\vcan_install\x18\x02 \x01(\bR\n" +
@@ -9252,7 +9299,11 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"slot_short\x18\x04 \x01(\x05R\tslotShort\x12\x1d\n" +
 	"\n" +
-	"crew_short\x18\x05 \x01(\x05R\tcrewShort\"\xb2\x01\n" +
+	"crew_short\x18\x05 \x01(\x05R\tcrewShort\x12-\n" +
+	"\x12requirements_known\x18\x06 \x01(\bR\x11requirementsKnown\x12-\n" +
+	"\x12requirements_power\x18\a \x01(\x05R\x11requirementsPower\x12+\n" +
+	"\x11requirements_crew\x18\b \x01(\x05R\x10requirementsCrew\x12-\n" +
+	"\x12requirements_slots\x18\t \x01(\x05R\x11requirementsSlots\"\xb2\x01\n" +
 	"\x14InstallModuleRequest\x12\x1f\n" +
 	"\vship_symbol\x18\x01 \x01(\tR\n" +
 	"shipSymbol\x12#\n" +

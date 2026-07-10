@@ -9,8 +9,18 @@ package navigation
 // blocked. More than one field can be short at once (e.g. both power and
 // slots).
 type InstallFeasibility struct {
-	// CanInstall is true only when PowerShort, SlotShort, and CrewShort are
-	// all 0.
+	// RequirementsKnown is true only when the candidate's power/slot/crew
+	// requirements were actually resolved from a real data source (sp-el60
+	// acceptance fix). It is false for the Go zero value of
+	// InstallFeasibility and for UnknownRequirementsFeasibility(), so an
+	// unconstructed or explicitly-unknown verdict can never be mistaken for
+	// a computed one. Callers must check this before trusting CanInstall.
+	RequirementsKnown bool
+	// CanInstall is true only when RequirementsKnown is true and
+	// PowerShort, SlotShort, and CrewShort are all 0. A verdict built
+	// without known requirements (RequirementsKnown false) always reports
+	// CanInstall false — there is no zero-filled-requirements path that can
+	// produce a false "fits" verdict.
 	CanInstall bool
 	// PowerShort is how much additional reactor power output would be
 	// needed to fit the candidate, or 0 if the power budget already covers
@@ -24,6 +34,16 @@ type InstallFeasibility struct {
 	// cover the candidate's crew requirement, or 0 if capacity already
 	// covers it.
 	CrewShort int
+}
+
+// UnknownRequirementsFeasibility is the verdict callers must use when a
+// candidate's power/slot/crew requirements cannot be resolved from a real
+// data source (sp-el60 acceptance fix) — e.g. no ship in the fleet has ever
+// carried the candidate's symbol, so there is nothing to look up. It always
+// reports RequirementsKnown false and CanInstall false; never construct a
+// "fits" verdict from zero-filled or guessed requirements.
+func UnknownRequirementsFeasibility() InstallFeasibility {
+	return InstallFeasibility{RequirementsKnown: false, CanInstall: false}
 }
 
 // CheckModuleInstallFeasibility reports whether candidate can be installed
@@ -60,7 +80,7 @@ func CheckMountInstallFeasibility(ship *Ship, candidate *ShipMount) InstallFeasi
 // shortfall of that magnitude; a need already covered by what remains blocks
 // nothing.
 func newInstallFeasibility(powerRemaining, powerNeed, slotsRemaining, slotsNeed, crewRemaining, crewNeed int) InstallFeasibility {
-	f := InstallFeasibility{}
+	f := InstallFeasibility{RequirementsKnown: true}
 	if gap := powerNeed - powerRemaining; gap > 0 {
 		f.PowerShort = gap
 	}

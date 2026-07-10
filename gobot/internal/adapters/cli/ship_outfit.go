@@ -158,9 +158,6 @@ func newShipOutfitListCommand() *cobra.Command {
 	var (
 		shipSymbol      string
 		candidateSymbol string
-		candidatePower  int
-		candidateCrew   int
-		candidateSlots  int
 	)
 
 	cmd := &cobra.Command{
@@ -174,13 +171,19 @@ state (sp-el60) - reactors, frames, and crew capacity have no swap endpoint
 in the SpaceTraders API, so these budgets are permanent for the life of the
 hull and don't require a live trial-and-error install to check.
 
-Pass --candidate (with its --power/--crew/--slots install requirements) to
-check offline whether that not-yet-installed module would fit.
+Pass --candidate to check offline whether a not-yet-installed module would
+fit. The candidate's own power/crew/slot requirements are resolved
+automatically from another ship in the fleet that has it installed (sp-el60
+acceptance fix) - there is no catalog of unowned module specs to take them
+from on the command line, so there are no --power/--crew/--slots flags. If
+no ship anywhere has ever carried the candidate symbol, the requirements are
+reported as unknown and the verdict is UNKNOWN-REQUIREMENTS, never a
+trivially-satisfied CAN-INSTALL.
 
 Examples:
   spacetraders ship outfit list --ship ENDURANCE-1 --agent ENDURANCE
   spacetraders ship outfit list --ship ENDURANCE-1 --agent ENDURANCE \
-    --candidate MODULE_CARGO_HOLD_III --power 1 --crew 0 --slots 1`,
+    --candidate MODULE_CARGO_HOLD_III`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if shipSymbol == "" {
 				return fmt.Errorf("--ship flag is required")
@@ -201,7 +204,7 @@ Examples:
 			defer cancel()
 
 			result, err := client.ListShipModules(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol,
-				candidateSymbol, candidatePower, candidateCrew, candidateSlots)
+				candidateSymbol)
 			if err != nil {
 				return fmt.Errorf("list modules failed: %w", err)
 			}
@@ -222,6 +225,7 @@ Examples:
 
 			if result.Feasibility != nil {
 				fmt.Println("Feasibility:")
+				fmt.Printf("    %s\n", formatRequirementsLine(result.Feasibility))
 				fmt.Printf("    %s\n", formatFeasibility(result.Feasibility))
 			}
 
@@ -231,9 +235,6 @@ Examples:
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol whose modules to list (required)")
 	cmd.Flags().StringVar(&candidateSymbol, "candidate", "", "Symbol of a not-yet-installed module to check offline install feasibility for")
-	cmd.Flags().IntVar(&candidatePower, "power", 0, "Candidate module's power requirement (used with --candidate)")
-	cmd.Flags().IntVar(&candidateCrew, "crew", 0, "Candidate module's crew requirement (used with --candidate)")
-	cmd.Flags().IntVar(&candidateSlots, "slots", 0, "Candidate module's module-slot requirement (used with --candidate)")
 
 	return cmd
 }
@@ -253,9 +254,31 @@ func printPowerSlotsSummary(result *ShipModulesResponse) {
 		result.CrewCurrent, result.CrewRequired, result.CrewCapacity)
 }
 
+// formatRequirementsLine renders the candidate's resolved power/crew/slot
+// requirements, or an explicit "requirements: unknown" when no ship in the
+// fleet has ever carried the symbol (sp-el60 acceptance fix). The
+// requirements a verdict was checked against must always be visible in the
+// output, never silently omitted - the original acceptance bug printed a
+// CAN-INSTALL verdict with no requirements line at all.
+func formatRequirementsLine(f *ModuleFeasibilityDTO) string {
+	if !f.RequirementsKnown {
+		return fmt.Sprintf("%s requirements: unknown", f.CandidateSymbol)
+	}
+	return fmt.Sprintf("%s requirements: power=%d crew=%d slots=%d",
+		f.CandidateSymbol, f.RequirementsPower, f.RequirementsCrew, f.RequirementsSlots)
+}
+
 // formatFeasibility renders an offline install-feasibility verdict as a
-// single CAN-INSTALL / *-SHORT-N line (sp-el60).
+// single CAN-INSTALL / UNKNOWN-REQUIREMENTS / *-SHORT-N line (sp-el60).
+// UNKNOWN-REQUIREMENTS is checked first and unconditionally: a candidate
+// whose requirements could not be resolved must never print CAN-INSTALL,
+// even though the DTO's CanInstall bool is already guaranteed false by the
+// domain layer for this case - the output must say so explicitly, per the
+// sp-el60 acceptance fix, not just fail closed silently.
 func formatFeasibility(f *ModuleFeasibilityDTO) string {
+	if !f.RequirementsKnown {
+		return fmt.Sprintf("%s: UNKNOWN-REQUIREMENTS", f.CandidateSymbol)
+	}
 	if f.CanInstall {
 		return fmt.Sprintf("%s: CAN-INSTALL", f.CandidateSymbol)
 	}

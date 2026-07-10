@@ -365,12 +365,25 @@ type ModuleModificationResponse struct {
 // ModuleFeasibilityDTO is the CLI-side offline install-feasibility verdict
 // for a candidate module (sp-el60), populated only when the list request
 // carried a candidate symbol.
+//
+// RequirementsKnown is true only when the candidate's own power/crew/slot
+// requirements were actually resolved server-side - from another ship in
+// the fleet that has the symbol installed, since there is no catalog of
+// unowned module specs anywhere (sp-el60 acceptance fix). When false,
+// RequirementsPower/Crew/Slots are unset/zero and CanInstall is always
+// false; callers must present the requirements as "unknown", never as a
+// real zero-cost spec, and must never report CAN-INSTALL.
 type ModuleFeasibilityDTO struct {
 	CandidateSymbol string
 	CanInstall      bool
 	PowerShort      int
 	SlotShort       int
 	CrewShort       int
+
+	RequirementsKnown bool
+	RequirementsPower int
+	RequirementsCrew  int
+	RequirementsSlots int
 }
 
 // ShipModulesResponse is the CLI-side result of listing a ship's modules,
@@ -482,18 +495,19 @@ func (c *DaemonClient) RemoveModule(
 // ListShipModules lists the modules installed on a ship, along with its
 // power/slot/crew budget summary computed offline from cached ship state
 // (sp-el60). When candidateSymbol is non-empty, the response also carries an
-// offline install-feasibility verdict for that not-yet-installed module —
-// candidatePower/Crew/Slots are the candidate's own install requirements,
-// supplied by the caller since no catalog of unowned module specs exists.
+// offline install-feasibility verdict for that not-yet-installed module. The
+// candidate's own power/crew/slot requirements are resolved server-side, not
+// supplied by the caller (sp-el60 acceptance fix) — there is no catalog of
+// unowned module specs anywhere, so the only real data source is another
+// ship in the fleet that has the symbol installed. See
+// ModuleFeasibilityDTO.RequirementsKnown for the fail-closed signal when no
+// ship anywhere ever has.
 func (c *DaemonClient) ListShipModules(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
 	agentSymbol string,
 	candidateSymbol string,
-	candidatePower int,
-	candidateCrew int,
-	candidateSlots int,
 ) (*ShipModulesResponse, error) {
 	req := &pb.ListShipModulesRequest{
 		ShipSymbol: shipSymbol,
@@ -503,13 +517,7 @@ func (c *DaemonClient) ListShipModules(
 		req.AgentSymbol = &agentSymbol
 	}
 	if candidateSymbol != "" {
-		power := int32(candidatePower)
-		crew := int32(candidateCrew)
-		slots := int32(candidateSlots)
 		req.CandidateSymbol = &candidateSymbol
-		req.CandidatePower = &power
-		req.CandidateCrew = &crew
-		req.CandidateSlots = &slots
 	}
 
 	resp, err := c.client.ListShipModules(ctx, req)
@@ -535,11 +543,15 @@ func (c *DaemonClient) ListShipModules(
 
 	if f := resp.Feasibility; f != nil {
 		out.Feasibility = &ModuleFeasibilityDTO{
-			CandidateSymbol: f.CandidateSymbol,
-			CanInstall:      f.CanInstall,
-			PowerShort:      int(f.PowerShort),
-			SlotShort:       int(f.SlotShort),
-			CrewShort:       int(f.CrewShort),
+			CandidateSymbol:   f.CandidateSymbol,
+			CanInstall:        f.CanInstall,
+			PowerShort:        int(f.PowerShort),
+			SlotShort:         int(f.SlotShort),
+			CrewShort:         int(f.CrewShort),
+			RequirementsKnown: f.RequirementsKnown,
+			RequirementsPower: int(f.RequirementsPower),
+			RequirementsCrew:  int(f.RequirementsCrew),
+			RequirementsSlots: int(f.RequirementsSlots),
 		}
 	}
 

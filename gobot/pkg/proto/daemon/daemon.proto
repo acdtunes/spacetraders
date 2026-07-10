@@ -302,12 +302,26 @@ message ShipModuleInfo {
 // carried a candidate_symbol.
 message ModuleFeasibility {
   string candidate_symbol = 1;
-  // can_install is true only when power_short, slot_short, and crew_short
-  // are all 0.
+  // can_install is true only when requirements_known is true and
+  // power_short, slot_short, and crew_short are all 0. A candidate whose
+  // requirements could not be resolved from a real data source always
+  // reports can_install = false (sp-el60 acceptance fix) - there is no
+  // zero-filled-requirements path that can produce a false "fits" verdict.
   bool can_install = 2;
   int32 power_short = 3;
   int32 slot_short = 4;
   int32 crew_short = 5;
+  // requirements_known is true only when the candidate's own power/crew/slot
+  // requirements were actually resolved - from another ship in the fleet
+  // that has candidate_symbol installed, since there is no catalog of
+  // unowned module specs anywhere (sp-el60 acceptance fix). When false, the
+  // requirements_power/crew/slots fields below are unset/zero and MUST be
+  // presented to the user as "unknown", never as a real zero-cost spec, and
+  // can_install is always false regardless of the ship's free budget.
+  bool requirements_known = 6;
+  int32 requirements_power = 7;
+  int32 requirements_crew = 8;
+  int32 requirements_slots = 9;
 }
 
 // InstallModuleRequest installs a module from the ship's cargo onto the ship.
@@ -360,10 +374,15 @@ message ListShipModulesRequest {
   optional string agent_symbol = 3;
   // candidate_symbol, when set, requests an offline feasibility check for a
   // not-yet-installed module against this ship's current power/slot/crew
-  // budget (sp-el60). candidate_power/crew/slots are the candidate module's
-  // own install requirements - there is no catalog of unowned module specs
-  // in this codebase or the SpaceTraders API, so the caller supplies them.
+  // budget (sp-el60).
   optional string candidate_symbol = 4;
+  // candidate_power/crew/slots are DEPRECATED and ignored server-side as of
+  // the sp-el60 acceptance fix: a caller-supplied value silently defaulted
+  // to 0 when omitted, which trivially satisfied every budget check and
+  // misreported CAN-INSTALL. The candidate's requirements are now always
+  // resolved server-side from another ship in the fleet that has
+  // candidate_symbol installed (see ModuleFeasibility.requirements_known).
+  // Fields kept, unread, for wire compatibility with older clients.
   optional int32 candidate_power = 5;
   optional int32 candidate_crew = 6;
   optional int32 candidate_slots = 7;

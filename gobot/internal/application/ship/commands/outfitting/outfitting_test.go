@@ -392,10 +392,14 @@ const frigateProcessorsJSON = `[` +
 
 // TestListShipModules_FrigateEmpiricalCase_OfflineFeasibility encodes the
 // empirical ledger that motivated sp-el60 (reactor powerOutput 31 vs 33
-// required, gap 2) end to end through handleList: given a candidate symbol
-// plus its power/crew/slots requirements, the offline feasibility verdict
-// and the power/slot/crew budget summary must both be computed from the
-// DB-cached ship state alone - no live trial-and-error install required.
+// required, gap 2) end to end through handleList: the candidate's own
+// power/crew/slots requirements are resolved from CARRIER-1, a second hull
+// elsewhere in the fleet that has the candidate symbol installed (sp-el60
+// acceptance fix - there is no catalog of unowned module specs, so a caller
+// can no longer just supply CandidatePower/Crew/Slots). The offline
+// feasibility verdict and the power/slot/crew budget summary must both be
+// computed from the DB-cached ship state alone - no live trial-and-error
+// install required.
 func TestListShipModules_FrigateEmpiricalCase_OfflineFeasibility(t *testing.T) {
 	fake := &outfitFakeAPIClient{}
 	handler, db, pid := newOutfitHarness(t, fake)
@@ -412,10 +416,18 @@ func TestListShipModules_FrigateEmpiricalCase_OfflineFeasibility(t *testing.T) {
 		AssignmentStatus: "idle",
 	}).Error)
 
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "CARRIER-1", PlayerID: pid,
+		NavStatus: "DOCKED", LocationSymbol: "X1-JP61-A1", SystemSymbol: "X1-JP61", EngineSpeed: 10,
+		CargoCapacity: 40, CargoInventory: "[]",
+		Modules: `[{"symbol":"MODULE_CARGO_HOLD_III","capacity":100,"range":0,"requirements":{"power":31,"crew":0,"slots":1}}]`,
+		Mounts:  "[]", AssignmentStatus: "idle",
+	}).Error)
+
 	pidInt := pid
 	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{
 		ShipSymbol: "SHIP-1", PlayerID: &pidInt,
-		CandidateSymbol: cargoHold3, CandidatePower: 31, CandidateCrew: 0, CandidateSlots: 1,
+		CandidateSymbol: cargoHold3,
 	})
 	require.NoError(t, err)
 
@@ -430,10 +442,147 @@ func TestListShipModules_FrigateEmpiricalCase_OfflineFeasibility(t *testing.T) {
 
 	require.NotNil(t, listResp.Feasibility, "a CandidateSymbol must produce a feasibility verdict")
 	require.Equal(t, cargoHold3, listResp.Feasibility.CandidateSymbol)
+	require.True(t, listResp.Feasibility.RequirementsKnown, "requirements were resolved from CARRIER-1")
 	require.False(t, listResp.Feasibility.CanInstall, "31 reactor vs 33 required (2 installed + 31 candidate) must not fit")
 	require.Equal(t, 2, listResp.Feasibility.PowerShort, "gap must be exactly 2 (31 reactor vs 33 required)")
 	require.Equal(t, 0, listResp.Feasibility.SlotShort)
 	require.Equal(t, 0, listResp.Feasibility.CrewShort)
+	require.Equal(t, 31, listResp.Feasibility.RequirementsPower, "the resolved requirements must always be reported")
+	require.Equal(t, 0, listResp.Feasibility.RequirementsCrew)
+	require.Equal(t, 1, listResp.Feasibility.RequirementsSlots)
+}
+
+// TestListShipModules_CandidateRequirementsUnknown_FailsClosed is the
+// sp-el60 acceptance-failure regression at the application layer: a
+// candidate symbol never observed installed anywhere in the fleet must
+// yield UnknownRequirementsFeasibility (RequirementsKnown=false,
+// CanInstall=false), never a trivially-satisfied CAN-INSTALL built from
+// zero-filled requirements.
+func TestListShipModules_CandidateRequirementsUnknown_FailsClosed(t *testing.T) {
+	fake := &outfitFakeAPIClient{}
+	handler, db, pid := newOutfitHarness(t, fake)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-1", PlayerID: pid, EngineSpeed: 9,
+		ReactorPowerOutput: 31, ModuleSlots: 5, MountingPoints: 5, CrewCapacity: 10,
+		Modules: "[]", Mounts: "[]", CargoInventory: "[]",
+		AssignmentStatus: "idle",
+	}).Error)
+
+	pidInt := pid
+	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{
+		ShipSymbol: "SHIP-1", PlayerID: &pidInt,
+		CandidateSymbol: "MODULE_NEVER_OBSERVED_ANYWHERE",
+	})
+	require.NoError(t, err)
+
+	listResp, ok := resp.(*ListShipModulesResponse)
+	require.True(t, ok)
+
+	require.NotNil(t, listResp.Feasibility, "a CandidateSymbol must always produce a feasibility verdict")
+	require.Equal(t, "MODULE_NEVER_OBSERVED_ANYWHERE", listResp.Feasibility.CandidateSymbol)
+	require.False(t, listResp.Feasibility.RequirementsKnown, "no ship anywhere has ever carried this symbol")
+	require.False(t, listResp.Feasibility.CanInstall, "an unresolved candidate must never report CAN-INSTALL")
+}
+
+// torwind10ModulesJSON reproduces the exact TORWIND-10 acceptance-failure
+// shape team-lead reported: four installed modules whose slot costs sum to
+// 2+2+1+1=6, filling a 6-slot budget completely (6/6 used, 0 free).
+const torwind10ModulesJSON = `[` +
+	`{"symbol":"MODULE_CARGO_HOLD_II","capacity":80,"range":0,"requirements":{"power":0,"crew":0,"slots":2}},` +
+	`{"symbol":"MODULE_GAS_PROCESSOR_II","capacity":0,"range":0,"requirements":{"power":0,"crew":0,"slots":2}},` +
+	`{"symbol":"MODULE_CREW_QUARTERS_I","capacity":0,"range":0,"requirements":{"power":0,"crew":0,"slots":1}},` +
+	`{"symbol":"MODULE_JUMP_DRIVE_I","capacity":0,"range":0,"requirements":{"power":0,"crew":0,"slots":1}}` +
+	`]`
+
+// TestListShipModules_Torwind10Shape_SlotShort_WhenRequirementsKnown is
+// team-lead's TORWIND-10 reproduction, mandate point 4: a ship with four
+// installed modules summing to 6/6 module slots used (0 free) against a
+// MODULE_CARGO_HOLD_III candidate whose requirements are resolvable (a
+// second hull carries it) must yield SLOT-SHORT, not CAN-INSTALL.
+// MODULE_CARGO_HOLD_III cannot need 0 slots when MODULE_CARGO_HOLD_II needs
+// 2 - the old bug reported exactly that impossible verdict because it never
+// looked up the candidate's real requirements.
+func TestListShipModules_Torwind10Shape_SlotShort_WhenRequirementsKnown(t *testing.T) {
+	fake := &outfitFakeAPIClient{}
+	handler, db, pid := newOutfitHarness(t, fake)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "TORWIND-10", PlayerID: pid,
+		NavStatus: "DOCKED", LocationSymbol: "X1-JP61-A1", SystemSymbol: "X1-JP61", EngineSpeed: 10,
+		FrameSymbol: "FRAME_FRIGATE", Role: "EXCAVATOR",
+		CargoCapacity: 40, CargoInventory: "[]",
+		Modules: torwind10ModulesJSON, Mounts: "[]",
+		ReactorSymbol: "REACTOR_FISSION_I", ReactorName: "Fission Reactor I", ReactorPowerOutput: 50,
+		ModuleSlots: 6, MountingPoints: 5,
+		CrewCurrent: 0, CrewRequired: 0, CrewCapacity: 10,
+		AssignmentStatus: "idle",
+	}).Error)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "CARRIER-1", PlayerID: pid,
+		NavStatus: "DOCKED", LocationSymbol: "X1-JP61-A1", SystemSymbol: "X1-JP61", EngineSpeed: 10,
+		CargoCapacity: 40, CargoInventory: "[]",
+		Modules: `[{"symbol":"MODULE_CARGO_HOLD_III","capacity":100,"range":0,"requirements":{"power":1,"crew":0,"slots":2}}]`,
+		Mounts:  "[]", AssignmentStatus: "idle",
+	}).Error)
+
+	pidInt := pid
+	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{
+		ShipSymbol: "TORWIND-10", PlayerID: &pidInt,
+		CandidateSymbol: cargoHold3,
+	})
+	require.NoError(t, err)
+
+	listResp, ok := resp.(*ListShipModulesResponse)
+	require.True(t, ok)
+	require.Equal(t, 6, listResp.ModuleSlots)
+	require.Equal(t, 6, listResp.ModuleSlotsUsed, "the four modules must sum to 2+2+1+1=6, i.e. 6/6 used (0 free)")
+
+	require.NotNil(t, listResp.Feasibility)
+	require.True(t, listResp.Feasibility.RequirementsKnown, "requirements were resolved from CARRIER-1")
+	require.False(t, listResp.Feasibility.CanInstall, "0 free slots against a 2-slot candidate must not fit")
+	require.Equal(t, 2, listResp.Feasibility.SlotShort, "0 free slots vs a 2-slot need is short by 2")
+}
+
+// TestListShipModules_Torwind10Shape_UnknownRequirements_WhenNeverObserved
+// is the second half of mandate point 4: the identical 6/6-slot TORWIND-10
+// shape, but with no ship anywhere carrying the candidate symbol, must yield
+// UNKNOWN-REQUIREMENTS - never CAN-INSTALL on zero-filled data, and never a
+// guessed SLOT-SHORT either, since the candidate's actual slot cost was
+// never observed.
+func TestListShipModules_Torwind10Shape_UnknownRequirements_WhenNeverObserved(t *testing.T) {
+	fake := &outfitFakeAPIClient{}
+	handler, db, pid := newOutfitHarness(t, fake)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "TORWIND-10", PlayerID: pid,
+		NavStatus: "DOCKED", LocationSymbol: "X1-JP61-A1", SystemSymbol: "X1-JP61", EngineSpeed: 10,
+		FrameSymbol: "FRAME_FRIGATE", Role: "EXCAVATOR",
+		CargoCapacity: 40, CargoInventory: "[]",
+		Modules: torwind10ModulesJSON, Mounts: "[]",
+		ReactorSymbol: "REACTOR_FISSION_I", ReactorName: "Fission Reactor I", ReactorPowerOutput: 50,
+		ModuleSlots: 6, MountingPoints: 5,
+		CrewCurrent: 0, CrewRequired: 0, CrewCapacity: 10,
+		AssignmentStatus: "idle",
+	}).Error)
+
+	pidInt := pid
+	resp, err := handler.Handle(context.Background(), &ListShipModulesQuery{
+		ShipSymbol: "TORWIND-10", PlayerID: &pidInt,
+		CandidateSymbol: cargoHold3,
+	})
+	require.NoError(t, err)
+
+	listResp, ok := resp.(*ListShipModulesResponse)
+	require.True(t, ok)
+	require.Equal(t, 6, listResp.ModuleSlots)
+	require.Equal(t, 6, listResp.ModuleSlotsUsed, "the four modules must sum to 2+2+1+1=6, i.e. 6/6 used (0 free)")
+
+	require.NotNil(t, listResp.Feasibility)
+	require.False(t, listResp.Feasibility.RequirementsKnown, "no ship anywhere carries MODULE_CARGO_HOLD_III in this test")
+	require.False(t, listResp.Feasibility.CanInstall, "an unresolved candidate must never report CAN-INSTALL, even trivially")
+	require.Equal(t, 0, listResp.Feasibility.SlotShort, "no shortfall is computed - the need itself was never known")
 }
 
 // TestListShipModules_NoCandidate_FeasibilityOmitted guards against a

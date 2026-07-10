@@ -212,6 +212,55 @@ func TestPowerUsedModuleSlotsUsedMountingPointsUsed(t *testing.T) {
 	}
 }
 
+// TestUnknownRequirementsFeasibility proves the fail-closed "requirements
+// could not be resolved" verdict never claims CanInstall (sp-el60
+// acceptance fix). This is the verdict callers must build directly when a
+// candidate's requirements cannot be resolved from a real data source -
+// never by calling CheckModuleInstallFeasibility/CheckMountInstallFeasibility
+// with a zero-filled candidate, which would trivially satisfy every budget
+// check and misreport CAN-INSTALL.
+func TestUnknownRequirementsFeasibility(t *testing.T) {
+	got := navigation.UnknownRequirementsFeasibility()
+
+	if got.CanInstall {
+		t.Fatalf("CanInstall = true, want false when requirements are unknown: %+v", got)
+	}
+	if got.RequirementsKnown {
+		t.Fatalf("RequirementsKnown = true, want false: %+v", got)
+	}
+}
+
+// TestCheckModuleInstallFeasibility_SetsRequirementsKnown proves every
+// computed verdict (as opposed to UnknownRequirementsFeasibility) reports
+// RequirementsKnown=true, so callers can distinguish "checked, doesn't fit"
+// from "never checked" without inspecting CanInstall alone.
+func TestCheckModuleInstallFeasibility_SetsRequirementsKnown(t *testing.T) {
+	ship := newFeasibilityTestShip(t, 10, 5, 5, 5, 0, nil, nil)
+	candidate := navigation.NewShipModule("MODULE_CARGO_HOLD_I", 15, 0, navigation.NewShipRequirements(5, 1, 1))
+
+	got := navigation.CheckModuleInstallFeasibility(ship, candidate)
+
+	if !got.RequirementsKnown {
+		t.Fatalf("RequirementsKnown = false, want true for a computed verdict: %+v", got)
+	}
+}
+
+// TestInstallFeasibility_ZeroValueFailsClosed proves the Go zero value of
+// InstallFeasibility{} (e.g. an accidentally-unconstructed struct) never
+// claims CanInstall - RequirementsKnown defaults to false, matching
+// UnknownRequirementsFeasibility's semantics by construction, so there is no
+// zero-value path that misreports installability.
+func TestInstallFeasibility_ZeroValueFailsClosed(t *testing.T) {
+	var got navigation.InstallFeasibility
+
+	if got.CanInstall {
+		t.Fatalf("zero-value InstallFeasibility.CanInstall = true, want false")
+	}
+	if got.RequirementsKnown {
+		t.Fatalf("zero-value InstallFeasibility.RequirementsKnown = true, want false")
+	}
+}
+
 func TestCheckMountInstallFeasibility_SlotShort(t *testing.T) {
 	installedModule := navigation.NewShipModule("MODULE_CARGO_HOLD_I", 15, 0, navigation.NewShipRequirements(1, 0, 1))
 	installedMount := navigation.NewShipMount("MOUNT_SENSOR_ARRAY_I", "Sensor Array I", 0, nil, navigation.NewShipRequirements(1, 0, 1))

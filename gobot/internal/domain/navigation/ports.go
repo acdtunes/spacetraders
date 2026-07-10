@@ -138,6 +138,20 @@ type ShipRepository interface {
 	FindInTransitWithFutureArrival(ctx context.Context) ([]*Ship, error)
 	FindWithExpiredCooldown(ctx context.Context) ([]*Ship, error)
 	FindWithFutureCooldown(ctx context.Context) ([]*Ship, error)
+
+	// FindModuleRequirements resolves a not-yet-installed module's own
+	// power/crew/slot requirements by searching every ship's installed
+	// module list for symbol (sp-el60 acceptance fix). There is no catalog
+	// of unowned module specs anywhere in this codebase or the SpaceTraders
+	// API, so a candidate's requirements can only come from having been
+	// observed installed somewhere - the same module symbol has identical
+	// requirements on every hull that carries it, and this query is
+	// unscoped by player for that reason, mirroring the unscoped background
+	// updater queries above. The bool return is false only when no ship
+	// anywhere has ever carried symbol; callers must treat that as
+	// "requirements unknown" (see UnknownRequirementsFeasibility), never
+	// substitute a zero-valued ShipRequirements.
+	FindModuleRequirements(ctx context.Context, symbol string) (ShipRequirements, bool, error)
 }
 
 // ArrivalScheduler schedules ship arrival transitions.
