@@ -1165,6 +1165,35 @@ func (c *DaemonClient) StartTradeRoute(
 	}, nil
 }
 
+// StartWarehouse launches a passive inventory warehouse (sp-dchv Lane B) on an
+// idle, dedicated storage hull parked at a home waypoint, as a recovery-safe
+// daemon container.
+func (c *DaemonClient) StartWarehouse(
+	ctx context.Context,
+	shipSymbol string,
+	waypointSymbol string,
+	supportedGoods []string,
+	playerID int,
+) (*StartWarehouseResult, error) {
+	resp, err := c.client.StartWarehouse(ctx, &pb.StartWarehouseRequest{
+		PlayerId:       int32(playerID),
+		ShipSymbol:     shipSymbol,
+		WaypointSymbol: waypointSymbol,
+		SupportedGoods: supportedGoods,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StartWarehouseResult{
+		ContainerID:    resp.ContainerId,
+		ShipSymbol:     resp.ShipSymbol,
+		WaypointSymbol: resp.WaypointSymbol,
+		Status:         resp.Status,
+		Message:        resp.Message,
+	}, nil
+}
+
 // StartArbRunResult reports the container started for a one-shot guarded arb run (sp-p4ua).
 type StartArbRunResult struct {
 	ContainerID string
@@ -1366,6 +1395,16 @@ type StartTradeRouteResult struct {
 	SystemSymbol string
 	Status       string
 	Message      string
+}
+
+// StartWarehouseResult reports the container started for a passive inventory
+// warehouse (sp-dchv Lane B).
+type StartWarehouseResult struct {
+	ContainerID    string
+	ShipSymbol     string
+	WaypointSymbol string
+	Status         string
+	Message        string
 }
 
 // StopGoodsFactoryResult contains the result of stopping a goods factory

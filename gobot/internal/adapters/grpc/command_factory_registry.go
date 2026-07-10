@@ -9,6 +9,7 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	storageCmd "github.com/andrescamacho/spacetraders-go/internal/application/storage/commands"
 	shipNavCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypesCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
@@ -224,6 +225,10 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 //	                                                            (sp-perx); -1 uses 2q2o backoff
 //	manufacturing_coordinator   ∞ internal loop   coordinator   re-adopts
 //	gas_coordinator             ∞ internal loop   coordinator   re-adopts
+//	warehouse                   passive hold      coordinator   re-adopts; op row +
+//	                            (blocks on                      hull cargo rebuilt by
+//	                            shutdown)                       StorageRecoveryService
+//	                                                            from live ship state (dchv)
 //	trade_route                 visit budget      coordinator   re-adopts; laden exit is a
 //	                            (max_visits)                    FAILURE (sp-1hj5, invariant 2)
 //	tour_run                    tour count        coordinator   re-adopts; re-plans from current
@@ -263,6 +268,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
+		{CommandType: "warehouse", build: buildWarehouseCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
@@ -510,6 +516,26 @@ func buildGasCoordinatorCommand(cfg *configReader, playerID int, containerID str
 		ContainerID:    cfg.RequiredString("container_id"),
 		Force:          cfg.OptionalBool("force"),
 		DryRun:         cfg.OptionalBool("dry_run"),
+	}
+}
+
+// buildWarehouseCommand rebuilds the passive warehouse command from a persisted
+// launch config so restart recovery re-adopts a RUNNING warehouse container
+// (sp-dchv Lane B). Both ContainerID and OperationID are pinned to the
+// recovery-supplied containerID (the persisted row's ID), mirroring
+// trade_route/arb_run, so the operation row, the hull's ClaimShip, and the
+// coordinator registration all stay pinned to the same identity across a
+// restart. The hull's actual cargo is rebuilt separately and for free by the
+// StorageRecoveryService from live ship state (RULINGS #2) — this only rebuilds
+// the command that re-parks and re-registers the hull.
+func buildWarehouseCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &storageCmd.RunWarehouseCommand{
+		ShipSymbol:     cfg.RequiredNonEmptyString("ship_symbol"),
+		WaypointSymbol: cfg.RequiredNonEmptyString("waypoint_symbol"),
+		PlayerID:       shared.MustNewPlayerID(playerID),
+		ContainerID:    containerID,
+		OperationID:    containerID,
+		SupportedGoods: cfg.RequiredStringSlice("supported_goods"),
 	}
 }
 

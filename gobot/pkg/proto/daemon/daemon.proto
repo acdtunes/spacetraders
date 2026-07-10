@@ -155,6 +155,10 @@ service DaemonService {
   // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe daemon container
   rpc StartTradeRoute(StartTradeRouteRequest) returns (StartTradeRouteResponse);
 
+  // StartWarehouse launches a passive inventory warehouse (sp-dchv Lane B) on a dedicated
+  // storage hull parked at a home waypoint, as a recovery-safe daemon container.
+  rpc StartWarehouse(StartWarehouseRequest) returns (StartWarehouseResponse);
+
   // StartArbRun launches a ONE-SHOT, captain-directed, guarded arbitrage run (sp-p4ua):
   // buy a named good at a source waypoint, route (cross-gate) to a destination, sell once, stop.
   rpc StartArbRun(StartArbRunRequest) returns (StartArbRunResponse);
@@ -1039,6 +1043,25 @@ message StartTradeRouteResponse {
   string container_id = 1;
   string ship_symbol = 2;
   string system_symbol = 3;
+  string status = 4;
+  string message = 5;
+}
+
+// StartWarehouseRequest starts a passive inventory warehouse (sp-dchv Lane B) on an
+// idle, dedicated storage hull parked at a home waypoint. The hull buffers the
+// whitelisted goods deposited by tour/trade legs; contract workers withdraw from it.
+message StartWarehouseRequest {
+  int32 player_id = 1;
+  string ship_symbol = 2;              // Idle dedicated storage hull
+  string waypoint_symbol = 3;          // Home waypoint to park the hull at
+  repeated string supported_goods = 4; // Goods whitelist this warehouse buffers
+}
+
+// StartWarehouseResponse returns the started warehouse container
+message StartWarehouseResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string waypoint_symbol = 3;
   string status = 4;
   string message = 5;
 }

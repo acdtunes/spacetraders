@@ -19,6 +19,13 @@ const (
 
 	// OperationTypeCustom for future resource types
 	OperationTypeCustom OperationType = "CUSTOM"
+
+	// OperationTypeWarehouse buffers arbitrary contract goods at a home waypoint.
+	// Unlike the extractor-fed types above, a warehouse has ZERO extractor ships:
+	// cargo arrives from HAULERS (tour/trade deposit legs), not from extraction.
+	// It reuses the StorageShip deposit/withdraw protocols and StorageCoordinator
+	// unchanged — see NewWarehouseOperation.
+	OperationTypeWarehouse OperationType = "WAREHOUSE"
 )
 
 // OperationStatus represents the lifecycle state of a storage operation
@@ -39,7 +46,9 @@ const (
 // This is the aggregate root for storage operations.
 //
 // Invariants:
-// - Must have at least one extractor ship
+// - Extractor-fed types (GAS_SIPHON, MINING) must have at least one extractor
+//   ship; a WAREHOUSE (NewWarehouseOperation) has zero — cargo arrives from
+//   haulers, not extractors.
 // - Must have at least one storage ship
 // - Waypoint must be specified
 // - Supported goods must be specified
@@ -100,6 +109,65 @@ func NewStorageOperation(
 		waypointSymbol: waypointSymbol,
 		operationType:  operationType,
 		extractorShips: extractors,
+		storageShips:   storage,
+		supportedGoods: goods,
+		lifecycle:      shared.NewLifecycleStateMachine(clock),
+	}, nil
+}
+
+// NewWarehouseOperation creates a passive warehouse storage operation: a
+// dedicated hull parked at a home waypoint that BUFFERS arbitrary contract
+// goods deposited by haulers. It is the extractor-free sibling of
+// NewStorageOperation (sp-dchv Lane B): a warehouse has ZERO extractor ships
+// because cargo arrives from tour/trade deposit legs, not from extraction, so
+// the >=1-extractor invariant is inapplicable and replaced by >=1 storage ship
+// plus a non-empty supported-goods whitelist.
+//
+// Everything downstream is shared UNCHANGED with extractor-fed operations: the
+// StorageShip deposit (ReserveSpace/ConfirmDeposit) and withdrawal
+// (TryReserveCargo/ConfirmTransfer) protocols, the StorageCoordinator, the
+// storage_operations persistence, and the StorageRecoveryService live-cargo
+// rebuild on daemon restart (RULINGS #2) — recovery reads only StorageShips()
+// and WaypointSymbol(), never extractors, so a zero-extractor warehouse
+// reconstructs identically.
+func NewWarehouseOperation(
+	id string,
+	playerID int,
+	waypointSymbol string,
+	storageShips []string,
+	supportedGoods []string,
+	clock shared.Clock,
+) (*StorageOperation, error) {
+	if id == "" {
+		return nil, fmt.Errorf("operation ID cannot be empty")
+	}
+	if playerID <= 0 {
+		return nil, fmt.Errorf("player ID must be positive")
+	}
+	if waypointSymbol == "" {
+		return nil, fmt.Errorf("waypoint symbol cannot be empty")
+	}
+	if len(storageShips) == 0 {
+		return nil, fmt.Errorf("warehouse operation must have at least 1 storage ship")
+	}
+	if len(supportedGoods) == 0 {
+		return nil, fmt.Errorf("warehouse operation must specify supported goods")
+	}
+
+	// Copy slices to avoid external mutation. Extractors are deliberately empty:
+	// a warehouse is fed by haulers, not extractors.
+	storage := make([]string, len(storageShips))
+	copy(storage, storageShips)
+
+	goods := make([]string, len(supportedGoods))
+	copy(goods, supportedGoods)
+
+	return &StorageOperation{
+		id:             id,
+		playerID:       playerID,
+		waypointSymbol: waypointSymbol,
+		operationType:  OperationTypeWarehouse,
+		extractorShips: []string{},
 		storageShips:   storage,
 		supportedGoods: goods,
 		lifecycle:      shared.NewLifecycleStateMachine(clock),

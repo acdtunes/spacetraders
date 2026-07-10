@@ -41,6 +41,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	storageCmd "github.com/andrescamacho/spacetraders-go/internal/application/storage/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
@@ -740,6 +741,16 @@ func run(cfg *config.Config) error {
 	gasStorageShipWorkerHandler := gasCmd.NewRunStorageShipWorkerHandler(med, shipRepo, storageCoordinator)
 	if err := mediator.RegisterHandler[*gasCmd.RunStorageShipWorkerCommand](med, gasStorageShipWorkerHandler); err != nil {
 		return fmt.Errorf("failed to register RunStorageShipWorker handler: %w", err)
+	}
+
+	// Warehouse coordinator (sp-dchv Lane B): passive inventory buffer on a
+	// dedicated hull. Shares the SAME storageCoordinator as gas + manufacturing,
+	// so a warehouse hull's deposits (tour/trade legs) and withdrawals
+	// (STORAGE_ACQUIRE_DELIVER executor) flow through one coordinator, and the
+	// StorageRecoveryService below rebuilds its cargo on restart for free.
+	warehouseHandler := storageCmd.NewRunWarehouseHandler(med, shipRepo, storageOperationRepo, storageCoordinator, nil)
+	if err := mediator.RegisterHandler[*storageCmd.RunWarehouseCommand](med, warehouseHandler); err != nil {
+		return fmt.Errorf("failed to register RunWarehouse handler: %w", err)
 	}
 
 	// Create storage recovery service for daemon restart resilience

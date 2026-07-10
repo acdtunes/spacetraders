@@ -1097,6 +1097,39 @@ func (s *daemonServiceImpl) StartTradeRoute(ctx context.Context, req *pb.StartTr
 	}, nil
 }
 
+// StartWarehouse implements the StartWarehouse RPC: it launches a passive
+// inventory warehouse (sp-dchv Lane B) on a dedicated storage hull as a
+// recovery-safe daemon container, delegating to DaemonServer.StartWarehouse
+// which enforces the idle-gap discipline and owns the container lifecycle.
+func (s *daemonServiceImpl) StartWarehouse(ctx context.Context, req *pb.StartWarehouseRequest) (*pb.StartWarehouseResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+	if req.ShipSymbol == "" {
+		return nil, fmt.Errorf("ship_symbol is required")
+	}
+	if req.WaypointSymbol == "" {
+		return nil, fmt.Errorf("waypoint_symbol is required")
+	}
+	if len(req.SupportedGoods) == 0 {
+		return nil, fmt.Errorf("supported_goods is required (at least one good)")
+	}
+
+	result, err := s.daemon.StartWarehouse(ctx, req.ShipSymbol, req.WaypointSymbol, req.SupportedGoods, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start warehouse: %w", err)
+	}
+
+	return &pb.StartWarehouseResponse{
+		ContainerId:    result.ContainerID,
+		ShipSymbol:     result.ShipSymbol,
+		WaypointSymbol: result.WaypointSymbol,
+		Status:         "RUNNING",
+		Message:        fmt.Sprintf("Warehouse started for %s at %s", req.ShipSymbol, req.WaypointSymbol),
+	}, nil
+}
+
 // StartArbRun implements the StartArbRun RPC: it launches a one-shot, captain-directed,
 // guarded arbitrage run as a recovery-safe daemon container (sp-p4ua), delegating to
 // DaemonServer.StartArbRun which enforces the idle-gap discipline and owns the container
