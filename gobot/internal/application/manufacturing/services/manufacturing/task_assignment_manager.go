@@ -143,6 +143,11 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		})
 	}
 
+	// sp-c07v NO-CARGO-DUMP CLAIM GUARD: exclude any hull HandleShipsWithExistingCargo
+	// could not fully place. See filterShipsWithRemainingCargo's doc comment for why
+	// "still holds cargo at this point" is safe to treat as unconditionally unrelated.
+	idleShips = filterShipsWithRemainingCargo(ctx, idleShips)
+
 	// Get ready tasks. Construction (gate/mission-critical) tasks are hoisted
 	// ahead of manufacturing (income) tasks so an aged manufacturing backlog
 	// can't starve the gate of workers - see prioritizeConstructionTasks.
@@ -224,6 +229,72 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	}
 
 	return tasksAssigned, nil
+}
+
+// filterShipsWithRemainingCargo excludes any ship still holding cargo after
+// HandleShipsWithExistingCargo has already had its chance to match, liquidate,
+// or jettison it (sp-c07v). Walking HandleShipsWithExistingCargo's own control
+// flow: every ship it successfully placed - onto a matching ACQUIRE_DELIVER or
+// COLLECT_SELL task, a freshly created LIQUIDATE task, or a jettison of
+// low-value cargo - is deleted from idleShips before that function returns. A
+// ship still present here with cargo aboard is therefore one that call could
+// NOT place: no sell market found, the sell market saturated, a duplicate
+// LIQUIDATE task already existed, a DB write failed, or the worker assignment
+// itself failed. Handing such a hull a brand-new task here would reproduce the
+// exact TORWIND-38 incident: the task worker discovers the hold already
+// occupied by cargo it doesn't own, can't unload it (the no-cargo-dump claim
+// guard, sp-wq7r), and burns a zero-unit no-op buy attempt.
+//
+// Unlike the tree-scoped factory coordinator's filterUnrelatedCargo (which must
+// allow cargo matching any good in ONE factory's supply tree, since a hull
+// carrying a mid-chain input is legitimately useful), AssignTasks serves the
+// entire ready-task queue across every factory and good at once - there is no
+// single "related goods" list to check cargo against here, and none is needed:
+// anything HandleShipsWithExistingCargo could usefully match is already gone
+// from idleShips by this point, so "still holds cargo" and "unrelated to
+// anything this call could assign it" are the same condition. That equivalence
+// is why this is a mirrored, simpler cousin of filterUnrelatedCargo (a
+// different package, a different signature, no goods list) rather than a
+// shared call to it.
+func filterShipsWithRemainingCargo(ctx context.Context, ships map[string]*navigation.Ship) map[string]*navigation.Ship {
+	logger := common.LoggerFromContext(ctx)
+
+	claimable := make(map[string]*navigation.Ship, len(ships))
+	for symbol, ship := range ships {
+		if ship.CargoUnits() == 0 {
+			claimable[symbol] = ship
+			continue
+		}
+
+		held := heldCargoItems(ship.Cargo())
+		// sp-iqyq convention: the container-log renderer prints only
+		// level+message and drops the metadata map, so ship/held-goods/reason
+		// must be verbatim in the message itself for an operator watching the
+		// log stream to see why the hull was skipped.
+		logger.Log("INFO", fmt.Sprintf(
+			"Skipped idle hull holding unrelated cargo - not assigned a new task: ship=%s held_goods=%v reason=unrelated_cargo",
+			symbol, held,
+		), map[string]interface{}{
+			"ship":       symbol,
+			"held_goods": held,
+			"reason":     "unrelated_cargo",
+		})
+	}
+
+	return claimable
+}
+
+// heldCargoItems formats a ship's full cargo hold as "SYMBOL:UNITS" strings
+// for logging, mirroring the factory coordinator's unrelatedCargoItems.
+func heldCargoItems(cargo *shared.Cargo) []string {
+	if cargo == nil {
+		return nil
+	}
+	held := make([]string, 0, len(cargo.Inventory))
+	for _, item := range cargo.Inventory {
+		held = append(held, fmt.Sprintf("%s:%d", item.Symbol, item.Units))
+	}
+	return held
 }
 
 // prioritizeConstructionTasks partitions ready tasks so DELIVER_TO_CONSTRUCTION

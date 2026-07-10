@@ -63,7 +63,7 @@ func TestWaitForIdleHaulers_CancelledDuringParkWait_ReturnsPromptly(t *testing.T
 	}
 	done := make(chan waitResult, 1)
 	go func() {
-		ships, symbols, err := handler.waitForIdleHaulers(ctx, shared.MustNewPlayerID(1), testSystem, "factory-cancel-test")
+		ships, symbols, err := handler.waitForIdleHaulers(ctx, shared.MustNewPlayerID(1), testSystem, nil, "factory-cancel-test")
 		done <- waitResult{ships, symbols, err}
 	}()
 

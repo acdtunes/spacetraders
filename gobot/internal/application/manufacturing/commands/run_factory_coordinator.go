@@ -282,6 +282,11 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	nodes := dependencyTree.FlattenToList()
 	response.NodesTotal = len(nodes)
 
+	// sp-c07v: every good anywhere in this factory's own tree (target output
+	// plus every input at every level) counts as "related" cargo for the
+	// claim-time guard below (Step 3) - see filterUnrelatedCargo.
+	relatedGoods := treeGoodsList(nodes)
+
 	logger.Log("INFO", "Dependency tree built", map[string]interface{}{
 		"factory_id":      response.FactoryID,
 		"target_good":     cmd.TargetGood,
@@ -321,7 +326,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// cancelled. A factory that holds a market at MODERATE+ is long-lived, so an
 	// indefinite wait for the next idle gap is the correct bound.
 	playerID := shared.MustNewPlayerID(cmd.PlayerID)
-	idleShips, idleShipSymbols, err := h.waitForIdleHaulers(ctx, playerID, cmd.SystemSymbol, response.FactoryID)
+	idleShips, idleShipSymbols, err := h.waitForIdleHaulers(ctx, playerID, cmd.SystemSymbol, relatedGoods, response.FactoryID)
 	if err != nil {
 		return err
 	}
@@ -343,7 +348,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	})
 
 	// Step 5: Execute production in parallel levels
-	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response); err != nil {
+	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, relatedGoods); err != nil {
 		// Release all ship assignments on error
 		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
 		return fmt.Errorf("parallel production failed: %w", err)
@@ -377,6 +382,100 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	return nil
 }
 
+// treeGoodsList returns the good symbol for every node in a flattened supply
+// chain tree - the target output plus every input at every level. It scopes
+// the claim-time unrelated-cargo guard (filterUnrelatedCargo) to this
+// factory's own production tree rather than just its top-level target good.
+func treeGoodsList(nodes []*goods.SupplyChainNode) []string {
+	list := make([]string, len(nodes))
+	for i, node := range nodes {
+		list[i] = node.Good
+	}
+	return list
+}
+
+// filterUnrelatedCargo excludes idle candidates from discovery whenever they
+// hold cargo that has nothing to do with this factory's own production tree
+// (sp-c07v). A hull left idle by some unrelated crashed/aborted worker - e.g.
+// a stocker crash that leaves FOOD aboard - must never be claimed here:
+// claiming it only spins zero-unit "hold full, could not unload existing
+// cargo" BUY-task no-ops, since the factory has nowhere to put the input
+// goods it buys and, by design, never jettisons a stranger's cargo to make
+// room. The hull is simply left unclaimed - a fail-safe skip, never a dump.
+//
+// This mirrors the contract coordinator's own claim-time guard
+// (contract.FilterUnrelatedCargo, sp-wq7r) rather than calling it directly:
+// that helper's contract is built around a single required good (one
+// contract run delivers one good), but a factory's dependency tree spans
+// MULTIPLE goods at once - e.g. FAB_PLATE (the target) fed by IRON (an input
+// two levels down) - and a hull pre-loaded with any one tree good is
+// legitimate, already-useful cargo (see
+// TestFactoryCoordinator_ParallelFabrication_DoesNotRepurchaseDeliveredInputs,
+// which relies on exactly this: an idle hauler pre-loaded with an INPUT good
+// must still be claimed normally). Narrowing the check to a single target
+// good would wrongly park a hull mid-flight on a feed leg. relatedGoods is
+// every good anywhere in the tree (treeGoodsList), so a hull is skipped only
+// when its hold contains something genuinely foreign to this factory's own
+// supply chain.
+//
+// Candidates already arrive as live *navigation.Ship values from
+// FindIdleLightHaulers, so - unlike contract.FilterUnrelatedCargo - no
+// second repository fetch is needed here; the cargo already in hand is
+// checked directly.
+func filterUnrelatedCargo(
+	ctx context.Context,
+	ships []*navigation.Ship,
+	relatedGoods []string,
+) ([]*navigation.Ship, []string) {
+	if len(ships) == 0 {
+		return ships, nil
+	}
+
+	related := make(map[string]bool, len(relatedGoods))
+	for _, good := range relatedGoods {
+		related[good] = true
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	claimable := make([]*navigation.Ship, 0, len(ships))
+	claimableSymbols := make([]string, 0, len(ships))
+
+	for _, ship := range ships {
+		if held := unrelatedCargoItems(ship.Cargo(), related); len(held) > 0 {
+			// sp-iqyq convention: the container-log renderer prints only
+			// level+message and drops the metadata map, so ship/held-goods/reason
+			// must be verbatim in the message itself, not just in metadata, for an
+			// operator watching the log stream to see why the hull was skipped.
+			logger.Log("INFO", fmt.Sprintf(
+				"Skipped idle hull holding unrelated cargo - not claimed: ship=%s held_goods=%v reason=unrelated_cargo",
+				ship.ShipSymbol(), held,
+			), map[string]interface{}{
+				"ship":       ship.ShipSymbol(),
+				"held_goods": held,
+				"reason":     "unrelated_cargo",
+			})
+			continue
+		}
+		claimable = append(claimable, ship)
+		claimableSymbols = append(claimableSymbols, ship.ShipSymbol())
+	}
+
+	return claimable, claimableSymbols
+}
+
+// unrelatedCargoItems returns a "SYMBOL:UNITS" summary of every cargo item
+// that is not in related. Empty cargo, or cargo made up entirely of related
+// goods, returns nil (nothing foreign found).
+func unrelatedCargoItems(cargo *shared.Cargo, related map[string]bool) []string {
+	var held []string
+	for _, item := range cargo.Inventory {
+		if item.Units > 0 && !related[item.Symbol] {
+			held = append(held, fmt.Sprintf("%s:%d", item.Symbol, item.Units))
+		}
+	}
+	return held
+}
+
 // waitForIdleHaulers polls for idle light haulers, blocking until at least one
 // is available or the context is cancelled.
 //
@@ -388,10 +487,16 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 // momentarily empty (run_fleet_coordinator.go) — is the correct behaviour. The
 // wait is bounded only by context cancellation (container shutdown), never by a
 // timeout, so a slow-to-free fleet can never re-introduce the crash.
+//
+// sp-c07v: candidates holding cargo unrelated to this factory's own
+// production tree (relatedGoods) are filtered out before the idle-count
+// check below, so they are never claimed in the first place - see
+// filterUnrelatedCargo.
 func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	systemSymbol string,
+	relatedGoods []string,
 	factoryID string,
 ) ([]*navigation.Ship, []string, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -413,6 +518,12 @@ func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to discover idle ships: %w", err)
 		}
+
+		// sp-c07v: NO-CARGO-DUMP claim guard, ported from the contract
+		// coordinator (sp-wq7r) - skip, never claim, any hull holding cargo
+		// foreign to this factory's tree.
+		idleShips, idleShipSymbols = filterUnrelatedCargo(ctx, idleShips, relatedGoods)
+
 		if len(idleShips) > 0 {
 			if waited {
 				logger.Log("INFO", "Idle hauler became available - resuming production", map[string]interface{}{
@@ -452,6 +563,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	levels []mfgServices.ParallelLevel,
 	idleShips []*navigation.Ship,
 	response *RunFactoryCoordinatorResponse,
+	relatedGoods []string,
 ) error {
 	// Get operation context from context
 	opContext := shared.OperationContextFromContext(ctx)
@@ -471,7 +583,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
 	defer cancelDiscovery()
 
-	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, cmd.SystemSymbol, shipPool, shipsUsed, &shipsUsedMutex)
+	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, cmd.SystemSymbol, relatedGoods, shipPool, shipsUsed, &shipsUsedMutex)
 
 	logger.Log("INFO", "Starting parallel production", map[string]interface{}{
 		"factory_id":         response.FactoryID,
@@ -603,6 +715,7 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 	ctx context.Context,
 	playerID int,
 	systemSymbol string,
+	relatedGoods []string,
 	shipPool chan *navigation.Ship,
 	shipsUsed map[string]bool,
 	shipsUsedMutex *sync.Mutex,
@@ -627,7 +740,7 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 			return
 
 		case <-ticker.C:
-			discoveryCount = h.refreshShipPoolOnce(ctx, playerIDValue, systemSymbol, shipPool, shipsUsed, shipsUsedMutex, discoveryCount)
+			discoveryCount = h.refreshShipPoolOnce(ctx, playerIDValue, systemSymbol, relatedGoods, shipPool, shipsUsed, shipsUsedMutex, discoveryCount)
 		}
 	}
 }
@@ -650,6 +763,7 @@ func (h *RunFactoryCoordinatorHandler) refreshShipPoolOnce(
 	ctx context.Context,
 	playerIDValue shared.PlayerID,
 	systemSymbol string,
+	relatedGoods []string,
 	shipPool chan *navigation.Ship,
 	shipsUsed map[string]bool,
 	shipsUsedMutex *sync.Mutex,
@@ -672,6 +786,11 @@ func (h *RunFactoryCoordinatorHandler) refreshShipPoolOnce(
 		})
 		return discoveryCount
 	}
+
+	// sp-c07v: NO-CARGO-DUMP claim guard - a hull holding cargo foreign to
+	// this factory's tree is skipped here too, so a mid-run discovery tick
+	// can't add it to the pool any more than the initial discovery could.
+	newIdleShips, _ = filterUnrelatedCargo(ctx, newIdleShips, relatedGoods)
 
 	// Add newly discovered ships to pool (non-blocking)
 	addedCount := 0

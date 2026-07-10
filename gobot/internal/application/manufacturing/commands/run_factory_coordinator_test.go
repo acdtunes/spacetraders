@@ -794,7 +794,7 @@ func TestWaitForIdleHaulers_SelfHeal_ReturnsInSystemHullWhenItArrives(t *testing
 		}
 	}
 
-	idle, symbols, err := handler.waitForIdleHaulers(context.Background(), shared.MustNewPlayerID(1), testSystem, "factory-selfheal")
+	idle, symbols, err := handler.waitForIdleHaulers(context.Background(), shared.MustNewPlayerID(1), testSystem, nil, "factory-selfheal")
 	if err != nil {
 		t.Fatalf("waitForIdleHaulers: %v", err)
 	}
