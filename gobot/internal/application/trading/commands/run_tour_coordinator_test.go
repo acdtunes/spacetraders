@@ -210,6 +210,16 @@ type tourFakeRoutingClient struct {
 	positions []string
 	cargos    []map[string]int
 	errAfter  int
+	// maxSpends captures cons.MaxSpend on each call (sp-7z7j: proving a dynamic-cap
+	// continuous tour RE-RESOLVES the 25%-of-treasury budget per iteration — a fresh
+	// positive value each pass, never a stale/0 budget). infeasibleOnZeroSpend makes
+	// the fake mirror the real solver's spend_cap=max(0, max_spend-reserve) verdict:
+	// a maxSpend of 0 (the unreadable-treasury signature) yields spend_cap 0, which the
+	// Python planner reports as infeasible (tour_solver.py) — the exact production
+	// mechanism that turned a transient treasury read failure into a loop-ending
+	// "tour unavailable".
+	maxSpends             []int64
+	infeasibleOnZeroSpend bool
 	// cancel + cancelOnCall simulate a daemon stop: when the call count reaches
 	// cancelOnCall the planner cancels the run's context (as interruptAllContainers
 	// does), so a test can prove a continuous run exits RESUMABLE at the tour boundary
@@ -221,6 +231,7 @@ type tourFakeRoutingClient struct {
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate) (*routing.TourPlan, error) {
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
+	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {
 		held[g] = u
@@ -231,6 +242,9 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	}
 	if c.err != nil && (c.errAfter == 0 || c.calls >= c.errAfter) {
 		return nil, c.err
+	}
+	if c.infeasibleOnZeroSpend && cons.MaxSpend == 0 {
+		return &routing.TourPlan{Feasible: false, InfeasibleReason: "spend_cap_zero"}, nil
 	}
 	idx := c.calls - 1
 	if idx >= len(c.plans) {

@@ -63,6 +63,17 @@ const (
 	// Lane C). Junior to the working-capital reserve; an unreadable balance yields
 	// ZERO candidates (fail closed, RULINGS #4).
 	defaultDepositCeilingPct = 10
+	// tourTreasuryRetryBackoff is the interruptible pause a CONTINUOUS (--iterations
+	// -1) dynamic-cap (--max-spend 0) tour waits before RE-TRYING when the live
+	// treasury read fails at re-resolution time (sp-7z7j). RULINGS #4: an unreadable
+	// balance fails CLOSED (never spend, never fall back to unlimited/stale) — but
+	// failing closed must PAUSE and RETRY, not silently end the -1 loop. A transient
+	// GetAgent blip (a global rate-limit burst fails every hull's shared-agent read at
+	// once) was resolving to a 0 budget the planner refused (spend_cap 0 → infeasible),
+	// which the loop misread as "tour unavailable" and COMPLETED the container after one
+	// iteration. Mirrors liquidationRetryBackoff's cadence; clock-injected so tests are
+	// instant and a Stop/shutdown never waits it out.
+	tourTreasuryRetryBackoff = 20 * time.Second
 )
 
 // exitReason* enumerates why the continuous tour loop stopped, surfaced on the
@@ -373,7 +384,31 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// working-capital floor guards every spend regardless.
 		tourMaxSpend := cmd.MaxSpend
 		if tourMaxSpend == 0 {
-			tourMaxSpend = h.defaultMaxSpend(ctx)
+			resolved, unreadable := h.defaultMaxSpend(ctx)
+			if unreadable {
+				// sp-7z7j: the dynamic budget could NOT be re-resolved — a treasury
+				// SOURCE is wired but the live read failed (transient GetAgent blip /
+				// token gone). RULINGS #4 fail-CLOSED: do NOT spend this iteration and
+				// NEVER fall back to unlimited or a stale budget. But failing closed
+				// must PAUSE and RETRY, not end the loop: proceeding here with a 0
+				// budget is exactly what the planner refused (spend_cap 0 → infeasible),
+				// which — nothing earned yet on a relaunch — the loop below misread as
+				// "tour unavailable" and COMPLETED a -1 container after one iteration
+				// (the 5/5 field repro). Skip the tour, wait an interruptible backoff,
+				// and re-resolve next pass; a Stop/shutdown during the wait exits
+				// RESUMABLE (ctx error), the same as the boundary check above. The
+				// no-progress starvation streak is left UNTOUCHED — an unreadable
+				// treasury is a transient guard trip, not margin-death.
+				logger.Log("WARNING", "Dynamic tour budget unresolved (live treasury unreadable) - failing closed: not spending, pausing before retry (loop stays alive)", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
+					"backoff_seconds": int(tourTreasuryRetryBackoff.Seconds()),
+				})
+				if werr := h.legs.sleepInterruptibly(ctx, tourTreasuryRetryBackoff); werr != nil {
+					return werr
+				}
+				continue
+			}
+			tourMaxSpend = resolved
 		}
 
 		tradesBefore := response.TradesExecuted
@@ -1016,26 +1051,44 @@ func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing
 }
 
 // defaultMaxSpend resolves the 25%-of-treasury cap (RULINGS #6) when --max-spend is 0.
-// No apiClient / no token / read failure → 0 (no explicit cumulative cap; the per-buy
-// working-capital floor still guards every spend).
-func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context) int64 {
+// It returns (cap, unreadable) so the caller can tell "no treasury source, plan
+// uncapped" apart from "have a source but the read FAILED, fail closed" (sp-7z7j) —
+// the pre-fix single int64(0) conflated the two, letting a transient read failure
+// masquerade as a 0 budget:
+//
+//   - unreadable=false, cap>0  → live treasury read; size the tour to 25% of it.
+//   - unreadable=false, cap=0  → NO apiClient wired at all (structural; the daemon
+//     always wires one, so this is the test-harness / pure-env path). 0 is "no explicit
+//     cumulative cap" — the per-buy working-capital floor still guards every spend.
+//   - unreadable=true,  cap=0  → a treasury SOURCE is wired but the live read FAILED
+//     (no player token, or GetAgent errored). The caller MUST fail closed: never spend
+//     on this, never fall back to unlimited or a stale budget — pause and retry so a
+//     continuous (--iterations -1) loop survives the transient (the exact 5/5 field
+//     repro where a shared-agent GetAgent blip completed every hull after one iteration).
+func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context) (int64, bool) {
 	logger := common.LoggerFromContext(ctx)
 	if h.apiClient == nil {
-		return 0
+		return 0, false // no treasury source wired — 0 = no explicit cap (floor guards)
 	}
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return 0
+		logger.Log("WARNING", "Cannot re-resolve dynamic tour max-spend: player token unavailable - failing closed (will not spend uncapped)", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0, true // source exists but UNREADABLE (no token) — fail closed
 	}
 	agent, err := h.apiClient.GetAgent(ctx, token)
 	if err != nil {
-		return 0
+		logger.Log("WARNING", fmt.Sprintf("Cannot re-resolve dynamic tour max-spend: live treasury read failed (%v) - failing closed (will not spend uncapped)", err), map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0, true // source exists but UNREADABLE (read failed) — fail closed
 	}
 	spendCap := int64(agent.Credits) * tourDefaultMaxSpendTreasuryPct / 100
 	logger.Log("INFO", fmt.Sprintf("Default tour max-spend = %d (25%% of live treasury %d)", spendCap, agent.Credits), map[string]interface{}{
 		"max_spend": spendCap, "treasury": agent.Credits,
 	})
-	return spendCap
+	return spendCap, false
 }
 
 // strandedReason reports whether any good the tour bought is still aboard (net
