@@ -52,6 +52,7 @@ const (
 	ContainerTypeScoutPostCoordinator     ContainerType = "SCOUT_POST_COORDINATOR"
 	ContainerTypeTradeFleetCoordinator    ContainerType = "TRADE_FLEET_COORDINATOR"
 	ContainerTypeScoutReposition          ContainerType = "SCOUT_REPOSITION"
+	ContainerTypeFrontierExpansion        ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"
 	ContainerTypeParallelManufacturing    ContainerType = "PARALLEL_MANUFACTURING"

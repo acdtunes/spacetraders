@@ -34,6 +34,7 @@ const (
 	DaemonService_AssignScoutingFleet_FullMethodName                   = "/daemon.DaemonService/AssignScoutingFleet"
 	DaemonService_ScoutPostCoordinator_FullMethodName                  = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName                 = "/daemon.DaemonService/TradeFleetCoordinator"
+	DaemonService_FrontierExpansionCoordinator_FullMethodName          = "/daemon.DaemonService/FrontierExpansionCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                          = "/daemon.DaemonService/AddScoutPost"
 	DaemonService_RemoveScoutPost_FullMethodName                       = "/daemon.DaemonService/RemoveScoutPost"
 	DaemonService_ListScoutPosts_FullMethodName                        = "/daemon.DaemonService/ListScoutPosts"
@@ -119,6 +120,8 @@ type DaemonServiceClient interface {
 	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
 	// exit after a cooldown. Retires the captain hand-relaunch loop.
 	TradeFleetCoordinator(ctx context.Context, in *TradeFleetCoordinatorRequest, opts ...grpc.CallOption) (*TradeFleetCoordinatorResponse, error)
+	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
+	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(ctx context.Context, in *AddScoutPostRequest, opts ...grpc.CallOption) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -363,6 +366,16 @@ func (c *daemonServiceClient) TradeFleetCoordinator(ctx context.Context, in *Tra
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TradeFleetCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_TradeFleetCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FrontierExpansionCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_FrontierExpansionCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -794,6 +807,8 @@ type DaemonServiceServer interface {
 	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
 	// exit after a cooldown. Retires the captain hand-relaunch loop.
 	TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error)
+	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
+	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -938,6 +953,9 @@ func (UnimplementedDaemonServiceServer) ScoutPostCoordinator(context.Context, *S
 }
 func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TradeFleetCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddScoutPost not implemented")
@@ -1340,6 +1358,24 @@ func _DaemonService_TradeFleetCoordinator_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).TradeFleetCoordinator(ctx, req.(*TradeFleetCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_FrontierExpansionCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FrontierExpansionCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).FrontierExpansionCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_FrontierExpansionCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).FrontierExpansionCoordinator(ctx, req.(*FrontierExpansionCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2094,6 +2130,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TradeFleetCoordinator",
 			Handler:    _DaemonService_TradeFleetCoordinator_Handler,
+		},
+		{
+			MethodName: "FrontierExpansionCoordinator",
+			Handler:    _DaemonService_FrontierExpansionCoordinator_Handler,
 		},
 		{
 			MethodName: "AddScoutPost",

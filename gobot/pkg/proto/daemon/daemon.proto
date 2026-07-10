@@ -60,6 +60,9 @@ service DaemonService {
   // exit after a cooldown. Retires the captain hand-relaunch loop.
   rpc TradeFleetCoordinator(TradeFleetCoordinatorRequest) returns (TradeFleetCoordinatorResponse);
 
+  // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
+  rpc FrontierExpansionCoordinator(FrontierExpansionCoordinatorRequest) returns (FrontierExpansionCoordinatorResponse);
+
   // AddScoutPost adds or updates a desired-state scout post for a system
   rpc AddScoutPost(AddScoutPostRequest) returns (ScoutPostResponse);
 
@@ -503,6 +506,23 @@ message TradeFleetCoordinatorRequest {
 }
 
 message TradeFleetCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// FrontierExpansionCoordinator launch knobs (sp-8w89). All optional; a 0/false value
+// uses the coordinator's documented default (RULINGS #5).
+message FrontierExpansionCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  int32 tick_interval_secs = 3;      // reconcile cadence; 0 = default
+  bool dry_run = 4;                  // log decisions, buy/declare nothing
+  int32 max_probe_fleet = 5;         // total satellite cap; 0 = default
+  int32 max_spend_per_cycle = 6;     // probe spend cap in the trailing window; 0 = default
+  int32 purchase_cooldown_secs = 7;  // min seconds between probe buys; 0 = default
+  int32 expansion_max_hops = 8;      // gate-graph reach for the queue; 0 = default
+}
+message FrontierExpansionCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

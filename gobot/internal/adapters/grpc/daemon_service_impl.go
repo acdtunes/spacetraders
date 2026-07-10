@@ -493,6 +493,30 @@ func (s *daemonServiceImpl) TradeFleetCoordinator(ctx context.Context, req *pb.T
 	return &pb.TradeFleetCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
+func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.FrontierExpansionCoordinator(
+		ctx,
+		playerID,
+		int(req.TickIntervalSecs),
+		req.DryRun,
+		int(req.MaxProbeFleet),
+		int(req.MaxSpendPerCycle),
+		int(req.PurchaseCooldownSecs),
+		int(req.ExpansionMaxHops),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start frontier expansion coordinator: %w", err)
+	}
+
+	return &pb.FrontierExpansionCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq)
 func (s *daemonServiceImpl) AddScoutPost(ctx context.Context, req *pb.AddScoutPostRequest) (*pb.ScoutPostResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

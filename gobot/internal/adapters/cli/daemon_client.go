@@ -1177,6 +1177,39 @@ func (c *DaemonClient) TradeFleetCoordinator(ctx context.Context, playerID int, 
 	return resp.ContainerId, nil
 }
 
+// FrontierExpansionCoordinatorParams carries the launch knobs for the frontier
+// expansion coordinator (sp-8w89). All are optional; a 0/false value uses the
+// coordinator's documented default (RULINGS #5).
+type FrontierExpansionCoordinatorParams struct {
+	TickIntervalSecs     int
+	DryRun               bool
+	MaxProbeFleet        int
+	MaxSpendPerCycle     int
+	PurchaseCooldownSecs int
+	ExpansionMaxHops     int
+}
+
+// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89).
+func (c *DaemonClient) FrontierExpansionCoordinator(ctx context.Context, playerID int, agentSymbol string, p FrontierExpansionCoordinatorParams) (string, error) {
+	req := &pb.FrontierExpansionCoordinatorRequest{
+		PlayerId:             int32(playerID),
+		TickIntervalSecs:     int32(p.TickIntervalSecs),
+		DryRun:               p.DryRun,
+		MaxProbeFleet:        int32(p.MaxProbeFleet),
+		MaxSpendPerCycle:     int32(p.MaxSpendPerCycle),
+		PurchaseCooldownSecs: int32(p.PurchaseCooldownSecs),
+		ExpansionMaxHops:     int32(p.ExpansionMaxHops),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.FrontierExpansionCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq). hulls is the
 // probe budget N (sp-enry); 0 defaults to single-hull.
 func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string, hulls int) (*ScoutPost, error) {

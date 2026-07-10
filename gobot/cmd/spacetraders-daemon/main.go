@@ -11,6 +11,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
+	expansionAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/expansion"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
@@ -29,6 +30,7 @@ import (
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
+	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -665,6 +667,32 @@ func run(cfg *config.Config) error {
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)
+	}
+
+	// Frontier expansion coordinator (sp-8w89): the standing coordinator that closes the
+	// manual expansion loop — it measures coverage demand (unmanned scout-post slots +
+	// a gate-ranked expansion queue), declares frontier sweep-once posts through the SAME
+	// scout-post repo the reconciler mans, and buys probes under the money guards. It moves
+	// and claims NOTHING; the scout-post reconciler (above) and its s232 relays do all
+	// movement. shipRepo satisfies the coordinator's read-only FleetReader; transactionRepo
+	// supplies the ledger-derived, restart-safe cooldown/spend (RULINGS #2).
+	frontierExpansionHandler := expansionCmd.NewRunFrontierExpansionCoordinatorHandler(
+		scoutPostRepo, shipRepo, transactionRepo, nil, // nil = use RealClock
+	)
+	// Live treasury for the 25% guard (RULINGS #6) — nil would fail-close every buy.
+	frontierExpansionHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
+	// Price-and-buy over the existing purchase_ship machinery (RULINGS #3): it buys only
+	// through an idle ship already stationed at a probe-selling shipyard (movement-free,
+	// no poach), and lands the probe undedicated for the reconciler to relay.
+	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo))
+	// The expansion queue's frontier enumerator: one BFS over the SAME persisted gate graph
+	// the trade circuit and scout relays share, annotated with market-data counts. nil would
+	// leave the coordinator serving only unmanned-slot demand.
+	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
+		gateGraphService, marketRepoAdapter, shipRepo, playerRepo,
+	))
+	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {
+		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
 	}
 
 	// Arb-run coordinator (sp-p4ua): a one-shot, captain-directed, guarded arbitrage run

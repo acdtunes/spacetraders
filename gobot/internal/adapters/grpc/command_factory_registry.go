@@ -6,6 +6,7 @@ import (
 	"time"
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -295,6 +296,7 @@ func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
 		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
+		{CommandType: "frontier_expansion_coordinator", build: buildFrontierExpansionCoordinatorCommand},
 		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
@@ -427,6 +429,31 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		MinMargin:             cfg.OptionalInt("trade_fleet_min_margin", 0),
 		ReplanLimit:           cfg.OptionalInt("trade_fleet_replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("trade_fleet_reserve", 0)),
+	}
+}
+
+// buildFrontierExpansionCoordinatorCommand rebuilds the standing frontier expansion
+// coordinator from its persisted launch config so restart recovery re-adopts it
+// byte-identically (RULINGS #2, sp-8w89). It is a reconcile-loop coordinator (NOT a
+// CoordinatorOwnsIterations type — it loops forever inside one Handle()). Every knob is
+// optional (0/false → the coordinator's own default, RULINGS #5), so the creation op and
+// recovery share one construction and can never drift.
+func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &expansionCmd.RunFrontierExpansionCoordinatorCommand{
+		PlayerID:                 shared.MustNewPlayerID(playerID),
+		ContainerID:              cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:         cfg.OptionalInt("tick_interval_secs", 0),
+		DryRun:                   cfg.OptionalBool("dry_run"),
+		MaxProbeFleet:            cfg.OptionalInt("max_probe_fleet", 0),
+		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
+		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),
+		SpendWindowSecs:          cfg.OptionalInt("spend_window_secs", 0),
+		ExpansionMaxHops:         cfg.OptionalInt("expansion_max_hops", 0),
+		MaxFrontierPostsInFlight: cfg.OptionalInt("max_frontier_posts_in_flight", 0),
+		FrontierFreshnessSecs:    cfg.OptionalInt("frontier_freshness_secs", 0),
+		WeightKnownMarket:        cfg.OptionalInt("weight_known_market", 0),
+		WeightHopPenalty:         cfg.OptionalInt("weight_hop_penalty", 0),
+		WeightVirginBonus:        cfg.OptionalInt("weight_virgin_bonus", 0),
 	}
 }
 
