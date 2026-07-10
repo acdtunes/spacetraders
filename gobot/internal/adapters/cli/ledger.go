@@ -267,10 +267,6 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 
 // runProfitLoss executes the profit & loss report command
 func runProfitLoss(playerID int, startDate, endDate string) error {
-	if playerID == 0 {
-		return fmt.Errorf("--player-id flag is required")
-	}
-
 	// Parse dates
 	start, err := time.Parse("2006-01-02", startDate)
 	if err != nil {
@@ -296,10 +292,20 @@ func runProfitLoss(playerID int, startDate, endDate string) error {
 
 	// Create repository and handler
 	transactionRepo := persistence.NewGormTransactionRepository(db)
+	playerRepo := persistence.NewGormPlayerRepository(db)
 	handler := queries.NewGetProfitLossHandler(transactionRepo)
 
-	// Execute query
+	// Resolve the effective player (flags > persisted default), same as
+	// `ledger list`, so `ledger report profit-loss` honors the default set
+	// via `config set-player` instead of hard-requiring --player-id.
 	ctx := context.Background()
+	resolvedPlayer, err := resolveDefaultPlayer(ctx, playerRepo)
+	if err != nil {
+		return err
+	}
+	playerID = resolvedPlayer.ID.Value()
+
+	// Execute query
 	result, err := handler.Handle(ctx, &queries.GetProfitLossQuery{
 		PlayerID:  playerID,
 		StartDate: start,
@@ -319,10 +325,6 @@ func runProfitLoss(playerID int, startDate, endDate string) error {
 
 // runCashFlow executes the cash flow report command
 func runCashFlow(playerID int, startDate, endDate, groupBy string) error {
-	if playerID == 0 {
-		return fmt.Errorf("--player-id flag is required")
-	}
-
 	// Parse dates
 	start, err := time.Parse("2006-01-02", startDate)
 	if err != nil {
@@ -348,10 +350,20 @@ func runCashFlow(playerID int, startDate, endDate, groupBy string) error {
 
 	// Create repository and handler
 	transactionRepo := persistence.NewGormTransactionRepository(db)
+	playerRepo := persistence.NewGormPlayerRepository(db)
 	handler := queries.NewGetCashFlowHandler(transactionRepo)
 
-	// Execute query
+	// Resolve the effective player (flags > persisted default), same as
+	// `ledger list`, so `ledger report cash-flow` honors the default set via
+	// `config set-player` instead of hard-requiring --player-id.
 	ctx := context.Background()
+	resolvedPlayer, err := resolveDefaultPlayer(ctx, playerRepo)
+	if err != nil {
+		return err
+	}
+	playerID = resolvedPlayer.ID.Value()
+
+	// Execute query
 	result, err := handler.Handle(ctx, &queries.GetCashFlowQuery{
 		PlayerID:  playerID,
 		StartDate: start,

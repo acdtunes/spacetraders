@@ -194,6 +194,7 @@ func newContainerStopCommand() *cobra.Command {
 func newContainerLogsCommand() *cobra.Command {
 	var (
 		limit int
+		tail  int
 		level string
 	)
 
@@ -202,8 +203,14 @@ func newContainerLogsCommand() *cobra.Command {
 		Short: "Get logs from a container",
 		Long: `Retrieve logs for a specific container from the database.
 
+Both --limit and --tail fetch the N most recent entries (query is ORDER BY
+timestamp DESC LIMIT N) and print them oldest-first/newest-last, matching
+tail(1) — the newest line is always the last one printed. --tail and --limit
+are mutually exclusive; if both are given, --tail wins.
+
 Examples:
   spacetraders container logs navigate-SCOUT-1-1234567890
+  spacetraders container logs navigate-SCOUT-1-1234567890 --tail 50
   spacetraders container logs navigate-SCOUT-1-1234567890 --limit 50
   spacetraders container logs navigate-SCOUT-1-1234567890 --level ERROR`,
 		Args: cobra.ExactArgs(1),
@@ -230,7 +237,13 @@ Examples:
 			// Create log repository
 			logRepo := persistence.NewGormContainerLogRepository(db, nil) // nil = use RealClock
 
-			// Query logs
+			// Query logs. --tail and --limit both resolve to the same
+			// underlying "N most recent" query (ORDER BY timestamp DESC
+			// LIMIT N, applied at the repo/data layer, not fetch-then-trim);
+			// --tail just gives that behavior its expected name and wins if
+			// both flags are set.
+			effectiveLimit := effectiveLogLimit(cmd, limit, tail)
+
 			ctx := context.Background()
 
 			var levelPtr *string
@@ -238,7 +251,7 @@ Examples:
 				levelPtr = &level
 			}
 
-			logs, err := logRepo.GetLogs(ctx, containerID, playerIdent.PlayerID, limit, levelPtr, nil)
+			logs, err := logRepo.GetLogs(ctx, containerID, playerIdent.PlayerID, effectiveLimit, levelPtr, nil)
 			if err != nil {
 				return fmt.Errorf("failed to get logs: %w", err)
 			}
@@ -248,7 +261,8 @@ Examples:
 				return nil
 			}
 
-			// Display logs in reverse order (oldest first)
+			// logs is newest-first (DESC); print oldest-first/newest-last,
+			// like tail(1), so the most recent entry is at the bottom.
 			for i := len(logs) - 1; i >= 0; i-- {
 				log := logs[i]
 				fmt.Printf("[%s] [%s] %s\n",
@@ -264,10 +278,22 @@ Examples:
 		},
 	}
 
-	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum number of log entries")
+	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum number of log entries (newest N)")
+	cmd.Flags().IntVar(&tail, "tail", 0, "Show only the last N log entries (newest N); overrides --limit if both are set")
 	cmd.Flags().StringVar(&level, "level", "", "Filter by log level (INFO, WARNING, ERROR, DEBUG)")
 
 	return cmd
+}
+
+// effectiveLogLimit resolves the row-count limit for `container logs`:
+// --tail (newest N) wins if the caller explicitly set it, otherwise --limit
+// applies. Mutually exclusive by convention, not enforcement, so existing
+// --limit-only invocations keep working unchanged.
+func effectiveLogLimit(cmd *cobra.Command, limit, tail int) int {
+	if cmd.Flags().Changed("tail") {
+		return tail
+	}
+	return limit
 }
 
 // Helper functions
