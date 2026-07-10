@@ -25,6 +25,7 @@ type Config struct {
 	Logging  LoggingConfig  `mapstructure:"logging"`
 	Metrics  MetricsConfig  `mapstructure:"metrics"`
 	Captain  CaptainConfig  `mapstructure:"captain"`
+	Contract ContractConfig `mapstructure:"contract"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

@@ -83,6 +83,13 @@ type DaemonServer struct {
 	marketMetricsCollector        *metrics.MarketMetricsCollector
 	manufacturingMetricsCollector *metrics.ManufacturingMetricsCollector
 
+	// contractConfig carries the idle-arb harvest knobs (sp-1z2h / sp-uohe)
+	// from config.yaml. ContractFleetCoordinator injects them into the
+	// coordinator container's launch config, so a captain tunes the harvest —
+	// including the money-guard blacklist — by editing config and restarting,
+	// no code redeploy.
+	contractConfig config.ContractConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -111,6 +118,7 @@ func NewDaemonServer(
 	apiClient domainPorts.APIClient,
 	socketPath string,
 	metricsConfig *config.MetricsConfig,
+	contractConfig config.ContractConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -167,6 +175,7 @@ func NewDaemonServer(
 		containerSpecs:        make(map[string]ContainerSpec),
 		pendingWorkerCommands: make(map[string]interface{}),
 		metricsConfig:         metricsConfig,
+		contractConfig:        contractConfig,
 		shutdownChan:          make(chan os.Signal, 1),
 		done:                  make(chan struct{}),
 	}

@@ -491,7 +491,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}

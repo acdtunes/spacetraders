@@ -31,6 +31,7 @@ type RunFleetCoordinatorHandler struct {
 	contractMarketService  *contractServices.ContractMarketService
 	marketRepo             market.MarketRepository
 	shipRepo               navigation.ShipRepository
+	contractRepo           domainContract.ContractRepository
 	daemonClient           daemon.DaemonClient
 	graphProvider          system.ISystemGraphProvider
 	converter              system.IWaypointConverter
@@ -75,6 +76,7 @@ func NewRunFleetCoordinatorHandler(
 		contractMarketService:  contractMarketService,
 		marketRepo:             marketRepo,
 		shipRepo:               shipRepo,
+		contractRepo:           contractRepo,
 		daemonClient:           daemonClient,
 		graphProvider:          graphProvider,
 		converter:              converter,
@@ -142,15 +144,21 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.marketRepo,
 			h.graphProvider,
 			h.idleArbLauncher,
+			appContract.NewActiveContractGoods(h.contractRepo),
 			h.clock,
 			cmd.PlayerID,
 			dedicatedFleetContract,
 			appContract.IdleArbConfig{
 				ReserveHulls:     cmd.IdleArbReserveHulls,
 				HubRadius:        cmd.IdleArbHubRadius,
+				LeashRadius:      cmd.IdleArbLeashRadius,
+				MaxLegDuration:   time.Duration(cmd.IdleArbMaxLegSecs) * time.Second,
 				MaxSpendPerLeg:   cmd.IdleArbMaxSpend,
 				MinMarginPerUnit: cmd.IdleArbMinMargin,
-				Interval:         time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
+				// Percent → fraction (0 → WithDefaults applies the 0.80 default).
+				MarginVerifyFraction: float64(cmd.IdleArbMarginVerifyPct) / 100.0,
+				Blacklist:            cmd.IdleArbBlacklist,
+				Interval:             time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
 			},
 		)
 		go dispatcher.Run(ctx)

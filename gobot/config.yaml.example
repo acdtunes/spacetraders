@@ -125,3 +125,31 @@ captain:
   max_feature_diff_lines: 400
   repo_dir: .                  # gobot repo root (worktrees are created under it)
   restart_cmd: make restart-daemon
+
+# Contract fleet coordinator configuration
+contract:
+  # Idle-gap arbitrage harvest (sp-1z2h / sp-uohe): the contract fleet's
+  # dedicated hulls sit idle ~89% of wall-time; this harvests that idle time
+  # with hub-local one-shot guarded arb legs. Every value below is OPTIONAL —
+  # an unset key takes the documented default. Editing these and restarting the
+  # daemon retunes the harvest with no code redeploy (RULINGS #2/#5).
+  idle_arb:
+    # disabled: true turns the harvest off entirely (default: on wherever a
+    # dedicated contract fleet exists).
+    # disabled: false
+    reserve_hulls: 1           # idle hulls never leased to arb, reserved for instant contract claims (default 1)
+    hub_radius: 250            # outer hub-local filter: max sell-leg distance from the hub (default 250)
+    # sp-uohe money guards — the −234k ELECTRONICS bleed fix. Fail CLOSED, never weakened.
+    leash_radius: 80           # tight leash: max sell-leg distance from the hub (default 80; legs naturally max ~52u)
+    max_leg_seconds: 480       # projected per-leg CRUISE flight-time cap (default 480 = 8 min)
+    max_spend: 100000          # per-leg buy cap (default 100k)
+    min_margin: 1              # ABSOLUTE per-unit margin floor handed to the arb run (default 1)
+    margin_verify_pct: 80      # RELATIVE floor: abort pre-buy unless the LIVE margin holds >= this % of the quoted margin (default 80)
+    interval_seconds: 90       # dispatch tick (default 90)
+    # blacklist: goods the harvest never dispatches (checked at dispatch time).
+    # Absent → default [ELECTRONICS] (the good that bled −234k). To RE-ENABLE a
+    # blacklisted good, edit this list and restart — e.g. set `blacklist: []`
+    # to clear it, or list other goods. An explicit empty list disables the
+    # blacklist entirely.
+    blacklist:
+      - ELECTRONICS

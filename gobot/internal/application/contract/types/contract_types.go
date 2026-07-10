@@ -133,10 +133,15 @@ type RunFleetCoordinatorCommand struct {
 	// hatch — the harvest is ON by default wherever a dedicated fleet exists.
 	IdleArbDisabled     bool
 	IdleArbReserveHulls int     // idle hulls never leased to arb (default 1)
-	IdleArbHubRadius    float64 // max sell-leg distance from the hub (default 250)
+	IdleArbHubRadius    float64 // outer hub-local filter distance (default 250)
 	IdleArbMaxSpend     int     // per-leg spend cap (default 100k)
-	IdleArbMinMargin    int     // per-unit margin floor (default 1)
+	IdleArbMinMargin    int     // absolute per-unit margin floor (default 1)
 	IdleArbIntervalSecs int     // dispatch tick in seconds (default 90)
+	// sp-uohe money guards (all parametrized, RULINGS #5):
+	IdleArbLeashRadius     float64  // tight money-guard leash radius (default 80)
+	IdleArbMaxLegSecs      int      // projected per-leg flight-time cap, seconds (default 480)
+	IdleArbMarginVerifyPct int      // live-verify floor as % of quoted margin (default 80)
+	IdleArbBlacklist       []string // excluded goods; nil → default [ELECTRONICS]
 }
 
 // RunFleetCoordinatorResponse contains fleet coordination results.

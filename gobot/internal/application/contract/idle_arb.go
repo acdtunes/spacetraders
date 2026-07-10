@@ -3,9 +3,12 @@ package contract
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -63,31 +66,70 @@ type IdleArbConfig struct {
 	ReserveHulls int
 	// HubRadius is the maximum in-system distance (distance units) from the
 	// hull's current waypoint to the leg's sell market. Bounds both leg
-	// duration and how far a hull can drift from its hub.
+	// duration and how far a hull can drift from its hub. This is the OUTER
+	// hub-local filter; LeashRadius (below) is the tighter money-guard leash.
 	HubRadius float64
+	// LeashRadius (sp-uohe) is the formal money-guard leash: the maximum
+	// distance (distance units) from the home hub a leg's sell market may sit.
+	// Legs naturally max ~52u, so 80 formalizes that boundary with headroom;
+	// tighter than HubRadius, it is the binding radius in practice. A candidate
+	// beyond it is skipped (leash counter), never dispatched.
+	LeashRadius float64
+	// MaxLegDuration (sp-uohe) caps a leg's projected one-way flight time to
+	// the sell market (CRUISE estimate from the hull's engine speed). It bites
+	// where LeashRadius does not: a slow hull whose in-radius leg still
+	// projects longer than this is skipped (leash counter).
+	MaxLegDuration time.Duration
 	// MaxSpendPerLeg caps each leg's buy (the arb run's --max-spend guard).
 	MaxSpendPerLeg int
-	// MinMarginPerUnit is the per-unit floor handed to the arb run's margin
-	// gate (which re-reads live prices and fails closed).
+	// MinMarginPerUnit is the absolute per-unit floor handed to the arb run's
+	// margin gate (which re-reads live prices and fails closed).
 	MinMarginPerUnit int
+	// MarginVerifyFraction (sp-uohe) is the RELATIVE per-unit floor: a leg's
+	// effective MinMargin is raised to ceil(MarginVerifyFraction × quoted
+	// margin), so the arb run's existing live-verify gate aborts fail-closed
+	// unless the live margin holds ≥ this fraction of the cached quote. This is
+	// the −234k fix: it gives the gate teeth the flat MinMarginPerUnit=1 floor
+	// never had (which tolerated a near-total collapse from the quote). 0.80 =
+	// tolerate at most a 20% margin slip between quote and live.
+	MarginVerifyFraction float64
+	// Blacklist (sp-uohe) is the config-driven excluded-goods list checked at
+	// dispatch: a leg is never dispatched on a listed good. Nil → the package
+	// default (ELECTRONICS); an explicit empty list disables the blacklist.
+	// The captain flips a good back by editing config and restarting (no code
+	// redeploy). RULINGS #5.
+	Blacklist []string
 	// Interval is the dispatch tick.
 	Interval time.Duration
 }
 
-// Idle-arb defaults. Sizing notes: radius 250 ≈ a 5-8 minute leg at the
-// fleet's observed ~35 units/min (sp-5bmq's far-source autopsy), the analyst's
-// micro-run shape; spend 100k/leg × ≤5 concurrent legs bounds exposure at
-// ~500k against a multi-million treasury, before the arb run's own
-// working-capital floor (non-tunable, sp-bp6f) even engages; margin floor 1
-// because any positive spread beats a parked hull — the run's live margin
-// gate, not this floor, is the capital protection.
+// Idle-arb defaults. Sizing notes: HubRadius 250 is the loose outer hub-local
+// filter; LeashRadius 80 is the tight money-guard leash (legs naturally max
+// ~52u, sp-5bmq, so 80 formalizes that boundary with headroom) and the
+// 8-minute cap catches slow hulls the radius alone would not; spend 100k/leg ×
+// ≤5 concurrent legs bounds exposure at ~500k against a multi-million treasury,
+// before the arb run's own working-capital floor (non-tunable, sp-bp6f) even
+// engages. MinMargin 1 is the ABSOLUTE floor; the capital protection is the
+// RELATIVE MarginVerifyFraction (0.80): sp-uohe autopsy — a flat floor of 1 let
+// the arb run's live-verify gate pass legs whose quoted margin had collapsed to
+// +1/unit, and selling ~52u of volatile ELECTRONICS into that razor cushion
+// realized −234k. The 80%-of-quote floor gives the gate the teeth to abort
+// those pre-buy.
 const (
-	DefaultIdleArbReserveHulls = 1
-	DefaultIdleArbHubRadius    = 250.0
-	DefaultIdleArbMaxSpend     = 100_000
-	DefaultIdleArbMinMargin    = 1
-	DefaultIdleArbInterval     = 90 * time.Second
+	DefaultIdleArbReserveHulls         = 1
+	DefaultIdleArbHubRadius            = 250.0
+	DefaultIdleArbLeashRadius          = 80.0
+	DefaultIdleArbMaxLegDuration       = 8 * time.Minute
+	DefaultIdleArbMaxSpend             = 100_000
+	DefaultIdleArbMinMargin            = 1
+	DefaultIdleArbMarginVerifyFraction = 0.80
+	DefaultIdleArbInterval             = 90 * time.Second
 )
+
+// DefaultIdleArbBlacklist is the initial excluded-goods list (sp-uohe): the
+// −234k bleed was on ELECTRONICS. A nil IdleArbConfig.Blacklist takes this;
+// an explicit empty list disables the blacklist entirely.
+var DefaultIdleArbBlacklist = []string{"ELECTRONICS"}
 
 // WithDefaults fills zero-valued fields with the package defaults.
 func (c IdleArbConfig) WithDefaults() IdleArbConfig {
@@ -97,11 +139,25 @@ func (c IdleArbConfig) WithDefaults() IdleArbConfig {
 	if c.HubRadius <= 0 {
 		c.HubRadius = DefaultIdleArbHubRadius
 	}
+	if c.LeashRadius <= 0 {
+		c.LeashRadius = DefaultIdleArbLeashRadius
+	}
+	if c.MaxLegDuration <= 0 {
+		c.MaxLegDuration = DefaultIdleArbMaxLegDuration
+	}
 	if c.MaxSpendPerLeg <= 0 {
 		c.MaxSpendPerLeg = DefaultIdleArbMaxSpend
 	}
 	if c.MinMarginPerUnit <= 0 {
 		c.MinMarginPerUnit = DefaultIdleArbMinMargin
+	}
+	if c.MarginVerifyFraction <= 0 {
+		c.MarginVerifyFraction = DefaultIdleArbMarginVerifyFraction
+	}
+	// nil → default blacklist; an explicit empty (non-nil) list is preserved so
+	// a config whitelist-flip genuinely disables the blacklist without code.
+	if c.Blacklist == nil {
+		c.Blacklist = DefaultIdleArbBlacklist
 	}
 	if c.Interval <= 0 {
 		c.Interval = DefaultIdleArbInterval
@@ -133,6 +189,44 @@ type IdleArbLauncher interface {
 	LaunchIdleArb(ctx context.Context, spec IdleArbSpec) (containerID string, err error)
 }
 
+// ContractGoodsProvider lists the delivery goods of the player's OPEN contracts
+// (sp-uohe guard 3) so the dispatcher never dispatches an arb leg on a good we
+// are actively sourcing for a contract — the idle harvest must never compete
+// with, or bid up, our own contract sourcing. A narrow port (not the full
+// ContractRepository) keeps the dispatcher testable with a trivial fake.
+type ContractGoodsProvider interface {
+	// OpenContractGoods returns the set of trade symbols under the player's
+	// active contracts. An error is fatal to a dispatch pass (fail-closed): the
+	// dispatcher would rather skip a tick than risk sourcing-competition it
+	// cannot rule out.
+	OpenContractGoods(ctx context.Context, playerID int) (map[string]struct{}, error)
+}
+
+// activeContractGoods adapts the domain ContractRepository to
+// ContractGoodsProvider by reading every active contract's delivery symbols.
+type activeContractGoods struct {
+	repo domainContract.ContractRepository
+}
+
+// NewActiveContractGoods wires the default provider over the contract repo.
+func NewActiveContractGoods(repo domainContract.ContractRepository) ContractGoodsProvider {
+	return activeContractGoods{repo: repo}
+}
+
+func (a activeContractGoods) OpenContractGoods(ctx context.Context, playerID int) (map[string]struct{}, error) {
+	contracts, err := a.repo.FindActiveContracts(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	goods := make(map[string]struct{})
+	for _, c := range contracts {
+		for _, delivery := range c.Terms().Deliveries {
+			goods[delivery.TradeSymbol] = struct{}{}
+		}
+	}
+	return goods, nil
+}
+
 // IdleArbLane is a scored hub-local lane candidate.
 type IdleArbLane struct {
 	Good          string
@@ -150,18 +244,36 @@ type IdleArbDispatcher struct {
 	marketRepo    market.MarketRepository
 	graphProvider system.ISystemGraphProvider
 	launcher      IdleArbLauncher
+	contractGoods ContractGoodsProvider
 	clock         shared.Clock
 	playerID      shared.PlayerID
 	fleet         string
 	cfg           IdleArbConfig
+	blacklist     map[string]struct{} // upper-cased cfg.Blacklist, built once
+
+	// Observability counters (sp-uohe guard 5). In-memory and reset on restart
+	// by design: they measure THIS process's harvest rate, not operational
+	// state — a restart legitimately restarts the window. The operational state
+	// (claims, reservations, container rows) is persisted by the existing
+	// mechanisms (RULINGS #2), untouched here. DispatchOnce is called serially
+	// (Run's single goroutine), so these need no locking.
+	startTime        time.Time
+	attempts         int // legs launch-attempted
+	launched         int // legs successfully launched
+	skipBlacklist    int // legs skipped: good on the blacklist
+	skipContractGood int // legs skipped: good under an open contract
+	skipLeash        int // legs skipped: only profit was beyond the leash/leg-time
 }
 
-// NewIdleArbDispatcher wires a dispatcher for the given dedicated fleet.
+// NewIdleArbDispatcher wires a dispatcher for the given dedicated fleet. A nil
+// contractGoods provider leaves the contract-good exclusion (guard 3) inert —
+// the same optional-port contract the other guards use for missing wiring.
 func NewIdleArbDispatcher(
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	graphProvider system.ISystemGraphProvider,
 	launcher IdleArbLauncher,
+	contractGoods ContractGoodsProvider,
 	clock shared.Clock,
 	playerID shared.PlayerID,
 	fleet string,
@@ -170,16 +282,57 @@ func NewIdleArbDispatcher(
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
+	cfg = cfg.WithDefaults()
+	// Pre-build the blacklist lookup once, upper-cased so a config typo in case
+	// still matches the API's upper-case good symbols.
+	blacklist := make(map[string]struct{}, len(cfg.Blacklist))
+	for _, g := range cfg.Blacklist {
+		blacklist[strings.ToUpper(strings.TrimSpace(g))] = struct{}{}
+	}
 	return &IdleArbDispatcher{
 		shipRepo:      shipRepo,
 		marketRepo:    marketRepo,
 		graphProvider: graphProvider,
 		launcher:      launcher,
+		contractGoods: contractGoods,
 		clock:         clock,
 		playerID:      playerID,
 		fleet:         fleet,
-		cfg:           cfg.WithDefaults(),
+		cfg:           cfg,
+		blacklist:     blacklist,
+		startTime:     clock.Now(),
 	}
+}
+
+// isBlacklisted reports whether good is on the configured excluded list.
+func (d *IdleArbDispatcher) isBlacklisted(good string) bool {
+	_, ok := d.blacklist[strings.ToUpper(good)]
+	return ok
+}
+
+// idleArbSkipReason names why a hull's would-be leg was refused at dispatch, so
+// the skip counters (guard 5) can attribute pressure by cause.
+type idleArbSkipReason int
+
+const (
+	skipNone idleArbSkipReason = iota
+	skipReasonBlacklist
+	skipReasonContractGood
+	skipReasonLeash
+)
+
+// idleArbMinMargin (sp-uohe guard 1) is the effective per-unit floor a leg
+// hands the arb run's live-verify gate: the tighter of the absolute floor and
+// the relative one (ceil(fraction × quoted margin)). Passing THIS as the run's
+// MinMargin makes the run's existing live-refresh + fail-closed abort reject a
+// leg whose live margin has slipped below the fraction of its quote — the
+// −234k hole was the dispatcher handing this gate a flat floor of 1.
+func idleArbMinMargin(cfg IdleArbConfig, quotedMargin int) int {
+	relative := int(math.Ceil(cfg.MarginVerifyFraction * float64(quotedMargin)))
+	if relative > cfg.MinMarginPerUnit {
+		return relative
+	}
+	return cfg.MinMarginPerUnit
 }
 
 // Run ticks DispatchOnce every Interval until ctx is cancelled. Started as a
@@ -208,6 +361,27 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 	logger := common.LoggerFromContext(ctx)
 
 	launched := 0
+	passSkips := 0 // dispatch-time guard skips THIS pass (guard-5 summary trigger)
+	// Emit the harvest summary (guard 5) on every return path of a pass that did
+	// something, so the captain's acceptance can read the attempt rate and the
+	// per-reason skip pressure from message text.
+	defer func() { d.logHarvestSummary(ctx, launched, passSkips) }()
+
+	// Guard 3 dependency: the goods under the player's OPEN contracts. Read ONCE
+	// per pass (not per hull) and fail CLOSED — a contract-read failure skips the
+	// whole tick rather than risk dispatching a leg that competes with our own
+	// sourcing. A nil provider leaves the exclusion inert (empty set).
+	openGoods := map[string]struct{}{}
+	if d.contractGoods != nil {
+		g, err := d.contractGoods.OpenContractGoods(ctx, d.playerID.Value())
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf(
+				"Idle-arb dispatch: could not read open-contract goods, skipping pass (fail-closed): %v", err), nil)
+			return launched
+		}
+		openGoods = g
+	}
+
 	// tried tracks hulls already handled this pass (launched, or skipped for
 	// want of a lane) so the recount loop below always terminates. A skipped
 	// hull stays idle and keeps padding the reserve — conservative.
@@ -243,21 +417,34 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		hull := candidates[0]
 		tried[hull.ShipSymbol()] = true
 
-		lane := d.pickHubLocalLane(ctx, hull)
+		lane, skip := d.pickHubLocalLane(ctx, hull, openGoods)
 		if lane == nil {
-			continue // no profitable local lane from this hull's hub right now
+			// A guard refused this hull's only profitable lane → attribute the
+			// skip by cause (guard 5). skipNone means there simply was no
+			// profitable local lane, i.e. idle-for-lack-of-opportunity, not a
+			// guard skip.
+			if d.recordSkip(skip) {
+				passSkips++
+			}
+			continue
 		}
 
+		// Guard 1 (the −234k fix): hand the arb run's live-verify gate the
+		// RELATIVE floor ceil(fraction × quoted margin), not the flat absolute
+		// floor. The run re-reads live prices and fails closed, so a leg whose
+		// live margin has collapsed below that fraction of its quote aborts
+		// pre-buy (zero spend) instead of buying on a razor cushion.
 		spec := IdleArbSpec{
 			ShipSymbol: hull.ShipSymbol(),
 			Good:       lane.Good,
 			BuyAt:      hull.CurrentLocation().Symbol,
 			SellAt:     lane.SellAt,
 			MaxSpend:   d.cfg.MaxSpendPerLeg,
-			MinMargin:  d.cfg.MinMarginPerUnit,
+			MinMargin:  idleArbMinMargin(d.cfg, lane.MarginPerUnit),
 			PlayerID:   d.playerID.Value(),
 			Operation:  d.fleet,
 		}
+		d.attempts++
 		containerID, err := d.launcher.LaunchIdleArb(ctx, spec)
 		if err != nil {
 			// Losing the claim race (the coordinator took this hull for a
@@ -268,11 +455,12 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			continue
 		}
 		launched++
+		d.launched++
 
 		logger.Log("INFO", fmt.Sprintf(
-			"Idle-gap arb leg launched: %s flies %s %s->%s (margin %d/unit = bid %d - ask %d, distance %.0f, max spend %d) in container %s",
+			"Idle-gap arb leg launched: %s flies %s %s->%s (quoted margin %d/unit = bid %d - ask %d, live-verify floor %d/unit, distance %.0f, max spend %d) in container %s",
 			hull.ShipSymbol(), lane.Good, spec.BuyAt, lane.SellAt,
-			lane.MarginPerUnit, lane.DestBid, lane.SourceAsk, lane.Distance, spec.MaxSpend, containerID,
+			lane.MarginPerUnit, lane.DestBid, lane.SourceAsk, spec.MinMargin, lane.Distance, spec.MaxSpend, containerID,
 		), map[string]interface{}{
 			"action":       "idle_arb_launched",
 			"ship_symbol":  hull.ShipSymbol(),
@@ -287,38 +475,55 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 }
 
 // pickHubLocalLane scores every (good, sell-market) pair reachable from the
-// hull's CURRENT waypoint within HubRadius and returns the best positive-
-// margin lane, or nil when the hub offers none right now. Prices are the
-// scanned cache — deliberately: the arb run itself live-refreshes the source
-// and re-gates the margin fail-closed before any credit moves, so a stale
-// pick here costs at worst a wasted (refused) leg, never money.
-func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigation.Ship) *IdleArbLane {
+// hull's CURRENT waypoint and returns the best positive-margin lane that PASSES
+// every dispatch-time guard, together with a skip reason. Prices are the scanned
+// cache — deliberately: the arb run itself live-refreshes the source and
+// re-gates the margin fail-closed (now against the tighter relative floor) before
+// any credit moves, so a stale pick here costs at worst a wasted (refused) leg.
+//
+// The return distinguishes three outcomes for the skip counters (guard 5):
+//   - a lane + skipNone: fly it.
+//   - nil + a guard reason: a profitable lane existed but EVERY candidate was
+//     refused by a guard (blacklist / open-contract good / leash) — a
+//     skipped-by-guard leg, attributed to the reason of the best refused lane.
+//   - nil + skipNone: no profitable local lane at all — idle for lack of
+//     opportunity, not a guard skip.
+func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigation.Ship, excludedContractGoods map[string]struct{}) (*IdleArbLane, idleArbSkipReason) {
 	logger := common.LoggerFromContext(ctx)
 	origin := hull.CurrentLocation()
 	if origin == nil {
-		return nil
+		return nil, skipNone
 	}
 
 	hubMarket, err := d.marketRepo.GetMarketData(ctx, origin.Symbol, d.playerID.Value())
 	if err != nil || hubMarket == nil || hubMarket.GoodsCount() == 0 {
-		return nil // the hub standby station isn't a scanned market — nothing to fly
+		return nil, skipNone // the hub standby station isn't a scanned market — nothing to fly
 	}
 
 	systemSymbol := shared.ExtractSystemSymbol(origin.Symbol)
 	graphResult, err := d.graphProvider.GetGraph(ctx, systemSymbol, false, d.playerID.Value())
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Idle-arb lane pick: no system graph for %s: %v", systemSymbol, err), nil)
-		return nil
+		return nil, skipNone
 	}
 
 	marketWaypoints, err := d.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, d.playerID.Value())
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Idle-arb lane pick: market listing failed for %s: %v", systemSymbol, err), nil)
-		return nil
+		return nil, skipNone
 	}
 
-	var best *IdleArbLane
-	bestScore := 0
+	// bestAllowed is the best lane passing every guard; bestExcluded is the best
+	// profitable lane a guard refused (with its reason). If nothing passes but a
+	// profitable lane was refused, the reason of bestExcluded is what skipped the
+	// leg — a fair attribution because bestAllowed==nil means ALL profitable
+	// candidates were refused, so the best one's reason is representative.
+	var bestAllowed *IdleArbLane
+	bestAllowedScore := 0
+	var bestExcluded *IdleArbLane
+	bestExcludedScore := 0
+	bestExcludedReason := skipNone
+
 	for _, wp := range marketWaypoints {
 		if wp == origin.Symbol {
 			continue
@@ -329,7 +534,7 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 		}
 		distance := origin.DistanceTo(coord)
 		if distance > d.cfg.HubRadius {
-			continue // hub-LOCAL only: the hull must stay a short hop from home
+			continue // hub-LOCAL outer bound: the hull must stay a short hop from home
 		}
 
 		destMarket, err := d.marketRepo.GetMarketData(ctx, wp, d.playerID.Value())
@@ -362,19 +567,100 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 				continue
 			}
 			score := margin * units
-			if best == nil || score > bestScore {
-				best = &IdleArbLane{
-					Good:          hubGood.Symbol(),
-					SellAt:        wp,
-					MarginPerUnit: margin,
-					Distance:      distance,
-					SourceAsk:     ask,
-					DestBid:       bid,
+			lane := &IdleArbLane{
+				Good:          hubGood.Symbol(),
+				SellAt:        wp,
+				MarginPerUnit: margin,
+				Distance:      distance,
+				SourceAsk:     ask,
+				DestBid:       bid,
+			}
+
+			if reason := d.laneSkipReason(hubGood.Symbol(), distance, excludedContractGoods, hull.EngineSpeed()); reason != skipNone {
+				if bestExcluded == nil || score > bestExcludedScore {
+					bestExcluded = lane
+					bestExcludedScore = score
+					bestExcludedReason = reason
 				}
-				bestScore = score
+				continue
+			}
+			if bestAllowed == nil || score > bestAllowedScore {
+				bestAllowed = lane
+				bestAllowedScore = score
 			}
 		}
 	}
 
-	return best
+	if bestAllowed != nil {
+		return bestAllowed, skipNone
+	}
+	if bestExcluded != nil {
+		return nil, bestExcludedReason
+	}
+	return nil, skipNone
+}
+
+// laneSkipReason applies the dispatch-time exclusions to one (good, market)
+// candidate and returns the FIRST reason it is refused, or skipNone if it may
+// fly. Order: blacklist (guard 4) → open-contract good (guard 3) → leash (guard
+// 2: the LeashRadius bound, then the projected CRUISE leg-time from the hull's
+// engine speed against MaxLegDuration). None weakens the pre-existing HubRadius
+// filter; each only tightens (RULINGS #4).
+func (d *IdleArbDispatcher) laneSkipReason(good string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int) idleArbSkipReason {
+	if d.isBlacklisted(good) {
+		return skipReasonBlacklist
+	}
+	if _, ok := excludedContractGoods[good]; ok {
+		return skipReasonContractGood
+	}
+	if distance > d.cfg.LeashRadius {
+		return skipReasonLeash
+	}
+	legSeconds := shared.FlightModeCruise.TravelTime(distance, engineSpeed)
+	if time.Duration(legSeconds)*time.Second > d.cfg.MaxLegDuration {
+		return skipReasonLeash
+	}
+	return skipNone
+}
+
+// recordSkip increments the cumulative counter for a dispatch-time guard skip
+// (guard 5) and reports whether it was one. skipNone is not a skip — the hull
+// simply had no profitable local lane this tick.
+func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
+	switch reason {
+	case skipReasonBlacklist:
+		d.skipBlacklist++
+	case skipReasonContractGood:
+		d.skipContractGood++
+	case skipReasonLeash:
+		d.skipLeash++
+	default:
+		return false
+	}
+	return true
+}
+
+// logHarvestSummary emits the guard-5 observability line in MESSAGE TEXT (not a
+// metadata map — the CLI renderer drops metadata), carrying the attempt rate and
+// the cumulative per-reason skip counts the captain's acceptance and the
+// fleet-sizing rule read. Margin-aborts are a POST-launch refusal the arb run
+// logs per-leg in its own message text ("... aborting before buy"); they are not
+// summed here because the dispatcher's launch is fire-and-forget and never
+// observes the run's outcome. Emitted only when the pass did something, to keep
+// idle ticks quiet.
+func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisPass, skipsThisPass int) {
+	if launchedThisPass == 0 && skipsThisPass == 0 {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+	rate := 0.0
+	if elapsed := d.clock.Now().Sub(d.startTime).Hours(); elapsed > 0 {
+		rate = float64(d.attempts) / elapsed
+	}
+	logger.Log("INFO", fmt.Sprintf(
+		"Idle-arb harvest: %d leg(s) launched this pass; %d attempt(s) total at %.1f/hr; "+
+			"skipped legs - blacklist %d, contract-good %d, leash %d (cumulative; margin-aborts logged per-leg by the arb run)",
+		launchedThisPass, d.attempts, rate,
+		d.skipBlacklist, d.skipContractGood, d.skipLeash,
+	), nil)
 }

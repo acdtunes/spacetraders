@@ -406,6 +406,15 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		IdleArbMaxSpend:     cfg.OptionalInt("idle_arb_max_spend", 0),
 		IdleArbMinMargin:    cfg.OptionalInt("idle_arb_min_margin", 0),
 		IdleArbIntervalSecs: cfg.OptionalInt("idle_arb_interval_secs", 0),
+		// sp-uohe money guards. Absent → 0/nil → the contract package's
+		// WithDefaults applies the documented defaults (leash 80, leg-cap 480s,
+		// verify 80%, blacklist [ELECTRONICS]). An explicit empty blacklist ([])
+		// is preserved by OptionalStringSlice (non-nil) so a config whitelist-flip
+		// genuinely disables it without a code change.
+		IdleArbLeashRadius:     float64(cfg.OptionalInt("idle_arb_leash_radius", 0)),
+		IdleArbMaxLegSecs:      cfg.OptionalInt("idle_arb_max_leg_secs", 0),
+		IdleArbMarginVerifyPct: cfg.OptionalInt("idle_arb_margin_verify_pct", 0),
+		IdleArbBlacklist:       cfg.OptionalStringSlice("idle_arb_blacklist"),
 	}
 }
 

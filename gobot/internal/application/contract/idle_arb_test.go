@@ -3,9 +3,11 @@ package contract
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -81,6 +83,25 @@ func (f *fakeIdleArbLauncher) LaunchIdleArb(_ context.Context, spec IdleArbSpec)
 	return "idle-arb-" + spec.ShipSymbol, nil
 }
 
+// fakeContractGoods serves a fixed open-contract-goods set (guard 3), and can
+// simulate a contract-read failure to exercise the fail-closed dispatch path.
+type fakeContractGoods struct {
+	goods map[string]struct{}
+	err   error
+}
+
+func contractGoodsOf(symbols ...string) fakeContractGoods {
+	set := make(map[string]struct{}, len(symbols))
+	for _, s := range symbols {
+		set[s] = struct{}{}
+	}
+	return fakeContractGoods{goods: set}
+}
+
+func (f fakeContractGoods) OpenContractGoods(context.Context, int) (map[string]struct{}, error) {
+	return f.goods, f.err
+}
+
 // --- fixture builders ------------------------------------------------------
 
 func idleArbWaypoint(t *testing.T, symbol string, x, y float64) *shared.Waypoint {
@@ -136,14 +157,23 @@ func marketAt(t *testing.T, waypoint string, goods ...market.TradeGood) *market.
 
 const testFleet = "contract"
 
-// hub layout: hull(s) at HUB (0,0); NEAR market at (0,100) inside the 250
-// radius buying MACHINERY at 150 vs the hub's 100 ask; FAR market at (0,400)
-// outside the radius with an even juicier bid that must be IGNORED.
+// hub layout: hull(s) at HUB (0,0); NEAR market at (0,50) INSIDE the 80u leash
+// buying MACHINERY at 150 vs the hub's 100 ask (margin 50/unit); FAR market at
+// (0,400) outside both the leash and the 250 hub-radius with an even juicier bid
+// that must be IGNORED. NEAR sits at ~50u — the "legs max ~52u naturally" shape
+// the sp-uohe leash formalizes — so the default 80u leash still admits it.
 func idleArbHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArbDispatcher, *idleArbFakeShipRepo, *fakeIdleArbLauncher) {
+	t.Helper()
+	return idleArbHarnessGoods(t, hulls, cfg, nil)
+}
+
+// idleArbHarnessGoods is idleArbHarness with an explicit contract-goods provider
+// (guard 3). A nil provider leaves the contract-good exclusion inert.
+func idleArbHarnessGoods(t *testing.T, hulls int, cfg IdleArbConfig, contractGoods ContractGoodsProvider) (*IdleArbDispatcher, *idleArbFakeShipRepo, *fakeIdleArbLauncher) {
 	t.Helper()
 
 	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
-	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 100)
+	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
 	far := idleArbWaypoint(t, "X1-HUB-Z99", 0, 400)
 
 	repo := &idleArbFakeShipRepo{}
@@ -163,7 +193,7 @@ func idleArbHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArbDispatc
 
 	clock := shared.NewRealClock()
 	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
-	dispatcher := NewIdleArbDispatcher(repo, markets, graph, launcher, clock, shared.MustNewPlayerID(1), testFleet, cfg)
+	dispatcher := NewIdleArbDispatcher(repo, markets, graph, launcher, contractGoods, clock, shared.MustNewPlayerID(1), testFleet, cfg)
 	return dispatcher, repo, launcher
 }
 
@@ -216,8 +246,14 @@ func TestIdleArb_LaneIsHubLocal_AndSpecInheritsGuards(t *testing.T) {
 	if spec.Operation != testFleet {
 		t.Errorf("claim identity must be the dispatcher's fleet (l7h2), got %q", spec.Operation)
 	}
-	if spec.MaxSpend != 77_000 || spec.MinMargin != 5 {
-		t.Errorf("guard knobs must pass through untouched, got spend %d margin %d", spec.MaxSpend, spec.MinMargin)
+	if spec.MaxSpend != 77_000 {
+		t.Errorf("max-spend guard knob must pass through untouched, got %d", spec.MaxSpend)
+	}
+	// Guard 1 (sp-uohe): the spec's MinMargin is the RELATIVE live-verify floor,
+	// max(absolute floor 5, ceil(0.80 × quoted margin 50) = 40) = 40 — NOT the
+	// flat absolute floor. This is what arms the arb run's live-verify gate.
+	if spec.MinMargin != 40 {
+		t.Errorf("MinMargin must be the 80%%-of-quote live-verify floor (40), got %d", spec.MinMargin)
 	}
 }
 
@@ -312,13 +348,189 @@ func TestIdleArbConfig_WithDefaults_FillsZeroes(t *testing.T) {
 	cfg := IdleArbConfig{}.WithDefaults()
 	if cfg.ReserveHulls != DefaultIdleArbReserveHulls ||
 		cfg.HubRadius != DefaultIdleArbHubRadius ||
+		cfg.LeashRadius != DefaultIdleArbLeashRadius ||
+		cfg.MaxLegDuration != DefaultIdleArbMaxLegDuration ||
 		cfg.MaxSpendPerLeg != DefaultIdleArbMaxSpend ||
 		cfg.MinMarginPerUnit != DefaultIdleArbMinMargin ||
+		cfg.MarginVerifyFraction != DefaultIdleArbMarginVerifyFraction ||
 		cfg.Interval != DefaultIdleArbInterval {
 		t.Fatalf("zero config must take documented defaults, got %+v", cfg)
 	}
-	custom := IdleArbConfig{ReserveHulls: 2, HubRadius: 50, MaxSpendPerLeg: 5, MinMarginPerUnit: 9, Interval: DefaultIdleArbInterval}.WithDefaults()
-	if custom.ReserveHulls != 2 || custom.HubRadius != 50 || custom.MaxSpendPerLeg != 5 || custom.MinMarginPerUnit != 9 {
+	// A nil blacklist defaults to [ELECTRONICS] (the −234k good).
+	if len(cfg.Blacklist) != 1 || cfg.Blacklist[0] != "ELECTRONICS" {
+		t.Fatalf("nil blacklist must default to [ELECTRONICS], got %v", cfg.Blacklist)
+	}
+	// An EXPLICIT empty blacklist is preserved (the whitelist-flip that disables
+	// it entirely) — it must NOT be re-defaulted to ELECTRONICS.
+	flipped := IdleArbConfig{Blacklist: []string{}}.WithDefaults()
+	if len(flipped.Blacklist) != 0 {
+		t.Fatalf("explicit empty blacklist must be preserved (disabled), got %v", flipped.Blacklist)
+	}
+	custom := IdleArbConfig{ReserveHulls: 2, HubRadius: 50, LeashRadius: 33, MaxSpendPerLeg: 5, MinMarginPerUnit: 9, MarginVerifyFraction: 0.5, Interval: DefaultIdleArbInterval}.WithDefaults()
+	if custom.ReserveHulls != 2 || custom.HubRadius != 50 || custom.LeashRadius != 33 || custom.MaxSpendPerLeg != 5 || custom.MinMarginPerUnit != 9 || custom.MarginVerifyFraction != 0.5 {
 		t.Fatalf("non-zero config must be preserved, got %+v", custom)
 	}
+}
+
+// --- sp-uohe money-guard tests ---------------------------------------------
+
+// Guard 1 (live pre-buy verify): the effective floor is the tighter of the
+// absolute floor and ceil(fraction × quoted margin). This is the value handed to
+// the arb run's live-verify gate; the run itself aborts pre-buy when the LIVE
+// margin misses it (proven end-to-end by
+// TestArbCoordinator_MinMarginAbortsBeforeBuy).
+func TestIdleArbMinMargin_RelativeFloor(t *testing.T) {
+	cfg := IdleArbConfig{MinMarginPerUnit: 5, MarginVerifyFraction: 0.80}
+	if got := idleArbMinMargin(cfg, 100); got != 80 {
+		t.Errorf("quoted 100 → relative floor ceil(0.8×100)=80, got %d", got)
+	}
+	if got := idleArbMinMargin(cfg, 51); got != 41 {
+		t.Errorf("quoted 51 → ceil(0.8×51)=41 (ceil rounds up), got %d", got)
+	}
+	if got := idleArbMinMargin(cfg, 3); got != 5 {
+		t.Errorf("quoted 3 → absolute floor 5 dominates the tiny relative floor, got %d", got)
+	}
+}
+
+// Guard 1 end-to-end at the dispatch seam: a launched leg carries the 80%-of-
+// quote live-verify floor, not the flat MinMargin=1 that let the −234k
+// ELECTRONICS legs through. Remove idleArbMinMargin and this goes red.
+func TestIdleArb_MarginVerifyFloorArmsTheGate(t *testing.T) {
+	d, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
+	if launched := d.DispatchOnce(context.Background()); launched != 1 {
+		t.Fatalf("expected exactly 1 launch, got %d", launched)
+	}
+	// NEAR quotes margin 50/unit → floor ceil(0.80 × 50) = 40, not the flat 1.
+	if got := launcher.launches[0].MinMargin; got != 40 {
+		t.Fatalf("launched leg must carry the 80%%-of-quote floor (40), got %d", got)
+	}
+}
+
+// Guard 4 (blacklist): a listed good is never dispatched; a config whitelist-flip
+// (explicit empty list) re-enables it with no code change.
+func TestIdleArb_Blacklist_NeverDispatches_FlipReEnables(t *testing.T) {
+	blocked, repo, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1, Blacklist: []string{"MACHINERY"}})
+	if launched := blocked.DispatchOnce(context.Background()); launched != 0 || len(launcher.launches) != 0 {
+		t.Fatalf("a blacklisted good must never dispatch, got %d launches", launched)
+	}
+	if blocked.skipBlacklist == 0 {
+		t.Fatalf("a blacklist skip must be counted, got %d", blocked.skipBlacklist)
+	}
+	if idle, _, _ := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, testFleet); len(idle) != 2 {
+		t.Fatalf("blacklist-skipped hulls must stay idle, got %d", len(idle))
+	}
+
+	// Whitelist flip: an explicit empty blacklist re-enables the same lane.
+	open, _, launcher2 := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1, Blacklist: []string{}})
+	if launched := open.DispatchOnce(context.Background()); launched != 1 || launcher2.launches[0].Good != "MACHINERY" {
+		t.Fatalf("clearing the blacklist must re-enable dispatch, got %d launches", launched)
+	}
+}
+
+// Guard 3 (contract-good exclusion): a good under an open contract is never
+// dispatched (no competing with our own sourcing), and a contract-read failure
+// fails CLOSED — the whole pass is skipped rather than dispatched blind.
+func TestIdleArb_ContractGood_NeverDispatches_FailClosed(t *testing.T) {
+	under, _, launcher := idleArbHarnessGoods(t, 2, IdleArbConfig{ReserveHulls: 1}, contractGoodsOf("MACHINERY"))
+	if launched := under.DispatchOnce(context.Background()); launched != 0 || len(launcher.launches) != 0 {
+		t.Fatalf("a good under an open contract must never dispatch, got %d launches", launched)
+	}
+	if under.skipContractGood == 0 {
+		t.Fatalf("a contract-good skip must be counted, got %d", under.skipContractGood)
+	}
+
+	clear, _, launcher2 := idleArbHarnessGoods(t, 2, IdleArbConfig{ReserveHulls: 1}, contractGoodsOf("FUEL"))
+	if launched := clear.DispatchOnce(context.Background()); launched != 1 || launcher2.launches[0].Good != "MACHINERY" {
+		t.Fatalf("a good NOT under any contract must dispatch, got %d launches", launched)
+	}
+
+	failing, _, launcher3 := idleArbHarnessGoods(t, 2, IdleArbConfig{ReserveHulls: 1}, fakeContractGoods{err: fmt.Errorf("contract store down")})
+	if launched := failing.DispatchOnce(context.Background()); launched != 0 || len(launcher3.launches) != 0 {
+		t.Fatalf("a contract-read failure must fail CLOSED (0 launches), got %d", launched)
+	}
+}
+
+// Guard 2 (leash): a market inside the outer hub-radius but beyond the leash is
+// skipped; widening the leash admits it. The leg-time cap bites where the radius
+// does not — an in-leash market whose projected CRUISE leg exceeds the cap is
+// also skipped. Both increment the leash counter.
+func TestIdleArb_Leash_SkipsBeyondRadiusAndLegTime(t *testing.T) {
+	build := func(cfg IdleArbConfig) (*IdleArbDispatcher, *fakeIdleArbLauncher) {
+		hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
+		mid := idleArbWaypoint(t, "X1-HUB-M50", 0, 150) // inside HubRadius 250, beyond leash 80
+		repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
+			idleArbHull(t, "TORWIND-1", hub, testFleet),
+			idleArbHull(t, "TORWIND-2", hub, testFleet),
+		}}
+		graph := &fakeGraphProvider{waypoints: map[string]*shared.Waypoint{hub.Symbol: hub, mid.Symbol: mid}}
+		markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
+			hub.Symbol: marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 90, 100)),
+			mid.Symbol: marketAt(t, mid.Symbol, tradeGood(t, "MACHINERY", 300, 320)),
+		}}
+		clock := shared.NewRealClock()
+		launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
+		return NewIdleArbDispatcher(repo, markets, graph, launcher, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg), launcher
+	}
+
+	leashed, launcher := build(IdleArbConfig{ReserveHulls: 1, HubRadius: 250, LeashRadius: 80})
+	if launched := leashed.DispatchOnce(context.Background()); launched != 0 || len(launcher.launches) != 0 {
+		t.Fatalf("a market beyond the leash (but within hub-radius) must be skipped, got %d launches", launched)
+	}
+	if leashed.skipLeash == 0 {
+		t.Fatalf("a leash skip must be counted, got %d", leashed.skipLeash)
+	}
+
+	admitted, launcher2 := build(IdleArbConfig{ReserveHulls: 1, HubRadius: 250, LeashRadius: 250})
+	if launched := admitted.DispatchOnce(context.Background()); launched != 1 || len(launcher2.launches) != 1 {
+		t.Fatalf("widening the leash to admit the market must dispatch it, got %d launches", launched)
+	}
+
+	// Leg-time cap: NEAR (@50u, inside the 80u leash) but a 10s max-leg-time is
+	// shorter than its ~51s CRUISE leg → skipped by the leg-time branch.
+	legCapped, _, launcher3 := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1, MaxLegDuration: 10 * time.Second})
+	if launched := legCapped.DispatchOnce(context.Background()); launched != 0 || len(launcher3.launches) != 0 {
+		t.Fatalf("a leg exceeding the max-leg-time must be skipped, got %d launches", launched)
+	}
+	if legCapped.skipLeash == 0 {
+		t.Fatalf("a leg-time skip must count as a leash skip, got %d", legCapped.skipLeash)
+	}
+}
+
+// Guard 5 (counters): the per-pass harvest summary carries the attempt rate and
+// the per-reason skip counts in MESSAGE TEXT (the CLI renderer drops metadata
+// maps), so the captain's acceptance and the fleet-sizing rule can read them.
+func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
+	logger := &idleArbCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	d, _, _ := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1, Blacklist: []string{"MACHINERY"}})
+	d.DispatchOnce(ctx)
+
+	summary := logger.messageWithPrefix(t, "Idle-arb harvest:")
+	for _, want := range []string{"blacklist", "contract-good", "leash", "/hr"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("harvest summary must carry %q in message TEXT, got: %s", want, summary)
+		}
+	}
+}
+
+// idleArbCapturingLogger records log message text so the guard-5 summary can be
+// asserted (the CLI drops metadata, so the counts must live in the text).
+type idleArbCapturingLogger struct {
+	messages []string
+}
+
+func (l *idleArbCapturingLogger) Log(_ string, message string, _ map[string]interface{}) {
+	l.messages = append(l.messages, message)
+}
+
+func (l *idleArbCapturingLogger) messageWithPrefix(t *testing.T, prefix string) string {
+	t.Helper()
+	for _, m := range l.messages {
+		if strings.HasPrefix(m, prefix) {
+			return m
+		}
+	}
+	t.Fatalf("no log message with prefix %q; got %v", prefix, l.messages)
+	return ""
 }

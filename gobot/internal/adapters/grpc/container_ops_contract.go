@@ -165,6 +165,12 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		"dedicated_ships":  dedicatedShips,
 		"standby_stations": standbyStations,
 	}
+	// Inject the idle-arb harvest knobs from config.yaml (sp-1z2h / sp-uohe) so
+	// they persist into the launch config and survive restart recovery
+	// (buildContractFleetCoordinatorCommand reads them back). Only keys the
+	// captain actually set are written; the rest defer to the contract package's
+	// documented defaults.
+	s.injectIdleArbConfig(config)
 
 	// Create contract fleet coordinator command from the launch config
 	cmd, err := s.buildCommandForType("contract_fleet_coordinator", config, playerID, containerID)
@@ -200,4 +206,48 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	}()
 
 	return containerID, nil
+}
+
+// injectIdleArbConfig writes the idle-arb harvest knobs from config.yaml
+// (s.contractConfig.IdleArb) into a coordinator container's launch config
+// (sp-1z2h / sp-uohe). Only keys the captain actually set (non-zero) are
+// written, so an unset knob defers to the contract package's documented
+// defaults via IdleArbConfig.WithDefaults — the daemon never hardcodes the
+// operational values (RULINGS #5). The blacklist is special: a nil (absent)
+// list is omitted so the default [ELECTRONICS] applies, while an explicit
+// (non-nil) list — including an empty one that disables the blacklist — is
+// injected verbatim so a captain's config whitelist-flip takes effect on the
+// next daemon start with no code change.
+func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
+	ia := s.contractConfig.IdleArb
+	if ia.Disabled {
+		config["idle_arb_disabled"] = true
+	}
+	if ia.ReserveHulls != 0 {
+		config["idle_arb_reserve_hulls"] = ia.ReserveHulls
+	}
+	if ia.HubRadius != 0 {
+		config["idle_arb_hub_radius"] = ia.HubRadius
+	}
+	if ia.LeashRadius != 0 {
+		config["idle_arb_leash_radius"] = ia.LeashRadius
+	}
+	if ia.MaxLegSeconds != 0 {
+		config["idle_arb_max_leg_secs"] = ia.MaxLegSeconds
+	}
+	if ia.MaxSpend != 0 {
+		config["idle_arb_max_spend"] = ia.MaxSpend
+	}
+	if ia.MinMargin != 0 {
+		config["idle_arb_min_margin"] = ia.MinMargin
+	}
+	if ia.MarginVerifyPct != 0 {
+		config["idle_arb_margin_verify_pct"] = ia.MarginVerifyPct
+	}
+	if ia.IntervalSeconds != 0 {
+		config["idle_arb_interval_secs"] = ia.IntervalSeconds
+	}
+	if ia.Blacklist != nil {
+		config["idle_arb_blacklist"] = ia.Blacklist
+	}
 }
