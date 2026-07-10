@@ -158,17 +158,26 @@ never-exercised subsystem. Manual chains: confirm actual location after navigate
 the live ask before buying, split success from failure tokens in every completion check.
 
 ## Fleet logistics doctrine
-**Warehousing — stock ahead of demand.** Pre-position cheap foreign goods into a home
-warehouse; contracts fulfill by ZERO-ASK withdrawal instead of market buys. One parked
-warehouse hull per home system — heavy frame preferred (hold size binds portfolio
-breadth); warehouse resolution is newest-RUNNING-wins per waypoint, so a second warehouse
-at the same post is dead capital. One durably-dedicated stocker hull loops
-buy-at-cheapest-foreign-export → deposit, fail-closed: measured demand only, live-ask
-verified, treasury ceiling junior to the reserve floor. Stock a PORTFOLIO, never a single
-good — per-good caps force rotation (contract draws are random across goods; coverage
-beats depth) — and include the fat contract tier (weapons-class goods draw at multiples of
-the median). Deposits book zero revenue: a treasury dip while stocking is correct.
-Withdrawals are in-system ship-to-ship — align nav states before the transfer.
+**Warehousing — stock ahead of demand, staged by fleet maturity.** End-state: cheap
+foreign goods pre-positioned in a home warehouse so contracts fulfill by ZERO-ASK
+withdrawal instead of market buys. Stage the build-out on the CONSTRAINT shifting, never
+on a treasury number alone:
+- Bootstrap (frigate + probe): NO warehousing — every hull earns directly; the demand
+  history a warehouse needs accumulates from normal contract flow.
+- Hauler pool forming: still none — a light earns more running contracts while the
+  one-active-contract cap is not yet the binding constraint.
+- Contract cap binding: stand up a LIGHT warehouse + light stocker — cycle-time
+  compression is now the only contract lever. Thin portfolio with per-good caps (contract
+  draws are random across goods; coverage beats depth); include the fat contract tier
+  (weapons-class goods draw at multiples of the median) from the first stocking day.
+- Heavy seller discovered and payback clears: upgrade to a heavy frame (hold size binds
+  portfolio breadth) and deepen the portfolio.
+Mechanics at every stage: ONE warehouse per home system (warehouse resolution is
+newest-RUNNING-wins per waypoint — a second warehouse at the same post is dead capital);
+the stocker holds a DURABLE dedication and runs fail-closed (measured demand only,
+live-ask verified, treasury ceiling junior to the reserve floor); deposits book zero
+revenue — a treasury dip while stocking is correct; withdrawals are in-system
+ship-to-ship — align nav states before the transfer.
 **Hub positioning — park where buy legs start.** Contract cycle time is travel-dominated:
 park idle dual-duty hulls at EXPORT ORIGINS (closest-ship-wins compresses the buy leg),
 sized to the observed contract-source distribution and leash-capped. Tour heavies need no
@@ -177,14 +186,19 @@ a many-market system older than the tour planner's age cap is INVISIBLE to tours
 no tours → no revenue → looks unimportant, a self-reinforcing blind spot — staleness
 detectors and circuit-math scout sizing are the counter). Keep ONE purchase agent docked
 at the heavy shipyard: rung-to-tour in seconds instead of a long ferry.
-**Command frigate — a contract executor, not an ornament.** Upgrade its cargo within the
-fixed power budget (processor modules are one power each and zero-cargo; reactors and
-frames are permanent — no swap endpoints), then POOL it for contract work: its speed kills
-far-source tails and its hold single-trips every draw; fuel never binds home-cluster legs.
-Keep it release-on-demand — repin to command the moment command needs it; an idle reserve
-is paid for in foregone contract throughput. Price module feasibility from data (module
-power requirements are fleet-constant per symbol — one observed install prices the whole
-fleet), never by live trial-and-error.
+**Command frigate — earns its keep, in stages.** Bootstrap: the frigate runs the first
+contracts because it is the only hull. The moment light haulers exist it STEPS BACK from
+contract work — at typical stock sizes it double-trips loads a light single-trips, wasting
+its speed. It rejoins the contract pool ONLY after the cargo upgrade: buy the cargo-hold
+module and free the power by removing the zero-cargo processor modules (reactors and
+frames are permanent — no swap endpoints); price feasibility from data FIRST (module power
+requirements are fleet-constant per symbol — one observed install prices the whole fleet),
+never by live trial. Upgraded, it single-trips every observed draw at speed and kills
+far-source tails; unaffordable or power-blocked, it stays on command duties — an
+unupgraded frigate in the contract pool is a net loss against a light. The engine enforces
+the gate (contract selection skips command hulls below the cargo baseline) — your hand is
+the upgrade decision itself. Release-on-demand throughout: repin to command the moment
+command needs it.
 
 ## Conduct doctrine
 1. **Constraint audit.** Every self-imposed limit (caps, benched hulls, deferred buys)
