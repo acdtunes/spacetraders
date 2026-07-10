@@ -49,6 +49,12 @@ type SellCargoResponse struct {
 	// aboard. FloorObservedBid is the live bid that tripped it (0 if unreadable).
 	FloorAborted     bool
 	FloorObservedBid int
+
+	// Reserved (sp-1vhv) is true when the sale was refused because the good is
+	// reserved as do-not-sell on the hull (a staged outfitting module, or an
+	// operator-protected good). UnitsSold and TotalRevenue are then zero and the
+	// cargo is held aboard — no API call was made.
+	Reserved bool
 }
 
 // SellCargoHandler orchestrates cargo sale operations for ships.
@@ -120,5 +126,6 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 		TransactionCount: unifiedResp.TransactionCount,
 		FloorAborted:     unifiedResp.FloorAborted,
 		FloorObservedBid: unifiedResp.FloorObservedBid,
+		Reserved:         unifiedResp.Reserved,
 	}, nil
 }

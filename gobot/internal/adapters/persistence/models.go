@@ -135,6 +135,16 @@ type ShipModel struct {
 	// container claim - it is a standing claim-filter, not a work assignment.
 	DedicatedFleet string `gorm:"column:dedicated_fleet;default:''"`
 
+	// ReservationOverrides (sp-1vhv): per-hull cargo do-not-sell override set,
+	// stored as a JSON object of good->bool. true force-reserves a good the default
+	// would sell; false force-allows a default-reserved module's sale (deliberate
+	// resale). A good absent from the object follows the code-level MODULE_*/MOUNT_*
+	// classification. Like DedicatedFleet above, this is a standing per-hull tag
+	// independent of any container assignment, so it must be preserved across the
+	// restart-time API sync (which has no concept of it) or a reservation is
+	// silently wiped and a staged module is re-exposed to coordinator liquidation.
+	ReservationOverrides string `gorm:"column:reservation_overrides;type:jsonb;default:'{}'"`
+
 	// Sync metadata
 	SyncedAt time.Time `gorm:"column:synced_at;autoCreateTime"`
 	Version  int       `gorm:"column:version;default:1"`

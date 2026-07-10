@@ -108,6 +108,14 @@ type ShipRepository interface {
 	// current holder.
 	AssignFleet(ctx context.Context, shipSymbol string, fleet string, playerID shared.PlayerID) error
 
+	// SetCargoReservation atomically sets (reserved=true) or releases to sellable
+	// (reserved=false) a single cargo do-not-sell override on a hull (sp-1vhv),
+	// row-locked like AssignFleet. reserved=false is the deliberate-resale escape
+	// hatch that releases a default-reserved module (MODULE_*/MOUNT_*) for sale.
+	// The persisted override is reloaded on boot and honored at every coordinator
+	// sell leg via Ship.IsCargoReserved.
+	SetCargoReservation(ctx context.Context, shipSymbol, good string, reserved bool, playerID shared.PlayerID) error
+
 	// ReserveForCaptain atomically reserves an idle ship for the captain's direct,
 	// manual use, hiding it from coordinator discovery (sp-i1ku). Uses the same
 	// row-level locking as ClaimShip so a concurrent coordinator claim can never

@@ -773,6 +773,21 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	if err != nil {
 		return false, err
 	}
+
+	// sp-1vhv fail-closed: never sell cargo the hull has reserved as do-not-sell
+	// (a staged outfitting module, or an operator-protected good). Skip the leg with
+	// a reason=reserved line rather than liquidate a module a coordinator wrongly
+	// treated as manifest. tourShipState already keeps reserved cargo out of the
+	// planner, so this only fires on a planning leak — the executor refuses
+	// independently so a leak can never realize the loss. Returning a skip degrades
+	// the leg, and the re-plan (with reserved cargo excluded) drops the doomed sell.
+	if ship.IsCargoReserved(trade.Good) {
+		logger.Log("INFO", fmt.Sprintf("Tour leg %d: skipped selling %s at %s - cargo is reserved (do-not-sell), held aboard", legIdx, trade.Good, leg.Waypoint), map[string]interface{}{
+			"action": "reserved_cargo_skip", "ship_symbol": cmd.ShipSymbol, "good": trade.Good, "waypoint": leg.Waypoint, "reason": "reserved", "leg": legIdx,
+		})
+		return false, nil
+	}
+
 	held := 0
 	if c := ship.Cargo(); c != nil {
 		held = c.GetItemUnits(trade.Good)
@@ -1031,6 +1046,15 @@ func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing
 	cargo := map[string]int{}
 	if c := ship.Cargo(); c != nil {
 		for _, item := range c.Inventory {
+			// sp-1vhv: never offer reserved cargo (staged outfitting modules, or an
+			// operator-protected good) to the planner as sellable/liquidatable
+			// inventory — the tour must not PLAN to sell what the executor will
+			// refuse to sell, and its projected profit must not book phantom
+			// module-liquidation revenue. Non-reserved held cargo is still carried
+			// forward and liquidated as launch inventory (sp-m5kv).
+			if ship.IsCargoReserved(item.Symbol) {
+				continue
+			}
 			cargo[item.Symbol] = item.Units
 		}
 	}

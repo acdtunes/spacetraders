@@ -95,6 +95,13 @@ type CargoTransactionResponse struct {
 	// could not be read — a fail-closed abort). Both stay zero for an uncapped buy.
 	CeilingAborted     bool
 	CeilingObservedAsk int
+
+	// Reserved (sp-1vhv) is true when the sell was refused because the good is
+	// reserved as do-not-sell on the hull (a staged outfitting module, or an
+	// operator-protected good). No API call is made and no ledger row is written;
+	// UnitsProcessed and TotalAmount stay zero and the cargo is held aboard. Only
+	// ever set on a sell.
+	Reserved bool
 }
 
 // CargoTransactionHandler orchestrates cargo transaction operations using the Strategy pattern.
@@ -186,6 +193,25 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 
 	if err := h.strategy.ValidatePreconditions(ship, cmd.GoodSymbol, cmd.Units); err != nil {
 		return nil, err
+	}
+
+	// Reserved-cargo money guard (sp-1vhv): a coordinator (tour/arb/circuit/held-
+	// liquidation), manufacturing, or the CLI must NEVER sell cargo the hull has
+	// reserved as do-not-sell — ship hardware bought for outfitting (MODULE_*/MOUNT_*
+	// by default) that rides a working hull only to be installed. This is the single
+	// choke point every sell funnels through: the sale is refused (no API call, no
+	// ledger row, zero units) rather than executed, and the cargo is held aboard.
+	// The default classification is pure code, so the module guard holds even when a
+	// hull's override state is unreadable (fail-closed, RULINGS #4). Buys are never
+	// guarded — a module must be bought before it can be installed.
+	if h.strategy.GetTransactionType() == "sell" && ship.IsCargoReserved(cmd.GoodSymbol) {
+		logging.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+			"Sell of %s on %s skipped: cargo is reserved (do-not-sell) - held aboard",
+			cmd.GoodSymbol, cmd.ShipSymbol), map[string]interface{}{
+			"action": "reserved_cargo_skip", "ship_symbol": cmd.ShipSymbol,
+			"good": cmd.GoodSymbol, "reason": "reserved",
+		})
+		return &CargoTransactionResponse{Reserved: true}, nil
 	}
 
 	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)

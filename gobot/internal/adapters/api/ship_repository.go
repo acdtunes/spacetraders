@@ -714,6 +714,14 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	// of the transient container assignment below.
 	model.DedicatedFleet = ship.DedicatedFleet()
 
+	// Reservation overrides (sp-1vhv): the per-hull cargo do-not-sell override set.
+	// A marshal failure leaves the column at its zero value rather than persisting a
+	// corrupt string; ReservationOverrides() never returns nil, so this is "{}" for
+	// an empty set.
+	if overridesJSON, err := json.Marshal(ship.ReservationOverrides()); err == nil {
+		model.ReservationOverrides = string(overridesJSON)
+	}
+
 	// Assignment
 	model.AssignmentOwner = string(navigation.AssignmentOwnerContainer)
 	if ship.Assignment() != nil {
@@ -1171,6 +1179,57 @@ func (r *ShipRepository) AssignFleet(ctx context.Context, shipSymbol string, fle
 	})
 }
 
+// SetCargoReservation atomically sets or releases a single cargo do-not-sell
+// override on a hull (sp-1vhv) — the single write path behind the
+// `ship reserve-cargo`/`unreserve-cargo` verbs. reserved=true force-protects the
+// good; reserved=false force-allows its sale, releasing the default MODULE_/MOUNT_
+// reservation for a deliberate resale. Uses the same row-level SELECT FOR UPDATE
+// as AssignFleet so a reservation edit can never interleave with a concurrent ship
+// write and lose the other's update, and is idempotent (writing the already-
+// persisted decision performs zero DB writes). A previously-corrupt override
+// column is repaired to a fresh set carrying just this decision.
+func (r *ShipRepository) SetCargoReservation(ctx context.Context, shipSymbol, good string, reserved bool, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		overrides, corrupt := parseReservationOverrides(model.ReservationOverrides)
+		if overrides == nil {
+			overrides = map[string]bool{}
+		}
+		// Idempotent: the decision is already persisted and the column is readable.
+		if existing, ok := overrides[good]; ok && existing == reserved && !corrupt {
+			return nil
+		}
+		overrides[good] = reserved
+
+		encoded, err := json.Marshal(overrides)
+		if err != nil {
+			return fmt.Errorf("failed to encode reservation overrides: %w", err)
+		}
+		if err := tx.Model(&model).Update("reservation_overrides", string(encoded)).Error; err != nil {
+			return fmt.Errorf("failed to set cargo reservation: %w", err)
+		}
+
+		r.shipListCache.Delete(playerID.Value())
+		return nil
+	})
+}
+
 // =============================================================================
 // DB-as-Source-of-Truth Methods
 // =============================================================================
@@ -1234,7 +1293,7 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	assignment := r.modelToAssignment(model)
 
 	// Create ship using reconstruction constructor
-	return navigation.ReconstructShip(
+	ship, err := navigation.ReconstructShip(
 		model.ShipSymbol,
 		playerID,
 		location,
@@ -1253,6 +1312,35 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		assignment,
 		model.DedicatedFleet,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reservation overrides (sp-1vhv): load the per-hull cargo do-not-sell set. A
+	// malformed column reconstructs the hull with the corrupt flag set, so the
+	// domain guard fails CLOSED (treats all cargo as reserved) rather than dropping
+	// protections it cannot read.
+	overrides, corrupt := parseReservationOverrides(model.ReservationOverrides)
+	ship.SetReservationOverrides(overrides, corrupt)
+	return ship, nil
+}
+
+// parseReservationOverrides decodes the per-hull cargo do-not-sell override JSON
+// (sp-1vhv). Empty/absent/"{}"/"null" is a clean empty set. A malformed value
+// returns corrupt=true so the domain guard fails CLOSED (treats all cargo as
+// reserved) rather than silently dropping protections a garbled column may hold.
+func parseReservationOverrides(raw string) (map[string]bool, bool) {
+	if raw == "" || raw == "{}" || raw == "null" {
+		return map[string]bool{}, false
+	}
+	var overrides map[string]bool
+	if err := json.Unmarshal([]byte(raw), &overrides); err != nil {
+		return nil, true
+	}
+	if overrides == nil {
+		overrides = map[string]bool{}
+	}
+	return overrides, false
 }
 
 func (r *ShipRepository) modelsToShips(ctx context.Context, models []persistence.ShipModel) []*navigation.Ship {
@@ -1406,6 +1494,12 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			// unconditionally) - re-opening the hull to poaching by whichever
 			// coordinator claims it first.
 			model.DedicatedFleet = existingModel.DedicatedFleet
+			// sp-1vhv: ReservationOverrides is a standing per-hull tag like
+			// DedicatedFleet above — raw API data has no concept of it, so without
+			// copying it forward the UpdateAll upsert wipes every do-not-sell
+			// reservation on the next restart, re-exposing a staged outfitting module
+			// to coordinator liquidation (the exact loss this bead closes).
+			model.ReservationOverrides = existingModel.ReservationOverrides
 		}
 
 		models = append(models, *model)
@@ -1470,6 +1564,10 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 		// `fleet assign` pin is silently wiped back to "" the next time this
 		// ship is synced from the API, opening it up to poaching.
 		model.DedicatedFleet = existingModel.DedicatedFleet
+		// sp-1vhv: see the matching comment in SyncAllFromAPI — without this a
+		// do-not-sell reservation is silently wiped the next time this ship is
+		// synced from the API, re-exposing a staged outfitting module.
+		model.ReservationOverrides = existingModel.ReservationOverrides
 	}
 
 	err = r.db.WithContext(ctx).
