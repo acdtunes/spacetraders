@@ -580,7 +580,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		// sp-149h: put the payload in the MESSAGE TEXT, not just the metadata map the
 		// `container logs` renderer drops — the captain greps the CLI output to verify
 		// which lane (and whether a cross-system one) was picked and at what margin.
-		logger.Log("INFO", laneSelectionMessage(lane, lanes), selectionPayload)
+		logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest), selectionPayload)
 
 		visitsBefore := response.Visits
 		ship = h.runCircuit(ctx, cmd, lane, ship, response, runMaxVisits)
@@ -1534,17 +1534,35 @@ func laneLogPayload(l trading.ArbitrageLane) map[string]interface{} {
 }
 
 // laneSelectionOneLiner renders one lane into a compact
-// "GOOD SRC(SRCSYS)->DST(DSTSYS) m=SPREAD <same|cross>" token for the selection log
-// message text (sp-149h). m is the per-unit margin (SpreadPerUnit); the same/cross
-// tag makes a gate-crossing lane greppable without parsing the two system codes.
-func laneSelectionOneLiner(l trading.ArbitrageLane) string {
+// "GOOD SRC(SRCSYS)->DST(DSTSYS) m=SPREAD <same|cross>[ pen=P]" token for the
+// selection log message text (sp-149h). m is the per-unit margin (SpreadPerUnit);
+// the same/cross tag makes a gate-crossing lane greppable without parsing the two
+// system codes.
+//
+// For a cross-system lane the token also carries pen=P (sp-xwa1): the exact
+// per-unit penalty the ranker charged it - the capacity-amortized
+// time-opportunity cost from crossSystemPenaltyPerUnit(shipCapacity). This is
+// what lets the captain see WHY a deep frontier lane won or lost autonomous
+// selection ("m=1700 cross pen=110" reads as "raw 1700, charged 110 for the
+// jump time") instead of inferring the charge. m stays the RAW spread and the
+// existing tag is unchanged - the penalty is appended, not substituted. A
+// directed --dest lane whose penalty the ranker waived (laneMatchesTarget)
+// reports pen=0(waived), matching what ranking actually applied.
+func laneSelectionOneLiner(l trading.ArbitrageLane, shipCapacity int, targetDest string) string {
 	srcSys := shared.ExtractSystemSymbol(l.SourceWaypoint)
 	dstSys := shared.ExtractSystemSymbol(l.DestWaypoint)
 	scope := "same"
 	if srcSys != dstSys {
 		scope = "cross"
 	}
-	return fmt.Sprintf("%s %s(%s)->%s(%s) m=%d %s", l.Good, l.SourceWaypoint, srcSys, l.DestWaypoint, dstSys, l.SpreadPerUnit, scope)
+	base := fmt.Sprintf("%s %s(%s)->%s(%s) m=%d %s", l.Good, l.SourceWaypoint, srcSys, l.DestWaypoint, dstSys, l.SpreadPerUnit, scope)
+	if srcSys == dstSys {
+		return base
+	}
+	if laneMatchesTarget(l, targetDest) {
+		return base + " pen=0(waived)"
+	}
+	return base + fmt.Sprintf(" pen=%d", crossSystemPenaltyPerUnit(shipCapacity))
 }
 
 // laneSelectionCandidateLimit bounds how many ranked candidates the selection log
@@ -1562,15 +1580,15 @@ const laneSelectionCandidateLimit = 3
 // route around by putting the cause in the message). The stable prefix "Selected top
 // disciplined arbitrage lane" is preserved — existing greps/tests that match it keep
 // working — with the payload appended after a colon.
-func laneSelectionMessage(chosen trading.ArbitrageLane, ranked []trading.ArbitrageLane) string {
+func laneSelectionMessage(chosen trading.ArbitrageLane, ranked []trading.ArbitrageLane, shipCapacity int, targetDest string) string {
 	limit := laneSelectionCandidateLimit
 	if len(ranked) < limit {
 		limit = len(ranked)
 	}
 	tops := make([]string, 0, limit)
 	for _, l := range ranked[:limit] {
-		tops = append(tops, laneSelectionOneLiner(l))
+		tops = append(tops, laneSelectionOneLiner(l, shipCapacity, targetDest))
 	}
 	return fmt.Sprintf("Selected top disciplined arbitrage lane: %s | top%d: %s",
-		laneSelectionOneLiner(chosen), limit, strings.Join(tops, "; "))
+		laneSelectionOneLiner(chosen, shipCapacity, targetDest), limit, strings.Join(tops, "; "))
 }

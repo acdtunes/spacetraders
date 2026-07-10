@@ -210,16 +210,94 @@ func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSyst
 	return h.gateGraph.Path(ctx, fromSystem, destSystem, playerID)
 }
 
-// --- cross-system ranking penalty (sp-wlev) ---
+// --- cross-system ranking penalty (sp-wlev; sp-xwa1 time-opportunity-cost model) ---
 
-// crossSystemRankingPenaltyPerUnit is subtracted from a lane's per-unit
-// spread, for RANKING PURPOSES ONLY, when its source and destination sit in
-// different systems - representing the jump-plus-cooldown time cost against
-// an equally-profitable same-system lane. It never mutates the lane's real
-// economics (SpreadPerUnit, CappedSpread, ClearsFloor all still read the
-// lane's own untouched values), so a cross-system lane that wins the
+// The cross-system ranking penalty (a per-unit spread haircut applied to a
+// gate-crossing lane, for RANKING PURPOSES ONLY) is derived from the TIME a
+// cross-system CIRCUIT spends jumping and cooling down instead of trading -
+// the opportunity cost the raw per-unit spread can't see. It never mutates a
+// lane's real economics (SpreadPerUnit, CappedSpread, ClearsFloor all still
+// read the lane's own untouched values), so a cross-system lane that wins the
 // ranking is still evaluated for floor-discipline on its true numbers.
-const crossSystemRankingPenaltyPerUnit = 200
+//
+// These are the parametrized inputs to that model (RULINGS #5 - a named
+// constant table, not magic numbers scattered at the call site). Retune here
+// if the fleet's real hop time or baseline home-lane earn rate shifts.
+const (
+	// crossSystemHopSeconds is the observed wall-clock cost of ONE gate hop:
+	// the jump execution plus the cooldown wait that must elapse before the
+	// hull can act again (waitForJumpCooldown, this file). ~352s is the
+	// production-observed per-hop figure (sp-wlev). It is the atomic time unit
+	// the round-trip opportunity cost is built from - derived from the engine's
+	// real cooldown behavior, not invented.
+	crossSystemHopSeconds = 352.0
+
+	// crossSystemRoundTripHops is how many gate hops a cross-system CIRCUIT pays
+	// that an equivalent same-system circuit does not: one outbound (source
+	// system -> destination system) and one inbound (back to re-buy), so a round
+	// trip crosses the gate twice. The autonomous scan only ranks 1-jump
+	// neighbors (scanLanes' neighborSystems is a single hop), so exactly one hop
+	// per direction is the right unit here; a rare deeper multi-hop lane is
+	// under-penalized, never over-penalized - the conservative direction.
+	crossSystemRoundTripHops = 2.0
+
+	// hullOpportunityCreditsPerSecond is what a hull is assumed to earn per
+	// second running a DECENT same-system home lane - the opportunity a
+	// cross-system detour gives up while jumping and cooling down. Derived
+	// conservatively from the ~250-300k/hr home-lane class the fleet sustains:
+	// 270000 credits / 3600s = 75 credits/s. Deliberately toward the LOW end of
+	// that band so the penalty never over-charges a genuinely-deep frontier lane
+	// out of contention (the exact failure this bead retires: a too-high rate
+	// would wrongly demote deep lanes). If the fleet's baseline home-lane rate
+	// climbs, this is the knob to raise.
+	hullOpportunityCreditsPerSecond = 75.0
+
+	// legacyFlatCrossSystemPenaltyPerUnit is the retired flat -200/unit penalty,
+	// kept ONLY as the no-ship-context fallback (crossSystemPenaltyPerUnit with
+	// shipCapacity <= 0): without a hull capacity there is nothing to amortize
+	// the fixed time cost over, so the pre-sp-xwa1 flat estimate is the honest
+	// stand-in. Every production lane-selection call carries a real capacity and
+	// takes the time-opportunity-cost path instead.
+	legacyFlatCrossSystemPenaltyPerUnit = 200
+)
+
+// crossSystemPenaltyPerUnit is the per-unit spread haircut a cross-system lane
+// carries in RANKING (never in real economics): the time-opportunity cost of
+// the round-trip circuit's jump+cooldown detour, amortized over the units the
+// hull carries per circuit.
+//
+//	penaltyPerUnit = crossSystemExtraSeconds * hullOpportunityCreditsPerSecond / unitsPerCircuit
+//	crossSystemExtraSeconds = crossSystemRoundTripHops * crossSystemHopSeconds
+//	unitsPerCircuit         = shipCapacity (the tranche the ranker already sizes to)
+//
+// This REPLACES the old flat legacyFlatCrossSystemPenaltyPerUnit=200, which was
+// capacity-BLIND: it charged a 40-unit hauler and a 480-unit freighter the same
+// 200/unit, so a deep frontier lane a HEAVY hull could fill (amortizing the
+// fixed ~700s round-trip jump cost over hundreds of units) was over-charged and
+// lost autonomous selection to a saturated home lane it genuinely beat on
+// time-adjusted value (the DP51 +357k round-trip evidence, captain 2026-07-10).
+// Amortizing the SAME fixed time cost over the ACTUAL tranche makes the per-unit
+// charge shrink as the hull gets heavier: a deep lane a big hull fills wins,
+// while a thin lane on a small hull (few units to spread the cost over) still
+// pays a stiff per-unit charge and stays correctly demoted. The pivot where the
+// amortized charge equals the retired flat 200 is ~264 units of capacity: hulls
+// heavier than that are charged LESS than the old flat rate (the deep-frontier
+// unlock), lighter hulls MORE (a small hull crossing a gate for a tiny load
+// genuinely wastes the ~700s, which the flat rate under-charged).
+//
+// shipCapacity <= 0 (no ship context - older tests, any non-circuit caller)
+// falls back to the flat legacy penalty so those callers rank exactly as before
+// this lever existed. The result is truncated toward zero (int()), the
+// conservative direction: a fractional charge never rounds UP into an
+// over-penalty.
+func crossSystemPenaltyPerUnit(shipCapacity int) int {
+	if shipCapacity <= 0 {
+		return legacyFlatCrossSystemPenaltyPerUnit
+	}
+	extraSeconds := crossSystemRoundTripHops * crossSystemHopSeconds
+	totalOpportunityCost := extraSeconds * hullOpportunityCreditsPerSecond
+	return int(totalOpportunityCost / float64(shipCapacity))
+}
 
 // maxListingAge bounds how old a cached market observation may be and still feed
 // UNDIRECTED lane ranking (sp-xwa1). The ranker scores lanes off cached prices; a
@@ -323,7 +401,7 @@ func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane, shipCapacity int, t
 		effectiveSpread := lane.SpreadPerUnit
 		crossSystem := shared.ExtractSystemSymbol(lane.SourceWaypoint) != shared.ExtractSystemSymbol(lane.DestWaypoint)
 		if crossSystem && !laneMatchesTarget(lane, targetDest) {
-			effectiveSpread -= crossSystemRankingPenaltyPerUnit
+			effectiveSpread -= crossSystemPenaltyPerUnit(shipCapacity)
 		}
 		weight := 1.0
 		if shipCapacity > 0 {
