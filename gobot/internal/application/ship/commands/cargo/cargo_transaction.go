@@ -45,6 +45,16 @@ type CargoTransactionCommand struct {
 	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
 	Units      int             // Total units to transaction
 	PlayerID   shared.PlayerID // Player ID for authorization
+
+	// MinBidPerUnit (sp-lbbm) is the per-tranche SELL floor: before each sell
+	// tranche the handler re-reads the LIVE bid and, if it has fallen below this
+	// per-unit floor, ABORTS the remaining tranches and leaves the rest aboard
+	// (FloorAborted). It is the fix for the H50 co-dump — five tranches sold for 27
+	// credits after the bid crashed 19,950→4. 0 disables the floor entirely, so
+	// every non-arb caller (contract delivery, manufacturing, refuel) is unchanged.
+	// The arb executor arms it with ceil(fraction × quoted bid); see the arb
+	// coordinator. Ignored for purchases.
+	MinBidPerUnit int
 }
 
 // CargoTransactionResponse contains the unified results of a cargo transaction.
@@ -55,6 +65,15 @@ type CargoTransactionResponse struct {
 	TotalAmount      int // Total credits (cost for purchase, revenue for sell)
 	UnitsProcessed   int // Total units (added for purchase, sold for sell)
 	TransactionCount int // Number of API transactions executed
+
+	// FloorAborted (sp-lbbm) is true when the per-tranche sell floor stopped the
+	// sale early: the live bid fell below MinBidPerUnit, so the remaining units
+	// were held aboard rather than dumped. UnitsProcessed then reports only what
+	// sold before the abort. FloorObservedBid is the live bid that tripped the
+	// floor (0 when it could not be read — a fail-closed abort). Both stay zero
+	// for an unfloored transaction.
+	FloorAborted     bool
+	FloorObservedBid int
 }
 
 // CargoTransactionHandler orchestrates cargo transaction operations using the Strategy pattern.
@@ -212,6 +231,8 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	unitsRemaining := cmd.Units
 
 	transactionType := h.strategy.GetTransactionType()
+	floorAborted := false
+	floorObservedBid := 0
 
 	// OPTIMIZATION: Skip balance fetch (saves 1 API call)
 	// Ledger entries will have balance=0 but transaction amounts are still tracked
@@ -221,6 +242,28 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	const runningBalance = 0
 
 	for unitsRemaining > 0 {
+		// PER-TRANCHE SELL FLOOR (sp-lbbm): before every sell tranche, re-read the
+		// LIVE bid and abort the remainder if it has fallen below the armed floor —
+		// so a bid our own earlier tranches (or a colliding hull) crushed is never
+		// dumped into. The remainder stays aboard for later liquidation. Only sells
+		// with MinBidPerUnit>0 arm it; every other caller runs the loop unchanged.
+		// Fails CLOSED: a live bid we cannot read (ok=false) holds the remainder too.
+		if transactionType == "sell" && cmd.MinBidPerUnit > 0 {
+			liveBid, ok := h.liveBidForFloor(ctx, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID)
+			if !ok || liveBid < cmd.MinBidPerUnit {
+				floorAborted = true
+				floorObservedBid = liveBid
+				logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+					"Sell floor tripped for %s at %s: live bid %d < floor %d/unit (readable=%t) - aborting remaining %d units, held aboard",
+					cmd.GoodSymbol, waypointSymbol, liveBid, cmd.MinBidPerUnit, ok, unitsRemaining), map[string]interface{}{
+					"action": "sell_floor_abort", "ship_symbol": cmd.ShipSymbol, "good": cmd.GoodSymbol,
+					"waypoint": waypointSymbol, "live_bid": liveBid, "floor": cmd.MinBidPerUnit,
+					"bid_readable": ok, "units_held": unitsRemaining,
+				})
+				break
+			}
+		}
+
 		unitsToProcess := utils.Min(unitsRemaining, transactionLimit)
 
 		result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToProcess, token)
@@ -265,7 +308,33 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		TotalAmount:      totalAmount,
 		UnitsProcessed:   unitsProcessed,
 		TransactionCount: transactionCount,
+		FloorAborted:     floorAborted,
+		FloorObservedBid: floorObservedBid,
 	}, nil
+}
+
+// liveBidForFloor reads the current per-unit bid for good at waypoint for the
+// sp-lbbm per-tranche sell floor. When a market refresher is wired it live-
+// refreshes first and fails CLOSED (ok=false) if the refresh errors — a tranche
+// whose live bid cannot be verified must not be sold. With no refresher wired it
+// reads the cached bid (fail-open on the missing port, matching the arb buy
+// guard's optional-port contract). ok=false on any inability to read a bid, so
+// the caller holds the remainder rather than dump it blind.
+func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint, good string, playerID shared.PlayerID) (int, bool) {
+	if h.marketRefresher != nil {
+		if err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID.Value()), waypoint); err != nil {
+			return 0, false
+		}
+	}
+	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
+	if err != nil || mkt == nil {
+		return 0, false
+	}
+	g := mkt.FindGood(good)
+	if g == nil {
+		return 0, false
+	}
+	return g.PurchasePrice(), true
 }
 
 // recordCargoTransaction records the cargo transaction in the ledger

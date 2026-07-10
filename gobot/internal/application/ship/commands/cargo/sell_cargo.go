@@ -27,6 +27,12 @@ type SellCargoCommand struct {
 	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
 	Units      int             // Total units to sell
 	PlayerID   shared.PlayerID // Player ID for authorization
+
+	// MinBidPerUnit (sp-lbbm) arms the per-tranche sell floor: before each tranche
+	// the handler re-verifies the live bid and aborts the remainder (holding it
+	// aboard) if it falls below this per-unit floor. 0 disables it — the unchanged
+	// path for every caller but the arb executor. See CargoTransactionCommand.
+	MinBidPerUnit int
 }
 
 // SellCargoResponse contains the results of a cargo sale operation.
@@ -37,6 +43,12 @@ type SellCargoResponse struct {
 	TotalRevenue     int // Total credits earned across all transactions
 	UnitsSold        int // Total units successfully sold
 	TransactionCount int // Number of API transactions executed
+
+	// FloorAborted (sp-lbbm) is true when the per-tranche sell floor stopped the
+	// sale early (live bid below MinBidPerUnit); the unsold remainder is held
+	// aboard. FloorObservedBid is the live bid that tripped it (0 if unreadable).
+	FloorAborted     bool
+	FloorObservedBid int
 }
 
 // SellCargoHandler orchestrates cargo sale operations for ships.
@@ -87,10 +99,11 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 
 	// Convert to unified command
 	unifiedCmd := &CargoTransactionCommand{
-		ShipSymbol: cmd.ShipSymbol,
-		GoodSymbol: cmd.GoodSymbol,
-		Units:      cmd.Units,
-		PlayerID:   cmd.PlayerID,
+		ShipSymbol:    cmd.ShipSymbol,
+		GoodSymbol:    cmd.GoodSymbol,
+		Units:         cmd.Units,
+		PlayerID:      cmd.PlayerID,
+		MinBidPerUnit: cmd.MinBidPerUnit, // sp-lbbm per-tranche sell floor (0 → disabled)
 	}
 
 	// Delegate to unified handler
@@ -105,5 +118,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 		TotalRevenue:     unifiedResp.TotalAmount,
 		UnitsSold:        unifiedResp.UnitsProcessed,
 		TransactionCount: unifiedResp.TransactionCount,
+		FloorAborted:     unifiedResp.FloorAborted,
+		FloorObservedBid: unifiedResp.FloorObservedBid,
 	}, nil
 }

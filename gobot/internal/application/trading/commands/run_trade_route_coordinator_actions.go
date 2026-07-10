@@ -108,11 +108,21 @@ func (h *RunTradeRouteCoordinatorHandler) purchase(ctx context.Context, shipSymb
 }
 
 func (h *RunTradeRouteCoordinatorHandler) sell(ctx context.Context, shipSymbol, good string, units, playerID int) (*shipCargo.SellCargoResponse, error) {
+	return h.sellWithFloor(ctx, shipSymbol, good, units, playerID, 0)
+}
+
+// sellWithFloor sells like sell, but arms the per-tranche sell floor (sp-lbbm):
+// minBidPerUnit>0 makes the underlying handler re-verify the live bid before each
+// tranche and abort the remainder (held aboard, SellCargoResponse.FloorAborted)
+// if it falls below the floor. minBidPerUnit==0 is exactly the plain sell, so
+// sell() and the trade-route/tour callers are unchanged.
+func (h *RunTradeRouteCoordinatorHandler) sellWithFloor(ctx context.Context, shipSymbol, good string, units, playerID, minBidPerUnit int) (*shipCargo.SellCargoResponse, error) {
 	resp, err := h.mediator.Send(ctx, &shipCargo.SellCargoCommand{
-		ShipSymbol: shipSymbol,
-		GoodSymbol: good,
-		Units:      units,
-		PlayerID:   shared.MustNewPlayerID(playerID),
+		ShipSymbol:    shipSymbol,
+		GoodSymbol:    good,
+		Units:         units,
+		PlayerID:      shared.MustNewPlayerID(playerID),
+		MinBidPerUnit: minBidPerUnit,
 	})
 	if err != nil {
 		return nil, err

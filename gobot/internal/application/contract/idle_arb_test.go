@@ -199,13 +199,55 @@ func idleArbHarnessGoods(t *testing.T, hulls int, cfg IdleArbConfig, contractGoo
 
 // --- tests -----------------------------------------------------------------
 
+// idleArbTwoSinkHarness builds a dispatcher over a hub with TWO distinct in-leash
+// sinks for the same good (sp-lbbm): sinkA (0,40) at a fatter margin (100) than
+// sinkB (0,50) (50). Because the lane mutex forbids two hulls dumping ONE sink in
+// a window, a reserve/claim-race test that must still launch two legs needs two
+// sinks — the highest-margin hull takes sinkA and the next falls back to sinkB.
+// Hulls are TORWIND-1..N at the shared hub.
+func idleArbTwoSinkHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArbDispatcher, *idleArbFakeShipRepo, *fakeIdleArbLauncher) {
+	t.Helper()
+	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
+	sinkA := idleArbWaypoint(t, "X1-HUB-A40", 0, 40)
+	sinkB := idleArbWaypoint(t, "X1-HUB-B50", 0, 50)
+
+	repo := &idleArbFakeShipRepo{}
+	for i := 0; i < hulls; i++ {
+		repo.ships = append(repo.ships, idleArbHull(t, fmt.Sprintf("TORWIND-%d", i+1), hub, testFleet))
+	}
+	graph := &fakeGraphProvider{waypoints: map[string]*shared.Waypoint{
+		hub.Symbol: hub, sinkA.Symbol: sinkA, sinkB.Symbol: sinkB,
+	}}
+	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
+		hub.Symbol:   marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 90, 100)),
+		sinkA.Symbol: marketAt(t, sinkA.Symbol, tradeGood(t, "MACHINERY", 200, 210)), // margin 100
+		sinkB.Symbol: marketAt(t, sinkB.Symbol, tradeGood(t, "MACHINERY", 150, 160)), // margin 50
+	}}
+	clock := shared.NewRealClock()
+	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
+	d := NewIdleArbDispatcher(repo, markets, graph, launcher, nil, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg)
+	return d, repo, launcher
+}
+
 func TestIdleArb_ReserveHullsNeverDispatched(t *testing.T) {
-	dispatcher, repo, launcher := idleArbHarness(t, 3, IdleArbConfig{ReserveHulls: 1})
+	// Two distinct in-leash sinks so the lane mutex (sp-lbbm) does not cap the
+	// count: a single shared sink would (correctly) allow only ONE concurrent
+	// dump, confounding the reserve-count assertion. Here the two surplus hulls
+	// spread across the two sinks, isolating reserve discipline.
+	dispatcher, repo, launcher := idleArbTwoSinkHarness(t, 3, IdleArbConfig{ReserveHulls: 1})
 
 	launched := dispatcher.DispatchOnce(context.Background())
 
 	if launched != 2 || len(launcher.launches) != 2 {
 		t.Fatalf("3 idle − reserve 1 must launch exactly 2, got %d", launched)
+	}
+	// The mutex spread the two legs across DIFFERENT sinks — never two into one.
+	sinks := map[string]bool{}
+	for _, spec := range launcher.launches {
+		sinks[spec.SellAt] = true
+	}
+	if len(sinks) != 2 {
+		t.Fatalf("the two legs must hit two DISTINCT sinks (no concurrent same-sink dump), got %v", sinks)
 	}
 	idle, _, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, testFleet)
 	if err != nil {
@@ -270,7 +312,10 @@ func TestIdleArb_NoProfitableLane_NoLaunch_TerminatesCleanly(t *testing.T) {
 }
 
 func TestIdleArb_LostClaimRace_SkipsHullAndContinues(t *testing.T) {
-	dispatcher, repo, launcher := idleArbHarness(t, 3, IdleArbConfig{ReserveHulls: 1})
+	// Two sinks (sp-lbbm): the two surviving hulls spread across them rather than
+	// collide, so the claim-race-skip-and-continue behavior can still show two
+	// launches without the concurrent same-sink dump the mutex now forbids.
+	dispatcher, repo, launcher := idleArbTwoSinkHarness(t, 3, IdleArbConfig{ReserveHulls: 1})
 	launcher.failNext = true // TORWIND-1's launch loses its claim race
 
 	launched := dispatcher.DispatchOnce(context.Background())

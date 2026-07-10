@@ -68,4 +68,8 @@ type IdleArbSettings struct {
 	MarginVerifyPct int      `mapstructure:"margin_verify_pct"`
 	IntervalSeconds int      `mapstructure:"interval_seconds"`
 	Blacklist       []string `mapstructure:"blacklist"`
+	// RecoveryHoldSeconds (sp-lbbm) is the lane mutex's post-termination hold: how
+	// long a (good, sink) lane stays closed after its leg terminates before another
+	// hull may work it. 0 → the contract package default (1200s = 20min).
+	RecoveryHoldSeconds int `mapstructure:"recovery_hold_seconds"`
 }

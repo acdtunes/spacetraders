@@ -9,10 +9,10 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
-	storageCmd "github.com/andrescamacho/spacetraders-go/internal/application/storage/commands"
 	shipNavCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypesCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	storageCmd "github.com/andrescamacho/spacetraders-go/internal/application/storage/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -98,6 +98,17 @@ func (r *configReader) OptionalInt(key string, fallback int) int {
 	return value
 }
 
+// OptionalFloat reads a float config value (e.g. sp-lbbm's sell_floor_fraction),
+// returning fallback when the key is absent or non-numeric. JSON numbers
+// round-trip through float64, and an int is accepted too.
+func (r *configReader) OptionalFloat(key string, fallback float64) float64 {
+	value, ok := floatValue(r.values[key])
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
 func (r *configReader) OptionalBool(key string) bool {
 	value, _ := r.values[key].(bool)
 	return value
@@ -139,6 +150,16 @@ func intValue(raw interface{}) (int, bool) {
 		return v, true
 	case float64:
 		return int(v), true
+	}
+	return 0, false
+}
+
+func floatValue(raw interface{}) (float64, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
 	}
 	return 0, false
 }
@@ -455,10 +476,11 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		// verify 80%, blacklist [ELECTRONICS]). An explicit empty blacklist ([])
 		// is preserved by OptionalStringSlice (non-nil) so a config whitelist-flip
 		// genuinely disables it without a code change.
-		IdleArbLeashRadius:     float64(cfg.OptionalInt("idle_arb_leash_radius", 0)),
-		IdleArbMaxLegSecs:      cfg.OptionalInt("idle_arb_max_leg_secs", 0),
-		IdleArbMarginVerifyPct: cfg.OptionalInt("idle_arb_margin_verify_pct", 0),
-		IdleArbBlacklist:       cfg.OptionalStringSlice("idle_arb_blacklist"),
+		IdleArbLeashRadius:      float64(cfg.OptionalInt("idle_arb_leash_radius", 0)),
+		IdleArbMaxLegSecs:       cfg.OptionalInt("idle_arb_max_leg_secs", 0),
+		IdleArbMarginVerifyPct:  cfg.OptionalInt("idle_arb_margin_verify_pct", 0),
+		IdleArbRecoveryHoldSecs: cfg.OptionalInt("idle_arb_recovery_hold_secs", 0),
+		IdleArbBlacklist:        cfg.OptionalStringSlice("idle_arb_blacklist"),
 	}
 }
 
@@ -591,6 +613,10 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 		MinMargin:             cfg.OptionalInt("min_margin", 0),
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
 		PriorAttemptCost:      cfg.OptionalInt("prior_attempt_cost", 0),
+		// sp-lbbm per-tranche sell floor fraction. Absent → 0 → the coordinator's
+		// own defaultArbSellFloorFraction (0.80), so a captain arb-run with no knob
+		// set is still floored; idle-arb writes the live 80% knob here.
+		SellFloorFraction: cfg.OptionalFloat("sell_floor_fraction", 0),
 	}
 }
 

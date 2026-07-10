@@ -110,6 +110,14 @@ type IdleArbConfig struct {
 	StandbyStations []string
 	// Interval is the dispatch tick.
 	Interval time.Duration
+	// RecoveryHold (sp-lbbm) is the lane mutex's post-termination hold: after a
+	// leg on a (good, sink) lane terminates, the dispatcher keeps that lane closed
+	// for this long before another hull may work it, so back-to-back passes never
+	// re-dump a sink the last leg just depressed. In-flight legs block their lane
+	// regardless of this value; it only spaces SEQUENTIAL legs on one sink. See
+	// laneMutex for why a flat hold (not the routing service's recovery model) is
+	// the honest v1 and how it cites the model's half-lives.
+	RecoveryHold time.Duration
 }
 
 // Idle-arb defaults. Sizing notes: HubRadius 250 is the loose outer hub-local
@@ -133,6 +141,14 @@ const (
 	DefaultIdleArbMinMargin            = 1
 	DefaultIdleArbMarginVerifyFraction = 0.80
 	DefaultIdleArbInterval             = 90 * time.Second
+	// DefaultIdleArbRecoveryHold (sp-lbbm) is the lane mutex's post-termination
+	// hold. 20min is deliberately shorter than any modelled recovery half-life
+	// (market_model.json: 180min GROWING … 413min RESTRICTED, ~1074min baseline) —
+	// it does not claim full recovery, only that a sink is not re-dumped
+	// back-to-back. The in-flight lane block and the per-tranche sell floor carry
+	// the rest of the defense; a captain wanting the fuller modelled hold raises
+	// the config knob with no code change.
+	DefaultIdleArbRecoveryHold = 20 * time.Minute
 )
 
 // DefaultIdleArbBlacklist is the initial excluded-goods list (sp-uohe): the
@@ -171,6 +187,9 @@ func (c IdleArbConfig) WithDefaults() IdleArbConfig {
 	if c.Interval <= 0 {
 		c.Interval = DefaultIdleArbInterval
 	}
+	if c.RecoveryHold <= 0 {
+		c.RecoveryHold = DefaultIdleArbRecoveryHold
+	}
 	return c
 }
 
@@ -187,6 +206,12 @@ type IdleArbSpec struct {
 	MinMargin  int
 	PlayerID   int
 	Operation  string // claim identity, e.g. "contract" (l7h2)
+	// SellFloorFraction (sp-lbbm) arms the arb run's per-tranche sell floor: each
+	// sell tranche aborts the remainder when the LIVE bid falls below this fraction
+	// of the quoted bid. It reuses the SAME 80% knob the buy-side live-verify uses
+	// (cfg.MarginVerifyFraction), so a captain retune moves both floors together.
+	// 0 → the arb run's own default (defaultArbSellFloorFraction).
+	SellFloorFraction float64
 }
 
 // IdleArbLauncher starts one recovery-safe, guarded one-shot arb container and
@@ -280,6 +305,7 @@ type IdleArbDispatcher struct {
 	cfg             IdleArbConfig
 	blacklist       map[string]struct{} // upper-cased cfg.Blacklist, built once
 	standbyStations map[string]struct{} // sp-8bpr: cfg.StandbyStations as a set, for the at-home filter
+	lanes           *laneMutex          // sp-lbbm: one hull per (good, sink) per recovery window
 
 	// Observability counters (sp-uohe guard 5). In-memory and reset on restart
 	// by design: they measure THIS process's harvest rate, not operational
@@ -293,6 +319,7 @@ type IdleArbDispatcher struct {
 	skipBlacklist    int // legs skipped: good on the blacklist
 	skipContractGood int // legs skipped: good under an open contract
 	skipLeash        int // legs skipped: only profit was beyond the leash/leg-time
+	skipLaneHeld     int // sp-lbbm: legs skipped: best lane held by a live/recovering leg
 	rehomed          int // sp-8bpr: hulls re-homed post-leg (cumulative)
 }
 
@@ -343,6 +370,7 @@ func NewIdleArbDispatcher(
 		cfg:             cfg,
 		blacklist:       blacklist,
 		standbyStations: standbyStations,
+		lanes:           newLaneMutex(clock, cfg.RecoveryHold),
 		startTime:       clock.Now(),
 	}
 }
@@ -362,6 +390,7 @@ const (
 	skipReasonBlacklist
 	skipReasonContractGood
 	skipReasonLeash
+	skipReasonLaneHeld
 )
 
 // String names the skip reason for the per-candidate verdict line (sp-nw9v). It
@@ -375,6 +404,8 @@ func (r idleArbSkipReason) String() string {
 		return "contract-good"
 	case skipReasonLeash:
 		return "leash"
+	case skipReasonLaneHeld:
+		return "lane-held"
 	default:
 		return "none"
 	}
@@ -432,6 +463,17 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 	// CURRENT waypoint). Inert when re-homing is off (nil homer / no stations).
 	homingThisPass := d.rehomeDriftedHulls(ctx)
 	rehomedThisPass := len(homingThisPass)
+
+	// LANE MUTEX reconcile (sp-lbbm): observe which of the legs this dispatcher
+	// launched have terminated, so their (good, sink) lanes can begin the recovery
+	// hold and eventually free. A terminated leg is one whose hull no longer
+	// carries the leg's container id (released to idle, or re-claimed by a
+	// contract) — the same live fleet state the reserve accounting reads. A read
+	// failure skips reconcile (lanes stay held — the safe direction: never free a
+	// lane we cannot confirm terminated), and terminations are picked up next pass.
+	if shipContainerIDs, ok := d.fleetShipContainerIDs(ctx); ok {
+		d.lanes.reconcile(shipContainerIDs)
+	}
 
 	// Emit the harvest summary (guard 5) on every return path of a pass that did
 	// something, so the captain's acceptance can read the attempt rate, the
@@ -518,6 +560,9 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			MinMargin:  idleArbMinMargin(d.cfg, lane.MarginPerUnit),
 			PlayerID:   d.playerID.Value(),
 			Operation:  d.fleet,
+			// sp-lbbm: arm the arb run's per-tranche sell floor with the SAME
+			// 80%-of-quote knob the buy-side live-verify uses (cfg.MarginVerifyFraction).
+			SellFloorFraction: d.cfg.MarginVerifyFraction,
 		}
 		d.attempts++
 		containerID, err := d.launcher.LaunchIdleArb(ctx, spec)
@@ -531,6 +576,11 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		}
 		launched++
 		d.launched++
+		// LANE MUTEX (sp-lbbm): mark this (good, sink) held the instant the leg
+		// launches, so a later candidate THIS pass that would pick the same sink is
+		// skipped:lane-held (within-pass dedupe), and the next pass holds it until
+		// the leg terminates + the recovery window elapses (cross-pass).
+		d.lanes.noteLaunch(laneKey{good: lane.Good, sink: lane.SellAt}, hull.ShipSymbol(), containerID)
 
 		logger.Log("INFO", fmt.Sprintf(
 			"Idle-gap arb leg launched: %s flies %s %s->%s (quoted margin %d/unit = bid %d - ask %d, live-verify floor %d/unit, distance %.0f, max spend %d) in container %s",
@@ -547,6 +597,27 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			"container_id": containerID,
 		})
 	}
+}
+
+// fleetShipContainerIDs returns the dedicated fleet's live ship→container map
+// (symbol → current container id, "" when idle/unassigned) — the input the lane
+// mutex reconciles its launched legs against (sp-lbbm). It reads the same
+// repository the reserve recount does. ok is false on a read failure, so the
+// caller skips reconcile and leaves lane holds untouched rather than free a lane
+// it cannot confirm terminated.
+func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[string]string, bool) {
+	ships, err := d.shipRepo.FindAllByPlayer(ctx, d.playerID)
+	if err != nil {
+		return nil, false
+	}
+	out := make(map[string]string, len(ships))
+	for _, s := range ships {
+		if s.DedicatedFleet() != d.fleet {
+			continue
+		}
+		out[s.ShipSymbol()] = s.ContainerID()
+	}
+	return out, true
 }
 
 // rehomeDriftedHulls (sp-8bpr) sends every idle dedicated hull that is NOT
@@ -720,7 +791,7 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 				DestBid:       bid,
 			}
 
-			reason := d.laneSkipReason(hubGood.Symbol(), distance, excludedContractGoods, hull.EngineSpeed())
+			reason := d.laneSkipReason(hubGood.Symbol(), wp, distance, excludedContractGoods, hull.EngineSpeed())
 
 			// Per-candidate verdict logging (sp-nw9v): emit one terse line for
 			// every positive-margin candidate with the COMPUTED distance the leash
@@ -769,6 +840,18 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 	verdict := "eligible"
 	if reason != skipNone {
 		verdict = "skipped:" + reason.String()
+		// sp-lbbm: for a lane-held verdict, name the holding hull and (once its leg
+		// has terminated) when the lane frees, so a collision the mutex prevented is
+		// legible in the same candidate line the analyst scan is diffed against.
+		if reason == skipReasonLaneHeld {
+			if holder, freesAt, flying := d.lanes.describe(laneKey{good: lane.Good, sink: lane.SellAt}); holder != "" {
+				if flying {
+					verdict += fmt.Sprintf(" (%s flying)", holder)
+				} else {
+					verdict += fmt.Sprintf(" (%s dumped, frees ~%s)", holder, freesAt.Format("15:04:05"))
+				}
+			}
+		}
 	}
 	now := d.clock.Now()
 	legSeconds := shared.FlightModeCruise.TravelTime(lane.Distance, hull.EngineSpeed())
@@ -791,7 +874,7 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 // 2: the LeashRadius bound, then the projected CRUISE leg-time from the hull's
 // engine speed against MaxLegDuration). None weakens the pre-existing HubRadius
 // filter; each only tightens (RULINGS #4).
-func (d *IdleArbDispatcher) laneSkipReason(good string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int) idleArbSkipReason {
+func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int) idleArbSkipReason {
 	if d.isBlacklisted(good) {
 		return skipReasonBlacklist
 	}
@@ -804,6 +887,16 @@ func (d *IdleArbDispatcher) laneSkipReason(good string, distance float64, exclud
 	legSeconds := shared.FlightModeCruise.TravelTime(distance, engineSpeed)
 	if time.Duration(legSeconds)*time.Second > d.cfg.MaxLegDuration {
 		return skipReasonLeash
+	}
+	// LANE MUTEX (sp-lbbm): a (good, sink) already worked by a live or still-
+	// recovering leg — including one launched earlier THIS pass — is held. Checked
+	// LAST so a lane that is ALSO blacklisted / contract-good / out-of-leash
+	// reports that more fundamental reason, and a lane held only by the mutex
+	// reports lane-held. Because pickHubLocalLane scans ALL (good, sink) pairs and
+	// keeps the best NON-skipped one, a held best lane makes the hull fall back to
+	// its next-best unheld sink rather than collide.
+	if d.lanes.held(laneKey{good: good, sink: sink}) {
+		return skipReasonLaneHeld
 	}
 	return skipNone
 }
@@ -819,6 +912,8 @@ func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
 		d.skipContractGood++
 	case skipReasonLeash:
 		d.skipLeash++
+	case skipReasonLaneHeld:
+		d.skipLaneHeld++
 	default:
 		return false
 	}
@@ -844,8 +939,8 @@ func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisP
 	}
 	logger.Log("INFO", fmt.Sprintf(
 		"Idle-arb harvest: %d leg(s) launched this pass; %d hull(s) re-homed this pass; %d attempt(s) total at %.1f/hr; "+
-			"skipped legs - blacklist %d, contract-good %d, leash %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
+			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
 		launchedThisPass, rehomedThisPass, d.attempts, rate,
-		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.rehomed,
+		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.rehomed,
 	), nil)
 }

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -10,6 +11,14 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// defaultArbSellFloorFraction (sp-lbbm) is the per-tranche sell floor's default
+// fraction of the quoted bid: a sell tranche aborts the remainder when the live
+// bid falls below 80% of the quote. It mirrors the buy-side live-verify default
+// (idle-arb's MarginVerifyFraction), so an unarmed captain arb-run is still
+// guarded. A caller (idle-arb, or a future captain knob) overrides via
+// RunArbCoordinatorCommand.SellFloorFraction.
+const defaultArbSellFloorFraction = 0.80
 
 // RunArbCoordinatorCommand is a ONE-SHOT, captain-directed, guarded arbitrage run
 // (sp-p4ua): fly THIS hull on THIS lane, ONCE, safely. It is the deliberate middle
@@ -38,6 +47,22 @@ type RunArbCoordinatorCommand struct {
 	// WorkingCapitalReserve is the hard spend floor (mirrors sp-bp6f): the buy must
 	// not drop live treasury below this line. 0 → defaultWorkingCapitalReserve.
 	WorkingCapitalReserve int
+	// SellFloorFraction (sp-lbbm) arms the per-tranche sell floor: each sell tranche
+	// aborts the remainder (held aboard) when the LIVE bid falls below this fraction
+	// of the QUOTED bid. It reuses the same 80% knob the buy-side live-verify uses,
+	// applied uniformly to arb-run and idle-arb (both run this coordinator). 0 →
+	// defaultArbSellFloorFraction, so even a captain arb-run with no knob set is
+	// guarded.
+	SellFloorFraction float64
+	// QuotedDestBid (sp-lbbm) carries the quoted destination bid — the healthy
+	// anchor the sell floor measures against — across an IN-PROCESS retry, exactly
+	// as PriorAttemptCost carries the buy cost: a fresh buy records it here so the
+	// retry (same command object, cargo already aboard) floors against the real
+	// quote instead of a since-crushed one. It is REPORTING/guard state, never a
+	// spend input. A daemon-restart rebuild (which reconstructs the command from
+	// config and does not carry this) leaves it 0, and the coordinator falls back
+	// to a fresh pre-sell bid observation as the anchor.
+	QuotedDestBid int
 	// PriorAttemptCost carries a prior attempt's already-incurred buy cost across a
 	// resume so the completion P&L is honest (sp-dkj7). On a FRESH run it is 0 and the
 	// buy sets TotalCost live; the run then persists that cost (container config +
@@ -100,6 +125,14 @@ type RunArbCoordinatorResponse struct {
 	// the missing route only after crashing laden at the home gate; this refuses
 	// the buy BEFORE spending. AbortReason names both systems.
 	RoutabilityAbort bool
+
+	// Sell-floor guard (sp-lbbm): set when the per-tranche sell floor aborted the
+	// sale mid-tranche because the LIVE bid fell below the floor, leaving the
+	// remainder held aboard. This is an HONEST failure completion (Handle returns a
+	// non-nil error), NOT a false success — the held cargo is picked up by the next
+	// plan/liquidation leg. Distinct from a routability/margin/spend abort, which
+	// all refuse BEFORE buying and hold nothing.
+	SellFloorAbort bool
 }
 
 // RunArbCoordinatorHandler runs the one-shot guarded arb. It composes the proven
@@ -311,7 +344,34 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.AbortReason = fmt.Sprintf("dock at destination %s failed: %v", cmd.SellAt, err)
 		return err
 	}
-	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, cmd.Good, tranche, cmd.PlayerID)
+	// PER-TRANCHE SELL FLOOR (sp-lbbm): arm the sale with a per-unit floor so a bid
+	// our own tranches (or a colliding hull) crush mid-sale aborts the remainder
+	// instead of dumping it — the H50 fix (five tranches for 27 credits). The floor
+	// is ceil(fraction × QUOTED bid); the quote is the healthy anchor: a fresh run
+	// has it live in DestBid, an in-process retry carries it on the command, and a
+	// daemon-restart resume (neither available) falls back to a fresh pre-sell
+	// observation. No obtainable anchor → floor disabled for this sale (fail-open on
+	// a missing basis, matching the buy guard's cached-basis path) rather than
+	// refuse a legitimate sale we cannot anchor.
+	sellFloorFraction := cmd.SellFloorFraction
+	if sellFloorFraction <= 0 {
+		sellFloorFraction = defaultArbSellFloorFraction
+	}
+	quotedBid := response.DestBid
+	if quotedBid <= 0 {
+		quotedBid = cmd.QuotedDestBid
+	}
+	if quotedBid <= 0 {
+		if g, oerr := h.legs.observeGood(ctx, cmd.SellAt, cmd.Good, cmd.PlayerID); oerr == nil {
+			quotedBid = g.PurchasePrice()
+		}
+	}
+	minBidPerUnit := 0
+	if quotedBid > 0 {
+		minBidPerUnit = int(math.Ceil(sellFloorFraction * float64(quotedBid)))
+	}
+
+	sellResp, err := h.legs.sellWithFloor(ctx, cmd.ShipSymbol, cmd.Good, tranche, cmd.PlayerID, minBidPerUnit)
 	if err != nil {
 		response.AbortReason = fmt.Sprintf("sell of %d %s at %s failed: %v", tranche, cmd.Good, cmd.SellAt, err)
 		return err
@@ -320,21 +380,38 @@ func (h *RunArbCoordinatorHandler) execute(
 	response.UnitsTraded = sellResp.UnitsSold
 	response.NetProfit = sellResp.TotalRevenue - response.TotalCost
 
-	// sp-5nqx fix (c) — stranded cargo is a FAILURE, never a false success. A run that
-	// bought a tranche but could not offload all of it (the destination could not
-	// absorb the whole load) ends holding unsold units of the good it bought; that must
-	// reflect as a container failure (a non-nil error here → the runner's
-	// signalCompletionWithStatus(false)), NOT the success=true the incident logged with
-	// 36 units stranded. The message carries good/units/location so the strand is
-	// greppable and hand-recoverable.
-	if stranded := tranche - sellResp.UnitsSold; stranded > 0 {
+	// A held remainder is a FAILURE, never a false success (sp-5nqx fix c, sp-lbbm).
+	// It arises two ways, both the stranded-veto situation: the sell floor aborted
+	// the sale (the bid crashed — sp-lbbm), or the destination could not absorb the
+	// whole tranche. Either leaves unsold units aboard, which must reflect as a
+	// container failure (a non-nil error → the runner's signalCompletionWithStatus(
+	// false)), NOT the success=true the incident logged with cargo stranded — so the
+	// m5kv/next-leg liquidation path picks the held cargo up. The sell-floor case is
+	// named distinctly (SellFloorAbort) so a deliberate money-guard hold reads apart
+	// from a destination-capacity strand; both carry good/units/location for
+	// greppable hand-recovery.
+	if held := tranche - sellResp.UnitsSold; held > 0 {
+		if sellResp.FloorAborted {
+			response.SellFloorAbort = true
+			response.AbortReason = fmt.Sprintf(
+				"sell-floor abort: live bid %d < floor %d/unit (%.0f%% of quoted bid %d) at %s - sold %d of %d, %d units of %s held aboard for later liquidation",
+				sellResp.FloorObservedBid, minBidPerUnit, sellFloorFraction*100, quotedBid, cmd.SellAt,
+				sellResp.UnitsSold, tranche, held, cmd.Good,
+			)
+			logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+				"action": "arb_sell_floor_abort", "ship_symbol": cmd.ShipSymbol,
+				"good": cmd.Good, "sell_at": cmd.SellAt, "live_bid": sellResp.FloorObservedBid,
+				"floor": minBidPerUnit, "quoted_bid": quotedBid, "sold": sellResp.UnitsSold, "held": held,
+			})
+			return fmt.Errorf("%s", response.AbortReason)
+		}
 		response.AbortReason = fmt.Sprintf(
 			"stranded cargo: %d unsold units of %s at %s (sold %d of %d) - reporting failure",
-			stranded, cmd.Good, cmd.SellAt, sellResp.UnitsSold, tranche,
+			held, cmd.Good, cmd.SellAt, sellResp.UnitsSold, tranche,
 		)
 		logger.Log("ERROR", response.AbortReason, map[string]interface{}{
 			"action": "arb_stranded_cargo", "ship_symbol": cmd.ShipSymbol,
-			"good": cmd.Good, "stranded": stranded, "sold": sellResp.UnitsSold,
+			"good": cmd.Good, "stranded": held, "sold": sellResp.UnitsSold,
 			"tranche": tranche, "location": cmd.SellAt,
 		})
 		return fmt.Errorf("%s", response.AbortReason)
@@ -462,6 +539,10 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	response.DestBid = destBid
 	response.MarginPerUnit = marginPerUnit
 	response.MinMarginFloor = cmd.MinMargin
+	// sp-lbbm: record the quoted bid as the sell floor's healthy anchor, so an
+	// in-process retry (same command object, tranche already aboard, DestBid not
+	// re-read) still floors against the real quote rather than a since-crushed bid.
+	cmd.QuotedDestBid = destBid
 
 	// A non-positive margin is always refused; a positive-but-thin margin is refused
 	// only when it misses the caller's explicit floor.

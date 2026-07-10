@@ -142,6 +142,10 @@ type RunFleetCoordinatorCommand struct {
 	IdleArbMaxLegSecs      int      // projected per-leg flight-time cap, seconds (default 480)
 	IdleArbMarginVerifyPct int      // live-verify floor as % of quoted margin (default 80)
 	IdleArbBlacklist       []string // excluded goods; nil → default [ELECTRONICS]
+	// sp-lbbm lane mutex: post-termination recovery hold, seconds (default 1200 =
+	// 20min). Keeps a (good, sink) lane closed after its leg terminates so
+	// sequential passes never re-dump a sink the last leg just depressed.
+	IdleArbRecoveryHoldSecs int
 }
 
 // RunFleetCoordinatorResponse contains fleet coordination results.

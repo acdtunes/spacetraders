@@ -222,6 +222,7 @@ var idleArbConfigKeys = []string{
 	"idle_arb_min_margin",
 	"idle_arb_margin_verify_pct",
 	"idle_arb_interval_secs",
+	"idle_arb_recovery_hold_secs",
 	"idle_arb_blacklist",
 }
 
@@ -285,6 +286,9 @@ func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
 	}
 	if ia.IntervalSeconds != 0 {
 		config["idle_arb_interval_secs"] = ia.IntervalSeconds
+	}
+	if ia.RecoveryHoldSeconds != 0 {
+		config["idle_arb_recovery_hold_secs"] = ia.RecoveryHoldSeconds
 	}
 	if ia.Blacklist != nil {
 		config["idle_arb_blacklist"] = ia.Blacklist

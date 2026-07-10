@@ -187,6 +187,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				Blacklist:            cmd.IdleArbBlacklist,
 				StandbyStations:      cmd.StandbyStations,
 				Interval:             time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
+				// sp-lbbm lane mutex recovery hold (0 → WithDefaults applies 20min).
+				RecoveryHold: time.Duration(cmd.IdleArbRecoveryHoldSecs) * time.Second,
 			},
 		)
 		go dispatcher.Run(ctx)

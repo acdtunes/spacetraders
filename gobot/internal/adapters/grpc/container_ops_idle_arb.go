@@ -67,6 +67,10 @@ func (s *DaemonServer) LaunchIdleArb(ctx context.Context, spec appContract.IdleA
 		"min_margin":              spec.MinMargin,
 		"working_capital_reserve": 0, // 0 → the run's non-tunable default floor
 		"operation":               spec.Operation,
+		// sp-lbbm: arm the arb run's per-tranche sell floor with the dispatcher's
+		// live 80%-of-quote knob (0 → the run's own default). Persisted so a restart
+		// rebuild resumes with the same floor (RULINGS #2).
+		"sell_floor_fraction": spec.SellFloorFraction,
 	}
 
 	// Same factory recovery uses ("arb_run"), so launch and restart rebuild can
