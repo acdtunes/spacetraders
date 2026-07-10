@@ -16,7 +16,9 @@ import (
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -30,6 +32,30 @@ type DeliveryExecutor struct {
 	mediator     common.Mediator
 	shipRepo     navigation.ShipRepository
 	cargoManager *CargoManager
+
+	// Inventory-first sourcing collaborators (sp-dchv Lane D). Wired together via
+	// WithInventorySource, or all nil — a nil finder disables inventory-first and
+	// the executor uses the market path byte-identical (existing tests construct
+	// the executor with no options and are unaffected).
+	invFinder          appContract.InventorySourceFinder
+	storageCoordinator storage.StorageCoordinator
+	apiClient          domainPorts.APIClient
+}
+
+// DeliveryExecutorOption configures optional collaborators without breaking the
+// positional constructor the existing tests use.
+type DeliveryExecutorOption func(*DeliveryExecutor)
+
+// WithInventorySource enables inventory-first contract sourcing (sp-dchv Lane D):
+// before each market buy the executor withdraws the good from an in-system
+// warehouse at zero ask when one holds it. A nil finder is a no-op (market-only),
+// so callers may forward optional wiring unconditionally.
+func WithInventorySource(finder appContract.InventorySourceFinder, coordinator storage.StorageCoordinator, apiClient domainPorts.APIClient) DeliveryExecutorOption {
+	return func(e *DeliveryExecutor) {
+		e.invFinder = finder
+		e.storageCoordinator = coordinator
+		e.apiClient = apiClient
+	}
 }
 
 // NewDeliveryExecutor creates a new delivery executor service
@@ -37,12 +63,17 @@ func NewDeliveryExecutor(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	cargoManager *CargoManager,
+	opts ...DeliveryExecutorOption,
 ) *DeliveryExecutor {
-	return &DeliveryExecutor{
+	e := &DeliveryExecutor{
 		mediator:     mediator,
 		shipRepo:     shipRepo,
 		cargoManager: cargoManager,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // ProcessAllDeliveries processes all deliveries in a contract
@@ -159,38 +190,62 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 
 		sourcingHalted := false
 		if unitsToPurchase > 0 {
-			profitResult, err := profitabilityResultOrErr(profitabilityResp, currentDelivery.TradeSymbol)
-			if err != nil {
-				return nil, err
+			// INVENTORY-FIRST (sp-dchv Lane D): withdraw the good from an in-system
+			// warehouse at zero ask before any market buy. This runs BEFORE the
+			// profitability lookup so a stocked good sources even before scouts
+			// have priced a market for it. Fail-open (RULINGS #1): a warehouse
+			// read/transfer error is logged and falls through to the market path,
+			// never parking the contract. A withdrawal that lands ANY units aboard
+			// short-circuits the market buy THIS trip; the outer loop delivers them
+			// and re-sources the remainder (inventory again until drained, then
+			// market) — the sp-2ei3 two-phase, re-entered by re-consulting the
+			// warehouse each trip.
+			withdrew, invShip, invErr := e.trySourceFromInventory(ctx, shipSymbol, playerID, ship, currentDelivery, unitsToPurchase, profitabilityResp)
+			if invErr != nil {
+				logger.Log("WARNING", fmt.Sprintf(
+					"Inventory-first sourcing for %s errored (%v); falling through to the market path (never-skip, RULINGS #1)",
+					currentDelivery.TradeSymbol, invErr), map[string]interface{}{
+					"ship_symbol":  shipSymbol,
+					"action":       "inventory_sourcing_failopen",
+					"trade_symbol": currentDelivery.TradeSymbol,
+				})
 			}
-			// The evaluation's cached ask for this good is the basis the sourcing
-			// defer gate projected against; the purchase loop's ladder cap
-			// (sp-1z2h) stops buying when realized prices run away from it.
-			projectedUnitAsk := profitResult.MarketPrices[currentDelivery.TradeSymbol]
-			ship, sourcingHalted, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, currentDelivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, projectedUnitAsk, result, opContext)
-			if err != nil {
-				// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
-				// state, not a bug. Enrich the sentinel with the numbers an
-				// operator needs and log ONCE at WARNING before returning it
-				// unchanged - RunWorkflowHandler.Handle converts this into a
-				// clean (nil-error) exit so the container doesn't crashloop.
-				// The dynamic-discovery fleet coordinator re-picks-up this
-				// contract on its next pass, which is the resume mechanism.
-				var insufficientErr *ErrInsufficientCredits
-				if errors.As(err, &insufficientErr) {
-					insufficientErr.CreditsNeeded = profitResult.PurchaseCost
-					insufficientErr.CreditsAvailable = e.lookupLiveCredits(ctx, playerID)
-					logger.Log("WARNING", insufficientErr.Error(), map[string]interface{}{
-						"ship_symbol":       shipSymbol,
-						"action":            "parked",
-						"reason":            "insufficient_credits",
-						"trade_symbol":      currentDelivery.TradeSymbol,
-						"units_attempted":   insufficientErr.UnitsAttempted,
-						"credits_needed":    insufficientErr.CreditsNeeded,
-						"credits_available": insufficientErr.CreditsAvailable,
-					})
+			if withdrew {
+				ship = invShip
+			} else {
+				profitResult, err := profitabilityResultOrErr(profitabilityResp, currentDelivery.TradeSymbol)
+				if err != nil {
+					return nil, err
 				}
-				return nil, err
+				// The evaluation's cached ask for this good is the basis the sourcing
+				// defer gate projected against; the purchase loop's ladder cap
+				// (sp-1z2h) stops buying when realized prices run away from it.
+				projectedUnitAsk := profitResult.MarketPrices[currentDelivery.TradeSymbol]
+				ship, sourcingHalted, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, currentDelivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, projectedUnitAsk, result, opContext)
+				if err != nil {
+					// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
+					// state, not a bug. Enrich the sentinel with the numbers an
+					// operator needs and log ONCE at WARNING before returning it
+					// unchanged - RunWorkflowHandler.Handle converts this into a
+					// clean (nil-error) exit so the container doesn't crashloop.
+					// The dynamic-discovery fleet coordinator re-picks-up this
+					// contract on its next pass, which is the resume mechanism.
+					var insufficientErr *ErrInsufficientCredits
+					if errors.As(err, &insufficientErr) {
+						insufficientErr.CreditsNeeded = profitResult.PurchaseCost
+						insufficientErr.CreditsAvailable = e.lookupLiveCredits(ctx, playerID)
+						logger.Log("WARNING", insufficientErr.Error(), map[string]interface{}{
+							"ship_symbol":       shipSymbol,
+							"action":            "parked",
+							"reason":            "insufficient_credits",
+							"trade_symbol":      currentDelivery.TradeSymbol,
+							"units_attempted":   insufficientErr.UnitsAttempted,
+							"credits_needed":    insufficientErr.CreditsNeeded,
+							"credits_available": insufficientErr.CreditsAvailable,
+						})
+					}
+					return nil, err
+				}
 			}
 		}
 
@@ -571,4 +626,186 @@ func profitabilityResultOrErr(resp common.Response, good string) (*contractQueri
 		return nil, fmt.Errorf("cannot plan purchase of %s: no profitability/market data available (scout markets first)", good)
 	}
 	return result, nil
+}
+
+// trySourceFromInventory attempts to fill this source trip from an in-system
+// warehouse (sp-dchv Lane D) instead of buying at market. It returns
+// withdrew=true (with the reloaded ship) when it lands at least one unit aboard,
+// so the caller skips the market buy for this trip and lets the delivery loop
+// re-source the remainder. It returns withdrew=false for EVERY no-inventory case
+// (feature off, no stock, drained mid-flight) so the caller uses the market
+// path, and a non-nil error only for an unexpected failure the caller logs and
+// still treats as fail-open (never a skip, RULINGS #1).
+//
+// Withdrawal mirrors the proven manufacturing STORAGE_ACQUIRE_DELIVER shape
+// (TryReserveCargo -> TransferCargo -> ConfirmTransfer) but BOUNDS the take to
+// what the contract needs this trip: it reserves what the storage ship holds,
+// transfers only min(reserved, hold space, units needed), and releases the
+// excess reservation so other workers/contracts are not starved. The warehouse
+// hull is Lane B's dedicated, claimed ship (RULINGS #7) — the contract worker
+// only transfers from it, never claims it. The per-ship reservation is atomic
+// (TryReserveCargo holds the storage-ship mutex), so two contracts racing the
+// same units cannot double-claim: one reserves, the other sees them gone and
+// falls through.
+func (e *DeliveryExecutor) trySourceFromInventory(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+	ship *navigation.Ship,
+	delivery domainContract.Delivery,
+	unitsToPurchase int,
+	profitabilityResp common.Response,
+) (bool, *navigation.Ship, error) {
+	// Not wired (existing tests / feature off) -> market path, no error.
+	if e.invFinder == nil || e.storageCoordinator == nil || e.apiClient == nil {
+		return false, ship, nil
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	good := delivery.TradeSymbol
+	deliverySystem := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
+
+	// Decision read: in-system warehouse stock for this good? (in-system only,
+	// RULINGS #14 — the finder never returns an out-of-system warehouse.)
+	src := e.invFinder.FindInSystemInventory(ctx, playerID.Value(), deliverySystem, good)
+	if src == nil {
+		return false, ship, nil // no inventory -> market path
+	}
+
+	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
+	if availableSpace <= 0 {
+		return false, ship, nil // no hold space -> let the market path decide
+	}
+	want := utils.Min(availableSpace, unitsToPurchase)
+	if want <= 0 {
+		return false, ship, nil
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return false, ship, fmt.Errorf("no player token for inventory withdrawal: %w", err)
+	}
+
+	// Fly to the warehouse (in-system) and stay in orbit for the ship-to-ship
+	// transfer.
+	ship, err = e.navigateToWaypoint(ctx, shipSymbol, src.StorageWaypoint, playerID)
+	if err != nil {
+		return false, ship, fmt.Errorf("navigate to warehouse %s: %w", src.StorageWaypoint, err)
+	}
+	if err := e.orbitForTransfer(ctx, ship, playerID); err != nil {
+		return false, ship, fmt.Errorf("orbit at warehouse %s: %w", src.StorageWaypoint, err)
+	}
+
+	// Reserve from the warehouse's storage ship(s). A drain between the finder
+	// read and here yields no reservation -> fall through to market (fail-open).
+	storageShip, reserved := e.reserveFromWarehouse(src.OperationID, good)
+	if storageShip == nil || reserved <= 0 {
+		return false, ship, nil
+	}
+
+	toMove := utils.Min(reserved, want)
+
+	if _, err := e.apiClient.TransferCargo(ctx, storageShip.ShipSymbol(), shipSymbol, good, toMove, token); err != nil {
+		// Release the whole reservation and fall through to market (fail-open).
+		if cancelErr := storageShip.CancelReservation(good, reserved); cancelErr != nil {
+			logger.Log("ERROR", "Inventory withdrawal: failed to cancel reservation after transfer error", map[string]interface{}{
+				"ship_symbol":  shipSymbol,
+				"storage_ship": storageShip.ShipSymbol(),
+				"error":        cancelErr.Error(),
+			})
+		}
+		return false, ship, fmt.Errorf("transfer %d %s from warehouse ship %s: %w", toMove, good, storageShip.ShipSymbol(), err)
+	}
+
+	// Commit the moved units; release any over-reservation for other workers.
+	if err := storageShip.ConfirmTransfer(good, toMove); err != nil {
+		logger.Log("ERROR", "Inventory withdrawal: confirm transfer failed (cargo already moved)", map[string]interface{}{
+			"ship_symbol":  shipSymbol,
+			"storage_ship": storageShip.ShipSymbol(),
+			"error":        err.Error(),
+		})
+	}
+	if excess := reserved - toMove; excess > 0 {
+		if err := storageShip.CancelReservation(good, excess); err != nil {
+			logger.Log("WARN", "Inventory withdrawal: failed to release over-reservation", map[string]interface{}{
+				"storage_ship": storageShip.ShipSymbol(),
+				"excess":       excess,
+				"error":        err.Error(),
+			})
+		}
+	}
+
+	// Persist both ships' cargo state (mirror manufacturing).
+	if _, err := e.shipRepo.SyncShipFromAPI(ctx, storageShip.ShipSymbol(), playerID); err != nil {
+		logger.Log("WARN", "Inventory withdrawal: failed to sync storage ship after transfer", map[string]interface{}{
+			"storage_ship": storageShip.ShipSymbol(),
+			"error":        err.Error(),
+		})
+	}
+	reloaded, err := e.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID)
+	if err != nil {
+		return false, ship, fmt.Errorf("sync hauler after withdrawal: %w", err)
+	}
+
+	// Honest accounting (sp-dchv): withdrawn goods cost the contract engine ZERO
+	// at withdrawal (basis sunk at deposit). The market ask this trip AVOIDED is
+	// the realized-savings line the captain reads. marketAsk is best-effort (0
+	// when no market has been priced for the good yet).
+	marketAsk := marketAskBestEffort(profitabilityResp, good)
+	logger.Log("INFO", fmt.Sprintf(
+		"Sourced %d %s from warehouse ship %s at zero ask (market would have cost %d @ %d/unit) - realized savings, contract sourcing cost 0",
+		toMove, good, storageShip.ShipSymbol(), marketAsk*toMove, marketAsk,
+	), map[string]interface{}{
+		"ship_symbol":     shipSymbol,
+		"action":          "inventory_withdrawal",
+		"trade_symbol":    good,
+		"units_withdrawn": toMove,
+		"storage_op":      src.OperationID,
+		"market_ask":      marketAsk,
+		"savings":         marketAsk * toMove,
+	})
+
+	return true, reloaded, nil
+}
+
+// reserveFromWarehouse reserves all unreserved units of good on the first
+// storage ship in the operation that holds any, returning that ship and the
+// amount reserved (0 if none). The caller MUST ConfirmTransfer the moved units
+// and CancelReservation any remainder.
+func (e *DeliveryExecutor) reserveFromWarehouse(operationID, good string) (*storage.StorageShip, int) {
+	for _, s := range e.storageCoordinator.GetStorageShipsForOperation(operationID) {
+		if s == nil {
+			continue
+		}
+		reserved, err := s.TryReserveCargo(good, 1)
+		if err == nil && reserved > 0 {
+			return s, reserved
+		}
+	}
+	return nil, 0
+}
+
+// orbitForTransfer ensures the ship is in orbit (not docked) so a ship-to-ship
+// cargo transfer can run at the warehouse waypoint. A ship already in orbit is a
+// no-op.
+func (e *DeliveryExecutor) orbitForTransfer(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
+	if ship != nil && !ship.IsDocked() {
+		return nil
+	}
+	orbitCmd := &shipTypes.OrbitShipCommand{Ship: ship, PlayerID: playerID}
+	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
+		return err
+	}
+	return nil
+}
+
+// marketAskBestEffort returns the profitability evaluation's cached market ask
+// for good, or 0 when no profitability/market data is available. Used only for
+// the savings log line, so it never errors (an unpriced good still withdraws).
+func marketAskBestEffort(resp common.Response, good string) int {
+	pr, ok := resp.(*contractQueries.ProfitabilityResult)
+	if !ok || pr == nil {
+		return 0
+	}
+	return pr.MarketPrices[good]
 }

@@ -6,11 +6,14 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 // Type aliases for convenience
@@ -46,16 +49,41 @@ type RunWorkflowHandler struct {
 	deliveryExecutor *contractServices.DeliveryExecutor
 }
 
+// RunWorkflowOption configures optional collaborators on the contract workflow
+// handler (and the delivery executor it builds) without breaking the positional
+// constructor the existing tests use.
+type RunWorkflowOption func(*runWorkflowConfig)
+
+type runWorkflowConfig struct {
+	deliveryOpts []contractServices.DeliveryExecutorOption
+}
+
+// WithInventorySourcing enables inventory-first contract sourcing (sp-dchv Lane
+// D) on the delivery executor: a stocked good is withdrawn from an in-system
+// warehouse at zero ask before any market buy. A nil finder is a no-op
+// (market-only), so callers may forward optional wiring unconditionally.
+func WithInventorySourcing(finder appContract.InventorySourceFinder, coordinator storage.StorageCoordinator, apiClient domainPorts.APIClient) RunWorkflowOption {
+	return func(c *runWorkflowConfig) {
+		c.deliveryOpts = append(c.deliveryOpts, contractServices.WithInventorySource(finder, coordinator, apiClient))
+	}
+}
+
 // NewRunWorkflowHandler creates a new contract workflow handler
 func NewRunWorkflowHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
 	clock shared.Clock,
+	opts ...RunWorkflowOption,
 ) *RunWorkflowHandler {
+	var cfg runWorkflowConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	cargoManager := contractServices.NewCargoManager(mediator, shipRepo)
 	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
-	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager)
+	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager, cfg.deliveryOpts...)
 
 	return &RunWorkflowHandler{
 		lifecycleService: lifecycleService,

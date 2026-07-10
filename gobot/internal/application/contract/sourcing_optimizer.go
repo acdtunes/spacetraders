@@ -114,13 +114,24 @@ type SystemReachability func(system string) bool
 // projected to cost including the travel penalty term.
 type SourcingPlan struct {
 	Good           string
-	Market         string // waypoint symbol of the chosen market
-	UnitAsk        int    // cached ask at the chosen market
+	Market         string // waypoint symbol of the chosen source (market OR storage waypoint for INVENTORY)
+	UnitAsk        int    // cached ask at the chosen market; 0 for INVENTORY (sunk cost)
 	UnitsRemaining int    // units still to source for the delivery
-	GoodsCost      int    // UnitAsk × UnitsRemaining
+	GoodsCost      int    // UnitAsk × UnitsRemaining; 0 for INVENTORY
 	TravelPenalty  int    // 0 in-system; CrossGateSourcingPenalty cross-gate
 	EffectiveCost  int    // GoodsCost + TravelPenalty — the defer projection basis
 	CrossSystem    bool   // true when the chosen market is outside the delivery system
+
+	// Source distinguishes a MARKET buy from an INVENTORY withdrawal (sp-dchv
+	// Lane D). Defaults to SourceMarket, so every pre-existing plan is a market
+	// plan and existing behavior is unchanged.
+	Source SourcingSource
+
+	// StorageOperationID is the warehouse operation to withdraw from when
+	// Source == SourceInventory (empty otherwise). It is informational for the
+	// projection/logging path; the executor re-consults the finder at withdrawal
+	// time for the freshest reservation (fail-open, RULINGS #1).
+	StorageOperationID string
 }
 
 // PlanSourcing picks the cheapest REACHABLE market for the contract's first
@@ -144,12 +155,13 @@ func PlanSourcing(
 	marketRepo market.MarketRepository,
 	playerID int,
 	reachable SystemReachability,
+	opts ...SourcingOption,
 ) (*SourcingPlan, error) {
 	for _, delivery := range contract.Terms().Deliveries {
 		if delivery.UnitsRequired-delivery.UnitsFulfilled == 0 {
 			continue
 		}
-		return PlanDeliverySourcing(ctx, delivery, marketRepo, playerID, reachable)
+		return PlanDeliverySourcing(ctx, delivery, marketRepo, playerID, reachable, opts...)
 	}
 
 	return nil, fmt.Errorf("no unfulfilled deliveries found in contract")
@@ -167,11 +179,56 @@ func PlanDeliverySourcing(
 	marketRepo market.MarketRepository,
 	playerID int,
 	reachable SystemReachability,
+	opts ...SourcingOption,
 ) (*SourcingPlan, error) {
 	logger := common.LoggerFromContext(ctx)
+	cfg := newSourcingConfig(opts)
 
 	unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
 	deliverySystem := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
+
+	// INVENTORY-FIRST (sp-dchv Lane D): before any market candidate, consult the
+	// warehouse. Stock of this good in the DELIVERY system is a zero-ask source —
+	// the units are already paid for (deposit sunk), so the projection treats
+	// them as free, which is economically correct for the contract engine's
+	// park/proceed decision (a stocked contract is never in the runaway-ask class
+	// the defer gate exists to park). Fail-open (RULINGS #1): a nil finder, no
+	// stock, or any read error inside the finder yields nil here, and sourcing
+	// falls through to the market candidate below byte-identical — inventory only
+	// ever ADDS a cheaper source, it never skips or parks a contract. Withdrawal
+	// is single-system by construction: the finder only returns warehouses in
+	// deliverySystem (RULINGS #14).
+	if cfg.inventory != nil {
+		if src := cfg.inventory.FindInSystemInventory(ctx, playerID, deliverySystem, delivery.TradeSymbol); src != nil && src.UnitsAvailable > 0 {
+			plan := &SourcingPlan{
+				Good:               delivery.TradeSymbol,
+				Market:             src.StorageWaypoint,
+				UnitAsk:            0,
+				UnitsRemaining:     unitsRemaining,
+				GoodsCost:          0,
+				TravelPenalty:      0,
+				EffectiveCost:      0,
+				CrossSystem:        false,
+				Source:             SourceInventory,
+				StorageOperationID: src.OperationID,
+			}
+			logger.Log("INFO", fmt.Sprintf(
+				"Sourcing plan for %s: %d units from INVENTORY @ 0 ask at warehouse %s (op %s, %d units on hand) - sunk cost, zero-ask projection",
+				plan.Good, plan.UnitsRemaining, plan.Market, src.OperationID, src.UnitsAvailable,
+			), map[string]interface{}{
+				"action":          "plan_sourcing",
+				"trade_symbol":    plan.Good,
+				"market":          plan.Market,
+				"unit_ask":        0,
+				"units":           plan.UnitsRemaining,
+				"effective_cost":  0,
+				"source":          string(SourceInventory),
+				"storage_op":      src.OperationID,
+				"units_available": src.UnitsAvailable,
+			})
+			return plan, nil
+		}
+	}
 
 	// In-system candidate: always reachable (the consumer must reach the
 	// delivery system to deliver at all), so it is never gated by reachable.
@@ -258,6 +315,7 @@ func candidateOrNil(m *market.CheapestMarketResult, units int, deliverySystem st
 		TravelPenalty:  penalty,
 		EffectiveCost:  goods + penalty,
 		CrossSystem:    cross,
+		Source:         SourceMarket,
 	}
 }
 

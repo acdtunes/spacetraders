@@ -45,6 +45,13 @@ type RunFleetCoordinatorHandler struct {
 	// for the idle-gap dispatcher. Wired at daemon startup like the event
 	// subscriber; nil (e.g. in tests) leaves the harvest off entirely.
 	idleArbLauncher appContract.IdleArbLauncher
+
+	// invFinder (sp-dchv Lane D) lets the sourcing plan see in-system warehouse
+	// stock as a zero-ask source, so the defer gate does not park a contract
+	// inventory can fulfill for free. Nil (tests / feature off) => market-only
+	// projection, byte-identical to before. The worker's executor withdraws
+	// independently, so this only affects the coordinator's park/proceed math.
+	invFinder appContract.InventorySourceFinder
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -96,6 +103,13 @@ func (h *RunFleetCoordinatorHandler) SetEventSubscriber(subscriber navigation.Sh
 // the coordinator runs exactly as before, no harvest.
 func (h *RunFleetCoordinatorHandler) SetIdleArbLauncher(launcher appContract.IdleArbLauncher) {
 	h.idleArbLauncher = launcher
+}
+
+// SetInventoryFinder wires the in-system warehouse finder (sp-dchv Lane D) into
+// the sourcing plan so the defer gate treats stocked goods as zero-ask. Optional
+// and nil-safe: without it the coordinator plans market-only, exactly as before.
+func (h *RunFleetCoordinatorHandler) SetInventoryFinder(finder appContract.InventorySourceFinder) {
+	h.invFinder = finder
 }
 
 // Handle executes the fleet coordinator command
@@ -387,7 +401,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// a cross-system source it can't reach must be excluded, not
 		// selected-then-crashed ('waypoint not found in cache' — sp-9hu8).
 		logger.Log("INFO", "Planning sourcing (cheapest in-system market)...", nil)
-		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value(), nil)
+		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value(), nil, appContract.WithInventoryFinder(h.invFinder))
 		if err != nil {
 			// Market data not yet available - this is expected while scouts are scanning
 			logger.Log("INFO", "Purchase market not yet available - waiting for scouts to scan market data", map[string]interface{}{

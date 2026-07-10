@@ -17,6 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
+	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
 	ledgerCmd "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
@@ -474,10 +475,9 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register EvaluateContractProfitability handler: %w", err)
 	}
 
-	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil)
-	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
-		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
-	}
+	// ContractWorkflow handler is constructed AFTER the storage coordinator +
+	// warehouse (sp-dchv Lane B/D) so it can be wired with inventory-first
+	// sourcing — see "Inventory-first contract sourcing" below.
 
 	rebalanceFleetHandler := contractCmd.NewRebalanceContractFleetHandler(med, shipRepo, graphService, marketRepo, waypointConverter)
 	if err := mediator.RegisterHandler[*contractCmd.RebalanceContractFleetCommand](med, rebalanceFleetHandler); err != nil {
@@ -751,6 +751,24 @@ func run(cfg *config.Config) error {
 	warehouseHandler := storageCmd.NewRunWarehouseHandler(med, shipRepo, storageOperationRepo, storageCoordinator, nil)
 	if err := mediator.RegisterHandler[*storageCmd.RunWarehouseCommand](med, warehouseHandler); err != nil {
 		return fmt.Errorf("failed to register RunWarehouse handler: %w", err)
+	}
+
+	// Inventory-first contract sourcing (sp-dchv Lane D). The finder reads
+	// warehouse (Lane B) stock from the SAME shared storage coordinator the
+	// warehouse registers its hull with, so a contract worker withdraws a stocked
+	// good in-system at zero ask before buying it, and the fleet coordinator's
+	// defer gate treats that stock as free (never parks a contract inventory can
+	// fulfill). Nil-safe throughout: no warehouse / no stock / any read error
+	// falls through to the pre-existing market path (RULINGS #1). Withdrawal is
+	// single-system (RULINGS #14) and transfers from Lane B's dedicated hull
+	// without claiming it (RULINGS #7).
+	contractInventoryFinder := contractServices.NewStorageInventoryFinder(storageOperationRepo, storageCoordinator)
+	contractFleetCoordinatorHandler.SetInventoryFinder(contractInventoryFinder)
+
+	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil,
+		contractCmd.WithInventorySourcing(contractInventoryFinder, storageCoordinator, apiClient))
+	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
+		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
 	}
 
 	// Create storage recovery service for daemon restart resilience
