@@ -64,10 +64,13 @@ type MarketWaypointProvider interface {
 }
 
 // RunScoutPostCoordinatorHandler reconciles the desired-state posts table every
-// tick: it respawns any post whose tour died, mans unmanned posts by claiming the
-// nearest idle satellite, retires completed sweep-once posts, and never poaches a
-// pinned hull. It is the freshness backbone the tour planner's age cap and the
-// analyst board both ride on.
+// tick: it respawns any post whose tour died, mans unmanned posts by claiming an
+// idle satellite ALREADY IN THE POST'S SYSTEM (matching is in-system-only, sp-qxa4),
+// releases any assignment whose hull has drifted out of the post's system so it can
+// be re-matched, retires completed sweep-once posts, parks a post with no in-system
+// satellite (honest reason, re-checked every tick), and never poaches a pinned hull.
+// It is the freshness backbone the tour planner's age cap and the analyst board both
+// ride on.
 type RunScoutPostCoordinatorHandler struct {
 	postRepo       domainScouting.ScoutPostRepository
 	shipRepo       navigation.ShipRepository
@@ -145,13 +148,17 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 // coordinator's tests drive directly (the Handle loop just calls it on a timer).
 //
 // Two passes:
-//   - Pass 1 (manned posts): retire a completed sweep-once (release its hull,
+//   - Pass 1 (manned posts): release any post whose assigned hull is no longer in
+//     the post's system (the sp-qxa4 cross-system defect — stop its tour, free the
+//     hull, clear the assignment); retire a completed sweep-once (release its hull,
 //     delete the post); free the hull of any other post whose tour is not running,
-//     clearing the assignment so pass 2 re-mans it. A healthy tour is left
+//     clearing the assignment so pass 2 re-mans it. A healthy in-system tour is left
 //     untouched.
-//   - Pass 2 (unmanned posts): standing posts before sweep-once, claim the nearest
-//     idle satellite for each and spawn its tour, until the idle-satellite pool is
-//     empty.
+//   - Pass 2 (unmanned posts): standing posts before sweep-once, claim an idle
+//     satellite ALREADY IN THE POST'S SYSTEM and spawn its tour. A post with no
+//     in-system satellite parks unmanned with an honest reason and is re-checked
+//     next tick (self-heals when a satellite arrives). Cross-system matching is
+//     never done — the tour navigates in-system only, so it would crash-loop.
 func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunScoutPostCoordinatorCommand) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -179,6 +186,30 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		if !post.IsManned() {
 			continue
 		}
+		// REPAIR (sp-qxa4): the assigned hull is no longer in the post's system — a
+		// cross-system assignment (the removed global fallback) or a satellite that
+		// drifted away. Its in-system tour can never navigate the post's waypoints, so
+		// it crash-respawn-loops. Release it unconditionally (even if the crash-loop is
+		// momentarily RUNNING this tick): stop the tour so it is NOT respawned, free the
+		// hull, and clear the assignment. Pass 2 then re-mans the post with an in-system
+		// satellite or parks it. This heals the live incident at deploy — no manual
+		// cleanup. Checked before the healthy-tour skip so a flickering-RUNNING loop
+		// cannot slip past.
+		if h.hullOutOfSystem(ctx, cmd, post) {
+			_ = h.daemonClient.StopContainer(ctx, post.TourContainerID)
+			h.reclaimHull(ctx, cmd, post)
+			logger.Log("INFO", fmt.Sprintf("Released cross-system assignment: hull %s is not in post %s's system — returned to pool for in-system re-matching", post.AssignedHull, post.SystemSymbol), map[string]interface{}{
+				"action":        "scout_post_cross_system_repair",
+				"system_symbol": post.SystemSymbol,
+				"ship_symbol":   post.AssignedHull,
+			})
+			post.AssignedHull = ""
+			post.TourContainerID = ""
+			if err := h.postRepo.Upsert(ctx, post); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to clear cross-system assignment on post %s: %v", post.SystemSymbol, err), nil)
+			}
+			continue
+		}
 		// A live tour is healthy — never disturb it.
 		if post.TourContainerID != "" && running[post.TourContainerID] {
 			continue
@@ -199,8 +230,9 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 			continue
 		}
 		// Otherwise the tour is dead/missing/crashed: free the hull and clear the
-		// assignment. Pass 2 re-mans the post — with this same hull if it is the
-		// nearest idle satellite, which after a restart it is (respawn within a tick).
+		// assignment. Pass 2 re-mans the post — with this same hull, since it is idle
+		// in the post's system (the repair above already released any out-of-system
+		// hull), so it respawns within a tick.
 		h.reclaimHull(ctx, cmd, post)
 		post.AssignedHull = ""
 		post.TourContainerID = ""
@@ -229,21 +261,37 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	for _, post := range unmanned {
 		if len(idleSats) == 0 {
-			break // no idle satellites left this tick
+			break // no idle satellites left this tick — remaining posts wait
 		}
+
+		// In-system-only matching (sp-qxa4): a post can only be manned by an idle
+		// satellite already in its system. The scout_tour worker navigates in-system
+		// only, so handing it a cross-system hull just crash-respawn-loops. No match
+		// among the (non-empty) idle pool means satellites exist but are stranded in
+		// other systems: park the post with an honest, actionable reason and re-check
+		// next tick. It self-heals the moment a satellite arrives in-system.
+		idx := selectInSystemSatellite(idleSats, post.SystemSymbol)
+		if idx < 0 {
+			logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: no in-system satellite — reposition one or wait", post.SystemSymbol), map[string]interface{}{
+				"action":        "scout_post_unmanned_no_in_system_satellite",
+				"system_symbol": post.SystemSymbol,
+			})
+			continue
+		}
+
 		markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to discover markets for post %s: %v", post.SystemSymbol, err), nil)
 			continue
 		}
 		if len(markets) == 0 {
-			// Nothing to scan (uncharted / no marketplace waypoints). Don't burn an
-			// idle satellite on it — leave it for a man-able post this tick.
+			// Nothing to scan (uncharted / no marketplace waypoints). Don't burn the
+			// in-system satellite's claim on a zero-market tour — leave it idle in
+			// system until the system is charted.
 			logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — leaving post unmanned this tick", post.SystemSymbol), nil)
 			continue
 		}
 
-		idx := selectSatelliteIndex(idleSats, post.SystemSymbol)
 		sat := idleSats[idx]
 		idleSats = append(idleSats[:idx], idleSats[idx+1:]...)
 
@@ -361,6 +409,26 @@ func (h *RunScoutPostCoordinatorHandler) spawnTour(
 	return workerID, nil
 }
 
+// hullOutOfSystem reports whether a manned post's assigned hull is currently NOT in
+// the post's system — the cross-system-assignment defect the repair pass heals
+// (sp-qxa4). It fails safe: a hull that cannot be loaded, or whose location is
+// unknown, is treated as in-system so a transient lookup gap never triggers a
+// spurious release. An unmanned post is trivially not out-of-system.
+func (h *RunScoutPostCoordinatorHandler) hullOutOfSystem(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) bool {
+	if post.AssignedHull == "" {
+		return false
+	}
+	ship, err := h.shipRepo.FindBySymbol(ctx, post.AssignedHull, cmd.PlayerID)
+	if err != nil {
+		return false // unknown hull — never release on a lookup failure
+	}
+	loc := ship.CurrentLocation()
+	if loc == nil {
+		return false // unknown location — conservative, leave the assignment alone
+	}
+	return loc.SystemSymbol != post.SystemSymbol
+}
+
 // reclaimHull frees any ship still assigned to a post's (now dead) tour container,
 // returning it to idle so pass 2 can re-claim it. Best-effort and DB-only — the
 // contract ReclaimShipsFromInterruptedWorkers pattern.
@@ -442,15 +510,19 @@ func postKindRank(kind domainScouting.PostKind) int {
 	return 1
 }
 
-// selectSatelliteIndex picks the satellite to man a post: an idle satellite already
-// in the post's system if one exists (the nearest possible, and no repositioning
-// flight), else the first idle satellite anywhere (in-system/nearest precedents
-// f66z, qr3v). idleSats is pre-sorted, so the choice is deterministic.
-func selectSatelliteIndex(idleSats []*navigation.Ship, systemSymbol string) int {
+// selectInSystemSatellite returns the index of an idle satellite already in the
+// post's system, or -1 if none. Cross-system matching is intentionally impossible
+// (sp-qxa4, the 9hu8/#14 in-system class): the scout_tour worker navigates in-system
+// only (no multi-jump repositioning), so a cross-system assignment crash-respawn-
+// loops. A post with no in-system satellite is UNSELECTABLE — the caller parks it
+// with a reason rather than dispatching it to a crash. idleSats is pre-sorted, so the
+// choice is deterministic. (The captain repositions satellites manually for now;
+// jump-routing repositioning is a possible v2, deliberately not built here.)
+func selectInSystemSatellite(idleSats []*navigation.Ship, systemSymbol string) int {
 	for i, sat := range idleSats {
 		if sat.CurrentLocation() != nil && sat.CurrentLocation().SystemSymbol == systemSymbol {
 			return i
 		}
 	}
-	return 0
+	return -1
 }

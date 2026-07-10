@@ -3,17 +3,46 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// scoutCaptureLogger implements common.ContainerLogger and records message text so
+// tests can assert on the honest park/repair reasons the coordinator logs.
+type scoutCaptureLogger struct {
+	messages []string
+}
+
+func (l *scoutCaptureLogger) Log(_, message string, _ map[string]interface{}) {
+	l.messages = append(l.messages, message)
+}
+
+// loggedContaining reports whether any captured message contains every substring.
+func (l *scoutCaptureLogger) loggedContaining(subs ...string) bool {
+	for _, m := range l.messages {
+		all := true
+		for _, s := range subs {
+			if !strings.Contains(m, s) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
 
 // ---- fakes -----------------------------------------------------------------
 
@@ -298,28 +327,30 @@ func TestScoutPost_HealthyTour_LeftUntouched(t *testing.T) {
 	require.Equal(t, "live-tour", postRepo.find("X1-GZ7").TourContainerID)
 }
 
-// Acceptance (3): zero satellites idle while unmanned posts exist — every idle
-// satellite is claimed when there are at least as many unmanned posts.
-func TestScoutPost_ManyPostsFewSatellites_NoSatelliteLeftIdle(t *testing.T) {
+// Acceptance (3), in-system-scoped (sp-qxa4): the old "zero satellites idle while
+// unmanned posts exist" is now system-scoped. A satellite may sit idle in system A
+// while a post in system B is unmanned — that is CORRECT, not a violation: handing
+// the A-satellite to the B-post would crash the cross-system tour. Each post is
+// manned only by an in-system hull; a post whose system has no satellite parks.
+func TestScoutPost_InSystemScoped_SatelliteMayIdleWhileCrossSystemPostUnmanned(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
 		{PlayerID: 1, SystemSymbol: "X1-AAA", Kind: domainScouting.PostKindStanding},
 		{PlayerID: 1, SystemSymbol: "X1-BBB", Kind: domainScouting.PostKindStanding},
-		{PlayerID: 1, SystemSymbol: "X1-CCC", Kind: domainScouting.PostKindStanding},
 	}}
-	// Two idle satellites, three unmanned posts.
-	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{
-		newScoutTestSatellite(t, "SAT-1", "X1-ZZZ-A1"),
-		newScoutTestSatellite(t, "SAT-2", "X1-ZZZ-A2"),
-	}, clock: clock}
+	satA := newScoutTestSatellite(t, "SAT-A", "X1-AAA-A1") // in-system for X1-AAA
+	satZ := newScoutTestSatellite(t, "SAT-Z", "X1-ZZZ-A1") // idle in X1-ZZZ — in-system for NO post
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{satA, satZ}, clock: clock}
 	daemonClient := &fakeScoutDaemonClient{}
 	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
 
 	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
 
-	require.Len(t, shipRepo.claims, 2, "both idle satellites must be claimed")
-	idle, _ := shipRepo.FindIdleByPlayer(context.Background(), shared.MustNewPlayerID(1))
-	require.Empty(t, idle, "no satellite may be left idle while posts are unmanned")
+	require.Len(t, shipRepo.claims, 1, "only the in-system match is claimed")
+	require.Equal(t, "SAT-A", shipRepo.claims[0].ship)
+	require.Equal(t, "SAT-A", postRepo.find("X1-AAA").AssignedHull, "the in-system satellite mans its post")
+	require.Empty(t, postRepo.find("X1-BBB").AssignedHull, "the cross-system post parks — never handed the idle Z satellite")
+	require.True(t, satZ.IsIdle(), "a satellite may idle in its own system while a cross-system post is unmanned — correct, not poached")
 }
 
 // Acceptance (5) / RULINGS #7: a satellite pinned to another fleet is never
@@ -400,51 +431,58 @@ func TestScoutPost_SweepOnceCrashed_Retried(t *testing.T) {
 	require.Equal(t, "SAT-1", postRepo.find("X1-FRONTIER").AssignedHull)
 }
 
-// When satellites are scarce, standing posts are manned before sweep-once posts.
-func TestScoutPost_StandingPostsPrioritizedOverSweepOnce(t *testing.T) {
-	clock := &shared.MockClock{CurrentTime: time.Now()}
-	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
-		{PlayerID: 1, SystemSymbol: "X1-SWEEP", Kind: domainScouting.PostKindSweepOnce},
-		{PlayerID: 1, SystemSymbol: "X1-STAND", Kind: domainScouting.PostKindStanding},
-	}}
-	// Only one idle satellite for two posts.
-	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-OTHER-A1")}, clock: clock}
-	daemonClient := &fakeScoutDaemonClient{}
-	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+// sortPostsByPriority orders standing posts before sweep-once, deterministic by
+// system within a kind. Under in-system-only matching (sp-qxa4) each post draws only
+// from its own system's satellite pool (posts are keyed by system, so two never
+// compete for one hull) — the ordering no longer causes cross-system stealing, but it
+// still gives the reconcile a stable, standing-first iteration order. Tested directly.
+func TestScoutPost_SortPostsByPriority_StandingBeforeSweepOnce(t *testing.T) {
+	posts := []*domainScouting.ScoutPost{
+		{SystemSymbol: "X1-SWEEP-B", Kind: domainScouting.PostKindSweepOnce},
+		{SystemSymbol: "X1-STAND-B", Kind: domainScouting.PostKindStanding},
+		{SystemSymbol: "X1-STAND-A", Kind: domainScouting.PostKindStanding},
+		{SystemSymbol: "X1-SWEEP-A", Kind: domainScouting.PostKindSweepOnce},
+	}
+	sortPostsByPriority(posts)
 
-	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
-
-	require.Equal(t, "SAT-1", postRepo.find("X1-STAND").AssignedHull, "the standing post is manned first")
-	require.Empty(t, postRepo.find("X1-SWEEP").AssignedHull, "the sweep-once post waits")
+	got := []string{posts[0].SystemSymbol, posts[1].SystemSymbol, posts[2].SystemSymbol, posts[3].SystemSymbol}
+	require.Equal(t, []string{"X1-STAND-A", "X1-STAND-B", "X1-SWEEP-A", "X1-SWEEP-B"}, got,
+		"standing posts sort before sweep-once, deterministic by system within a kind")
 }
 
-// An in-system idle satellite is preferred over an out-of-system one (no needless
-// repositioning flight).
-func TestScoutPost_PrefersInSystemSatellite(t *testing.T) {
+// Only the in-system satellite is ever selected; the out-of-system one is left idle,
+// never claimed (sp-qxa4 in-system-only matching), even though it sorts first.
+func TestScoutPost_SelectsInSystemSatellite_CrossSystemLeftIdle(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
 	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
-	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{
-		newScoutTestSatellite(t, "SAT-FAR", "X1-OTHER-A1"), // sorts first by symbol, but out of system
-		newScoutTestSatellite(t, "SAT-NEAR", "X1-GZ7-A1"),  // in the post's system
-	}, clock: clock}
+	satFar := newScoutTestSatellite(t, "SAT-FAR", "X1-OTHER-A1") // sorts first by symbol, but out of system
+	satNear := newScoutTestSatellite(t, "SAT-NEAR", "X1-GZ7-A1") // in the post's system
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{satFar, satNear}, clock: clock}
 	daemonClient := &fakeScoutDaemonClient{}
 	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
 
 	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
 
-	require.Equal(t, "SAT-NEAR", postRepo.find("X1-GZ7").AssignedHull, "the in-system satellite is preferred")
+	require.Equal(t, "SAT-NEAR", postRepo.find("X1-GZ7").AssignedHull, "the in-system satellite mans the post")
+	require.Len(t, shipRepo.claims, 1, "only the in-system satellite is claimed")
+	require.Equal(t, "SAT-NEAR", shipRepo.claims[0].ship)
+	require.True(t, satFar.IsIdle(), "the out-of-system satellite is never claimed")
 }
 
-// A post in an uncharted system (no marketplace waypoints) does not consume a
-// satellite — it is left for a man-able post this tick.
-func TestScoutPost_NoKnownMarkets_LeavesSatelliteForAnotherPost(t *testing.T) {
+// A post whose system has no known marketplace waypoints is not manned — the
+// coordinator does not spawn a zero-market tour or burn the in-system satellite's
+// claim; the hull stays idle in-system until the system is charted. A charted post
+// with its own in-system satellite is manned normally.
+func TestScoutPost_NoKnownMarkets_LeavesInSystemSatelliteIdle(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
 		{PlayerID: 1, SystemSymbol: "X1-UNCHARTED", Kind: domainScouting.PostKindStanding},
 		{PlayerID: 1, SystemSymbol: "X1-CHARTED", Kind: domainScouting.PostKindStanding},
 	}}
-	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-OTHER-A1")}, clock: clock}
+	satU := newScoutTestSatellite(t, "SAT-U", "X1-UNCHARTED-A1") // in-system for the uncharted post
+	satC := newScoutTestSatellite(t, "SAT-C", "X1-CHARTED-A1")   // in-system for the charted post
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{satU, satC}, clock: clock}
 	daemonClient := &fakeScoutDaemonClient{}
 	mp := &fakeMarketProvider{emptySystems: map[string]bool{"X1-UNCHARTED": true}}
 	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, mp, clock)
@@ -452,7 +490,8 @@ func TestScoutPost_NoKnownMarkets_LeavesSatelliteForAnotherPost(t *testing.T) {
 	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
 
 	require.Empty(t, postRepo.find("X1-UNCHARTED").AssignedHull, "the uncharted post stays unmanned")
-	require.Equal(t, "SAT-1", postRepo.find("X1-CHARTED").AssignedHull, "the satellite goes to the man-able post")
+	require.True(t, satU.IsIdle(), "its in-system satellite is not burned on a zero-market tour")
+	require.Equal(t, "SAT-C", postRepo.find("X1-CHARTED").AssignedHull, "the charted post is manned by its in-system satellite")
 }
 
 // A start-failure rolls the claim back so the hull is not stranded.
@@ -470,4 +509,101 @@ func TestScoutPost_StartFailure_ReleasesHull(t *testing.T) {
 	require.Contains(t, shipRepo.releases, "SAT-1", "a failed start must release the claimed hull")
 	require.Contains(t, daemonClient.stopped, daemonClient.persisted[0], "the persisted worker must be cleaned up")
 	require.Empty(t, postRepo.find("X1-GZ7").AssignedHull, "the post stays unmanned after a failed start")
+}
+
+// ---- tests: sp-qxa4 in-system-only matching -------------------------------
+
+// Root cause (sp-qxa4): only a cross-system idle satellite exists — the live
+// 1A@DP51 / post-in-PA3 shape. It must NEVER be selected: the scout tour navigates
+// in-system only, so a cross-system assignment crash-respawn-loops. The post parks.
+func TestScoutPost_CrossSystemSatellite_NeverSelected(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-PA3", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	far := newScoutTestSatellite(t, "SAT-1A", "X1-DP51-A1") // idle in DP51, post is in PA3
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{far}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Empty(t, shipRepo.claims, "a cross-system satellite is never claimed for a post")
+	require.Empty(t, daemonClient.started, "no cross-system tour is ever spawned")
+	require.Empty(t, postRepo.find("X1-PA3").AssignedHull, "the post parks unmanned")
+	require.True(t, far.IsIdle(), "the cross-system satellite stays idle in its own system")
+}
+
+// An unmanned post with no in-system satellite (but a repositionable one idle
+// elsewhere) parks with an honest, system-scoped reason in the message text (sp-qxa4).
+func TestScoutPost_UnmannedPost_ParksWithReason(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-PA3", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	far := newScoutTestSatellite(t, "SAT-1A", "X1-DP51-A1") // idle elsewhere — a repositionable candidate
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{far}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	logger := &scoutCaptureLogger{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	ctx := common.WithLogger(context.Background(), logger)
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Empty(t, postRepo.find("X1-PA3").AssignedHull, "the post is unmanned")
+	require.True(t, logger.loggedContaining("X1-PA3", "no in-system satellite"),
+		"the park must be logged with an honest, system-scoped reason in the message text")
+}
+
+// Repair pass (sp-qxa4): the live incident — a post ASSIGNED a hull that is not in
+// the post's system (1A stranded in DP51 while manning the PA3 post), the crash-loop
+// even flickering RUNNING. On reconcile the assignment is released: tour stopped (NOT
+// respawned), hull freed, assignment cleared — both return to the pool. This heals the
+// incident at deploy with no manual cleanup. The freed hull, still cross-system, is
+// then correctly parked (not re-manned onto the wrong post) by pass 2.
+func TestScoutPost_RepairPass_ReleasesMismatchedAssignment(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-PA3", Kind: domainScouting.PostKindStanding, AssignedHull: "SAT-1A", TourContainerID: "cross-tour"}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1A", "X1-DP51-A1") // stranded in DP51, post is in PA3
+	require.NoError(t, sat.AssignToContainer("cross-tour", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	// The crash-looping tour is momentarily RUNNING — the repair must still fire.
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "cross-tour", ContainerType: "SCOUT", Status: "RUNNING"}},
+	}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, cq, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Contains(t, daemonClient.stopped, "cross-tour", "the crash-looping cross-system tour is stopped, not respawned")
+	require.Contains(t, shipRepo.releases, "SAT-1A", "the stranded hull is released back to the pool")
+	require.True(t, sat.IsIdle(), "the hull is idle again, available for correct re-matching")
+	got := postRepo.find("X1-PA3")
+	require.Empty(t, got.AssignedHull, "the post's assignment is cleared")
+	require.Empty(t, got.TourContainerID, "the dead tour reference is cleared")
+	require.Empty(t, daemonClient.started, "the cross-system tour is not respawned onto the same wrong hull")
+}
+
+// A parked post self-heals the moment a satellite arrives in its system — no
+// coordinator restart, no manual intervention (sp-qxa4). Two ticks: parks, then mans.
+func TestScoutPost_InSystemArrival_SelfHeals(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-PA3", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{newScoutTestSatellite(t, "SAT-1A", "X1-DP51-A1")}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	// Tick 1: the only satellite is cross-system → the post parks unmanned.
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Empty(t, postRepo.find("X1-PA3").AssignedHull, "tick 1: no in-system satellite, post parks")
+	require.Empty(t, shipRepo.claims, "tick 1: nothing is claimed")
+
+	// The captain repositions the satellite into the post's system (it arrives).
+	shipRepo.ships = []*navigation.Ship{newScoutTestSatellite(t, "SAT-1A", "X1-PA3-A1")}
+
+	// Tick 2: now in-system → the post self-heals, manned with no restart.
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, "SAT-1A", postRepo.find("X1-PA3").AssignedHull, "tick 2: in-system arrival self-heals the post")
+	require.Len(t, shipRepo.claims, 1, "tick 2: the now-in-system satellite is claimed")
 }
