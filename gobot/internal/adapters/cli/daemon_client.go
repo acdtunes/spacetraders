@@ -99,6 +99,15 @@ type ContractFleetCoordinatorResponse struct {
 	Status      string
 }
 
+// ScoutPost mirrors the protobuf ScoutPost message for CLI display (sp-cxpq).
+type ScoutPost struct {
+	SystemSymbol     string
+	FreshnessSeconds int
+	Kind             string
+	AssignedHull     string
+	TourContainerID  string
+}
+
 // ContainerInfo mirrors the protobuf ContainerInfo message for CLI display.
 // This struct includes all fields needed for user-facing container information.
 // Note: PlayerID is int32 per protobuf requirements (converted from domain int).
@@ -907,6 +916,85 @@ func (c *DaemonClient) ContractFleetCoordinator(
 		ShipSymbols: shipSymbols,
 		Status:      resp.Status,
 	}, nil
+}
+
+// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq).
+func (c *DaemonClient) ScoutPostCoordinator(ctx context.Context, playerID int, agentSymbol string, tickIntervalSecs int) (string, error) {
+	req := &pb.ScoutPostCoordinatorRequest{
+		PlayerId:         int32(playerID),
+		TickIntervalSecs: int32(tickIntervalSecs),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.ScoutPostCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
+// AddScoutPost adds or updates a desired-state scout post (sp-cxpq).
+func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string) (*ScoutPost, error) {
+	req := &pb.AddScoutPostRequest{
+		PlayerId:         int32(playerID),
+		SystemSymbol:     systemSymbol,
+		FreshnessSeconds: int32(freshnessSeconds),
+		Kind:             kind,
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.AddScoutPost(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+	return protoToScoutPost(resp.Post), nil
+}
+
+// RemoveScoutPost removes a scout post (sp-cxpq).
+func (c *DaemonClient) RemoveScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string) error {
+	req := &pb.RemoveScoutPostRequest{
+		PlayerId:     int32(playerID),
+		SystemSymbol: systemSymbol,
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	if _, err := c.client.RemoveScoutPost(ctx, req); err != nil {
+		return fmt.Errorf(grpcCallFailed, err)
+	}
+	return nil
+}
+
+// ListScoutPosts lists the active scout posts (sp-cxpq).
+func (c *DaemonClient) ListScoutPosts(ctx context.Context, playerID int, agentSymbol string) ([]*ScoutPost, error) {
+	req := &pb.ListScoutPostsRequest{PlayerId: int32(playerID)}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.ListScoutPosts(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+	posts := make([]*ScoutPost, len(resp.Posts))
+	for i, p := range resp.Posts {
+		posts[i] = protoToScoutPost(p)
+	}
+	return posts, nil
+}
+
+func protoToScoutPost(p *pb.ScoutPost) *ScoutPost {
+	if p == nil {
+		return nil
+	}
+	return &ScoutPost{
+		SystemSymbol:     p.SystemSymbol,
+		FreshnessSeconds: int(p.FreshnessSeconds),
+		Kind:             p.Kind,
+		AssignedHull:     p.AssignedHull,
+		TourContainerID:  p.TourContainerId,
+	}
 }
 
 // StartGoodsFactory starts a goods factory for automated production

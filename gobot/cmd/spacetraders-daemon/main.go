@@ -527,6 +527,24 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register AssignScoutingFleet handler: %w", err)
 	}
 
+	// Register the standing scout-post coordinator (sp-cxpq): reconciles the
+	// desired-state posts table every tick — respawns dead tours, claims idle
+	// satellites for unmanned posts, retires completed sweep-once posts. The posts
+	// table and waypoint repo are read directly; the container repo supplies tour
+	// liveness (ListByStatusSimple), daemonClientLocal spawns/stops tour workers.
+	scoutPostRepo := persistence.NewGormScoutPostRepository(db)
+	scoutPostCoordinatorHandler := scoutingCmd.NewRunScoutPostCoordinatorHandler(
+		scoutPostRepo,
+		shipRepo,
+		daemonClientLocal,
+		containerRepo,
+		waypointRepo,
+		nil, // nil = use RealClock
+	)
+	if err := mediator.RegisterHandler[*scoutingCmd.RunScoutPostCoordinatorCommand](med, scoutPostCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register ScoutPostCoordinator handler: %w", err)
+	}
+
 	// Register GoodsFactoryCoordinator handler (depends on daemonClientLocal)
 	// Create goods factory services using the domain market repository adapter
 	goodsMarketLocator := goodsServices.NewMarketLocator(marketRepoAdapter, waypointRepo, playerRepo, apiClient)

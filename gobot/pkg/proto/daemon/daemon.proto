@@ -37,6 +37,18 @@ service DaemonService {
   // AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
   rpc AssignScoutingFleet(AssignScoutingFleetRequest) returns (AssignScoutingFleetResponse);
 
+  // ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
+  rpc ScoutPostCoordinator(ScoutPostCoordinatorRequest) returns (ScoutPostCoordinatorResponse);
+
+  // AddScoutPost adds or updates a desired-state scout post for a system
+  rpc AddScoutPost(AddScoutPostRequest) returns (ScoutPostResponse);
+
+  // RemoveScoutPost removes a scout post for a system
+  rpc RemoveScoutPost(RemoveScoutPostRequest) returns (RemoveScoutPostResponse);
+
+  // ListScoutPosts returns the active scout posts for a player
+  rpc ListScoutPosts(ListScoutPostsRequest) returns (ListScoutPostsResponse);
+
   // ListContainers returns all running background containers
   rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
 
@@ -293,6 +305,64 @@ message ScoutTourResponse {
   repeated string markets = 3;
   int32 iterations = 4;
   string status = 5;
+}
+
+// ScoutPost is one desired-state post (sp-cxpq): keep system_symbol scanned to
+// within freshness_seconds, via kind ("standing" or "sweep_once"), currently
+// manned by assigned_hull (empty if unmanned) through tour_container_id.
+message ScoutPost {
+  string system_symbol = 1;
+  int32 freshness_seconds = 2;
+  string kind = 3;
+  string assigned_hull = 4;
+  string tour_container_id = 5;
+}
+
+// ScoutPostCoordinatorRequest starts the standing scout-post coordinator.
+message ScoutPostCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  // tick_interval_secs is the reconcile cadence; 0 uses the coordinator default.
+  int32 tick_interval_secs = 3;
+}
+
+message ScoutPostCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// AddScoutPostRequest adds or updates a post. An existing post's live assignment
+// is preserved; only freshness and kind change.
+message AddScoutPostRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string system_symbol = 3;
+  int32 freshness_seconds = 4;
+  string kind = 5;
+}
+
+message ScoutPostResponse {
+  ScoutPost post = 1;
+}
+
+// RemoveScoutPostRequest removes a post and releases its hull if manned.
+message RemoveScoutPostRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string system_symbol = 3;
+}
+
+message RemoveScoutPostResponse {
+  string status = 1;
+}
+
+message ListScoutPostsRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message ListScoutPostsResponse {
+  repeated ScoutPost posts = 1;
 }
 
 // ScoutMarketsRequest initiates fleet market scouting with VRP optimization

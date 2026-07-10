@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -306,6 +308,86 @@ func (s *daemonServiceImpl) ScoutTour(ctx context.Context, req *pb.ScoutTourRequ
 	}
 
 	return response, nil
+}
+
+// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
+func (s *daemonServiceImpl) ScoutPostCoordinator(ctx context.Context, req *pb.ScoutPostCoordinatorRequest) (*pb.ScoutPostCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.ScoutPostCoordinator(ctx, playerID, int(req.TickIntervalSecs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to start scout post coordinator: %w", err)
+	}
+
+	return &pb.ScoutPostCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
+// AddScoutPost adds or updates a desired-state scout post (sp-cxpq)
+func (s *daemonServiceImpl) AddScoutPost(ctx context.Context, req *pb.AddScoutPostRequest) (*pb.ScoutPostResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	kind := domainScouting.PostKind(req.Kind)
+	if req.Kind == "" {
+		kind = domainScouting.PostKindStanding
+	}
+	freshness := time.Duration(req.FreshnessSeconds) * time.Second
+
+	post, err := s.daemon.AddScoutPost(ctx, playerID, req.SystemSymbol, freshness, kind)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add scout post: %w", err)
+	}
+
+	return &pb.ScoutPostResponse{Post: scoutPostToProto(post)}, nil
+}
+
+// RemoveScoutPost removes a scout post and releases its hull (sp-cxpq)
+func (s *daemonServiceImpl) RemoveScoutPost(ctx context.Context, req *pb.RemoveScoutPostRequest) (*pb.RemoveScoutPostResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	if err := s.daemon.RemoveScoutPost(ctx, playerID, req.SystemSymbol); err != nil {
+		return nil, fmt.Errorf("failed to remove scout post: %w", err)
+	}
+
+	return &pb.RemoveScoutPostResponse{Status: "REMOVED"}, nil
+}
+
+// ListScoutPosts returns the active scout posts for a player (sp-cxpq)
+func (s *daemonServiceImpl) ListScoutPosts(ctx context.Context, req *pb.ListScoutPostsRequest) (*pb.ListScoutPostsResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	posts, err := s.daemon.ListScoutPosts(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list scout posts: %w", err)
+	}
+
+	protoPosts := make([]*pb.ScoutPost, len(posts))
+	for i, p := range posts {
+		protoPosts[i] = scoutPostToProto(p)
+	}
+	return &pb.ListScoutPostsResponse{Posts: protoPosts}, nil
+}
+
+// scoutPostToProto maps a domain scout post to its wire representation.
+func scoutPostToProto(p *domainScouting.ScoutPost) *pb.ScoutPost {
+	return &pb.ScoutPost{
+		SystemSymbol:     p.SystemSymbol,
+		FreshnessSeconds: int32(p.FreshnessTarget.Seconds()),
+		Kind:             string(p.Kind),
+		AssignedHull:     p.AssignedHull,
+		TourContainerId:  p.TourContainerID,
+	}
 }
 
 // ScoutMarkets orchestrates fleet deployment for market scouting (multi-ship with VRP)

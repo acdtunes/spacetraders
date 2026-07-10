@@ -177,6 +177,41 @@ func TestRecoveryRestartsTopLevelCoordinator(t *testing.T) {
 	runner.cancelFunc()
 }
 
+// TestRecoveryRestartsScoutPostCoordinator (sp-cxpq): the standing scout-post
+// coordinator is a top-level coordinator (no coordinator_id, not a worker type),
+// so a daemon restart must re-instantiate it live — it then reloads its posts and
+// respawns each post's tour on its first reconcile tick.
+func TestRecoveryRestartsScoutPostCoordinator(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	insertRunningContainer(t, db, "scoutpost-1", "scout_post_coordinator", "SCOUT_POST_COORDINATOR",
+		`{"container_id":"scoutpost-1","tick_interval_secs":30}`, playerID, nil)
+
+	require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+	runner := s.registeredRunner("scoutpost-1")
+	require.NotNil(t, runner, "the scout-post coordinator must re-adopt at restart (sp-7yej)")
+	requireContainerState(t, db, "scoutpost-1", "RUNNING", "")
+	runner.cancelFunc()
+}
+
+// TestRecoverySkipsCoordinatorSpawnedScoutTour (sp-cxpq): a scout_tour spawned as
+// a managed worker by the scout-post coordinator carries a coordinator_id, so boot
+// recovery must SKIP it (mark worker_interrupted, preserving the ship assignment)
+// and leave respawning to the coordinator — exactly the contract_workflow worker
+// path. A standalone `workflow scout-markets` tour (no coordinator_id) is untouched
+// by this and still recovers independently.
+func TestRecoverySkipsCoordinatorSpawnedScoutTour(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	parent := "scoutpost-1"
+	insertRunningContainer(t, db, "scout-tour-SAT-3", "scout_tour", "SCOUT",
+		`{"ship_symbol":"SAT-3","markets":["X1-GZ7-A1"],"iterations":-1,"coordinator_id":"scoutpost-1"}`, playerID, &parent)
+
+	require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+	requireContainerState(t, db, "scout-tour-SAT-3", "FAILED", "worker_interrupted")
+	require.Nil(t, s.registeredRunner("scout-tour-SAT-3"))
+}
+
 // TestRecoveryRestoresFactoryIterationBudgetFromMaxIterationsKey is the sp-perx
 // regression: StartGoodsFactory persists a factory's iteration budget under the
 // "max_iterations" config key (see container_ops_goods.go), but recoverContainer

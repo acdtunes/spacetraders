@@ -209,7 +209,12 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 //	--------------------------  ----------------  ------------  ---------------------------------
 //	scout_tour                  one full tour     coordinator   re-adopts; finite tour re-runs
 //	                                                            from scratch (progress not
-//	                                                            persisted), ∞ resumes
+//	                                                            persisted), ∞ resumes; a
+//	                                                            coordinator-spawned tour (has
+//	                                                            coordinator_id) is skipped and
+//	                                                            respawned by scout_post_coordinator
+//	scout_post_coordinator      ∞ internal loop   coordinator   re-adopts; reloads posts +
+//	                                                            assignments, respawns tours (cxpq)
 //	contract_workflow           one contract      coordinator   re-adopts standalone; worker
 //	                                                            (coordinator_id) waits for parent
 //	contract_fleet_coordinator  ∞ internal loop   coordinator   re-adopts
@@ -245,6 +250,7 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
 		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
@@ -305,6 +311,21 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 		ShipSymbol: cfg.RequiredString("ship_symbol"),
 		Markets:    cfg.RequiredStringSlice("markets"),
 		Iterations: iterations,
+	}
+}
+
+// buildScoutPostCoordinatorCommand rebuilds the standing scout-post coordinator
+// from its persisted launch config so restart recovery re-adopts it (sp-cxpq): it
+// reloads the posts table and respawns each post's tour. Like
+// contract_fleet_coordinator it loops forever inside one Handle() call, so the
+// container-level iteration budget is irrelevant and it is NOT a
+// CoordinatorOwnsIterations type. tick_interval_secs is optional (0 → the
+// coordinator's own default).
+func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &scoutingCmd.RunScoutPostCoordinatorCommand{
+		PlayerID:         shared.MustNewPlayerID(playerID),
+		ContainerID:      cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs: cfg.OptionalInt("tick_interval_secs", 0),
 	}
 }
 

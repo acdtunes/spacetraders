@@ -18,6 +18,15 @@ type ScoutTourCommand struct {
 	ShipSymbol string
 	Markets    []string // Waypoint symbols to scout
 	Iterations int      // Number of complete tours (-1 for infinite)
+
+	// CoordinatorID names the scout_post_coordinator that spawned this tour as a
+	// managed worker (sp-cxpq). When non-empty it is persisted into the
+	// container's config so daemon restart recovery SKIPS the tour (marks it
+	// worker_interrupted, preserving the ship assignment) and leaves respawning to
+	// the coordinator's reconcile pass — the contract_workflow worker pattern.
+	// Empty for the standalone `workflow scout-markets` tours, which recover
+	// independently as before.
+	CoordinatorID string
 }
 
 // ScoutTourResponse - Response from scout tour execution

@@ -59,6 +59,37 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 			},
 		},
 		{
+			// sp-cxpq: a RUNNING scout_post_coordinator must rebuild from its launch
+			// config on restart so it re-adopts its posts + assignments and respawns
+			// each post's tour. Like contract_fleet_coordinator it loops internally, so
+			// container_id comes from config; tick_interval_secs round-trips its knob.
+			name:        "scout_post_coordinator",
+			commandType: "scout_post_coordinator",
+			containerID: "scoutpost-1",
+			launchConfig: map[string]interface{}{
+				"container_id":       "scoutpost-1",
+				"tick_interval_secs": 45,
+			},
+			want: &scoutingCmd.RunScoutPostCoordinatorCommand{
+				PlayerID:         pid,
+				ContainerID:      "scoutpost-1",
+				TickIntervalSecs: 45,
+			},
+		},
+		{
+			name:        "scout_post_coordinator defaults tick_interval_secs",
+			commandType: "scout_post_coordinator",
+			containerID: "scoutpost-2",
+			launchConfig: map[string]interface{}{
+				"container_id": "scoutpost-2",
+			},
+			want: &scoutingCmd.RunScoutPostCoordinatorCommand{
+				PlayerID:         pid,
+				ContainerID:      "scoutpost-2",
+				TickIntervalSecs: 0,
+			},
+		},
+		{
 			name:        "contract_workflow",
 			commandType: "contract_workflow",
 			containerID: "worker-1",
@@ -364,6 +395,7 @@ func TestRecoveryFactoryRejectsMissingOrWrongTypedFields(t *testing.T) {
 		{"scout_tour missing iterations", "scout_tour", map[string]interface{}{"ship_symbol": "S", "markets": []interface{}{"M1"}}, "iterations"},
 		{"contract_workflow missing ship_symbol", "contract_workflow", map[string]interface{}{"coordinator_id": "c"}, "ship_symbol"},
 		{"contract_fleet_coordinator missing container_id", "contract_fleet_coordinator", map[string]interface{}{}, "container_id"},
+		{"scout_post_coordinator missing container_id", "scout_post_coordinator", map[string]interface{}{}, "container_id"},
 		{"purchase_ship missing ship_type", "purchase_ship", map[string]interface{}{"ship_symbol": "S"}, "ship_type"},
 		{"purchase_ship missing ship_symbol", "purchase_ship", map[string]interface{}{"ship_type": "T"}, "ship_symbol"},
 		{"batch_purchase missing quantity", "batch_purchase_ships", map[string]interface{}{"ship_symbol": "S", "ship_type": "T", "max_budget": 1.0}, "quantity"},

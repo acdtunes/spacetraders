@@ -29,6 +29,10 @@ const (
 	DaemonService_ScoutTour_FullMethodName                             = "/daemon.DaemonService/ScoutTour"
 	DaemonService_ScoutMarkets_FullMethodName                          = "/daemon.DaemonService/ScoutMarkets"
 	DaemonService_AssignScoutingFleet_FullMethodName                   = "/daemon.DaemonService/AssignScoutingFleet"
+	DaemonService_ScoutPostCoordinator_FullMethodName                  = "/daemon.DaemonService/ScoutPostCoordinator"
+	DaemonService_AddScoutPost_FullMethodName                          = "/daemon.DaemonService/AddScoutPost"
+	DaemonService_RemoveScoutPost_FullMethodName                       = "/daemon.DaemonService/RemoveScoutPost"
+	DaemonService_ListScoutPosts_FullMethodName                        = "/daemon.DaemonService/ListScoutPosts"
 	DaemonService_ListContainers_FullMethodName                        = "/daemon.DaemonService/ListContainers"
 	DaemonService_GetContainer_FullMethodName                          = "/daemon.DaemonService/GetContainer"
 	DaemonService_StopContainer_FullMethodName                         = "/daemon.DaemonService/StopContainer"
@@ -91,6 +95,14 @@ type DaemonServiceClient interface {
 	ScoutMarkets(ctx context.Context, in *ScoutMarketsRequest, opts ...grpc.CallOption) (*ScoutMarketsResponse, error)
 	// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
 	AssignScoutingFleet(ctx context.Context, in *AssignScoutingFleetRequest, opts ...grpc.CallOption) (*AssignScoutingFleetResponse, error)
+	// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
+	ScoutPostCoordinator(ctx context.Context, in *ScoutPostCoordinatorRequest, opts ...grpc.CallOption) (*ScoutPostCoordinatorResponse, error)
+	// AddScoutPost adds or updates a desired-state scout post for a system
+	AddScoutPost(ctx context.Context, in *AddScoutPostRequest, opts ...grpc.CallOption) (*ScoutPostResponse, error)
+	// RemoveScoutPost removes a scout post for a system
+	RemoveScoutPost(ctx context.Context, in *RemoveScoutPostRequest, opts ...grpc.CallOption) (*RemoveScoutPostResponse, error)
+	// ListScoutPosts returns the active scout posts for a player
+	ListScoutPosts(ctx context.Context, in *ListScoutPostsRequest, opts ...grpc.CallOption) (*ListScoutPostsResponse, error)
 	// ListContainers returns all running background containers
 	ListContainers(ctx context.Context, in *ListContainersRequest, opts ...grpc.CallOption) (*ListContainersResponse, error)
 	// GetContainer returns detailed information about a specific container
@@ -271,6 +283,46 @@ func (c *daemonServiceClient) AssignScoutingFleet(ctx context.Context, in *Assig
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AssignScoutingFleetResponse)
 	err := c.cc.Invoke(ctx, DaemonService_AssignScoutingFleet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ScoutPostCoordinator(ctx context.Context, in *ScoutPostCoordinatorRequest, opts ...grpc.CallOption) (*ScoutPostCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScoutPostCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ScoutPostCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) AddScoutPost(ctx context.Context, in *AddScoutPostRequest, opts ...grpc.CallOption) (*ScoutPostResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScoutPostResponse)
+	err := c.cc.Invoke(ctx, DaemonService_AddScoutPost_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RemoveScoutPost(ctx context.Context, in *RemoveScoutPostRequest, opts ...grpc.CallOption) (*RemoveScoutPostResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveScoutPostResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RemoveScoutPost_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListScoutPosts(ctx context.Context, in *ListScoutPostsRequest, opts ...grpc.CallOption) (*ListScoutPostsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScoutPostsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListScoutPosts_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -634,6 +686,14 @@ type DaemonServiceServer interface {
 	ScoutMarkets(context.Context, *ScoutMarketsRequest) (*ScoutMarketsResponse, error)
 	// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
 	AssignScoutingFleet(context.Context, *AssignScoutingFleetRequest) (*AssignScoutingFleetResponse, error)
+	// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
+	ScoutPostCoordinator(context.Context, *ScoutPostCoordinatorRequest) (*ScoutPostCoordinatorResponse, error)
+	// AddScoutPost adds or updates a desired-state scout post for a system
+	AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error)
+	// RemoveScoutPost removes a scout post for a system
+	RemoveScoutPost(context.Context, *RemoveScoutPostRequest) (*RemoveScoutPostResponse, error)
+	// ListScoutPosts returns the active scout posts for a player
+	ListScoutPosts(context.Context, *ListScoutPostsRequest) (*ListScoutPostsResponse, error)
 	// ListContainers returns all running background containers
 	ListContainers(context.Context, *ListContainersRequest) (*ListContainersResponse, error)
 	// GetContainer returns detailed information about a specific container
@@ -749,6 +809,18 @@ func (UnimplementedDaemonServiceServer) ScoutMarkets(context.Context, *ScoutMark
 }
 func (UnimplementedDaemonServiceServer) AssignScoutingFleet(context.Context, *AssignScoutingFleetRequest) (*AssignScoutingFleetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AssignScoutingFleet not implemented")
+}
+func (UnimplementedDaemonServiceServer) ScoutPostCoordinator(context.Context, *ScoutPostCoordinatorRequest) (*ScoutPostCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ScoutPostCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddScoutPost not implemented")
+}
+func (UnimplementedDaemonServiceServer) RemoveScoutPost(context.Context, *RemoveScoutPostRequest) (*RemoveScoutPostResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveScoutPost not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListScoutPosts(context.Context, *ListScoutPostsRequest) (*ListScoutPostsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScoutPosts not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListContainers(context.Context, *ListContainersRequest) (*ListContainersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListContainers not implemented")
@@ -1046,6 +1118,78 @@ func _DaemonService_AssignScoutingFleet_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).AssignScoutingFleet(ctx, req.(*AssignScoutingFleetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ScoutPostCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScoutPostCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ScoutPostCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ScoutPostCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ScoutPostCoordinator(ctx, req.(*ScoutPostCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_AddScoutPost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddScoutPostRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).AddScoutPost(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_AddScoutPost_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).AddScoutPost(ctx, req.(*AddScoutPostRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RemoveScoutPost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveScoutPostRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RemoveScoutPost(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RemoveScoutPost_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RemoveScoutPost(ctx, req.(*RemoveScoutPostRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListScoutPosts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScoutPostsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListScoutPosts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListScoutPosts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListScoutPosts(ctx, req.(*ListScoutPostsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1690,6 +1834,22 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AssignScoutingFleet",
 			Handler:    _DaemonService_AssignScoutingFleet_Handler,
+		},
+		{
+			MethodName: "ScoutPostCoordinator",
+			Handler:    _DaemonService_ScoutPostCoordinator_Handler,
+		},
+		{
+			MethodName: "AddScoutPost",
+			Handler:    _DaemonService_AddScoutPost_Handler,
+		},
+		{
+			MethodName: "RemoveScoutPost",
+			Handler:    _DaemonService_RemoveScoutPost_Handler,
+		},
+		{
+			MethodName: "ListScoutPosts",
+			Handler:    _DaemonService_ListScoutPosts_Handler,
 		},
 		{
 			MethodName: "ListContainers",

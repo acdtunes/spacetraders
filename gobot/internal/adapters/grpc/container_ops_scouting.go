@@ -2,8 +2,10 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -61,6 +63,97 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 	}()
 
 	return containerID, nil
+}
+
+// PersistScoutTourWorker persists (but does NOT start) a scout_tour container that
+// the scout_post_coordinator manages (sp-cxpq). The persisted config carries a
+// coordinator_id and the container a parent link, so daemon restart recovery SKIPS
+// it (marks it worker_interrupted, preserving the ship assignment) and leaves
+// respawning to the coordinator's reconcile pass — the contract_workflow worker
+// pattern. Unlike a contract worker it uses a plain Add (not CreateIfNoActiveWorker):
+// many scout tours run concurrently, one per post, so there is no one-worker cap.
+func (s *DaemonServer) PersistScoutTourWorker(
+	ctx context.Context,
+	containerID string,
+	shipSymbol string,
+	markets []string,
+	iterations int,
+	playerID int,
+	coordinatorID string,
+) error {
+	config := map[string]interface{}{
+		"ship_symbol":    shipSymbol,
+		"markets":        markets,
+		"iterations":     iterations,
+		"coordinator_id": coordinatorID,
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeScout,
+		playerID,
+		1, // one iteration wraps the whole tour; the command owns "iterations"
+		&coordinatorID,
+		config,
+		nil, // Use default RealClock for production
+	)
+
+	if err := s.containerRepo.Add(ctx, containerEntity, "scout_tour"); err != nil {
+		return fmt.Errorf("failed to persist scout tour worker: %w", err)
+	}
+	return nil
+}
+
+// StartScoutTour starts a previously persisted scout_tour container (the
+// coordinator-managed worker path). Mirrors StartContractWorkflow: load the
+// persisted model, rebuild the command from its config, and run it.
+func (s *DaemonServer) StartScoutTour(ctx context.Context, containerID string) error {
+	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var containerModel *persistence.ContainerModel
+	for _, c := range allContainers {
+		if c.ID == containerID {
+			containerModel = c
+			break
+		}
+	}
+	if containerModel == nil {
+		return fmt.Errorf("container %s not found", containerID)
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	cmd, err := s.buildCommandForType("scout_tour", config, containerModel.PlayerID, containerModel.ID)
+	if err != nil {
+		return fmt.Errorf("failed to create command: %w", err)
+	}
+
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		1, // one iteration = the whole tour run; the command owns "iterations"
+		containerModel.ParentContainerID,
+		config,
+		nil,
+	)
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
 }
 
 // ScoutMarkets handles fleet deployment for market scouting (multi-ship with VRP)

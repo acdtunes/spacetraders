@@ -19,6 +19,10 @@ const (
 	ContainerKindManufacturingTaskWorker ContainerKind = "manufacturing_task_worker"
 	ContainerKindGasSiphonWorker         ContainerKind = "gas_siphon_worker"
 	ContainerKindStorageShip             ContainerKind = "storage_ship"
+	// ContainerKindScoutTour is a scout_tour spawned as a managed worker by the
+	// scout_post_coordinator (sp-cxpq): persisted with a coordinator_id so restart
+	// recovery skips it and the coordinator respawns it.
+	ContainerKindScoutTour ContainerKind = "scout_tour"
 )
 
 // ContainerInfo represents container metadata for daemon client communication.

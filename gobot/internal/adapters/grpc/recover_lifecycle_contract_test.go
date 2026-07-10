@@ -209,7 +209,7 @@ func TestEveryPersistedCommandTypeIsRegistered(t *testing.T) {
 
 	created := []string{
 		// coordinators / one-shots
-		"scout_tour", "contract_workflow", "contract_fleet_coordinator",
+		"scout_tour", "scout_post_coordinator", "contract_workflow", "contract_fleet_coordinator",
 		"purchase_ship", "batch_purchase_ships", "goods_factory_coordinator",
 		"manufacturing_coordinator", "gas_coordinator", "trade_route", "arb_run", "tour_run",
 		"navigate_ship", "dock_ship", "orbit_ship", "refuel_ship",

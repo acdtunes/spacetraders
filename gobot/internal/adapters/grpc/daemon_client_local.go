@@ -78,6 +78,12 @@ func (c *DaemonClientLocal) PersistContainer(
 		return c.server.PersistGasSiphonWorkerContainer(ctx, containerID, playerID, command)
 	case daemon.ContainerKindStorageShip:
 		return c.server.PersistStorageShipContainer(ctx, containerID, playerID, command)
+	case daemon.ContainerKindScoutTour:
+		cmd, ok := command.(*scoutingCmd.ScoutTourCommand)
+		if !ok {
+			return daemon.ErrInvalidCommandType
+		}
+		return c.server.PersistScoutTourWorker(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID), cmd.CoordinatorID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }
@@ -96,6 +102,8 @@ func (c *DaemonClientLocal) StartContainer(
 		return c.server.StartGasSiphonWorkerContainer(ctx, containerID)
 	case daemon.ContainerKindStorageShip:
 		return c.server.StartStorageShipContainer(ctx, containerID)
+	case daemon.ContainerKindScoutTour:
+		return c.server.StartScoutTour(ctx, containerID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }

@@ -546,6 +546,37 @@ func (TourLegTelemetryModel) TableName() string {
 	return "tour_leg_telemetry"
 }
 
+// ScoutPostModel is one desired-state scout post (sp-cxpq): a per-system
+// market-freshness assignment the scout_post_coordinator keeps manned, the way
+// the contract fleet coordinator keeps its dedicated fleet working. AssignedHull
+// (nullable) is the satellite currently manning the post and TourContainerID the
+// worker container scanning it — both persisted so a daemon restart re-adopts the
+// same hull onto the same post (RULINGS #2). Kind is "standing" (infinite tour)
+// or "sweep_once" (single tour, then auto-removed).
+//
+// EraID mirrors WaypointModel/GateEdgeModel exactly: reads are era-scoped so a
+// universe reset never resurrects dead-era posts (sp-njpu). The unique index on
+// (player_id, system_symbol) enforces one post per system per player; a re-add in
+// a new era reuses the row (Upsert restamps era_id). No players foreign key —
+// like the other operational-state rows (spend reservations, tour telemetry),
+// player_id is a plain indexed column the reads scope to, and a hard FK would only
+// add fixture friction to the coordinator tests that write these rows.
+type ScoutPostModel struct {
+	ID                     int       `gorm:"column:id;primaryKey;autoIncrement"`
+	PlayerID               int       `gorm:"column:player_id;not null;uniqueIndex:idx_scout_posts_player_system,priority:1;index:idx_scout_posts_player"`
+	SystemSymbol           string    `gorm:"column:system_symbol;not null;uniqueIndex:idx_scout_posts_player_system,priority:2"`
+	FreshnessTargetSeconds int       `gorm:"column:freshness_target_seconds;not null"`
+	Kind                   string    `gorm:"column:kind;not null"`
+	AssignedHull           *string   `gorm:"column:assigned_hull"`
+	TourContainerID        *string   `gorm:"column:tour_container_id"`
+	EraID                  *int      `gorm:"column:era_id;index:idx_scout_posts_era"`
+	CreatedAt              time.Time `gorm:"column:created_at;not null"`
+}
+
+func (ScoutPostModel) TableName() string {
+	return "scout_posts"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -574,5 +605,6 @@ func AllModels() []any {
 		&SpendReservationModel{},
 		&GateEdgeModel{},
 		&TourLegTelemetryModel{},
+		&ScoutPostModel{},
 	}
 }
