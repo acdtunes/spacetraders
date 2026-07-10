@@ -224,3 +224,33 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 	require.NoError(t, err)
 	require.True(t, ok, "a healthy edge at the same 3h age must still be fresh (24h window)")
 }
+
+// sp-8qhu deploy-gap: an EMPTY synced_at — the exact state the migration leaves on
+// a pre-tracking row — reads as a MISS (so routing re-fetches + re-probes before
+// trusting the row's OPEN default) AND is flagged Stale by Adjacency (so the verb
+// marks it unverified rather than authoritative). This is the invalidated live
+// KA42→AF2 row the harbormaster caught.
+func TestGateEdgeRepository_EmptySyncedAt_MissAndFlaggedStale(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-KA42", ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-GATE",
+		EraID: intPtr(1), SyncedAt: "", UnderConstruction: false,
+	}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	// Routing read: a MISS, so Connections() falls through to a live re-probe.
+	_, ok, err := repo.Edges(ctx, "X1-KA42")
+	require.NoError(t, err)
+	require.False(t, ok, "an empty synced_at row must read as a miss so routing re-probes it")
+
+	// Overview read: present, but flagged Stale for the verb's ? annotation.
+	adjacency, err := repo.Adjacency(ctx)
+	require.NoError(t, err)
+	require.Len(t, adjacency["X1-KA42"], 1)
+	require.True(t, adjacency["X1-KA42"][0].Stale, "Adjacency must flag the invalidated row Stale")
+}

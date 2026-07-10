@@ -82,3 +82,39 @@ func TestRenderGateAdjacency_NoLegendWhenAllBuilt(t *testing.T) {
 		t.Fatalf("a fully-built chart must carry no * marks or legend, got %q", got)
 	}
 }
+
+// sp-8qhu deploy-gap: a STALE row (invalidated cache — the migration cleared its
+// synced_at) must render "?" + legend, never as an authoritative verdict. This is
+// the live scenario the harbormaster caught: KA42→AF2 sat at empty synced_at with
+// the pre-tracking OPEN default and the raw chart wrongly printed it routable.
+func TestRenderGateAdjacency_StaleAnnotated(t *testing.T) {
+	got := renderGateAdjacency(map[string][]domainsystem.GateEdge{
+		"X1-KA42": {
+			{ConnectedSystem: "X1-AF2", Stale: true},
+			{ConnectedSystem: "X1-PA3"},
+		},
+	})
+	if !strings.Contains(got, "X1-AF2?") {
+		t.Fatalf("a stale row must be marked with a trailing ?, got %q", got)
+	}
+	if strings.Contains(got, "X1-AF2*") {
+		t.Fatalf("a stale row must NOT read as a verified verdict (*), got %q", got)
+	}
+	if strings.Contains(got, "X1-PA3?") || strings.Contains(got, "X1-PA3*") {
+		t.Fatalf("a fresh open row must carry no marker, got %q", got)
+	}
+	if !strings.Contains(got, "stale cache") {
+		t.Fatalf("a legend must explain the ? marker, got %q", got)
+	}
+}
+
+// Stale takes precedence over under-construction: a stale row's construction value
+// is exactly what we no longer trust, so it must read "?" not "*".
+func TestRenderGateAdjacency_StalePrecedesUnderConstruction(t *testing.T) {
+	got := renderGateAdjacency(map[string][]domainsystem.GateEdge{
+		"X1-KA42": {{ConnectedSystem: "X1-AF2", UnderConstruction: true, Stale: true}},
+	})
+	if !strings.Contains(got, "X1-AF2?") || strings.Contains(got, "X1-AF2*") {
+		t.Fatalf("stale must win over * (its construction value is unverified), got %q", got)
+	}
+}

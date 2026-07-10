@@ -122,11 +122,14 @@ func printGateAdjacency(adjacency map[string][]domainsystem.GateEdge) {
 
 // renderGateAdjacency renders the adjacency as aligned `SYS <-> a,b,c` lines,
 // systems sorted for stable output and neighbors sorted and comma-joined — the
-// sp-7gr2 topology-dump shape. An under-construction gate (sp-8qhu) is marked with
-// a trailing `*` and a legend line is appended whenever any are present: the
-// captain charts routes off this dump, so an unbuilt (unroutable) gate must read
-// as such at a glance. Pure (returns the text) so it is unit-testable without
-// capturing stdout.
+// sp-7gr2 topology-dump shape. Two markers keep the chart honest (sp-8qhu): a
+// VERIFIED under-construction gate is marked `*` (not routable); a STALE row —
+// whose cached construction state is unverified and will be re-probed on the next
+// route — is marked `?` so an invalidated row is never presented as an
+// authoritative built/unbuilt verdict. Stale takes precedence over `*` (a stale
+// row's construction value is exactly what we no longer trust). A legend line is
+// appended for whichever markers appear. Pure (returns the text) so it is
+// unit-testable without capturing stdout.
 func renderGateAdjacency(adjacency map[string][]domainsystem.GateEdge) string {
 	systems := make([]string, 0, len(adjacency))
 	width := 0
@@ -140,6 +143,7 @@ func renderGateAdjacency(adjacency map[string][]domainsystem.GateEdge) string {
 
 	var b strings.Builder
 	anyUnderConstruction := false
+	anyStale := false
 	for _, sys := range systems {
 		edges := adjacency[sys]
 		if len(edges) == 0 {
@@ -153,7 +157,11 @@ func renderGateAdjacency(adjacency map[string][]domainsystem.GateEdge) string {
 		labels := make([]string, 0, len(sorted))
 		for _, e := range sorted {
 			label := e.ConnectedSystem
-			if e.UnderConstruction {
+			switch {
+			case e.Stale:
+				label += "?"
+				anyStale = true
+			case e.UnderConstruction:
 				label += "*"
 				anyUnderConstruction = true
 			}
@@ -161,8 +169,14 @@ func renderGateAdjacency(adjacency map[string][]domainsystem.GateEdge) string {
 		}
 		fmt.Fprintf(&b, "%-*s <-> %s\n", width, sys, strings.Join(labels, ","))
 	}
-	if anyUnderConstruction {
-		b.WriteString("\n* = jump gate under construction — not routable (excluded from pathing)\n")
+	if anyUnderConstruction || anyStale {
+		b.WriteString("\n")
+		if anyUnderConstruction {
+			b.WriteString("* = jump gate under construction — not routable (excluded from pathing)\n")
+		}
+		if anyStale {
+			b.WriteString("? = stale cache — construction state unverified, re-probed on next route\n")
+		}
 	}
 	return b.String()
 }

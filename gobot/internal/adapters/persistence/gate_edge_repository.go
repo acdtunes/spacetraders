@@ -149,6 +149,9 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 			ConnectedSystem:   m.ConnectedSystem,
 			GateWaypoint:      m.GateWaypoint,
 			UnderConstruction: m.UnderConstruction,
+			// Adjacency is a raw dump — flag a stale row so the verb marks it as
+			// unverified (its UnderConstruction value is re-probed on next route).
+			Stale: rowStale(m),
 		})
 	}
 	for sys := range adjacency {
@@ -159,22 +162,35 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 	return adjacency, nil
 }
 
-// anyStale reports whether any row's synced_at is missing/unparseable or older
-// than its freshness window. A system's edges are written in one Replace() with a
-// single timestamp, so any stale row means the whole set is stale. The window is
-// per-row: an under-construction edge uses the SHORTER window (sp-8qhu) so a build
-// completion is re-probed same-era, while a healthy edge keeps the 24h window.
+// anyStale reports whether any row is stale. A system's edges are written in one
+// Replace() with a single timestamp, so any stale row means the whole set is stale
+// (the lazy-refresh signal that forces a full re-fetch + re-probe before routing
+// trusts the set).
 func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
 	for _, m := range models {
-		if m.SyncedAt == "" {
-			return true
-		}
-		syncedAt, err := time.Parse(time.RFC3339, m.SyncedAt)
-		if err != nil || time.Since(syncedAt) >= freshWindowFor(m) {
+		if rowStale(m) {
 			return true
 		}
 	}
 	return false
+}
+
+// rowStale reports whether a single edge row's cache is stale: its synced_at is
+// missing/unparseable, or older than its freshness window. The window is per-row —
+// an under-construction edge uses the SHORTER window (sp-8qhu) so a build
+// completion is re-probed same-era, while a healthy edge keeps the 24h window. An
+// EMPTY synced_at is always stale: this is what the deploy-time cache invalidation
+// (AutoMigrate clearing synced_at on the column's introduction) relies on to force
+// a re-probe of pre-tracking rows before they are ever trusted for routing.
+func rowStale(m GateEdgeModel) bool {
+	if m.SyncedAt == "" {
+		return true
+	}
+	syncedAt, err := time.Parse(time.RFC3339, m.SyncedAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(syncedAt) >= freshWindowFor(m)
 }
 
 // freshWindowFor is the freshness bound for one edge: the shorter

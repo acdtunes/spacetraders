@@ -107,6 +107,14 @@ type GateEdge struct {
 	// the laden frigate crashed at hop 1). Resolved per-edge on refresh; fails
 	// CLOSED (treated true) when the neighbor's build state cannot be read.
 	UnderConstruction bool
+	// Stale is set only by Adjacency (the `system gates` overview): the row is a
+	// raw cache dump whose synced_at is empty/expired, so its UnderConstruction
+	// value is UNVERIFIED and will be re-probed on the next routing lookup. Routing
+	// reads (Edges) never surface a stale edge — a stale set reads as a miss and is
+	// re-fetched — so this is always false on the routing path (sp-8qhu). The verb
+	// annotates a stale edge distinctly so the captain's chart never presents an
+	// invalidated row as an authoritative built/unbuilt verdict.
+	Stale bool
 }
 
 // GateEdgeRepository persists the cross-system jump-gate adjacency (sp-7gr2).

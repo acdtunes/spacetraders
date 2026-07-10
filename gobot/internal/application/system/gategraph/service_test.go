@@ -6,12 +6,15 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // --- pure BFS (bfsPath) ---
@@ -394,5 +397,70 @@ func TestService_GateUnderConstruction_ReadError_True(t *testing.T) {
 	got := svc.gateUnderConstruction(context.Background(), "X1-AF2", "X1-AF2-GATE", "tok", logging.LoggerFromContext(context.Background()))
 	if !got {
 		t.Fatal("a probe error must fail closed (true)")
+	}
+}
+
+// --- sp-8qhu deploy-gap: Path re-probes an INVALIDATED origin before trusting it ---
+
+// The exact post-deploy live scenario, end-to-end over the PRODUCTION store: KA42's
+// edges were invalidated by the migration (synced_at="", under_construction=f
+// default). A Path query from KA42 must NOT trust the stale OPEN default — the
+// empty synced_at makes the set read as a MISS, forcing Connections()→fetchAndStore
+// to re-fetch and RE-PROBE AF2's real (under construction) state before the BFS
+// routes. Uses the real GormGateEdgeRepository (not a fake), because the staleness
+// enforcement that makes this safe lives in the store.
+func TestService_Path_InvalidatedOriginRow_ReprobesBeforeRouting(t *testing.T) {
+	db, err := database.NewTestConnection()
+	if err != nil {
+		t.Fatalf("test db: %v", err)
+	}
+	if err := db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error; err != nil {
+		t.Fatalf("seed era: %v", err)
+	}
+	ptr := func(i int) *int { return &i }
+	fresh := time.Now().Format(time.RFC3339)
+
+	// INVALIDATED KA42 edges (empty synced_at + pre-tracking OPEN default) — exactly
+	// the rows the deploy left behind — plus a neighbor row so GateWaypointOf(KA42)
+	// resolves KA42's own gate on re-fetch, and FRESH downstream hops so only KA42
+	// needs a re-fetch.
+	seed := []persistence.GateEdgeModel{
+		{SystemSymbol: "X1-KA42", ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-GATE", EraID: ptr(1), SyncedAt: "", UnderConstruction: false},
+		{SystemSymbol: "X1-KA42", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-GATE", EraID: ptr(1), SyncedAt: "", UnderConstruction: false},
+		{SystemSymbol: "X1-GQ92", ConnectedSystem: "X1-KA42", GateWaypoint: "X1-KA42-GATE", EraID: ptr(1), SyncedAt: fresh, UnderConstruction: false},
+		{SystemSymbol: "X1-PA3", ConnectedSystem: "X1-UQ16", GateWaypoint: "X1-UQ16-GATE", EraID: ptr(1), SyncedAt: fresh, UnderConstruction: false},
+		{SystemSymbol: "X1-UQ16", ConnectedSystem: "X1-JP61", GateWaypoint: "X1-JP61-GATE", EraID: ptr(1), SyncedAt: fresh, UnderConstruction: false},
+	}
+	for i := range seed {
+		if err := db.Create(&seed[i]).Error; err != nil {
+			t.Fatalf("seed edge %d: %v", i, err)
+		}
+	}
+
+	store := persistence.NewGormGateEdgeRepository(db)
+	// On the KA42 re-fetch the live gate reports AF2 still under construction, PA3 open.
+	api := &fakeGateAPI{
+		connections:       []string{"X1-AF2-GATE", "X1-PA3-GATE"},
+		underConstruction: map[string]bool{"X1-AF2-GATE": true},
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	got, err := svc.Path(context.Background(), "X1-KA42", "X1-JP61", 1)
+	if err != nil {
+		t.Fatalf("expected the re-probed PA3 route, got error: %v", err)
+	}
+	want := []string{"X1-KA42", "X1-PA3", "X1-UQ16", "X1-JP61"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("an invalidated origin must re-probe and route via PA3 %v, got %v", want, got)
+	}
+
+	// The invalidated AF2 row was re-probed and PERSISTED with the real state —
+	// proof the stale OPEN default was never trusted for routing.
+	edges, ok, err := store.Edges(context.Background(), "X1-KA42")
+	if err != nil || !ok {
+		t.Fatalf("KA42 edges must now be a fresh hit after the re-probe, ok=%v err=%v", ok, err)
+	}
+	if !findEdge(edges, "X1-AF2").UnderConstruction {
+		t.Fatal("the re-probe must persist AF2 as under construction, not the stale open default")
 	}
 }
