@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -160,6 +161,15 @@ type RunArbCoordinatorHandler struct {
 	// fix — fail-open, matching the sibling optional-port contract). The daemon injects a
 	// container-config-backed persister via SetCostPersister.
 	costPersister ArbCostPersister
+	// absorptionLedger (sp-78ai L2) converts this leg's PLANNED absorption hold into
+	// an EXECUTED recovery shadow at sale completion, so the depth this dump occupies
+	// is visible to every engine while it regrows (untagged sinks / zero-unit sales
+	// leave none — trade-analyst Q2). Optional: nil disables the convert (the PLANNED
+	// row, if any, is then reclaimed by the ledger's dead-container sweep / TTL when
+	// the container exits). The daemon injects the DB-backed ledger via
+	// SetAbsorptionLedger; a captain-directed arb run with no PLANNED row converts
+	// nothing (the update matches zero rows) — harmless.
+	absorptionLedger absorption.Ledger
 }
 
 // ArbCostPersister durably records a one-shot arb run's already-incurred buy cost
@@ -224,6 +234,14 @@ func (h *RunArbCoordinatorHandler) SetEventSubscriber(subscriber navigation.Ship
 // SetGateGraph optional-injection idiom.
 func (h *RunArbCoordinatorHandler) SetCostPersister(p ArbCostPersister) {
 	h.costPersister = p
+}
+
+// SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L2) so a
+// completed sale converts this leg's PLANNED hold into a recovery shadow. Left unset
+// (nil), the convert is skipped (a leg's PLANNED row is reclaimed by the ledger's own
+// sweep on container exit). Mirrors the SetCostPersister optional-injection idiom.
+func (h *RunArbCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger) {
+	h.absorptionLedger = ledger
 }
 
 // Handle executes the one-shot arb. A guarded refusal returns a nil error with the
@@ -379,6 +397,13 @@ func (h *RunArbCoordinatorHandler) execute(
 	response.TotalRevenue = sellResp.TotalRevenue
 	response.UnitsTraded = sellResp.UnitsSold
 	response.NetProfit = sellResp.TotalRevenue - response.TotalCost
+
+	// sp-78ai L2: convert this leg's PLANNED absorption hold into an EXECUTED recovery
+	// shadow with what ACTUALLY sold, before the held-cargo failure check below so a
+	// partial sale still records the depth it consumed. A zero-unit or untagged sale
+	// records nothing and releases the hold (Q2). No-op for a captain-directed arb run
+	// that never reserved (the update matches zero PLANNED rows).
+	h.convertAbsorptionShadow(ctx, cmd, sellResp.UnitsSold)
 
 	// A held remainder is a FAILURE, never a false success (sp-5nqx fix c, sp-lbbm).
 	// It arises two ways, both the stranded-veto situation: the sell floor aborted
@@ -655,6 +680,41 @@ func (h *RunArbCoordinatorHandler) persistBuyCostForResume(ctx context.Context, 
 			cost, cmd.ContainerID, err,
 		), map[string]interface{}{
 			"action": "arb_cost_persist_failed", "container_id": cmd.ContainerID, "cost": cost, "error": err.Error(),
+		})
+	}
+}
+
+// convertAbsorptionShadow converts this leg's PLANNED absorption hold into an
+// EXECUTED recovery shadow at sale completion (sp-78ai L2), keyed by the container +
+// sink. It reads the sink good's LIVE activity tier and trade_volume (post-sale, the
+// cache is fresh) so the shadow decays on the right curve and sizes its own recovery
+// floor. Best-effort and fail-open, exactly like persistBuyCostForResume: a nil
+// ledger disables it, a missing container ID has nothing to convert, and a convert
+// error is logged but NEVER propagated — the sale has completed, and it must not be
+// reported as a failure over a ledger miss (the sell floor + live-verify are the hard
+// guards; the shadow is advisory coordination). A zero-unit or untagged-sink sale
+// records no shadow and releases the hold (trade-analyst Q2), which the ledger's
+// ConvertByContainer encodes.
+func (h *RunArbCoordinatorHandler) convertAbsorptionShadow(ctx context.Context, cmd *RunArbCoordinatorCommand, realizedUnits int) {
+	if h.absorptionLedger == nil || cmd.ContainerID == "" {
+		return
+	}
+	tier := ""
+	tradeVolume := 0
+	if g, err := h.legs.observeGood(ctx, cmd.SellAt, cmd.Good, cmd.PlayerID); err == nil && g != nil {
+		if a := g.Activity(); a != nil {
+			tier = *a
+		}
+		tradeVolume = g.TradeVolume()
+	}
+	key := absorption.LaneKey{Waypoint: cmd.SellAt, Good: cmd.Good, Side: absorption.SideSell}
+	if err := h.absorptionLedger.ConvertByContainer(ctx, cmd.ContainerID, cmd.PlayerID, key, realizedUnits, tier, tradeVolume); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"could not convert absorption shadow for container %s at %s/%s (sale completed; ledger coordination degraded, guards intact): %v",
+			cmd.ContainerID, cmd.SellAt, cmd.Good, err,
+		), map[string]interface{}{
+			"action": "arb_absorption_convert_failed", "container_id": cmd.ContainerID,
+			"sell_at": cmd.SellAt, "good": cmd.Good, "error": err.Error(),
 		})
 	}
 }

@@ -10,6 +10,7 @@ import (
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -52,6 +53,15 @@ type RunFleetCoordinatorHandler struct {
 	// projection, byte-identical to before. The worker's executor withdraws
 	// independently, so this only affects the coordinator's park/proceed math.
 	invFinder appContract.InventorySourceFinder
+
+	// absorptionLedger (sp-78ai L2) is wired into the idle-arb dispatcher so it
+	// consults the cross-engine ledger (skip:reserved) and records each launched
+	// leg's absorption. Nil (tests / feature off) leaves the dispatcher's ledger
+	// integration inert. consultDisabled + plannedTTLSlack are the ledger knobs the
+	// daemon injects alongside it (RULINGS #5).
+	absorptionLedger          absorption.Ledger
+	absorptionConsultOff      bool
+	absorptionPlannedTTLSlack time.Duration
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -103,6 +113,16 @@ func (h *RunFleetCoordinatorHandler) SetEventSubscriber(subscriber navigation.Sh
 // the coordinator runs exactly as before, no harvest.
 func (h *RunFleetCoordinatorHandler) SetIdleArbLauncher(launcher appContract.IdleArbLauncher) {
 	h.idleArbLauncher = launcher
+}
+
+// SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L2) into the
+// idle-arb dispatcher this coordinator spawns, with the two ledger knobs (consult
+// kill-switch, PLANNED-hold TTL slack). Nil leaves the dispatcher's ledger
+// integration inert. Mirrors the SetIdleArbLauncher startup-injection idiom.
+func (h *RunFleetCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool, plannedTTLSlack time.Duration) {
+	h.absorptionLedger = ledger
+	h.absorptionConsultOff = consultDisabled
+	h.absorptionPlannedTTLSlack = plannedTTLSlack
 }
 
 // SetInventoryFinder wires the in-system warehouse finder (sp-dchv Lane D) into
@@ -191,6 +211,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				RecoveryHold: time.Duration(cmd.IdleArbRecoveryHoldSecs) * time.Second,
 			},
 		)
+		// sp-78ai L2: wire the cross-engine absorption ledger so the dispatcher
+		// consults it (skip:reserved) and records launched legs. Inert when unwired.
+		dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionConsultOff, h.absorptionPlannedTTLSlack)
 		go dispatcher.Run(ctx)
 	}
 

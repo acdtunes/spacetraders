@@ -18,14 +18,15 @@ const configPathEnvVar = "SPACETRADERS_CONFIG"
 
 // Config is the main configuration struct combining all sub-configs
 type Config struct {
-	Database DatabaseConfig `mapstructure:"database"`
-	API      APIConfig      `mapstructure:"api"`
-	Routing  RoutingConfig  `mapstructure:"routing"`
-	Daemon   DaemonConfig   `mapstructure:"daemon"`
-	Logging  LoggingConfig  `mapstructure:"logging"`
-	Metrics  MetricsConfig  `mapstructure:"metrics"`
-	Captain  CaptainConfig  `mapstructure:"captain"`
-	Contract ContractConfig `mapstructure:"contract"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	API        APIConfig        `mapstructure:"api"`
+	Routing    RoutingConfig    `mapstructure:"routing"`
+	Daemon     DaemonConfig     `mapstructure:"daemon"`
+	Logging    LoggingConfig    `mapstructure:"logging"`
+	Metrics    MetricsConfig    `mapstructure:"metrics"`
+	Captain    CaptainConfig    `mapstructure:"captain"`
+	Contract   ContractConfig   `mapstructure:"contract"`
+	Absorption AbsorptionConfig `mapstructure:"absorption"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

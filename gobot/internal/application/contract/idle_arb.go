@@ -8,11 +8,26 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+)
+
+// Absorption-ledger integration constants (sp-78ai L2). The engine tag attributes a
+// row's origin for telemetry and dead-container reclaim; the TTL knobs bound a
+// PLANNED hold whose container dies without releasing (dead-container reclaim is the
+// primary cleanup, these are the backstop).
+const (
+	absorptionEngineIdleArb = "idle-arb"
+	// defaultAbsorptionPlannedTTLSlack pads a leg's projected round-trip so a healthy
+	// in-flight hold never expires early; minAbsorptionPlannedTTL floors it for very
+	// short legs. Both are backstops to the dead-container reclaim (RULINGS #5: the
+	// slack is a wired config, these are its defaults).
+	defaultAbsorptionPlannedTTLSlack = 15 * time.Minute
+	minAbsorptionPlannedTTL          = 30 * time.Minute
 )
 
 // Idle-gap arbitrage (sp-1z2h). The contract fleet's dedicated hulls sit
@@ -307,6 +322,19 @@ type IdleArbDispatcher struct {
 	standbyStations map[string]struct{} // sp-8bpr: cfg.StandbyStations as a set, for the at-home filter
 	lanes           *laneMutex          // sp-lbbm: one hull per (good, sink) per recovery window
 
+	// sp-78ai L2: the cross-engine absorption ledger. nil → integration inert (the
+	// same optional-port contract the other guards use). When wired, the dispatcher
+	// CONSULTS it once per pass (skip:reserved) and RECORDS each launched leg's sell
+	// side so tours and other dispatchers see this leg's in-flight absorption — the
+	// lane mutex + flat hold above STAY ARMED IN PARALLEL (belt to this suspenders;
+	// L5 retires them after burn-in). consultDisabled is the kill-switch: when set,
+	// the consult (skip:reserved) is suppressed but recording continues, so the
+	// ledger still populates for other engines while an operator diagnoses it.
+	ledger          absorption.Ledger
+	consultDisabled bool
+	plannedTTLSlack time.Duration
+	skipReserved    int // legs skipped: sink reserved/recovering in the absorption ledger
+
 	// Observability counters (sp-uohe guard 5). In-memory and reset on restart
 	// by design: they measure THIS process's harvest rate, not operational
 	// state — a restart legitimately restarts the window. The operational state
@@ -375,6 +403,95 @@ func NewIdleArbDispatcher(
 	}
 }
 
+// SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L2), the
+// optional-port idiom the other dispatcher dependencies use. A nil ledger leaves the
+// consult and the launch-record inert (pre-L2 behavior). consultDisabled is the
+// consult kill-switch (recording continues so the ledger still serves other
+// engines); plannedTTLSlack pads a recorded leg's projected round-trip TTL (0 → the
+// package default).
+func (d *IdleArbDispatcher) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool, plannedTTLSlack time.Duration) {
+	d.ledger = ledger
+	d.consultDisabled = consultDisabled
+	if plannedTTLSlack <= 0 {
+		plannedTTLSlack = defaultAbsorptionPlannedTTLSlack
+	}
+	d.plannedTTLSlack = plannedTTLSlack
+}
+
+// absorptionConsult is one pass's batched read of the ledger plus its fail-closed
+// state. Built once per DispatchOnce (design §2: one outstanding query per pass) and
+// threaded to every candidate — the within-pass collision is the lane mutex's job,
+// the cross-pass/cross-engine collision is this.
+type absorptionConsult struct {
+	active     bool // ledger wired AND consult not killed
+	unreadable bool // the read failed → fail closed
+	pools      map[absorption.LaneKey]absorption.KeyOccupancy
+}
+
+// reserved reports whether a (good, sink) sell is blocked by the ledger: an in-flight
+// PLANNED leg on the key, or a recovering EXECUTED shadow still above its floor
+// (Outstanding already drops sub-floor shadows). Fail-closed: an unreadable ledger
+// blocks EVERY candidate — never dispatch blind into depth another engine may have
+// reserved or just crushed (RULINGS #4). Same structural hole as sp-i8vx's in-flight
+// exposure finding, closed here from the market-absorption side.
+func (c absorptionConsult) reserved(good, sink string) bool {
+	if !c.active {
+		return false
+	}
+	if c.unreadable {
+		return true
+	}
+	occ := c.pools[absorption.LaneKey{Waypoint: sink, Good: good, Side: absorption.SideSell}]
+	return occ.PlannedUnits > 0 || occ.RecoveringResidual > 0
+}
+
+// readAbsorption performs the once-per-pass consult read. Inert (never blocks) when
+// the ledger is unwired or the consult is killed; fail-closed (blocks all) when the
+// read errors.
+func (d *IdleArbDispatcher) readAbsorption(ctx context.Context) absorptionConsult {
+	if d.ledger == nil || d.consultDisabled {
+		return absorptionConsult{}
+	}
+	pools, err := d.ledger.Outstanding(ctx, d.playerID.Value())
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Idle-arb absorption consult: ledger read failed, declining all candidates this pass (fail-closed): %v", err), nil)
+		return absorptionConsult{active: true, unreadable: true}
+	}
+	return absorptionConsult{active: true, pools: pools}
+}
+
+// recordAbsorption publishes a just-launched leg's sell-side occupancy to the ledger
+// so tours and other dispatchers consult it (sp-78ai L2). Called at the SAME seam the
+// lane mutex is marked (noteLaunch) — the leg has committed, so this is a fail-open
+// RECORD, not a gate: a write failure loses cross-engine visibility (the armed mutex
+// and the arb run's sell floor still guard the leg) but never strands the launched
+// leg. units is the full hull hold (worst case); the arb container's convert-at-sale
+// corrects it to realized units.
+func (d *IdleArbDispatcher) recordAbsorption(ctx context.Context, hull *navigation.Ship, lane *IdleArbLane, containerID string) {
+	if d.ledger == nil {
+		return
+	}
+	legSeconds := shared.FlightModeCruise.TravelTime(lane.Distance, hull.EngineSpeed())
+	ttl := 2*time.Duration(legSeconds)*time.Second + d.plannedTTLSlack
+	if ttl < minAbsorptionPlannedTTL {
+		ttl = minAbsorptionPlannedTTL
+	}
+	entry := absorption.ReserveEntry{
+		Waypoint:    lane.SellAt,
+		Good:        lane.Good,
+		Side:        absorption.SideSell,
+		Units:       hull.AvailableCargoSpace(),
+		QuotedPrice: lane.DestBid,
+		TTL:         ttl,
+	}
+	if _, err := d.ledger.RecordPlanned(ctx, d.playerID.Value(), containerID, absorptionEngineIdleArb, entry); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Idle-arb absorption record: could not record leg %s on %s/%s (leg flies; mutex + sell floor still guard it): %v",
+			containerID, lane.SellAt, lane.Good, err), nil)
+	}
+}
+
 // isBlacklisted reports whether good is on the configured excluded list.
 func (d *IdleArbDispatcher) isBlacklisted(good string) bool {
 	_, ok := d.blacklist[strings.ToUpper(good)]
@@ -391,6 +508,12 @@ const (
 	skipReasonContractGood
 	skipReasonLeash
 	skipReasonLaneHeld
+	// skipReasonReserved (sp-78ai L2): the (good, sink) is occupied in the
+	// cross-engine absorption ledger — a PLANNED leg (any engine) is in flight there,
+	// or a recovering EXECUTED shadow still blocks above its floor. This is the
+	// lane-mutex's guarantee generalized CROSS-ENGINE and across a restart: a tour or
+	// another dispatcher's leg the in-memory mutex cannot see is caught here.
+	skipReasonReserved
 )
 
 // String names the skip reason for the per-candidate verdict line (sp-nw9v). It
@@ -406,6 +529,8 @@ func (r idleArbSkipReason) String() string {
 		return "leash"
 	case skipReasonLaneHeld:
 		return "lane-held"
+	case skipReasonReserved:
+		return "reserved"
 	default:
 		return "none"
 	}
@@ -495,6 +620,13 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		openGoods = g
 	}
 
+	// sp-78ai L2: one batched absorption-ledger read per pass (design §2). The
+	// consult skips candidates whose (good, sink) another engine has reserved in
+	// flight or just crushed (a recovering shadow above its floor) — the cross-engine
+	// generalization the in-memory lane mutex cannot see. Fail-closed: an unreadable
+	// ledger declines every candidate this pass rather than dispatch blind.
+	consult := d.readAbsorption(ctx)
+
 	// tried tracks hulls already handled this pass (launched, or skipped for
 	// want of a lane) so the recount loop below always terminates. A skipped
 	// hull stays idle and keeps padding the reserve — conservative.
@@ -534,7 +666,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		hull := candidates[0]
 		tried[hull.ShipSymbol()] = true
 
-		lane, skip := d.pickHubLocalLane(ctx, hull, openGoods)
+		lane, skip := d.pickHubLocalLane(ctx, hull, openGoods, consult)
 		if lane == nil {
 			// A guard refused this hull's only profitable lane → attribute the
 			// skip by cause (guard 5). skipNone means there simply was no
@@ -581,6 +713,10 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		// skipped:lane-held (within-pass dedupe), and the next pass holds it until
 		// the leg terminates + the recovery window elapses (cross-pass).
 		d.lanes.noteLaunch(laneKey{good: lane.Good, sink: lane.SellAt}, hull.ShipSymbol(), containerID)
+		// sp-78ai L2: publish this leg's sell-side absorption to the cross-engine
+		// ledger at the same seam the mutex is marked, so a tour or another dispatcher
+		// consults it. Fail-open record (the leg has committed) — see recordAbsorption.
+		d.recordAbsorption(ctx, hull, lane, containerID)
 
 		logger.Log("INFO", fmt.Sprintf(
 			"Idle-gap arb leg launched: %s flies %s %s->%s (quoted margin %d/unit = bid %d - ask %d, live-verify floor %d/unit, distance %.0f, max spend %d) in container %s",
@@ -703,7 +839,7 @@ func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]b
 //     skipped-by-guard leg, attributed to the reason of the best refused lane.
 //   - nil + skipNone: no profitable local lane at all — idle for lack of
 //     opportunity, not a guard skip.
-func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigation.Ship, excludedContractGoods map[string]struct{}) (*IdleArbLane, idleArbSkipReason) {
+func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigation.Ship, excludedContractGoods map[string]struct{}, consult absorptionConsult) (*IdleArbLane, idleArbSkipReason) {
 	logger := common.LoggerFromContext(ctx)
 	origin := hull.CurrentLocation()
 	if origin == nil {
@@ -798,7 +934,7 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 				DestBid:       bid,
 			}
 
-			reason := d.laneSkipReason(hubGood.Symbol(), wp, distance, excludedContractGoods, hull.EngineSpeed())
+			reason := d.laneSkipReason(hubGood.Symbol(), wp, distance, excludedContractGoods, hull.EngineSpeed(), consult)
 
 			// Per-candidate verdict logging (sp-nw9v): emit one terse line for
 			// every positive-margin candidate with the COMPUTED distance the leash
@@ -881,7 +1017,7 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 // 2: the LeashRadius bound, then the projected CRUISE leg-time from the hull's
 // engine speed against MaxLegDuration). None weakens the pre-existing HubRadius
 // filter; each only tightens (RULINGS #4).
-func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int) idleArbSkipReason {
+func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int, consult absorptionConsult) idleArbSkipReason {
 	if d.isBlacklisted(good) {
 		return skipReasonBlacklist
 	}
@@ -897,13 +1033,19 @@ func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, 
 	}
 	// LANE MUTEX (sp-lbbm): a (good, sink) already worked by a live or still-
 	// recovering leg — including one launched earlier THIS pass — is held. Checked
-	// LAST so a lane that is ALSO blacklisted / contract-good / out-of-leash
-	// reports that more fundamental reason, and a lane held only by the mutex
-	// reports lane-held. Because pickHubLocalLane scans ALL (good, sink) pairs and
-	// keeps the best NON-skipped one, a held best lane makes the hull fall back to
-	// its next-best unheld sink rather than collide.
+	// before the ledger consult so a sink THIS dispatcher already holds keeps
+	// reporting lane-held (existing behavior), and because pickHubLocalLane scans ALL
+	// (good, sink) pairs and keeps the best NON-skipped one, a held best lane makes
+	// the hull fall back to its next-best unheld sink rather than collide.
 	if d.lanes.held(laneKey{good: good, sink: sink}) {
 		return skipReasonLaneHeld
+	}
+	// ABSORPTION LEDGER (sp-78ai L2): a sink the in-memory mutex does NOT hold but
+	// another engine has reserved in flight, or a recovering shadow still blocks — the
+	// cross-engine / cross-restart generalization of the mutex. Same structural hole
+	// as sp-i8vx (in-flight exposure), closed here from the market-absorption side.
+	if consult.reserved(good, sink) {
+		return skipReasonReserved
 	}
 	return skipNone
 }
@@ -921,6 +1063,8 @@ func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
 		d.skipLeash++
 	case skipReasonLaneHeld:
 		d.skipLaneHeld++
+	case skipReasonReserved:
+		d.skipReserved++
 	default:
 		return false
 	}
@@ -946,8 +1090,8 @@ func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisP
 	}
 	logger.Log("INFO", fmt.Sprintf(
 		"Idle-arb harvest: %d leg(s) launched this pass; %d hull(s) re-homed this pass; %d attempt(s) total at %.1f/hr; "+
-			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
+			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d, reserved %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
 		launchedThisPass, rehomedThisPass, d.attempts, rate,
-		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.rehomed,
+		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.skipReserved, d.rehomed,
 	), nil)
 }

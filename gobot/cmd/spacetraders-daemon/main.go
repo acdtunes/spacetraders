@@ -523,11 +523,29 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ScoutMarkets handler: %w", err)
 	}
 
+	// sp-78ai L2: the cross-engine market-absorption ledger, shared by the idle-arb
+	// dispatcher (consult skip:reserved + record each launched leg) and the arb
+	// container (convert-at-sale). Recovery half-lives come from the SAME fitted
+	// artifact the tour engine reads (cfg.Routing.ModelArtifactPath, resolved
+	// absolute at load); dead-container reclaim consults the live containers table.
+	absorptionLedger := persistence.NewAbsorptionLedger(
+		db,
+		cfg.Routing.ModelArtifactPath,
+		persistence.AbsorptionLedgerConfig{
+			ExecutedHardCap:     cfg.Absorption.ExecutedHardCap,
+			ShadowFloorFraction: cfg.Absorption.ShadowFloorFraction,
+		},
+		persistence.NewContainerLiveness(db),
+	)
+
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// Idle-gap arb (sp-1z2h): the coordinator's dispatcher launches its
 	// one-shot legs through the daemon server (claim-first, recovery-safe).
 	contractFleetCoordinatorHandler.SetIdleArbLauncher(daemonServer)
+	// sp-78ai L2: wire the absorption ledger into the idle-arb dispatcher (consult +
+	// record), with the analyst-ruled knobs.
+	contractFleetCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.IdleArbConsultDisabled, cfg.Absorption.PlannedTTLSlack)
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}
@@ -653,6 +671,9 @@ func run(cfg *config.Config) error {
 	// restart-rebuilt resume reloads it and reports honest P&L (a resumed run skips the
 	// completed buy, which otherwise leaves TotalCost=0 and over-states NetProfit).
 	arbCoordinatorHandler.SetCostPersister(grpc.NewArbCostConfigPersister(containerRepo))
+	// sp-78ai L2: convert an arb/idle-arb leg's PLANNED absorption hold into an
+	// EXECUTED recovery shadow at sale completion (shared ledger instance above).
+	arbCoordinatorHandler.SetAbsorptionLedger(absorptionLedger)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunArbCoordinatorCommand](med, arbCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
 	}

@@ -649,6 +649,63 @@ func (ScoutPostModel) TableName() string {
 	return "scout_posts"
 }
 
+// MarketAbsorptionLedgerModel is one outstanding claim on a market's depth — the
+// shared-state substrate of the cross-engine absorption ledger (sp-78ai). Five
+// engines (tours, arb-run, idle-arb, trade-route circuits, pre-positioning) all
+// absorb the SAME (waypoint, good, side) depth with no cross-container signal but
+// the market cache, which only reflects EXECUTED trades seconds later. This table
+// carries the two invisible windows: PLANNED rows (in-flight intent — a leg
+// dispatched but not yet landed, so the cache still quotes pre-absorption prices)
+// and EXECUTED rows (the recovery shadow — depth a completed dump still occupies
+// while it regrows on the model's fitted per-tier half-life). A reader nets the
+// decayed outstanding against a market's depth so nobody, including the absorber's
+// own next plan, steps into a hole the model says has not regrown (sp-lbbm was two
+// hulls co-dumping the same bid, −80k; the lane mutex + flat hold are the tactical
+// patch this ledger generalizes cross-engine).
+//
+// Deliberately NO players foreign key and NO era_id (the SpendReservationModel
+// idiom, sp-w3he): these are ephemeral operational rows living minutes (a PLANNED
+// leg) to hours (an EXECUTED shadow, hard-capped at 12h — trade-analyst Q2), so
+// referential integrity buys nothing and an era reset kills the owning containers
+// (PLANNED rows swept by dead-container reclaim) while EXECUTED rows age out on
+// their hard cap and key on (waypoint, good) quotes that reset anyway. player_id +
+// (waypoint_symbol, good_symbol, side) is the composite the outstanding query
+// scopes to; container_id is indexed for dead-container reclaim and the arb
+// container's convert-at-sale; expires_at is indexed for the read filter and sweep.
+//
+// TierAtWrite is the sink good's activity (WEAK/GROWING/STRONG/RESTRICTED) stamped
+// at the EXECUTED write; readers resolve the recovery half-life from the fitted
+// artifact. UNTAGGED sinks (empty activity) get NO EXECUTED shadow at all
+// (trade-analyst Q2: the depth model cannot price what it has not fit — a shadow
+// there is either wrong or effectively eternal). TrancheSize is the sink good's
+// trade_volume at write, so a reader can size the 50%-of-a-tranche recovery floor
+// without a live market lookup. QuotedPrice is telemetry only.
+type MarketAbsorptionLedgerModel struct {
+	ID          string `gorm:"column:id;primaryKey;not null"`
+	PlayerID    int    `gorm:"column:player_id;not null;index:idx_absorption_player_key,priority:1"`
+	ContainerID string `gorm:"column:container_id;not null;index:idx_absorption_container"`
+	Engine      string `gorm:"column:engine;not null"` // tour | arb | idle-arb — telemetry + reclaim attribution
+	Waypoint    string `gorm:"column:waypoint_symbol;not null;index:idx_absorption_player_key,priority:2"`
+	Good        string `gorm:"column:good_symbol;not null;index:idx_absorption_player_key,priority:3"`
+	Side        string `gorm:"column:side;not null;index:idx_absorption_player_key,priority:4"` // sell | buy
+	State       string `gorm:"column:state;not null"`                                           // PLANNED | EXECUTED
+	Units       int    `gorm:"column:units;not null"`                                           // planned absorption / realized absorbed units
+	TrancheSize int    `gorm:"column:tranche_size;not null;default:0"`                          // sink trade_volume at write (recovery-floor sizing)
+	TierAtWrite string `gorm:"column:tier_at_write;not null;default:''"`                        // activity tier; readers resolve half-life from the artifact
+	QuotedPrice int    `gorm:"column:quoted_price;not null;default:0"`                          // telemetry only
+	// CreatedAt is set on the PLANNED insert; ExecutedAt is stamped when a leg's
+	// sale converts the row to EXECUTED (nil while PLANNED). ExpiresAt is the
+	// lifecycle bound the sweep and the read filter both use: a PLANNED row's
+	// per-plan TTL (2× projected flight + slack) or an EXECUTED row's 12h hard cap.
+	CreatedAt  time.Time  `gorm:"column:created_at;not null"`
+	ExecutedAt *time.Time `gorm:"column:executed_at"`
+	ExpiresAt  time.Time  `gorm:"column:expires_at;not null;index:idx_absorption_expires"`
+}
+
+func (MarketAbsorptionLedgerModel) TableName() string {
+	return "market_absorption_ledger"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -678,5 +735,6 @@ func AllModels() []any {
 		&GateEdgeModel{},
 		&TourLegTelemetryModel{},
 		&ScoutPostModel{},
+		&MarketAbsorptionLedgerModel{},
 	}
 }
