@@ -259,6 +259,28 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	shipState := h.tourShipState(ship)
 	shipState.CurrentSystem = cand.system
 	shipState.CurrentWaypoint = cand.waypoint
+	// sp-m9co Class B: the hull is NOT at the candidate yet — it will JUMP there, riding the
+	// shared cooldown-riding travel machinery (which refuels en route), and arrive with a
+	// hold ready to trade. So the pre-flight must measure the CANDIDATE's FRESH arb potential
+	// against a ready-to-tour hull: an AVAILABLE hold and full fuel.
+	//
+	// Carrying the drained hull's CURRENT cargo here was the field bug (2B-0691151d): the
+	// solver seats launch cargo in every hold slot for the whole tour (tour_solver.py
+	// occ = [total_initial]*n), so a hull whose hold is clogged with cargo the candidate
+	// cannot sink has ZERO slack for fresh arb. Because that cargo is unsellable at every
+	// foreign candidate alike, EVERY candidate then pre-flights infeasible — which is exactly
+	// how three healthy-prerank grounds (X1-UQ16/FQ55/XT71) all read "infeasible" and the
+	// hull completed on its home ground instead of rotating. The leftover cargo stays on the
+	// REAL hull and is handled by the post-jump LIVE re-plan (liquidated as launch inventory
+	// where a sink exists, or surfaced by the stranded veto) — it must never veto the
+	// reconnaissance that decides whether the fresh ground is worth the jump. Clearing it
+	// also zeroes HeldLiquidation, so the reposition floor gates on pure fresh profit, never
+	// on launch-liquidation the destination can't actually pay.
+	//
+	// (Fuel is inert to today's solver, but full fuel is the honest post-travel arrival state
+	// and mirrors a fresh launch — future-proofing a fuel-aware solver at no cost.)
+	shipState.Cargo = nil
+	shipState.FuelCurrent = shipState.FuelCapacity
 	allowedSystems := h.tourSystemsFrom(ctx, cand.system, cmd.PlayerID)
 	return h.planForState(ctx, shipState, allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
 }
@@ -282,19 +304,37 @@ func (h *RunTourCoordinatorHandler) persistReposition(ctx context.Context, cmd *
 // logRepositionRanking emits the ranking table (requirement #1) as a greppable one-liner
 // in the MESSAGE TEXT (which `container logs` keeps even though it drops the structured
 // metadata map — the sp-149h/sp-iqyq renderer defect): each evaluated candidate's system,
-// pre-rank score and planner-projected fresh profit, plus which was chosen and the floor.
+// pre-rank score and planner verdict, plus which was chosen and the floor.
+//
+// The verdict distinguishes THREE states (sp-m9co: the pre-fix line conflated them, which
+// cost diagnosis time on the 2B episode — every candidate read "infeasible" yet the summary
+// said "none cleared the floor", implying they were merely thin):
+//   - infeasible: the solver declined a real tour (the ground itself cannot be toured);
+//   - fresh=N,below-floor: tourable, but the planned fresh margin is under the relocation
+//     floor (RULINGS #5) — feasible yet not worth the jump, NOT the same as infeasible;
+//   - fresh=N: tourable and clears the floor (a real contender / the chosen one).
 func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem string, evaluated []repositionScore, best *repositionScore, floor int64) {
 	parts := make([]string, 0, len(evaluated))
 	for _, s := range evaluated {
-		if s.feasible {
-			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d)", s.system, s.prerank, s.freshProfit))
-		} else {
+		switch {
+		case !s.feasible:
 			parts = append(parts, fmt.Sprintf("%s(prerank=%d,infeasible)", s.system, s.prerank))
+		case s.freshProfit < floor:
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d,below-floor)", s.system, s.prerank, s.freshProfit))
+		default:
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d)", s.system, s.prerank, s.freshProfit))
 		}
 	}
-	chosen := "none (none cleared the floor)"
-	if best != nil {
+	var chosen string
+	switch {
+	case best != nil && best.freshProfit >= floor:
 		chosen = fmt.Sprintf("%s (fresh %d)", best.system, best.freshProfit)
+	case best != nil:
+		// A best feasible candidate exists but falls under the floor — name it so the log
+		// shows the ground WAS tourable, just not worth the jump (distinct from all-infeasible).
+		chosen = fmt.Sprintf("none (best %s fresh %d < floor %d)", best.system, best.freshProfit, floor)
+	default:
+		chosen = fmt.Sprintf("none (all %d candidate(s) solver-infeasible)", len(evaluated))
 	}
 	logger.Log("INFO", fmt.Sprintf("Reposition ranking from %s [%s] - floor %d, chosen %s", fromSystem, strings.Join(parts, ", "), floor, chosen), map[string]interface{}{
 		"ship_symbol": shipSymbol, "from_system": fromSystem, "floor": floor, "candidates_evaluated": len(evaluated),

@@ -538,10 +538,20 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			continue
 		}
 
-		// No progress this tour. On the VERY FIRST tour with no plan, nothing was earned →
-		// the fail-open no-op (single-lane fallback stands): the original one-shot behavior,
-		// preserved exactly.
-		if !feasible && response.ToursCompleted == 0 {
+		// No progress this tour. On the VERY FIRST tour with no plan, nothing was earned.
+		// A finite/one-shot run (iterations != -1) fails open here — the single-lane
+		// fallback stands, the original one-shot behavior preserved exactly. A CONTINUOUS
+		// (-1) run does NOT: a recovered engine re-enters at ToursCompleted==0 having LOST
+		// its pre-restart productive standing across the daemon boundary, and dying on ONE
+		// drained-ground plan (bypassing sp-zhii's rank-and-reposition) is the sp-m9co
+		// restart-boundary death — hulls productive before the restart lost to a single bad
+		// post-restart plan on ground the pre-restart cohort had drained. So a continuous run
+		// falls THROUGH to the streak, letting iteration-1 infeasibility accumulate toward the
+		// SAME reposition rescue as margins-death rather than completing the container; a
+		// genuinely dead neighbourhood still exits honestly below (no candidate clears the
+		// floor). The 7z7j unreadable-treasury PAUSE never reaches here (it `continue`s above,
+		// before runOneTour), so it is untouched.
+		if !feasible && response.ToursCompleted == 0 && !continuous {
 			response.TourUnavailable = true
 			response.TourUnavailableReason = reason
 			response.ExitReason = tourExitUnavailable
@@ -565,9 +575,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
 		// renewable ground (sp-zhii): rank jump-reachable systems by expected tour margin,
 		// jump to the best one that clears the reposition floor, and let the loop re-plan
-		// there. Only CONTINUOUS (-1) runs that have earned >=1 tour reposition — a
-		// finite/one-shot run, or a run that never executed a first tour, exits as today.
-		if continuous && response.ToursCompleted > 0 {
+		// there. Scoped to CONTINUOUS (-1) runs — a finite/one-shot run already fail-opened
+		// above on iteration-1 infeasibility and never reaches here with no plan. sp-m9co:
+		// this now fires at ToursCompleted==0 too, so a recovered continuous engine that
+		// re-entered with a lost productive count and 3-struck on iteration-1 infeasibility
+		// rotates off the drained ground instead of dying on it (the fail-open above no
+		// longer intercepts continuous runs).
+		if continuous {
 			repositioned, rerr := h.maybeReposition(ctx, cmd, response, &episode, maxHops, tourMaxSpend, reserve, modelVersion)
 			if rerr != nil {
 				return rerr
