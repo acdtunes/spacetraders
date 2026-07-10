@@ -3,6 +3,7 @@ package grpc
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -56,6 +57,31 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				ShipSymbol: "SHIP-A",
 				Markets:    []string{"M1", "M2"},
 				Iterations: 3,
+			},
+		},
+		{
+			// sp-zixw: scan_interval_secs is the on-disk form of ScanInterval
+			// (whole seconds — the coordinator persists
+			// int(cmd.ScanInterval.Seconds()) via PersistScoutTourWorker). A restart
+			// must rebuild the exact interval the coordinator derived from the
+			// post's freshness target, not silently fall back to the direct-launch
+			// 15m default (which only applies when the key is absent, as in the
+			// "scout_tour" case above).
+			name:        "scout_tour with scan_interval_secs",
+			commandType: "scout_tour",
+			containerID: "scout-2",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":        "SHIP-B",
+				"markets":            []string{"M1"},
+				"iterations":         2,
+				"scan_interval_secs": 600,
+			},
+			want: &scoutingCmd.ScoutTourCommand{
+				PlayerID:     pid,
+				ShipSymbol:   "SHIP-B",
+				Markets:      []string{"M1"},
+				Iterations:   2,
+				ScanInterval: 600 * time.Second,
 			},
 		},
 		{

@@ -164,21 +164,25 @@ func (r *fakeScoutShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 // fakeScoutDaemonClient records the worker lifecycle calls the coordinator makes.
 type fakeScoutDaemonClient struct {
 	daemon.DaemonClient
-	persisted    []string // container IDs persisted (scout_tour workers)
-	repositioned []string // container IDs persisted (scout_reposition relays, sp-s232)
-	started      []string
-	stopped      []string
-	startErr     error
-	persistErr   error
+	persisted         []string            // container IDs persisted (scout_tour workers)
+	persistedTourCmds []*ScoutTourCommand // the *ScoutTourCommand captured per persisted tour, same order as persisted (sp-zixw)
+	repositioned      []string            // container IDs persisted (scout_reposition relays, sp-s232)
+	started           []string
+	stopped           []string
+	startErr          error
+	persistErr        error
 }
 
-func (c *fakeScoutDaemonClient) PersistContainer(_ context.Context, kind daemon.ContainerKind, containerID string, _ uint, _ interface{}) error {
+func (c *fakeScoutDaemonClient) PersistContainer(_ context.Context, kind daemon.ContainerKind, containerID string, _ uint, command interface{}) error {
 	if c.persistErr != nil {
 		return c.persistErr
 	}
 	switch kind {
 	case daemon.ContainerKindScoutTour:
 		c.persisted = append(c.persisted, containerID)
+		if tourCmd, ok := command.(*ScoutTourCommand); ok {
+			c.persistedTourCmds = append(c.persistedTourCmds, tourCmd)
+		}
 	case daemon.ContainerKindScoutReposition:
 		c.repositioned = append(c.repositioned, containerID)
 	default:
@@ -948,4 +952,61 @@ func TestScoutPost_Reposition_VirginDiscoveryFails_ParksAndBacksOff(t *testing.T
 	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
 	require.Len(t, gp.requested, 1, "no second discovery inside the backoff window (no per-tick API hammering)")
 	require.True(t, logger.loggedContaining("X1-VIRGIN", "backing off"), "the intervening tick parks via the backoff, not a fresh probe")
+}
+
+// ---- tests: sp-zixw probe scan-interval derivation -------------------------
+
+// A 60m freshness target derives to exactly the 30m cap (60/2=30, landing exactly
+// on scanIntervalCap): the boundary case proving the derivation clamps at, not past,
+// the ceiling (sp-zixw — replaces the old hardcoded 5m wait that ignored freshness
+// entirely).
+func TestScoutPost_SpawnTour_ScanInterval_60mFreshnessClampsAtCap(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding, FreshnessTarget: 60 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.persistedTourCmds, 1, "a scout tour must be persisted")
+	require.Equal(t, 30*time.Minute, daemonClient.persistedTourCmds[0].ScanInterval, "60m freshness halves to 30m, exactly at the cap")
+}
+
+// A 20m freshness target derives to 10m, well inside [floor, cap] — proving the
+// derivation is not simply clamping everything to one bound (sp-zixw).
+func TestScoutPost_SpawnTour_ScanInterval_20mFreshnessUnclamped(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding, FreshnessTarget: 20 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.persistedTourCmds, 1, "a scout tour must be persisted")
+	require.Equal(t, 10*time.Minute, daemonClient.persistedTourCmds[0].ScanInterval, "20m freshness halves to 10m, unclamped")
+}
+
+// A zero/unset freshness target (post.FreshnessTarget never configured) derives to
+// zero, which clamps UP to the 5m floor — the coordinator path has no "direct
+// launch" 15m default to fall back on, so an absent freshness must not resolve to a
+// zero-wait busy loop (sp-zixw).
+func TestScoutPost_SpawnTour_ScanInterval_ZeroFreshnessClampsToFloor(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding} // FreshnessTarget left zero
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.persistedTourCmds, 1, "a scout tour must be persisted")
+	require.Equal(t, 5*time.Minute, daemonClient.persistedTourCmds[0].ScanInterval, "zero freshness clamps up to the 5m floor")
 }

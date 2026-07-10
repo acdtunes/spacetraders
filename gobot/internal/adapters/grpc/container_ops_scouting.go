@@ -78,14 +78,16 @@ func (s *DaemonServer) PersistScoutTourWorker(
 	shipSymbol string,
 	markets []string,
 	iterations int,
+	scanIntervalSecs int,
 	playerID int,
 	coordinatorID string,
 ) error {
 	config := map[string]interface{}{
-		"ship_symbol":    shipSymbol,
-		"markets":        markets,
-		"iterations":     iterations,
-		"coordinator_id": coordinatorID,
+		"ship_symbol":        shipSymbol,
+		"markets":            markets,
+		"iterations":         iterations,
+		"scan_interval_secs": scanIntervalSecs,
+		"coordinator_id":     coordinatorID,
 	}
 
 	containerEntity := container.NewContainer(

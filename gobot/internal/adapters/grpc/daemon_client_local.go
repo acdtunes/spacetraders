@@ -83,7 +83,7 @@ func (c *DaemonClientLocal) PersistContainer(
 		if !ok {
 			return daemon.ErrInvalidCommandType
 		}
-		return c.server.PersistScoutTourWorker(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID), cmd.CoordinatorID)
+		return c.server.PersistScoutTourWorker(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(cmd.ScanInterval.Seconds()), int(playerID), cmd.CoordinatorID)
 	case daemon.ContainerKindScoutReposition:
 		cmd, ok := command.(*scoutingCmd.ScoutRepositionCommand)
 		if !ok {

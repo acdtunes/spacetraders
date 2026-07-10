@@ -306,7 +306,7 @@ func run(cfg *config.Config) error {
 	}
 
 	// Market scouting handlers
-	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner)
+	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner, nil) // nil clock = RealClock (sp-zixw)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)
 	}

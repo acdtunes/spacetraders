@@ -466,6 +466,17 @@ func (h *RunScoutPostCoordinatorHandler) idleScoutSatellites(ctx context.Context
 	return sats, nil
 }
 
+// deriveScanInterval computes a post's probe market-scan cadence from its
+// freshness target (sp-zixw): half the freshness window, clamped via
+// clampScanInterval (scout_tour.go) to [scanIntervalFloor, scanIntervalCap] so
+// neither an aggressive nor a lax freshness target can push the per-hull API cost
+// outside the budgeted range. A zero/unset freshness target clamps to the floor,
+// same as any other too-small value — the coordinator path has no "direct launch"
+// default to fall back on.
+func deriveScanInterval(freshness time.Duration) time.Duration {
+	return clampScanInterval(freshness / 2)
+}
+
 // spawnTour persists a coordinator-managed scout_tour worker for hullSymbol,
 // atomically claims the hull to it, and starts it. The persisted config carries
 // coordinator_id so restart recovery skips the tour and leaves respawning to this
@@ -491,6 +502,7 @@ func (h *RunScoutPostCoordinatorHandler) spawnTour(
 		Markets:       markets,
 		Iterations:    iterations,
 		CoordinatorID: cmd.ContainerID,
+		ScanInterval:  deriveScanInterval(post.FreshnessTarget),
 	}
 
 	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindScoutTour, workerID, uint(cmd.PlayerID.Value()), tourCmd); err != nil {

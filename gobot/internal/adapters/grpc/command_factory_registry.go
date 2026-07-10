@@ -3,6 +3,7 @@ package grpc
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
@@ -357,10 +358,11 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 		iterations = 1
 	}
 	return &scoutingCmd.ScoutTourCommand{
-		PlayerID:   shared.MustNewPlayerID(playerID),
-		ShipSymbol: cfg.RequiredString("ship_symbol"),
-		Markets:    cfg.RequiredStringSlice("markets"),
-		Iterations: iterations,
+		PlayerID:     shared.MustNewPlayerID(playerID),
+		ShipSymbol:   cfg.RequiredString("ship_symbol"),
+		Markets:      cfg.RequiredStringSlice("markets"),
+		Iterations:   iterations,
+		ScanInterval: time.Duration(cfg.OptionalInt("scan_interval_secs", 0)) * time.Second,
 	}
 }
 

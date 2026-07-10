@@ -12,6 +12,54 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+const (
+	// defaultDirectScanInterval is the probe market-scan cadence applied when a
+	// scout_tour is launched with no ScanInterval supplied (sp-zixw) — the
+	// CLI/legacy direct-launch path (workflow scout-markets and the daemon
+	// ScoutTour RPC). Replaces the old hardcoded 5-minute wait, which wasted API
+	// budget at 54 hulls; the captain's ask was a 15-30m cap, so direct launches
+	// default to 15m. Coordinator-spawned tours instead derive their own interval
+	// from the post's freshness target (deriveScanInterval,
+	// run_scout_post_coordinator.go) — both paths funnel through
+	// effectiveScanInterval below, so the same floor/cap always applies.
+	defaultDirectScanInterval = 15 * time.Minute
+
+	// scanIntervalFloor and scanIntervalCap bound every resolved scan interval,
+	// coordinator-derived or direct (RULINGS #5: parametrized, not hardcoded at the
+	// call site). Below the floor the API cost outweighs the freshness gained at
+	// 54+ hulls; above the cap a post drifts stale regardless of how loose its
+	// freshness target is.
+	scanIntervalFloor = 5 * time.Minute
+	scanIntervalCap   = 30 * time.Minute
+)
+
+// clampScanInterval bounds d to [scanIntervalFloor, scanIntervalCap] (sp-zixw).
+// Shared by effectiveScanInterval (direct launches) and deriveScanInterval
+// (run_scout_post_coordinator.go) so both paths enforce one budget.
+func clampScanInterval(d time.Duration) time.Duration {
+	if d < scanIntervalFloor {
+		return scanIntervalFloor
+	}
+	if d > scanIntervalCap {
+		return scanIntervalCap
+	}
+	return d
+}
+
+// effectiveScanInterval resolves cmd.ScanInterval to the cadence
+// continuousMarketScanning actually waits on (sp-zixw). Zero/negative means "no
+// interval supplied" — the direct/legacy launch path — and defaults to
+// defaultDirectScanInterval before clamping. A coordinator-supplied interval
+// (deriveScanInterval) is already clamped, so re-clamping here is a defensive
+// no-op for that path and the only effective clamp for a direct caller that
+// supplies an explicit out-of-band value.
+func effectiveScanInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = defaultDirectScanInterval
+	}
+	return clampScanInterval(interval)
+}
+
 // ScoutTourCommand - Command to execute a market scouting tour with a single ship
 type ScoutTourCommand struct {
 	PlayerID   shared.PlayerID
@@ -27,6 +75,15 @@ type ScoutTourCommand struct {
 	// Empty for the standalone `workflow scout-markets` tours, which recover
 	// independently as before.
 	CoordinatorID string
+
+	// ScanInterval is the cadence continuousMarketScanning waits between market
+	// scans at a stationary post (sp-zixw). Coordinator-spawned tours set it from
+	// the post's freshness target (deriveScanInterval, run_scout_post_coordinator.go);
+	// zero/negative means "unset" — the direct/legacy launch path — and resolves to
+	// defaultDirectScanInterval. Either way effectiveScanInterval clamps the final
+	// value to [scanIntervalFloor, scanIntervalCap] so no path can drift outside the
+	// API budget at 54+ hulls (replaces the old hardcoded 5m wait).
+	ScanInterval time.Duration
 }
 
 // ScoutTourResponse - Response from scout tour execution
@@ -41,18 +98,26 @@ type ScoutTourHandler struct {
 	shipRepo      navigation.ShipRepository
 	mediator      common.Mediator
 	marketScanner *ship.MarketScanner
+	clock         shared.Clock
 }
 
-// NewScoutTourHandler creates a new scout tour command handler
+// NewScoutTourHandler creates a new scout tour command handler. A nil clock
+// defaults to shared.NewRealClock() (sp-zixw), matching the sibling coordinator
+// handlers' constructor idiom.
 func NewScoutTourHandler(
 	shipRepo navigation.ShipRepository,
 	mediator common.Mediator,
 	marketScanner *ship.MarketScanner,
+	clock shared.Clock,
 ) *ScoutTourHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &ScoutTourHandler{
 		shipRepo:      shipRepo,
 		mediator:      mediator,
 		marketScanner: marketScanner,
+		clock:         clock,
 	}
 }
 
@@ -194,7 +259,9 @@ func (h *ScoutTourHandler) performInitialScan(
 	return nil
 }
 
-// continuousMarketScanning runs a loop that scans the market every 5 minutes
+// continuousMarketScanning runs a loop that scans the market on cmd.ScanInterval
+// (sp-zixw) — resolved and clamped by effectiveScanInterval, so no launch path can
+// hammer the API below the floor or drift stale above the cap.
 func (h *ScoutTourHandler) continuousMarketScanning(
 	ctx context.Context,
 	cmd *ScoutTourCommand,
@@ -202,18 +269,16 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 	response *ScoutTourResponse,
 ) error {
 	logger := common.LoggerFromContext(ctx)
+	interval := effectiveScanInterval(cmd.ScanInterval)
 
 	for iteration := 1; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
 		logger.Log("INFO", "Waiting before next market scan", map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol,
 			"action":      "wait_scan",
-			"duration":    "5m",
+			"duration":    interval.String(),
 		})
 
-		select {
-		case <-time.After(5 * time.Minute):
-			// Continue to next scan
-		case <-ctx.Done():
+		if !h.sleepInterruptibly(ctx, interval) {
 			logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{
 				"ship_symbol":          cmd.ShipSymbol,
 				"action":               "tour_cancelled",
@@ -245,6 +310,28 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 	}
 
 	return nil
+}
+
+// sleepInterruptibly waits for d on h.clock, returning true if the wait completed
+// normally or false if ctx was cancelled first (sp-zixw). Clock-injected so tests
+// run on a MockClock with no wall-time cost, mirroring the sleepInterruptibly
+// idiom used by run_factory_coordinator.go and run_trade_route_coordinator_travel.go
+// — this handler's own private copy, returning bool so the caller can react to
+// cancellation on the same tick (same log message, same immediate return nil) that
+// the previous time.After/ctx.Done select achieved.
+func (h *ScoutTourHandler) sleepInterruptibly(ctx context.Context, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		h.clock.Sleep(d)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // executeMultiMarketTour executes a tour visiting multiple markets in sequence
