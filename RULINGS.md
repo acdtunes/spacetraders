@@ -64,3 +64,12 @@ This file exists so that class of miss cannot recur.)
 New Admiral rulings are appended here (with date + origin) by the harbormaster/shipwright as
 they are issued. The captain's standing operational doctrine lives in captain/state/; this file
 carries only rulings that bind ENGINEERING decisions.
+
+13. **Only captain-gate merges agent work to main.** (2026-07-09, origin: sp-4xn4 landed via
+    raw `git merge --ff-only` — harmless for a docs/deps change, but a Go change merged that
+    way would skip the build/test gate and the empty-merge/stray-sweep protections.) Agents
+    NEVER merge to main directly; the sanctioned path is
+    `gobot/bin/captain-gate --repo <root> --worktree <wt> --branch <br> --message <m>
+    --provision --merge`, followed by numstat verification. Direct main commits are reserved
+    for the harbormaster/Admiral (docs, operational state). Dispatch briefs must quote the
+    full gate invocation.
