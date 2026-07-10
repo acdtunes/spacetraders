@@ -199,6 +199,31 @@ func TestFindIdleLightHaulers_ExcludesDedicatedShips(t *testing.T) {
 	}
 }
 
+// sp-m92a: the "stocker" fleet is a durable hauler dedication like "contract".
+// The unconditional dedication exclude (DedicatedFleet != "") is what keeps a
+// stocker hull invisible to the factory/contract pool "for free" — so a hull the
+// captain pins `fleet assign --fleet stocker` is never poached between the
+// stocker container's legs. Locks the stocker case explicitly so a future
+// fleet-name special-case cannot silently regress continuous stocking.
+func TestFindIdleLightHaulers_ExcludesStockerDedicatedShips(t *testing.T) {
+	dedicated := newCandidateShip(t, "TORWIND-38", "HAULER", 30, 10, 0)
+	dedicated.SetDedicatedFleet("stocker")
+	general := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{dedicated, general}}
+
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
+	if err != nil {
+		t.Fatalf("FindIdleLightHaulers: %v", err)
+	}
+
+	if containsSymbol(symbols, "TORWIND-38") {
+		t.Fatalf("stocker-dedicated hull TORWIND-38 must be excluded from the general pool %v - the factory/contract pool must never poach a continuous-stocking hull", symbols)
+	}
+	if !containsSymbol(symbols, "TORWIND-3") {
+		t.Fatalf("non-dedicated hauler TORWIND-3 missing from candidate pool %v", symbols)
+	}
+}
+
 // newCandidateShipAt builds an idle, docked hauler located at the given waypoint
 // symbol, so a test can place hulls in different systems and exercise the
 // single-system pool filter (sp-qr3v). Its system is derived from the waypoint

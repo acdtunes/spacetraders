@@ -71,11 +71,22 @@ func (r FleetCargoRequirement) MinCargoCapacity(fleet string) int {
 // captain.defaultStandingCoordinatorFleets. Its members must be able to haul.
 const dedicatedFleetContract = "contract"
 
+// dedicatedFleetStocker is the durable continuous-stocking hauler fleet (sp-m92a),
+// matching operationStocker in container_ops_stocker.go — the fleet name the
+// captain pins with `fleet assign --fleet stocker` AND the operation the stocker
+// container claims under. A stocker hull IS a cargo hauler, so it joins the
+// cargo-floor set alongside contract: a 0-cargo hull can never be pinned to it.
+const dedicatedFleetStocker = "stocker"
+
 // DefaultFleetCargoRequirement is the standing eligibility rule wired in
-// production (sp-r6f1): the contract fleet's members must carry cargo (floor 1).
+// production (sp-r6f1): a hauling fleet's members must carry cargo (floor 1).
 // Parametrized here rather than hardcoded in the handler so the rule has one
-// obvious home and can grow other hauling fleets without touching the gate.
-var DefaultFleetCargoRequirement = FleetCargoRequirement{dedicatedFleetContract: 1}
+// obvious home and can grow other hauling fleets without touching the gate. Both
+// the contract pool and the sp-m92a stocker dedication are cargo-required.
+var DefaultFleetCargoRequirement = FleetCargoRequirement{
+	dedicatedFleetContract: 1,
+	dedicatedFleetStocker:  1,
+}
 
 // AssignShipFleetHandler handles the AssignShipFleet command.
 type AssignShipFleetHandler struct {

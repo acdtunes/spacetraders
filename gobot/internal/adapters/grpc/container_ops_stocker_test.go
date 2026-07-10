@@ -35,7 +35,10 @@ func TestStartStocker_RefusesNonIdleShip(t *testing.T) {
 
 // An idle hull must produce a recovery-visible stocker container: persisted with the
 // "stocker" command_type, "TRADING" container_type, and a config carrying
-// ship_symbol/warehouse_waypoint/iterations so restart recovery can rebuild it (RULINGS #2).
+// ship_symbol/warehouse_waypoint/iterations so restart recovery can rebuild it (RULINGS #2),
+// plus the operation="stocker" fleet identity so both the fresh start and a recovery rebuild
+// claim the hull under the durable stocker dedication (sp-m92a) — the claim that lets the
+// stocker (and only the stocker) take its own 'stocker'-dedicated hull.
 func TestStartStocker_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	ship := newIdleTradeShip(t, "STK-1", playerID)
@@ -60,6 +63,7 @@ func TestStartStocker_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T) {
 	require.Contains(t, model.Config, "X1-HOME-A1")
 	require.Contains(t, model.Config, "warehouse_waypoint")
 	require.Contains(t, model.Config, "iterations")
+	require.Contains(t, model.Config, `"operation":"stocker"`)
 }
 
 // Recovery must ADOPT a RUNNING stocker container as a top-level coordinator (not skip it
@@ -72,7 +76,7 @@ func TestRecoveryAdoptsRunningStockerContainer(t *testing.T) {
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"STK-2": ship}}
 
 	insertRunningContainer(t, db, "stk-rec-1", "stocker", "TRADING",
-		`{"ship_symbol":"STK-2","warehouse_waypoint":"X1-HOME-A1","iterations":-1,"container_id":"stk-rec-1"}`,
+		`{"ship_symbol":"STK-2","warehouse_waypoint":"X1-HOME-A1","iterations":-1,"container_id":"stk-rec-1","operation":"stocker"}`,
 		playerID, nil)
 
 	require.NoError(t, s.RecoverRunningContainers(context.Background()))

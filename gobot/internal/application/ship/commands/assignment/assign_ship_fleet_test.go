@@ -320,6 +320,67 @@ func TestAssignShipFleet_ManualAssignWarnsButAllowsZeroCargoIntoContractFleet(t 
 	}
 }
 
+// sp-m92a — the "stocker" fleet is a durable hauler dedication (continuous
+// stocking): a genuine hauler manually pinned `fleet assign --ship 38 --fleet
+// stocker` PERSISTS to the dedication tag and passes the r6f1 cargo floor
+// cleanly. This is the captain's operational entry point — the pin is what makes
+// the hull invisible to the factory/contract pool and claimable only by the
+// stocker.
+func TestAssignShipFleet_ManualAssignPersistsHaulerIntoStockerFleet(t *testing.T) {
+	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-38", "FRAME_LIGHT_FREIGHTER", "HAULER", 40, "")}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 2
+	resp, err := handler.Handle(context.Background(), &AssignShipFleetCommand{
+		ShipSymbol: "TORWIND-38",
+		Fleet:      "stocker",
+		PlayerID:   &pid,
+		Assigner:   "cli",
+		Manual:     true,
+	})
+	if err != nil {
+		t.Fatalf("expected a hauler to be assignable into the stocker fleet, got: %v", err)
+	}
+	if repo.assignCalled != 1 {
+		t.Fatalf("expected the stocker pin to be written once, got %d", repo.assignCalled)
+	}
+	if repo.assignedFleet != "stocker" {
+		t.Fatalf("expected fleet stocker to persist, got %q", repo.assignedFleet)
+	}
+	if resp.(*AssignShipFleetResponse).Fleet != "stocker" {
+		t.Fatalf("expected response to echo the persisted stocker fleet, got %q", resp.(*AssignShipFleetResponse).Fleet)
+	}
+}
+
+// sp-m92a — the stocker fleet carries a cargo floor exactly like contract, so an
+// AUTOMATED attempt to pin a 0-cargo hull into it is BLOCKED (a hull that cannot
+// haul is never auto-pinned to a hauling fleet). Proves stocker joined the
+// cargo-required set rather than being an ungated free-for-all.
+func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoStockerFleet(t *testing.T) {
+	log := &captureLogger{}
+	ctx := common.WithLogger(context.Background(), log)
+	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-25", "FRAME_PROBE", "SATELLITE", 0, "")}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 2
+	_, err := handler.Handle(ctx, &AssignShipFleetCommand{
+		ShipSymbol: "TORWIND-25",
+		Fleet:      "stocker",
+		PlayerID:   &pid,
+		Assigner:   "some-auto-reconcile",
+		Manual:     false,
+	})
+	if err == nil {
+		t.Fatalf("expected an auto-assign of a 0-cargo hull into stocker to be blocked")
+	}
+	if repo.assignCalled != 0 {
+		t.Fatalf("a blocked auto-assign must never write to the repository, got %d writes", repo.assignCalled)
+	}
+	if _, ok := log.find("ERROR", "BLOCKED"); !ok {
+		t.Fatalf("expected a loud ERROR block line for the ineligible stocker pin, got lines: %+v", log.lines)
+	}
+}
+
 // sp-r6f1 scoping — a 0-cargo satellite is perfectly valid in a fleet with no
 // cargo floor (scouts/tours legitimately fly 0-cargo hulls). Only cargo-required
 // hauling fleets gate on capacity, so a scout pin is never blocked or warned.
