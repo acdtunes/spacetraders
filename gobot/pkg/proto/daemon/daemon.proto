@@ -393,14 +393,18 @@ message ScoutTourResponse {
 }
 
 // ScoutPost is one desired-state post (sp-cxpq): keep system_symbol scanned to
-// within freshness_seconds, via kind ("standing" or "sweep_once"), currently
-// manned by assigned_hull (empty if unmanned) through tour_container_id.
+// within freshness_seconds, via kind ("standing" or "sweep_once"). assigned_hull
+// and tour_container_id are the PRIMARY slot (empty if unmanned). hulls is the probe
+// budget N (sp-enry): the system is toured by N probes over N disjoint partitions;
+// manned_count is how many of those N slots currently have a hull.
 message ScoutPost {
   string system_symbol = 1;
   int32 freshness_seconds = 2;
   string kind = 3;
   string assigned_hull = 4;
   string tour_container_id = 5;
+  int32 hulls = 6;
+  int32 manned_count = 7;
 }
 
 // ScoutPostCoordinatorRequest starts the standing scout-post coordinator.
@@ -417,13 +421,15 @@ message ScoutPostCoordinatorResponse {
 }
 
 // AddScoutPostRequest adds or updates a post. An existing post's live assignment
-// is preserved; only freshness and kind change.
+// is preserved; freshness, kind, and the hull budget change. hulls is the probe
+// budget N (sp-enry); 0 defaults to 1 (single-hull, the pre-enry behavior).
 message AddScoutPostRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
   string system_symbol = 3;
   int32 freshness_seconds = 4;
   string kind = 5;
+  int32 hulls = 6;
 }
 
 message ScoutPostResponse {

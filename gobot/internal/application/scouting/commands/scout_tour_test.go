@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -82,4 +84,109 @@ func TestSleepInterruptibly_ContextCancelled_ReturnsPromptly(t *testing.T) {
 
 	require.False(t, completed, "a cancelled context must report the wait as not completed")
 	require.Less(t, elapsed, 1*time.Second, "expected context cancellation to interrupt a 5s sleep promptly")
+}
+
+// ---- tests: sp-enry circuitPaceInterval (end-of-circuit pacing) ------------
+
+// A circuit shorter than the freshness target waits only the REMAINDER — pacing
+// the circuit PERIOD to the target rather than adding a full interval. This is the
+// partitioned-probe case: a small partition scans fast, then idles to the target so
+// the API-budget invariant (scans/hour ≈ markets/target, independent of N) holds.
+func TestCircuitPaceInterval_ShortCircuitWaitsRemainder(t *testing.T) {
+	require.Equal(t, 20*time.Minute, circuitPaceInterval(30*time.Minute, 10*time.Minute))
+}
+
+// A circuit that already meets or exceeds the target waits ZERO — so a single-hull
+// post over a big system loops as fast as travel allows, byte-identical to the
+// pre-enry travel-paced multi-market loop (no wait injected).
+func TestCircuitPaceInterval_LongCircuitWaitsZero(t *testing.T) {
+	require.Equal(t, time.Duration(0), circuitPaceInterval(30*time.Minute, 30*time.Minute))
+	require.Equal(t, time.Duration(0), circuitPaceInterval(30*time.Minute, 45*time.Minute))
+}
+
+// ---- tests: sp-enry executeMultiMarketTour pacing (per-hop vs per-circuit) --
+
+// fakeTourMediator answers every NavigateRouteCommand instantly WITHOUT advancing
+// the injected clock, so the only clock motion an executeMultiMarketTour test sees
+// is the coordinator's own end-of-circuit pacing wait.
+type fakeTourMediator struct {
+	common.Mediator
+	navs int
+}
+
+func (m *fakeTourMediator) Send(_ context.Context, _ common.Request) (common.Response, error) {
+	m.navs++
+	return &shipNav.NavigateRouteResponse{Status: "completed"}, nil
+}
+
+// A partitioned probe over several markets waits ONCE per circuit (end-of-circuit),
+// never between hops. Driven on a MockClock: the clock advances by exactly the
+// pace per completed circuit and NOT during a circuit, proving there is no per-hop
+// wait (Admiral doctrine) and that pacing is applied per partition per circuit.
+func TestExecuteMultiMarketTour_PacesPerCircuitNotPerHop(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	med := &fakeTourMediator{}
+	h := &ScoutTourHandler{mediator: med, clock: clock}
+
+	// 3-market partition, 2 finite circuits, 30m freshness target. Instant navs →
+	// each circuit's travel time is 0, so each non-final circuit paces the full 30m.
+	cmd := &ScoutTourCommand{
+		PlayerID:     shared.MustNewPlayerID(1),
+		ShipSymbol:   "PROBE-1",
+		Markets:      []string{"M1", "M2", "M3"},
+		Iterations:   2,
+		ScanInterval: 30 * time.Minute,
+	}
+	response := &ScoutTourResponse{}
+	start := clock.CurrentTime
+
+	require.NoError(t, h.executeMultiMarketTour(context.Background(), cmd, cmd.Markets, response))
+
+	require.Equal(t, 6, med.navs, "2 circuits × 3 markets = 6 navigations, each scanning on arrival")
+	require.Equal(t, 6, response.MarketsVisited)
+	require.Equal(t, 2, response.Iterations)
+	// Exactly ONE end-of-circuit pace happened (after circuit 1; the final circuit is
+	// not paced). If pacing were per-hop the clock would have advanced 30m × 5 gaps.
+	require.Equal(t, 30*time.Minute, clock.CurrentTime.Sub(start),
+		"the clock must advance by exactly one circuit-pace (per-circuit, not per-hop)")
+}
+
+// A circuit whose own travel time already meets the target injects NO wait —
+// preserving the pre-enry travel-paced behavior for a big single-hull system.
+func TestExecuteMultiMarketTour_LongCircuitNoWait(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	// A mediator that advances the clock 40m per nav → a single 2-market circuit
+	// takes 80m, well past the 30m target, so no end-of-circuit wait is added.
+	med := &clockAdvancingMediator{clock: clock, perNav: 40 * time.Minute}
+	h := &ScoutTourHandler{mediator: med, clock: clock}
+
+	cmd := &ScoutTourCommand{
+		PlayerID:     shared.MustNewPlayerID(1),
+		ShipSymbol:   "PROBE-1",
+		Markets:      []string{"M1", "M2"},
+		Iterations:   2,
+		ScanInterval: 30 * time.Minute,
+	}
+	response := &ScoutTourResponse{}
+	start := clock.CurrentTime
+
+	require.NoError(t, h.executeMultiMarketTour(context.Background(), cmd, cmd.Markets, response))
+
+	// Only the 4 navigations advanced the clock (4 × 40m); no pacing wait was added
+	// because each circuit already exceeded the target.
+	require.Equal(t, 160*time.Minute, clock.CurrentTime.Sub(start),
+		"a circuit longer than the target must add no end-of-circuit wait")
+}
+
+// clockAdvancingMediator advances the injected clock by perNav on each navigation,
+// simulating real travel time so a circuit can exceed the freshness target.
+type clockAdvancingMediator struct {
+	common.Mediator
+	clock  *shared.MockClock
+	perNav time.Duration
+}
+
+func (m *clockAdvancingMediator) Send(_ context.Context, _ common.Request) (common.Response, error) {
+	m.clock.Advance(m.perNav)
+	return &shipNav.NavigateRouteResponse{Status: "completed"}, nil
 }

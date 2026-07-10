@@ -621,6 +621,11 @@ func run(cfg *config.Config) error {
 	// graphService the `waypoint` verb and scout-markets planner use — one cache/graph,
 	// era-scoped persistence. nil would leave the pre-nn0y park behavior intact.
 	scoutPostCoordinatorHandler.SetGraphProvider(graphService)
+	// sp-enry: wire the VRP fleet partitioner so a multi-probe post splits its markets into
+	// N disjoint per-probe tours. Reuses the SAME routing client the scout-markets verb uses —
+	// the routing service already solves the partition problem. nil would leave multi-probe
+	// posts parked (fail-closed); single-hull posts never partition and are unaffected.
+	scoutPostCoordinatorHandler.SetRoutingClient(routingClient)
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)

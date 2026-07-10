@@ -46,6 +46,30 @@ func clampScanInterval(d time.Duration) time.Duration {
 	return d
 }
 
+// circuitPaceInterval is the END-OF-CIRCUIT wait for a multi-market tour (sp-enry):
+// it paces the circuit PERIOD to target — waiting only the remainder after the
+// circuit's own travel time, never a full extra interval and never a negative
+// duration. Two properties fall out of this one formula:
+//
+//   - The API-budget invariant holds. Each partition is re-scanned about once per
+//     target regardless of how many probes N split a system, so total scans/hour ≈
+//     markets / freshness-target — INDEPENDENT of N. More probes buy smaller
+//     partitions (fresher data), NOT more API calls (sp-enry, Admiral doctrine).
+//   - A single-hull post over a big system stays byte-identical to the pre-enry
+//     travel-paced loop: when the circuit already takes at least the target (a large
+//     partition), the wait is zero and the probe loops as fast as travel allows — no
+//     wait, no pacing log.
+//
+// The wait is applied ONCE per circuit (end-of-circuit), never per hop: the Admiral
+// doctrine forbids per-hop waits, and a probe that idled between markets would leave
+// the ones behind it stale for the whole circuit.
+func circuitPaceInterval(target, elapsed time.Duration) time.Duration {
+	if elapsed >= target {
+		return 0
+	}
+	return target - elapsed
+}
+
 // effectiveScanInterval resolves cmd.ScanInterval to the cadence
 // continuousMarketScanning actually waits on (sp-zixw). Zero/negative means "no
 // interval supplied" — the direct/legacy launch path — and defaults to
@@ -334,21 +358,32 @@ func (h *ScoutTourHandler) sleepInterruptibly(ctx context.Context, d time.Durati
 	}
 }
 
-// executeMultiMarketTour executes a tour visiting multiple markets in sequence
+// executeMultiMarketTour executes a tour visiting multiple markets in sequence.
+// Each circuit is travel-paced with NO per-hop waits (Admiral doctrine, sp-enry):
+// the probe navigates market-to-market scanning on arrival, then — for an
+// infinite/standing tour — paces the CIRCUIT PERIOD to the freshness target once at
+// the end (circuitPaceInterval) so a small partition does not over-scan. This is the
+// per-partition consumer of the zixw freshness plumbing: a partitioned probe from
+// a multi-hull post (run_scout_post_coordinator.go) and a direct scout-markets tour
+// both flow through here, and both hit the same API-budget invariant.
 func (h *ScoutTourHandler) executeMultiMarketTour(
 	ctx context.Context,
 	cmd *ScoutTourCommand,
 	tourOrder []string,
 	response *ScoutTourResponse,
 ) error {
+	logger := common.LoggerFromContext(ctx)
+	interval := effectiveScanInterval(cmd.ScanInterval)
+
 	for iteration := 0; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
+		circuitStart := h.clock.Now()
+
 		for _, marketWaypoint := range tourOrder {
 			navResult, err := h.navigateToMarket(ctx, cmd, marketWaypoint, iteration)
 			if err != nil {
 				return err
 			}
 
-			logger := common.LoggerFromContext(ctx)
 			logger.Log("INFO", "Ship navigation complete", map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol,
 				"action":      "navigation_complete",
@@ -362,6 +397,34 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 		}
 
 		response.Iterations++
+
+		// End-of-circuit pacing (sp-enry): pace the circuit period to the freshness
+		// target. Skipped after the FINAL circuit of a finite tour (nothing follows),
+		// and a zero wait — a big partition whose circuit already exceeds the target —
+		// emits no wait and no log, keeping a single-hull big-system tour byte-identical
+		// to the pre-enry travel-paced loop.
+		lastCircuit := cmd.Iterations != -1 && iteration+1 >= cmd.Iterations
+		if lastCircuit {
+			continue
+		}
+		wait := circuitPaceInterval(interval, h.clock.Now().Sub(circuitStart))
+		if wait <= 0 {
+			continue
+		}
+		logger.Log("INFO", "Circuit complete — pacing to freshness target", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "circuit_pace",
+			"duration":    wait.String(),
+			"markets":     len(tourOrder),
+		})
+		if !h.sleepInterruptibly(ctx, wait) {
+			logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{
+				"ship_symbol":          cmd.ShipSymbol,
+				"action":               "tour_cancelled",
+				"iterations_completed": response.Iterations,
+			})
+			return nil
+		}
 	}
 
 	return nil

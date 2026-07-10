@@ -573,9 +573,26 @@ type ScoutPostModel struct {
 	// a satellite toward this post. Nullable — set only while a relay is airborne,
 	// cleared when it lands (the next tick mans the post in-system) or dies. GORM
 	// AutoMigrate adds the column in place; existing rows read it as NULL → "".
-	RepositionContainerID *string   `gorm:"column:reposition_container_id"`
-	EraID                 *int      `gorm:"column:era_id;index:idx_scout_posts_era"`
-	CreatedAt             time.Time `gorm:"column:created_at;not null"`
+	RepositionContainerID *string `gorm:"column:reposition_container_id"`
+
+	// Hulls is the probe budget N for a multi-probe post (sp-enry): the system is
+	// toured by N probes over N disjoint market partitions. Defaults to 1 (single
+	// hull, the pre-enry behavior). AutoMigrate adds the column with default 1, so
+	// every existing post reads as single-hull. RULINGS #5: a DB value, not a const.
+	Hulls int `gorm:"column:hulls;not null;default:1"`
+
+	// PrimaryPartition is the JSON-encoded frozen market tour of the PRIMARY slot
+	// when Hulls>1 (sp-enry). NULL/empty ⇒ the primary tours ALL markets (single-hull
+	// behavior), so a single-hull row never carries one and stays byte-identical.
+	// ExtraSlots is the JSON-encoded slots 1..N-1 (hull, tour/relay container, and
+	// each slot's frozen partition). Persisting the partitions is what makes a daemon
+	// restart re-adopt each probe onto the SAME partition without a mass re-tour
+	// (RULINGS #2) — the reconciler re-partitions ONLY on a hull-budget change.
+	PrimaryPartition *string `gorm:"column:primary_partition"`
+	ExtraSlots       *string `gorm:"column:extra_slots"`
+
+	EraID     *int      `gorm:"column:era_id;index:idx_scout_posts_era"`
+	CreatedAt time.Time `gorm:"column:created_at;not null"`
 }
 
 func (ScoutPostModel) TableName() string {

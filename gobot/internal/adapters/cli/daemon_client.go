@@ -99,13 +99,16 @@ type ContractFleetCoordinatorResponse struct {
 	Status      string
 }
 
-// ScoutPost mirrors the protobuf ScoutPost message for CLI display (sp-cxpq).
+// ScoutPost mirrors the protobuf ScoutPost message for CLI display (sp-cxpq). Hulls
+// is the probe budget N and MannedCount how many of those slots have a hull (sp-enry).
 type ScoutPost struct {
 	SystemSymbol     string
 	FreshnessSeconds int
 	Kind             string
 	AssignedHull     string
 	TourContainerID  string
+	Hulls            int
+	MannedCount      int
 }
 
 // ContainerInfo mirrors the protobuf ContainerInfo message for CLI display.
@@ -1069,13 +1072,15 @@ func (c *DaemonClient) ScoutPostCoordinator(ctx context.Context, playerID int, a
 	return resp.ContainerId, nil
 }
 
-// AddScoutPost adds or updates a desired-state scout post (sp-cxpq).
-func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string) (*ScoutPost, error) {
+// AddScoutPost adds or updates a desired-state scout post (sp-cxpq). hulls is the
+// probe budget N (sp-enry); 0 defaults to single-hull.
+func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string, hulls int) (*ScoutPost, error) {
 	req := &pb.AddScoutPostRequest{
 		PlayerId:         int32(playerID),
 		SystemSymbol:     systemSymbol,
 		FreshnessSeconds: int32(freshnessSeconds),
 		Kind:             kind,
+		Hulls:            int32(hulls),
 	}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
@@ -1129,6 +1134,8 @@ func protoToScoutPost(p *pb.ScoutPost) *ScoutPost {
 		Kind:             p.Kind,
 		AssignedHull:     p.AssignedHull,
 		TourContainerID:  p.TourContainerId,
+		Hulls:            int(p.Hulls),
+		MannedCount:      int(p.MannedCount),
 	}
 }
 

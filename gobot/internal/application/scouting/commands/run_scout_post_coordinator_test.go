@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -1009,4 +1011,366 @@ func TestScoutPost_SpawnTour_ScanInterval_ZeroFreshnessClampsToFloor(t *testing.
 
 	require.Len(t, daemonClient.persistedTourCmds, 1, "a scout tour must be persisted")
 	require.Equal(t, 5*time.Minute, daemonClient.persistedTourCmds[0].ScanInterval, "zero freshness clamps up to the 5m floor")
+}
+
+// ---- fakes & helpers: sp-enry multi-probe partitions ----------------------
+
+// fakeScoutRoutingClient partitions markets round-robin across the N synthetic slot
+// ships the coordinator supplies, so partitions are disjoint, complete, and
+// deterministic — a faithful stand-in for the VRP service for partition-logic tests.
+// It records how many times PartitionFleet was called so a test can assert the
+// coordinator re-partitions ONLY on a hull-budget change.
+type fakeScoutRoutingClient struct {
+	routing.RoutingClient
+	calls int
+	err   error
+}
+
+func (c *fakeScoutRoutingClient) PartitionFleet(_ context.Context, req *routing.VRPRequest) (*routing.VRPResponse, error) {
+	c.calls++
+	if c.err != nil {
+		return nil, c.err
+	}
+	assignments := make(map[string]*routing.ShipTourData, len(req.ShipSymbols))
+	for _, id := range req.ShipSymbols {
+		assignments[id] = &routing.ShipTourData{}
+	}
+	for j, market := range req.MarketWaypoints {
+		id := req.ShipSymbols[j%len(req.ShipSymbols)]
+		assignments[id].Waypoints = append(assignments[id].Waypoints, market)
+	}
+	return &routing.VRPResponse{Assignments: assignments}, nil
+}
+
+// fakeMultiMarketProvider returns a configured list of marketplace waypoints per
+// system, so a partition test can hand a post more than one market.
+type fakeMultiMarketProvider struct {
+	markets map[string][]string
+}
+
+func (m *fakeMultiMarketProvider) ListBySystemWithTrait(_ context.Context, systemSymbol, _ string) ([]*shared.Waypoint, error) {
+	syms := m.markets[systemSymbol]
+	wps := make([]*shared.Waypoint, 0, len(syms))
+	for _, s := range syms {
+		wp, err := shared.NewWaypoint(s, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		wps = append(wps, wp)
+	}
+	return wps, nil
+}
+
+// partitionOf collects the full market set a post assigns across all its slots, and
+// the per-slot partitions in slot order, so a test can assert disjointness/coverage.
+func partitionOf(post *domainScouting.ScoutPost) (all []string, perSlot [][]string) {
+	for _, slot := range post.Slots() {
+		p := append([]string(nil), slot.Partition()...)
+		perSlot = append(perSlot, p)
+		all = append(all, p...)
+	}
+	sort.Strings(all)
+	return all, perSlot
+}
+
+// Acceptance / transition: a fresh 3-hull post with 3 idle in-system satellites
+// converges to a FULL disjoint partition in ONE reconcile cycle — the exact shape the
+// harbormaster's KA42 hulls=3 declaration relies on.
+func TestScoutPost_MultiHull_ConvergesInOneCycle(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	got := postRepo.find("X1-KA42")
+	require.Equal(t, 3, got.MannedCount(), "all 3 slots manned in one cycle")
+	require.True(t, got.IsFullyManned())
+	require.Len(t, daemonClient.started, 3, "3 disjoint tours started")
+
+	all, perSlot := partitionOf(got)
+	require.Equal(t, []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"}, all,
+		"the partition covers every market, with no duplicates (disjoint + complete)")
+	for _, p := range perSlot {
+		require.Len(t, p, 2, "6 markets split evenly across 3 probes")
+	}
+	// Each spawned tour flies ONLY its slot's partition — not all 6 markets.
+	for _, cmd := range daemonClient.persistedTourCmds {
+		require.Len(t, cmd.Markets, 2, "a probe tours its disjoint partition, not the whole system")
+		require.Equal(t, 15*time.Minute, cmd.ScanInterval, "30m freshness halves to 15m for every probe on the post")
+	}
+}
+
+// Partition STABILITY: with the hull budget unchanged, a second reconcile tick does
+// NOT re-partition — the frozen partitions are reused and the VRP is not called again.
+func TestScoutPost_MultiHull_PartitionStableAcrossTicks(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	require.Equal(t, 1, rc.calls, "partitioned once on first sight of the 3-hull post")
+	_, firstPartitions := partitionOf(postRepo.find("X1-KA42"))
+
+	// Mark all spawned tours RUNNING so tick 2 leaves the healthy slots untouched.
+	running := make([]persistence.ContainerSummary, 0, len(daemonClient.started))
+	for _, id := range daemonClient.started {
+		running = append(running, persistence.ContainerSummary{ID: id, Status: "RUNNING"})
+	}
+	cq.byStatus["RUNNING"] = running
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 1, rc.calls, "a stable hull budget must NOT re-partition on later ticks")
+	_, secondPartitions := partitionOf(postRepo.find("X1-KA42"))
+	require.Equal(t, firstPartitions, secondPartitions, "the frozen partition is unchanged across ticks")
+}
+
+// Restart survival: a post reloaded from persistence with its partitions and hull
+// assignments intact but its tours INTERRUPTED (not RUNNING) re-mans each probe onto
+// the SAME partition without re-partitioning — a restart never triggers a mass re-tour.
+func TestScoutPost_MultiHull_RestartReAdoptsSamePartitionNoRepartition(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	// The persisted (reloaded) post: 3 hulls, partitions frozen, hulls recorded on the
+	// slots, tours pointing at now-dead (interrupted) containers.
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute,
+		AssignedHull: "SAT-1", TourContainerID: "dead-0", PrimaryPartition: []string{"X1-KA42-M1", "X1-KA42-M4"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-2", TourContainerID: "dead-1", Partition: []string{"X1-KA42-M2", "X1-KA42-M5"}},
+			{AssignedHull: "SAT-3", TourContainerID: "dead-2", Partition: []string{"X1-KA42-M3", "X1-KA42-M6"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	// The hulls are stuck on the interrupted containers (claim preserved across restart).
+	require.NoError(t, sats[0].AssignToContainer("dead-0", clock))
+	require.NoError(t, sats[1].AssignToContainer("dead-1", clock))
+	require.NoError(t, sats[2].AssignToContainer("dead-2", clock))
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 0, rc.calls, "a reloaded, already-partitioned post must NOT re-partition on restart")
+	got := postRepo.find("X1-KA42")
+	require.Equal(t, []string{"X1-KA42-M1", "X1-KA42-M4"}, got.PrimaryPartition, "primary partition survives the restart")
+	require.Equal(t, []string{"X1-KA42-M2", "X1-KA42-M5"}, got.ExtraSlots[0].Partition)
+	require.Equal(t, []string{"X1-KA42-M3", "X1-KA42-M6"}, got.ExtraSlots[1].Partition)
+	require.Len(t, daemonClient.started, 3, "all three interrupted tours are respawned over their same partitions")
+	require.True(t, got.IsFullyManned(), "every slot re-manned")
+	// Each respawned tour flies its original partition.
+	for _, cmd := range daemonClient.persistedTourCmds {
+		require.Len(t, cmd.Markets, 2)
+	}
+}
+
+// Dead-slot re-man: when ONE probe of a 3-hull post dies, only that slot is re-manned
+// (onto its SAME partition) and its siblings are left untouched — no re-partition.
+func TestScoutPost_MultiHull_DeadSlotRemannedKeepsPartition(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute,
+		AssignedHull: "SAT-1", TourContainerID: "live-0", PrimaryPartition: []string{"X1-KA42-M1", "X1-KA42-M4"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-2", TourContainerID: "dead-1", Partition: []string{"X1-KA42-M2", "X1-KA42-M5"}},
+			{AssignedHull: "SAT-3", TourContainerID: "live-2", Partition: []string{"X1-KA42-M3", "X1-KA42-M6"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	require.NoError(t, sats[0].AssignToContainer("live-0", clock))
+	require.NoError(t, sats[1].AssignToContainer("dead-1", clock)) // this probe's tour died
+	require.NoError(t, sats[2].AssignToContainer("live-2", clock))
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-0", Status: "RUNNING"}, {ID: "live-2", Status: "RUNNING"}},
+	}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 0, rc.calls, "a single dead probe must NOT trigger a re-partition")
+	require.Contains(t, shipRepo.releases, "SAT-2", "the dead probe's hull is reclaimed")
+	require.Len(t, daemonClient.started, 1, "only the dead slot is respawned; the two live tours are untouched")
+	got := postRepo.find("X1-KA42")
+	require.True(t, got.IsFullyManned(), "the post is fully manned again")
+	require.Equal(t, "live-0", got.TourContainerID, "the healthy primary tour is untouched")
+	require.Equal(t, "live-2", got.ExtraSlots[1].TourContainerID, "the healthy third tour is untouched")
+	require.Equal(t, []string{"X1-KA42-M2", "X1-KA42-M5"}, got.ExtraSlots[0].Partition, "the re-manned slot keeps its exact partition")
+	require.Equal(t, "SAT-2", got.ExtraSlots[0].AssignedHull, "the same idle in-system hull re-mans the slot")
+}
+
+// A single-hull post NEVER calls the VRP partitioner even when one is wired — the
+// pre-enry path is untouched (byte-identical behavior).
+func TestScoutPost_SingleHull_NeverPartitions(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding} // Hulls unset → single-hull
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: &fakeContainerStatusQuery{}, marketProvider: &fakeMarketProvider{}, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 0, rc.calls, "a single-hull post must never partition")
+	got := postRepo.find("X1-GZ7")
+	require.Equal(t, "SAT-1", got.AssignedHull)
+	require.Empty(t, got.ExtraSlots, "no extra slots are materialized for a single-hull post")
+	require.Len(t, daemonClient.persistedTourCmds, 1)
+	require.Equal(t, []string{"X1-GZ7-A1"}, daemonClient.persistedTourCmds[0].Markets, "the single probe tours ALL markets, not a partition")
+}
+
+// A hull-budget CHANGE re-partitions (requirement #1: "N changing recomputes"). A
+// running 2-hull post whose budget is raised to 3 tears down its old tours and
+// rebuilds 3 disjoint partitions, then re-mans them.
+func TestScoutPost_MultiHull_BudgetChangeRepartitions(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	// Reloaded post: budget now 3, but only 1 extra slot materialized (was 2-hull).
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute,
+		AssignedHull: "SAT-1", TourContainerID: "live-0", PrimaryPartition: []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-2", TourContainerID: "live-1", Partition: []string{"X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	require.NoError(t, sats[0].AssignToContainer("live-0", clock))
+	require.NoError(t, sats[1].AssignToContainer("live-1", clock))
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 1, rc.calls, "the budget change re-partitions exactly once")
+	require.Contains(t, daemonClient.stopped, "live-0", "the old primary tour is stopped for re-partition")
+	require.Contains(t, daemonClient.stopped, "live-1", "the old extra tour is stopped for re-partition")
+	got := postRepo.find("X1-KA42")
+	require.Len(t, got.ExtraSlots, 2, "the post now has 3 slots (primary + 2 extra)")
+	all, perSlot := partitionOf(got)
+	require.Equal(t, []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"}, all)
+	for _, p := range perSlot {
+		require.Len(t, p, 2, "6 markets now split across 3 probes")
+	}
+}
+
+// Reducing a multi-probe post to a single hull reverts it to the pre-enry single-slot
+// shape and frees the surplus probes to the pool (no stale extra slots linger).
+func TestScoutPost_MultiHull_RevertToSingleHullFreesSurplus(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 1, FreshnessTarget: 30 * time.Minute,
+		AssignedHull: "SAT-1", TourContainerID: "live-0", PrimaryPartition: []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-2", TourContainerID: "live-1", Partition: []string{"X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+	}
+	require.NoError(t, sats[0].AssignToContainer("live-0", clock))
+	require.NoError(t, sats[1].AssignToContainer("live-1", clock))
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 0, rc.calls, "reverting to single-hull needs no VRP")
+	require.Contains(t, shipRepo.releases, "SAT-2", "the surplus probe is freed to the pool")
+	got := postRepo.find("X1-KA42")
+	require.Empty(t, got.ExtraSlots, "no stale extra slots linger after the revert")
+	require.Empty(t, got.PrimaryPartition, "the primary reverts to touring all markets")
+	// After teardown the primary is re-manned over ALL markets in the same tick.
+	require.Equal(t, 1, got.MannedCount())
+	require.Len(t, daemonClient.persistedTourCmds, 1)
+	require.Len(t, daemonClient.persistedTourCmds[0].Markets, 6, "the single probe tours all markets again")
 }

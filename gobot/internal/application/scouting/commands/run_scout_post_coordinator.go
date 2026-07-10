@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -34,14 +35,25 @@ const (
 	marketplaceTrait = "MARKETPLACE"
 
 	// repositionRetryBackoff bounds how often the coordinator will DISPATCH a
-	// cross-gate relay for one post (sp-s232). The RUNNING-relay check already stops a
-	// second dispatch while a relay is airborne; this covers the AFTER-failure window
-	// so a relay that fails fast (an unroutable verdict that slipped past the
+	// cross-gate relay for one post slot (sp-s232). The RUNNING-relay check already
+	// stops a second dispatch while a relay is airborne; this covers the AFTER-failure
+	// window so a relay that fails fast (an unroutable verdict that slipped past the
 	// pre-dispatch BFS, an API refusal at a hop) does not hot-loop re-dispatch every
 	// tick — the sp-py4n respawn-cap discipline applied to relays. In-memory and reset
 	// on restart (conservative: at most one immediate retry after a daemon restart,
 	// never a storm).
 	repositionRetryBackoff = 5 * time.Minute
+
+	// partitionAnchorFuelCapacity and partitionAnchorEngineSpeed are the synthetic
+	// probe configs the VRP partitioner anchors at a common waypoint (sp-enry). The
+	// partition is a division of a system's markets into N disjoint tours; it must be
+	// STABLE across which specific probes are present (RULINGS: re-partition only on
+	// hull-count change), so the partitioner is fed N identical anchored slots rather
+	// than real ship locations, and the RESULT is frozen+persisted. These are typical
+	// probe values; the exact numbers do not matter because the partition is computed
+	// once per budget change, not re-optimized per tick.
+	partitionAnchorFuelCapacity = 400
+	partitionAnchorEngineSpeed  = 30
 )
 
 // RunScoutPostCoordinatorCommand launches the standing scout-post coordinator for
@@ -86,16 +98,18 @@ type GateGraph interface {
 }
 
 // RunScoutPostCoordinatorHandler reconciles the desired-state posts table every
-// tick: it respawns any post whose tour died, mans unmanned posts by claiming an
-// idle satellite ALREADY IN THE POST'S SYSTEM (manning is in-system-only, sp-qxa4),
-// releases any assignment whose hull has drifted out of the post's system so it can
-// be re-matched, retires completed sweep-once posts, and never poaches a pinned hull.
-// When a post has no in-system satellite it JUMP-ROUTES the fleet-wide nearest idle
-// satellite to it (sp-s232) — a claimed cross-gate relay via the shared multi-jump
-// travel machinery; manning stays in-system-only (the relay just moves the hull
-// there first). A post with no reachable satellite parks honest, re-checked each tick.
-// It is the freshness backbone the tour planner's age cap and the analyst board both
-// ride on.
+// tick. Each post has HullBudget() manning SLOTS — one for a single-hull post, N for
+// a multi-probe post (sp-enry) — and every slot is manned, repaired, and repositioned
+// independently. A multi-probe post's markets are first partitioned into N DISJOINT
+// per-probe tours via the existing VRP machinery and frozen (re-partitioned only on a
+// hull-budget change); each slot then behaves exactly like a single-hull post over its
+// partition. The reconciler respawns any tour that died, mans an unmanned slot by
+// claiming an idle satellite ALREADY IN THE POST'S SYSTEM (manning is in-system-only,
+// sp-qxa4), releases any assignment whose hull drifted out of system so it can be
+// re-matched, retires completed sweep-once posts, and never poaches a pinned hull. When
+// a slot has no in-system satellite it JUMP-ROUTES the fleet-wide nearest idle satellite
+// to it (sp-s232). It is the freshness backbone the tour planner's age cap and the
+// analyst board both ride on.
 type RunScoutPostCoordinatorHandler struct {
 	postRepo       domainScouting.ScoutPostRepository
 	shipRepo       navigation.ShipRepository
@@ -111,27 +125,38 @@ type RunScoutPostCoordinatorHandler struct {
 	gateGraph GateGraph
 
 	// graphProvider discovers a VIRGIN system's waypoints presence-free via the API when
-	// the reposition target has zero KNOWN market waypoints (sp-nn0y — the s232 bootstrap
-	// chicken-and-egg: an unswept system has no market waypoint to relay to). It is the
-	// same cache-first ISystemGraphProvider port scout_markets/assign_scouting_fleet use,
-	// and persists discovered waypoints era-scoped via its BuildSystemGraph→Add path
-	// (sp-vapw). nil disables virgin discovery — the reposition path then parks exactly as
-	// before nn0y — so it is wired via SetGraphProvider rather than the constructor, and
-	// every existing caller/test that never wires it behaves identically.
+	// the reposition target has zero KNOWN market waypoints (sp-nn0y), and supplies
+	// waypoint coordinates to the VRP partitioner (sp-enry). It is the same cache-first
+	// ISystemGraphProvider port scout_markets/assign_scouting_fleet use, and persists
+	// discovered waypoints era-scoped via its BuildSystemGraph→Add path (sp-vapw). nil
+	// disables virgin discovery and leaves the partitioner without coordinates (it still
+	// partitions, just without geometry) — so it is wired via SetGraphProvider rather than
+	// the constructor, and every existing caller/test that never wires it behaves identically.
 	graphProvider system.ISystemGraphProvider
 
-	// repositionBackoffUntil rate-limits reposition DISPATCH per post (key
-	// playerID|system → earliest next dispatch time) so a relay that fails fast does
-	// not hot-loop re-dispatch (sp-s232). In-memory (reset on restart); guarded by
-	// repositionMu since the handler is a registered singleton that could serve two
-	// players' coordinator ticks concurrently.
+	// routingClient solves the VRP that partitions a multi-probe post's markets into N
+	// disjoint tours (sp-enry). Reuses the SAME PartitionFleet the `workflow scout-markets`
+	// verb uses — the routing service already solves the partition problem. nil disables
+	// partitioning: a multi-probe post then cannot materialize its extra slots and parks
+	// (fail-closed), while single-hull posts (which never partition) are unaffected. Wired
+	// via SetRoutingClient so every pre-enry caller/test that never wires it is unchanged.
+	routingClient routing.RoutingClient
+
+	// repositionBackoffUntil rate-limits reposition DISPATCH per post slot (key
+	// playerID|system[|slotIndex] → earliest next dispatch time) so a relay that fails
+	// fast does not hot-loop re-dispatch (sp-s232). A single-hull post keeps the pre-enry
+	// un-suffixed key. In-memory (reset on restart); guarded by repositionMu since the
+	// handler is a registered singleton that could serve two players' coordinator ticks
+	// concurrently.
 	repositionMu           sync.Mutex
 	repositionBackoffUntil map[string]time.Time
 }
 
 // NewRunScoutPostCoordinatorHandler wires the coordinator. clock defaults to the
-// real clock when nil (production). The gate-graph resolver is optional and injected
-// separately via SetGateGraph (sp-s232) — nil leaves repositioning disabled.
+// real clock when nil (production). The gate-graph resolver, graph provider, and
+// routing client are optional and injected separately (SetGateGraph, SetGraphProvider,
+// SetRoutingClient) — nil leaves repositioning / virgin discovery / partitioning
+// disabled, so every pre-enry caller behaves as before.
 func NewRunScoutPostCoordinatorHandler(
 	postRepo domainScouting.ScoutPostRepository,
 	shipRepo navigation.ShipRepository,
@@ -164,12 +189,22 @@ func (h *RunScoutPostCoordinatorHandler) SetGateGraph(g GateGraph) {
 }
 
 // SetGraphProvider wires the presence-free waypoint discoverer for virgin reposition
-// targets (sp-nn0y). The daemon injects the same graphService the `waypoint` verb and the
-// scout-markets planner use, so virgin discovery shares one cache/graph and persists
-// era-scoped exactly as every other charting path. Mirrors SetGateGraph's optional-
-// injection idiom; nil (the default) leaves the pre-nn0y park behavior intact.
+// targets (sp-nn0y) and the coordinate source for the VRP partitioner (sp-enry). The
+// daemon injects the same graphService the `waypoint` verb and the scout-markets planner
+// use, so discovery shares one cache/graph and persists era-scoped exactly as every other
+// charting path. Mirrors SetGateGraph's optional-injection idiom; nil (the default) leaves
+// the pre-nn0y park behavior intact.
 func (h *RunScoutPostCoordinatorHandler) SetGraphProvider(g system.ISystemGraphProvider) {
 	h.graphProvider = g
+}
+
+// SetRoutingClient wires the VRP fleet partitioner (sp-enry). The daemon injects the
+// SAME routing client the scout-markets verb uses, so a multi-probe post's disjoint
+// partition is solved by the routing service that already solves it. Optional-injection
+// (like SetGateGraph): nil leaves partitioning disabled, so single-hull posts are
+// unaffected and a multi-probe post parks fail-closed until a client is wired.
+func (h *RunScoutPostCoordinatorHandler) SetRoutingClient(c routing.RoutingClient) {
+	h.routingClient = c
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -213,38 +248,41 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 	}
 }
 
+// slotTarget pairs an unmanned slot with its owning post so pass 2 can man or
+// reposition it with the post's markets, priority, and freshness (sp-enry).
+type slotTarget struct {
+	post *domainScouting.ScoutPost
+	slot domainScouting.ScoutSlotRef
+}
+
 // reconcileOnce is one reconcile pass over the posts table. It is the unit the
 // coordinator's tests drive directly (the Handle loop just calls it on a timer).
 //
+// A post has HullBudget() manning SLOTS (sp-enry): one for a single-hull post — the
+// primary slot, byte-identical to the pre-enry behavior — or N for a multi-probe post,
+// whose markets are first partitioned into N disjoint per-probe tours and frozen. Every
+// pass below iterates SLOTS, not posts, so a dead probe on one slot heals without
+// touching its siblings.
+//
 // Passes:
-//   - Pass 1 (manned posts): release any post whose assigned hull is no longer in
-//     the post's system (the sp-qxa4 cross-system defect — stop its tour, free the
-//     hull, clear the assignment); retire a completed sweep-once (release its hull,
-//     delete the post); free the hull of any other post whose tour is not running,
-//     clearing the assignment so pass 2 re-mans it. A healthy in-system tour is left
-//     untouched.
-//   - Pass 1.5 (repositioning posts): a post with a relay in flight is left alone
-//     while its container is RUNNING; when the relay ends (landed, failed, or restart-
-//     interrupted) the hull is reclaimed and the relay reference cleared so pass 2
-//     re-evaluates the post — 2a mans it if the satellite arrived in-system, else 2b
-//     re-dispatches (backoff-gated).
-//   - Pass 2a (in-system manning): standing posts before sweep-once, claim an idle
-//     satellite ALREADY IN THE POST'S SYSTEM and spawn its tour. Manning is in-system
-//     only (sp-qxa4) — the tour navigates in-system, so a cross-system hull would
-//     crash-loop.
-//   - Pass 2b (reposition, sp-s232): for a post STILL unmanned after 2a, jump-route
-//     the FLEET-WIDE nearest idle satellite (fewest gate hops, via the gate-graph BFS)
-//     to it as a claimed cross-gate relay, then let the next tick's 2a man it in-system.
-//     A VIRGIN target (no KNOWN market waypoint to relay to) is first DISCOVERED presence-
-//     free via the API and repositioned the same tick, or parked UNSERVICEABLE if it has
-//     no marketplaces (sp-nn0y). Fail-closed: no gate graph, no reachable satellite, an
-//     API discovery failure, or an active backoff → the post parks honest and is re-checked
-//     next tick. In-system manning (2a) always wins over repositioning (2b) for the same
-//     satellite, since a satellite that arrives idle in a post's system is claimed by 2a
-//     before 2b runs.
+//   - Partition (sp-enry): (re)compute a multi-probe post's N disjoint partitions via VRP
+//     ONLY when its hull budget changed (slot count != budget), and persist them — so a
+//     restart reloads the frozen partitions and never re-tours, and a re-man reuses the same
+//     partition.
+//   - Pass 1 (manned slots): release any slot whose hull drifted out of the post's system
+//     (sp-qxa4 repair — stop its tour, free the hull, clear the slot); retire a completed
+//     sweep-once (release its hull, delete the post); free the hull of any other slot whose
+//     tour is not running, clearing it so pass 2 re-mans it with the SAME partition. A
+//     healthy in-system tour is left untouched.
+//   - Pass 1.5 (repositioning slots): a slot with a relay in flight is left alone while its
+//     container is RUNNING; when the relay ends the hull is reclaimed and the relay reference
+//     cleared so pass 2 re-evaluates the slot.
+//   - Pass 2a (in-system manning): claim an idle satellite ALREADY IN THE POST'S SYSTEM and
+//     spawn its tour over the slot's markets (all markets for a single-hull post, the frozen
+//     partition for a multi-probe slot). In-system only (sp-qxa4).
+//   - Pass 2b (reposition, sp-s232): for a slot STILL unmanned, jump-route the FLEET-WIDE
+//     nearest idle satellite to the post's system, then let the next tick's 2a man it.
 func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunScoutPostCoordinatorCommand) error {
-	logger := common.LoggerFromContext(ctx)
-
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {
 		return fmt.Errorf("failed to list scout posts: %w", err)
@@ -264,165 +302,425 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	removed := make(map[string]bool)
 
-	// Pass 1: manned posts.
+	// Partition pass (sp-enry): materialize each multi-probe post's disjoint tours.
+	// A no-op for single-hull posts and for multi-probe posts already partitioned at
+	// their current budget — it re-partitions ONLY on a hull-budget change.
 	for _, post := range posts {
-		if !post.IsManned() {
-			continue
-		}
-		// REPAIR (sp-qxa4): the assigned hull is no longer in the post's system — a
-		// cross-system assignment (the removed global fallback) or a satellite that
-		// drifted away. Its in-system tour can never navigate the post's waypoints, so
-		// it crash-respawn-loops. Release it unconditionally (even if the crash-loop is
-		// momentarily RUNNING this tick): stop the tour so it is NOT respawned, free the
-		// hull, and clear the assignment. Pass 2 then re-mans the post with an in-system
-		// satellite or parks it. This heals the live incident at deploy — no manual
-		// cleanup. Checked before the healthy-tour skip so a flickering-RUNNING loop
-		// cannot slip past.
-		if h.hullOutOfSystem(ctx, cmd, post) {
-			_ = h.daemonClient.StopContainer(ctx, post.TourContainerID)
-			h.reclaimHull(ctx, cmd, post)
-			logger.Log("INFO", fmt.Sprintf("Released cross-system assignment: hull %s is not in post %s's system — returned to pool for in-system re-matching", post.AssignedHull, post.SystemSymbol), map[string]interface{}{
-				"action":        "scout_post_cross_system_repair",
-				"system_symbol": post.SystemSymbol,
-				"ship_symbol":   post.AssignedHull,
-			})
-			post.AssignedHull = ""
-			post.TourContainerID = ""
-			if err := h.postRepo.Upsert(ctx, post); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to clear cross-system assignment on post %s: %v", post.SystemSymbol, err), nil)
-			}
-			continue
-		}
-		// A live tour is healthy — never disturb it.
-		if post.TourContainerID != "" && running[post.TourContainerID] {
-			continue
-		}
-		// A sweep-once post whose tour COMPLETED has done its one job: release the
-		// hull and retire the post so its satellite flows to the next unmanned post.
-		if post.Kind == domainScouting.PostKindSweepOnce && post.TourContainerID != "" && completed[post.TourContainerID] {
-			h.releaseHull(ctx, cmd, post.AssignedHull, "sweep_once_complete")
-			if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to retire completed sweep-once post %s: %v", post.SystemSymbol, err), nil)
-			} else {
-				removed[post.SystemSymbol] = true
-				logger.Log("INFO", fmt.Sprintf("Retired completed sweep-once post %s (hull %s released)", post.SystemSymbol, post.AssignedHull), map[string]interface{}{
-					"action":        "scout_post_sweep_complete",
-					"system_symbol": post.SystemSymbol,
-				})
-			}
-			continue
-		}
-		// Otherwise the tour is dead/missing/crashed: free the hull and clear the
-		// assignment. Pass 2 re-mans the post — with this same hull, since it is idle
-		// in the post's system (the repair above already released any out-of-system
-		// hull), so it respawns within a tick.
-		h.reclaimHull(ctx, cmd, post)
-		post.AssignedHull = ""
-		post.TourContainerID = ""
-		if err := h.postRepo.Upsert(ctx, post); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to clear assignment on post %s: %v", post.SystemSymbol, err), nil)
+		h.ensurePartitions(ctx, cmd, post)
+	}
+
+	// Pass 1: manned slots.
+	for _, post := range posts {
+		if h.reconcileMannedSlots(ctx, cmd, post, running, completed, removed) {
+			continue // post retired (sweep-once complete)
 		}
 	}
 
-	// Pass 1.5: repositioning posts (sp-s232). A relay in flight (RUNNING) owns its
-	// post — pass 2 skips it. When the relay is no longer RUNNING it has landed
-	// (COMPLETED: the hull is idle in the post's system — pass 2a mans it), failed (the
-	// hull is released wherever it stranded — pass 2b re-dispatches, backoff-gated), or
-	// was restart-interrupted (the claim is preserved — reclaim frees it so pass 2b
-	// re-dispatches from the hull's current position, travel() re-planning the remaining
-	// hops). Reclaim defensively (a clean/failed exit already released the hull; an
-	// interrupted one has not) and clear the relay reference either way.
+	// Pass 1.5: repositioning slots (sp-s232). A relay in flight (RUNNING) owns its slot —
+	// pass 2 skips it. When the relay is no longer RUNNING it has landed, failed, or was
+	// restart-interrupted; reclaim defensively and clear the relay reference so pass 2
+	// re-evaluates the slot.
 	for _, post := range posts {
-		if removed[post.SystemSymbol] || post.IsManned() || !post.IsRepositioning() {
+		if removed[post.SystemSymbol] {
 			continue
 		}
-		if running[post.RepositionContainerID] {
-			continue // relay airborne — leave it; pass 2 skips this post
-		}
-		h.reclaimRepositionHull(ctx, cmd, post)
-		logger.Log("INFO", fmt.Sprintf("Scout reposition relay for post %s ended (container %s not running) — re-evaluating next tick", post.SystemSymbol, post.RepositionContainerID), map[string]interface{}{
-			"action":        "scout_reposition_relay_ended",
-			"system_symbol": post.SystemSymbol,
-		})
-		post.RepositionContainerID = ""
-		if err := h.postRepo.Upsert(ctx, post); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to clear ended reposition relay on post %s: %v", post.SystemSymbol, err), nil)
-		}
+		h.reconcileRepositioningSlots(ctx, cmd, post, running)
 	}
 
-	// Pass 2: man the unmanned posts, standing first. A post repositioning (relay still
-	// airborne after pass 1.5) is excluded — the relay owns it until it lands or dies.
-	unmanned := make([]*domainScouting.ScoutPost, 0, len(posts))
-	for _, post := range posts {
-		if removed[post.SystemSymbol] || post.IsManned() || post.IsRepositioning() {
-			continue
-		}
-		unmanned = append(unmanned, post)
-	}
-	if len(unmanned) == 0 {
+	// Pass 2: man the unmanned slots, standing posts first.
+	targets := h.unmannedSlotTargets(posts, removed)
+	if len(targets) == 0 {
 		return nil
 	}
-	sortPostsByPriority(unmanned)
 
 	idleSats, err := h.idleScoutSatellites(ctx, cmd)
 	if err != nil {
 		return err
 	}
 
-	// Pass 2a: man every post that has an idle satellite ALREADY in its system (sp-qxa4
-	// in-system-only manning). Doing this for ALL posts before any reposition guarantees
-	// an in-system satellite is never repositioned AWAY from a post that could man it
-	// locally — manning wins over relaying for the same hull. Posts left unmanned here
-	// (no in-system satellite) fall through to 2b.
-	stillUnmanned := make([]*domainScouting.ScoutPost, 0, len(unmanned))
-	for _, post := range unmanned {
-		idx := selectInSystemSatellite(idleSats, post.SystemSymbol)
+	// Pass 2a: man every slot that has an idle satellite ALREADY in its system (sp-qxa4
+	// in-system-only manning). Doing this for ALL slots before any reposition guarantees an
+	// in-system satellite is never repositioned AWAY from a slot that could man it locally.
+	stillUnmanned := make([]slotTarget, 0, len(targets))
+	for _, tgt := range targets {
+		idx := selectInSystemSatellite(idleSats, tgt.post.SystemSymbol)
 		if idx < 0 {
-			stillUnmanned = append(stillUnmanned, post)
+			stillUnmanned = append(stillUnmanned, tgt)
 			continue
 		}
 
-		markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
+		markets, err := h.slotMarkets(ctx, tgt.post, tgt.slot)
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to discover markets for post %s: %v", post.SystemSymbol, err), nil)
+			common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to discover markets for post %s: %v", tgt.post.SystemSymbol, err), nil)
 			continue
 		}
 		if len(markets) == 0 {
-			// Nothing to scan (uncharted / no marketplace waypoints). Don't burn the
-			// in-system satellite's claim on a zero-market tour — leave it idle in
-			// system until the system is charted. Repositioning cannot help either (the
-			// problem is markets, not hull location), so this post is NOT a 2b candidate.
-			logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — leaving post unmanned this tick", post.SystemSymbol), nil)
+			// Nothing to scan (uncharted / no marketplace waypoints, or an un-partitioned
+			// multi-probe slot). Don't burn the in-system satellite's claim on a zero-market
+			// tour — leave it idle in system. Repositioning cannot help (the problem is
+			// markets, not hull location), so this slot is NOT a 2b candidate.
+			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("No markets to scan for post %s slot yet — leaving unmanned this tick", tgt.post.SystemSymbol), nil)
 			continue
 		}
 
 		sat := idleSats[idx]
 		idleSats = append(idleSats[:idx], idleSats[idx+1:]...)
 
-		tourID, err := h.spawnTour(ctx, cmd, post, sat.ShipSymbol(), markets)
+		tourID, err := h.spawnTour(ctx, cmd, tgt.post, sat.ShipSymbol(), markets)
 		if err != nil {
-			// Claim rejection (a raced pin) or a transient spawn failure: the satellite
-			// is consumed for this tick; the post stays unmanned and retries next tick.
-			logger.Log("WARNING", fmt.Sprintf("Failed to man post %s with %s: %v", post.SystemSymbol, sat.ShipSymbol(), err), nil)
+			common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to man post %s with %s: %v", tgt.post.SystemSymbol, sat.ShipSymbol(), err), nil)
 			continue
 		}
 
-		post.AssignedHull = sat.ShipSymbol()
-		post.TourContainerID = tourID
-		if err := h.postRepo.Upsert(ctx, post); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Manned post %s but failed to persist assignment: %v", post.SystemSymbol, err), nil)
+		tgt.slot.SetAssignedHull(sat.ShipSymbol())
+		tgt.slot.SetTourContainerID(tourID)
+		if err := h.postRepo.Upsert(ctx, tgt.post); err != nil {
+			common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Manned post %s but failed to persist assignment: %v", tgt.post.SystemSymbol, err), nil)
 		}
 	}
 
-	// Pass 2b: jump-route the fleet-wide nearest idle satellite to each still-unmanned
-	// post (sp-s232). repositionUnmannedPost fails closed — no gate graph, no idle
-	// satellite, no reachable satellite, no known markets, or an active backoff parks
-	// the post honest — so with no gate graph wired this is exactly the pre-s232 park.
-	for _, post := range stillUnmanned {
-		h.repositionUnmannedPost(ctx, cmd, post, &idleSats)
+	// Pass 2b: jump-route the fleet-wide nearest idle satellite to each still-unmanned slot
+	// (sp-s232). repositionUnmannedSlot fails closed — no gate graph, no idle satellite, no
+	// reachable satellite, no known markets, or an active backoff parks the slot honest — so
+	// with no gate graph wired this is exactly the pre-s232 park.
+	for _, tgt := range stillUnmanned {
+		h.repositionUnmannedSlot(ctx, cmd, tgt.post, tgt.slot, &idleSats)
 	}
 
 	return nil
+}
+
+// reconcileMannedSlots runs pass 1 over one post's slots. It returns true when the
+// post was retired (a completed sweep-once), so the caller skips it in later passes.
+func (h *RunScoutPostCoordinatorHandler) reconcileMannedSlots(
+	ctx context.Context,
+	cmd *RunScoutPostCoordinatorCommand,
+	post *domainScouting.ScoutPost,
+	running, completed, removed map[string]bool,
+) bool {
+	logger := common.LoggerFromContext(ctx)
+
+	for _, slot := range post.Slots() {
+		hull := slot.AssignedHull()
+		if hull == "" {
+			continue
+		}
+		tourID := slot.TourContainerID()
+
+		// REPAIR (sp-qxa4): the assigned hull is no longer in the post's system. Its
+		// in-system tour can never navigate the post's waypoints, so it crash-respawn-loops.
+		// Release it unconditionally (even if momentarily RUNNING): stop the tour, free the
+		// hull, clear the slot. Pass 2 then re-mans with an in-system satellite or parks.
+		if h.hullOutOfSystem(ctx, cmd, hull, post.SystemSymbol) {
+			_ = h.daemonClient.StopContainer(ctx, tourID)
+			h.reclaimHullFromContainer(ctx, cmd, tourID, "scout_post_respawn")
+			logger.Log("INFO", fmt.Sprintf("Released cross-system assignment: hull %s is not in post %s's system — returned to pool for in-system re-matching", hull, post.SystemSymbol), map[string]interface{}{
+				"action":        "scout_post_cross_system_repair",
+				"system_symbol": post.SystemSymbol,
+				"ship_symbol":   hull,
+			})
+			slot.SetAssignedHull("")
+			slot.SetTourContainerID("")
+			if err := h.postRepo.Upsert(ctx, post); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to clear cross-system assignment on post %s: %v", post.SystemSymbol, err), nil)
+			}
+			continue
+		}
+
+		// A live tour is healthy — never disturb it.
+		if tourID != "" && running[tourID] {
+			continue
+		}
+
+		// A sweep-once post whose tour COMPLETED has done its one job: release the hull and
+		// retire the post so its satellite flows to the next unmanned post. Sweep-once is
+		// always single-hull (HullBudget clamps it), so this is the only slot.
+		if post.Kind == domainScouting.PostKindSweepOnce && tourID != "" && completed[tourID] {
+			h.releaseHull(ctx, cmd, hull, "sweep_once_complete")
+			if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to retire completed sweep-once post %s: %v", post.SystemSymbol, err), nil)
+			} else {
+				removed[post.SystemSymbol] = true
+				logger.Log("INFO", fmt.Sprintf("Retired completed sweep-once post %s (hull %s released)", post.SystemSymbol, hull), map[string]interface{}{
+					"action":        "scout_post_sweep_complete",
+					"system_symbol": post.SystemSymbol,
+				})
+				return true
+			}
+			continue
+		}
+
+		// Otherwise the tour is dead/missing/crashed: free the hull and clear the slot. Pass 2
+		// re-mans it — with this same hull, since it is idle in the post's system — over the
+		// SAME partition (the slot's frozen markets are untouched), so it respawns within a tick.
+		h.reclaimHullFromContainer(ctx, cmd, tourID, "scout_post_respawn")
+		slot.SetAssignedHull("")
+		slot.SetTourContainerID("")
+		if err := h.postRepo.Upsert(ctx, post); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to clear assignment on post %s: %v", post.SystemSymbol, err), nil)
+		}
+	}
+	return false
+}
+
+// reconcileRepositioningSlots runs pass 1.5 over one post's slots: reclaim any ended
+// relay and clear its reference so pass 2 re-evaluates the slot (sp-s232).
+func (h *RunScoutPostCoordinatorHandler) reconcileRepositioningSlots(
+	ctx context.Context,
+	cmd *RunScoutPostCoordinatorCommand,
+	post *domainScouting.ScoutPost,
+	running map[string]bool,
+) {
+	logger := common.LoggerFromContext(ctx)
+	for _, slot := range post.Slots() {
+		relayID := slot.RepositionContainerID()
+		if slot.AssignedHull() != "" || relayID == "" {
+			continue
+		}
+		if running[relayID] {
+			continue // relay airborne — leave it; pass 2 skips this slot
+		}
+		h.reclaimHullFromContainer(ctx, cmd, relayID, "scout_reposition_ended")
+		logger.Log("INFO", fmt.Sprintf("Scout reposition relay for post %s ended (container %s not running) — re-evaluating next tick", post.SystemSymbol, relayID), map[string]interface{}{
+			"action":        "scout_reposition_relay_ended",
+			"system_symbol": post.SystemSymbol,
+		})
+		slot.SetRepositionContainerID("")
+		if err := h.postRepo.Upsert(ctx, post); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to clear ended reposition relay on post %s: %v", post.SystemSymbol, err), nil)
+		}
+	}
+}
+
+// unmannedSlotTargets collects every slot that pass 2 should man: unmanned, not
+// repositioning, in a non-retired post. Standing posts sort before sweep-once (the
+// freshness backbone is manned first), deterministic by system within a kind, and
+// primary-before-extra within a post — so manning order is stable and testable.
+func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool) []slotTarget {
+	ordered := make([]*domainScouting.ScoutPost, 0, len(posts))
+	for _, post := range posts {
+		if removed[post.SystemSymbol] {
+			continue
+		}
+		ordered = append(ordered, post)
+	}
+	sortPostsByPriority(ordered)
+
+	var targets []slotTarget
+	for _, post := range ordered {
+		for _, slot := range post.Slots() {
+			if slot.AssignedHull() != "" || slot.RepositionContainerID() != "" {
+				continue
+			}
+			targets = append(targets, slotTarget{post: post, slot: slot})
+		}
+	}
+	return targets
+}
+
+// ensurePartitions materializes a multi-probe post's N DISJOINT market partitions
+// (sp-enry). It is a no-op for a single-hull post (HullBudget 1 → no partition, the
+// primary tours all markets) and for a multi-probe post ALREADY partitioned at its
+// current budget (len(ExtraSlots) == budget-1) — so it re-partitions ONLY on a
+// hull-budget change, never per tick. On a budget change of a running post it stops the
+// existing tours/relays (their markets change), reclaims their hulls, and rebuilds the
+// slots with fresh partitions; pass 2 re-mans them. Fails closed: no routing client, no
+// markets, or a VRP error leaves the post un-partitioned (it parks) and retries next tick.
+//
+// API-BUDGET INVARIANT (documented per the bead): partitioning changes WHERE probes scan,
+// not HOW MUCH. Total scans/hour ≈ markets / freshness-target regardless of N — N smaller
+// partitions each paced to the freshness target (circuitPaceInterval, scout_tour.go) sum to
+// one scan per market per freshness window. More probes buy fresher data, NOT more API calls.
+func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) {
+	logger := common.LoggerFromContext(ctx)
+
+	budget := post.HullBudget()
+
+	if budget <= 1 {
+		// Single-hull (or sweep-once): a genuine single-hull post carries no partition
+		// state and this is a no-op (byte-identical to pre-enry). But a post REDUCED from
+		// multi-probe (hulls lowered to 1, or converted to sweep-once) still carries stale
+		// extra slots / partition — tear them down so it reverts to the single-slot shape,
+		// freeing the surplus probes to the pool. Pass 2 then re-mans the primary over ALL
+		// markets.
+		if len(post.ExtraSlots) > 0 || len(post.PrimaryPartition) > 0 {
+			h.tearDownSlots(ctx, cmd, post)
+			if err := h.postRepo.Upsert(ctx, post); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to revert post %s to single-hull: %v", post.SystemSymbol, err), nil)
+				return
+			}
+			logger.Log("INFO", fmt.Sprintf("Scout post %s hull budget reduced to %d — reverted to single-hull, surplus probes freed", post.SystemSymbol, budget), map[string]interface{}{
+				"action":        "scout_post_reverted_single_hull",
+				"system_symbol": post.SystemSymbol,
+			})
+		}
+		return
+	}
+	if len(post.ExtraSlots) == budget-1 {
+		return // already partitioned at this budget — stable, no re-partition.
+	}
+
+	if h.routingClient == nil {
+		logger.Log("WARNING", fmt.Sprintf("Scout post %s wants %d hulls but no routing client is wired — cannot partition; parking", post.SystemSymbol, budget), map[string]interface{}{
+			"action":        "scout_post_partition_unavailable",
+			"system_symbol": post.SystemSymbol,
+		})
+		return
+	}
+
+	markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to discover markets to partition post %s: %v", post.SystemSymbol, err), nil)
+		return
+	}
+	if len(markets) == 0 {
+		logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — cannot partition, post parks", post.SystemSymbol), map[string]interface{}{
+			"action":        "scout_post_partition_no_markets",
+			"system_symbol": post.SystemSymbol,
+		})
+		return
+	}
+
+	partitions, err := h.partitionMarkets(ctx, cmd, post.SystemSymbol, markets, budget)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("VRP partition of post %s into %d tours failed: %v — parking, retry next tick", post.SystemSymbol, budget, err), map[string]interface{}{
+			"action":        "scout_post_partition_failed",
+			"system_symbol": post.SystemSymbol,
+		})
+		return
+	}
+
+	// Re-partition: stop any existing tours/relays (their markets change) and reclaim their
+	// hulls before overwriting the slots. On first partition (no slots yet) this is a no-op.
+	repartition := len(post.ExtraSlots) > 0 || post.AssignedHull != "" || post.RepositionContainerID != ""
+	h.tearDownSlots(ctx, cmd, post)
+
+	post.PrimaryPartition = partitions[0]
+	post.ExtraSlots = make([]domainScouting.ScoutPostSlot, budget-1)
+	for i := 1; i < budget; i++ {
+		post.ExtraSlots[i-1] = domainScouting.ScoutPostSlot{Partition: partitions[i]}
+	}
+	if err := h.postRepo.Upsert(ctx, post); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Partitioned post %s but failed to persist: %v", post.SystemSymbol, err), nil)
+		return
+	}
+
+	action := "scout_post_partitioned"
+	verb := "Partitioned"
+	if repartition {
+		action = "scout_post_repartitioned"
+		verb = "Re-partitioned (hull budget changed)"
+	}
+	logger.Log("INFO", fmt.Sprintf("%s scout post %s into %d disjoint tours over %d markets", verb, post.SystemSymbol, budget, len(markets)), map[string]interface{}{
+		"action":        action,
+		"system_symbol": post.SystemSymbol,
+		"hulls":         budget,
+		"markets":       len(markets),
+	})
+}
+
+// tearDownSlots stops every slot's tour/relay container and reclaims its hull ahead of
+// a re-partition (sp-enry), then clears the assignments in memory. Best-effort: a hull
+// the coordinator fails to reclaim here is reclaimed by pass 1 on a later tick.
+func (h *RunScoutPostCoordinatorHandler) tearDownSlots(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) {
+	for _, slot := range post.Slots() {
+		if tourID := slot.TourContainerID(); tourID != "" {
+			_ = h.daemonClient.StopContainer(ctx, tourID)
+			h.reclaimHullFromContainer(ctx, cmd, tourID, "scout_post_repartition")
+		}
+		if relayID := slot.RepositionContainerID(); relayID != "" {
+			_ = h.daemonClient.StopContainer(ctx, relayID)
+			h.reclaimHullFromContainer(ctx, cmd, relayID, "scout_post_repartition")
+		}
+	}
+	post.AssignedHull = ""
+	post.TourContainerID = ""
+	post.RepositionContainerID = ""
+	post.PrimaryPartition = nil
+	post.ExtraSlots = nil
+}
+
+// partitionMarkets solves the VRP that splits markets into n DISJOINT per-probe tours
+// (sp-enry), reusing the SAME PartitionFleet the scout-markets verb uses. The N probes are
+// synthetic slots anchored at a common waypoint (the lexicographically-smallest market),
+// so the partition depends only on (n, markets, geometry) and is STABLE across which real
+// probes are present; the caller freezes and persists the result. It guarantees complete,
+// disjoint coverage: any market the VRP fails to place (e.g. the fallback mock's 1-per-ship
+// stub) is appended to slot 0, so no market is silently dropped.
+func (h *RunScoutPostCoordinatorHandler) partitionMarkets(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, systemSymbol string, markets []string, n int) ([][]string, error) {
+	if h.routingClient == nil {
+		return nil, fmt.Errorf("no routing client wired")
+	}
+
+	anchor := markets[0]
+	for _, m := range markets[1:] {
+		if m < anchor {
+			anchor = m
+		}
+	}
+
+	slotIDs := make([]string, n)
+	configs := make(map[string]*routing.ShipConfigData, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("%s-slot-%d", systemSymbol, i)
+		slotIDs[i] = id
+		configs[id] = &routing.ShipConfigData{
+			CurrentLocation: anchor,
+			FuelCapacity:    partitionAnchorFuelCapacity,
+			EngineSpeed:     partitionAnchorEngineSpeed,
+		}
+	}
+
+	var waypointData []*system.WaypointData
+	if h.graphProvider != nil {
+		if graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value()); err == nil {
+			waypointData, _ = extractWaypointData(graphResult.Graph)
+		}
+	}
+
+	resp, err := h.routingClient.PartitionFleet(ctx, &routing.VRPRequest{
+		SystemSymbol:    systemSymbol,
+		ShipSymbols:     slotIDs,
+		MarketWaypoints: markets,
+		ShipConfigs:     configs,
+		AllWaypoints:    waypointData,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	partitions := make([][]string, n)
+	assigned := make(map[string]bool, len(markets))
+	for i, id := range slotIDs {
+		if tour, ok := resp.Assignments[id]; ok {
+			for _, wp := range tour.Waypoints {
+				if assigned[wp] {
+					continue // keep partitions strictly disjoint
+				}
+				assigned[wp] = true
+				partitions[i] = append(partitions[i], wp)
+			}
+		}
+	}
+	// Complete coverage: any market the VRP left unplaced goes to slot 0, so a partition
+	// never silently drops a market (defense against a degraded/stub partitioner).
+	for _, m := range markets {
+		if !assigned[m] {
+			partitions[0] = append(partitions[0], m)
+			assigned[m] = true
+		}
+	}
+	return partitions, nil
+}
+
+// slotMarkets returns the waypoints a slot's tour should scan (sp-enry): ALL the
+// system's markets for a single-hull post (the pre-enry behavior, discovered fresh), or
+// the slot's frozen partition for a multi-probe post.
+func (h *RunScoutPostCoordinatorHandler) slotMarkets(ctx context.Context, post *domainScouting.ScoutPost, slot domainScouting.ScoutSlotRef) ([]string, error) {
+	if post.HullBudget() <= 1 {
+		return h.discoverMarkets(ctx, post.SystemSymbol)
+	}
+	return slot.Partition(), nil
 }
 
 // containerIDSet returns the set of container IDs in the given status for the player.
@@ -477,10 +775,12 @@ func deriveScanInterval(freshness time.Duration) time.Duration {
 	return clampScanInterval(freshness / 2)
 }
 
-// spawnTour persists a coordinator-managed scout_tour worker for hullSymbol,
-// atomically claims the hull to it, and starts it. The persisted config carries
-// coordinator_id so restart recovery skips the tour and leaves respawning to this
-// coordinator. Standing posts run an infinite tour; sweep-once posts a single one.
+// spawnTour persists a coordinator-managed scout_tour worker for hullSymbol over the
+// slot's markets, atomically claims the hull to it, and starts it. The persisted config
+// carries coordinator_id so restart recovery skips the tour and leaves respawning to this
+// coordinator. Standing posts run an infinite tour; sweep-once posts a single one. The
+// tour's ScanInterval is derived from the POST's freshness target, so every probe on a
+// multi-probe post paces its own partition against one freshness target (sp-enry).
 func (h *RunScoutPostCoordinatorHandler) spawnTour(
 	ctx context.Context,
 	cmd *RunScoutPostCoordinatorCommand,
@@ -533,35 +833,32 @@ func (h *RunScoutPostCoordinatorHandler) spawnTour(
 	return workerID, nil
 }
 
-// repositionUnmannedPost jump-routes the fleet-wide nearest idle satellite to a post
-// with no in-system hull (sp-s232). It FAILS CLOSED at every gap — no gate graph, no
-// idle satellite, an active backoff, an unserviceable/undiscoverable virgin system, or
-// no jump-routable satellite — by parking the post honest and returning, so the post is
-// simply re-checked next tick (nothing is spent, no hull is committed to an un-flyable
-// relay). A virgin target with no KNOWN market waypoint is first discovered presence-free
-// (discoverVirginMarkets, sp-nn0y) and repositioned the same tick. On success it claims
-// the satellite to a new reposition container (the relay owns the hull for the whole
-// flight, RULINGS #7), records the relay on the post, and arms the per-post dispatch
-// backoff. idleSats is a pointer so a dispatched satellite is removed from the shared
-// pool for the rest of this tick.
-func (h *RunScoutPostCoordinatorHandler) repositionUnmannedPost(
+// repositionUnmannedSlot jump-routes the fleet-wide nearest idle satellite to a slot
+// with no in-system hull (sp-s232). It FAILS CLOSED at every gap — no gate graph, no idle
+// satellite, an active backoff, an unserviceable/undiscoverable virgin system, or no
+// jump-routable satellite — by parking the slot honest and returning. On success it claims
+// the satellite to a new reposition container, records the relay on the slot, and arms the
+// per-slot dispatch backoff. idleSats is a pointer so a dispatched satellite is removed from
+// the shared pool for the rest of this tick.
+func (h *RunScoutPostCoordinatorHandler) repositionUnmannedSlot(
 	ctx context.Context,
 	cmd *RunScoutPostCoordinatorCommand,
 	post *domainScouting.ScoutPost,
+	slot domainScouting.ScoutSlotRef,
 	idleSats *[]*navigation.Ship,
 ) {
 	logger := common.LoggerFromContext(ctx)
+	key := backoffKey(cmd.PlayerID.Value(), post.SystemSymbol, slot.Index())
 
 	// No gate graph wired, or no idle satellite left this tick → cannot reposition. Park
-	// honest with the in-system reason (the pre-s232 / sp-qxa4 behavior and greppable
-	// park message).
+	// honest with the in-system reason (the pre-s232 / sp-qxa4 behavior and greppable message).
 	if h.gateGraph == nil || len(*idleSats) == 0 {
 		h.parkNoInSystemSatellite(ctx, post)
 		return
 	}
 
-	// A recent relay for this post failed — don't hot-loop re-dispatch (sp-py4n).
-	if h.repositionBackedOff(cmd.PlayerID.Value(), post.SystemSymbol) {
+	// A recent relay for this slot failed — don't hot-loop re-dispatch (sp-py4n).
+	if h.repositionBackedOff(key) {
 		logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: reposition backing off after a recent relay — retrying shortly", post.SystemSymbol), map[string]interface{}{
 			"action":        "scout_reposition_backoff",
 			"system_symbol": post.SystemSymbol,
@@ -569,24 +866,20 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedPost(
 		return
 	}
 
-	// Repositioning to a system with nothing to scan is pointless, and travel() needs a
-	// concrete destination waypoint — reuse the discovered markets (the same waypoints
-	// the tour will scan on arrival).
+	// travel() needs a concrete destination waypoint in the target system; any market
+	// serves (the relay just lands the hull there and the next in-system tick's tour rotates
+	// to start from wherever it sits). Use the whole system's markets, not the slot's
+	// partition, so the destination logic is byte-identical to s232 for a single-hull post.
 	markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to discover markets for reposition target %s: %v", post.SystemSymbol, err), nil)
 		return
 	}
 	if len(markets) == 0 {
-		// Virgin frontier system (sp-nn0y): the post's system has ZERO KNOWN market
-		// waypoints, so there is no destination to relay to — the s232 bootstrap chicken-
-		// and-egg, since nothing can scan a system no satellite can reach. DISCOVER its
-		// waypoints presence-free via the API, then retry the read. discoverVirginMarkets
-		// fails closed (parks honest) at every gap and arms the dispatch backoff so the
-		// API is probed at most once per window, never per tick.
-		markets = h.discoverVirginMarkets(ctx, cmd, post)
+		// Virgin frontier system (sp-nn0y): discover its waypoints presence-free, then retry.
+		markets = h.discoverVirginMarkets(ctx, cmd, post, key)
 		if len(markets) == 0 {
-			return // parked honest by discoverVirginMarkets (no discoverer / API error / unserviceable)
+			return // parked honest by discoverVirginMarkets
 		}
 	}
 	destWaypoint := pickRepositionDestination(markets)
@@ -606,16 +899,14 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedPost(
 
 	relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint)
 	if err != nil {
-		// Claim rejection (a raced pin) or a transient spawn failure: the satellite is
-		// consumed for this tick; the post stays unmanned and retries next tick.
 		logger.Log("WARNING", fmt.Sprintf("Failed to dispatch reposition of %s to post %s: %v", sat.ShipSymbol(), post.SystemSymbol, err), nil)
 		return
 	}
 
 	// Arm the backoff BEFORE persisting the relay reference: if the Upsert below fails,
-	// the backoff still prevents an immediate second relay to this post next tick.
-	h.noteRepositionDispatch(cmd.PlayerID.Value(), post.SystemSymbol)
-	post.RepositionContainerID = relayID
+	// the backoff still prevents an immediate second relay to this slot next tick.
+	h.noteRepositionDispatch(key)
+	slot.SetRepositionContainerID(relayID)
 	if err := h.postRepo.Upsert(ctx, post); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Dispatched reposition for post %s but failed to persist relay reference: %v", post.SystemSymbol, err), nil)
 	}
@@ -631,32 +922,21 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedPost(
 }
 
 // discoverVirginMarkets resolves the s232 bootstrap chicken-and-egg for a post whose
-// system has ZERO known market waypoints (sp-nn0y): the reposition destination IS a known
-// market waypoint, and an unswept system has none, so the captain's frontier relay targets
-// would park forever. It DISCOVERS the system's waypoints presence-free via the graph
-// provider's cache-first GetGraph — the same fetch-through the `waypoint` verb and
-// scout_markets use, which needs no local ship in the system — persisting them era-scoped
-// (the unchanged BuildSystemGraph→waypointRepo.Add path, sp-vapw). It then re-reads:
-//   - markets found → returns them; the caller repositions THIS tick.
-//   - none found → the system is genuinely marketless: parks UNSERVICEABLE with a DISTINCT
-//     reason, so the captain can tell 'not yet scanned' from 'nothing there' and remove it.
-//   - API error → parks fail-closed with the pre-nn0y reason, retried next window.
-//
-// It arms the reposition dispatch backoff BEFORE the API call (reusing the s232 keying), so
-// a marketless or API-erroring system is probed at most ONCE per window — the caller's
-// pass-2b backoff check short-circuits every intervening tick (no per-tick API hammering).
-// A system whose discovery finds markets is never re-discovered: the persisted rows satisfy
-// the caller's discoverMarkets read directly next pass. With no graph provider wired it is a
-// no-op that logs the pre-nn0y park verbatim, so every existing caller/test is unaffected.
+// system has ZERO known market waypoints (sp-nn0y): it DISCOVERS the system's waypoints
+// presence-free via the graph provider's cache-first GetGraph, persisting them era-scoped,
+// then re-reads. markets found → returns them (the caller repositions this tick); none →
+// parks UNSERVICEABLE (charted but barren); API error → parks fail-closed. It arms the
+// per-slot dispatch backoff (key) BEFORE the API call, so a marketless or API-erroring
+// system is probed at most ONCE per window. With no graph provider wired it logs the pre-nn0y
+// park verbatim, so every existing caller/test is unaffected.
 func (h *RunScoutPostCoordinatorHandler) discoverVirginMarkets(
 	ctx context.Context,
 	cmd *RunScoutPostCoordinatorCommand,
 	post *domainScouting.ScoutPost,
+	key string,
 ) []string {
 	logger := common.LoggerFromContext(ctx)
 
-	// No discoverer wired → preserve the pre-nn0y park verbatim (its message text and
-	// action still grep-match; disabled discovery cannot change existing behavior).
 	if h.graphProvider == nil {
 		logger.Log("INFO", fmt.Sprintf("No known marketplace waypoints in %s yet — cannot reposition (nothing to scan), post parks", post.SystemSymbol), map[string]interface{}{
 			"action":        "scout_reposition_no_markets",
@@ -666,13 +946,10 @@ func (h *RunScoutPostCoordinatorHandler) discoverVirginMarkets(
 	}
 
 	// Arm the backoff BEFORE the API call: whether discovery finds markets, finds none, or
-	// errors, this system is not probed again until the window elapses. On the found-markets
-	// path the caller repositions immediately and the persisted rows short-circuit any
-	// re-discovery next pass anyway, so the extra arm is harmless there.
-	h.noteRepositionDispatch(cmd.PlayerID.Value(), post.SystemSymbol)
+	// errors, this system is not probed again until the window elapses.
+	h.noteRepositionDispatch(key)
 
 	if _, err := h.graphProvider.GetGraph(ctx, post.SystemSymbol, false, cmd.PlayerID.Value()); err != nil {
-		// Fail closed: nothing spent, no hull committed — park and retry after the backoff.
 		logger.Log("WARNING", fmt.Sprintf("Virgin-system waypoint discovery for reposition target %s failed: %v — post parks (fail-closed), retrying after backoff", post.SystemSymbol, err), map[string]interface{}{
 			"action":        "scout_reposition_discovery_failed",
 			"system_symbol": post.SystemSymbol,
@@ -680,16 +957,12 @@ func (h *RunScoutPostCoordinatorHandler) discoverVirginMarkets(
 		return nil
 	}
 
-	// Discovery persisted the system's waypoints era-scoped — re-read the markets.
 	markets, err := h.discoverMarkets(ctx, post.SystemSymbol)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to re-read markets for %s after discovery: %v", post.SystemSymbol, err), nil)
 		return nil
 	}
 	if len(markets) == 0 {
-		// Discovery succeeded but the system genuinely has NO marketplaces — the post is
-		// unserviceable. A distinct reason (not the 'not yet scanned' park) so the captain
-		// knows the system was charted and found barren, and can remove the post.
 		logger.Log("INFO", fmt.Sprintf("%s has no marketplaces — post is unserviceable; consider removing", post.SystemSymbol), map[string]interface{}{
 			"action":        "scout_post_unserviceable",
 			"system_symbol": post.SystemSymbol,
@@ -708,11 +981,8 @@ func (h *RunScoutPostCoordinatorHandler) discoverVirginMarkets(
 // selectNearestSatelliteByHops returns the index (into idleSats) of the satellite
 // FEWEST jump hops from postSystem, its hop count, and ok=false when none can be
 // jump-routed there (sp-s232). Distance is the gate-graph BFS path length; a satellite
-// whose Path errors — a definitive unroutable verdict OR a transient store/fetch
-// failure — is skipped (fail-closed: never dispatch a relay we cannot route), the gate
-// graph re-fetching next tick. idleSats is pre-sorted by symbol, and the comparison is
-// strict (< bestHops), so the lowest-symbol satellite wins an equal-hops tie —
-// deterministic and testable.
+// whose Path errors is skipped (fail-closed). idleSats is pre-sorted by symbol, and the
+// comparison is strict (< bestHops), so the lowest-symbol satellite wins an equal-hops tie.
 func (h *RunScoutPostCoordinatorHandler) selectNearestSatelliteByHops(
 	ctx context.Context,
 	idleSats []*navigation.Ship,
@@ -750,9 +1020,7 @@ func (h *RunScoutPostCoordinatorHandler) selectNearestSatelliteByHops(
 // hullSymbol, atomically claims the hull to it (operation scoutPostFleet — the same
 // poach guard the tour claim uses, RULINGS #7), and starts it. Mirrors spawnTour
 // exactly (persist → claim → start, with rollback on each failure) so the reposition
-// worker inherits the same restart-recovery semantics: the persisted config carries
-// coordinator_id, so daemon restart marks it worker_interrupted (claim preserved) and
-// leaves re-dispatch to this coordinator.
+// worker inherits the same restart-recovery semantics.
 func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 	ctx context.Context,
 	cmd *RunScoutPostCoordinatorCommand,
@@ -771,9 +1039,6 @@ func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 		return "", fmt.Errorf("failed to persist scout reposition worker: %w", err)
 	}
 
-	// Atomic claim (l7h2): rejects a hull pinned to another fleet at the DB, so a pin
-	// racing discovery can never be poached. %w so a dedication rejection is
-	// distinguishable from a transient failure.
 	if err := h.shipRepo.ClaimShip(ctx, hullSymbol, workerID, cmd.PlayerID, scoutPostFleet); err != nil {
 		_ = h.daemonClient.StopContainer(ctx, workerID)
 		return "", fmt.Errorf("failed to claim satellite %s for reposition: %w", hullSymbol, err)
@@ -788,36 +1053,8 @@ func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 	return workerID, nil
 }
 
-// reclaimRepositionHull frees any hull still assigned to a post's ended reposition
-// relay (sp-s232), returning it to idle so pass 2 re-evaluates it. Best-effort and
-// DB-only — the reclaimHull pattern, keyed on the relay container instead of the tour.
-// A clean or failed relay exit already released the hull (this is a no-op then); a
-// restart-interrupted relay did not (this is what frees it).
-func (h *RunScoutPostCoordinatorHandler) reclaimRepositionHull(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) {
-	logger := common.LoggerFromContext(ctx)
-	if post.RepositionContainerID == "" {
-		return
-	}
-	ships, err := h.shipRepo.FindByContainer(ctx, post.RepositionContainerID, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to load ships for ended reposition relay %s: %v", post.RepositionContainerID, err), nil)
-		return
-	}
-	for _, ship := range ships {
-		if !ship.IsAssigned() {
-			continue
-		}
-		ship.ForceRelease("scout_reposition_ended", h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim satellite %s from ended relay %s: %v", ship.ShipSymbol(), post.RepositionContainerID, err), nil)
-			continue
-		}
-		logger.Log("INFO", fmt.Sprintf("Reclaimed satellite %s from ended reposition relay %s", ship.ShipSymbol(), post.RepositionContainerID), nil)
-	}
-}
-
 // parkNoInSystemSatellite logs the honest, system-scoped park reason for an unmanned
-// post that has no in-system satellite and cannot be repositioned (no gate graph, or no
+// slot that has no in-system satellite and cannot be repositioned (no gate graph, or no
 // idle satellite left this tick). The message text is preserved verbatim from the
 // pre-s232 park so `container logs` greps and the sp-qxa4 park assertions still match.
 func (h *RunScoutPostCoordinatorHandler) parkNoInSystemSatellite(ctx context.Context, post *domainScouting.ScoutPost) {
@@ -827,37 +1064,41 @@ func (h *RunScoutPostCoordinatorHandler) parkNoInSystemSatellite(ctx context.Con
 	})
 }
 
-// repositionBackedOff reports whether a reposition dispatch for (playerID, system) is
-// currently within its backoff window (sp-s232). A nil/absent entry reads false.
-func (h *RunScoutPostCoordinatorHandler) repositionBackedOff(playerID int, system string) bool {
+// repositionBackedOff reports whether a reposition dispatch for key is currently within
+// its backoff window (sp-s232). A nil/absent entry reads false.
+func (h *RunScoutPostCoordinatorHandler) repositionBackedOff(key string) bool {
 	h.repositionMu.Lock()
 	defer h.repositionMu.Unlock()
-	until, ok := h.repositionBackoffUntil[backoffKey(playerID, system)]
+	until, ok := h.repositionBackoffUntil[key]
 	return ok && h.clock.Now().Before(until)
 }
 
-// noteRepositionDispatch arms the per-post dispatch backoff (sp-s232) so the next
-// dispatch for this post waits out repositionRetryBackoff — the anti-hot-loop bound.
-func (h *RunScoutPostCoordinatorHandler) noteRepositionDispatch(playerID int, system string) {
+// noteRepositionDispatch arms the per-slot dispatch backoff (sp-s232) so the next
+// dispatch for this slot waits out repositionRetryBackoff — the anti-hot-loop bound.
+func (h *RunScoutPostCoordinatorHandler) noteRepositionDispatch(key string) {
 	h.repositionMu.Lock()
 	defer h.repositionMu.Unlock()
 	if h.repositionBackoffUntil == nil {
 		h.repositionBackoffUntil = make(map[string]time.Time)
 	}
-	h.repositionBackoffUntil[backoffKey(playerID, system)] = h.clock.Now().Add(repositionRetryBackoff)
+	h.repositionBackoffUntil[key] = h.clock.Now().Add(repositionRetryBackoff)
 }
 
-// backoffKey scopes the reposition backoff to (playerID, system) so one player's relay
-// to system S never rate-limits another player's post in the same-named system.
-func backoffKey(playerID int, system string) string {
-	return fmt.Sprintf("%d|%s", playerID, system)
+// backoffKey scopes the reposition backoff to (playerID, system, slot) so one player's
+// relay to system S never rate-limits another player's post in the same-named system, and
+// each slot of a multi-probe post repositions independently (sp-enry). The PRIMARY slot
+// keeps the pre-enry un-suffixed key, so a single-hull post is byte-identical to s232.
+func backoffKey(playerID int, system string, slotIndex int) string {
+	if slotIndex < 0 {
+		return fmt.Sprintf("%d|%s", playerID, system)
+	}
+	return fmt.Sprintf("%d|%s|%d", playerID, system, slotIndex)
 }
 
 // pickRepositionDestination chooses the reposition target waypoint from a post's
 // discovered markets — the lexicographically smallest, so the destination (and thus the
-// dispatch log and the tests) is deterministic. Any market in the system serves: the
-// relay lands the hull there and the next in-system tick's tour rotates its scan to
-// start from wherever the hull sits. The caller has already ensured markets is non-empty.
+// dispatch log and the tests) is deterministic. Any market in the system serves. The
+// caller has already ensured markets is non-empty.
 func pickRepositionDestination(markets []string) string {
 	best := markets[0]
 	for _, m := range markets[1:] {
@@ -868,16 +1109,15 @@ func pickRepositionDestination(markets []string) string {
 	return best
 }
 
-// hullOutOfSystem reports whether a manned post's assigned hull is currently NOT in
-// the post's system — the cross-system-assignment defect the repair pass heals
-// (sp-qxa4). It fails safe: a hull that cannot be loaded, or whose location is
-// unknown, is treated as in-system so a transient lookup gap never triggers a
-// spurious release. An unmanned post is trivially not out-of-system.
-func (h *RunScoutPostCoordinatorHandler) hullOutOfSystem(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) bool {
-	if post.AssignedHull == "" {
+// hullOutOfSystem reports whether a hull is currently NOT in system — the cross-system
+// -assignment defect the repair pass heals (sp-qxa4). It fails safe: a hull that cannot be
+// loaded, or whose location is unknown, is treated as in-system so a transient lookup gap
+// never triggers a spurious release.
+func (h *RunScoutPostCoordinatorHandler) hullOutOfSystem(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, hullSymbol, systemSymbol string) bool {
+	if hullSymbol == "" {
 		return false
 	}
-	ship, err := h.shipRepo.FindBySymbol(ctx, post.AssignedHull, cmd.PlayerID)
+	ship, err := h.shipRepo.FindBySymbol(ctx, hullSymbol, cmd.PlayerID)
 	if err != nil {
 		return false // unknown hull — never release on a lookup failure
 	}
@@ -885,32 +1125,33 @@ func (h *RunScoutPostCoordinatorHandler) hullOutOfSystem(ctx context.Context, cm
 	if loc == nil {
 		return false // unknown location — conservative, leave the assignment alone
 	}
-	return loc.SystemSymbol != post.SystemSymbol
+	return loc.SystemSymbol != systemSymbol
 }
 
-// reclaimHull frees any ship still assigned to a post's (now dead) tour container,
-// returning it to idle so pass 2 can re-claim it. Best-effort and DB-only — the
-// contract ReclaimShipsFromInterruptedWorkers pattern.
-func (h *RunScoutPostCoordinatorHandler) reclaimHull(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost) {
+// reclaimHullFromContainer frees any ship still assigned to a (now dead) worker
+// container, returning it to idle so pass 2 can re-claim it. Best-effort and DB-only —
+// the contract ReclaimShipsFromInterruptedWorkers pattern, shared by dead tours and ended
+// reposition relays (the reason distinguishes them in the log).
+func (h *RunScoutPostCoordinatorHandler) reclaimHullFromContainer(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, containerID, reason string) {
 	logger := common.LoggerFromContext(ctx)
-	if post.TourContainerID == "" {
+	if containerID == "" {
 		return
 	}
-	ships, err := h.shipRepo.FindByContainer(ctx, post.TourContainerID, cmd.PlayerID)
+	ships, err := h.shipRepo.FindByContainer(ctx, containerID, cmd.PlayerID)
 	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to load ships for dead tour %s: %v", post.TourContainerID, err), nil)
+		logger.Log("WARNING", fmt.Sprintf("Failed to load ships for dead container %s: %v", containerID, err), nil)
 		return
 	}
 	for _, ship := range ships {
 		if !ship.IsAssigned() {
 			continue
 		}
-		ship.ForceRelease("scout_post_respawn", h.clock)
+		ship.ForceRelease(reason, h.clock)
 		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim hull %s from dead tour %s: %v", ship.ShipSymbol(), post.TourContainerID, err), nil)
+			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim hull %s from container %s: %v", ship.ShipSymbol(), containerID, err), nil)
 			continue
 		}
-		logger.Log("INFO", fmt.Sprintf("Reclaimed hull %s from dead tour %s", ship.ShipSymbol(), post.TourContainerID), nil)
+		logger.Log("INFO", fmt.Sprintf("Reclaimed hull %s from container %s", ship.ShipSymbol(), containerID), nil)
 	}
 }
 
@@ -971,12 +1212,9 @@ func postKindRank(kind domainScouting.PostKind) int {
 
 // selectInSystemSatellite returns the index of an idle satellite already in the
 // post's system, or -1 if none. Cross-system matching is intentionally impossible
-// (sp-qxa4, the 9hu8/#14 in-system class): the scout_tour worker navigates in-system
-// only (no multi-jump repositioning), so a cross-system assignment crash-respawn-
-// loops. A post with no in-system satellite is UNSELECTABLE — the caller parks it
-// with a reason rather than dispatching it to a crash. idleSats is pre-sorted, so the
-// choice is deterministic. (The captain repositions satellites manually for now;
-// jump-routing repositioning is a possible v2, deliberately not built here.)
+// (sp-qxa4): the scout_tour worker navigates in-system only, so a cross-system
+// assignment crash-respawn-loops. A slot with no in-system satellite is a reposition
+// candidate (2b). idleSats is pre-sorted, so the choice is deterministic.
 func selectInSystemSatellite(idleSats []*navigation.Ship, systemSymbol string) int {
 	for i, sat := range idleSats {
 		if sat.CurrentLocation() != nil && sat.CurrentLocation().SystemSymbol == systemSymbol {

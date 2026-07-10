@@ -450,7 +450,7 @@ func (s *daemonServiceImpl) AddScoutPost(ctx context.Context, req *pb.AddScoutPo
 	}
 	freshness := time.Duration(req.FreshnessSeconds) * time.Second
 
-	post, err := s.daemon.AddScoutPost(ctx, playerID, req.SystemSymbol, freshness, kind)
+	post, err := s.daemon.AddScoutPost(ctx, playerID, req.SystemSymbol, freshness, kind, int(req.Hulls))
 	if err != nil {
 		return nil, fmt.Errorf("failed to add scout post: %w", err)
 	}
@@ -491,7 +491,8 @@ func (s *daemonServiceImpl) ListScoutPosts(ctx context.Context, req *pb.ListScou
 	return &pb.ListScoutPostsResponse{Posts: protoPosts}, nil
 }
 
-// scoutPostToProto maps a domain scout post to its wire representation.
+// scoutPostToProto maps a domain scout post to its wire representation. hulls is the
+// probe budget and manned_count how many of those slots currently have a hull (sp-enry).
 func scoutPostToProto(p *domainScouting.ScoutPost) *pb.ScoutPost {
 	return &pb.ScoutPost{
 		SystemSymbol:     p.SystemSymbol,
@@ -499,6 +500,8 @@ func scoutPostToProto(p *domainScouting.ScoutPost) *pb.ScoutPost {
 		Kind:             string(p.Kind),
 		AssignedHull:     p.AssignedHull,
 		TourContainerId:  p.TourContainerID,
+		Hulls:            int32(p.HullBudget()),
+		MannedCount:      int32(p.MannedCount()),
 	}
 }
 

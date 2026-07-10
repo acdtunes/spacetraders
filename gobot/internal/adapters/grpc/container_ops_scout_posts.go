@@ -58,12 +58,17 @@ func (s *DaemonServer) ScoutPostCoordinator(ctx context.Context, playerID int, t
 
 // AddScoutPost adds or updates a desired-state scout post for a system (sp-cxpq).
 // The daemon is the single writer of post state (RULINGS #3); the captain's CLI
-// reaches this only through the RPC. An existing post's live assignment is
-// preserved — only the freshness target and kind are changed — so re-adding a
-// manned post never evicts its hull.
-func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSymbol string, freshness time.Duration, kind domainScouting.PostKind) (*domainScouting.ScoutPost, error) {
+// reaches this only through the RPC. An existing post's live assignment — including
+// every multi-probe slot and its frozen partition (sp-enry) — is preserved, so a
+// freshness/kind edit never evicts a hull. hulls is the probe budget N (0 ⇒ 1); if it
+// CHANGES from the existing budget the coordinator re-partitions on its next tick
+// (ensurePartitions), tearing down and rebuilding the slots.
+func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSymbol string, freshness time.Duration, kind domainScouting.PostKind, hulls int) (*domainScouting.ScoutPost, error) {
 	if !kind.Valid() {
 		return nil, fmt.Errorf("invalid post kind %q (want standing or sweep_once)", kind)
+	}
+	if hulls < 1 {
+		hulls = 1
 	}
 
 	repo := persistence.NewGormScoutPostRepository(s.db)
@@ -78,13 +83,19 @@ func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSym
 		SystemSymbol:    systemSymbol,
 		FreshnessTarget: freshness,
 		Kind:            kind,
+		Hulls:           hulls,
 		CreatedAt:       time.Now(),
 	}
-	// Preserve a live assignment when updating an existing post.
+	// Preserve ALL live state (primary slot + extra slots + frozen partitions) when
+	// updating an existing post, so a freshness/kind change never disturbs manning.
+	// The coordinator alone re-partitions, and only when the budget actually changes.
 	for _, p := range existing {
 		if p.SystemSymbol == systemSymbol {
 			post.AssignedHull = p.AssignedHull
 			post.TourContainerID = p.TourContainerID
+			post.RepositionContainerID = p.RepositionContainerID
+			post.PrimaryPartition = p.PrimaryPartition
+			post.ExtraSlots = p.ExtraSlots
 			post.CreatedAt = p.CreatedAt
 			break
 		}
@@ -107,8 +118,12 @@ func (s *DaemonServer) RemoveScoutPost(ctx context.Context, playerID int, system
 		return fmt.Errorf("failed to load posts: %w", err)
 	}
 	for _, p := range posts {
-		if p.SystemSymbol == systemSymbol && p.AssignedHull != "" {
-			s.releaseScoutHull(ctx, playerID, p.AssignedHull)
+		if p.SystemSymbol == systemSymbol {
+			// Release EVERY slot's hull (a multi-probe post has more than one), so all
+			// its satellites flow to other posts on the next reconcile tick (sp-enry).
+			for _, hull := range p.MannedHulls() {
+				s.releaseScoutHull(ctx, playerID, hull)
+			}
 			break
 		}
 	}

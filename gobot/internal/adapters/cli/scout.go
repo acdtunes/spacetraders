@@ -92,6 +92,7 @@ func newScoutPostsAddCommand() *cobra.Command {
 	var (
 		freshness time.Duration
 		kind      string
+		hulls     int
 	)
 
 	cmd := &cobra.Command{
@@ -99,15 +100,22 @@ func newScoutPostsAddCommand() *cobra.Command {
 		Short: "Add or update a scout post for a system",
 		Long: `Add (or update) a desired-state scout post for a system. The coordinator
 mans it with the nearest idle satellite on its next tick. Re-adding an existing
-post updates its freshness/kind without evicting the hull already manning it.
+post updates its freshness/kind/hulls without evicting the hulls already manning it.
 
 --kind standing (default) keeps the system fresh forever; --kind sweep-once runs
 a single tour then auto-removes the post, freeing its hull for the next one — the
 shape the captain seeds frontier-census systems with.
 
+--hulls N (default 1) deploys N probes on DISJOINT tours: the system's markets are
+partitioned into N per-probe circuits via the routing VRP, so freshness per market
+improves ~N× at the SAME per-probe API rate (more probes = smaller partitions =
+fresher data, not more API calls). Only standing posts partition; sweep-once is
+always single-hull. Changing N re-partitions on the next reconcile tick.
+
 Examples:
   spacetraders scout posts add X1-GZ7 --agent ENDURANCE
   spacetraders scout posts add X1-JP61 --freshness 45m --agent ENDURANCE
+  spacetraders scout posts add X1-KA42 --hulls 3 --freshness 30m --agent ENDURANCE
   spacetraders scout posts add X1-KA42 --kind sweep-once --agent ENDURANCE`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -116,6 +124,9 @@ Examples:
 			postKind, err := normalizePostKind(kind)
 			if err != nil {
 				return err
+			}
+			if hulls < 1 {
+				return fmt.Errorf("invalid --hulls %d (want a positive probe budget)", hulls)
 			}
 
 			playerIdent, err := resolvePlayerIdentifier()
@@ -132,16 +143,16 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			post, err := client.AddScoutPost(ctx, playerIdent.PlayerID, playerIdent.AgentSymbol, systemSymbol, int(freshness.Seconds()), postKind)
+			post, err := client.AddScoutPost(ctx, playerIdent.PlayerID, playerIdent.AgentSymbol, systemSymbol, int(freshness.Seconds()), postKind, hulls)
 			if err != nil {
 				return fmt.Errorf("failed to add scout post: %w", err)
 			}
 
-			fmt.Printf("✓ Scout post added: %s (%s, freshness %s)\n", post.SystemSymbol, post.Kind, formatSeconds(post.FreshnessSeconds))
-			if post.AssignedHull != "" {
-				fmt.Printf("  Currently manned by %s\n", post.AssignedHull)
+			fmt.Printf("✓ Scout post added: %s (%s, freshness %s, %d hull(s))\n", post.SystemSymbol, post.Kind, formatSeconds(post.FreshnessSeconds), post.Hulls)
+			if post.MannedCount > 0 {
+				fmt.Printf("  Currently manned: %d/%d slot(s)\n", post.MannedCount, post.Hulls)
 			} else {
-				fmt.Println("  Unmanned — the coordinator will claim an idle satellite next tick.")
+				fmt.Println("  Unmanned — the coordinator will claim idle satellites next tick.")
 			}
 			return nil
 		},
@@ -149,6 +160,7 @@ Examples:
 
 	cmd.Flags().DurationVar(&freshness, "freshness", 60*time.Minute, "Target market-scan freshness (e.g. 60m)")
 	cmd.Flags().StringVar(&kind, "kind", "standing", "Post kind: standing or sweep-once")
+	cmd.Flags().IntVar(&hulls, "hulls", 1, "Probe budget N: deploy N probes on disjoint partitioned tours (standing posts only)")
 	return cmd
 }
 
@@ -181,13 +193,17 @@ func newScoutPostsListCommand() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("%-16s  %-11s  %-10s  %s\n", "SYSTEM", "KIND", "FRESHNESS", "MANNED BY")
+			fmt.Printf("%-16s  %-11s  %-10s  %-6s  %s\n", "SYSTEM", "KIND", "FRESHNESS", "HULLS", "MANNED")
 			for _, p := range posts {
-				manned := p.AssignedHull
-				if manned == "" {
+				hulls := p.Hulls
+				if hulls < 1 {
+					hulls = 1
+				}
+				manned := fmt.Sprintf("%d/%d", p.MannedCount, hulls)
+				if p.MannedCount == 0 {
 					manned = "(unmanned)"
 				}
-				fmt.Printf("%-16s  %-11s  %-10s  %s\n", p.SystemSymbol, p.Kind, formatSeconds(p.FreshnessSeconds), manned)
+				fmt.Printf("%-16s  %-11s  %-10s  %-6d  %s\n", p.SystemSymbol, p.Kind, formatSeconds(p.FreshnessSeconds), hulls, manned)
 			}
 			return nil
 		},

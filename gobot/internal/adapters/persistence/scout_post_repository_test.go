@@ -135,3 +135,82 @@ func TestScoutPostRepo_ListActiveEmptyWhenNoOpenEra(t *testing.T) {
 	err = repo.Upsert(ctx, &domainScouting.ScoutPost{PlayerID: playerID, SystemSymbol: "X1-NEW", Kind: domainScouting.PostKindStanding})
 	require.Error(t, err)
 }
+
+// A multi-hull post round-trips through the DB with its budget AND its frozen
+// partitions intact (sp-enry): the primary slot's partition, and every extra slot's
+// hull/tour/relay/partition. This is the persistence half of restart survival —
+// a reloaded post carries the exact partitions so the reconciler re-adopts each
+// probe without re-touring.
+func TestScoutPostRepo_MultiHullRoundTrip(t *testing.T) {
+	repo, _, playerID := newScoutPostTestRepo(t)
+	ctx := context.Background()
+
+	post := &domainScouting.ScoutPost{
+		PlayerID:         playerID,
+		SystemSymbol:     "X1-KA42",
+		FreshnessTarget:  30 * time.Minute,
+		Kind:             domainScouting.PostKindStanding,
+		Hulls:            3,
+		AssignedHull:     "SAT-0",
+		TourContainerID:  "tour-0",
+		PrimaryPartition: []string{"X1-KA42-A1", "X1-KA42-A2"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-1", TourContainerID: "tour-1", Partition: []string{"X1-KA42-B1", "X1-KA42-B2"}},
+			{RepositionContainerID: "relay-2", Partition: []string{"X1-KA42-C1"}},
+		},
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, repo.Upsert(ctx, post))
+
+	posts, err := repo.ListActive(ctx, playerID)
+	require.NoError(t, err)
+	require.Len(t, posts, 1)
+	got := posts[0]
+
+	require.Equal(t, 3, got.Hulls)
+	require.Equal(t, "SAT-0", got.AssignedHull)
+	require.Equal(t, []string{"X1-KA42-A1", "X1-KA42-A2"}, got.PrimaryPartition)
+	require.Len(t, got.ExtraSlots, 2)
+	require.Equal(t, "SAT-1", got.ExtraSlots[0].AssignedHull)
+	require.Equal(t, "tour-1", got.ExtraSlots[0].TourContainerID)
+	require.Equal(t, []string{"X1-KA42-B1", "X1-KA42-B2"}, got.ExtraSlots[0].Partition)
+	require.Equal(t, "relay-2", got.ExtraSlots[1].RepositionContainerID)
+	require.Equal(t, []string{"X1-KA42-C1"}, got.ExtraSlots[1].Partition)
+
+	// The domain aggregates reconstruct correctly from the persisted row.
+	require.Equal(t, 3, got.HullBudget())
+	require.Equal(t, []string{"SAT-0", "SAT-1"}, got.MannedHulls())
+}
+
+// A single-hull post persists byte-identically to the pre-enry layout (sp-enry):
+// Hulls defaults to 1 and the partition/extra-slot columns stay NULL, so it reads
+// back with no partitions and no extra slots.
+func TestScoutPostRepo_SingleHullNoPartitionColumns(t *testing.T) {
+	repo, db, playerID := newScoutPostTestRepo(t)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Upsert(ctx, &domainScouting.ScoutPost{
+		PlayerID:        playerID,
+		SystemSymbol:    "X1-HU21",
+		FreshnessTarget: 90 * time.Minute,
+		Kind:            domainScouting.PostKindStanding,
+		AssignedHull:    "SAT-9",
+		TourContainerID: "tour-9",
+		CreatedAt:       time.Now(),
+	}))
+
+	posts, err := repo.ListActive(ctx, playerID)
+	require.NoError(t, err)
+	require.Len(t, posts, 1)
+	require.Equal(t, 1, posts[0].Hulls, "an unset budget defaults to single-hull")
+	require.Nil(t, posts[0].PrimaryPartition)
+	require.Nil(t, posts[0].ExtraSlots)
+
+	// The partition columns are NULL on disk — not "[]" — so a single-hull row is
+	// byte-identical to a pre-enry row.
+	var model persistence.ScoutPostModel
+	require.NoError(t, db.Where("system_symbol = ?", "X1-HU21").First(&model).Error)
+	require.Nil(t, model.PrimaryPartition)
+	require.Nil(t, model.ExtraSlots)
+	require.Equal(t, 1, model.Hulls)
+}

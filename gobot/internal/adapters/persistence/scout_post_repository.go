@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -114,6 +115,10 @@ func (r *GormScoutPostRepository) Remove(ctx context.Context, playerID int, syst
 }
 
 func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
+	hulls := p.Hulls
+	if hulls < 1 {
+		hulls = 1
+	}
 	return &ScoutPostModel{
 		ID:                     p.ID,
 		PlayerID:               p.PlayerID,
@@ -123,11 +128,18 @@ func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
 		AssignedHull:           stringToPtr(p.AssignedHull),
 		TourContainerID:        stringToPtr(p.TourContainerID),
 		RepositionContainerID:  stringToPtr(p.RepositionContainerID),
+		Hulls:                  hulls,
+		PrimaryPartition:       marshalPartition(p.PrimaryPartition),
+		ExtraSlots:             marshalExtraSlots(p.ExtraSlots),
 		CreatedAt:              p.CreatedAt,
 	}
 }
 
 func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
+	hulls := m.Hulls
+	if hulls < 1 {
+		hulls = 1 // a legacy row (column added by AutoMigrate) reads as single-hull.
+	}
 	return &domainScouting.ScoutPost{
 		ID:                    m.ID,
 		PlayerID:              m.PlayerID,
@@ -137,6 +149,91 @@ func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 		AssignedHull:          derefString(m.AssignedHull),
 		TourContainerID:       derefString(m.TourContainerID),
 		RepositionContainerID: derefString(m.RepositionContainerID),
+		Hulls:                 hulls,
+		PrimaryPartition:      unmarshalPartition(m.PrimaryPartition),
+		ExtraSlots:            unmarshalExtraSlots(m.ExtraSlots),
 		CreatedAt:             m.CreatedAt,
 	}
+}
+
+// marshalPartition JSON-encodes a slot's market list, returning nil for an empty
+// partition so a single-hull row leaves primary_partition NULL (byte-identical to
+// the pre-enry layout) (sp-enry).
+func marshalPartition(markets []string) *string {
+	if len(markets) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(markets)
+	if err != nil {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
+// unmarshalPartition decodes a slot's market list; a NULL/empty/garbled column
+// reads as no partition (the tour-all-markets default).
+func unmarshalPartition(raw *string) []string {
+	if raw == nil || *raw == "" {
+		return nil
+	}
+	var markets []string
+	if err := json.Unmarshal([]byte(*raw), &markets); err != nil {
+		return nil
+	}
+	return markets
+}
+
+// extraSlotDTO is the persisted shape of a non-primary manning slot (sp-enry): the
+// same fields as the primary (scalar columns), carried in the extra_slots JSON array.
+type extraSlotDTO struct {
+	AssignedHull          string   `json:"assigned_hull,omitempty"`
+	TourContainerID       string   `json:"tour_container_id,omitempty"`
+	RepositionContainerID string   `json:"reposition_container_id,omitempty"`
+	Partition             []string `json:"partition,omitempty"`
+}
+
+// marshalExtraSlots JSON-encodes slots 1..N-1, returning nil for a single-hull post
+// so extra_slots stays NULL (byte-identical to the pre-enry layout) (sp-enry).
+func marshalExtraSlots(slots []domainScouting.ScoutPostSlot) *string {
+	if len(slots) == 0 {
+		return nil
+	}
+	dtos := make([]extraSlotDTO, len(slots))
+	for i, s := range slots {
+		dtos[i] = extraSlotDTO{
+			AssignedHull:          s.AssignedHull,
+			TourContainerID:       s.TourContainerID,
+			RepositionContainerID: s.RepositionContainerID,
+			Partition:             s.Partition,
+		}
+	}
+	b, err := json.Marshal(dtos)
+	if err != nil {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
+// unmarshalExtraSlots decodes slots 1..N-1; a NULL/empty/garbled column reads as no
+// extra slots (a single-hull post).
+func unmarshalExtraSlots(raw *string) []domainScouting.ScoutPostSlot {
+	if raw == nil || *raw == "" {
+		return nil
+	}
+	var dtos []extraSlotDTO
+	if err := json.Unmarshal([]byte(*raw), &dtos); err != nil {
+		return nil
+	}
+	slots := make([]domainScouting.ScoutPostSlot, len(dtos))
+	for i, d := range dtos {
+		slots[i] = domainScouting.ScoutPostSlot{
+			AssignedHull:          d.AssignedHull,
+			TourContainerID:       d.TourContainerID,
+			RepositionContainerID: d.RepositionContainerID,
+			Partition:             d.Partition,
+		}
+	}
+	return slots
 }

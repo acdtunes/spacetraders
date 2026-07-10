@@ -1680,8 +1680,10 @@ func (x *ScoutTourResponse) GetStatus() string {
 }
 
 // ScoutPost is one desired-state post (sp-cxpq): keep system_symbol scanned to
-// within freshness_seconds, via kind ("standing" or "sweep_once"), currently
-// manned by assigned_hull (empty if unmanned) through tour_container_id.
+// within freshness_seconds, via kind ("standing" or "sweep_once"). assigned_hull
+// and tour_container_id are the PRIMARY slot (empty if unmanned). hulls is the probe
+// budget N (sp-enry): the system is toured by N probes over N disjoint partitions;
+// manned_count is how many of those N slots currently have a hull.
 type ScoutPost struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	SystemSymbol     string                 `protobuf:"bytes,1,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
@@ -1689,6 +1691,8 @@ type ScoutPost struct {
 	Kind             string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
 	AssignedHull     string                 `protobuf:"bytes,4,opt,name=assigned_hull,json=assignedHull,proto3" json:"assigned_hull,omitempty"`
 	TourContainerId  string                 `protobuf:"bytes,5,opt,name=tour_container_id,json=tourContainerId,proto3" json:"tour_container_id,omitempty"`
+	Hulls            int32                  `protobuf:"varint,6,opt,name=hulls,proto3" json:"hulls,omitempty"`
+	MannedCount      int32                  `protobuf:"varint,7,opt,name=manned_count,json=mannedCount,proto3" json:"manned_count,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1756,6 +1760,20 @@ func (x *ScoutPost) GetTourContainerId() string {
 		return x.TourContainerId
 	}
 	return ""
+}
+
+func (x *ScoutPost) GetHulls() int32 {
+	if x != nil {
+		return x.Hulls
+	}
+	return 0
+}
+
+func (x *ScoutPost) GetMannedCount() int32 {
+	if x != nil {
+		return x.MannedCount
+	}
+	return 0
 }
 
 // ScoutPostCoordinatorRequest starts the standing scout-post coordinator.
@@ -1873,7 +1891,8 @@ func (x *ScoutPostCoordinatorResponse) GetStatus() string {
 }
 
 // AddScoutPostRequest adds or updates a post. An existing post's live assignment
-// is preserved; only freshness and kind change.
+// is preserved; freshness, kind, and the hull budget change. hulls is the probe
+// budget N (sp-enry); 0 defaults to 1 (single-hull, the pre-enry behavior).
 type AddScoutPostRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	PlayerId         int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
@@ -1881,6 +1900,7 @@ type AddScoutPostRequest struct {
 	SystemSymbol     string                 `protobuf:"bytes,3,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
 	FreshnessSeconds int32                  `protobuf:"varint,4,opt,name=freshness_seconds,json=freshnessSeconds,proto3" json:"freshness_seconds,omitempty"`
 	Kind             string                 `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
+	Hulls            int32                  `protobuf:"varint,6,opt,name=hulls,proto3" json:"hulls,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1948,6 +1968,13 @@ func (x *AddScoutPostRequest) GetKind() string {
 		return x.Kind
 	}
 	return ""
+}
+
+func (x *AddScoutPostRequest) GetHulls() int32 {
+	if x != nil {
+		return x.Hulls
+	}
+	return 0
 }
 
 type ScoutPostResponse struct {
@@ -8793,13 +8820,15 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"iterations\x18\x04 \x01(\x05R\n" +
 	"iterations\x12\x16\n" +
-	"\x06status\x18\x05 \x01(\tR\x06status\"\xc2\x01\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\"\xfb\x01\n" +
 	"\tScoutPost\x12#\n" +
 	"\rsystem_symbol\x18\x01 \x01(\tR\fsystemSymbol\x12+\n" +
 	"\x11freshness_seconds\x18\x02 \x01(\x05R\x10freshnessSeconds\x12\x12\n" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12#\n" +
 	"\rassigned_hull\x18\x04 \x01(\tR\fassignedHull\x12*\n" +
-	"\x11tour_container_id\x18\x05 \x01(\tR\x0ftourContainerId\"\xa1\x01\n" +
+	"\x11tour_container_id\x18\x05 \x01(\tR\x0ftourContainerId\x12\x14\n" +
+	"\x05hulls\x18\x06 \x01(\x05R\x05hulls\x12!\n" +
+	"\fmanned_count\x18\a \x01(\x05R\vmannedCount\"\xa1\x01\n" +
 	"\x1bScoutPostCoordinatorRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
 	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12,\n" +
@@ -8807,13 +8836,14 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\r_agent_symbol\"Y\n" +
 	"\x1cScoutPostCoordinatorResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xd1\x01\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xe7\x01\n" +
 	"\x13AddScoutPostRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
 	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12#\n" +
 	"\rsystem_symbol\x18\x03 \x01(\tR\fsystemSymbol\x12+\n" +
 	"\x11freshness_seconds\x18\x04 \x01(\x05R\x10freshnessSeconds\x12\x12\n" +
-	"\x04kind\x18\x05 \x01(\tR\x04kindB\x0f\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05hulls\x18\x06 \x01(\x05R\x05hullsB\x0f\n" +
 	"\r_agent_symbol\":\n" +
 	"\x11ScoutPostResponse\x12%\n" +
 	"\x04post\x18\x01 \x01(\v2\x11.daemon.ScoutPostR\x04post\"\x93\x01\n" +
