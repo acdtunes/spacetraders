@@ -23,6 +23,11 @@ datasources:
     secureJsonData:
       password: dev_password
     jsonData:
+      # Grafana 13's postgres FRONTEND reads the database from jsonData only;
+      # the top-level `database:` field is legacy (backend still honors it,
+      # which is why API queries pass while every PG panel errors
+      # "no default database configured" in the UI without this key.
+      database: spacetraders
       sslmode: disable
       maxOpenConns: 5
       maxIdleConns: 2
