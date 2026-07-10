@@ -1078,6 +1078,24 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 		// cargo") and would re-crash the very run we just kept alive, so we skip delivery
 		// and let the node complete with zero units.
 		if deliveryDest != "" && result.QuantityAcquired > 0 {
+			// sp-9mkf (Bug 1) same-waypoint guard: a feed whose buy waypoint equals its
+			// delivery destination is a guaranteed round-trip loss — we would sell it back
+			// at the same market's (lower) bid we just bought it from at the (higher) ask.
+			// The root cause (sourcing a feed from an IMPORT market, i.e. the factory
+			// itself) is fixed in FindExportMarket, so this can no longer arise for the
+			// importer case; this is the fail-closed backstop. It REFUSES the same-waypoint
+			// delivery sell and holds the cargo rather than dump it at a loss, logged loudly
+			// so any recurrence surfaces immediately.
+			if deliveryDest == result.WaypointSymbol {
+				logger.Log("WARNING", fmt.Sprintf("Refusing same-waypoint delivery of %d units of %s at %s — feed was bought here; selling it back is a round-trip loss. Holding cargo.", result.QuantityAcquired, node.Good, deliveryDest), map[string]interface{}{
+					"good":     node.Good,
+					"waypoint": deliveryDest,
+					"units":    result.QuantityAcquired,
+					"action":   "same_waypoint_delivery_refused",
+				})
+				return result, nil
+			}
+
 			logger.Log("INFO", fmt.Sprintf("Delivering %d units of %s to %s", result.QuantityAcquired, node.Good, deliveryDest), map[string]interface{}{
 				"good":        node.Good,
 				"quantity":    result.QuantityAcquired,

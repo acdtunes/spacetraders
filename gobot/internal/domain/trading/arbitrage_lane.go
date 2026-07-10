@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+// tradeTypeExport is the GoodListing.TradeType value for a market that PRODUCES and
+// sells a good (an exporter). Its Bid is a low sellback price, so it can never be a
+// sell destination (sp-9mkf Bug 3). Matches domain/market.TradeTypeExport without
+// importing that package into this pure-domain ranking code.
+const tradeTypeExport = "EXPORT"
+
 // GoodListing is one cached market's trade data for a single good, expressed in
 // SpaceTraders' MARKET-perspective column semantics — the "inverted-margin trap"
 // that overstates every spread ~2x when read backwards (market-doctrine):
@@ -226,6 +232,15 @@ func bestLaneForGood(good string, markets []GoodListing) (ArbitrageLane, bool) {
 		for di := range markets {
 			dest := markets[di]
 			if source.Waypoint == dest.Waypoint {
+				continue
+			}
+
+			// sp-9mkf (Bug 3): never sell into an EXPORT market's bid. An exporter's Bid
+			// is a low sellback price, not a real import sink (LAB_INSTRUMENTS dumped into
+			// the exporter C37 at 2,347/u). A valid sink is IMPORT or EXCHANGE. An
+			// unknown/empty trade type is left eligible (fail-open on missing data,
+			// matching the manufacturing sell_market_distributor reference filter).
+			if dest.TradeType == tradeTypeExport {
 				continue
 			}
 

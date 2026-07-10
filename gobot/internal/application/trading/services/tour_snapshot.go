@@ -66,14 +66,28 @@ func BuildTourSnapshot(
 				continue // stale — same age-cap as lane ranking
 			}
 			for _, g := range mkt.TradeGoods() {
+				// sp-9mkf (Bug 3): an EXPORT market's bid is a low sellback price, never a
+				// real import sink — the tour solver admits ANY positive-bid market as a sell
+				// destination, so it dumped 80 LAB_INSTRUMENTS into the exporter C37 at
+				// 2,347/u. Zero the sink-side Bid for EXPORT goods so the solver cannot pick
+				// this (waypoint, good) as a sell destination, while keeping the Ask so the
+				// market stays a valid BUY source. IMPORT/EXCHANGE (and unknown trade type)
+				// keep their bid — the fail-open posture the manufacturing reference filter
+				// (sell_market_distributor) uses. This applies the trade_type sink filter at
+				// the snapshot boundary, so no trade_type field need thread through the
+				// routing proto/solver.
+				bid := g.PurchasePrice() // market BUY column = what we receive selling
+				if g.TradeType() == market.TradeTypeExport {
+					bid = 0
+				}
 				snapshot = append(snapshot, routing.TourGoodSnapshot{
 					Waypoint:    mkt.WaypointSymbol(),
 					System:      sys,
 					Good:        g.Symbol(),
 					Supply:      derefString(g.Supply()),
 					Activity:    derefString(g.Activity()),
-					Ask:         g.SellPrice(),     // market SELL column = what we pay buying
-					Bid:         g.PurchasePrice(), // market BUY column = what we receive selling
+					Ask:         g.SellPrice(), // market SELL column = what we pay buying
+					Bid:         bid,
 					TradeVolume: g.TradeVolume(),
 					ObservedAt:  observed,
 				})

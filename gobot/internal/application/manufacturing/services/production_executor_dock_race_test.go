@@ -291,6 +291,13 @@ func (r *dockRaceMarketRepo) FindCheapestMarketSelling(ctx context.Context, good
 	return nil, nil
 }
 
+// FindAllMarketsInSystem lists this harness's single market so the trade-type-aware
+// FindExportMarket (sp-9mkf) can iterate it; GetMarketData is consistent with
+// FindCheapestMarketSelling, so the sourced market is unchanged.
+func (r *dockRaceMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
+	return []string{dockRaceMarketWP}, nil
+}
+
 func (r *dockRaceMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*market.Market, error) {
 	if waypointSymbol != dockRaceMarketWP {
 		return nil, nil

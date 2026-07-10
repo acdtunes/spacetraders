@@ -104,8 +104,11 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 		switch s.Good {
 		case "MEDICINE":
 			med = true
+			// sp-9mkf (Bug 3): D39 MEDICINE is an EXPORT good, so its sink-side Bid is
+			// zeroed (an exporter is never a sell destination). The Ask (a valid buy
+			// source) still maps through exactly — a swapped bid/ask still trips here.
 			if s.Waypoint != "X1-NK36-D39" || s.System != "X1-NK36" || s.Supply != "LIMITED" ||
-				s.Activity != "WEAK" || s.Ask != 1900 || s.Bid != 1844 || s.TradeVolume != 20 {
+				s.Activity != "WEAK" || s.Ask != 1900 || s.Bid != 0 || s.TradeVolume != 20 {
 				t.Fatalf("D39 MEDICINE mapping wrong: %+v", s)
 			}
 			if !s.ObservedAt.Equal(now) {

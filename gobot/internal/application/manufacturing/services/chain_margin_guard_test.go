@@ -103,6 +103,31 @@ func (r *guardMarketRepo) GetMarketData(_ context.Context, wp string, _ int) (*m
 	return market.NewMarket(wp, goodsList, time.Now())
 }
 
+// FindAllMarketsInSystem returns every waypoint this fake knows a market for, so the
+// trade-type-aware FindExportMarket (sp-9mkf) can iterate them. The GetMarketData
+// above is consistent with the sell/buy maps, so iterating yields the same source the
+// old FindCheapestMarketSelling path did.
+func (r *guardMarketRepo) FindAllMarketsInSystem(_ context.Context, _ string, _ int) ([]string, error) {
+	seen := map[string]bool{}
+	var wps []string
+	add := func(wp string) {
+		if wp != "" && !seen[wp] {
+			seen[wp] = true
+			wps = append(wps, wp)
+		}
+	}
+	for _, q := range r.sell {
+		add(q.waypoint)
+	}
+	for _, q := range r.buy {
+		add(q.waypoint)
+	}
+	for wp := range r.imports {
+		add(wp)
+	}
+	return wps, nil
+}
+
 // singleFeedChain is the incident's shape: a fabricated product with one raw BUY feed.
 func singleFeedChain() *goods.SupplyChainNode {
 	root := goods.NewSupplyChainNode(guardProduct, goods.AcquisitionFabricate)

@@ -590,14 +590,43 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 		return 0, nil
 	}
 
-	// --- past every guard: execute the one-shot buy ---
-	buyResp, err := h.legs.purchase(ctx, cmd.ShipSymbol, cmd.Good, units, cmd.PlayerID)
+	// --- past every guard: execute the one-shot buy under the per-tranche buy ceiling ---
+	// sp-9mkf: the margin guard above re-read the live source ask ONCE, but this buy
+	// splits into market-limited sub-tranches and the ask ladders up WITHIN them — the
+	// D39 incident walked 3,985→~7k inside a single dispatch, realising −3,430/u. Arm
+	// the per-tranche ceiling at the max ask that still clears the lane's justifying
+	// margin: the quoted dest bid minus the min-margin floor (or one credit when no
+	// floor is set, so a non-positive-margin unit can never be bought). Each sub-tranche
+	// re-reads the live ask and aborts the remainder once it ladders past this ceiling.
+	// destBid is the quoted (cached) bid — the sell floor (sp-lbbm) guards the far-side
+	// bid-crash; together they bound the loss, per RULINGS #4 layered defense.
+	maxAskPerUnit := destBid - cmd.MinMargin
+	if cmd.MinMargin <= 0 {
+		maxAskPerUnit = destBid - 1
+	}
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, cmd.Good, units, cmd.PlayerID, maxAskPerUnit)
 	if err != nil {
 		response.AbortReason = fmt.Sprintf("purchase of %d %s at %s failed: %v", units, cmd.Good, cmd.BuyAt, err)
 		return 0, err
 	}
 	response.UnitsTraded = buyResp.UnitsAdded
 	response.TotalCost = buyResp.TotalCost
+	// The ceiling tripped before ANY unit was bought → the ask had already laddered past
+	// the lane's justifying margin at the top of the book. Treat as a clean margin abort
+	// (no travel, no sell) rather than proceed to sell nothing.
+	if buyResp.UnitsAdded == 0 && buyResp.CeilingAborted {
+		response.Aborted = true
+		response.MarginAbort = true
+		response.AbortReason = fmt.Sprintf(
+			"buy ceiling: live ask %d > ceiling %d/unit (quoted bid %d − min-margin %d) at %s - aborting before spend, zero bought",
+			buyResp.CeilingObservedAsk, maxAskPerUnit, destBid, cmd.MinMargin, cmd.BuyAt)
+		logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+			"action": "arb_buy_ceiling_abort", "ship_symbol": cmd.ShipSymbol, "good": cmd.Good,
+			"source": cmd.BuyAt, "live_ask": buyResp.CeilingObservedAsk, "ceiling": maxAskPerUnit,
+			"quoted_bid": destBid, "min_margin": cmd.MinMargin,
+		})
+		return 0, nil
+	}
 	return buyResp.UnitsAdded, nil
 }
 

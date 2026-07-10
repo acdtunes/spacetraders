@@ -695,9 +695,23 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	}
 
 	plannedAt := h.clock.Now()
-	buyResp, err := h.legs.purchase(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID)
+	// sp-9mkf: arm the per-tranche buy ceiling at the plan's tolerated ask — the planned
+	// basis plus the same tourPriceTolerancePct the leg-level gate above applied. That
+	// gate checked only the first live read; this bounds the intra-buy ladder a
+	// multi-tranche purchase walks up itself (the D39 stale-ask class), aborting the
+	// remainder once a sub-tranche prices past the plan's tolerance.
+	planned := trade.ExpectedUnitPrice
+	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit)
 	if err != nil {
 		return false, fmt.Errorf("purchase of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
+	}
+	if buyResp.UnitsAdded == 0 && buyResp.CeilingAborted {
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy ceiling aborted %s at %s (live ask %d > ceiling %d) - skipping, will re-plan",
+			legIdx, trade.Good, leg.Waypoint, buyResp.CeilingObservedAsk, maxAskPerUnit), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "live_ask": buyResp.CeilingObservedAsk, "ceiling": maxAskPerUnit,
+		})
+		return false, nil
 	}
 	*cumulativeSpend += int64(buyResp.TotalCost)
 	response.TotalSpent += int64(buyResp.TotalCost)

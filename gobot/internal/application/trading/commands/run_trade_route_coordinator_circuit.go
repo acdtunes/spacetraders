@@ -240,10 +240,26 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 			return ship, held
 		}
 
-		buyResp, err := h.purchase(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID)
+		// sp-9mkf: arm the per-tranche buy ceiling at the lane's margin floor — the max
+		// ask that still clears destBid − MinBidMargin. The per-visit MarginAlive gate
+		// above checked only this visit's FIRST live ask; this bounds the intra-buy ladder
+		// a multi-tranche purchase walks up itself (the D39 stale-ask class), aborting the
+		// remainder once a sub-tranche prices past the bid-floor.
+		buyResp, err := h.purchaseWithCeiling(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID, destBid-trading.MinBidMargin)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("purchase of %d %s at source %s failed: %v", buyUnits, lane.Good, lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Purchase failed - ending circuit", map[string]interface{}{"error": err.Error()})
+			return ship, held
+		}
+		if buyResp.UnitsAdded == 0 && buyResp.CeilingAborted {
+			// The source ask laddered past the bid-floor before any unit was bought — end
+			// the circuit rather than fly an empty leg. Prior-visit held cargo (if any) is
+			// finished by the epilogue.
+			logger.Log("WARNING", fmt.Sprintf("Buy ceiling aborted the tranche for %s at %s: live ask %d > ceiling %d - ending circuit",
+				lane.Good, lane.SourceWaypoint, buyResp.CeilingObservedAsk, destBid-trading.MinBidMargin), map[string]interface{}{
+				"action": "circuit_buy_ceiling_abort", "good": lane.Good,
+				"live_ask": buyResp.CeilingObservedAsk, "ceiling": destBid - trading.MinBidMargin,
+			})
 			return ship, held
 		}
 		held += buyResp.UnitsAdded

@@ -55,6 +55,19 @@ type CargoTransactionCommand struct {
 	// The arb executor arms it with ceil(fraction × quoted bid); see the arb
 	// coordinator. Ignored for purchases.
 	MinBidPerUnit int
+
+	// MaxAskPerUnit (sp-9mkf) is the mirror of MinBidPerUnit for the BUY side: the
+	// per-tranche buy CEILING. Before each purchase tranche the handler re-reads the
+	// LIVE ask and, if it has laddered ABOVE this per-unit ceiling, ABORTS the
+	// remaining tranches and leaves the rest unbought (CeilingAborted). It is the fix
+	// for the stale-ask buy — SHIP_PARTS bought at D39 while the ask laddered
+	// 3,985→4,942→~7k inside a single dispatch, realising −3,430/u. A single pre-buy
+	// margin check cannot see the ladder that a multi-tranche buy walks up itself;
+	// this re-reads per tranche. 0 disables the ceiling entirely, so every non-arb
+	// caller (contract delivery, manufacturing, refuel) is unchanged. The arb/circuit
+	// executors arm it with the max ask that still clears the lane's justifying margin
+	// (quoted dest bid − min-margin); see the arb coordinator. Ignored for sells.
+	MaxAskPerUnit int
 }
 
 // CargoTransactionResponse contains the unified results of a cargo transaction.
@@ -74,6 +87,14 @@ type CargoTransactionResponse struct {
 	// for an unfloored transaction.
 	FloorAborted     bool
 	FloorObservedBid int
+
+	// CeilingAborted (sp-9mkf) is true when the per-tranche buy ceiling stopped the
+	// purchase early: the live ask rose above MaxAskPerUnit, so the remaining units
+	// were left unbought. UnitsProcessed then reports only what was bought before the
+	// abort. CeilingObservedAsk is the live ask that tripped the ceiling (0 when it
+	// could not be read — a fail-closed abort). Both stay zero for an uncapped buy.
+	CeilingAborted     bool
+	CeilingObservedAsk int
 }
 
 // CargoTransactionHandler orchestrates cargo transaction operations using the Strategy pattern.
@@ -233,6 +254,8 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	transactionType := h.strategy.GetTransactionType()
 	floorAborted := false
 	floorObservedBid := 0
+	ceilingAborted := false
+	ceilingObservedAsk := 0
 
 	// OPTIMIZATION: Skip balance fetch (saves 1 API call)
 	// Ledger entries will have balance=0 but transaction amounts are still tracked
@@ -259,6 +282,29 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 					"action": "sell_floor_abort", "ship_symbol": cmd.ShipSymbol, "good": cmd.GoodSymbol,
 					"waypoint": waypointSymbol, "live_bid": liveBid, "floor": cmd.MinBidPerUnit,
 					"bid_readable": ok, "units_held": unitsRemaining,
+				})
+				break
+			}
+		}
+
+		// PER-TRANCHE BUY CEILING (sp-9mkf): the mirror of the sell floor. Before every
+		// buy tranche, re-read the LIVE ask and abort the remainder if it has laddered
+		// ABOVE the armed ceiling — so a source ask our own earlier tranches (or a
+		// colliding hull) walked up is never bought into above the price that justifies
+		// the lane. The remainder is simply left unbought. Only buys with MaxAskPerUnit>0
+		// arm it; every other caller runs the loop unchanged. Fails CLOSED: a live ask we
+		// cannot read (ok=false) holds the remainder too.
+		if transactionType == "purchase" && cmd.MaxAskPerUnit > 0 {
+			liveAsk, ok := h.liveAskForCeiling(ctx, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID)
+			if !ok || liveAsk > cmd.MaxAskPerUnit {
+				ceilingAborted = true
+				ceilingObservedAsk = liveAsk
+				logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+					"Buy ceiling tripped for %s at %s: live ask %d > ceiling %d/unit (readable=%t) - aborting remaining %d units, left unbought",
+					cmd.GoodSymbol, waypointSymbol, liveAsk, cmd.MaxAskPerUnit, ok, unitsRemaining), map[string]interface{}{
+					"action": "buy_ceiling_abort", "ship_symbol": cmd.ShipSymbol, "good": cmd.GoodSymbol,
+					"waypoint": waypointSymbol, "live_ask": liveAsk, "ceiling": cmd.MaxAskPerUnit,
+					"ask_readable": ok, "units_unbought": unitsRemaining,
 				})
 				break
 			}
@@ -305,11 +351,13 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	h.refreshMarketData(ctx, cmd.PlayerID, waypointSymbol)
 
 	return &CargoTransactionResponse{
-		TotalAmount:      totalAmount,
-		UnitsProcessed:   unitsProcessed,
-		TransactionCount: transactionCount,
-		FloorAborted:     floorAborted,
-		FloorObservedBid: floorObservedBid,
+		TotalAmount:        totalAmount,
+		UnitsProcessed:     unitsProcessed,
+		TransactionCount:   transactionCount,
+		FloorAborted:       floorAborted,
+		FloorObservedBid:   floorObservedBid,
+		CeilingAborted:     ceilingAborted,
+		CeilingObservedAsk: ceilingObservedAsk,
 	}, nil
 }
 
@@ -335,6 +383,30 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 		return 0, false
 	}
 	return g.PurchasePrice(), true
+}
+
+// liveAskForCeiling reads the current per-unit ask for good at waypoint for the
+// sp-9mkf per-tranche buy ceiling — the exact mirror of liveBidForFloor. When a
+// market refresher is wired it live-refreshes first and fails CLOSED (ok=false) if
+// the refresh errors — a tranche whose live ask cannot be verified must not be
+// bought. With no refresher wired it reads the cached ask (fail-open on the missing
+// port, matching liveBidForFloor). ok=false on any inability to read an ask, so the
+// caller holds the remainder (does not buy) rather than purchase blind above the ceiling.
+func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good string, playerID shared.PlayerID) (int, bool) {
+	if h.marketRefresher != nil {
+		if err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID.Value()), waypoint); err != nil {
+			return 0, false
+		}
+	}
+	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
+	if err != nil || mkt == nil {
+		return 0, false
+	}
+	g := mkt.FindGood(good)
+	if g == nil {
+		return 0, false
+	}
+	return g.SellPrice(), true // market SELL price = the ASK the hull pays to buy
 }
 
 // recordCargoTransaction records the cargo transaction in the ledger

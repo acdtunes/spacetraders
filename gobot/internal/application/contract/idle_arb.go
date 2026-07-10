@@ -766,6 +766,13 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 			if destGood == nil {
 				continue
 			}
+			// sp-9mkf (Bug 3): never sell into an EXPORT market's bid — an exporter's bid
+			// is a low sellback price, not a real import sink. A valid sink is IMPORT or
+			// EXCHANGE; unknown trade type is left eligible (fail-open, matching the
+			// manufacturing sell_market_distributor reference filter).
+			if destGood.TradeType() == market.TradeTypeExport {
+				continue
+			}
 			bid := destGood.PurchasePrice() // what the hull receives at the destination
 			margin := bid - ask
 			if margin < d.cfg.MinMarginPerUnit {

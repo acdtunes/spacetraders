@@ -236,6 +236,13 @@ func (r *factoryFakeMarketRepo) FindCheapestMarketSelling(ctx context.Context, g
 	return nil, nil
 }
 
+// FindAllMarketsInSystem lists the fake's two markets so the trade-type-aware
+// FindExportMarket (sp-9mkf) can iterate them; GetMarketData below is consistent with
+// FindCheapestMarketSelling, so the iterated source is unchanged.
+func (r *factoryFakeMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
+	return []string{testFactoryWaypoint, testIronWaypoint}, nil
+}
+
 func (r *factoryFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*market.Market, error) {
 	supply := "MODERATE"
 	activity := "GROWING"

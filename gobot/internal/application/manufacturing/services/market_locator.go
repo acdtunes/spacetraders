@@ -170,9 +170,22 @@ func (l *MarketLocator) scannedTradeGood(ctx context.Context, waypointSymbol str
 	return tradeGood, nil
 }
 
-// FindExportMarket finds a market that sells a good (exports it).
+// FindExportMarket finds a market that SELLS a good to us — a buy SOURCE.
 // For actual ship types (not ship components), searches shipyards.
-// For regular goods and ship components, returns the market with the lowest sell price.
+// For regular goods and ship components, returns the cheapest EXPORT or EXCHANGE
+// market for the good.
+//
+// sp-9mkf (Bug 1): an IMPORT market is NEVER a buy source. A consumer market (e.g. a
+// FOOD factory) lists a sell_price for the FERTILIZERS it consumes, so the old
+// trade-type-blind "cheapest sell_price" query could return the consuming factory
+// itself as the feed's "source" when no real exporter existed in-system. The feed was
+// then bought AND delivered (sold back) at that same waypoint — a guaranteed
+// round-trip loss (FERTILIZERS bought at ask 470 and sold at bid 235 at FF5F, four
+// times, −75k). Every sibling locator in this file already filters trade_type; this
+// one now does too. EXCHANGE stays eligible (a neutral market you can buy from); only
+// EXPORT/EXCHANGE — never IMPORT — can source a good. When no such market exists the
+// feed is genuinely un-sourceable in-system and the caller correctly skips it, rather
+// than round-tripping cargo through the consumer at a loss.
 func (l *MarketLocator) FindExportMarket(
 	ctx context.Context,
 	good string,
@@ -185,28 +198,46 @@ func (l *MarketLocator) FindExportMarket(
 		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
 	}
 
-	// Use the repository's FindCheapestMarketSelling method for regular goods
-	cheapestMarket, err := l.marketRepo.FindCheapestMarketSelling(ctx, good, systemSymbol, playerID)
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find export market for %s: %w", good, err)
+		return nil, fmt.Errorf("failed to find markets for %s: %w", good, err)
 	}
 
-	if cheapestMarket == nil {
-		return nil, fmt.Errorf("no market found exporting %s", good)
+	var best *MarketLocatorResult
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil {
+			continue
+		}
+		// Never source from an IMPORT market (the consumer/factory) — only EXPORT or
+		// EXCHANGE can sell a good to us. This filter is the fix for the same-waypoint
+		// feed round-trip (sp-9mkf Bug 1).
+		if tradeGood.TradeType() == market.TradeTypeImport {
+			continue
+		}
+		price := tradeGood.SellPrice()
+		if price <= 0 {
+			continue // not actually purchasable here
+		}
+		if best == nil || price < best.Price {
+			best = &MarketLocatorResult{
+				WaypointSymbol: waypointSymbol,
+				Activity:       activityOrEmpty(tradeGood),
+				Supply:         supplyOrEmpty(tradeGood),
+				Price:          price,
+				TradeVolume:    tradeGood.TradeVolume(),
+			}
+		}
 	}
 
-	tradeGood, err := l.scannedTradeGood(ctx, cheapestMarket.WaypointSymbol, good, playerID)
-	if err != nil {
-		return nil, err
+	if best == nil {
+		return nil, fmt.Errorf("no export or exchange market found selling %s in %s", good, systemSymbol)
 	}
-
-	return &MarketLocatorResult{
-		WaypointSymbol: cheapestMarket.WaypointSymbol,
-		Activity:       activityOrEmpty(tradeGood),
-		Supply:         cheapestMarket.Supply,
-		Price:          cheapestMarket.SellPrice,
-		TradeVolume:    tradeGood.TradeVolume(),
-	}, nil
+	return best, nil
 }
 
 // FindExportMarketBySupplyPriority finds the best market with acceptable supply level.
