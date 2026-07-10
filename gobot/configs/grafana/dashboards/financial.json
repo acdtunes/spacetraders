@@ -917,6 +917,273 @@
       ],
       "title": "Per-Heavy Tour Profit (6h)",
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 100,
+      "panels": [],
+      "title": "Operating Profit (ex-Capex)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Operating profit = every transaction EXCEPT category='SHIP_INVESTMENTS' (hull capex). Hull purchases (~22M/day) swamp net P/L; splitting them out shows the trading business's real rate. Traded modules (MODULE_%/MOUNT_% bought+sold via PURCHASE_CARGO/SELL_CARGO) stay in opex - they are flipped as goods, not installed, and total <0.4M/7d vs hull capex 100:1.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 39
+      },
+      "id": 101,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE created_at >= NOW() - INTERVAL '24 hours' AND category != 'SHIP_INVESTMENTS' AND player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Operating Profit (24h, ex-capex)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "How much ship-investment capex pulled net P/L below operating profit in the last 24h (= operating - net). This is the distortion the operating split removes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10000000
+              },
+              {
+                "color": "red",
+                "value": 40000000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 43
+      },
+      "id": 102,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(-SUM(amount) FILTER (WHERE category = 'SHIP_INVESTMENTS'), 0) FROM transactions WHERE created_at >= NOW() - INTERVAL '24 hours' AND player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Capex Drag (24h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Hourly operating profit (ex-capex) vs net (all-in). The gap between the lines in any hour IS that hour's ship-investment capex burn.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 4,
+        "y": 39
+      },
+      "id": 103,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), COALESCE(SUM(amount) FILTER (WHERE category != 'SHIP_INVESTMENTS'), 0) AS \"operating (ex-capex)\", COALESCE(SUM(amount), 0) AS \"net (all-in)\" FROM transactions WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Operating vs Net Profit (hourly)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Trailing moving average of hourly operating profit (ex-capex), 3h and 6h windows, to read trend through the lumpy tour buy/sell texture. Input window is widened by 6h (the largest window) then clipped to the visible range, so the leading buckets average over real history instead of dipping.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 39
+      },
+      "id": 104,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH buckets AS (SELECT date_trunc('hour', created_at) AS b, SUM(amount) AS hourly FROM transactions WHERE created_at > $__timeFrom()::timestamptz - INTERVAL '6 hours' AND created_at < $__timeTo()::timestamptz AND category != 'SHIP_INVESTMENTS' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1) SELECT b AS \"time\", AVG(hourly) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS \"operating 3h avg\", AVG(hourly) OVER (ORDER BY b ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS \"operating 6h avg\" FROM buckets WHERE b >= date_trunc('hour', $__timeFrom()::timestamptz) ORDER BY b",
+          "refId": "A"
+        }
+      ],
+      "title": "Operating Profit/hr - Smoothed (3h/6h trailing)",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
