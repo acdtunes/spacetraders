@@ -14,7 +14,7 @@
 #   3. The 'default' owner for the memory's db.
 #
 # An agent primes only the memories whose owner is itself OR 'shared'.
-# owners: captain | shipwright | trade-analyst | fleet-architect | surveyor |
+# owners: captain | shipwright | economy-analyst | surveyor |
 #         harbormaster | shared
 #
 # --- per-db defaults ------------------------------------------------------

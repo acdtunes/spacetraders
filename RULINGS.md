@@ -2,8 +2,8 @@
 
 **Every shipwright dispatch brief references this file. Read it BEFORE making design decisions.**
 These are human-issued standing orders. They override code convenience, test convenience, and
-"obvious" optimizations. If your task appears to conflict with a ruling, STOP and escalate to
-the harbormaster — do not resolve the conflict yourself. (Origin: sp-snmb shipped a contract
+"obvious" optimizations. If your task appears to conflict with a ruling, STOP, flag the bead
+`bd human`, and mail the captain — do not resolve the conflict yourself. (Origin: sp-snmb shipped a contract
 value-floor that violated ruling #1 because the agent never saw it. A spec-miss, not a code bug.
 This file exists so that class of miss cannot recur.)
 
@@ -65,7 +65,7 @@ This file exists so that class of miss cannot recur.)
     NEVER merge to main directly; the sanctioned path is
     `gobot/bin/captain-gate --repo <root> --worktree <wt> --branch <br> --message <m>
     --provision --merge`, followed by numstat verification. Direct main commits are reserved
-    for the harbormaster/Admiral (docs, operational state). Dispatch briefs must quote the
+    for the Admiral (docs, operational state). Dispatch briefs must quote the
     full gate invocation.
 
 14. **Contract operations are single-system.** (2026-07-10, origin: sp-9hu8 — the sourcing
@@ -78,6 +78,7 @@ This file exists so that class of miss cannot recur.)
 
 ## Maintenance
 
-New Admiral rulings are appended here (with date + origin) by the harbormaster/shipwright as
-they are issued. The captain's standing operational doctrine lives in captain/state/; this file
-carries only rulings that bind ENGINEERING decisions.
+New Admiral rulings are appended here (with date + origin) by the shipwright as
+they are issued. The captain's standing operational doctrine lives in beads (decision beads,
+`bd remember` memories, and the captain template); this file carries only rulings that bind
+ENGINEERING decisions.
