@@ -440,8 +440,16 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		return false, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), nil
 	}
 	response.LegsPlanned += len(plan.Legs)
-	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (model %s)", len(plan.Legs), plan.ProjectedProfit, modelVersion), map[string]interface{}{
-		"legs": len(plan.Legs), "projected_profit": plan.ProjectedProfit, "cph": plan.ProjectedCreditsPerHour, "model": modelVersion,
+	// Honest projection split (sp-bc27, Admiral ruling C): projected profit is the
+	// TOTAL that ranked this tour; fresh-trade profit and held-cargo liquidation
+	// revenue are reported apart so a laden-hull plan's margin is not read as pure
+	// fresh-trade profit. Fresh = total - liquidation (liquidation has no acquisition
+	// cost in the plan).
+	freshProfit := plan.ProjectedProfit - plan.HeldLiquidation
+	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (fresh %d, liquidation %d) (model %s)", len(plan.Legs), plan.ProjectedProfit, freshProfit, plan.HeldLiquidation, modelVersion), map[string]interface{}{
+		"legs": len(plan.Legs), "projected_profit": plan.ProjectedProfit,
+		"projected_fresh_profit": freshProfit, "projected_held_liquidation": plan.HeldLiquidation,
+		"cph": plan.ProjectedCreditsPerHour, "model": modelVersion,
 	})
 
 	// Execute plan legs; on degradation, re-plan from current position/cargo (bounded

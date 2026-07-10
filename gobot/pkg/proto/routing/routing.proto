@@ -417,4 +417,15 @@ message OptimizeTradeTourResponse {
   double projected_credits_per_hour = 5;
   repeated RejectedTour top_rejected = 6;
   string model_version = 7;
+  // held_liquidation is the portion of projected_profit that is REVENUE from
+  // selling cargo already aboard at plan time (m5kv launch-liquidation legs:
+  // sell tranches with no paired buy leg — buy_leg=None in the solver). It has
+  // NO acquisition cost in this plan, so it inflates the projected margin used
+  // for display. projected_profit stays the TOTAL (fresh-trade profit + this):
+  // total ranks tour SELECTION so pure-liquidation tours remain feasible/
+  // plannable (Admiral ruling C, sp-bc27). This field is REPORTING-only — it
+  // lets a projection show fresh profit (projected_profit - held_liquidation)
+  // and liquidation revenue apart, and leaves the door open to re-weight
+  // selection later without re-plumbing the wire.
+  int64 held_liquidation = 8;
 }

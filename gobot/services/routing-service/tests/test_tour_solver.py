@@ -185,6 +185,50 @@ def test_solver_empty_hold_plans_no_launch_liquidation():
     total_sells = sum(t["units"] for l in out["legs"] for t in l["trades"] if not t["is_buy"])
     assert total_buys > 0 and total_sells > 0, out
     assert total_sells <= total_buys, out                # nothing to liquidate from an empty hold
+    assert out["held_liquidation"] == 0, out             # sp-bc27: no held cargo -> no liquidation revenue
+
+
+def test_solver_reports_held_liquidation_split():
+    # sp-bc27 (Admiral ruling C): a laden-hull plan reports the held-cargo
+    # liquidation REVENUE apart from fresh-trade profit, while projected_profit
+    # stays the TOTAL (fresh + liquidation) that ranks selection. The hull holds
+    # 40 MEDICINE (liquidates at B, no source anywhere -> no buy leg) AND flies a
+    # fresh G arb (buy A -> sell B). The split must equal the MEDICINE sell
+    # revenue exactly; the total must remain fresh + liquidation (unchanged).
+    snapshot = [
+        snap("A", "S1", "G", ask=100, bid=90, tv=40),           # fresh buy
+        snap("B", "S1", "G", ask=999, bid=300, tv=40),          # fresh sink
+        # MEDICINE is sink-ONLY: ask (9999) > bid (1800) so it is never a
+        # profitable source, even on a revisit — every MEDICINE sell is
+        # launch-liquidation of the held load, never a bought-and-resold arb.
+        snap("B", "S1", "MEDICINE", ask=9999, bid=1800, tv=40),
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[dict(good_symbol="MEDICINE", units=40)])
+    cons = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"], out
+
+    # MEDICINE only ever sells (no source market) -> every MEDICINE sell is
+    # launch-liquidation revenue.
+    liq_rev = sum(t["units"] * t["expected_unit_price"]
+                  for l in out["legs"] for t in l["trades"]
+                  if not t["is_buy"] and t["good_symbol"] == "MEDICINE")
+    fresh_manifest = sum(
+        t["units"] * t["expected_unit_price"] * (-1 if t["is_buy"] else 1)
+        for l in out["legs"] for t in l["trades"] if t["good_symbol"] != "MEDICINE")
+    total_manifest = sum(
+        t["units"] * t["expected_unit_price"] * (-1 if t["is_buy"] else 1)
+        for l in out["legs"] for t in l["trades"])
+
+    assert liq_rev > 0 and fresh_manifest > 0, out          # both a fresh arb and a liquidation
+    assert out["held_liquidation"] == liq_rev, out          # split == liquidation-leg revenue
+    assert out["projected_profit"] == total_manifest, out   # total UNCHANGED (fresh + liquidation)
+    # Fresh-trade profit is the honest remainder the projection reports apart.
+    assert out["projected_profit"] - out["held_liquidation"] == fresh_manifest, out
 
 
 def test_solver_property_capacity_and_spend():

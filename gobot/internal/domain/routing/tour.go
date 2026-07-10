@@ -98,6 +98,14 @@ type TourPlan struct {
 	Legs                    []TourLeg
 	ProjectedProfit         int64
 	ProjectedCreditsPerHour float64
-	ModelVersion            string
-	TopRejected             []string
+	// HeldLiquidation is the slice of ProjectedProfit that is REVENUE from
+	// selling cargo already aboard at plan time (launch-liquidation legs — sell
+	// tranches with no paired buy). ProjectedProfit stays the TOTAL that ranks
+	// tour selection so pure-liquidation tours remain plannable (Admiral ruling
+	// C, sp-bc27); this field is reporting-only, letting the planned-manifest log
+	// split fresh-trade profit (ProjectedProfit - HeldLiquidation) from
+	// liquidation revenue.
+	HeldLiquidation int64
+	ModelVersion    string
+	TopRejected     []string
 }

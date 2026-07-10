@@ -113,6 +113,7 @@ class TourHandlerMixin:
                     for leg in result["legs"]],
                 projected_profit=result["projected_profit"],
                 projected_credits_per_hour=result["projected_credits_per_hour"],
+                held_liquidation=result["held_liquidation"],
                 top_rejected=[routing_pb2.RejectedTour(
                     summary=r["summary"], reason=r["reason"])
                     for r in result["top_rejected"]],

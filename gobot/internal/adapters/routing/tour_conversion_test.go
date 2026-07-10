@@ -79,6 +79,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 		Feasible:                true,
 		ProjectedProfit:         123456,
 		ProjectedCreditsPerHour: 78910.5,
+		HeldLiquidation:         44444,
 		ModelVersion:            "1@torwind-2026-07-05",
 		Legs: []*pb.TradeTourLeg{{
 			WaypointSymbol:        "X1-GQ92-A1",
@@ -99,7 +100,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 	plan := tourPlanFromPb(resp)
 
 	if !plan.Feasible || plan.ProjectedProfit != 123456 || plan.ProjectedCreditsPerHour != 78910.5 ||
-		plan.ModelVersion != "1@torwind-2026-07-05" {
+		plan.HeldLiquidation != 44444 || plan.ModelVersion != "1@torwind-2026-07-05" {
 		t.Fatalf("plan totals wrong: %+v", plan)
 	}
 	if len(plan.Legs) != 1 {

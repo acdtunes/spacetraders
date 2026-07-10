@@ -2080,8 +2080,19 @@ type OptimizeTradeTourResponse struct {
 	ProjectedCreditsPerHour float64                `protobuf:"fixed64,5,opt,name=projected_credits_per_hour,json=projectedCreditsPerHour,proto3" json:"projected_credits_per_hour,omitempty"`
 	TopRejected             []*RejectedTour        `protobuf:"bytes,6,rep,name=top_rejected,json=topRejected,proto3" json:"top_rejected,omitempty"`
 	ModelVersion            string                 `protobuf:"bytes,7,opt,name=model_version,json=modelVersion,proto3" json:"model_version,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// held_liquidation is the portion of projected_profit that is REVENUE from
+	// selling cargo already aboard at plan time (m5kv launch-liquidation legs:
+	// sell tranches with no paired buy leg — buy_leg=None in the solver). It has
+	// NO acquisition cost in this plan, so it inflates the projected margin used
+	// for display. projected_profit stays the TOTAL (fresh-trade profit + this):
+	// total ranks tour SELECTION so pure-liquidation tours remain feasible/
+	// plannable (Admiral ruling C, sp-bc27). This field is REPORTING-only — it
+	// lets a projection show fresh profit (projected_profit - held_liquidation)
+	// and liquidation revenue apart, and leaves the door open to re-weight
+	// selection later without re-plumbing the wire.
+	HeldLiquidation int64 `protobuf:"varint,8,opt,name=held_liquidation,json=heldLiquidation,proto3" json:"held_liquidation,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *OptimizeTradeTourResponse) Reset() {
@@ -2161,6 +2172,13 @@ func (x *OptimizeTradeTourResponse) GetModelVersion() string {
 		return x.ModelVersion
 	}
 	return ""
+}
+
+func (x *OptimizeTradeTourResponse) GetHeldLiquidation() int64 {
+	if x != nil {
+		return x.HeldLiquidation
+	}
+	return 0
 }
 
 var File_pkg_proto_routing_routing_proto protoreflect.FileDescriptor
@@ -2353,7 +2371,7 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\bsnapshot\x18\x01 \x03(\v2\x1b.routing.MarketGoodSnapshotR\bsnapshot\x12%\n" +
 	"\x04ship\x18\x02 \x01(\v2\x11.routing.TourShipR\x04ship\x12:\n" +
 	"\vconstraints\x18\x03 \x01(\v2\x18.routing.TourConstraintsR\vconstraints\x123\n" +
-	"\twaypoints\x18\x04 \x03(\v2\x15.routing.TourWaypointR\twaypoints\"\xd6\x02\n" +
+	"\twaypoints\x18\x04 \x03(\v2\x15.routing.TourWaypointR\twaypoints\"\x81\x03\n" +
 	"\x19OptimizeTradeTourResponse\x12\x1a\n" +
 	"\bfeasible\x18\x01 \x01(\bR\bfeasible\x12+\n" +
 	"\x11infeasible_reason\x18\x02 \x01(\tR\x10infeasibleReason\x12)\n" +
@@ -2361,7 +2379,8 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x10projected_profit\x18\x04 \x01(\x03R\x0fprojectedProfit\x12;\n" +
 	"\x1aprojected_credits_per_hour\x18\x05 \x01(\x01R\x17projectedCreditsPerHour\x128\n" +
 	"\ftop_rejected\x18\x06 \x03(\v2\x15.routing.RejectedTourR\vtopRejected\x12#\n" +
-	"\rmodel_version\x18\a \x01(\tR\fmodelVersion*]\n" +
+	"\rmodel_version\x18\a \x01(\tR\fmodelVersion\x12)\n" +
+	"\x10held_liquidation\x18\b \x01(\x03R\x0fheldLiquidation*]\n" +
 	"\vRouteAction\x12\x1c\n" +
 	"\x18ROUTE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13ROUTE_ACTION_TRAVEL\x10\x01\x12\x17\n" +

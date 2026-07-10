@@ -307,6 +307,15 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
         allocations.append((good, i, j, units, buy_price, sell_price))
 
     profit = revenue - spend
+    # Held-liquidation revenue (sp-bc27, Admiral ruling C): the revenue from
+    # sell tranches of cargo held at launch (buy_leg i is None — no acquisition
+    # cost in this plan). It is a subset of `revenue` and thus of `profit`;
+    # reported alongside the TOTAL so a projection can show fresh-trade profit
+    # (profit - held_liquidation) and liquidation revenue apart. Selection still
+    # ranks on total `profit`, so pure-liquidation tours stay feasible.
+    held_liquidation = sum(units * sell_price
+                           for _good, i, _j, units, _buy_price, sell_price in allocations
+                           if i is None)
 
     # Assemble per-leg trades, then prune hops where nothing happens.
     leg_trades = [{} for _ in range(n)]  # (good, is_buy, price) -> units
@@ -345,7 +354,8 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn):
         prev = leg["waypoint_symbol"]
 
     cph = profit / (seconds / 3600.0) if seconds > 0 else 0.0
-    return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs)
+    return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs,
+                held_liquidation=held_liquidation)
 
 
 def beam_sequences(markets, ship, constraints, travel_fn):
@@ -453,6 +463,7 @@ def beam_sequences(markets, ship, constraints, travel_fn):
 def _infeasible(reason, model_version, top_rejected=None):
     return dict(feasible=False, infeasible_reason=reason, legs=[],
                 projected_profit=0, projected_credits_per_hour=0.0,
+                held_liquidation=0,
                 top_rejected=top_rejected or [], model_version=model_version)
 
 
@@ -535,5 +546,6 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None):
                 legs=best["legs"],
                 projected_profit=best["profit"],
                 projected_credits_per_hour=best["cph"],
+                held_liquidation=best["held_liquidation"],
                 top_rejected=rejected(scored[1:], winner=best),
                 model_version=model_version)

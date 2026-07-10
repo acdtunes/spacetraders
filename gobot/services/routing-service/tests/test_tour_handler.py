@@ -100,6 +100,9 @@ def test_golden_tour(tmp_path):
     }
     assert resp.projected_profit == 23_880
     assert resp.projected_credits_per_hour > 0
+    # sp-bc27: an empty-hold tour has no launch-liquidation revenue, so the split
+    # field is 0 and projected_profit is all fresh-trade profit.
+    assert resp.held_liquidation == 0
 
     # 2-system cap held even though S3's fat bid was allowed by constraints.
     assert all(l.system_symbol in ("S1", "S2") for l in resp.legs)

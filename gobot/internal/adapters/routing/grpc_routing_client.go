@@ -404,6 +404,7 @@ func tourPlanFromPb(resp *pb.OptimizeTradeTourResponse) *domainRouting.TourPlan 
 		InfeasibleReason:        resp.GetInfeasibleReason(),
 		ProjectedProfit:         resp.GetProjectedProfit(),
 		ProjectedCreditsPerHour: resp.GetProjectedCreditsPerHour(),
+		HeldLiquidation:         resp.GetHeldLiquidation(),
 		ModelVersion:            resp.GetModelVersion(),
 	}
 	for _, leg := range resp.GetLegs() {
