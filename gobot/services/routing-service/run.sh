@@ -38,9 +38,21 @@ fi
 # Activate virtual environment and run server
 source "$SCRIPT_DIR/venv/bin/activate"
 
-# Generate protobuf files if they don't exist
-if [ ! -f "$SCRIPT_DIR/generated/routing_pb2_grpc.py" ]; then
-    echo "Generating protobuf files..."
+# Generate protobuf files when MISSING or STALE.
+#
+# sp-qzej: the old guard only checked ABSENCE (`[ ! -f routing_pb2_grpc.py ]`), so a
+# redeploy that reused a pre-existing generated/ from before a proto change kept a STALE
+# descriptor. When C1 (sp-64je) added `stock_sources` to routing.proto, a redeploy that
+# did not wipe generated/ left the runtime proto without that field; the updated handler
+# then hit `AttributeError('stock_sources')` on every OptimizeTradeTour, which the servicer
+# returned as `internal_error: stock_sources` and the daemon masked as an empty "tour
+# unavailable" — aborting all tours for hours. Regenerating when routing.proto is NEWER
+# than the generated files keeps the runtime descriptor in lockstep with the schema.
+PROTO_SRC="$SCRIPT_DIR/../../pkg/proto/routing/routing.proto"
+GEN_PB2="$SCRIPT_DIR/generated/routing_pb2.py"
+GEN_GRPC="$SCRIPT_DIR/generated/routing_pb2_grpc.py"
+if [ ! -f "$GEN_GRPC" ] || [ ! -f "$GEN_PB2" ] || [ "$PROTO_SRC" -nt "$GEN_PB2" ] || [ "$PROTO_SRC" -nt "$GEN_GRPC" ]; then
+    echo "Generating protobuf files (missing or stale vs routing.proto)..."
     # Use venv's python to generate protos
     mkdir -p "$SCRIPT_DIR/generated"
     "$SCRIPT_DIR/venv/bin/python3" -m grpc_tools.protoc \

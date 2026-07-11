@@ -111,7 +111,27 @@ const (
 	// tourExitUnavailable: the very first tour found no plan and nothing was earned —
 	// the fail-open no-op (single-lane fallback stands).
 	tourExitUnavailable = "tour_unavailable"
+	// tourExitPlannerInternalError (sp-qzej): the routing-service returned a structured
+	// internal_error (an exception it caught, not a transport failure). A real planner
+	// OUTAGE — vetoes the container FAILED, never a clean fail-open.
+	tourExitPlannerInternalError = "planner_internal_error"
 )
+
+// plannerInternalErrorMarker is the prefix the routing-service stamps on any
+// exception it catches inside OptimizeTradeTour (handlers/tour_handler.py:
+// infeasible_reason = "internal_error: <exc>"). It uniquely distinguishes a
+// planner OUTAGE (the service is up but threw) from both a gRPC transport failure
+// (planAndReserve stamps "planner error:") and a legitimate infeasibility
+// ("no_profitable_tour", "no_fresh_market_data", …). Kept in lockstep with the
+// Python handler's literal.
+const plannerInternalErrorMarker = "internal_error:"
+
+// isPlannerInternalError reports whether an infeasible/unavailable reason carries the
+// routing-service's structured internal_error marker (sp-qzej). Such a reason is a
+// planner outage, not a legitimate no-tour verdict, and must surface as a FAILURE.
+func isPlannerInternalError(reason string) bool {
+	return strings.Contains(reason, plannerInternalErrorMarker)
+}
 
 // RunTourCoordinatorCommand is a captain-directed, guarded multi-hop trade-tour run
 // (sp-1ek0): plan a depth-aware tour for THIS hull, fly it leg by leg with prices
@@ -254,15 +274,30 @@ type RunTourCoordinatorResponse struct {
 	CargoStranded       bool
 	CargoStrandedReason string
 
+	// PlannerInternalError is the honest-completion veto for a planner OUTAGE (sp-qzej):
+	// the routing-service caught an exception and returned a STRUCTURED feasible=false
+	// with an "internal_error:" reason (not a gRPC transport error). That is a real
+	// planner failure, NOT a legitimate "no profitable tour" — routing it to the clean
+	// TourUnavailable fail-open masked a live outage as container success=true (the C1
+	// stock-source resolution stall). Surfaced through CompletionOutcome (nil Go error,
+	// like CargoStranded) so the container terminalizes FAILED and the outage is loud.
+	PlannerInternalError       bool
+	PlannerInternalErrorReason string
+
 	Error string
 }
 
 // CompletionOutcome implements common.CompletionReporter: a stranded tour vetoes
 // the runner's success=true (terminalized FAILED with the strand as its signature).
-// A fail-open "tour unavailable" is an honest clean completion (nothing half-done).
+// A planner internal_error (sp-qzej) vetoes the same way — a real routing-service
+// outage is a FAILURE, never masked as a clean completion. A fail-open "tour
+// unavailable" is an honest clean completion (nothing half-done).
 func (r *RunTourCoordinatorResponse) CompletionOutcome() (bool, string) {
 	if r.CargoStranded {
 		return false, r.CargoStrandedReason
+	}
+	if r.PlannerInternalError {
+		return false, r.PlannerInternalErrorReason
 	}
 	return true, ""
 }
@@ -765,6 +800,26 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		feasible, reason, terr := h.runOneTour(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, replanLimit, modelVersion)
 		if terr != nil {
 			return terr
+		}
+
+		// sp-qzej: a planner-returned internal_error is a routing-service OUTAGE (an
+		// exception it caught and returned as a structured feasible=false — e.g. the C1
+		// stock-source resolution AttributeError on a stale generated proto), NOT a
+		// legitimate "no profitable tour". Terminalize the container FAILED via the
+		// honest-completion veto so a live outage is surfaced LOUDLY instead of masked as
+		// a clean "tour unavailable" success — the masking that hid the 2026-07-11 trade
+		// stall for hours. Checked BEFORE the fail-open/starvation classification below so
+		// it wins in BOTH the one-shot and continuous paths, and regardless of how many
+		// tours already flew. Transport errors ("planner error:") and genuine
+		// infeasibility still fail open below (single-lane fallback stands).
+		if !feasible && isPlannerInternalError(reason) {
+			response.PlannerInternalError = true
+			response.PlannerInternalErrorReason = reason
+			response.ExitReason = tourExitPlannerInternalError
+			logger.Log("ERROR", reason, map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "model": modelVersion,
+			})
+			return nil
 		}
 
 		// A PRODUCTIVE tour (feasible AND flew >=1 trade) resets the starvation streak and
