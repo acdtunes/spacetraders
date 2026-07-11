@@ -517,6 +517,29 @@ func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, re
 	return &pb.FrontierExpansionCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
+// it ferries idle undedicated light-haulers cross-system to worker-starved factory systems.
+// All tuning lives in config.yaml [worker_rebalancer] (resolved live on every build); this
+// RPC only names the player/agent and the dry-run launch flag.
+func (s *daemonServiceImpl) WorkerRebalancerCoordinator(ctx context.Context, req *pb.WorkerRebalancerCoordinatorRequest) (*pb.WorkerRebalancerCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.WorkerRebalancerCoordinator(ctx, playerID, agentSymbol, req.DryRun)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start worker rebalancer coordinator: %w", err)
+	}
+
+	return &pb.WorkerRebalancerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq)
 func (s *daemonServiceImpl) AddScoutPost(ctx context.Context, req *pb.AddScoutPostRequest) (*pb.ScoutPostResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

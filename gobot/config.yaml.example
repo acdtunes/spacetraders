@@ -226,3 +226,28 @@ trade_fleet:
   # min_margin: 0
   # replan_limit: 0
   # working_capital_reserve: 0
+
+# Worker-rebalancer coordinator (sp-f5pr): the STANDING coordinator that ferries idle
+# undedicated light-haulers cross-system to worker-starved factory systems, so a factory
+# posting "No in-system worker" self-heals without captain hand-holding. A system is a
+# vacancy when a factory has run past vacancy_min_minutes with NO in-system idle light and
+# fewer lights than factory chains; the coordinator jump-routes the nearest idle light from
+# a source with a spare and reclaims it on arrival for the factory to man in-system. Launch
+# it once with `spacetraders workflow worker-rebalancer-coordinator` (add --dry-run first to
+# preview). It derives ALL state from ship + container rows — zero new persisted state, so a
+# daemon restart resumes identically.
+#
+# THIS SECTION IS LIVE (sp-ts82): the daemon resolves these knobs from THIS file every time
+# it builds the coordinator — at creation AND at restart recovery. Every value is OPTIONAL;
+# an unset key takes the documented default. Ownership is untouched: each ferry claims its
+# own hull under operation="worker_ferry" (occupancy, not a dedication); pinned and
+# captain-reserved hulls are never poached.
+worker_rebalancer:
+  # enabled: false parks the WHOLE ferry loop. Absent => ON.
+  # enabled: false
+  tick_seconds: 60                 # reconcile cadence (default 60)
+  vacancy_min_minutes: 15          # factory warm-up before a system counts as starved (default 15)
+  source_min_idle: 2               # idle lights a source must hold to donate one (default 2; never strips below 1)
+  ferry_cooldown_seconds: 600      # per-system suppress window after a ferry targets it (default 600)
+  max_concurrent_ferries: 2        # cap on simultaneously-running ferries (default 2)
+  max_lights_per_system: 0         # per-system light cap incl. in-flight ferries (0 = uncapped, default)

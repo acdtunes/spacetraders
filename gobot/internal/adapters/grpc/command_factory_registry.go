@@ -245,6 +245,14 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 //	                                                            claim; scout_post_coordinator re-
 //	                                                            dispatches from current position —
 //	                                                            travel() re-plans the hops (s232)
+//	worker_rebalancer_          ∞ internal loop   coordinator   re-adopts; all state DB-derived
+//	coordinator                                                 (ship + container rows), so a fresh
+//	                                                            handler ferries identically (f5pr)
+//	worker_ferry                one cross-system  coordinator   worker (coordinator_id): skipped +
+//	                            relay             (parent)      markWorkerInterrupted preserves the
+//	                                                            claim; worker_rebalancer_coordinator
+//	                                                            reclaims it (arrival or interruption),
+//	                                                            re-plans from current position (f5pr)
 //	contract_workflow           one contract      coordinator   re-adopts standalone; worker
 //	                                                            (coordinator_id) waits for parent
 //	contract_fleet_coordinator  ∞ internal loop   coordinator   re-adopts
@@ -305,6 +313,13 @@ func containerSpecList() []ContainerSpec {
 		// CoordinatorOwnsIterations type; the container-level iteration budget (-1) is
 		// irrelevant because Handle() never returns.
 		{CommandType: "trade_fleet_coordinator", build: buildTradeFleetCoordinatorCommand},
+		// worker_rebalancer_coordinator (sp-f5pr): a standing coordinator that loops
+		// forever inside one Handle() call, so — like trade_fleet/scout_post — it is NOT a
+		// CoordinatorOwnsIterations type. worker_ferry is its one-shot cross-system relay
+		// worker (twin of scout_reposition): the coordinator owns re-dispatch, so the
+		// container wraps exactly ONE iteration (CoordinatorOwnsIterations).
+		{CommandType: "worker_rebalancer_coordinator", build: buildWorkerRebalancerCoordinatorCommand},
+		{CommandType: "worker_ferry", build: buildWorkerFerryCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
@@ -364,6 +379,14 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// no persisted copy can shadow the live value.
 	if commandType == "trade_fleet_coordinator" {
 		s.resolveTradeFleetConfig(config)
+	}
+	// sp-f5pr: same live-config discipline for the worker-rebalancer coordinator. Its
+	// [worker_rebalancer] knobs are cleared and re-injected from the boot-loaded
+	// config.yaml on every build — creation and recovery alike — so a config edit +
+	// restart retunes a recovered coordinator and no persisted copy can shadow the live
+	// value.
+	if commandType == "worker_rebalancer_coordinator" {
+		s.resolveWorkerRebalancerConfig(config)
 	}
 	return spec.BuildCommand(config, playerID, containerID)
 }
@@ -431,6 +454,47 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		MinMargin:             cfg.OptionalInt("trade_fleet_min_margin", 0),
 		ReplanLimit:           cfg.OptionalInt("trade_fleet_replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("trade_fleet_reserve", 0)),
+	}
+}
+
+// buildWorkerRebalancerCoordinatorCommand rebuilds the standing worker-rebalancer
+// coordinator command (sp-f5pr) from a persisted launch config so a daemon restart
+// re-adopts it. The [worker_rebalancer] knobs are resolved LIVE from config.yaml just
+// before this runs (resolveWorkerRebalancerConfig in buildCommandForType), so the persisted
+// worker_rebalancer_* keys are transient — the reads below see the current config.yaml.
+// Enabled is reconstructed as the negation of worker_rebalancer_disabled: an absent key
+// reads as enabled, preserving the default-ON intent across a recovery from an old config
+// that predates the key. dry_run is the launch-time flag (mirrors the frontier
+// coordinator), read back so a dry-run coordinator resumes dry-run after a restart.
+func buildWorkerRebalancerCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunWorkerRebalancerCoordinatorCommand{
+		PlayerID:             shared.MustNewPlayerID(playerID),
+		ContainerID:          cfg.RequiredNonEmptyString("container_id"),
+		AgentSymbol:          cfg.OptionalString("agent_symbol"),
+		DryRun:               cfg.OptionalBool("dry_run"),
+		Enabled:              !cfg.OptionalBool("worker_rebalancer_disabled"),
+		TickIntervalSecs:     cfg.OptionalInt("worker_rebalancer_tick_secs", 0),
+		VacancyMinMinutes:    cfg.OptionalInt("worker_rebalancer_vacancy_min_minutes", 0),
+		SourceMinIdle:        cfg.OptionalInt("worker_rebalancer_source_min_idle", 0),
+		FerryCooldownSecs:    cfg.OptionalInt("worker_rebalancer_ferry_cooldown_secs", 0),
+		MaxConcurrentFerries: cfg.OptionalInt("worker_rebalancer_max_concurrent_ferries", 0),
+		MaxLightsPerSystem:   cfg.OptionalInt("worker_rebalancer_max_lights_per_system", 0),
+	}
+}
+
+// buildWorkerFerryCommand rebuilds a one-shot cross-system ferry from its persisted launch
+// config so restart recovery re-adopts it (sp-f5pr, twin of buildScoutRepositionCommand). A
+// coordinator-spawned ferry (coordinator_id present) is skipped by recovery and reclaimed
+// by the worker_rebalancer_coordinator, but the command is still rebuilt here so the
+// coordinator's StartWorkerFerry path can reconstruct it. Re-running after a restart is
+// safe: travel() waits out any in-transit leg and re-plans the gate path from the hull's
+// CURRENT position, so a mid-ferry restart resumes rather than strands.
+func buildWorkerFerryCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.WorkerFerryCommand{
+		PlayerID:            shared.MustNewPlayerID(playerID),
+		ShipSymbol:          cfg.RequiredString("ship_symbol"),
+		DestinationWaypoint: cfg.RequiredString("destination"),
+		CoordinatorID:       cfg.OptionalString("coordinator_id"),
 	}
 }
 

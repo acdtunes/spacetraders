@@ -63,6 +63,11 @@ service DaemonService {
   // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
   rpc FrontierExpansionCoordinator(FrontierExpansionCoordinatorRequest) returns (FrontierExpansionCoordinatorResponse);
 
+  // WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
+  // ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
+  // lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
+  rpc WorkerRebalancerCoordinator(WorkerRebalancerCoordinatorRequest) returns (WorkerRebalancerCoordinatorResponse);
+
   // AddScoutPost adds or updates a desired-state scout post for a system
   rpc AddScoutPost(AddScoutPostRequest) returns (ScoutPostResponse);
 
@@ -523,6 +528,20 @@ message FrontierExpansionCoordinatorRequest {
   int32 expansion_max_hops = 8;      // gate-graph reach for the queue; 0 = default
 }
 message FrontierExpansionCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// WorkerRebalancerCoordinatorRequest starts the standing worker-rebalancer coordinator
+// (sp-f5pr). All tuning lives in config.yaml's [worker_rebalancer] section (resolved live
+// on every build); this request only names the player/agent and the dry-run launch flag.
+message WorkerRebalancerCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  bool dry_run = 3; // decide + log the ferry it would dispatch, but ferry nothing
+}
+
+message WorkerRebalancerCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

@@ -206,6 +206,27 @@ func (r *ContainerRepositoryGORM) ListByStatus(
 	return models, nil
 }
 
+// ListByCommandTypeSince lists containers of a command type for a player that started
+// at/after `since` (sp-f5pr). The worker-rebalancer coordinator uses it to read recent
+// worker_ferry rows for the per-vacancy cooldown — a focused query that avoids scanning
+// every container. StartedAt is the persisted launch time, so the cooldown clock survives
+// a daemon restart with zero new state (RULINGS #2).
+func (r *ContainerRepositoryGORM) ListByCommandTypeSince(
+	ctx context.Context,
+	commandType string,
+	since time.Time,
+	playerID int,
+) ([]*ContainerModel, error) {
+	var models []*ContainerModel
+	if err := r.db.WithContext(ctx).
+		Where("command_type = ? AND player_id = ? AND started_at IS NOT NULL AND started_at >= ?",
+			commandType, playerID, since).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list containers by command type since: %w", err)
+	}
+	return models, nil
+}
+
 // ListAll lists all containers, optionally filtered by player
 func (r *ContainerRepositoryGORM) ListAll(
 	ctx context.Context,

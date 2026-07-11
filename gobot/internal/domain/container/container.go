@@ -52,6 +52,13 @@ const (
 	ContainerTypeScoutPostCoordinator     ContainerType = "SCOUT_POST_COORDINATOR"
 	ContainerTypeTradeFleetCoordinator    ContainerType = "TRADE_FLEET_COORDINATOR"
 	ContainerTypeScoutReposition          ContainerType = "SCOUT_REPOSITION"
+	// ContainerTypeWorkerRebalancerCoordinator is the standing coordinator that ferries
+	// idle light-haulers cross-system to worker-starved factory systems (sp-f5pr); like
+	// the trade-fleet/scout-post coordinators it loops forever inside one Handle().
+	ContainerTypeWorkerRebalancerCoordinator ContainerType = "WORKER_REBALANCER_COORDINATOR"
+	// ContainerTypeWorkerFerry is the one-shot cross-system ferry worker the
+	// worker_rebalancer_coordinator spawns (sp-f5pr), twin of ContainerTypeScoutReposition.
+	ContainerTypeWorkerFerry ContainerType = "WORKER_FERRY"
 	ContainerTypeFrontierExpansion        ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"

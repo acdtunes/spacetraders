@@ -1177,6 +1177,23 @@ func (c *DaemonClient) TradeFleetCoordinator(ctx context.Context, playerID int, 
 	return resp.ContainerId, nil
 }
 
+// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr).
+// dryRun decides + logs the ferry it would dispatch but ferries nothing.
+func (c *DaemonClient) WorkerRebalancerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
+	req := &pb.WorkerRebalancerCoordinatorRequest{
+		PlayerId: int32(playerID),
+		DryRun:   dryRun,
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.WorkerRebalancerCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // FrontierExpansionCoordinatorParams carries the launch knobs for the frontier
 // expansion coordinator (sp-8w89). All are optional; a 0/false value uses the
 // coordinator's documented default (RULINGS #5).

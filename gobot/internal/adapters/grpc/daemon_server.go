@@ -102,6 +102,14 @@ type DaemonServer struct {
 	// restarting, no code redeploy.
 	tradeFleetConfig config.TradeFleetConfig
 
+	// workerRebalancerConfig carries the worker-rebalancer coordinator knobs (sp-f5pr)
+	// from config.yaml. WorkerRebalancerCoordinator injects them into the coordinator
+	// container's launch config on every build (creation + restart recovery via
+	// resolveWorkerRebalancerConfig), so a captain retunes the standing ferry loop —
+	// enabled/vacancy-clock/source-floor/cooldown/caps — by editing config and
+	// restarting, no code redeploy.
+	workerRebalancerConfig config.WorkerRebalancerConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -132,6 +140,7 @@ func NewDaemonServer(
 	metricsConfig *config.MetricsConfig,
 	contractConfig config.ContractConfig,
 	tradeFleetConfig config.TradeFleetConfig,
+	workerRebalancerConfig config.WorkerRebalancerConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -171,27 +180,28 @@ func NewDaemonServer(
 	}
 
 	server := &DaemonServer{
-		mediator:              mediator,
-		db:                    db,
-		logRepo:               logRepo,
-		containerRepo:         containerRepo,
-		waypointRepo:          waypointRepo,
-		shipRepo:              shipRepo,
-		playerRepo:            playerRepo,
-		routingClient:         routingClient,
-		goodsFactoryRepo:      goodsFactoryRepo,
-		apiClient:             apiClient,
-		clock:                 clock,
-		shipStateScheduler:    shipStateScheduler,
-		listener:              listener,
-		containers:            make(map[string]*ContainerRunner),
-		containerSpecs:        make(map[string]ContainerSpec),
-		pendingWorkerCommands: make(map[string]interface{}),
-		metricsConfig:         metricsConfig,
-		contractConfig:        contractConfig,
-		tradeFleetConfig:      tradeFleetConfig,
-		shutdownChan:          make(chan os.Signal, 1),
-		done:                  make(chan struct{}),
+		mediator:               mediator,
+		db:                     db,
+		logRepo:                logRepo,
+		containerRepo:          containerRepo,
+		waypointRepo:           waypointRepo,
+		shipRepo:               shipRepo,
+		playerRepo:             playerRepo,
+		routingClient:          routingClient,
+		goodsFactoryRepo:       goodsFactoryRepo,
+		apiClient:              apiClient,
+		clock:                  clock,
+		shipStateScheduler:     shipStateScheduler,
+		listener:               listener,
+		containers:             make(map[string]*ContainerRunner),
+		containerSpecs:         make(map[string]ContainerSpec),
+		pendingWorkerCommands:  make(map[string]interface{}),
+		metricsConfig:          metricsConfig,
+		contractConfig:         contractConfig,
+		tradeFleetConfig:       tradeFleetConfig,
+		workerRebalancerConfig: workerRebalancerConfig,
+		shutdownChan:           make(chan os.Signal, 1),
+		done:                   make(chan struct{}),
 	}
 
 	// Create container info getter function. Hoisted above the

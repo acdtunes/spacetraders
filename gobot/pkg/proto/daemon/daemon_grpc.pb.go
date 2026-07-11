@@ -35,6 +35,7 @@ const (
 	DaemonService_ScoutPostCoordinator_FullMethodName                  = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName                 = "/daemon.DaemonService/TradeFleetCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName          = "/daemon.DaemonService/FrontierExpansionCoordinator"
+	DaemonService_WorkerRebalancerCoordinator_FullMethodName           = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                          = "/daemon.DaemonService/AddScoutPost"
 	DaemonService_RemoveScoutPost_FullMethodName                       = "/daemon.DaemonService/RemoveScoutPost"
 	DaemonService_ListScoutPosts_FullMethodName                        = "/daemon.DaemonService/ListScoutPosts"
@@ -122,6 +123,10 @@ type DaemonServiceClient interface {
 	TradeFleetCoordinator(ctx context.Context, in *TradeFleetCoordinatorRequest, opts ...grpc.CallOption) (*TradeFleetCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
+	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
+	// ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
+	// lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
+	WorkerRebalancerCoordinator(ctx context.Context, in *WorkerRebalancerCoordinatorRequest, opts ...grpc.CallOption) (*WorkerRebalancerCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(ctx context.Context, in *AddScoutPostRequest, opts ...grpc.CallOption) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -376,6 +381,16 @@ func (c *daemonServiceClient) FrontierExpansionCoordinator(ctx context.Context, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FrontierExpansionCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_FrontierExpansionCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) WorkerRebalancerCoordinator(ctx context.Context, in *WorkerRebalancerCoordinatorRequest, opts ...grpc.CallOption) (*WorkerRebalancerCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerRebalancerCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_WorkerRebalancerCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -809,6 +824,10 @@ type DaemonServiceServer interface {
 	TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
+	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
+	// ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
+	// lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
+	WorkerRebalancerCoordinator(context.Context, *WorkerRebalancerCoordinatorRequest) (*WorkerRebalancerCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -956,6 +975,9 @@ func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) WorkerRebalancerCoordinator(context.Context, *WorkerRebalancerCoordinatorRequest) (*WorkerRebalancerCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WorkerRebalancerCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddScoutPost not implemented")
@@ -1376,6 +1398,24 @@ func _DaemonService_FrontierExpansionCoordinator_Handler(srv interface{}, ctx co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).FrontierExpansionCoordinator(ctx, req.(*FrontierExpansionCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_WorkerRebalancerCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerRebalancerCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).WorkerRebalancerCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_WorkerRebalancerCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).WorkerRebalancerCoordinator(ctx, req.(*WorkerRebalancerCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2134,6 +2174,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FrontierExpansionCoordinator",
 			Handler:    _DaemonService_FrontierExpansionCoordinator_Handler,
+		},
+		{
+			MethodName: "WorkerRebalancerCoordinator",
+			Handler:    _DaemonService_WorkerRebalancerCoordinator_Handler,
 		},
 		{
 			MethodName: "AddScoutPost",

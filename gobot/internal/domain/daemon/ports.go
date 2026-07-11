@@ -32,6 +32,15 @@ const (
 	// exits; the next in-system reconcile mans the post — manning stays in-system
 	// only (the sp-qxa4 invariant), reposition just moves the hull there first.
 	ContainerKindScoutReposition ContainerKind = "scout_reposition"
+	// ContainerKindWorkerFerry is a one-shot cross-system relay the
+	// worker_rebalancer_coordinator spawns to jump-route an idle light-hauler to a
+	// worker-starved factory system (sp-f5pr). Like a scout_reposition relay it is a
+	// coordinator-managed worker (coordinator_id → restart recovery skips it, preserving
+	// the claim; the coordinator reclaims it on arrival or interruption). It reuses the
+	// trade-route coordinator's multi-jump travel() (no new jump logic) to fly the hull
+	// to the vacancy system, then exits; the destination factory's own idle-hauler
+	// discovery claims the now-idle hull in-system.
+	ContainerKindWorkerFerry ContainerKind = "worker_ferry"
 )
 
 // ContainerInfo represents container metadata for daemon client communication.

@@ -6,6 +6,7 @@ import (
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
 
@@ -90,6 +91,12 @@ func (c *DaemonClientLocal) PersistContainer(
 			return daemon.ErrInvalidCommandType
 		}
 		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID)
+	case daemon.ContainerKindWorkerFerry:
+		cmd, ok := command.(*tradingCmd.WorkerFerryCommand)
+		if !ok {
+			return daemon.ErrInvalidCommandType
+		}
+		return c.server.PersistWorkerFerryWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }
@@ -112,6 +119,8 @@ func (c *DaemonClientLocal) StartContainer(
 		return c.server.StartScoutTour(ctx, containerID)
 	case daemon.ContainerKindScoutReposition:
 		return c.server.StartScoutReposition(ctx, containerID)
+	case daemon.ContainerKindWorkerFerry:
+		return c.server.StartWorkerFerry(ctx, containerID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }

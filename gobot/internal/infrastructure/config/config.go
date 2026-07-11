@@ -28,6 +28,9 @@ type Config struct {
 	Contract   ContractConfig   `mapstructure:"contract"`
 	Absorption AbsorptionConfig `mapstructure:"absorption"`
 	TradeFleet TradeFleetConfig `mapstructure:"trade_fleet"`
+	// WorkerRebalancer holds the worker-rebalancer coordinator's knobs (sp-f5pr),
+	// injected live into the coordinator container on every build.
+	WorkerRebalancer WorkerRebalancerConfig `mapstructure:"worker_rebalancer"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

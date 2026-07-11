@@ -511,7 +511,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -677,6 +677,36 @@ func run(cfg *config.Config) error {
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)
+	}
+
+	// Worker-rebalancer coordinator (sp-f5pr): the standing coordinator that ferries idle
+	// undedicated light-haulers cross-system to worker-starved factory systems so a factory
+	// posting "No in-system worker" self-heals without captain hand-holding. It derives ALL
+	// state from ship + container rows (zero new persisted state, restart-safe), claims
+	// nothing directly (each ferry claims its own hull under operation="worker_ferry", never
+	// poaching a pinned/reserved hull), and reuses the trade-route coordinator's multi-jump
+	// travel() via the ferry worker below. The container-query adapter reads RUNNING factory
+	// + worker_ferry rows; waypointRepo supplies ferry destinations. Tuning is resolved live
+	// from config.yaml [worker_rebalancer].
+	workerRebalancerCoordinatorHandler := tradeRouteCmd.NewRunWorkerRebalancerCoordinatorHandler(
+		shipRepo,
+		daemonClientLocal,
+		grpc.NewWorkerRebalancerContainerQuery(containerRepo),
+		waypointRepo,
+		nil, // nil = use RealClock
+	)
+	// Shares the SAME persisted gate graph as the trade circuit / scout relays (one
+	// cache/graph) to rank the nearest idle light by jump hops. nil would disable ferrying
+	// (fail-closed park).
+	workerRebalancerCoordinatorHandler.SetGateGraph(gateGraphService)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunWorkerRebalancerCoordinatorCommand](med, workerRebalancerCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register WorkerRebalancerCoordinator handler: %w", err)
+	}
+	// The ferry worker reuses the trade-route coordinator's RepositionToWaypoint (the SAME
+	// multi-jump travel() the arb/trade circuits use) — twin of scoutRepositionHandler.
+	workerFerryHandler := tradeRouteCmd.NewWorkerFerryHandler(tradeRouteCoordinatorHandler)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.WorkerFerryCommand](med, workerFerryHandler); err != nil {
+		return fmt.Errorf("failed to register WorkerFerry handler: %w", err)
 	}
 
 	// Frontier expansion coordinator (sp-8w89): the standing coordinator that closes the
