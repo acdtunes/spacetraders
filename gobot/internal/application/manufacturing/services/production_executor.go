@@ -300,14 +300,24 @@ func (e *ProductionExecutor) buyGood(
 		return &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: ""}, nil
 	}
 
+	// Tag this input buy with the selector branch that chose the source (sp-br0m): it rides ctx
+	// down to the PURCHASE_CARGO ledger recorder (cargo_transaction.recordCargoTransaction),
+	// which stamps it into the transaction metadata beside good_symbol. That makes A1
+	// (supply-first compliance) gradable straight from the ledger — an ELIGIBLE buy is a healthy
+	// supply-first pick, a RESCUE buy the legal single-source-degraded exception — and arms the
+	// rescue-rate mis-siting tripwire, which cannot be reconstructed from the row otherwise. Only
+	// the input-buy path stamps it; the fabricated-output harvest and every non-factory cargo
+	// caller leave it unset, so their rows are unchanged.
+	ctx = shared.WithSelectorBranch(ctx, mode.String())
+
 	logger.Log("INFO", fmt.Sprintf("Selected supply-first source for %s purchase (%s)", node.Good, mode), map[string]interface{}{
-		"good":         node.Good,
-		"market":       marketResult.WaypointSymbol,
-		"price":        marketResult.Price,
-		"activity":     marketResult.Activity,
-		"supply":       marketResult.Supply,
-		"trade_volume": marketResult.TradeVolume,
-		"source_mode":  mode.String(),
+		"good":            node.Good,
+		"market":          marketResult.WaypointSymbol,
+		"price":           marketResult.Price,
+		"activity":        marketResult.Activity,
+		"supply":          marketResult.Supply,
+		"trade_volume":    marketResult.TradeVolume,
+		"selector_branch": mode.String(),
 	})
 
 	// The cross-market price ceiling applies on the ELIGIBLE path only — the BACKSTOP to the

@@ -8,6 +8,7 @@ type contextKey int
 const (
 	operationContextKey  contextKey = iota
 	skipMarketRefreshKey            // Skip market refresh after cargo transactions (optimization)
+	selectorBranchKey               // Factory input-source selector branch, tagged onto the buy's ledger row (sp-br0m)
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -125,4 +126,28 @@ func SkipMarketRefreshFromContext(ctx context.Context) bool {
 		return skip
 	}
 	return false
+}
+
+// WithSelectorBranch stamps the a5j7 input-source selector's branch (ELIGIBLE | RESCUE |
+// era-end | disabled) onto the context so the cargo-transaction recorder tags the resulting
+// PURCHASE_CARGO ledger row's metadata with it (sp-br0m). ONLY the factory input-buy path
+// (production_executor.buyGood) stamps this; every other cargo caller (trade, tour, arb,
+// contract delivery, refuel, CLI, the fabricated-output harvest) leaves it unset, so their
+// recorded rows are byte-identical to before. The tag makes A1 (supply-first compliance)
+// gradable straight from the ledger — an ELIGIBLE buy is a healthy supply-first pick, a RESCUE
+// buy is the legal single-source-degraded exception — and arms the rescue-rate mis-siting
+// tripwire (a chain buying >20% RESCUE is mis-sited), which are otherwise indistinguishable
+// once a buy is recorded.
+func WithSelectorBranch(ctx context.Context, branch string) context.Context {
+	return context.WithValue(ctx, selectorBranchKey, branch)
+}
+
+// SelectorBranchFromContext returns the selector branch stamped by WithSelectorBranch and
+// ok=true, or ("", false) when the caller is not a tagged factory input buy (an empty stamp
+// is treated as absent, so a blank tag never lands in the ledger metadata).
+func SelectorBranchFromContext(ctx context.Context) (string, bool) {
+	if branch, ok := ctx.Value(selectorBranchKey).(string); ok && branch != "" {
+		return branch, true
+	}
+	return "", false
 }

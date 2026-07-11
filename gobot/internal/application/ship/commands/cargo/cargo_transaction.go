@@ -493,6 +493,17 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		"waypoint":    waypointSymbol,
 	}
 
+	// sp-br0m: tag a factory input buy with the a5j7 selector branch (ELIGIBLE | RESCUE |
+	// era-end | disabled) that chose its source, recorded beside good_symbol so the analyst can
+	// grade A1 (supply-first compliance) and split legal RESCUE buys from violations straight
+	// from the transactions table. Only the input-buy path stamps the branch onto ctx
+	// (production_executor.buyGood); every other caller through this shared recorder — trade,
+	// tour, arb, contract delivery, refuel, the fabricated-output harvest — leaves it unset, so
+	// the key is simply absent on their rows and their metadata is unchanged.
+	if branch, ok := shared.SelectorBranchFromContext(ctx); ok {
+		metadata["selector_branch"] = branch
+	}
+
 	// Create record transaction command. AuthoritativeBalance carries the
 	// in-band agent.credits (when present) so the ledger anchors on API truth
 	// rather than the zero-baseline reconstruction below.

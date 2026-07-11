@@ -192,6 +192,7 @@ type dockRaceMediator struct {
 	navCalls       int
 	purchaseCalls  int
 	purchaseScript []error // per-attempt outcome; nil entry = success, missing = model real precondition
+	purchaseBranch string  // sp-br0m: selector branch observed on ctx at the last purchase dispatch
 	sellCalls      int
 	sellShouldFail bool // sp-mu6u: model a market that won't import the onboard good
 }
@@ -213,6 +214,11 @@ func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (co
 		m.mu.Lock()
 		idx := m.purchaseCalls
 		m.purchaseCalls++
+		// sp-br0m: capture the selector branch buyGood stamped on ctx for this input buy —
+		// the same value the ledger recorder tags into the transaction metadata.
+		if branch, ok := shared.SelectorBranchFromContext(ctx); ok {
+			m.purchaseBranch = branch
+		}
 		scripted := idx < len(m.purchaseScript)
 		var scriptedErr error
 		if scripted {
@@ -272,6 +278,14 @@ func (m *dockRaceMediator) sellAttempts() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sellCalls
+}
+
+// purchaseBranchTag returns the selector branch observed on ctx at the last purchase
+// dispatch (sp-br0m), or "" if none was stamped.
+func (m *dockRaceMediator) purchaseBranchTag() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.purchaseBranch
 }
 
 // dockRaceMarketRepo serves a single raw market selling dockRaceGood.
