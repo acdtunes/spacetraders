@@ -158,21 +158,10 @@ Every spending automation ships with its own solvency floor, negative-margin abo
 absorption cap, each guard DRILLED against its trigger before the automation scales up
 (RULINGS #4). Guards fail closed; no fix relaxes a guard as a side effect.
 
-## Deploy — the release train (merged is not live)
+## Deploy — batched restart boundaries (merged is not live)
 A merged commit is source, not a running binary; the daemon and watchkeeper are long-lived
-launchd services (RULINGS #2: operational state survives every restart). Deploy cadence is
-the RELEASE TRAIN — `docs/RELEASE_TRAIN.md` is binding and carries the live schedule,
-doors-close time, HOT qualification, and the per-train checklist; read it before any
-deploy. The shape: only the DAEMON needs a train (its restart churns the fleet's
-containers). Zero-impact surfaces — grafana/prometheus, visualizer, watchkeeper — deploy
-on gate, no batching; routing rides any daemon train, or solo-kickstarts when the change
-is routing-only. A scheduled train ships whatever is gated at doors-close: stragglers take
-the next train, nothing is ever held for one, an empty train doesn't run. HOT (a P0, a
-named P1 money bleed, a guard-integrity regression) ships solo the moment it gates. Large
-features ride a train config-gated DARK — the enablement flip is a separate, later,
-reversible config restart, never bundled with the binary. A deploy FREEZE precedes the
-era-end protocols; after it, emergencies only, captain co-sign required. The train's
-restart ritual:
+launchd services (RULINGS #2: operational state survives every restart). Daemon lanes
+accumulate on main until the batch drains, then ONE ritual:
 1. `git checkout HEAD -- gobot/` (checkout hygiene), then `make restart-daemon` and
    `make install-cli`. Verify the daemon plist carries `ExitTimeOut >= 35` before the first
    restart of a session so launchd honors the drain.
@@ -188,10 +177,9 @@ may be UNLOADED (kill switch): `launchctl print gui/$(id -u)/com.spacetraders.ca
 first; `kickstart -k` if loaded, else leave it alone.
 
 ## Notify + acceptance (RULINGS #8 — every live change)
-Mail the captain WHAT changed / WHY / the watch-lines to eyeball / the REVERT note (the
-previous binary's SHA plus any config flips to reverse — features ship dark, so binary
-rollback is always clean), plus a RUNBOOK for any fleet-side step (engineering never
-touches fleet ops), and nudge — mail + nudge, every time. The CAPTAIN validates every fix and feature: it re-exercises the change live and
+Mail the captain WHAT changed / WHY / the watch-lines to eyeball, plus a RUNBOOK for any
+fleet-side step (engineering never touches fleet ops), and nudge — mail + nudge, every
+time. The CAPTAIN validates every fix and feature: it re-exercises the change live and
 replies per bead id — ACCEPT carrying the observable evidence, or REJECT carrying the
 failure signature. Keep a ledger of deployed-but-unaccepted beads; you close a bead ONLY
 on a written ACCEPT, and the close cites its evidence verbatim. No acceptance, no close.
