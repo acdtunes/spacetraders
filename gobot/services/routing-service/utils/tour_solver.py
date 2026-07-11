@@ -728,6 +728,40 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
             f"model_version_mismatch: expected {expected}, artifact {model_version}",
             model_version)
 
+    # sp-avt4: a reserve >= max_spend zeroes spend_cap BEFORE the market is ever
+    # looked at (score_sequence's own guard, mirrored here). Pre-fix this read
+    # identically to a genuinely dead market — both fell through to the same generic
+    # "no_profitable_tour"/"no_candidate_tours" reason, costing 70+ min of
+    # misdiagnosis in the 2026-07-11 fleet-dark P0 (a zeroed budget is a solvency
+    # problem, not a market problem). Gated on held cargo too: a sell of cargo
+    # already aboard at launch has no acquisition cost and is EXEMPT from spend_cap
+    # in score_sequence's allocation loop (sp-m5kv) — a laden hull can have a
+    # genuinely feasible liquidation-only tour even at spend_cap 0, so this fast-fail
+    # must not shadow that case.
+    #
+    # Deliberately NOT a "cheapest-ask" min-viable-unit heuristic: a small-but-nonzero
+    # spend_cap that affords a unit but can't clear min_margin is genuine market
+    # infeasibility, not a budget-class failure — guessing a threshold here would
+    # reintroduce a subtler version of the same misdiagnosis this fix exists to kill.
+    #
+    # Also deliberately NOT silently clamping the reserve down to fit max_spend (e.g.
+    # reserve = min(reserve, max_spend)) so a tour proceeds on whatever headroom is
+    # left. For an EXPLICIT --max-spend run, max_spend is an operator-set ceiling and
+    # reserve is an operator-set floor; eroding the floor to keep a tour alive on an
+    # ambiguous overlap is exactly the silent auto-proceed RULINGS #4 forbids for
+    # money-guard code. A zeroed/negative spend_cap fails loud with a named cause
+    # instead — the caller (or the operator) decides whether to relax max_spend or the
+    # reserve, the solver never decides for them.
+    max_spend = constraints.get("max_spend", 0)
+    reserve = constraints.get("working_capital_reserve", 0)
+    spend_cap = max(0, max_spend - reserve)
+    has_initial_cargo = any(c["units"] > 0 for c in ship.get("cargo") or [])
+    if spend_cap <= 0 and not has_initial_cargo:
+        return _infeasible(
+            f"reserve_exceeds_budget (spend_cap=0: max_spend {max_spend} - "
+            f"reserve {reserve})",
+            model_version)
+
     age_cap = constraints.get("max_snapshot_age_minutes") or MAX_SNAPSHOT_AGE_MINUTES_DEFAULT
     cutoff = time.time() - age_cap * 60
     allowed = set(constraints.get("allowed_systems") or [ship["current_system"]])

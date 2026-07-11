@@ -147,3 +147,31 @@ def test_deposit_candidate_round_trips_to_deposit_leg(tmp_path):
     # foreign buy spend (the savings), and the fresh-cash remainder is negative.
     assert resp.projected_profit == resp.deposit_value - (40 * 100 + 0)
     assert resp.held_liquidation == 0
+
+
+def test_reserve_exceeds_budget_names_the_cause_through_handler(tmp_path):
+    # sp-avt4: an EXPLICIT max_spend request where working_capital_reserve consumes
+    # the whole budget must round-trip a "reserve_exceeds_budget" reason through the
+    # actual proto response — the Go coordinator only ever sees this field, never the
+    # solve_tour() dict directly, so the wiring itself is what this test pins.
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+    req = routing_pb2.OptimizeTradeTourRequest(
+        snapshot=[snap("A", "S1", "G", ask=100, bid=90),
+                  snap("B", "S1", "G", ask=999, bid=200)],
+        ship=routing_pb2.TourShip(
+            ship_symbol="HULL-1", current_waypoint="A", current_system="S1",
+            hold_capacity=80, fuel_current=400, fuel_capacity=400, engine_speed=30),
+        constraints=routing_pb2.TourConstraints(
+            max_hops=4, max_spend=50_000, min_margin_per_unit=1,
+            working_capital_reserve=50_000,  # reserve == max_spend -> spend_cap 0
+            allowed_systems=["S1"],
+            max_snapshot_age_minutes=75, expected_model_version="1@goldene"),
+        waypoints=[routing_pb2.TourWaypoint(symbol="A", system_symbol="S1", x=0, y=0),
+                   routing_pb2.TourWaypoint(symbol="B", system_symbol="S1", x=100, y=0)])
+
+    resp = handler.OptimizeTradeTour(req, None)
+    assert not resp.feasible
+    assert resp.infeasible_reason.startswith("reserve_exceeds_budget"), resp.infeasible_reason
+    assert "max_spend 50000" in resp.infeasible_reason
+    assert "reserve 50000" in resp.infeasible_reason
+    assert len(resp.legs) == 0

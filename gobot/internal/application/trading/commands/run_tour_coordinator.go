@@ -747,7 +747,18 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// reposition was already spent this episode (RULINGS: name origin and destination).
 		response.ExitReason = tourExitStarvation
 		response.ExitDetail = starvationExitDetail(episode, starvationDetail)
-		logger.Log("INFO", "Continuous tour stopping - "+response.ExitDetail, map[string]interface{}{
+		// sp-avt4: append the LAST tour's concrete reason (e.g. a solver
+		// "reserve_exceeds_budget" verdict) to the MESSAGE TEXT, not just metadata —
+		// ContainerRunner.Log only prints "message" to stdout, so a reason left solely in
+		// the metadata map is invisible to `container logs` (sp-149h/sp-iqyq renderer
+		// defect). Without this, a starved budget and genuine market death both read as
+		// the same generic "margins died" line. Empty when the last tour was feasible but
+		// flew zero trades (a different, already-named failure class above).
+		stopMsg := "Continuous tour stopping - " + response.ExitDetail
+		if reason != "" {
+			stopMsg += " (last: " + reason + ")"
+		}
+		logger.Log("INFO", stopMsg, map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
 			"repositions": response.Repositions, "reason": reason,
 		})
@@ -874,13 +885,18 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		// fresh (planAndReserve), so the replacement plan never double-counts the old
 		// one's holds and converted recovery shadows persist (sp-78ai L3).
 		var replanFeasible bool
-		plan, shadowSinks, _, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
+		var replanReason string
+		plan, shadowSinks, replanReason, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
 		if err != nil {
 			return false, "", err
 		}
 		if !replanFeasible {
-			logger.Log("INFO", "Re-plan produced no feasible tour - stopping", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
+			// sp-avt4: NAME the cause in the message text, not just metadata — ContainerRunner.Log
+			// (container_runner.go) only prints "message" to stdout, so a reason left in the
+			// metadata map alone is invisible to `container logs` (the sp-149h/sp-iqyq renderer
+			// defect the reposition ranking log already works around).
+			logger.Log("INFO", "Re-plan produced no feasible tour - stopping: "+replanReason, map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol, "reason": replanReason,
 			})
 			break
 		}

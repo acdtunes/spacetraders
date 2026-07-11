@@ -173,6 +173,70 @@ def test_solver_held_cargo_liquidates_without_buy_leg():
     assert not buys, f"held-cargo liquidation plans no buy leg, got {buys}"
 
 
+def test_solver_reserve_zeroes_budget_reports_reserve_exceeds_budget():
+    # sp-avt4: reserve >= max_spend zeroes spend_cap BEFORE the solver looks at the
+    # market. Pre-fix this read identically to a genuinely dead market (both hit the
+    # generic "no profitable allocation" reason), costing 70+ min of misdiagnosis in
+    # the 2026-07-11 fleet-dark P0. The market here is a deliberately strong, real
+    # arbitrage (100 -> 200) to prove the reason names the BUDGET as the cause, not
+    # the market — a dead market would land on a different reason (see the next test).
+    snapshot = [
+        snap("A", "S1", "G", ask=100, bid=90, tv=40),
+        snap("B", "S1", "G", ask=999, bid=200, tv=40),
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(max_hops=4, max_spend=50_000, min_margin_per_unit=1,
+                working_capital_reserve=50_000,  # reserve == max_spend -> spend_cap 0
+                allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert not out["feasible"]
+    assert out["infeasible_reason"].startswith("reserve_exceeds_budget"), out["infeasible_reason"]
+    assert "max_spend 50000" in out["infeasible_reason"]
+    assert "reserve 50000" in out["infeasible_reason"]
+
+
+def test_solver_genuine_market_death_keeps_generic_reason():
+    # Ample budget, but no counterpart sink exists anywhere in the snapshot for the
+    # only tradeable good — genuine market infeasibility, the ORIGINAL failure class
+    # this bead must keep distinguishable from a zeroed budget.
+    snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(max_hops=4, max_spend=50_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert not out["feasible"]
+    assert out["infeasible_reason"] in ("no_candidate_tours", "no_profitable_tour"), out["infeasible_reason"]
+
+
+def test_solver_held_cargo_liquidates_even_when_reserve_zeroes_budget():
+    # sp-avt4: the new reserve_exceeds_budget fast-fail must NOT swallow the sp-m5kv
+    # held-liquidation exemption — sells of cargo already aboard at launch have no
+    # acquisition cost and are exempt from the spend_cap/afford gate in
+    # score_sequence. A hull carrying stranded cargo can have a genuinely feasible
+    # liquidation-only tour even though reserve has zeroed the FRESH-trade budget.
+    # (Companion to test_solver_held_cargo_liquidates_without_buy_leg above, which
+    # zeroes spend_cap via max_spend=0 instead of via reserve.)
+    snapshot = [snap("B", "S1", "MEDICINE", ask=999, bid=1800, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[dict(good_symbol="MEDICINE", units=40)])
+    cons = dict(max_hops=4, max_spend=50_000,
+                working_capital_reserve=50_000,  # reserve == max_spend -> spend_cap 0
+                min_margin_per_unit=1, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"], out
+    sells = [(l["waypoint_symbol"], t["units"]) for l in out["legs"]
+             for t in l["trades"] if not t["is_buy"] and t["good_symbol"] == "MEDICINE"]
+    assert ("B", 40) in sells, out
+
+
 def test_solver_held_cargo_sells_ordered_before_buys():
     # Held cargo enters the manifest as sell-capable inventory and is dock-ordered
     # FIRST: a full hold of MEDICINE must be sold to free the hold before a fresh
