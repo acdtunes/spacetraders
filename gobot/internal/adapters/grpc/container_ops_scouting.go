@@ -279,6 +279,41 @@ func (s *DaemonServer) ScoutMarkets(
 	return scoutResp.ContainerIDs, scoutResp.Assignments, scoutResp.ReusedContainers, nil
 }
 
+// scoutingConfigKeys enumerates every launch-config key the [scouting] knobs occupy.
+// resolveScoutingConfig clears these before re-injecting the live values, so a stale
+// persisted copy from a prior boot can never shadow the current config.yaml (the
+// sp-ts82 live-config discipline). Keep in lockstep with injectScoutingConfig and
+// buildScoutTourCommand/buildScoutPostCoordinatorCommand's reads.
+var scoutingConfigKeys = []string{
+	"tour_start_jitter_max_seconds",
+}
+
+// resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
+// scouting subsystem's tour-start phase jitter (sp-x8i5, mirroring
+// resolveTradeFleetConfig). It clears any scouting keys already in the launch config
+// (stale copies persisted at a prior boot) and re-injects the daemon's boot-loaded
+// values, so the rebuilt command reflects the CURRENT config.yaml on every build —
+// creation and restart recovery alike, for both scout_tour and
+// scout_post_coordinator.
+func (s *DaemonServer) resolveScoutingConfig(config map[string]interface{}) {
+	for _, key := range scoutingConfigKeys {
+		delete(config, key)
+	}
+	s.injectScoutingConfig(config)
+}
+
+// injectScoutingConfig writes the [scouting] knobs from config.yaml
+// (s.scoutingConfig) into a scout_tour or scout_post_coordinator container's launch
+// config. Only keys the captain actually set (non-zero) are written, so an unset
+// knob defers to the handler's own documented default (RULINGS #5 — the daemon never
+// hardcodes the operational value).
+func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
+	sc := s.scoutingConfig
+	if sc.TourStartJitterMaxSeconds != 0 {
+		config["tour_start_jitter_max_seconds"] = sc.TourStartJitterMaxSeconds
+	}
+}
+
 // AssignScoutingFleet creates a scout-fleet-assignment container for async VRP optimization
 // Returns the container ID immediately without blocking
 func (s *DaemonServer) AssignScoutingFleet(

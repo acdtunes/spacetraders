@@ -124,6 +124,13 @@ type DaemonServer struct {
 	// floor above its 50k default by editing config and restarting, no code redeploy.
 	manufacturingConfig config.ManufacturingConfig
 
+	// scoutingConfig carries the scouting subsystem's tour-start phase jitter ceiling
+	// (sp-x8i5) from config.yaml. ScoutTour and ScoutPostCoordinator resolve it into
+	// their container's launch config on every build (creation + restart recovery via
+	// resolveScoutingConfig), so a captain retunes the jitter ceiling by editing
+	// config and restarting, no code redeploy.
+	scoutingConfig config.ScoutingConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -156,6 +163,7 @@ func NewDaemonServer(
 	tradeFleetConfig config.TradeFleetConfig,
 	workerRebalancerConfig config.WorkerRebalancerConfig,
 	manufacturingConfig config.ManufacturingConfig,
+	scoutingConfig config.ScoutingConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -216,6 +224,7 @@ func NewDaemonServer(
 		tradeFleetConfig:       tradeFleetConfig,
 		workerRebalancerConfig: workerRebalancerConfig,
 		manufacturingConfig:    manufacturingConfig,
+		scoutingConfig:         scoutingConfig,
 		shutdownChan:           make(chan os.Signal, 1),
 		done:                   make(chan struct{}),
 	}

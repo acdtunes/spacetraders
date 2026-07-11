@@ -107,6 +107,21 @@ type RunScoutPostCoordinatorCommand struct {
 	// same system. <= 0 uses the coordinator's own defaults, mirroring TickIntervalSecs.
 	UndersizedAvgHopSecs         int
 	UndersizedRewarnCooldownSecs int
+
+	// StartJitterMaxSecs bounds a one-time deterministic phase offset waited out before
+	// this coordinator's reconcile loop starts its first tick (sp-x8i5): derived from a
+	// stable hash of ContainerID via stableJitter (shared with scout_tour.go, same
+	// package — NOT math/rand) so the SAME container gets the SAME offset in
+	// [0, StartJitterMaxSecs) on every build, including restart recovery, where
+	// ContainerID is preserved rather than regenerated. <= 0 uses
+	// defaultTourStartJitterMax, mirroring TickIntervalSecs.
+	//
+	// This does NOT re-pace reconcileOnce's own per-post manning passes: a mass re-man
+	// (e.g. every post unmanned right after a restart) fans out through spawnTour into
+	// freshly-launched scout_tour containers, and each of THOSE already self-jitters its
+	// own first scan via the ShipSymbol-keyed offset above — so a synchronized sweep at
+	// the manning-pass level decoheres for free without touching reconcileOnce's loops.
+	StartJitterMaxSecs int
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -354,6 +369,10 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 		"container_id": cmd.ContainerID,
 	})
 
+	if !h.waitStartJitter(ctx, cmd) {
+		return result, ctx.Err()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -372,6 +391,46 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 		case <-ctx.Done():
 			return result, ctx.Err()
 		}
+	}
+}
+
+// waitStartJitter waits out this coordinator's deterministic start-of-loop phase
+// offset (sp-x8i5) before the reconcile loop's first tick, keyed on ContainerID — this
+// coordinator's stable identity, unchanged across restart recovery (unlike a freshly
+// generated random value would be). Reuses stableJitter/defaultTourStartJitterMax from
+// scout_tour.go (same package): decoheres this coordinator's tick from other standing
+// coordinators (trade_fleet, worker_rebalancer, manufacturing) that might otherwise
+// tick in lockstep. Returns false if ctx is cancelled during the wait, so the caller can
+// return cleanly instead of entering a reconcile loop that was already asked to stop.
+func (h *RunScoutPostCoordinatorHandler) waitStartJitter(ctx context.Context, cmd *RunScoutPostCoordinatorCommand) bool {
+	ceiling := time.Duration(cmd.StartJitterMaxSecs) * time.Second
+	if ceiling <= 0 {
+		ceiling = defaultTourStartJitterMax
+	}
+	jitter := stableJitter(cmd.ContainerID, ceiling)
+	if jitter <= 0 {
+		return true
+	}
+	return h.sleepInterruptibly(ctx, jitter)
+}
+
+// sleepInterruptibly waits for d on h.clock, returning true if the wait completed
+// normally or false if ctx was cancelled first (sp-x8i5). Clock-injected so tests run on
+// a MockClock with no wall-time cost — this handler's own private copy, mirroring the
+// same idiom in scout_tour.go, run_factory_coordinator.go, and
+// run_trade_route_coordinator_travel.go.
+func (h *RunScoutPostCoordinatorHandler) sleepInterruptibly(ctx context.Context, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		h.clock.Sleep(d)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

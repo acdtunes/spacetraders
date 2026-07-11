@@ -290,3 +290,22 @@ manufacturing:
   # max(50000, min(working_capital_reserve, pct% x treasury)) so a factory below ~2.5M
   # treasury is not deadlocked by a reserve above its balance. 0/absent => 40% default.
   # working_capital_reserve_treasury_pct: 40
+
+# Scouting subsystem (sp-x8i5): phase-jitter to keep a large scout fleet's tour
+# rotations decohered. ~45 scouts restarting their rotation in near-lockstep
+# transiently saturated the rate limiter — the 2026-07-11 00:56-01:02Z burst showed
+# p99 limiter wait plateaued ~4s and Purchase Cargo p99 at 9.5s, while 15m-average
+# utilization read a calm 53% (a phase-locked wave, not a sustained-load problem).
+#
+# THIS SECTION IS LIVE (sp-ts82 pattern): resolved from THIS file on every scout_tour
+# / scout_post_coordinator build — creation AND restart recovery — so a retune reaches
+# an already-running fleet after a daemon restart, no redeploy needed.
+scouting:
+  # tour_start_jitter_max_seconds bounds the per-ship deterministic phase jitter a
+  # scout tour waits before its first navigation/scan, and the standing
+  # scout_post_coordinator waits the same way before its reconcile loop starts. Each
+  # waits hash(id) % ceiling — deterministic across restarts (no math/rand) — so the
+  # fleet decoheres into a spread instead of stacking on every rotation. 0/absent =>
+  # 120s, sized so ~45 scouts spread across two effective reconcile ticks without
+  # materially delaying any one hull's first scan.
+  # tour_start_jitter_max_seconds: 120

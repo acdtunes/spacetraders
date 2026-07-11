@@ -34,6 +34,10 @@ type Config struct {
 	// Manufacturing holds the manufacturing coordinators' knobs (sp-kk61),
 	// injected live into the coordinator container on every build.
 	Manufacturing ManufacturingConfig `mapstructure:"manufacturing"`
+	// Scouting holds the scouting subsystem's knobs (sp-x8i5) — the tour-start phase
+	// jitter ceiling — injected live into scout_tour and scout_post_coordinator
+	// containers on every build.
+	Scouting ScoutingConfig `mapstructure:"scouting"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

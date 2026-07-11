@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -31,7 +32,34 @@ const (
 	// freshness target is.
 	scanIntervalFloor = 5 * time.Minute
 	scanIntervalCap   = 30 * time.Minute
+
+	// defaultTourStartJitterMax is the phase-jitter ceiling applied to a scout
+	// tour's start when tour_start_jitter_max_seconds is 0/absent in config.yaml
+	// (sp-x8i5, RULINGS #5). ~45 scouts booting with similar scan intervals were
+	// waking in near-lockstep: the burst-window log showed 1080 scout_tour + 725
+	// scout_post_coordinator lines (43% of all activity) inside one 6-minute
+	// window, p99 limiter wait 4s, while the 15m-average utilization read a
+	// nowhere-near-saturated 53% — the average smoothed right over the spike.
+	// 120s spreads 45 tour starts roughly 2.7s apart on average across the
+	// ceiling: wide enough to decohere the wave, short enough next to the 5m
+	// scan floor (scanIntervalFloor) that it never meaningfully delays a fresh
+	// post's first scan.
+	defaultTourStartJitterMax = 120 * time.Second
 )
+
+// stableJitter derives a deterministic pseudo-random duration in [0, ceiling)
+// from id via FNV-1a — NOT math/rand (sp-x8i5). The offset must be the SAME on
+// every build (fresh launch or restart recovery) for a given id, or a daemon
+// restart would silently reshuffle every scout's phase and could re-cohere the
+// very wave this fix decoheres. ceiling<=0 returns 0 (no jitter).
+func stableJitter(id string, ceiling time.Duration) time.Duration {
+	if ceiling <= 0 {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(id))
+	return time.Duration(h.Sum64() % uint64(ceiling))
+}
 
 // clampScanInterval bounds d to [scanIntervalFloor, scanIntervalCap] (sp-zixw).
 // Shared by effectiveScanInterval (direct launches) and deriveScanInterval
@@ -108,6 +136,14 @@ type ScoutTourCommand struct {
 	// value to [scanIntervalFloor, scanIntervalCap] so no path can drift outside the
 	// API budget at 54+ hulls (replaces the old hardcoded 5m wait).
 	ScanInterval time.Duration
+
+	// StartJitterMaxSecs bounds a one-time deterministic phase offset waited out
+	// before this tour's first scan (sp-x8i5): derived from a stable hash of
+	// ShipSymbol, so the SAME ship always gets the SAME offset (no math/rand,
+	// stable across restarts) in [0, StartJitterMaxSecs). Zero/absent resolves to
+	// defaultTourStartJitterMax. Decoheres a fleet of scouts that would otherwise
+	// wake in near-lockstep and burst the API rate budget every cycle.
+	StartJitterMaxSecs int
 }
 
 // ScoutTourResponse - Response from scout tour execution
@@ -157,6 +193,10 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, err
 	}
 
+	if !h.waitStartJitter(ctx, cmd) {
+		return response, nil
+	}
+
 	if len(tourOrder) == 1 {
 		err = h.executeStationaryScout(ctx, cmd, ship, tourOrder[0], response)
 	} else {
@@ -164,6 +204,27 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 	}
 
 	return response, err
+}
+
+// waitStartJitter waits out this tour's deterministic start-of-tour phase offset
+// (sp-x8i5) before any navigation/scanning begins. Applied exactly once, here —
+// the scan interval itself stays fixed for the tour's lifetime, so a one-time
+// start offset permanently decoheres the wave through every later wake cycle;
+// re-jittering per-iteration would buy nothing further and would complicate
+// pacing math (circuitPaceInterval) for no benefit. Returns false if ctx is
+// cancelled during the wait, mirroring sleepInterruptibly's contract, so the
+// caller can return the (unmodified) response cleanly instead of starting a tour
+// that was already asked to stop.
+func (h *ScoutTourHandler) waitStartJitter(ctx context.Context, cmd *ScoutTourCommand) bool {
+	ceiling := time.Duration(cmd.StartJitterMaxSecs) * time.Second
+	if ceiling <= 0 {
+		ceiling = defaultTourStartJitterMax
+	}
+	jitter := stableJitter(cmd.ShipSymbol, ceiling)
+	if jitter <= 0 {
+		return true
+	}
+	return h.sleepInterruptibly(ctx, jitter)
 }
 
 // loadShipAndPrepareTour loads ship data, rotates tour to start at current location, and initializes response

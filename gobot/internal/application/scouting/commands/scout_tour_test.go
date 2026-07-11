@@ -86,6 +86,92 @@ func TestSleepInterruptibly_ContextCancelled_ReturnsPromptly(t *testing.T) {
 	require.Less(t, elapsed, 1*time.Second, "expected context cancellation to interrupt a 5s sleep promptly")
 }
 
+// ---- tests: sp-x8i5 stableJitter / waitStartJitter (start-of-tour phase jitter) --
+
+// The same id must always produce the same offset — no math/rand, stable across
+// restarts, or a daemon restart would reshuffle every scout's phase and could
+// re-cohere the very wave this fix is meant to decohere.
+func TestStableJitter_DeterministicSameIDSameOffset(t *testing.T) {
+	require.Equal(t, stableJitter("PROBE-1", 120*time.Second), stableJitter("PROBE-1", 120*time.Second))
+}
+
+// The offset must always land in [0, ceiling) regardless of id.
+func TestStableJitter_BoundedByCeiling(t *testing.T) {
+	ceiling := 45 * time.Second
+	for _, id := range []string{"PROBE-A", "PROBE-B", "PROBE-C", "PROBE-D", "PROBE-E"} {
+		jitter := stableJitter(id, ceiling)
+		require.GreaterOrEqualf(t, jitter, time.Duration(0), "id %s", id)
+		require.Lessf(t, jitter, ceiling, "id %s", id)
+	}
+}
+
+// A zero or negative ceiling means "no jitter" — callers resolve 0/absent config to
+// defaultTourStartJitterMax themselves; stableJitter's own <=0 case must stay 0 so it
+// never accidentally divides by a non-positive modulus.
+func TestStableJitter_NonPositiveCeilingReturnsZero(t *testing.T) {
+	require.Equal(t, time.Duration(0), stableJitter("PROBE-1", 0))
+	require.Equal(t, time.Duration(0), stableJitter("PROBE-1", -1*time.Second))
+}
+
+// 0/absent StartJitterMaxSecs must defer to defaultTourStartJitterMax, not skip
+// jitter entirely — proven on a MockClock so the assertion costs no real wall time
+// even though the ceiling is 120s.
+func TestWaitStartJitter_ZeroConfigDefersToDefault(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	h := &ScoutTourHandler{clock: clock}
+	cmd := &ScoutTourCommand{ShipSymbol: "PROBE-DEFAULT", StartJitterMaxSecs: 0}
+	before := clock.CurrentTime
+
+	completed := h.waitStartJitter(context.Background(), cmd)
+
+	require.True(t, completed)
+	wantJitter := stableJitter(cmd.ShipSymbol, defaultTourStartJitterMax)
+	require.Equal(t, wantJitter, clock.CurrentTime.Sub(before))
+	require.Less(t, clock.CurrentTime.Sub(before), defaultTourStartJitterMax)
+}
+
+// An explicit StartJitterMaxSecs must be honored as the ceiling instead of the
+// package default.
+func TestWaitStartJitter_ExplicitCeilingHonored(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	h := &ScoutTourHandler{clock: clock}
+	cmd := &ScoutTourCommand{ShipSymbol: "PROBE-EXPLICIT", StartJitterMaxSecs: 10}
+	before := clock.CurrentTime
+
+	completed := h.waitStartJitter(context.Background(), cmd)
+
+	require.True(t, completed)
+	wantJitter := stableJitter(cmd.ShipSymbol, 10*time.Second)
+	require.Equal(t, wantJitter, clock.CurrentTime.Sub(before))
+	require.Less(t, clock.CurrentTime.Sub(before), 10*time.Second)
+}
+
+// ctx cancellation must interrupt the jitter wait promptly, mirroring
+// sleepInterruptibly's own cancellation contract (a jittering container must still
+// exit promptly on stop).
+func TestWaitStartJitter_CtxCancelled_ReturnsPromptly(t *testing.T) {
+	h := &ScoutTourHandler{clock: shared.NewRealClock()}
+	cmd := &ScoutTourCommand{ShipSymbol: "PROBE-CANCEL", StartJitterMaxSecs: 5}
+
+	// Sanity: this fixture must actually exercise a non-zero jitter, or the wait
+	// would return true immediately without ever reaching sleepInterruptibly and the
+	// cancellation race below would prove nothing.
+	require.NotZero(t, stableJitter(cmd.ShipSymbol, 5*time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	completed := h.waitStartJitter(ctx, cmd)
+	elapsed := time.Since(start)
+
+	require.False(t, completed, "a cancelled context must interrupt the jitter wait")
+	require.Less(t, elapsed, 1*time.Second, "expected cancellation to interrupt a 5s-ceiling jitter wait promptly")
+}
+
 // ---- tests: sp-enry circuitPaceInterval (end-of-circuit pacing) ------------
 
 // A circuit shorter than the freshness target waits only the REMAINDER — pacing

@@ -437,6 +437,14 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "goods_factory_coordinator" || commandType == "manufacturing_coordinator" {
 		s.resolveManufacturingConfig(config)
 	}
+	// sp-x8i5: same live-config discipline for the scouting subsystem's tour-start
+	// phase jitter ceiling. The [scouting] knob is cleared and re-injected from the
+	// boot-loaded config.yaml on every build — creation and recovery alike — for both
+	// scout_tour and scout_post_coordinator, so a config edit + restart retunes a
+	// recovered scout and no persisted copy can shadow the live value.
+	if commandType == "scout_tour" || commandType == "scout_post_coordinator" {
+		s.resolveScoutingConfig(config)
+	}
 	return spec.BuildCommand(config, playerID, containerID)
 }
 
@@ -452,11 +460,12 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 		iterations = 1
 	}
 	return &scoutingCmd.ScoutTourCommand{
-		PlayerID:     shared.MustNewPlayerID(playerID),
-		ShipSymbol:   cfg.RequiredString("ship_symbol"),
-		Markets:      cfg.RequiredStringSlice("markets"),
-		Iterations:   iterations,
-		ScanInterval: time.Duration(cfg.OptionalInt("scan_interval_secs", 0)) * time.Second,
+		PlayerID:           shared.MustNewPlayerID(playerID),
+		ShipSymbol:         cfg.RequiredString("ship_symbol"),
+		Markets:            cfg.RequiredStringSlice("markets"),
+		Iterations:         iterations,
+		ScanInterval:       time.Duration(cfg.OptionalInt("scan_interval_secs", 0)) * time.Second,
+		StartJitterMaxSecs: cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
 	}
 }
 
@@ -477,6 +486,7 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		MarketDriftMaxAgeSecs:        cfg.OptionalInt("market_drift_max_age_secs", 0),
 		UndersizedAvgHopSecs:         cfg.OptionalInt("undersized_avg_hop_secs", 0),
 		UndersizedRewarnCooldownSecs: cfg.OptionalInt("undersized_rewarn_cooldown_secs", 0),
+		StartJitterMaxSecs:           cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
 	}
 }
 

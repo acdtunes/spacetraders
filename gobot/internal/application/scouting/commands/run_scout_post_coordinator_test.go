@@ -2059,3 +2059,61 @@ func TestScoutPost_Freshness_NilProviderIsNoop(t *testing.T) {
 
 	require.Len(t, shipRepo.claims, 1, "manning is unaffected when no freshness provider is wired")
 }
+
+// ---- tests: sp-x8i5 waitStartJitter (coordinator start-of-loop phase jitter) --------
+//
+// stableJitter itself (determinism, ceiling-boundedness, non-positive-ceiling -> 0) is
+// exhaustively covered by the scout_tour.go suite in this same package — it's the exact
+// same function, just keyed here on ContainerID instead of ShipSymbol. These tests cover
+// the coordinator-side wiring: default resolution, explicit-ceiling honoring, and prompt
+// ctx-cancellation, mirroring the scout_tour.go waitStartJitter suite. Constructed via a
+// bare &RunScoutPostCoordinatorHandler{clock: ...} rather than newTestScoutPostHandler
+// since waitStartJitter/sleepInterruptibly touch only the clock field.
+
+func TestScoutPostWaitStartJitter_ZeroConfigDefersToDefault(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	h := &RunScoutPostCoordinatorHandler{clock: clock}
+	cmd := &RunScoutPostCoordinatorCommand{ContainerID: "scoutpost-default", StartJitterMaxSecs: 0}
+	before := clock.CurrentTime
+
+	completed := h.waitStartJitter(context.Background(), cmd)
+
+	require.True(t, completed)
+	wantJitter := stableJitter(cmd.ContainerID, defaultTourStartJitterMax)
+	require.Equal(t, wantJitter, clock.CurrentTime.Sub(before))
+	require.Less(t, clock.CurrentTime.Sub(before), defaultTourStartJitterMax)
+}
+
+func TestScoutPostWaitStartJitter_ExplicitCeilingHonored(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	h := &RunScoutPostCoordinatorHandler{clock: clock}
+	cmd := &RunScoutPostCoordinatorCommand{ContainerID: "scoutpost-explicit", StartJitterMaxSecs: 10}
+	before := clock.CurrentTime
+
+	completed := h.waitStartJitter(context.Background(), cmd)
+
+	require.True(t, completed)
+	wantJitter := stableJitter(cmd.ContainerID, 10*time.Second)
+	require.Equal(t, wantJitter, clock.CurrentTime.Sub(before))
+	require.Less(t, clock.CurrentTime.Sub(before), 10*time.Second)
+}
+
+func TestScoutPostWaitStartJitter_CtxCancelled_ReturnsPromptly(t *testing.T) {
+	h := &RunScoutPostCoordinatorHandler{clock: shared.NewRealClock()}
+	cmd := &RunScoutPostCoordinatorCommand{ContainerID: "scoutpost-cancel", StartJitterMaxSecs: 5}
+
+	require.NotZero(t, stableJitter(cmd.ContainerID, 5*time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	completed := h.waitStartJitter(ctx, cmd)
+	elapsed := time.Since(start)
+
+	require.False(t, completed, "a cancelled context must interrupt the jitter wait")
+	require.Less(t, elapsed, 1*time.Second, "expected cancellation to interrupt a 5s-ceiling jitter wait promptly")
+}
