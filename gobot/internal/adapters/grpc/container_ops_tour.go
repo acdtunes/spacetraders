@@ -91,7 +91,13 @@ func (s *DaemonServer) StartTourRun(
 		// false only for a command built directly (bypassing this registry), which is how
 		// the sp-agzj/sp-ggk2 absolute-floor-only test suites keep asserting pre-yqx4 behavior.
 		"working_capital_reserve_treasury_pct": workingCapitalReserveTreasuryPct,
-		"iterations":                           iterations,
+		// sp-686e: the stranded-hull detector threshold, sourced from the daemon's live
+		// [trade_fleet] config (not a per-call param — it is a daemon-global tuning, the same
+		// for every tour a captain or the trade-fleet coordinator launches). Persisted as-is
+		// (0 too, so an absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand
+		// passes it to the coordinator, which resolves 0/absent → its default 3.
+		"stranded_consecutive_threshold": s.tradeFleetConfig.StrandedConsecutiveThreshold,
+		"iterations":                     iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

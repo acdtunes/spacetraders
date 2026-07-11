@@ -971,6 +971,9 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionInProgress:     cfg.OptionalBool("reposition_in_progress"),
 		RepositionTargetSystem:   cfg.OptionalString("reposition_target_system"),
 		RepositionTargetWaypoint: cfg.OptionalString("reposition_target_waypoint"),
+		// sp-686e: stranded-hull detector threshold from [trade_fleet]; 0/absent → the
+		// coordinator's own default (3, resolveStrandedThreshold).
+		StrandedConsecutiveThreshold: cfg.OptionalInt("stranded_consecutive_threshold", 0),
 	}
 }
 

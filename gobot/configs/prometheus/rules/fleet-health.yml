@@ -104,3 +104,30 @@ groups:
             baseline — the leading indicator this bead designed to precede an
             EarnerDark flatline. Check tour feasibility / spend_cap before
             revenue actually goes to zero.
+
+      # StrandedHull: the sp-686e TORWIND-2C shape (post-sp-4hl5 residual). A hull whose
+      # origin has NO durable gate adjacency AND a gate-inaccessible (probe-backed-off) live
+      # gate makes BOTH reposition discovery paths return empty, so the hull can never
+      # self-reposition — it silently relaunch-loops until a human eyeballs a treasury chart.
+      # The tour coordinator's stranded detector counts CONSECUTIVE stranded empties per hull
+      # and emits fleet_hull_stranded_total ONCE per episode (default 3 consecutive launches),
+      # so ANY increase means a hull just crossed into a confirmed strand. Deliberately NO
+      # `for:` clause: the N-consecutive-launches gate inside the detector IS the debounce, so
+      # page on the first evaluation after the counter moves. Per-series {ship,system} labels
+      # name the exact stranded hull and where. Metric name confirmed against the collector's
+      # namespace+subsystem prefix (spacetraders_daemon_fleet_hull_stranded_total).
+      - alert: StrandedHull
+        expr: |
+          increase(spacetraders_daemon_fleet_hull_stranded_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hull stranded: {{ $labels.ship }} at {{ $labels.system }} — no durable gate adjacency + gate inaccessible"
+          description: >-
+            {{ $labels.ship }} at {{ $labels.system }} came up empty on its reposition scan
+            for N consecutive launches: zero durable gate adjacency AND a gate-inaccessible
+            (probe-backed-off) live gate, so it can never self-reposition and is silently
+            relaunch-looping (sp-686e). Runbook: captain-authority jump/ferry extraction of
+            the hull to a live trading ground (the immediate fix), then investigate why the
+            origin gate is uncharted / probe-backed-off. The tour coordinator's "hull
+            stranded" WARN names the same ship + system.

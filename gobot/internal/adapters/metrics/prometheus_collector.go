@@ -65,6 +65,11 @@ var (
 	// coordinator's reconcile sweep emits the market-freshness gauge through it.
 	globalScoutCollector *ScoutMetricsCollector
 
+	// globalFleetHealthCollector is the singleton fleet-health collector (sp-686e).
+	// Set by SetGlobalFleetHealthCollector() when metrics are enabled; the tour
+	// coordinator's reposition exit path emits the stranded-hull counter through it.
+	globalFleetHealthCollector *FleetHealthMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -449,6 +454,26 @@ func GetGlobalScoutCollector() *ScoutMetricsCollector {
 func RecordScoutFreshness(playerID int, system string, ageSeconds float64) {
 	if globalScoutCollector != nil {
 		globalScoutCollector.RecordFreshness(playerID, system, ageSeconds)
+	}
+}
+
+// SetGlobalFleetHealthCollector sets the global fleet-health collector (sp-686e).
+func SetGlobalFleetHealthCollector(collector *FleetHealthMetricsCollector) {
+	globalFleetHealthCollector = collector
+}
+
+// GetGlobalFleetHealthCollector returns the global fleet-health collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalFleetHealthCollector() *FleetHealthMetricsCollector {
+	return globalFleetHealthCollector
+}
+
+// RecordHullStranded records one stranded-hull episode for a (ship, system) globally
+// (sp-686e). No-op when metrics are disabled, so a metrics miss never touches the
+// reposition/tour path (RULINGS #4).
+func RecordHullStranded(ship, system string) {
+	if globalFleetHealthCollector != nil {
+		globalFleetHealthCollector.RecordHullStranded(ship, system)
 	}
 }
 

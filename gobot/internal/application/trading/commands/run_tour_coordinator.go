@@ -182,6 +182,15 @@ type RunTourCoordinatorCommand struct {
 	RepositionInProgress     bool
 	RepositionTargetSystem   string
 	RepositionTargetWaypoint string
+
+	// StrandedConsecutiveThreshold is the sp-686e stranded-hull detector threshold: how many
+	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
+	// inaccessible — the TORWIND-2C shape) a hull must accrue before the coordinator pages
+	// the watch with a WARN + the fleet_hull_stranded_total counter. 0/absent →
+	// strandedConsecutiveThresholdDefault (3). Config-driven from [trade_fleet]
+	// (RULINGS #5), threaded through the container config so a captain retunes it by
+	// editing config.yaml + restarting the daemon.
+	StrandedConsecutiveThreshold int
 }
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
@@ -303,6 +312,22 @@ type RunTourCoordinatorHandler struct {
 	depositParkedMu sync.Mutex
 	depositParked   map[string]string
 
+	// strandedStreak counts CONSECUTIVE origin-level empty reposition discoveries per hull
+	// for the sp-686e stranded detector: a TORWIND-2C hull whose origin has no durable gate
+	// adjacency AND a gate-inaccessible live probe finds BOTH discovery paths empty and can
+	// never self-reposition, so it silently relaunch-loops until a human notices. When the
+	// streak crosses the configured threshold (default 3) the coordinator emits ONE WARN +
+	// the fleet_hull_stranded_total counter so the watch is paged. Any successful discovery
+	// resets the hull's streak. Keyed by ship symbol (globally unique, agent-scoped); the
+	// value tracks the accruing system + count + whether this episode already paged, so the
+	// page fires once per episode, not per launch. Guarded by strandedMu because the handler
+	// is a SHARED singleton dispatched concurrently for every touring hull — the same
+	// per-hull state-change de-dup discipline as depositParked (sp-13tl) and the ikx1 backoff.
+	// In-memory only: a daemon restart resets every hull's streak (acceptable — a genuinely
+	// stranded hull re-accrues its streak within N relaunches).
+	strandedMu     sync.Mutex
+	strandedStreak map[string]*strandedHullState
+
 	// --- Cross-engine absorption coordination (sp-78ai L3) ---
 	// absorptionLedger, when wired via SetAbsorptionLedger, makes the tour a ledger
 	// WRITER (reserve planned tranches at plan-accept, convert to recovery shadows at
@@ -371,9 +396,10 @@ func NewRunTourCoordinatorHandler(
 		telemetry:     telemetry,
 		planner:       planner,
 		clock:         clock,
-		apiClient:     apiClient,
-		mediator:      mediator,
-		depositParked: make(map[string]string),
+		apiClient:      apiClient,
+		mediator:       mediator,
+		depositParked:  make(map[string]string),
+		strandedStreak: make(map[string]*strandedHullState),
 	}
 }
 

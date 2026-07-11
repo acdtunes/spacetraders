@@ -269,6 +269,16 @@ trade_fleet:
   # straight back to cooldown_seconds. 0/absent => 30 min.
   # relaunch_backoff_max_minutes: 30
 
+  # stranded_consecutive_threshold (sp-686e): how many CONSECUTIVE origin-level empty
+  # reposition discoveries a hull must accrue before the tour coordinator pages the watch.
+  # The TORWIND-2C shape — a hull whose origin has NO durable gate adjacency AND a
+  # gate-inaccessible (probe-backed-off) live gate — makes BOTH discovery paths return empty,
+  # so the hull can never self-reposition and silently relaunch-loops until a human notices.
+  # At this many consecutive stranded empties (any successful discovery resets the count), the
+  # coordinator emits ONE WARN + the fleet_hull_stranded_total counter (the StrandedHull
+  # alert), so the watch is paged for a captain-authority jump/ferry extraction. 0/absent => 3.
+  # stranded_consecutive_threshold: 3
+
 # Worker-rebalancer coordinator (sp-f5pr): the STANDING coordinator that ferries idle
 # undedicated light-haulers cross-system to worker-starved factory systems, so a factory
 # posting "No in-system worker" self-heals without captain hand-holding. A system is a

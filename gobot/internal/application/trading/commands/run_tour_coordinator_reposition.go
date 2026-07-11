@@ -339,6 +339,23 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 	if len(candidates) == 0 {
 		logRepositionDiscoveryEmpty(common.LoggerFromContext(ctx), cmd.ShipSymbol, currentSystem, neighbors, rejections, originReason)
 	}
+	// sp-686e stranded-hull detection: the TORWIND-2C shape is an ORIGIN-level empty — zero
+	// candidates because the origin has NO resolvable gated neighbor (len(neighbors)==0) and the
+	// reason is no-durable-adjacency or gate-inaccessible, so BOTH discovery paths return empty
+	// and the hull can never self-reposition. Counted per hull; N consecutive (config, default 3)
+	// with no successful discovery in between emits ONE WARN + the fleet_hull_stranded_total
+	// counter so the watch is paged (StrandedHull alert) instead of the hull silently
+	// relaunch-looping. A populated discovery, or an empty with reachable-but-unusable neighbors
+	// (the per-neighbor rejection path, len(neighbors)>0), resets the streak — that hull is not
+	// structurally stranded. Observation only (RULINGS #4): never gates the reposition decision.
+	qualifying := len(candidates) == 0 && len(neighbors) == 0 && isStrandedOriginReason(originReason)
+	if h.noteRepositionStrandedDiscovery(cmd.ShipSymbol, currentSystem, qualifying, cmd.StrandedConsecutiveThreshold) {
+		n := resolveStrandedThreshold(cmd.StrandedConsecutiveThreshold)
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("hull stranded: %s at %s — no durable adjacency + gate inaccessible for %d consecutive launches (sp-686e)", cmd.ShipSymbol, currentSystem, n), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "system": currentSystem, "consecutive_empties": n, "bead": "sp-686e",
+		})
+		metrics.RecordHullStranded(cmd.ShipSymbol, currentSystem)
+	}
 	return candidates
 }
 
@@ -663,4 +680,80 @@ func starvationExitDetail(episode repositionEpisode, base string) string {
 	}
 	// fromSystem lost across a restart-resume — name the destination we rotated to.
 	return fmt.Sprintf("%s; repositioned to %s this episode (resumed post-restart) but margins died there too", base, episode.toSystem)
+}
+
+// --- sp-686e stranded-hull detector ---
+
+// strandedConsecutiveThresholdDefault is how many CONSECUTIVE origin-level empty reposition
+// discoveries (no durable adjacency + gate inaccessible — the TORWIND-2C shape) a hull must
+// accrue before the coordinator pages the watch, when the captain leaves
+// [trade_fleet].stranded_consecutive_threshold at 0. Three is deliberately small: the shape is
+// STRUCTURAL (a hull with zero durable gate adjacency at a probe-backed-off gate cannot
+// self-reposition), so it holds across every relaunch — three consecutive confirmations
+// distinguish it from a one-off transient empty while still paging within a few relaunch
+// cooldowns, well before a human would notice the dark hull by eyeballing a treasury chart.
+const strandedConsecutiveThresholdDefault = 3
+
+// strandedHullState is one hull's stranded-streak accounting (sp-686e): the system the streak is
+// accruing at (a change is a fresh episode — a captain-authority extraction that landed the hull
+// on ANOTHER dead ground), the consecutive qualifying-empty count, and whether this episode has
+// already paged (so the WARN + counter fire once per episode, not per launch).
+type strandedHullState struct {
+	system string
+	count  int
+	paged  bool
+}
+
+// resolveStrandedThreshold applies the 0/absent → default-3 rule to the configured stranded
+// threshold, so the default lives in ONE place (RULINGS #5) and both the counter emission and
+// the WARN message report the same resolved number.
+func resolveStrandedThreshold(configured int) int {
+	if configured <= 0 {
+		return strandedConsecutiveThresholdDefault
+	}
+	return configured
+}
+
+// isStrandedOriginReason reports whether an EMPTY reposition discovery's origin-level reason
+// (from repositionNeighbors) is the TORWIND-2C stranded shape: the durable gate graph reports
+// zero adjacency for the origin (no-durable-adjacency) OR the gate is inaccessible to the live
+// probe (gate-inaccessible…, the probe-backed-off case). Both mean the hull cannot
+// self-reposition. It classifies only the ORIGIN reason; the caller additionally requires
+// len(neighbors)==0, so a per-neighbor empty (neighbors resolved but each rejected as
+// stale/unbuilt — a hull that DOES have reachable ground) never qualifies.
+func isStrandedOriginReason(reason string) bool {
+	return reason == "no-durable-adjacency" || strings.HasPrefix(reason, "gate-inaccessible")
+}
+
+// noteRepositionStrandedDiscovery updates a hull's stranded streak for ONE reposition discovery
+// outcome and reports whether THIS call crossed into a fresh stranded episode — the single point
+// at which the caller emits the WARN + the fleet_hull_stranded_total counter (sp-686e).
+//
+// qualifying is true only for the TORWIND-2C shape (an origin-level empty whose reason is
+// no-durable-adjacency or gate-inaccessible). Any non-qualifying outcome — candidates found, or an
+// empty with reachable neighbors — RESETS the streak: a stranded episode is a CONSECUTIVE run of
+// qualifying empties, ended by any evidence the hull is not structurally stranded. A change of
+// system also starts a fresh episode. threshold<=0 → the default (3). Returns true exactly ONCE
+// per episode — when the count first reaches the threshold — so the page is state-change de-duped
+// (the ikx1/13tl idiom), never per-launch spam. Guarded by strandedMu because the handler is a
+// shared singleton dispatched concurrently for every touring hull.
+func (h *RunTourCoordinatorHandler) noteRepositionStrandedDiscovery(ship, system string, qualifying bool, threshold int) bool {
+	h.strandedMu.Lock()
+	defer h.strandedMu.Unlock()
+
+	if !qualifying {
+		delete(h.strandedStreak, ship) // any successful discovery re-arms the detector
+		return false
+	}
+	st := h.strandedStreak[ship]
+	if st == nil || st.system != system {
+		st = &strandedHullState{system: system}
+		h.strandedStreak[ship] = st
+	}
+	st.count++
+	if !st.paged && st.count >= resolveStrandedThreshold(threshold) {
+		st.paged = true
+		return true
+	}
+	return false
 }

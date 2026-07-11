@@ -61,6 +61,17 @@ type TradeFleetConfig struct {
 	// like the base cooldown) — a coordinator restart resets every hull to base, a deliberate,
 	// self-healing trade-off (see the handler's hullBackoff doc).
 	RelaunchBackoffMaxMinutes int `mapstructure:"relaunch_backoff_max_minutes"`
+
+	// StrandedConsecutiveThreshold is the sp-686e stranded-hull detector threshold: how many
+	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
+	// inaccessible — the TORWIND-2C shape, where both discovery paths return empty so the hull
+	// can never self-reposition) a hull must accrue before the tour coordinator pages the watch
+	// with a distinct WARN + the fleet_hull_stranded_total counter (the StrandedHull alert),
+	// instead of the hull silently relaunch-looping until a human notices. 0/absent → the tour
+	// coordinator's own default (3); the default lives in the consumer, not this config layer.
+	// Threaded through the tour container config so a captain retunes it by editing config.yaml
+	// + restarting the daemon (RULINGS #5, no code redeploy).
+	StrandedConsecutiveThreshold int `mapstructure:"stranded_consecutive_threshold"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

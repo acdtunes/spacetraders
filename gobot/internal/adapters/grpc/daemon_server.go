@@ -433,6 +433,18 @@ func NewDaemonServer(
 
 		// Store reference for lifecycle management
 		server.scoutMetricsCollector = scoutCollector
+
+		// Create fleet-health collector (sp-686e): the tour coordinator's reposition exit
+		// path emits the stranded-hull counter (fleet_hull_stranded_total) through the global
+		// set here — the StrandedHull alert's source. Event-driven (no polling goroutine), so
+		// registration + the global wire is the whole lifecycle, mirroring the absorption
+		// collector above; no per-collector lifecycle state to retain.
+		fleetHealthCollector := metrics.NewFleetHealthMetricsCollector()
+		if err := fleetHealthCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register fleet-health metrics collector: %w", err)
+		}
+		metrics.SetGlobalFleetHealthCollector(fleetHealthCollector)
 	}
 
 	// Register container specs for launch and recovery
