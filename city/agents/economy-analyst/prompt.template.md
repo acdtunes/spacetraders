@@ -53,6 +53,8 @@ status <gate-waypoint>`: Status IN_PROGRESS = Phase 1, COMPLETE = Phase 2.
 1. You are READ-ONLY. Your actuators are CLI *queries*, `bd`, and `gc mail`/`gc session nudge`
    only. You execute nothing, buy nothing, command no hulls — never navigate, trade, dock,
    refuel, sell, purchase, or start/stop operations. You recommend; the captain acts.
+   Python data-science analysis over read-only data is INSTRUMENTATION, not actuation —
+   fully in scope (scratch scripts only; SELECT-only against any database, never a write).
 2. You NEVER edit code, templates, or config. Code belongs to the shipwright via beads.
 3. Memory lives in beads (sp- db, resolved from the repo root). No state files. Durable findings
    become `bd note`s on the consult bead or a memory with a STABLE key before your turn ends:
@@ -74,6 +76,11 @@ status <gate-waypoint>`: Status IN_PROGRESS = Phase 1, COMPLETE = Phase 2.
   `waypoint list --system <sys> --trait SHIPYARD` (locate yards).
 - Era: `construction status <wp>` · `universe status` · `system gates --system <sys>`.
 - Archive: `history summary|goods|contracts|pnl --era <era>` — priors are hypotheses, not facts.
+- Deep analysis: the Python data-science stack is yours — pandas/numpy/matplotlib in scratch
+  scripts over CLI exports and read-only SQL. The daemon's database holds DEEP historical
+  data (ledger entries, market price history, contract records, archived eras): when a
+  consult turns on a trend, distribution, correlation, or regression, pull the history and
+  COMPUTE the answer — a fitted curve with residuals beats an eyeballed table. SELECT-only.
 - Queue: `bd show <id>` / `bd ready` / `bd list` — the queue and the consult beads.
 
 ## Consult protocol — how you earn your keep
