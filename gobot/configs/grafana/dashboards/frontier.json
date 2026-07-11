@@ -1,0 +1,928 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Coverage Now",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Distinct systems with at least one priced market (system prefix of market_data.waypoint_symbol).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT split_part(waypoint_symbol,'-',1)||'-'||split_part(waypoint_symbol,'-',2)) FROM market_data WHERE player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Systems Priced",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Ships with role='SATELLITE' (the coordinator's own IsScoutType() check — ship.go:284 — is exactly this role filter, no other predicate). Threshold marks the compiled default max_probe_fleet (40). LIVE CONFIG CHECK: the running frontier_expansion_coordinator container's persisted launch config has max_probe_fleet=0, i.e. it IS using the compiled default of 40 — not an override. The fleet already exceeds it. The purchase gate (satCount >= cfg.MaxProbeFleet) only blocks NEW probe purchases once at/above cap; it does not shrink an already-over-cap fleet, so this is expected ratchet behavior, not a broken gate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 40
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM ships WHERE role='SATELLITE' AND player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Probe Fleet Size (cap: 40 default)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Scout post slots (primary + materialized extra_slots) with no assigned_hull and no reposition_container_id — the exact predicate the frontier coordinator's countUnmannedSlots() uses (run_frontier_expansion_coordinator.go) to size demand for new posts/probes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH slots AS (\n  SELECT id AS post_id, assigned_hull, reposition_container_id\n  FROM scout_posts WHERE player_id=(SELECT MAX(id) FROM players)\n  UNION ALL\n  SELECT sp.id AS post_id,\n         elem->>'assigned_hull' AS assigned_hull,\n         elem->>'reposition_container_id' AS reposition_container_id\n  FROM scout_posts sp, jsonb_array_elements(NULLIF(sp.extra_slots,'')::jsonb) elem\n  WHERE sp.player_id=(SELECT MAX(id) FROM players)\n)\nSELECT COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'')='' AND COALESCE(reposition_container_id,'')='') FROM slots",
+          "refId": "A"
+        }
+      ],
+      "title": "Unmanned Slots (Coverage Demand)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Scout posts by kind (standing/sweep_once), unnesting primary slot + materialized extra_slots. Manned = assigned_hull set. Unmanned (demand) = the coordinator's countUnmannedSlots() predicate (no hull, no reposition in flight). \"Manned, Tour Not Running\" is a ghost-slot diagnostic: hull assigned with a tour_container_id that isn't currently a RUNNING container (stale assignment / restart gap).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH slots AS (\n  SELECT id AS post_id, kind, assigned_hull, tour_container_id, reposition_container_id\n  FROM scout_posts WHERE player_id=(SELECT MAX(id) FROM players)\n  UNION ALL\n  SELECT sp.id AS post_id, sp.kind,\n         elem->>'assigned_hull' AS assigned_hull,\n         elem->>'tour_container_id' AS tour_container_id,\n         elem->>'reposition_container_id' AS reposition_container_id\n  FROM scout_posts sp, jsonb_array_elements(NULLIF(sp.extra_slots,'')::jsonb) elem\n  WHERE sp.player_id=(SELECT MAX(id) FROM players)\n)\nSELECT\n  kind AS \"Kind\",\n  COUNT(*) AS \"Slots\",\n  COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'') != '') AS \"Manned\",\n  COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'')='' AND COALESCE(reposition_container_id,'')='') AS \"Unmanned (demand)\",\n  COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'') != '' AND COALESCE(tour_container_id,'') != '' AND NOT EXISTS (SELECT 1 FROM containers c WHERE c.id = slots.tour_container_id AND c.status='RUNNING')) AS \"Manned, Tour Not Running\"\nFROM slots\nGROUP BY kind\nORDER BY kind",
+          "refId": "A"
+        }
+      ],
+      "title": "Scout Posts by Kind",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 6,
+      "panels": [],
+      "title": "Expansion Cadence",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Cumulative count of systems by first-priced hour (MIN(market_data.last_updated) per system, bucketed). Shows FULL history unconditionally — a cumulative-since-start curve would be misleading if clipped to the dashboard time picker, so this query does not use $__timeFilter.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket, SUM(cnt) OVER (ORDER BY bucket) AS \"systems priced (cumulative)\"\nFROM (\n  SELECT date_trunc('hour', first_priced) AS bucket, COUNT(*) AS cnt\n  FROM (\n    SELECT split_part(waypoint_symbol,'-',1)||'-'||split_part(waypoint_symbol,'-',2) AS system_symbol, MIN(last_updated) AS first_priced\n    FROM market_data WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1\n  ) s GROUP BY 1\n) b ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Systems Priced Over Time (Cumulative, All History)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Scout posts created per hour, by kind (scout_posts.created_at — confirmed present, no proxy needed). Respects the dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), kind AS metric, COUNT(*) AS \"posts\" FROM scout_posts WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1, 2 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Posts Declared Over Time (by kind)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Probe (SHIP_PROBE) purchase transactions per hour — operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE'. That last filter matters: the same operation_type/category also covers heavy freighters, light haulers and siphon drones, so an unfiltered count would overstate probe spend. Respects the dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), COUNT(*) AS \"probe purchases\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Probe Purchases Over Time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Cumulative credits spent on SHIP_PROBE purchases (same metadata filter as \"Probe Purchases Over Time\"). Shows FULL history unconditionally, same rationale as the Systems Priced cumulative curve — no $__timeFilter.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket, SUM(spend) OVER (ORDER BY bucket) AS \"cumulative probe capex\"\nFROM (\n  SELECT date_trunc('hour', created_at) AS bucket, SUM(-amount) AS spend\n  FROM transactions\n  WHERE operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE' AND player_id=(SELECT MAX(id) FROM players)\n  GROUP BY 1\n) b ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Cumulative Probe Capex (All History)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 11,
+      "panels": [],
+      "title": "Probe Economics",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "All-time probe capex (metadata->>'ship_type'='SHIP_PROBE' purchases) divided by systems priced. A blended efficiency figure, not a marginal cost — it mixes early cheap wins with later harder-to-reach systems.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(\n  (SELECT COALESCE(SUM(-amount),0) FROM transactions WHERE operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE' AND player_id=(SELECT MAX(id) FROM players))::numeric\n  /\n  NULLIF((SELECT COUNT(DISTINCT split_part(waypoint_symbol,'-',1)||'-'||split_part(waypoint_symbol,'-',2)) FROM market_data WHERE player_id=(SELECT MAX(id) FROM players)),0)\n,0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Cost per System Priced (all-time)",
+      "type": "stat"
+    },
+    {
+      "gridPos": {
+        "h": 6,
+        "w": 18,
+        "x": 6,
+        "y": 24
+      },
+      "id": 13,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "### Per-cycle expansion ranking is log-only today\n\nThe frontier expansion coordinator scores and ranks candidate systems every reconcile cycle (frontier hop distance, freshness demand, cap/cooldown/spend-window gates) before deciding whether to buy a probe and where to send it. That ranking and its inputs are **not persisted** to Postgres or Prometheus — today it only exists in the container's log lines.\n\nThe panels in this row and the Expansion Cadence row above are the best available **proxy**: probe-purchase events over time, cumulative capex, and probe fleet size vs. the compiled cap. They show the *outcome* of each cycle's decision, not the *reasoning*.\n\n**Follow-up (named on this bead):** P15 — instrument the coordinator with a `frontier_expansion_decisions_total{action}` counter (or equivalent) so the per-cycle ranking becomes queryable instead of log-only.",
+        "mode": "markdown"
+      },
+      "title": "Ranking Visibility (Instrumentation Gap)",
+      "type": "text"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 14,
+      "panels": [],
+      "title": "Freshness / Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Live scout freshness per system (sp-s0nx): seconds since each system's market data was last refreshed. Duplicated from navigation.json — this is the promQL feed the tour-lane eligibility gate reads from in real time, relevant here because frontier expansion depends on freshly-scouted systems.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "spacetraders_daemon_scout_freshness_actual_seconds",
+          "legendFormat": "{{system}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Scout Freshness (live, by system)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Rate of tour lanes excluded for stale scout data, by system (sp-s0nx). Duplicated from navigation.json. A lane goes stale here precisely when its system's freshness (left panel) has drifted past the post target.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (system) (rate(spacetraders_daemon_tour_lanes_stale_excluded_total[$__rate_interval]))",
+          "legendFormat": "{{system}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Stale Lanes Excluded (rate by system)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 17,
+      "panels": [],
+      "title": "Gate Graph",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Total rows in gate_edges. This table has no player_id column — it is a global/shared galaxy map, not scoped per player.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 0,
+        "y": 40
+      },
+      "id": 18,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM gate_edges",
+          "refId": "A"
+        }
+      ],
+      "title": "Gate Edges (total)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "gate_edges rows flagged under_construction. Global/shared, no player_id.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 4,
+        "y": 40
+      },
+      "id": 19,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE under_construction) FROM gate_edges",
+          "refId": "A"
+        }
+      ],
+      "title": "Gate Edges Under Construction",
+      "type": "stat"
+    },
+    {
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 8,
+        "y": 40
+      },
+      "id": 20,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "### Unreadable / backed-off gates — pending live migration (sp-ikx1)\n\nsp-ikx1 merged to main **during this dashboard's build** (commit `97490b2`): negative-result backoff (5m -> 30m -> 2h) for gates that 400 on read, so the gate-graph builder stops re-probing them every 30s tick. State is persisted as **marker rows** on `gate_edges` — a row with `connected_system=''` is not a real edge, it is the backoff marker for an unreadable system, carrying `unreadable_since` (RFC3339 text) and `attempt_count` (int).\n\nAs of this build the live database has **not yet run that migration** — `unreadable_since`/`attempt_count` do not exist on the running `gate_edges` table (checked live via `information_schema.columns`). They land once the owning daemon restarts onto the new binary.\n\nThis panel stays a placeholder because a query against those columns would fail live today, and every panel in this dashboard was validated live before being written. Once the migration lands, replace this text panel with: a count of marker rows (`connected_system=''`), and a breakdown by `attempt_count`/backoff tier.",
+        "mode": "markdown"
+      },
+      "title": "Unreadable / Backed-Off Gates (sp-ikx1 merged, migration pending)",
+      "type": "text"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": [
+    "spacetraders",
+    "frontier",
+    "expansion"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SpaceTraders - Frontier Expansion",
+  "uid": "spacetraders-frontier",
+  "version": 1
+}
