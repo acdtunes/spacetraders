@@ -67,6 +67,14 @@ type tourFixture struct {
 	// The fake models gates as "<sys>-GATE" waypoints. Default false so every existing jump test,
 	// which relies on the fake jump always succeeding, is byte-for-byte unchanged.
 	jumpRequiresGate bool
+	// departureHopNavStall, when true, models the arrival-wait false-positive that caused the
+	// live leg-1 crash (sp-trnp): a departure-hop navigate to a jump gate reports completion
+	// (route "arrived") while the persisted position still lags at the origin (the nav-cache
+	// race) — so the hull does NOT move here. Only an AUTHORITATIVE resync (SyncShipFromAPI)
+	// later reveals its true position (the gate), recording it via stalledGateDest. Default
+	// false so every existing navigate moves synchronously exactly as before.
+	departureHopNavStall bool
+	stalledGateDest      string
 
 	sellCap  map[string]int // per-good cap on units a sell absorbs (stranded test); 0 = uncapped
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
@@ -104,6 +112,13 @@ func (fx *tourFixture) buildShip(t *testing.T, symbol string) *navigation.Ship {
 	if err != nil {
 		t.Fatalf("waypoint: %v", err)
 	}
+	// The fake models jump gates as "<sys>-GATE" waypoints (see the mediator's
+	// FindNearestJumpGate/JumpShipCommand handlers); type them JUMP_GATE so
+	// CurrentLocation().IsJumpGate() reflects the same convention the real
+	// waypoint-typed code (and the sp-trnp departure-hop re-confirmation) reads.
+	if strings.HasSuffix(fx.location, "-GATE") {
+		wp.Type = "JUMP_GATE"
+	}
 	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), wp, fuel, 1000, fx.cargoCap, cargo, 30,
 		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked)
 	if err != nil {
@@ -120,8 +135,16 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	switch cmd := request.(type) {
 	case *navCmd.NavigateRouteCommand:
 		m.fx.mu.Lock()
-		m.fx.location = cmd.Destination
 		m.fx.navDests = append(m.fx.navDests, cmd.Destination)
+		// sp-trnp: model the nav-cache false-positive on a departure-hop navigate to the
+		// gate — the route reports "arrived" but the persisted position lags at the origin,
+		// so the hull does NOT move here; only an authoritative resync reveals the truth.
+		// Guarded, so every existing navigate moves synchronously exactly as before.
+		if m.fx.departureHopNavStall && strings.HasSuffix(cmd.Destination, "-GATE") {
+			m.fx.stalledGateDest = cmd.Destination
+		} else {
+			m.fx.location = cmd.Destination
+		}
 		m.fx.mu.Unlock()
 		return nil, nil
 	case *shipCargo.PurchaseCargoCommand:
@@ -277,6 +300,22 @@ func (r *tourFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, play
 	return r.fx.buildShip(r.t, symbol), nil
 }
 func (r *tourFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) error { return nil }
+
+// SyncShipFromAPI models the authoritative live resync the sp-trnp departure-hop
+// re-confirmation performs after navigating to the source gate. When a departure-hop
+// navigate stalled (departureHopNavStall — the persisted position lagged the truth), the
+// authoritative read reveals the hull actually reached the gate: it resolves the stalled
+// destination into the live position, which is what lets the re-confirmation RECOVER instead
+// of firing a doomed jump. Absent a stall it simply reflects the hull's current position.
+func (r *tourFakeShipRepo) SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	r.fx.mu.Lock()
+	if r.fx.stalledGateDest != "" {
+		r.fx.location = r.fx.stalledGateDest
+		r.fx.stalledGateDest = ""
+	}
+	r.fx.mu.Unlock()
+	return r.fx.buildShip(r.t, symbol), nil
+}
 
 type tourFakeRoutingClient struct {
 	routing.RoutingClient

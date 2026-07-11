@@ -281,6 +281,33 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 		if err := h.navigate(ctx, ship, gate.JumpGate.Symbol, playerID); err != nil {
 			return ship, fmt.Errorf("navigate %s from %s to source jump gate %s failed: %w", ship.ShipSymbol(), ship.CurrentLocation().Symbol, gate.JumpGate.Symbol, err)
 		}
+
+		// sp-trnp: DO NOT trust the navigate's completion. Its arrival wait can return on a
+		// STALE "left transit" resync (arrival_wait.go's pre-ETA safety poll reads a
+		// not-yet-propagated pre-departure nav_status — the sp-n7yp/sp-ynuf nav-cache race)
+		// BEFORE the hull actually reaches the gate, leaving a DRIVELESS hull off-gate. The
+		// hop loop's jump then hits jump_ship.go's hard "not at a jump gate" reject — which,
+		// unlike the drive-equipped path, does NOT auto-navigate — and the tour crashes
+		// UNRECOVERABLY (the live incident: TORWIND-37's leg-1 departure hop toward gate
+		// X1-DP51-B26F "completed" via a 30s-in false-positive while still ~2m in transit,
+		// and the jump crashed). Re-confirm on the AUTHORITATIVE live position: resync from
+		// the API (defeating the stale cache, exactly as dock does for the mirror race,
+		// sp-ynuf), ride out any genuine remaining transit, and only fall through to the jump
+		// once the hull is truly ON the gate. Otherwise fail with a resume-safe error so the
+		// container re-adopts and rides out the transit (travel()'s own top-of-function
+		// waitForInTransitArrival) instead of firing a doomed jump.
+		resynced, serr := h.shipRepo.SyncShipFromAPI(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))
+		if serr != nil {
+			return ship, fmt.Errorf("resync %s onto source jump gate %s after departure hop failed: %w", ship.ShipSymbol(), gate.JumpGate.Symbol, serr)
+		}
+		arrived, aerr := h.waitForInTransitArrival(ctx, resynced, playerID)
+		if aerr != nil {
+			return ship, aerr
+		}
+		if !arrived.CurrentLocation().IsJumpGate() {
+			return ship, fmt.Errorf("departure hop for %s reported navigate-complete but the hull is at %s, not source jump gate %s (nav-cache race, sp-trnp) — resume-safe, retrying", ship.ShipSymbol(), arrived.CurrentLocation().Symbol, gate.JumpGate.Symbol)
+		}
+		ship = arrived
 	}
 
 	// Execute the path hop-by-hop. Each hop is ONE directly-connected jump: the

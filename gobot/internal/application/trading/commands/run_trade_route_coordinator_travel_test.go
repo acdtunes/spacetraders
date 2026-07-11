@@ -222,9 +222,25 @@ func (c *travelFakeClock) Sleep(d time.Duration) {
 type travelShipRepo struct {
 	navigation.ShipRepository
 	ship *navigation.Ship
+	// syncedShip is what SyncShipFromAPI returns — the AUTHORITATIVE live position the
+	// sp-trnp departure-hop re-confirmation reads after navigating to the source gate,
+	// to defeat the nav-cache race that can complete the navigate before the hull truly
+	// reaches the gate. A cross-system test that flies the departure hop sets it to the
+	// SOURCE-gate ship (the hull genuinely reached the gate); nil falls back to `ship`.
+	// syncCalls counts the resyncs so a test can prove the departure hop re-confirmed.
+	syncedShip *navigation.Ship
+	syncCalls  int
 }
 
 func (r *travelShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	return r.ship, nil
+}
+
+func (r *travelShipRepo) SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	r.syncCalls++
+	if r.syncedShip != nil {
+		return r.syncedShip, nil
+	}
 	return r.ship, nil
 }
 
@@ -329,7 +345,10 @@ func TestTravel_CrossSystem_JumpsThenHopsGateToWaypoint_WaitsScaledCooldown_Relo
 		},
 	}
 	clock := &travelFakeClock{}
-	shipRepo := &travelShipRepo{ship: reloaded}
+	// sp-trnp: after the departure-hop navigate, travel re-confirms the hull is truly on the
+	// source gate via an authoritative resync. Here the hull genuinely reached X1-AAA-GATE,
+	// so the resync returns it and travel proceeds to the jump.
+	shipRepo := &travelShipRepo{ship: reloaded, syncedShip: newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")}
 	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, clock, nil)
 
 	got, err := handler.travel(context.Background(), ship, "X1-BBB-MARKET", 1)
@@ -537,7 +556,9 @@ func TestTravel_MultiJump_ExecutesEveryHopWithCooldownWaits(t *testing.T) {
 		jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60},
 	}
 	clock := &travelFakeClock{}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	// sp-trnp: the departure-hop resync confirms the hull reached the SOURCE gate X1-KA42-GATE
+	// before the first hop.
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded, syncedShip: newTravelShipAtGate(t, "HAULER-1", "X1-KA42-GATE")}, nil, nil, clock, nil)
 	handler.SetGateGraph(&fakeGateGraph{path: []string{"X1-KA42", "X1-PA3", "X1-UQ16", "X1-JP61"}})
 
 	got, err := handler.travel(context.Background(), ship, "X1-JP61-MARKET", 1)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,6 +117,16 @@ func (m *arbCooldownMediator) Send(ctx context.Context, request common.Request) 
 		return m.gateResp, nil
 	case *navCmd.NavigateRouteCommand:
 		m.navigates = append(m.navigates, cmd)
+		// Move the shared hull to the navigated waypoint, exactly as the real navigate
+		// persists the new position — so the sp-trnp departure-hop resync (which reads the
+		// authoritative post-navigate location) sees the hull ON the source gate rather than
+		// still at the market. Type gates as JUMP_GATE so CurrentLocation().IsJumpGate() holds.
+		if wp, err := shared.NewWaypoint(cmd.Destination, 0, 0); err == nil {
+			if strings.HasSuffix(cmd.Destination, "-GATE") {
+				wp.Type = "JUMP_GATE"
+			}
+			m.ship.SetLocation(wp)
+		}
 		return nil, nil
 	case *navCmd.JumpShipCommand:
 		m.jumps = append(m.jumps, cmd)
