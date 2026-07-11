@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -56,6 +57,16 @@ type tourFixture struct {
 	// destination system so a reposition test can assert the hull actually jumped.
 	neighbors map[string][]string
 	jumps     []string
+	// navDests records every NavigateRouteCommand destination in dispatch order (sp-trnp), so a
+	// test can assert the cross-system departure hop (waypoint->source gate) fired BEFORE the
+	// jump. Purely additive — no existing test reads it.
+	navDests []string
+	// jumpRequiresGate, when true, makes the fake JumpShipCommand enforce the live engine's
+	// precondition — a driveless hull must be sitting ON a jump gate — and reject a jump from a
+	// non-gate waypoint with the exact "not at a jump gate" error jump_ship.go returns (sp-trnp).
+	// The fake models gates as "<sys>-GATE" waypoints. Default false so every existing jump test,
+	// which relies on the fake jump always succeeding, is byte-for-byte unchanged.
+	jumpRequiresGate bool
 
 	sellCap  map[string]int // per-good cap on units a sell absorbs (stranded test); 0 = uncapped
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
@@ -110,6 +121,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	case *navCmd.NavigateRouteCommand:
 		m.fx.mu.Lock()
 		m.fx.location = cmd.Destination
+		m.fx.navDests = append(m.fx.navDests, cmd.Destination)
 		m.fx.mu.Unlock()
 		return nil, nil
 	case *shipCargo.PurchaseCargoCommand:
@@ -171,6 +183,16 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		// the hull on the destination system's gate and record the hop. CooldownSeconds=0
 		// so the post-jump settle wait is a no-op under the instant fake clock.
 		m.fx.mu.Lock()
+		// sp-trnp: when a test opts in, model the live jump API's precondition — a driveless
+		// hull must be sitting ON a jump gate (jump_ship.go rejects otherwise). The fake tracks
+		// gates as "<sys>-GATE" waypoints, so a current location without that suffix is a market/
+		// other waypoint and the jump must fail with the exact engine error — the crash the shared
+		// travel() departure hop (navigate waypoint->gate first) exists to prevent.
+		if m.fx.jumpRequiresGate && !strings.HasSuffix(m.fx.location, "-GATE") {
+			at := m.fx.location
+			m.fx.mu.Unlock()
+			return nil, fmt.Errorf("cannot jump: no jump drive module and not at a jump gate (ship %s at %s)", cmd.ShipSymbol, at)
+		}
 		m.fx.jumps = append(m.fx.jumps, cmd.DestinationSystem)
 		m.fx.location = cmd.DestinationSystem + "-GATE"
 		m.fx.mu.Unlock()
