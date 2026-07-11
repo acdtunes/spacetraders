@@ -1375,12 +1375,29 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// when the ledger is unwired / the consult is killed / the read fails (fail-OPEN —
 	// the conditional Reserve is the hard backstop), leaving the plan against full depth.
 	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID)
+	// sp-4hl5: the solver's money guard is spend_cap = max(0, max_spend −
+	// working_capital_reserve) (tour_solver.py, score_sequence) — a CASH contract:
+	// max_spend is the cash the caller lets the tour touch, the reserve a keep-back.
+	// That pairing only holds on the EXPLICIT --max-spend path. Under the DYNAMIC
+	// budget (cmd.MaxSpend == 0 → 25% of live treasury, re-resolved per tour),
+	// maxSpend is already a spend BUDGET — the capital guard is the 25% sizing plus
+	// the per-buy live-balance floor (reserveHeadroom, yqx4-proportional) — so
+	// forwarding the ABSOLUTE fleet reserve subtracted the guard a second time and
+	// zeroed the planner for any treasury below 4×reserve (25%×T ≤ reserve): every
+	// candidate scored "no profitable allocation under tranche decay/guards" and the
+	// heavy fleet relaunch-looped earning zero (2026-07-11, unmasked by sp-ggk2
+	// finally delivering the 1M [trade_fleet] reserve to live launches). The dynamic
+	// path hands the planner a reserve of 0; execution-time floors are untouched.
+	plannerReserve := reserve
+	if cmd.MaxSpend == 0 {
+		plannerReserve = 0
+	}
 	cons := routing.TourConstraints{
 		MaxHops:               maxHops,
 		MinMarginPerUnit:      cmd.MinMargin,
 		MaxSnapshotAgeMinutes: int(maxListingAge.Minutes()),
 		MaxSpend:              maxSpend,
-		WorkingCapitalReserve: reserve,
+		WorkingCapitalReserve: plannerReserve,
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
 	}

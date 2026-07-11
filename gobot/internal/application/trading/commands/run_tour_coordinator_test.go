@@ -279,6 +279,11 @@ type tourFakeRoutingClient struct {
 	// "tour unavailable".
 	maxSpends             []int64
 	infeasibleOnZeroSpend bool
+	// reserves captures cons.WorkingCapitalReserve on each call (sp-4hl5: proving the
+	// dynamic-budget path hands the planner a reserve of 0 — the 25%-of-treasury budget
+	// already embodies the capital guard — while an explicit --max-spend keeps the
+	// original cash-contract subtraction).
+	reserves []int64
 	// cancel + cancelOnCall simulate a daemon stop: when the call count reaches
 	// cancelOnCall the planner cancels the run's context (as interruptAllContainers
 	// does), so a test can prove a continuous run exits RESUMABLE at the tour boundary
@@ -301,6 +306,7 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
+	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
 	c.absorptions = append(c.absorptions, absorption)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {
