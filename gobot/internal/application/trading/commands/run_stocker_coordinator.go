@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
@@ -146,6 +147,17 @@ type RunStockerCoordinatorHandler struct {
 	demandMiner        tradingsvc.DepositDemandMiner
 	config             tradingsvc.DepositCandidateConfig
 	ceilingPct         int
+
+	// noReachableSource de-dups the sp-yuq9 "every ranked candidate is gate-unreachable"
+	// verdict so a hull whose need-rank keeps landing on unreachable-only markets (a
+	// scouted-but-unroutable market like X1-PB12 staying artificially "cheapest" forever)
+	// logs ONCE per ship per distinct state, not once per pass — the same per-hull
+	// state-change de-dup discipline as the tour coordinator's depositParked (sp-13tl) and
+	// the ikx1 backoff. Keyed by ship symbol; the value is the last emitted
+	// "<unreachable>/<total>" signature. Guarded by noReachableSourceMu because the handler
+	// is a SHARED singleton dispatched concurrently across every stocker hull.
+	noReachableSourceMu sync.Mutex
+	noReachableSource   map[string]string
 }
 
 // NewRunStockerCoordinatorHandler wires the stocker with the same driven ports as the
@@ -182,6 +194,7 @@ func NewRunStockerCoordinatorHandler(
 		demandMiner:        demandMiner,
 		config:             cfg,
 		ceilingPct:         ceilingPct,
+		noReachableSource:  make(map[string]string),
 	}
 }
 
@@ -435,6 +448,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 	if hold <= 0 {
 		return stockerPick{}, false
 	}
+	currentSystem := ship.CurrentLocation().SystemSymbol
 
 	homeSystem := shared.ExtractSystemSymbol(cmd.WarehouseWaypoint)
 	rows, err := h.demandMiner.Mine(ctx, homeSystem, cmd.PlayerID, nil, persistence.DemandMinerOptions{
@@ -457,7 +471,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 
 	var best stockerPick
 	bestValue := 0
-	eligible, afterFilters := 0, 0
+	eligible, afterFilters, unreachable := 0, 0, 0
 
 	// Rows arrive stock-eligible-first, ranked by total projected savings; the stocker
 	// re-ranks the survivors by (savings/u × units-short) — the most-needed-by-value good.
@@ -491,6 +505,17 @@ func (h *RunStockerCoordinatorHandler) pick(
 		unitsShort := target - tradingsvc.TotalCargoAvailable(h.storageCoordinator, group, r.Good)
 		if unitsShort <= 0 {
 			continue // already at/over the fill target
+		}
+
+		// Reachability (sp-yuq9): an unreachable-cheapest foreign market must never win
+		// the need-rank — feeding it to buy()'s travel() unchecked crash-loops the hull
+		// identically on every relaunch (TORWIND-38 repeatedly picked X1-PB12 from
+		// X1-KA42, gate-unreachable within 5 jumps, while scout posts kept its ask
+		// artificially "cheapest" forever). Consults the SAME gate graph and jump bound
+		// travel()'s own jumpPath() uses — never a second reachability notion.
+		if !h.foreignMarketReachable(ctx, currentSystem, r.ForeignMarket, cmd.PlayerID) {
+			unreachable++
+			continue
 		}
 
 		// Freshness (75-min discipline): a stale/gone foreign price is not a trustworthy
@@ -528,15 +553,29 @@ func (h *RunStockerCoordinatorHandler) pick(
 	}
 
 	if bestValue <= 0 {
+		// unreachable>0 with nothing else survivable is the sp-yuq9 "no reachable source"
+		// verdict — de-duped per hull (state-change only) so a hull parked on an
+		// unreachable-only need-rank logs ONCE, not once per pass. Any OTHER empty-pass
+		// cause (at target / unaffordable / stale / unsupported, unreachable==0) clears
+		// the remembered state so a LATER genuine no-reachable-source park re-logs fresh.
+		if unreachable > 0 {
+			h.recordNoReachableSource(ctx, cmd.ShipSymbol, unreachable, len(rows))
+		} else {
+			h.clearNoReachableSource(cmd.ShipSymbol)
+		}
 		logger.Log("INFO", fmt.Sprintf(
-			"Stocker verdict: nothing to stock — [warehouse=%s(group %d) free=%d ceiling=%d funnel: miner_rows=%d eligible=%d after_filters=%d] (at target / unaffordable / stale / unsupported)",
-			cmd.WarehouseWaypoint, len(group), freeSpace, ceiling, len(rows), eligible, afterFilters), map[string]interface{}{
+			"Stocker verdict: nothing to stock — [warehouse=%s(group %d) free=%d ceiling=%d funnel: miner_rows=%d eligible=%d unreachable=%d after_filters=%d] (at target / unreachable / unaffordable / stale / unsupported)",
+			cmd.WarehouseWaypoint, len(group), freeSpace, ceiling, len(rows), eligible, unreachable, afterFilters), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "group_size": len(group), "free_space": freeSpace,
-			"ceiling": ceiling, "miner_rows": len(rows), "eligible": eligible, "after_filters": afterFilters,
+			"ceiling": ceiling, "miner_rows": len(rows), "eligible": eligible, "unreachable": unreachable, "after_filters": afterFilters,
 		})
 		return stockerPick{}, false
 	}
 
+	// A productive pick: forget any prior no-reachable-source park (a later recurrence
+	// re-logs as a state change, mirrors the tour's clearDepositParked on the
+	// capital-available path).
+	h.clearNoReachableSource(cmd.ShipSymbol)
 	logger.Log("INFO", fmt.Sprintf(
 		"stocking %s: %du short, buy@%s %d/u (savings %d/u), value %d, hauling %du (ceiling %d, free %d)",
 		best.Good, best.UnitsShort, best.ForeignMarket, best.ForeignAsk, best.SavingsPerUnit, bestValue, best.Units, ceiling, freeSpace), map[string]interface{}{
@@ -816,6 +855,78 @@ func (h *RunStockerCoordinatorHandler) foreignMarketFresh(ctx context.Context, w
 		return true
 	}
 	return now.Sub(observed) <= maxAge
+}
+
+// foreignMarketReachable reports whether waypoint's system has a jump-gate route from
+// the hull's CURRENT system, within the SAME bound buy()'s travel() itself enforces
+// (sp-yuq9). Before this filter existed, the need-rank picked the cheapest foreign
+// market across EVERY scouted market_data row with no reachability check at all, then
+// handed it to travel() unchecked — TORWIND-38 repeatedly selected X1-PB12 as cheapest
+// from X1-KA42, but PB12 has no jump-gate route within 5 jumps, so every relaunch
+// crash-looped identically ("travel to market X1-PB12-C55F failed: no jump-gate route
+// from X1-KA42 to X1-PB12 within 5 jumps") because scout posts kept PB12's ask fresh
+// forever. This consults h.legs.gateGraphResolver() — the IDENTICAL cached GateGraph
+// instance (gategraph.Service, bounded to MaxJumpPath) that travel()'s own jumpPath()
+// uses — so there is exactly ONE notion of reachability in the codebase, never a second
+// one invented here. The check is DB-only (Routable -> Path -> the cached fetch-through
+// adjacency, sp-ikx1): no per-candidate live API call.
+//
+//   - Same system → trivially reachable, no consult needed (also keeps every
+//     single-system pick() test passing unmodified with no gate graph wired).
+//   - No gate graph wired (h.legs.gateGraphResolver() == nil) → fails OPEN, mirroring
+//     jumpPath's own legacy single-hop fallback, so every caller that never wires one
+//     (nearly all existing tests) is byte-for-byte unaffected.
+//   - A wired graph that cannot resolve routability (a store/fetch error, NOT a
+//     definitive unroutable verdict) fails CLOSED — an unverifiable route is no more
+//     trustworthy than the unreadable market foreignMarketFresh already refuses.
+//   - Otherwise, returns the graph's own Routable verdict directly.
+func (h *RunStockerCoordinatorHandler) foreignMarketReachable(ctx context.Context, currentSystem, waypoint string, playerID int) bool {
+	destSystem := shared.ExtractSystemSymbol(waypoint)
+	if currentSystem == destSystem {
+		return true
+	}
+	gateGraph := h.legs.gateGraphResolver()
+	if gateGraph == nil {
+		return true
+	}
+	routable, err := gateGraph.Routable(ctx, currentSystem, destSystem, playerID)
+	if err != nil {
+		return false
+	}
+	return routable
+}
+
+// recordNoReachableSource emits the sp-yuq9 "no reachable source" verdict for a hull at
+// most ONCE per distinct (unreachable/total) signature: a hull whose need-rank keeps
+// landing on unreachable-only candidates parks QUIETLY across hundreds of re-plans,
+// logging one line, not one per pass (the same discipline that stopped the ikx1/13tl
+// spam). A genuine state change — the unreachable count moves, or the hull later finds a
+// reachable pick and clearNoReachableSource forgets the signature — re-emits.
+// Concurrency-safe: the stocker handler is a shared singleton dispatched for every
+// stocking hull at once.
+func (h *RunStockerCoordinatorHandler) recordNoReachableSource(ctx context.Context, shipSymbol string, unreachable, totalRows int) {
+	sig := fmt.Sprintf("%d/%d", unreachable, totalRows)
+	h.noReachableSourceMu.Lock()
+	if h.noReachableSource[shipSymbol] == sig {
+		h.noReachableSourceMu.Unlock()
+		return
+	}
+	h.noReachableSource[shipSymbol] = sig
+	h.noReachableSourceMu.Unlock()
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Stocker parked: no reachable source (%d/%d ranked candidate(s) gate-unreachable from the hull's current system) - parking quietly rather than repeating an unreachable pick",
+		unreachable, totalRows), map[string]interface{}{
+		"ship_symbol": shipSymbol, "reason": "no_reachable_source", "unreachable_candidates": unreachable, "total_candidates": totalRows,
+	})
+}
+
+// clearNoReachableSource forgets a hull's last no-reachable-source verdict so that,
+// should the need-rank fall back into an unreachable-only state later, it logs afresh —
+// the "or on state change" half of the once-per-hull discipline.
+func (h *RunStockerCoordinatorHandler) clearNoReachableSource(shipSymbol string) {
+	h.noReachableSourceMu.Lock()
+	delete(h.noReachableSource, shipSymbol)
+	h.noReachableSourceMu.Unlock()
 }
 
 // strandedReason reports whether the hull is ending laden with undeposited cargo — an

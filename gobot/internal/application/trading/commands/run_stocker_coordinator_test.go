@@ -474,6 +474,123 @@ func TestStocker_Pick_StaleForeignMarketExcludes(t *testing.T) {
 	}
 }
 
+// ---- pick: reachability filter (sp-yuq9 PB12-from-KA42 regression) ----
+
+// Before this filter existed, the need-rank picked the cheapest foreign market across
+// EVERY scouted market_data row with no reachability check at all, then handed it to
+// buy()'s travel() unchecked. TORWIND-38 repeatedly selected X1-PB12-C55F as its
+// cheapest source from X1-KA42, but PB12 has no jump-gate route within 5 jumps, so
+// every relaunch crash-looped identically — while scout posts kept PB12's ask
+// artificially "cheapest" forever, it could never lose the rank on its own. Here PB12
+// carries the higher value (700/u savings x 40 short = 28000) and would win unfiltered;
+// JP61 is reachable but lower value (10/u x 40 = 400). The filter must still pick JP61.
+func TestStocker_Pick_UnreachableCheapestExcluded_PicksReachablePricier(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-KA42-H", cargoCap: 100,
+		ask: map[string]map[string]int{
+			"X1-PB12-C55F": {"MEDICINE": 2100},
+			"X1-JP61-B2":   {"FOOD": 90},
+		},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-KA42-H", 5000, []string{"MEDICINE", "FOOD"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{
+		eligible("MEDICINE", "X1-PB12-C55F", 2100, 2800, 40), // unreachable-cheapest: highest value
+		eligible("FOOD", "X1-JP61-B2", 90, 100, 40),          // reachable-pricier: the only legal pick
+	}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+	// X1-KA42->X1-PB12 is intentionally absent: definitively unroutable, mirroring the
+	// live incident's "no jump-gate route from X1-KA42 to X1-PB12 within 5 jumps".
+	h.SetGateGraph(&fakeHopGraph{hops: map[string]int{"X1-KA42->X1-JP61": 3}})
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
+	if !ok {
+		t.Fatalf("expected the reachable candidate to be picked")
+	}
+	if pick.Good != "FOOD" || pick.ForeignMarket != "X1-JP61-B2" {
+		t.Fatalf("expected the reachable-pricier FOOD@X1-JP61-B2 pick, got %s@%s — an unreachable-cheapest candidate must never win the need-rank", pick.Good, pick.ForeignMarket)
+	}
+}
+
+// When EVERY ranked candidate is gate-unreachable, pick() must park quietly (ok=false,
+// no panic, no error) instead of surfacing an unreachable pick for buy()'s travel() to
+// crash-loop on. Both candidates here are otherwise fully eligible (savings clear the
+// floor, both asks known, both goods buffered, both markets fresh) — the ONLY thing
+// that can empty this pass is the reachability filter, isolating the "no reachable
+// source" path from every other exclusion reason. A second identical pick() call
+// confirms the park is stable, not a one-shot fluke: a hull re-planning every tick on
+// an unchanged unreachable-only need-rank must keep returning the same quiet verdict.
+func TestStocker_Pick_AllUnreachable_ParksQuietly(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-KA42-H", cargoCap: 100,
+		ask: map[string]map[string]int{
+			"X1-PB12-C55F": {"MEDICINE": 2100},
+			"X1-VZ88-Q1":   {"FOOD": 90},
+		},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-KA42-H", 5000, []string{"MEDICINE", "FOOD"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{
+		eligible("MEDICINE", "X1-PB12-C55F", 2100, 2800, 40),
+		eligible("FOOD", "X1-VZ88-Q1", 90, 100, 40),
+	}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+	// Neither PB12 nor VZ88 appears in hops: both are definitively unroutable from KA42.
+	// JP61 is present but irrelevant here — proving other routes exist, just not to
+	// either candidate, exactly as in the live incident (KA42 is not gate-isolated).
+	h.SetGateGraph(&fakeHopGraph{hops: map[string]int{"X1-KA42->X1-JP61": 3}})
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	cmd := &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}
+	if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+		t.Fatalf("an all-unreachable candidate set must park quietly (ok=false), not surface a pick")
+	}
+	if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+		t.Fatalf("re-planning an unchanged unreachable-only candidate set must remain parked, got a pick")
+	}
+}
+
+// TestStocker_Pick_AllUnreachable_LogsOnceWithStructuredReason pins the log-side of the
+// no-reachable-source verdict: downstream alerting keys on the structured
+// reason=no_reachable_source field, so the WARNING must carry it verbatim, and the
+// once-per-signature de-dup (recordNoReachableSource) must hold across repeated identical
+// passes — a parked hull re-planning every tick on an unchanged need-rank must not spam.
+func TestStocker_Pick_AllUnreachable_LogsOnceWithStructuredReason(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-KA42-H", cargoCap: 100,
+		ask:       map[string]map[string]int{"X1-PB12-C55F": {"MEDICINE": 2100}},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-KA42-H", 5000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-PB12-C55F", 2100, 2800, 40)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+	h.SetGateGraph(&fakeHopGraph{hops: map[string]int{}}) // no entries: X1-KA42->X1-PB12 unroutable
+
+	logger := &laneLogCapturingLogger{}
+	ctx := common.WithLogger(auth.WithPlayerToken(context.Background(), "TOK"), logger)
+	cmd := &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}
+
+	for i := 0; i < 3; i++ {
+		if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+			t.Fatalf("pass %d: all candidates gate-unreachable must stock nothing", i)
+		}
+	}
+
+	var parks []laneLogEntry
+	for _, e := range logger.entries {
+		if e.metadata["reason"] == "no_reachable_source" {
+			parks = append(parks, e)
+		}
+	}
+	if len(parks) != 1 {
+		t.Fatalf("expected exactly one no_reachable_source log entry across 3 identical passes, got %d: %+v", len(parks), logger.entries)
+	}
+	if parks[0].level != "WARNING" {
+		t.Fatalf("expected WARNING level, got %s", parks[0].level)
+	}
+	if parks[0].metadata["ship_symbol"] != "S" {
+		t.Fatalf("expected ship_symbol=S in metadata, got %+v", parks[0].metadata)
+	}
+	if parks[0].metadata["unreachable_candidates"] != 1 || parks[0].metadata["total_candidates"] != 1 {
+		t.Fatalf("expected unreachable_candidates=1 total_candidates=1, got %+v", parks[0].metadata)
+	}
+}
+
 // ---- multi-warehouse: aggregate need-math + deposit spill (sp-5q2c) ----
 
 // The units-short math nets the target against the SUMMED on-hand across the co-located
