@@ -354,6 +354,12 @@ type RunTradeRouteCoordinatorHandler struct {
 // ends, or a gategraph.ErrUnroutable-wrapped error naming both systems.
 type GateGraph interface {
 	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
+	// RepositionPath resolves a route over the PERSISTED stored adjacency (no fetch-
+	// through) bounded to maxJumps, routing PAST an unreadable frontier gate rather than
+	// dead-ending on it — the expendable probe/scout reposition class only (sp-8k9m).
+	// Heavies/trade/arb keep Path; this seam is consumed solely by
+	// RepositionToWaypointWithinJumps.
+	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
 	// Connections returns fromSystem's directly-gated neighbor edges from the
 	// persisted era-scoped adjacency (fetch-through on a cache miss/stale). Unlike

@@ -837,3 +837,178 @@ func TestService_Backoff_LogsOnceWithNextProbe_SilentBetween(t *testing.T) {
 		t.Fatalf("a backed-off skip must be silent, new messages: %v", logger.messages[countAfterEnter:])
 	}
 }
+
+// --- RepositionPath: the expendable-probe stored-adjacency resolver (sp-8k9m) ---
+
+// adjStore serves a fixed stored adjacency and nothing else. RepositionPath must resolve
+// entirely from Adjacency() — a store-only read — so Edges/UnreadableState are never
+// consulted and no live fetch is triggered (the ikx1 backoff stays fully honored).
+type adjStore struct {
+	adjacency map[string][]system.GateEdge
+	adjErr    error
+}
+
+func (a *adjStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
+	return a.adjacency, a.adjErr
+}
+func (a *adjStore) Edges(ctx context.Context, s string) ([]system.GateEdge, bool, error) {
+	return nil, false, errors.New("RepositionPath must not read per-system Edges (no fetch-through)")
+}
+func (a *adjStore) GateWaypointOf(ctx context.Context, s string) (string, bool, error) {
+	return "", false, errors.New("RepositionPath must not resolve gate waypoints")
+}
+func (a *adjStore) Replace(ctx context.Context, s string, e []system.GateEdge) error { return nil }
+func (a *adjStore) UnreadableState(ctx context.Context, s string) (int, time.Time, bool, error) {
+	return 0, time.Time{}, false, errors.New("RepositionPath must not consult the unreadable backoff")
+}
+func (a *adjStore) MarkUnreadable(ctx context.Context, s, gate string, now time.Time) (int, error) {
+	return 0, nil
+}
+
+func repoEdgesTo(systems ...string) []system.GateEdge {
+	edges := make([]system.GateEdge, 0, len(systems))
+	for _, s := range systems {
+		edges = append(edges, system.GateEdge{ConnectedSystem: s, GateWaypoint: s + "-GATE"})
+	}
+	return edges
+}
+
+// A 6-jump frontier route (deeper than MaxJumpPath=5) resolves under a raised bound —
+// this is the whole point of the expendable-probe resolver: reach a post the strict
+// 5-jump cap rejects. The SAME route under a 5-jump bound is unroutable, proving the
+// bound (not luck) is what admits it.
+func TestRepositionPath_ReachesBeyondMaxJumpPath(t *testing.T) {
+	store := &adjStore{adjacency: map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-C"),
+		"X1-C": repoEdgesTo("X1-D"),
+		"X1-D": repoEdgesTo("X1-E"),
+		"X1-E": repoEdgesTo("X1-F"),
+		"X1-F": repoEdgesTo("X1-G"), // G is 6 jumps from A
+	}}
+	svc := NewService(store, nil, nil, nil) // nil API: any fetch-through would panic, proving none happens
+
+	got, err := svc.RepositionPath(context.Background(), "X1-A", "X1-G", 12)
+	if err != nil {
+		t.Fatalf("a 6-jump route under a 12-jump bound must resolve, got %v", err)
+	}
+	want := []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected the 6-jump path %v, got %v", want, got)
+	}
+
+	if _, err := svc.RepositionPath(context.Background(), "X1-A", "X1-G", 5); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("the same route under a 5-jump bound must be ErrUnroutable, got %v", err)
+	}
+}
+
+// The resolver reads ONLY the stored adjacency: with a nil API client (a fetch would
+// panic) and a store whose per-system Edges/UnreadableState error out, a multi-hop route
+// still resolves. This is stipulation 2 — route PAST unreadable gates over the persisted
+// edges, never re-probe them.
+func TestRepositionPath_StoredAdjacencyOnly_NoFetchNoReprobe(t *testing.T) {
+	store := &adjStore{adjacency: map[string][]system.GateEdge{
+		"X1-KN67": repoEdgesTo("X1-PA62"),
+		"X1-PA62": repoEdgesTo("X1-GD32"),
+		"X1-GD32": repoEdgesTo("X1-SN21"),
+	}}
+	svc := NewService(store, nil, nil, nil)
+
+	got, err := svc.RepositionPath(context.Background(), "X1-KN67", "X1-SN21", 12)
+	if err != nil {
+		t.Fatalf("a stored-adjacency route must resolve with no fetch, got %v", err)
+	}
+	want := []string{"X1-KN67", "X1-PA62", "X1-GD32", "X1-SN21"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+// An under-construction gate is still excluded (stipulation 3): a jump into an unbuilt
+// gate crashes at hop time (sp-8qhu) — a hazard just as real for a probe. When the only
+// route runs through one, the resolver refuses; a built alternate is taken instead.
+func TestRepositionPath_ExcludesUnderConstruction(t *testing.T) {
+	store := &adjStore{adjacency: map[string][]system.GateEdge{
+		"X1-A": {
+			{ConnectedSystem: "X1-BAD", GateWaypoint: "X1-BAD-GATE", UnderConstruction: true},
+			{ConnectedSystem: "X1-OK", GateWaypoint: "X1-OK-GATE"},
+		},
+		"X1-BAD": repoEdgesTo("X1-DEST"),
+		"X1-OK":  repoEdgesTo("X1-DEST"),
+	}}
+	svc := NewService(store, nil, nil, nil)
+
+	got, err := svc.RepositionPath(context.Background(), "X1-A", "X1-DEST", 12)
+	if err != nil {
+		t.Fatalf("the built alternate must resolve, got %v", err)
+	}
+	want := []string{"X1-A", "X1-OK", "X1-DEST"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("must route through the BUILT gate, got %v", got)
+	}
+
+	// With ONLY the under-construction route, the resolver refuses (never into an unbuilt gate).
+	onlyUnbuilt := &adjStore{adjacency: map[string][]system.GateEdge{
+		"X1-A":   {{ConnectedSystem: "X1-BAD", GateWaypoint: "X1-BAD-GATE", UnderConstruction: true}},
+		"X1-BAD": repoEdgesTo("X1-DEST"),
+	}}
+	svc2 := NewService(onlyUnbuilt, nil, nil, nil)
+	if _, err := svc2.RepositionPath(context.Background(), "X1-A", "X1-DEST", 12); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("an only-under-construction route must be ErrUnroutable, got %v", err)
+	}
+}
+
+// An unreachable destination is an ErrUnroutable-wrapped error naming both systems — the
+// honest refusal the worker surfaces, never a panic or empty path.
+func TestRepositionPath_Unroutable_NamedError(t *testing.T) {
+	store := &adjStore{adjacency: map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-A"), // closed pocket
+	}}
+	svc := NewService(store, nil, nil, nil)
+
+	_, err := svc.RepositionPath(context.Background(), "X1-A", "X1-ZZZ", 12)
+	if !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("expected ErrUnroutable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "X1-A") || !strings.Contains(err.Error(), "X1-ZZZ") {
+		t.Fatalf("the refusal must name both systems, got %q", err.Error())
+	}
+}
+
+// A store read failure fails CLOSED (a real error), never a clean unroutable verdict —
+// the worker must not strand a hull on a transient DB hiccup dressed up as "no path".
+func TestRepositionPath_StoreError_FailsClosed(t *testing.T) {
+	store := &adjStore{adjErr: errors.New("db down")}
+	svc := NewService(store, nil, nil, nil)
+
+	_, err := svc.RepositionPath(context.Background(), "X1-A", "X1-B", 12)
+	if err == nil {
+		t.Fatal("a store error must surface, not be swallowed as unroutable")
+	}
+	if errors.Is(err, ErrUnroutable) {
+		t.Fatalf("a store failure must NOT be reported as ErrUnroutable, got %v", err)
+	}
+}
+
+// A zero/absent bound falls back to MaxJumpPath (the documented default), so a caller that
+// forgets to pass one still gets the strict cap rather than an unbounded walk.
+func TestRepositionPath_ZeroBound_FallsBackToMaxJumpPath(t *testing.T) {
+	// A 5-jump chain resolves at the fallback; a 6-jump one does not.
+	store := &adjStore{adjacency: map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-C"),
+		"X1-C": repoEdgesTo("X1-D"),
+		"X1-D": repoEdgesTo("X1-E"),
+		"X1-E": repoEdgesTo("X1-F"), // F is 5 jumps from A
+	}}
+	svc := NewService(store, nil, nil, nil)
+
+	if _, err := svc.RepositionPath(context.Background(), "X1-A", "X1-F", 0); err != nil {
+		t.Fatalf("a 5-jump route must resolve at the MaxJumpPath fallback, got %v", err)
+	}
+	store.adjacency["X1-F"] = repoEdgesTo("X1-G") // now 6 jumps
+	if _, err := svc.RepositionPath(context.Background(), "X1-A", "X1-G", 0); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("a 6-jump route must exceed the MaxJumpPath fallback, got %v", err)
+	}
+}

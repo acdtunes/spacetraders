@@ -286,6 +286,7 @@ func (s *DaemonServer) ScoutMarkets(
 // buildScoutTourCommand/buildScoutPostCoordinatorCommand's reads.
 var scoutingConfigKeys = []string{
 	"tour_start_jitter_max_seconds",
+	"max_reposition_jumps",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -311,6 +312,9 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	sc := s.scoutingConfig
 	if sc.TourStartJitterMaxSeconds != 0 {
 		config["tour_start_jitter_max_seconds"] = sc.TourStartJitterMaxSeconds
+	}
+	if sc.MaxRepositionJumps != 0 {
+		config["max_reposition_jumps"] = sc.MaxRepositionJumps
 	}
 }
 

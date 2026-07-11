@@ -15,7 +15,9 @@ import (
 
 // ScoutMarketsCommand orchestrates fleet deployment for market scouting
 // Uses VRP optimization to distribute markets across multiple ships
-// Idempotent: reuses existing containers for ships that already have them
+// Transactional reset (sp-8k9m): it re-partitions every requested hull, computing the
+// whole re-man plan before tearing any existing tour down, so a failure never strands a
+// post (see ScoutMarketsHandler.Handle).
 type ScoutMarketsCommand struct {
 	PlayerID     shared.PlayerID
 	ShipSymbols  []string
@@ -60,40 +62,41 @@ func NewScoutMarketsHandler(
 	}
 }
 
-// Handle executes the scout markets command
+// Handle executes the scout markets command as a TRANSACTIONAL reset (sp-8k9m): it
+// re-partitions every requested hull over the system's markets, tearing the old tours
+// down and spawning fresh ones. The teardown is the last thing it does, never the first.
+//
+// The prior order stopped-and-released every hull UP FRONT, then did the fallible re-man
+// work (market check, ship-config load, graph read, VRP partition). Any failure after that
+// unconditional teardown — an empty market set, a missing hull, an unreadable graph, a VRP
+// error — left the system dark with nothing to re-man it (C81/SN21 went dark exactly this
+// way). Here the whole re-man PLAN is computed first, read-only; only once it is in hand —
+// so the re-man is guaranteed — are the old containers stopped and the new tours spawned.
+// A failure in the planning phase aborts with an honest error and NOTHING has been torn
+// down, so the existing posts keep running (verified-respawn-before-stop). Spawn-new-then-
+// stop is not usable here because a scout-tour claims its hull at creation, and a hull
+// cannot be claimed by two containers at once, so the old claim must be released first.
 func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*ScoutMarketsCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// Cleanup phase
-	if err := h.stopExistingContainers(ctx, cmd); err != nil {
-		return nil, err
-	}
-
-	// Identify reuse opportunities
-	shipsWithContainers, reusedContainers, shipsNeedingContainers, err := h.identifyContainerReuse(ctx, cmd.ShipSymbols, cmd.PlayerID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Early return if all ships already have containers
-	if response, shouldReturn, err := h.handleAllShipsHaveContainers(shipsWithContainers, reusedContainers); shouldReturn {
-		return response, err
-	}
-
-	// Early return if no markets to scout
+	// An empty market set is a no-op reset — there is nothing to re-man toward, so it must
+	// not tear down the existing posts (the pre-fix code stopped them, THEN early-returned).
 	if len(cmd.Markets) == 0 {
 		return &ScoutMarketsResponse{
-			ContainerIDs:     reusedContainers,
+			ContainerIDs:     []string{},
 			Assignments:      make(map[string][]string),
-			ReusedContainers: reusedContainers,
+			ReusedContainers: []string{},
 		}, nil
 	}
 
-	// Load ship data & graph
-	shipConfigs, err := h.loadShipConfigurations(ctx, shipsNeedingContainers, cmd.PlayerID)
+	// PLAN (read-only, fallible): compute the full re-man plan for every requested hull
+	// BEFORE tearing anything down. A reset repartitions all hulls, so every requested ship
+	// is (re)assigned here. Any failure returns an honest error with nothing stopped or
+	// released — the old posts keep running.
+	shipConfigs, err := h.loadShipConfigurations(ctx, cmd.ShipSymbols, cmd.PlayerID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,19 +106,47 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, err
 	}
 
-	// Calculate assignments
-	assignments, err := h.calculateMarketAssignments(ctx, shipsNeedingContainers, cmd.Markets, shipConfigs, waypointData)
+	assignments, err := h.calculateMarketAssignments(ctx, cmd.ShipSymbols, cmd.Markets, shipConfigs, waypointData)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create containers
+	// A degenerate plan — no ship assigned ANY market (e.g. a VRP that returned an empty
+	// partition rather than erroring) — is NOT a re-man (sp-8k9m). Refuse LOUDLY here,
+	// before any teardown: tearing the posts down for a zero-market plan and reporting
+	// success is the false-success class the captain flagged (a reset that reads "complete"
+	// while it darkened the system). The old posts keep running.
+	if totalAssignedMarkets(assignments) == 0 {
+		return nil, fmt.Errorf("scout reset for %s computed no market assignments across %d ship(s) over %d market(s) — refusing to tear down existing posts for an empty re-man", cmd.SystemSymbol, len(cmd.ShipSymbols), len(cmd.Markets))
+	}
+
+	// Refuse a CROSS-SYSTEM assignment at the spawn seam (sp-8k9m finding f). A scout tour
+	// is IN-SYSTEM by design — a scout post is per-system, and crossing gates is the
+	// reconciler's ferry job, not a tour's. NavigateRoute is in-system, so a hull handed a
+	// market in another system crash-loops on that waypoint ("not found in cache for system
+	// <origin>") and sits claimed but idle — the 7 KN67 probes stuck touring PA62 markets.
+	// Refuse LOUDLY here (before any teardown) rather than spawn a doomed tour: the hull must
+	// be repositioned into the target system first, then manned in-system.
+	if err := validateInSystemAssignments(assignments, shipConfigs); err != nil {
+		return nil, err
+	}
+
+	// COMMIT (destructive): the plan is in hand, so the re-man is guaranteed. Only now stop
+	// the old tours + release the hulls, then spawn the new tours over the fresh plan.
+	if err := h.stopExistingContainers(ctx, cmd); err != nil {
+		return nil, err
+	}
+
 	newContainerIDs, err := h.createScoutContainers(ctx, assignments, cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	return h.buildFinalResponse(reusedContainers, newContainerIDs, assignments, shipsWithContainers), nil
+	return &ScoutMarketsResponse{
+		ContainerIDs:     newContainerIDs,
+		Assignments:      assignments,
+		ReusedContainers: []string{},
+	}, nil
 }
 
 // stopExistingContainers stops all existing scouting containers and releases ship assignments
@@ -159,60 +190,6 @@ func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *S
 	}
 
 	return nil
-}
-
-// identifyContainerReuse determines which ships can reuse existing containers vs need new ones
-func (h *ScoutMarketsHandler) identifyContainerReuse(
-	ctx context.Context,
-	shipSymbols []string,
-	playerID shared.PlayerID,
-) (map[string]string, []string, []string, error) {
-	shipsWithContainers := make(map[string]string)
-	reusedContainers := []string{}
-
-	for _, shipSymbol := range shipSymbols {
-		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-		}
-
-		if ship.IsAssigned() {
-			shipsWithContainers[shipSymbol] = ship.ContainerID()
-			reusedContainers = append(reusedContainers, ship.ContainerID())
-		}
-	}
-
-	shipsNeedingContainers := []string{}
-	for _, shipSymbol := range shipSymbols {
-		if _, exists := shipsWithContainers[shipSymbol]; !exists {
-			shipsNeedingContainers = append(shipsNeedingContainers, shipSymbol)
-		}
-	}
-
-	return shipsWithContainers, reusedContainers, shipsNeedingContainers, nil
-}
-
-// handleAllShipsHaveContainers handles the early return scenario when all ships already have containers
-func (h *ScoutMarketsHandler) handleAllShipsHaveContainers(
-	shipsWithContainers map[string]string,
-	reusedContainers []string,
-) (*ScoutMarketsResponse, bool, error) {
-	if len(shipsWithContainers) == 0 {
-		return nil, false, nil
-	}
-
-	allContainerIDs := []string{}
-	assignments := make(map[string][]string)
-	for ship, containerID := range shipsWithContainers {
-		allContainerIDs = append(allContainerIDs, containerID)
-		assignments[ship] = []string{}
-	}
-
-	return &ScoutMarketsResponse{
-		ContainerIDs:     allContainerIDs,
-		Assignments:      assignments,
-		ReusedContainers: reusedContainers,
-	}, true, nil
 }
 
 // loadShipConfigurations loads ship data and prepares routing configurations
@@ -341,26 +318,35 @@ func (h *ScoutMarketsHandler) createScoutContainers(
 	return newContainerIDs, nil
 }
 
-// buildFinalResponse assembles the final response with all container and assignment details
-func (h *ScoutMarketsHandler) buildFinalResponse(
-	reusedContainerIDs []string,
-	newContainerIDs []string,
-	assignments map[string][]string,
-	shipsWithContainers map[string]string,
-) *ScoutMarketsResponse {
-	allContainerIDs := append(reusedContainerIDs, newContainerIDs...)
-
-	for ship := range shipsWithContainers {
-		if _, exists := assignments[ship]; !exists {
-			assignments[ship] = []string{}
+// validateInSystemAssignments refuses any ship→markets assignment that leaves the ship's
+// own system (sp-8k9m finding f): a scout tour navigates in-system only, so a cross-system
+// market waypoint is a doomed, crash-looping tour. Returns a loud error naming the ship, its
+// system, and the offending waypoint; nil when every assignment is in-system (the normal
+// case, since scout-markets is a per-system verb).
+func validateInSystemAssignments(assignments map[string][]string, shipConfigs map[string]*routing.ShipConfigData) error {
+	for ship, markets := range assignments {
+		cfg, ok := shipConfigs[ship]
+		if !ok || cfg == nil {
+			return fmt.Errorf("scout reset has no location for ship %s — cannot verify its markets are in-system", ship)
+		}
+		shipSystem := shared.ExtractSystemSymbol(cfg.CurrentLocation)
+		for _, market := range markets {
+			if marketSystem := shared.ExtractSystemSymbol(market); marketSystem != shipSystem {
+				return fmt.Errorf("scout reset would assign %s (in %s) a cross-system market %s (in %s) — a scout tour navigates in-system only; reposition the hull into %s first, then man it (sp-8k9m)", ship, shipSystem, market, marketSystem, marketSystem)
+			}
 		}
 	}
+	return nil
+}
 
-	return &ScoutMarketsResponse{
-		ContainerIDs:     allContainerIDs,
-		Assignments:      assignments,
-		ReusedContainers: reusedContainerIDs,
+// totalAssignedMarkets sums the market waypoints assigned across all ships — 0 means the
+// plan would man nothing, the degenerate-reset guard's trigger (sp-8k9m).
+func totalAssignedMarkets(assignments map[string][]string) int {
+	n := 0
+	for _, markets := range assignments {
+		n += len(markets)
 	}
+	return n
 }
 
 // extractWaypointData converts graph format to routing waypoint data

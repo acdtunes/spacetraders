@@ -356,3 +356,15 @@ scouting:
   # 120s, sized so ~45 scouts spread across two effective reconcile ticks without
   # materially delaying any one hull's first scan.
   # tour_start_jitter_max_seconds: 120
+
+  # max_reposition_jumps bounds the EXPENDABLE-probe reposition reach the standing
+  # scout_post_coordinator resolves over the PERSISTED stored gate adjacency (sp-8k9m).
+  # Both the nearest-satellite selection and the dispatched relay route PAST unreadable
+  # frontier gates (which the strict fetch-through router dead-ends on) up to this many
+  # jumps, so a probe can reach a post that sits beyond the strict heavy-hull cap
+  # (gategraph.MaxJumpPath=5). This is safe ONLY for the expendable scout class: a probe's
+  # purpose is to reach an unreadable frontier, and every arrival re-reads the gate it
+  # crossed, so the relaxation retires itself. The measured worst-case charted depth from
+  # the probe supply to the darkest posts was 6-12 jumps (KN67->SN21=6, ->C81=9, ->XN7=12),
+  # so 0/absent => 12. Raising this does NOT relax heavies/trade/arb — they keep MaxJumpPath.
+  # max_reposition_jumps: 12

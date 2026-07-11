@@ -21,4 +21,14 @@ type ScoutingConfig struct {
 	// reconcile loop starts. 0/absent => 120s, sized so ~45 scouts spread across two
 	// effective reconcile ticks without materially delaying any one hull's first scan.
 	TourStartJitterMaxSeconds int `mapstructure:"tour_start_jitter_max_seconds"`
+
+	// MaxRepositionJumps bounds the EXPENDABLE-probe reposition reach the standing
+	// scout_post_coordinator resolves over the PERSISTED stored adjacency (sp-8k9m): the
+	// nearest-satellite selection AND the dispatched relay both route PAST unreadable
+	// frontier gates up to this many jumps, reaching the posts that sit beyond the strict
+	// heavy-hull cap (gategraph.MaxJumpPath=5). Measured worst-case charted depth from the
+	// probe supply to the darkest posts was 6-12 jumps (KN67->SN21=6, ->C81=9, ->XN7=12),
+	// so 0/absent => 12. The strict cap is deliberately NOT raised — only the probe class,
+	// whose arrival re-reads the gate it crossed, is allowed this reach.
+	MaxRepositionJumps int `mapstructure:"max_reposition_jumps"`
 }

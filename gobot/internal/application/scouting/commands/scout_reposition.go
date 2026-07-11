@@ -16,7 +16,12 @@ import (
 // the dependency to this one method keeps the worker testable with a tiny fake and
 // states exactly what it touches: movement, nothing else.
 type Repositioner interface {
-	RepositionToWaypoint(ctx context.Context, shipSymbol, destinationWaypoint string, playerID int) error
+	// RepositionToWaypointWithinJumps flies a claimed satellite across gates to
+	// destinationWaypoint, resolving the jump path over the PERSISTED stored adjacency
+	// bounded to maxJumps (sp-8k9m) — routing PAST unreadable frontier gates so an
+	// expendable probe can reach a post the strict fetch-through cap rejects. maxJumps
+	// <= 0 degrades to the strict resolver.
+	RepositionToWaypointWithinJumps(ctx context.Context, shipSymbol, destinationWaypoint string, playerID, maxJumps int) error
 }
 
 // ScoutRepositionCommand is a one-shot cross-gate relay: jump-route a claimed idle
@@ -39,6 +44,12 @@ type ScoutRepositionCommand struct {
 	// waits out any in-transit leg and re-plans the gate path, so a mid-relay restart
 	// resumes rather than strands (RULINGS #2).
 	CoordinatorID string
+
+	// MaxRepositionJumps bounds the stored-adjacency jump path this relay may resolve
+	// (sp-8k9m [scouting] max_reposition_jumps). It is the expendable-probe reach past
+	// the strict fetch-through cap; <= 0 degrades to the strict resolver. Persisted with
+	// the container so a restart re-dispatches at the same reach.
+	MaxRepositionJumps int
 }
 
 // ScoutRepositionResponse reports the completed relay. Because the relay is one-shot
@@ -78,7 +89,7 @@ func (h *ScoutRepositionHandler) Handle(ctx context.Context, request common.Requ
 		"destination": cmd.DestinationWaypoint,
 	})
 
-	if err := h.repositioner.RepositionToWaypoint(ctx, cmd.ShipSymbol, cmd.DestinationWaypoint, cmd.PlayerID.Value()); err != nil {
+	if err := h.repositioner.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.DestinationWaypoint, cmd.PlayerID.Value(), cmd.MaxRepositionJumps); err != nil {
 		return nil, fmt.Errorf("scout reposition of %s to %s failed: %w", cmd.ShipSymbol, cmd.DestinationWaypoint, err)
 	}
 

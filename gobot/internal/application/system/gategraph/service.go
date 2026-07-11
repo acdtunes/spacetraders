@@ -31,10 +31,15 @@ type gateAPI interface {
 	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.WaypointDetail, error)
 }
 
-// MaxJumpPath bounds how many jumps a resolved route may contain. The charted
-// cluster is a handful of systems wide and the deepest known route (KA42→JP61)
-// is three jumps, so five is generous headroom while still capping the BFS
-// against a pathological fetch storm over the uncharted frontier.
+// MaxJumpPath bounds how many jumps a strict (fetch-through) Path route may contain —
+// the reach heavies/trade/arb are held to, capping the BFS against a pathological fetch
+// storm over the uncharted frontier. Five was chosen when the charted cluster was a
+// handful of systems wide; the frontier has since expanded and the deepest CHARTED routes
+// now run 6–12 jumps (measured KN67→SN21=6, →C81=9, sp-8k9m), so a laden hull can no
+// longer assume everything is within five. The EXPENDABLE probe/scout reposition class
+// reaches those deeper posts via RepositionPath (its own [scouting] max_reposition_jumps
+// bound over the stored adjacency); this strict cap stays 5 deliberately, because a fetch-
+// through BFS deeper than this over unreadable frontier gates is exactly the storm it guards.
 const MaxJumpPath = 5
 
 // ErrUnroutable wraps every "no path exists within the bound" outcome so callers
@@ -336,6 +341,53 @@ func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerI
 			// hop 1). Filtering the forward targets is what keeps the search on a
 			// fully-built route; if that makes the dest unreachable, the caller gets
 			// ErrUnroutable and the pre-buy guard refuses the spend.
+			if e.UnderConstruction {
+				continue
+			}
+			neighbors = append(neighbors, e.ConnectedSystem)
+		}
+		return neighbors, nil
+	})
+}
+
+// RepositionPath resolves the ordered system hop path from fromSystem to toSystem over
+// the PERSISTED, era-scoped gate adjacency (a pure store read, NO fetch-through), bounded
+// to maxJumps. It exists for the EXPENDABLE probe/scout reposition class ONLY (sp-8k9m) —
+// heavies/trade/arb keep strict Path — and differs from Path in exactly two deliberate
+// ways, both justified by that class:
+//
+//   - It routes PAST an unreadable frontier gate instead of dead-ending on it. Path
+//     fails closed on an unreadable gate because its onward gates are unverified (sp-qxa4);
+//     but a probe's whole purpose is to REACH that frontier, and a frontier gate is
+//     unreadable precisely because no probe has arrived to read it — the catch-22 a
+//     fail-closed router can never re-admit. Routing over the stored adjacency (which
+//     retains an unreadable gate's last-known edges) breaks it: the probe hops the
+//     known topology, and every arrival re-reads its gate, so each successful reposition
+//     SHRINKS the unreadable set (the relaxation retires itself). Crucially it does this
+//     WITHOUT any live probe — Adjacency is a store read, so the sp-ikx1 negative-result
+//     backoff is fully honored; we route past unreadable gates, we never re-probe them.
+//   - It takes a caller-supplied bound (the [scouting] max_reposition_jumps config,
+//     default 12) rather than the shared MaxJumpPath=5, because the expanded frontier's
+//     posts sit 6–12 gate-jumps from the probe supply.
+//
+// under_construction edges are STILL excluded (a jump into an unbuilt gate crashes at hop
+// time, sp-8qhu — a hazard just as real for a probe). maxJumps <= 0 falls back to
+// MaxJumpPath. A store read failure fails CLOSED (a real error, never a clean unroutable).
+func (s *Service) RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error) {
+	if maxJumps <= 0 {
+		maxJumps = MaxJumpPath
+	}
+	adjacency, err := s.store.Adjacency(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reposition path: failed to read stored gate adjacency: %w", err)
+	}
+	return bfsPath(fromSystem, toSystem, maxJumps, func(systemSymbol string) ([]string, error) {
+		edges := adjacency[systemSymbol]
+		neighbors := make([]string, 0, len(edges))
+		for _, e := range edges {
+			// Never route INTO an under-construction gate (sp-8qhu). Unlike Path, an
+			// UNREADABLE gate is NOT a dead-end here — its stored edges stand, so the
+			// probe hops past it (and re-reads it on arrival).
 			if e.UnderConstruction {
 				continue
 			}

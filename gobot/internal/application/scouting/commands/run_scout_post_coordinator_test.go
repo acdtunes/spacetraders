@@ -166,13 +166,14 @@ func (r *fakeScoutShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 // fakeScoutDaemonClient records the worker lifecycle calls the coordinator makes.
 type fakeScoutDaemonClient struct {
 	daemon.DaemonClient
-	persisted         []string            // container IDs persisted (scout_tour workers)
-	persistedTourCmds []*ScoutTourCommand // the *ScoutTourCommand captured per persisted tour, same order as persisted (sp-zixw)
-	repositioned      []string            // container IDs persisted (scout_reposition relays, sp-s232)
-	started           []string
-	stopped           []string
-	startErr          error
-	persistErr        error
+	persisted               []string                  // container IDs persisted (scout_tour workers)
+	persistedTourCmds       []*ScoutTourCommand       // the *ScoutTourCommand captured per persisted tour, same order as persisted (sp-zixw)
+	repositioned            []string                  // container IDs persisted (scout_reposition relays, sp-s232)
+	persistedRepositionCmds []*ScoutRepositionCommand // the *ScoutRepositionCommand captured per relay, same order as repositioned (sp-8k9m)
+	started                 []string
+	stopped                 []string
+	startErr                error
+	persistErr              error
 }
 
 func (c *fakeScoutDaemonClient) PersistContainer(_ context.Context, kind daemon.ContainerKind, containerID string, _ uint, command interface{}) error {
@@ -187,6 +188,9 @@ func (c *fakeScoutDaemonClient) PersistContainer(_ context.Context, kind daemon.
 		}
 	case daemon.ContainerKindScoutReposition:
 		c.repositioned = append(c.repositioned, containerID)
+		if repoCmd, ok := command.(*ScoutRepositionCommand); ok {
+			c.persistedRepositionCmds = append(c.persistedRepositionCmds, repoCmd)
+		}
 	default:
 		return fmt.Errorf("unexpected kind %q", kind)
 	}
@@ -240,10 +244,17 @@ type fakeGateGraph struct {
 	hops map[string]int // "FROM->TO" → jump hops
 }
 
-func (g *fakeGateGraph) Path(_ context.Context, from, to string, _ int) ([]string, error) {
+// RepositionPath mirrors the hop map but HONORS the maxJumps bound (sp-8k9m): a route
+// deeper than the bound is unroutable, so a test can pin that the expendable-probe reach
+// (default 12) admits a post the strict cap would reject, and that a post beyond the reach
+// still parks honest.
+func (g *fakeGateGraph) RepositionPath(_ context.Context, from, to string, maxJumps int) ([]string, error) {
 	n, ok := g.hops[from+"->"+to]
 	if !ok {
 		return nil, fmt.Errorf("no jump-gate route from %s to %s", from, to)
+	}
+	if maxJumps > 0 && n > maxJumps {
+		return nil, fmt.Errorf("route %s to %s is %d jumps, beyond the %d-jump reposition bound", from, to, n, maxJumps)
 	}
 	path := make([]string, n+1) // n hops → n+1 systems inclusive
 	for i := range path {
@@ -703,6 +714,55 @@ func TestScoutPost_Reposition_DispatchesNearestByHops(t *testing.T) {
 	require.True(t, logger.loggedContaining("X1-FAR", "repositioning SAT-Z", "1 jump"), "the dispatch logs the honest relay reason with hop count")
 }
 
+// sp-8k9m: a post 8 gate-jumps from the only idle probe is BEYOND the strict heavy-hull
+// cap (gategraph.MaxJumpPath=5) but WITHIN the expendable-probe reposition reach (default
+// 12). The reconciler must dispatch the relay — the whole point of the stored-adjacency
+// resolver — and persist the bound onto the relay so the worker flies it at the same reach.
+func TestScoutPost_Reposition_ReachesBeyondStrictCap(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-DARK", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-YARD-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-YARD->X1-DARK": 8}} // 8 > MaxJumpPath(5)
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.repositioned, 1, "an 8-jump post is dispatched over the stored-adjacency resolver, not parked")
+	require.Len(t, daemonClient.persistedRepositionCmds, 1)
+	require.Equal(t, defaultMaxRepositionJumps, daemonClient.persistedRepositionCmds[0].MaxRepositionJumps, "the relay carries the resolved bound so the worker flies it at the same reach")
+	require.Equal(t, "SAT-1", shipRepo.claims[0].ship, "the probe is claimed for the relay")
+}
+
+// sp-8k9m: the reposition reach is a HARD bound, not unbounded — a post beyond the
+// configured max_reposition_jumps still parks honest (never a relay that will strand). This
+// pins that the config knob is threaded from the command through to the resolver.
+func TestScoutPost_Reposition_BeyondConfiguredBound_Parks(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-DARK", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-YARD-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-YARD->X1-DARK": 8}} // 8 > the bound below
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	cmd := scoutPostTestCmd()
+	cmd.MaxRepositionJumps = 6 // operator-tuned reach; 8-jump post is beyond it
+
+	require.NoError(t, handler.reconcileOnce(ctx, cmd))
+
+	require.Empty(t, daemonClient.repositioned, "a post beyond the configured reposition bound parks — never a doomed relay")
+	require.Empty(t, shipRepo.claims, "no probe is claimed for an out-of-bound post")
+	require.True(t, logger.loggedContaining("X1-DARK", "parked (fail-closed)"), "the out-of-bound park is honest")
+}
+
 // One relay per post: while a relay is airborne (its container RUNNING) the coordinator
 // dispatches no second relay and claims no other hull for the same post (sp-s232).
 func TestScoutPost_Reposition_OneRelayPerPost_NoSecondDispatch(t *testing.T) {
@@ -748,7 +808,7 @@ func TestScoutPost_Reposition_Unroutable_ParksFailClosed(t *testing.T) {
 	require.Empty(t, postRepo.find("X1-ISLAND").AssignedHull, "the post parks unmanned")
 	require.Empty(t, postRepo.find("X1-ISLAND").RepositionContainerID, "no relay is recorded")
 	require.True(t, sat.IsIdle(), "the unreachable satellite stays idle")
-	require.True(t, logger.loggedContaining("X1-ISLAND", "no jump-routable satellite"), "the fail-closed park reason is logged")
+	require.True(t, logger.loggedContaining("X1-ISLAND", "parked (fail-closed)"), "the fail-closed park reason is logged")
 }
 
 // A relay that ended (failed or restart-interrupted, hull still claimed) is reclaimed

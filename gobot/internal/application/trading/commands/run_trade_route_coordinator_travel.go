@@ -217,6 +217,26 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	destinationWaypoint string,
 	playerID int,
 ) (*navigation.Ship, error) {
+	// Strict reach: heavies/trade/arb resolve the jump path through the fetch-through
+	// gategraph.Path (MaxJumpPath, fail-closed on unreadable gates). repositionJumpBound 0
+	// selects it — every existing caller's behavior is byte-for-byte unchanged (sp-8k9m).
+	return h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, 0)
+}
+
+// travelWithJumpBound is travel() with an explicit reposition jump bound (sp-8k9m). A
+// bound of 0 uses the strict fetch-through Path (heavies/trade/arb); a positive bound
+// routes the cross-system leg over the PERSISTED stored adjacency via RepositionPath —
+// the expendable probe/scout reposition class only, reached through
+// RepositionToWaypointWithinJumps. Everything ELSE about the flight (in-transit wait,
+// source/arrival gate hops, per-hop cooldowns) is identical; only WHICH resolver picks the
+// system sequence changes.
+func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
+	ctx context.Context,
+	ship *navigation.Ship,
+	destinationWaypoint string,
+	playerID int,
+	repositionJumpBound int,
+) (*navigation.Ship, error) {
 	// sp-8l3o — before ANY movement, ride out a hull that is still IN_TRANSIT. A
 	// run re-adopted mid-hop (the arb resume path: a hull mid in-system hop toward
 	// the source jump gate) is NOT idle — attempting the jump/navigate now returns
@@ -251,7 +271,7 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	// dest returns the wrapped error (naming both systems) BEFORE any flying.
 	// Without one, jumpPath falls back to the legacy single directly-connected
 	// jump so existing callers/tests are byte-for-byte unchanged.
-	path, err := h.jumpPath(ctx, currentSystem, destSystem, playerID)
+	path, err := h.jumpPath(ctx, currentSystem, destSystem, playerID, repositionJumpBound)
 	if err != nil {
 		return ship, err
 	}
@@ -384,6 +404,25 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypoint(ctx context.Conte
 	return nil
 }
 
+// RepositionToWaypointWithinJumps is the EXPENDABLE probe/scout variant of
+// RepositionToWaypoint (sp-8k9m): identical, except the cross-system jump path is resolved
+// over the PERSISTED stored adjacency bounded to maxJumps (RepositionPath) rather than the
+// strict fetch-through Path. This is the ONE call site that relaxes the sp-qxa4 fail-closed
+// unreadable-gate discipline — and only for a scout satellite, whose whole purpose is to
+// reach an unreadable frontier and whose arrival re-reads the gate it crossed (the
+// relaxation retires itself). Heavies/trade/arb keep RepositionToWaypoint (strict). maxJumps
+// <= 0 degrades to the strict resolver, so a mis-wired caller can never accidentally relax.
+func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypointWithinJumps(ctx context.Context, shipSymbol, destinationWaypoint string, playerID, maxJumps int) error {
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return fmt.Errorf("failed to load ship %s for reposition to %s: %w", shipSymbol, destinationWaypoint, err)
+	}
+	if _, err := h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, maxJumps); err != nil {
+		return fmt.Errorf("reposition of %s to %s failed: %w", shipSymbol, destinationWaypoint, err)
+	}
+	return nil
+}
+
 // waitForInTransitArrival rides out a hull that is still IN_TRANSIT before any
 // movement leg (sp-8l3o). It is the pre-movement mirror of the RouteExecutor's own
 // waitForCurrentTransit idempotency wait: the arb resume path re-adopts a hull mid
@@ -458,9 +497,16 @@ func (h *RunTradeRouteCoordinatorHandler) waitForInTransitArrival(
 // dest is one directly-connected jump away, preserving every existing
 // caller/test that never wires a graph. A gate-graph error (unroutable, or a
 // store/fetch failure) propagates so travel() aborts rather than fly blind.
-func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSystem, destSystem string, playerID int) ([]string, error) {
+// repositionJumpBound > 0 (the expendable probe/scout class, sp-8k9m) resolves the path
+// over the PERSISTED stored adjacency via RepositionPath — routing PAST unreadable frontier
+// gates over a larger bound — instead of the strict fetch-through Path. Bound 0 is every
+// other caller (heavies/trade/arb): byte-for-byte the pre-8k9m behavior.
+func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSystem, destSystem string, playerID, repositionJumpBound int) ([]string, error) {
 	if h.gateGraph == nil {
 		return []string{fromSystem, destSystem}, nil
+	}
+	if repositionJumpBound > 0 {
+		return h.gateGraph.RepositionPath(ctx, fromSystem, destSystem, repositionJumpBound)
 	}
 	return h.gateGraph.Path(ctx, fromSystem, destSystem, playerID)
 }

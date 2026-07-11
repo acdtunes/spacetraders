@@ -522,9 +522,25 @@ type fakeGateGraph struct {
 	// live-gate refusal the durable read normally survives). Absent origin -> nil edges.
 	edges   map[string][]system.GateEdge
 	connErr error
+
+	// repositionPath / repositionPathErr, when set, are what RepositionPath returns (the
+	// stored-adjacency probe/scout resolver, sp-8k9m); unset, RepositionPath mirrors Path
+	// so every pre-8k9m test is unaffected. repositionBound records the last maxJumps it
+	// was called with, so a test can assert the expendable-probe bound reached the resolver.
+	repositionPath    []string
+	repositionPathErr error
+	repositionBound   int
 }
 
 func (f *fakeGateGraph) Path(ctx context.Context, from, to string, playerID int) ([]string, error) {
+	return f.path, f.pathErr
+}
+
+func (f *fakeGateGraph) RepositionPath(ctx context.Context, from, to string, maxJumps int) ([]string, error) {
+	f.repositionBound = maxJumps
+	if f.repositionPath != nil || f.repositionPathErr != nil {
+		return f.repositionPath, f.repositionPathErr
+	}
 	return f.path, f.pathErr
 }
 
@@ -786,4 +802,35 @@ func (c *travelBlockingClock) Now() time.Time { return time.Now() }
 func (c *travelBlockingClock) Sleep(time.Duration) {
 	c.enteredOnce.Do(func() { close(c.blockEntered) })
 	<-c.release
+}
+
+// sp-8k9m: jumpPath selects the resolver by the reposition bound — 0 keeps the strict
+// fetch-through Path (heavies/trade/arb, byte-for-byte unchanged), a positive bound routes
+// over the stored-adjacency RepositionPath AND forwards the bound to it (the expendable
+// probe reach that reaches posts past MaxJumpPath).
+func TestJumpPath_BoundSelectsRepositionResolver(t *testing.T) {
+	fake := &fakeGateGraph{
+		path:           []string{"X1-A", "X1-B"},                 // strict Path result
+		repositionPath: []string{"X1-A", "X1-M", "X1-N", "X1-Z"}, // stored-adjacency result
+	}
+	h := &RunTradeRouteCoordinatorHandler{gateGraph: fake}
+
+	strict, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0)
+	if err != nil {
+		t.Fatalf("strict jumpPath errored: %v", err)
+	}
+	if !reflect.DeepEqual(strict, fake.path) {
+		t.Fatalf("bound 0 must use strict Path %v, got %v", fake.path, strict)
+	}
+
+	relaxed, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 9)
+	if err != nil {
+		t.Fatalf("reposition jumpPath errored: %v", err)
+	}
+	if !reflect.DeepEqual(relaxed, fake.repositionPath) {
+		t.Fatalf("a positive bound must use RepositionPath %v, got %v", fake.repositionPath, relaxed)
+	}
+	if fake.repositionBound != 9 {
+		t.Fatalf("the bound must reach the resolver, got %d", fake.repositionBound)
+	}
 }

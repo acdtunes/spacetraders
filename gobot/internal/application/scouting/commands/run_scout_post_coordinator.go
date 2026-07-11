@@ -80,6 +80,14 @@ const (
 	// re-queues the event at most once per window, never every 30s tick.
 	defaultUndersizedAvgHop         = 3 * time.Minute
 	defaultUndersizedRewarnCooldown = 3 * time.Hour
+
+	// defaultMaxRepositionJumps bounds the EXPENDABLE-probe reposition reach over the
+	// stored adjacency (sp-8k9m, [scouting] max_reposition_jumps) when the launch config
+	// leaves it unset (RULINGS #5). 12 covers the measured worst-case charted depth from
+	// the probe supply to the darkest posts (KN67→SN21=6, →C81=9, →XN7=12); the strict
+	// heavy-hull cap (gategraph.MaxJumpPath=5) is deliberately NOT raised — only the probe
+	// reposition class, which routes past unreadable frontier gates, reaches this far.
+	defaultMaxRepositionJumps = 12
 )
 
 // RunScoutPostCoordinatorCommand launches the standing scout-post coordinator for
@@ -122,6 +130,13 @@ type RunScoutPostCoordinatorCommand struct {
 	// own first scan via the ShipSymbol-keyed offset above — so a synchronized sweep at
 	// the manning-pass level decoheres for free without touching reconcileOnce's loops.
 	StartJitterMaxSecs int
+
+	// MaxRepositionJumps bounds the EXPENDABLE-probe reposition reach over the stored
+	// adjacency (sp-8k9m [scouting] max_reposition_jumps): the selection resolver and the
+	// dispatched relay both route past unreadable frontier gates up to this many jumps,
+	// reaching the 6-12-jump posts the strict fetch-through cap rejects. <= 0 uses
+	// defaultMaxRepositionJumps, mirroring TickIntervalSecs.
+	MaxRepositionJumps int
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -152,7 +167,14 @@ type MarketWaypointProvider interface {
 // coordinator then parks a satellite-less post exactly as before (the sp-qxa4 park),
 // so every pre-s232 caller/test behaves unchanged.
 type GateGraph interface {
-	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
+	// RepositionPath resolves the fleet-wide reposition route over the PERSISTED stored
+	// adjacency bounded to maxJumps (sp-8k9m): it routes PAST an unreadable frontier gate
+	// instead of dead-ending on it (the catch-22 a fetch-through Path can never re-admit —
+	// a probe can't reach the frontier because the gate is unreadable, and the gate is
+	// unreadable because no probe reached it), and reaches the 6-12-jump posts the strict
+	// MaxJumpPath=5 rejects. Safe for the expendable scout class only; every arrival
+	// re-reads its gate, so the relaxation retires itself.
+	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
 }
 
 // MarketFreshnessProvider computes, per POSTED system, the worst-case cached
@@ -1416,12 +1438,15 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedSlot(
 	}
 	destWaypoint := pickRepositionDestination(markets)
 
-	// Fleet-wide nearest idle satellite by jump-hop count (fail-closed on unroutable).
-	idx, hops, ok := h.selectNearestSatelliteByHops(ctx, *idleSats, post.SystemSymbol, cmd.PlayerID.Value())
+	// Fleet-wide nearest idle satellite by jump-hop count over the stored adjacency,
+	// bounded to the expendable-probe reposition reach (sp-8k9m). Fail-closed on unroutable.
+	maxJumps := resolveMaxRepositionJumps(cmd)
+	idx, hops, ok := h.selectNearestSatelliteByHops(ctx, *idleSats, post.SystemSymbol, maxJumps)
 	if !ok {
-		logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: no jump-routable satellite in the fleet — parked (fail-closed)", post.SystemSymbol), map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: no satellite within %d reposition jumps of the fleet — parked (fail-closed)", post.SystemSymbol, maxJumps), map[string]interface{}{
 			"action":        "scout_reposition_unroutable",
 			"system_symbol": post.SystemSymbol,
+			"max_jumps":     maxJumps,
 		})
 		return
 	}
@@ -1429,7 +1454,7 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedSlot(
 	sat := (*idleSats)[idx]
 	*idleSats = append((*idleSats)[:idx], (*idleSats)[idx+1:]...)
 
-	relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint)
+	relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint, maxJumps)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to dispatch reposition of %s to post %s: %v", sat.ShipSymbol(), post.SystemSymbol, err), nil)
 		return
@@ -1443,11 +1468,12 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedSlot(
 		logger.Log("WARNING", fmt.Sprintf("Dispatched reposition for post %s but failed to persist relay reference: %v", post.SystemSymbol, err), nil)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: repositioning %s (%d jump(s), relay %s) → %s", post.SystemSymbol, sat.ShipSymbol(), hops, relayID, destWaypoint), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: repositioning %s (%d jump(s) over stored adjacency, ≤%d bound, relay %s) → %s", post.SystemSymbol, sat.ShipSymbol(), hops, maxJumps, relayID, destWaypoint), map[string]interface{}{
 		"action":        "scout_reposition_dispatch",
 		"system_symbol": post.SystemSymbol,
 		"ship_symbol":   sat.ShipSymbol(),
 		"jumps":         hops,
+		"max_jumps":     maxJumps,
 		"destination":   destWaypoint,
 		"relay":         relayID,
 	})
@@ -1510,16 +1536,29 @@ func (h *RunScoutPostCoordinatorHandler) discoverVirginMarkets(
 	return markets
 }
 
+// resolveMaxRepositionJumps returns the expendable-probe reposition reach (sp-8k9m):
+// the launch-config [scouting] max_reposition_jumps, or defaultMaxRepositionJumps when
+// unset (RULINGS #5, the <= 0 → default idiom this file uses for every other knob).
+func resolveMaxRepositionJumps(cmd *RunScoutPostCoordinatorCommand) int {
+	if cmd.MaxRepositionJumps <= 0 {
+		return defaultMaxRepositionJumps
+	}
+	return cmd.MaxRepositionJumps
+}
+
 // selectNearestSatelliteByHops returns the index (into idleSats) of the satellite
 // FEWEST jump hops from postSystem, its hop count, and ok=false when none can be
-// jump-routed there (sp-s232). Distance is the gate-graph BFS path length; a satellite
-// whose Path errors is skipped (fail-closed). idleSats is pre-sorted by symbol, and the
-// comparison is strict (< bestHops), so the lowest-symbol satellite wins an equal-hops tie.
+// jump-routed there (sp-s232). Distance is the RepositionPath BFS length over the
+// PERSISTED stored adjacency bounded to maxJumps (sp-8k9m) — the expendable-probe resolver
+// that routes PAST unreadable frontier gates and reaches the 6-12-jump posts the strict
+// MaxJumpPath=5 rejects. A satellite whose route errors is skipped (fail-closed). idleSats
+// is pre-sorted by symbol, and the comparison is strict (< bestHops), so the lowest-symbol
+// satellite wins an equal-hops tie.
 func (h *RunScoutPostCoordinatorHandler) selectNearestSatelliteByHops(
 	ctx context.Context,
 	idleSats []*navigation.Ship,
 	postSystem string,
-	playerID int,
+	maxJumps int,
 ) (idx int, hops int, ok bool) {
 	logger := common.LoggerFromContext(ctx)
 	bestIdx, bestHops := -1, 0
@@ -1528,12 +1567,13 @@ func (h *RunScoutPostCoordinatorHandler) selectNearestSatelliteByHops(
 		if loc == nil {
 			continue // unknown location — cannot route
 		}
-		path, err := h.gateGraph.Path(ctx, loc.SystemSymbol, postSystem, playerID)
+		path, err := h.gateGraph.RepositionPath(ctx, loc.SystemSymbol, postSystem, maxJumps)
 		if err != nil {
-			logger.Log("INFO", fmt.Sprintf("Reposition candidate %s → %s unroutable this tick: %v", loc.SystemSymbol, postSystem, err), map[string]interface{}{
-				"action": "scout_reposition_candidate_unroutable",
-				"from":   loc.SystemSymbol,
-				"to":     postSystem,
+			logger.Log("INFO", fmt.Sprintf("Reposition candidate %s → %s unroutable this tick (stored-adjacency, ≤%d jumps): %v", loc.SystemSymbol, postSystem, maxJumps, err), map[string]interface{}{
+				"action":    "scout_reposition_candidate_unroutable",
+				"from":      loc.SystemSymbol,
+				"to":        postSystem,
+				"max_jumps": maxJumps,
 			})
 			continue
 		}
@@ -1558,6 +1598,7 @@ func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 	cmd *RunScoutPostCoordinatorCommand,
 	hullSymbol string,
 	destinationWaypoint string,
+	maxJumps int,
 ) (string, error) {
 	workerID := utils.GenerateContainerID("scout_reposition", hullSymbol)
 	repoCmd := &ScoutRepositionCommand{
@@ -1565,6 +1606,7 @@ func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 		ShipSymbol:          hullSymbol,
 		DestinationWaypoint: destinationWaypoint,
 		CoordinatorID:       cmd.ContainerID,
+		MaxRepositionJumps:  maxJumps,
 	}
 
 	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindScoutReposition, workerID, uint(cmd.PlayerID.Value()), repoCmd); err != nil {

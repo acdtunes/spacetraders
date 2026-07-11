@@ -497,6 +497,7 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		UndersizedAvgHopSecs:         cfg.OptionalInt("undersized_avg_hop_secs", 0),
 		UndersizedRewarnCooldownSecs: cfg.OptionalInt("undersized_rewarn_cooldown_secs", 0),
 		StartJitterMaxSecs:           cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
+		MaxRepositionJumps:           cfg.OptionalInt("max_reposition_jumps", 0),
 	}
 }
 

@@ -13,12 +13,14 @@ import (
 // fakeRepositioner records the travel delegation and can inject a failure — the reposition
 // worker must forward exactly one move to the shared travel machinery and surface its error.
 type fakeRepositioner struct {
-	calls []string // "ship->destination"
-	err   error
+	calls  []string // "ship->destination"
+	bounds []int    // the maxJumps forwarded per call (sp-8k9m)
+	err    error
 }
 
-func (f *fakeRepositioner) RepositionToWaypoint(_ context.Context, shipSymbol, destinationWaypoint string, _ int) error {
+func (f *fakeRepositioner) RepositionToWaypointWithinJumps(_ context.Context, shipSymbol, destinationWaypoint string, _ int, maxJumps int) error {
 	f.calls = append(f.calls, shipSymbol+"->"+destinationWaypoint)
+	f.bounds = append(f.bounds, maxJumps)
 	return f.err
 }
 
@@ -59,4 +61,22 @@ func TestScoutReposition_TravelError_FailsHonestly(t *testing.T) {
 
 	require.Error(t, err, "a travel failure surfaces — never a false success on a stranded hull")
 	require.Contains(t, err.Error(), "destination jump gate under construction", "the underlying cause is preserved verbatim")
+}
+
+// sp-8k9m: the relay worker forwards its command's MaxRepositionJumps to the movement
+// port, so the expendable-probe reach the coordinator chose actually governs the flight.
+func TestScoutReposition_ForwardsMaxRepositionJumps(t *testing.T) {
+	rep := &fakeRepositioner{}
+	handler := NewScoutRepositionHandler(rep)
+	cmd := &ScoutRepositionCommand{
+		PlayerID:            shared.MustNewPlayerID(1),
+		ShipSymbol:          "SAT-1",
+		DestinationWaypoint: "X1-FAR-A1",
+		MaxRepositionJumps:  9,
+	}
+
+	_, err := handler.Handle(context.Background(), cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, []int{9}, rep.bounds, "the relay forwards its configured reposition reach to travel()")
 }

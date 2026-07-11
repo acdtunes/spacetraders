@@ -145,6 +145,12 @@ func (g *fakeHopGraph) Path(_ context.Context, from, to string, _ int) ([]string
 	return path, nil
 }
 
+// RepositionPath mirrors Path — the worker rebalancer ferries via strict travel, so this
+// exists only to satisfy the GateGraph interface (sp-8k9m); the bound is ignored here.
+func (g *fakeHopGraph) RepositionPath(ctx context.Context, from, to string, _ int) ([]string, error) {
+	return g.Path(ctx, from, to, 0)
+}
+
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil
