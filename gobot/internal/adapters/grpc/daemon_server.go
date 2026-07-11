@@ -132,6 +132,13 @@ type DaemonServer struct {
 	// config and restarting, no code redeploy.
 	scoutingConfig config.ScoutingConfig
 
+	// fleetAutosizerConfig carries the fleet capacity autosizer's knobs (sp-1txd) from
+	// config.yaml. The fleet_autosizer coordinator resolves it into its container's launch
+	// config on every build (creation + restart recovery via resolveFleetAutosizerConfig), so
+	// a captain retunes the sizing/buying behaviour by editing config and restarting, no code
+	// redeploy.
+	fleetAutosizerConfig config.FleetAutosizerConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -172,6 +179,7 @@ func NewDaemonServer(
 	workerRebalancerConfig config.WorkerRebalancerConfig,
 	manufacturingConfig config.ManufacturingConfig,
 	scoutingConfig config.ScoutingConfig,
+	fleetAutosizerConfig config.FleetAutosizerConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -233,6 +241,7 @@ func NewDaemonServer(
 		workerRebalancerConfig: workerRebalancerConfig,
 		manufacturingConfig:    manufacturingConfig,
 		scoutingConfig:         scoutingConfig,
+		fleetAutosizerConfig:   fleetAutosizerConfig,
 		shutdownChan:           make(chan os.Signal, 1),
 		done:                   make(chan struct{}),
 	}
@@ -498,6 +507,16 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register factory-siting metrics collector: %w", err)
 		}
 		metrics.SetGlobalSitingCollector(sitingCollector)
+
+		// Create fleet-autosizer collector (sp-1txd): the autosizer's ACT path emits its
+		// purchase / guard-blocked / demand / zero-effect-alarm series through the global set here —
+		// the observability for the standing coordinator that sizes the hull pool and auto-buys.
+		fleetAutosizerCollector := metrics.NewFleetAutosizerMetricsCollector()
+		if err := fleetAutosizerCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register fleet-autosizer metrics collector: %w", err)
+		}
+		metrics.SetGlobalFleetAutosizerCollector(fleetAutosizerCollector)
 	}
 
 	// Register container specs for launch and recovery

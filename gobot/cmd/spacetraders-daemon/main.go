@@ -20,6 +20,7 @@ import (
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
 	ledgerCmd "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
@@ -512,7 +513,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -649,6 +650,21 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunSitingCoordinatorCommand](med, sitingCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register SitingCoordinator handler: %w", err)
+	}
+
+	// Fleet capacity autosizer (sp-1txd): the buy-side twin of the siting coordinator. It sizes the
+	// hull pool to demand and auto-buys hulls behind the fail-closed money-guard stack. LIVE BY
+	// DEFAULT once first-launched (CLI/gRPC), recovery-adopted on restart. All concrete ports —
+	// treasury/era-clock via the API client, worker/heavy/fleet counts via the ship repo, the
+	// running-chain count via the daemon, the chain-P&L realized worker rate, the shipyard price
+	// read, the buy+dedicate path, and the captain purchase notice — are assembled inside
+	// grpc.NewFleetAutosizerCoordinatorHandler. Heavies are wired but fail-closed (the unserved-lane
+	// read path is a banked seam), so only lights auto-buy live until that seam lands.
+	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
+		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo,
+	)
+	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
+		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
 	}
 
 	// Trade-route coordinator (sp-zewt): a single-hull pure-arbitrage circuit that runs

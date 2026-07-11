@@ -72,6 +72,12 @@ const (
 	// existing guard stack. Like the trade-fleet/frontier coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeSitingCoordinator ContainerType = "SITING_COORDINATOR"
+	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer (sp-1txd): a
+	// per-player coordinator that loops forever inside one Handle() sizing the hull pool to
+	// demand and auto-buying hulls (lights to factory demand, heavies to trade demand) behind
+	// the full money-guard stack. Like the trade-fleet/siting coordinators it is NOT a
+	// CoordinatorOwnsIterations type.
+	ContainerTypeFleetAutosizer ContainerType = "FLEET_AUTOSIZER_COORDINATOR"
 	ContainerTypeParallelManufacturing    ContainerType = "PARALLEL_MANUFACTURING"
 	ContainerTypeManufacturingTaskWorker  ContainerType = "MANUFACTURING_TASK_WORKER"
 	ContainerTypeGasCoordinator           ContainerType = "GAS_COORDINATOR"

@@ -1,0 +1,68 @@
+// Package commands holds the fleet capacity autosizer (sp-1txd): a standing per-player
+// coordinator that SIZES the hull pool to demand and AUTO-BUYS hulls behind the full
+// money-guard stack. It is the buy-side twin of the vdld siting coordinator (which sizes the
+// factory-chain portfolio at zero cost); this one spends real credits, so its guard stack is
+// fail-CLOSED (any unreadable input ⇒ no buy) where vdld's kill-switch is fail-open.
+//
+// Shape mirrors run_siting_coordinator.go: a registered singleton handler with optional
+// setter-collaborators, one infinite reconcile loop in Handle(), resolveFleetAutosizerConfig()
+// resolving every <=0 knob to a documented protective default (RULINGS #5). One coordinator,
+// N pluggable demand providers (lights, heavies, warehouse) — the vdld pluggable-provider idiom.
+package commands
+
+// HullClass identifies an autosized hull pool. Each class has its own demand provider, fleet
+// ceiling, price ceiling, realized-rate gate, purchased ship type, and dedicated-fleet name.
+type HullClass string
+
+const (
+	// HullClassLight is the factory-worker pool (HAULER role), sized to factory-chain demand.
+	HullClassLight HullClass = "light"
+	// HullClassHeavy is the trade-tour pool (DedicatedFleet "trade"), sized to trade demand.
+	HullClassHeavy HullClass = "heavy"
+	// HullClassWarehouse is the storage/stocker pool (DedicatedFleet "warehouse"), sized to
+	// producing-chain export demand (sp-1txd M7).
+	HullClassWarehouse HullClass = "warehouse"
+)
+
+// ClassDemand is one class's demand read for a tick: how many hulls the demand model wants
+// (Demand) vs how many exist now (Current), plus the marginal realized rate the era-clock
+// payback and realized-rate guards judge, and whether that rate is decaying (heavies stop
+// buying when absorption saturates). A demand model that cannot read its inputs sets
+// Readable=false, which the coordinator treats as fail-closed: NO buy (a missing signal must
+// never trigger a spend).
+type ClassDemand struct {
+	Class HullClass
+	// Demand is how many hulls of this class the demand model wants standing.
+	Demand int
+	// Current is how many hulls of this class exist now.
+	Current int
+	// MarginalRate is the expected marginal realized credits/hour the NEXT hull of this class
+	// would earn — the number the era-clock payback and realized-rate-floor guards judge. 0
+	// when no rate signal is available (then the realized-rate guard fails closed).
+	MarginalRate float64
+	// FleetAvgRate is the fleet-average realized rate for this class, the reference the
+	// realized-rate floor is a fraction of (heavies: fleet-avg tour $/hr). 0 when unavailable.
+	FleetAvgRate float64
+	// RateDeclining is true when the class's realized rate is trending down (absorption
+	// saturating) — the heavy stop-buy signal.
+	RateDeclining bool
+	// RateReadable reports whether the realized-rate signal (MarginalRate/FleetAvgRate) was
+	// readable. It is distinct from Readable: the DEMAND can be sized (Readable=true) while the
+	// rate is not yet available (RateReadable=false, e.g. a pre-realization chain) — the coordinator
+	// maps this into the guard request so the realized-rate guard fails closed on its own.
+	RateReadable bool
+	// Readable reports whether the demand model read all its inputs. false ⇒ fail-closed (no
+	// buy this tick), with Reason naming what could not be read.
+	Readable bool
+	// Reason is a human note for the decision log (why unreadable, or how demand was derived).
+	Reason string
+}
+
+// Shortfall is the unmet demand: how many hulls of the class are wanted beyond the current
+// pool. 0 when the pool already meets or exceeds demand.
+func (d ClassDemand) Shortfall() int {
+	if d.Demand > d.Current {
+		return d.Demand - d.Current
+	}
+	return 0
+}

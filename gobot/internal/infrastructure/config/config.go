@@ -38,6 +38,10 @@ type Config struct {
 	// jitter ceiling — injected live into scout_tour and scout_post_coordinator
 	// containers on every build.
 	Scouting ScoutingConfig `mapstructure:"scouting"`
+	// FleetAutosizer holds the fleet capacity autosizer's knobs (sp-1txd), injected live
+	// into the fleet_autosizer coordinator container on every build (creation + recovery),
+	// so a captain retunes the sizing/buying behaviour by editing config.yaml and restarting.
+	FleetAutosizer FleetAutosizerConfig `mapstructure:"fleet_autosizer"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

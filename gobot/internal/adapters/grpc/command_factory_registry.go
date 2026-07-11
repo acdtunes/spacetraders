@@ -142,6 +142,15 @@ func (r *configReader) OptionalBool(key string) bool {
 	return value
 }
 
+// PresentBool reads a bool knob and reports whether the key was present, for a
+// genuinely optional bool whose ABSENCE means "defer to a default" that is not
+// simply false (sp-1txd's prefer_demand_proximal_yard defaults TRUE — OptionalBool
+// would collapse "unset" into false and silently disable the default-on behaviour).
+func (r *configReader) PresentBool(key string) (bool, bool) {
+	value, ok := r.values[key].(bool)
+	return value, ok
+}
+
 func (r *configReader) RequiredStringSlice(key string, aliases ...string) []string {
 	if value, ok := stringSliceValue(r.values[key]); ok {
 		return value
@@ -372,6 +381,10 @@ func containerSpecList() []ContainerSpec {
 		// trade_fleet/frontier it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		{CommandType: "siting_coordinator", build: buildSitingCoordinatorCommand},
+		// fleet_autosizer (sp-1txd): the standing fleet capacity autosizer. Like
+		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		{CommandType: "fleet_autosizer", build: buildFleetAutosizerCommand},
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "warehouse", build: buildWarehouseCommand},
@@ -458,6 +471,13 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// value.
 	if commandType == "siting_coordinator" {
 		s.resolveSitingConfig(config)
+	}
+	// sp-1txd: same live-config discipline for the fleet capacity autosizer. Its
+	// [fleet_autosizer] knobs are cleared and re-injected from the boot-loaded config.yaml on
+	// every build — creation and recovery alike — so a config edit + restart retunes a recovered
+	// coordinator and no persisted copy can shadow the live value (the sp-ts82 pattern).
+	if commandType == "fleet_autosizer" {
+		s.resolveFleetAutosizerConfig(config)
 	}
 	// sp-x8i5: same live-config discipline for the scouting subsystem's tour-start
 	// phase jitter ceiling. The [scouting] knob is cleared and re-injected from the

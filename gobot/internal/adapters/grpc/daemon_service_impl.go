@@ -515,6 +515,26 @@ func (s *daemonServiceImpl) SitingCoordinator(ctx context.Context, req *pb.Sitin
 	return &pb.SitingCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd).
+func (s *daemonServiceImpl) FleetAutosizerCoordinator(ctx context.Context, req *pb.FleetAutosizerCoordinatorRequest) (*pb.FleetAutosizerCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.FleetAutosizerCoordinator(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start fleet autosizer coordinator: %w", err)
+	}
+
+	return &pb.FleetAutosizerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

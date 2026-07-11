@@ -1194,6 +1194,23 @@ func (c *DaemonClient) SitingCoordinator(ctx context.Context, playerID int, agen
 	return resp.ContainerId, nil
 }
 
+// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes the hull
+// pool to demand and auto-buys hulls behind the fail-closed money-guard stack. Identity-only launch
+// — all [fleet_autosizer] tuning resolves live from config.yaml.
+func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+	req := &pb.FleetAutosizerCoordinatorRequest{
+		PlayerId: int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.FleetAutosizerCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr).
 // dryRun decides + logs the ferry it would dispatch but ferries nothing.
 func (c *DaemonClient) WorkerRebalancerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {

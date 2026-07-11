@@ -35,6 +35,7 @@ const (
 	DaemonService_ScoutPostCoordinator_FullMethodName                  = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName                 = "/daemon.DaemonService/TradeFleetCoordinator"
 	DaemonService_SitingCoordinator_FullMethodName                     = "/daemon.DaemonService/SitingCoordinator"
+	DaemonService_FleetAutosizerCoordinator_FullMethodName             = "/daemon.DaemonService/FleetAutosizerCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName          = "/daemon.DaemonService/FrontierExpansionCoordinator"
 	DaemonService_WorkerRebalancerCoordinator_FullMethodName           = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                          = "/daemon.DaemonService/AddScoutPost"
@@ -127,6 +128,10 @@ type DaemonServiceClient interface {
 	// scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
 	// launches/retires goods_factory chains through the guard stack, and emits scout-demand.
 	SitingCoordinator(ctx context.Context, in *SitingCoordinatorRequest, opts ...grpc.CallOption) (*SitingCoordinatorResponse, error)
+	// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes
+	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
+	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
+	FleetAutosizerCoordinator(ctx context.Context, in *FleetAutosizerCoordinatorRequest, opts ...grpc.CallOption) (*FleetAutosizerCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -387,6 +392,16 @@ func (c *daemonServiceClient) SitingCoordinator(ctx context.Context, in *SitingC
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SitingCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_SitingCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) FleetAutosizerCoordinator(ctx context.Context, in *FleetAutosizerCoordinatorRequest, opts ...grpc.CallOption) (*FleetAutosizerCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FleetAutosizerCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_FleetAutosizerCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -843,6 +858,10 @@ type DaemonServiceServer interface {
 	// scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
 	// launches/retires goods_factory chains through the guard stack, and emits scout-demand.
 	SitingCoordinator(context.Context, *SitingCoordinatorRequest) (*SitingCoordinatorResponse, error)
+	// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes
+	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
+	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
+	FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -996,6 +1015,9 @@ func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *
 }
 func (UnimplementedDaemonServiceServer) SitingCoordinator(context.Context, *SitingCoordinatorRequest) (*SitingCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SitingCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FleetAutosizerCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
@@ -1422,6 +1444,24 @@ func _DaemonService_SitingCoordinator_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).SitingCoordinator(ctx, req.(*SitingCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_FleetAutosizerCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FleetAutosizerCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).FleetAutosizerCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_FleetAutosizerCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).FleetAutosizerCoordinator(ctx, req.(*FleetAutosizerCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2216,6 +2256,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SitingCoordinator",
 			Handler:    _DaemonService_SitingCoordinator_Handler,
+		},
+		{
+			MethodName: "FleetAutosizerCoordinator",
+			Handler:    _DaemonService_FleetAutosizerCoordinator_Handler,
 		},
 		{
 			MethodName: "FrontierExpansionCoordinator",

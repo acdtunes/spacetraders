@@ -116,6 +116,11 @@ const (
 	// so a rich system is not under-provisioned the way XT71/UQ87 were.
 	EventScoutPostProposal EventType = "scout.post_proposal"
 
+	// EventFleetAutosizerPurchase fires when the fleet capacity autosizer (sp-1txd) buys a hull —
+	// a purchase is real news (a treasury-moving action the captain must be able to see and audit).
+	// The payload carries the class, ship type, price, and the demand arithmetic that justified it.
+	EventFleetAutosizerPurchase EventType = "fleet.autosizer_purchase"
+
 	// EventPrometheusAlertFiring (sp-y0f6) fires once per Prometheus alertname
 	// found in the "firing" state on Prometheus's own /api/v1/alerts endpoint —
 	// EarnerDark, BurstSaturation, ApproachCeiling, StarvationWave (see

@@ -66,6 +66,11 @@ service DaemonService {
   // launches/retires goods_factory chains through the guard stack, and emits scout-demand.
   rpc SitingCoordinator(SitingCoordinatorRequest) returns (SitingCoordinatorResponse);
 
+  // FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes
+  // the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
+  // demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
+  rpc FleetAutosizerCoordinator(FleetAutosizerCoordinatorRequest) returns (FleetAutosizerCoordinatorResponse);
+
   // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
   rpc FrontierExpansionCoordinator(FrontierExpansionCoordinatorRequest) returns (FrontierExpansionCoordinatorResponse);
 
@@ -530,6 +535,19 @@ message SitingCoordinatorRequest {
 }
 
 message SitingCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// FleetAutosizerCoordinatorRequest starts the standing fleet capacity autosizer (sp-1txd).
+// All tuning lives in config.yaml's [fleet_autosizer] section (resolved live on every build);
+// this request only names the player/agent.
+message FleetAutosizerCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message FleetAutosizerCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

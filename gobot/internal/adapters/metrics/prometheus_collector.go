@@ -88,6 +88,11 @@ var (
 	// chain-P&L kill counters above).
 	globalChainExportRestCollector *ChainExportRestMetricsCollector
 
+	// globalFleetAutosizerCollector is the singleton fleet-autosizer collector (sp-1txd). Set by
+	// SetGlobalFleetAutosizerCollector() when metrics are enabled; the autosizer's ACT path emits
+	// its purchase/blocked/demand/zero-effect series through the package Record funcs below.
+	globalFleetAutosizerCollector *FleetAutosizerMetricsCollector
+
 	// globalSitingCollector is the singleton factory-siting collector (sp-vdld). Set by
 	// SetGlobalSitingCollector() when metrics are enabled; the siting coordinator's ACT and
 	// EMIT steps increment the launch/retire/scout-demand counters through it.
@@ -652,6 +657,49 @@ func RecordSitingRetire(good, system string) {
 func RecordSitingScoutDemand(system string) {
 	if globalSitingCollector != nil {
 		globalSitingCollector.RecordScoutDemand(system)
+	}
+}
+
+// SetGlobalFleetAutosizerCollector sets the global fleet-autosizer collector (sp-1txd). Pass nil
+// to clear it (e.g. in test cleanup).
+func SetGlobalFleetAutosizerCollector(collector *FleetAutosizerMetricsCollector) {
+	globalFleetAutosizerCollector = collector
+}
+
+// GetGlobalFleetAutosizerCollector returns the global fleet-autosizer collector.
+func GetGlobalFleetAutosizerCollector() *FleetAutosizerMetricsCollector {
+	return globalFleetAutosizerCollector
+}
+
+// RecordAutosizerPurchase increments the autosizer purchase counter for a class globally
+// (sp-1txd). No-op when metrics are disabled, so a metrics miss never touches the buy path.
+func RecordAutosizerPurchase(class string) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordPurchase(class)
+	}
+}
+
+// RecordAutosizerBlocked increments the autosizer blocked counter for a (class, guard) globally
+// (sp-1txd). No-op when metrics are disabled.
+func RecordAutosizerBlocked(class, guard string) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordBlocked(class, guard)
+	}
+}
+
+// RecordAutosizerDemand sets the autosizer demand/current gauges for a class globally (sp-1txd).
+// No-op when metrics are disabled.
+func RecordAutosizerDemand(class string, demand, current int) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordDemand(class, demand, current)
+	}
+}
+
+// RecordAutosizerZeroEffectAlarm increments the autosizer zero-effect alarm counter globally
+// (sp-1txd). No-op when metrics are disabled.
+func RecordAutosizerZeroEffectAlarm() {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordZeroEffectAlarm()
 	}
 }
 

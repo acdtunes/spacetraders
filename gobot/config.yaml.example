@@ -393,3 +393,92 @@ scouting:
   # the probe supply to the darkest posts was 6-12 jumps (KN67->SN21=6, ->C81=9, ->XN7=12),
   # so 0/absent => 12. Raising this does NOT relax heavies/trade/arb — they keep MaxJumpPath.
   # max_reposition_jumps: 12
+
+# fleet_autosizer (sp-1txd): the standing fleet capacity autosizer — the buy-side twin of the
+# siting coordinator. It sizes the hull pool to demand each slow tick and AUTO-BUYS hulls when
+# funds clear the full fail-closed money-guard stack. LIVE BY DEFAULT once first-launched
+# (`workflow fleet-autosizer`); every knob resolves live on daemon restart (no redeploy). Every
+# purchase decision logs its full arithmetic, so retune the blocking knob from the log, not guesswork.
+fleet_autosizer:
+  # Escapes. autosizer_disabled stands the WHOLE thing down (absent/false = ACTIVE, no dark-shipping);
+  # lights_disabled / heavies_disabled freeze one class while the other runs; dry_run evaluates + logs
+  # every buy LOUDLY but spends nothing (the zero-effect alarm still fires). warehouse_hulls_enabled
+  # is opt-IN (the warehouse class is not live by default).
+  # autosizer_disabled: false
+  # dry_run: false
+  # lights_disabled: false
+  # heavies_disabled: false
+  # warehouse_hulls_enabled: false
+
+  # Cadence + pacing. tick_interval_secs is the slow sizing cadence (0 => 900s). purchase_cap_per_tick
+  # bounds hulls bought per tick across ALL classes (0 => 1) — the treasury protection against a
+  # runaway multi-buy.
+  # tick_interval_secs: 900
+  # purchase_cap_per_tick: 1
+
+  # Fleet ceilings — the HARD API-request-budget bound (each hull adds request load). 0 => the
+  # protective defaults (total 50, lights 35, heavies 15, warehouse 8). Raise from evidence.
+  # fleet_ceiling_total: 50
+  # fleet_ceiling_lights: 35
+  # fleet_ceiling_heavies: 15
+  # fleet_ceiling_warehouse: 8
+
+  # Treasury guard (reuses common.EffectiveReserveFloor, the sp-yqx4 counter-cyclical floor). A buy
+  # fires only if live treasury − reserve floor >= price + purchase_margin_over_floor. margin 0 =>
+  # 200000; reserve_treasury_pct 0 => the 40% proportional floor default.
+  # purchase_margin_over_floor: 200000
+  # reserve: 0
+  # reserve_treasury_pct: 40
+
+  # LIGHT (factory-worker) demand. K chains need K x light_rotation_slots workers (inverts the siting
+  # C3 rotation math). 0 => 3.5.
+  # light_rotation_slots: 3.5
+
+  # HEAVY (trade) demand. heavy_marginal_rate_floor is the fraction of the class's fleet-average
+  # realized $/hr the marginal hull must clear (0 => 0.7). heavy_unserved_lanes_min is how many
+  # CONSECUTIVE ticks the profitable-lanes-beyond-hulls shortfall must persist before a heavy is bought
+  # (0 => 3, anti-thrash). heavy_treasury_pct_per_purchase is the analyst 25%-of-treasury affordability
+  # rule per big-ticket buy (0 => 25).
+  # heavy_marginal_rate_floor: 0.7
+  # heavy_unserved_lanes_min: 3
+  # heavy_treasury_pct_per_purchase: 25
+
+  # ERA-CLOCK payback guard — hulls evaporate at reset, so a buy must pay back in-era. Buy only if
+  # price <= expected_marginal_rate x hours_to_era_end x payback_safety_factor (0 => 0.5), and NEVER
+  # inside the hard last-buy window purchase_cutoff_at_era_minus_hours before reset (0 => 3.0 = T-3h).
+  # payback_safety_factor: 0.5
+  # purchase_cutoff_at_era_minus_hours: 3.0
+
+  # PRICE ceilings + yard preference. max_price_lights / max_price_heavies cap the absolute price paid
+  # (0 => no absolute cap). max_premium_over_cheapest_pct caps the premium over the cheapest known yard
+  # ask (0 => 50). prefer_demand_proximal_yard spawns hulls where the demand is, subject to the premium
+  # (default TRUE — set false to always take the cheapest yard).
+  # max_price_lights: 0
+  # max_price_heavies: 0
+  # max_premium_over_cheapest_pct: 50
+  # prefer_demand_proximal_yard: true
+
+  # Ship types bought per class (even the asset is a knob). 0/absent => SHIP_LIGHT_HAULER /
+  # SHIP_HEAVY_FREIGHTER.
+  # ship_type_lights: SHIP_LIGHT_HAULER
+  # ship_type_heavies: SHIP_HEAVY_FREIGHTER
+
+  # API-utilization ceiling (dynamic protection; the fleet ceilings are the hard bound). Blocks buys
+  # above this sustained request-utilization percent (0 => 85). Fails OPEN when unreadable.
+  # api_utilization_ceiling_pct: 85
+
+  # Zero-effect alarm: when demand persists this many consecutive ticks with NO purchase (blocked every
+  # tick, or silent dry-run), emit ONE edge-triggered WARN naming the blocker (0 => 4). The mechanized
+  # no-silent-dry-run lesson.
+  # zero_effect_alarm_ticks: 4
+
+  # WAREHOUSE hull class (sp-1txd M7/M8, opt-in via warehouse_hulls_enabled). Gate warehouse placement
+  # on a chain's realized $/hr (rh2z chain_pnl) and N-tick score persistence so warehouses follow
+  # DURABLE chains, not every tick's reshuffle. Capacity ladder buffer depth + module/frame ceilings.
+  # warehouse_min_chain_realized_per_hour: 0
+  # warehouse_min_chain_tick_persistence: 2
+  # max_warehouse_hulls: 8
+  # stocker_hulls_per_warehouse_group: 0
+  # warehouse_capacity_target_hours: 2
+  # max_module_spend_per_hull: 0
+  # warehouse_frame_class_ceiling: light
