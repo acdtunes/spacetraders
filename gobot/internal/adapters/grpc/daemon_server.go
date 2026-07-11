@@ -457,6 +457,17 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register chain-P&L metrics collector: %w", err)
 		}
 		metrics.SetGlobalChainPnLCollector(chainPnLCollector)
+
+		// Create input-pause collector (sp-r5a6): the goods_factory coordinator's input-poison
+		// anti-cycle emits the pause-episode counter through the global set here — the INPUT side
+		// of the self-pruning portfolio (the chain-P&L kill counter above is the OUTPUT side).
+		// Event-driven (no polling goroutine), mirroring the collectors above.
+		chainInputPauseCollector := metrics.NewChainInputPauseMetricsCollector()
+		if err := chainInputPauseCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register chain input-pause metrics collector: %w", err)
+		}
+		metrics.SetGlobalChainInputPauseCollector(chainInputPauseCollector)
 	}
 
 	// Register container specs for launch and recovery

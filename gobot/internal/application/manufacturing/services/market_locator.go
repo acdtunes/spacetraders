@@ -392,6 +392,62 @@ func (l *MarketLocator) EligibleSourceMedianAsk(
 	return medianInt(asks), len(asks), nil
 }
 
+// InputSourceEligibility reports whether a good has a healthy (MODERATE+) in-system EXPORT source
+// AND whether it has any readable in-system EXPORT source at all (sp-r5a6). It is the input-poison
+// anti-cycle's detector, and the distinction between the two return bools is the whole point:
+//
+//   - eligible=true: at least one MODERATE+ EXPORT source — the chain can source this input.
+//   - eligible=false, hasReadableSource=true: EXPORT source(s) exist and were READ, but every one
+//     is SCARCE/LIMITED — POSITIVE evidence the market is depleted (and will regenerate on the
+//     ~194min half-life). This is the ONLY signal that arms the anti-cycle's recovery pause.
+//   - eligible=false, hasReadableSource=false: no EXPORT source for the good was readable in-system
+//     — either a cold/partial market cache (a transient read miss) or the good genuinely has no
+//     in-system source at all. NEITHER is a depleted-market-that-recovers, so it must NOT arm the
+//     recovery pause: a transient miss would idle a healthy chain for hours, and a truly-sourceless
+//     input never regenerates (it needs a re-site, not a wait). Both fall through to the selector's
+//     ordinary park at production time.
+//   - err != nil: the system market LIST read failed — fail toward production (no pause).
+//
+// Eligibility mirrors FindExportMarketBySupplyPriority / EligibleSourceMedianAsk exactly (EXPORT
+// trade type, supply MODERATE or better, priced). Ship types have no supply semantics.
+func (l *MarketLocator) InputSourceEligibility(
+	ctx context.Context,
+	good string,
+	systemSymbol string,
+	playerID int,
+) (eligible bool, hasReadableSource bool, err error) {
+	if isShipType(good) {
+		// Ship types are shipyard-sourced, not supply-gated — never a depleted-market input.
+		return true, true, nil
+	}
+
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return false, false, fmt.Errorf("failed to find markets for %s input-eligibility: %w", good, err)
+	}
+
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue // a per-waypoint read miss is NOT counted as a readable source (fail toward production)
+		}
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil || tradeGood.TradeType() != market.TradeTypeExport {
+			continue
+		}
+		if tradeGood.SellPrice() <= 0 {
+			continue // unpriceable listing — not a usable source
+		}
+		hasReadableSource = true
+		// MODERATE+ only — the identical eligibility filter as the sibling locators.
+		if manufacturing.SupplyLevel(supplyOrEmpty(tradeGood)).Order()-manufacturing.SupplyLevelLimited.Order() >= 1 {
+			eligible = true
+			return eligible, hasReadableSource, nil // one healthy source is enough
+		}
+	}
+	return eligible, hasReadableSource, nil
+}
+
 // FindConstructionSource finds a market to BUY a good from for delivery to a
 // construction site. It is the construction-scoped source locator used both at
 // planning time and by the poll-loop recovery of deferred construction tasks.

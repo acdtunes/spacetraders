@@ -75,6 +75,12 @@ var (
 	// kill-switch emits the realized-P&L/hr gauge and the kill-episode counter through it.
 	globalChainPnLCollector *ChainPnLMetricsCollector
 
+	// globalChainInputPauseCollector is the singleton input-poison anti-cycle collector
+	// (sp-r5a6). Set by SetGlobalChainInputPauseCollector() when metrics are enabled; the
+	// goods_factory coordinator emits the input-pause episode counter through it (the INPUT
+	// side of the self-pruning portfolio, alongside the chain-P&L kill counter above).
+	globalChainInputPauseCollector *ChainInputPauseMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -517,6 +523,27 @@ func RecordChainPnLRealizedPerHour(good string, perHour float64) {
 func RecordChainPnLKill(good string) {
 	if globalChainPnLCollector != nil {
 		globalChainPnLCollector.RecordKill(good)
+	}
+}
+
+// SetGlobalChainInputPauseCollector sets the global input-pause collector (sp-r5a6). Pass nil
+// to clear it (e.g. in test cleanup).
+func SetGlobalChainInputPauseCollector(collector *ChainInputPauseMetricsCollector) {
+	globalChainInputPauseCollector = collector
+}
+
+// GetGlobalChainInputPauseCollector returns the global input-pause collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalChainInputPauseCollector() *ChainInputPauseMetricsCollector {
+	return globalChainInputPauseCollector
+}
+
+// RecordChainInputPause increments a chain's input-pause-episode counter globally (sp-r5a6).
+// No-op when metrics are disabled, so a metrics miss never touches the pause-check path
+// (RULINGS #4).
+func RecordChainInputPause(good string) {
+	if globalChainInputPauseCollector != nil {
+		globalChainInputPauseCollector.RecordPause(good)
 	}
 }
 

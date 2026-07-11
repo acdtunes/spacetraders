@@ -812,6 +812,12 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		ChainPnLKillThresholdPerHour: cfg.OptionalInt("chain_pnl_kill_threshold_per_hour", 0),
 		ChainPnLWindowHours:          cfg.OptionalInt("chain_pnl_window_hours", 0),
 		ChainPnLKillDisabled:         cfg.OptionalBool("chain_pnl_kill_disabled"),
+		// sp-r5a6: the input-poison anti-cycle. 0/absent → the coordinator resolves the 194min
+		// recovery half-life default at the point of use (the anti-cycle runs ON in production
+		// without the captain naming it); a set value is the analyst's [manufacturing] override.
+		// The disable flag is the RULINGS #5 emergency off-switch.
+		InputRecoveryReattemptMinutes: cfg.OptionalInt("input_recovery_reattempt_minutes", 0),
+		AntiCycleDisabled:             cfg.OptionalBool("anti_cycle_disabled"),
 	}
 }
 

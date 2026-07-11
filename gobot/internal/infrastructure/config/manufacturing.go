@@ -89,4 +89,19 @@ type ManufacturingConfig struct {
 	// true only to force the pre-C1 sell-at-market behavior in an emergency. It always
 	// fails safe to market-sell when no warehouse/space/treasury is available.
 	PlannerStockDisabled bool `mapstructure:"planner_stock_disabled"`
+
+	// InputRecoveryReattemptMinutes is the input-poison anti-cycle's recovery half-life (sp-r5a6),
+	// threaded into goods_factory_coordinator: when a chain's input layer goes ineligible (no
+	// MODERATE+ in-system supply source for a required input), the coordinator pauses it and holds
+	// it OFF the market for this many minutes before a one-iteration re-attempt through the launch
+	// guards. 0/absent → the 194min default the coordinator resolves at the point of use (the
+	// analyst's measured input recovery half-life; the anti-cycle runs ON in production without the
+	// captain naming it — it can only STOP spend, RULINGS #5). Config, not a constant, so the
+	// analyst retunes the number live.
+	InputRecoveryReattemptMinutes int `mapstructure:"input_recovery_reattempt_minutes"`
+
+	// AntiCycleDisabled is the emergency off-switch for the input-poison anti-cycle (RULINGS #5):
+	// true skips detection/pause entirely, reverting to the a5j7 selector's park-and-retry.
+	// Absent/false keeps the anti-cycle on at its default half-life.
+	AntiCycleDisabled bool `mapstructure:"anti_cycle_disabled"`
 }

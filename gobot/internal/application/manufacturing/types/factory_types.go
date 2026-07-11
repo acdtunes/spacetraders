@@ -99,6 +99,17 @@ type RunFactoryCoordinatorCommand struct {
 	// instead of selling at market. LIVE BY DEFAULT — false keeps it ACTIVE; true forces
 	// the pre-C1 sell-at-market path. Fed from planner_stock_disabled.
 	PlannerStockDisabled bool
+	// InputRecoveryReattemptMinutes is how long the input-poison anti-cycle holds a chain paused
+	// before its one-iteration re-attempt (sp-r5a6): keyed to the analyst's measured input
+	// recovery half-life. 0/absent resolves to the 194min default at the point of use (the
+	// anti-cycle runs ON in production without the captain naming it — it can only STOP spend, so
+	// a protective default is correct, RULINGS #5). Fed from input_recovery_reattempt_minutes.
+	InputRecoveryReattemptMinutes int
+	// AntiCycleDisabled is the emergency off-switch for the input-poison anti-cycle (RULINGS #5):
+	// true skips detection/pause entirely, reverting to the a5j7 selector's park-and-retry (which
+	// still refuses depleted sources — the anti-cycle only escalates that park to a recovery-clock
+	// pause). Absent/false keeps the anti-cycle on. Fed from anti_cycle_disabled.
+	AntiCycleDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

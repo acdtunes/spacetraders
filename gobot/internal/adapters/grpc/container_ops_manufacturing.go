@@ -319,6 +319,8 @@ var manufacturingConfigKeys = []string{
 	"chain_pnl_window_hours",
 	"chain_pnl_kill_disabled",
 	"planner_stock_disabled",
+	"input_recovery_reattempt_minutes",
+	"anti_cycle_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -404,5 +406,16 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.PlannerStockDisabled {
 		config["planner_stock_disabled"] = true
+	}
+	// sp-r5a6: the input-poison anti-cycle. Only written when the captain set a non-zero recovery
+	// half-life — an unset key defers to the goods_factory build's 194min default (the anti-cycle
+	// runs ON in production without the captain naming it, a protective default that can only STOP
+	// spend, RULINGS #5). The disable flag is written only when true, so absent/false keeps the
+	// anti-cycle on; the clear in resolveManufacturingConfig makes turning it back on take effect.
+	if s.manufacturingConfig.InputRecoveryReattemptMinutes != 0 {
+		config["input_recovery_reattempt_minutes"] = s.manufacturingConfig.InputRecoveryReattemptMinutes
+	}
+	if s.manufacturingConfig.AntiCycleDisabled {
+		config["anti_cycle_disabled"] = true
 	}
 }

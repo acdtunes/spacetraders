@@ -337,6 +337,19 @@ manufacturing:
   # chain_pnl_kill_threshold_per_hour: 30000
   # chain_pnl_window_hours: 6
   # chain_pnl_kill_disabled: false
+  #
+  # input_recovery_reattempt_minutes (sp-r5a6): the input-poison anti-cycle's recovery half-life.
+  # When a chain's input layer goes ineligible (no MODERATE+ in-system supply source for a
+  # required input — the a5j7 leading indicator), the goods_factory coordinator PAUSES the chain
+  # and holds it OFF the market for this many minutes before a one-iteration re-attempt through
+  # the launch guards (a still-poisoned layer re-pauses at zero cost; a recovered layer proceeds).
+  # This is the INPUT side of the self-pruning portfolio (chain_pnl_kill is the OUTPUT side): it
+  # stops early-recovery buys from re-poisoning a just-regenerating well. 0/absent => 194min
+  # default (the analyst's measured half-life; the anti-cycle is ON in production without naming it
+  # here — it can only STOP spend). anti_cycle_disabled: emergency off-switch (RULINGS #5) reverting
+  # to the selector's park-and-retry.
+  # input_recovery_reattempt_minutes: 194
+  # anti_cycle_disabled: false
 
 # Scouting subsystem (sp-x8i5): phase-jitter to keep a large scout fleet's tour
 # rotations decohered. ~45 scouts restarting their rotation in near-lockstep

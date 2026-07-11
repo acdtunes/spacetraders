@@ -101,6 +101,15 @@ type RunFactoryCoordinatorHandler struct {
 	chainPnLKillMu    sync.Mutex
 	chainPnLKillState map[string]bool
 
+	// inputPauseMu guards inputPauseState, the per-container input-poison anti-cycle state
+	// (sp-r5a6): a paused chain's recovery clock (when it may re-attempt) plus the cached pause
+	// line to re-report while it sleeps. Drives once-per-episode dedup (pause counter/WARN emit
+	// once on running→paused, resume INFO once on paused→running) AND the recovery-clock backoff
+	// (a paused chain sleeps until reattemptAt instead of re-polling every 45s). Keyed by
+	// ContainerID for the same singleton-across-containers reason as noWorkState.
+	inputPauseMu    sync.Mutex
+	inputPauseState map[string]*inputPauseEntry
+
 	// plannerStock deposits harvested root output into a co-located warehouse at
 	// cost basis instead of selling it at market (C1, sp-64je). LIVE BY DEFAULT:
 	// the daemon wires it unconditionally and it runs unless the run's
@@ -169,6 +178,7 @@ func NewRunFactoryCoordinatorHandler(
 		clock:              clock,
 		noWorkState:        make(map[string]*noWorkTracker),
 		chainPnLKillState:  make(map[string]bool),
+		inputPauseState:    make(map[string]*inputPauseEntry),
 	}
 }
 
@@ -255,16 +265,25 @@ func (h *RunFactoryCoordinatorHandler) backoffNoWork(ctx context.Context, contai
 	}
 	h.noWorkMu.Unlock()
 
+	// sp-r5a6: an input-poison pause rests the chain for its recovery half-life, not the 45s
+	// no-work poll — a just-flickering-marginal well re-poisons under early-recovery buys, so a
+	// paused chain sleeps until its re-attempt is due (zero polling during recovery). Any other
+	// no-work reason (a margin park, a no-hull park) keeps the normal short backoff.
+	delay := noWorkIterationDelay
+	if reattemptDelay, paused := h.inputPauseReattemptDelay(containerID); paused {
+		delay = reattemptDelay
+	}
+
 	if shouldLog {
 		logger := common.LoggerFromContext(ctx)
 		logger.Log("INFO", "Factory idle - waiting for workers", map[string]interface{}{
 			"container_id": containerID,
 			"reason":       reason,
-			"backoff":      noWorkIterationDelay.String(),
+			"backoff":      delay.String(),
 		})
 	}
 
-	h.sleepInterruptibly(ctx, noWorkIterationDelay)
+	h.sleepInterruptibly(ctx, delay)
 }
 
 // sleepInterruptibly blocks for d via the handler's injected clock (so tests
@@ -336,6 +355,21 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"system_symbol": cmd.SystemSymbol,
 	})
 
+	// Step 0.5: Input-poison anti-cycle recovery window (sp-r5a6). If this chain is already
+	// input-paused and its recovery clock has NOT elapsed, do ZERO work this tick — skip the
+	// tree build, every market read, and all buying pressure — and let Handle's backoff sleep
+	// the container to the re-attempt. This is the "held off the market during early recovery"
+	// half of the anti-cycle: re-polling a just-flickering-marginal well re-poisons it (the T1
+	// finding), so a paused chain reads nothing until the half-life is up. Scoped to resale runs
+	// like the guards below; when the anti-cycle is disabled the window is ignored (Step 2.4
+	// clears any stale pause).
+	if !cmd.InputsOnly && !cmd.AntiCycleDisabled {
+		if pausedMsg, withinWindow := h.inputPauseWithinWindow(cmd.ContainerID); withinWindow {
+			response.NoWorkReason = pausedMsg
+			return nil
+		}
+	}
+
 	// Step 1: Build dependency tree
 	dependencyTree, err := h.buildDependencyTree(ctx, cmd)
 	if err != nil {
@@ -359,6 +393,27 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"buy_nodes":       countNodesByMethod(nodes, goods.AcquisitionBuy),
 		"fabricate_nodes": countNodesByMethod(nodes, goods.AcquisitionFabricate),
 	})
+
+	// Step 2.4: Input-poison anti-cycle detection (sp-r5a6). BEFORE the margin guard and the C2
+	// kill-switch, ask whether this chain's market-sourced input layer has gone ineligible — no
+	// MODERATE+ in-system supply source for a required input (the a5j7 leading indicator, read
+	// off the same eligibility the supply-first selector picks from). When it has, PAUSE the
+	// chain onto the recovery clock: emit the pause (once per episode), set the NoWorkReason, and
+	// return pre-spend (zero credits, worker freed) — Handle's backoff then sleeps the container
+	// for the recovery half-life before the one-iteration re-attempt. Placed first so an
+	// input-poisoned chain gets the long recovery pause rather than the margin guard's short park
+	// or a C2 realized-P&L kill (precedence: this is cheaper and is the upstream cause). Scoped to
+	// resale runs (!InputsOnly) like the guards below. On a CLEARED (eligible) layer it lifts any
+	// standing pause and falls through to the margin guard + production.
+	if !cmd.InputsOnly {
+		pause := h.evaluateInputLayerPause(ctx, cmd, nodes)
+		if pause.Paused {
+			h.recordInputLayerPause(ctx, cmd, pause)
+			response.NoWorkReason = pause.PauseMessage()
+			return nil
+		}
+		h.clearInputLayerPause(ctx, cmd)
+	}
 
 	// Step 2.5: Pre-spend chain-margin + absorption guard (sp-2dv4, money-integrity
 	// #3). Project the whole chain's LIVE P&L and the final sink's absorption BEFORE
