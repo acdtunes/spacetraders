@@ -476,12 +476,73 @@
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "promQL twin of 'Corpse Rate by Command' (PG, above) - alerting-ready (sp-s0nx). container_exit_total covers ALL exits (not just FAILED), so COMPLETED should dominate; watch for a command_type's non-COMPLETED share climbing.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (command_type, status) (rate(spacetraders_daemon_container_exit_total[$__rate_interval]))",
+          "legendFormat": "{{command_type}} / {{status}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Container Exits (rate by command_type, status)",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 25
       },
       "id": 41,
       "panels": [],
@@ -507,7 +568,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 18
+        "y": 26
       },
       "id": 42,
       "options": {
@@ -564,7 +625,7 @@
         "h": 7,
         "w": 9,
         "x": 6,
-        "y": 18
+        "y": 26
       },
       "id": 43,
       "options": {
@@ -617,7 +678,7 @@
         "h": 7,
         "w": 9,
         "x": 15,
-        "y": 18
+        "y": 26
       },
       "id": 44,
       "options": {
@@ -661,7 +722,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "id": 45,
       "panels": [],
@@ -702,7 +763,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 26
+        "y": 34
       },
       "id": 46,
       "options": {
@@ -769,7 +830,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 30
+        "y": 38
       },
       "id": 47,
       "options": {
@@ -821,7 +882,7 @@
         "h": 8,
         "w": 12,
         "x": 4,
-        "y": 26
+        "y": 34
       },
       "id": 48,
       "options": {
@@ -874,7 +935,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 26
+        "y": 34
       },
       "id": 49,
       "options": {

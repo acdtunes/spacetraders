@@ -401,12 +401,134 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Live scout freshness per system (sp-s0nx): seconds since each system's market data was last refreshed. History twin of 'Market Freshness vs Post Target' (PG, above) - this is the promQL feed the tour-lane eligibility gate reads from in real time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "spacetraders_daemon_scout_freshness_actual_seconds",
+          "legendFormat": "{{system}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Scout Freshness (live, by system)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Rate of tour lanes excluded for stale scout data, by system (sp-s0nx). Chicken-and-egg pair with Scout Freshness (left): a lane goes stale here precisely when its system's freshness (left panel) has drifted past the post target - watch them together.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 33,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (system) (rate(spacetraders_daemon_tour_lanes_stale_excluded_total[$__rate_interval]))",
+          "legendFormat": "{{system}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Stale Lanes Excluded (rate by system)",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 25
       },
       "id": 26,
       "panels": [],
@@ -445,7 +567,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 18
+        "y": 26
       },
       "id": 27,
       "options": {
@@ -494,7 +616,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 18
+        "y": 26
       },
       "id": 28,
       "options": {
@@ -525,7 +647,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 34
       },
       "id": 29,
       "panels": [],
@@ -562,7 +684,7 @@
         "h": 7,
         "w": 4,
         "x": 0,
-        "y": 27
+        "y": 35
       },
       "id": 30,
       "options": {
@@ -627,7 +749,7 @@
         "h": 7,
         "w": 20,
         "x": 4,
-        "y": 27
+        "y": 35
       },
       "id": 31,
       "options": {

@@ -1317,6 +1317,67 @@
       ],
       "title": "Cap-Binding Rate by Outcome",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Consult verdicts from the absorption engine(s) (sp-s0nx): rate of verdict outcomes (pass/skip_reserved/etc.) by engine. Completes the L5 burn-in read alongside Cap-Binding Rate and Ladder Incidents - the third leg of the absorption ledger.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 113,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (verdict, engine) (rate(spacetraders_daemon_absorption_consult_verdicts_total[$__rate_interval]))",
+          "legendFormat": "{{engine}} / {{verdict}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Absorption Consult Verdicts by Verdict/Engine",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 38,
