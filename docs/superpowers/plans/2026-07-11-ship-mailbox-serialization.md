@@ -1,4 +1,4 @@
-# Per-Ship Mailbox Serialization Implementation Plan (probe: sp-60ff → gate → mailbox: sp-eum3)
+# Per-Ship Mailbox Serialization Implementation Plan (probe: sp-60ff → gate → mailbox: sp-eum3; epic sp-7b79)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **Stop at the Task 1 decision gate** — Tasks 2-7 only execute after the gate passes.
 
