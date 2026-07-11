@@ -27,6 +27,13 @@ const gateEdgeFreshWindow = 24 * time.Hour
 // verdict stale for a full day and refusing an now-valid route.
 const gateEdgeUnderConstructionFreshWindow = 2 * time.Hour
 
+// unreadableMarker is the sentinel connected_system of a negative-result BACKOFF
+// marker row (sp-ikx1): a row that records an UNREADABLE system's backoff state
+// (UnreadableSince/AttemptCount) rather than a real edge. A real edge's connected
+// system is always non-empty (ExtractSystemSymbol never yields ""), so "" cleanly
+// separates the two: edge reads exclude markers, backoff reads select only them.
+const unreadableMarker = ""
+
 // GormGateEdgeRepository implements system.GateEdgeRepository over GORM. It is
 // the persisted gate-graph adjacency store (sp-7gr2). Every read is era-scoped
 // exactly like GormWaypointRepository (openEraID + eraScopePredicate) so
@@ -52,6 +59,11 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	if err := r.db.WithContext(ctx).
 		Where("system_symbol = ?", systemSymbol).
+		// Exclude the negative-result backoff marker (sp-ikx1) — it is not an edge. A
+		// system that has ONLY a marker row therefore reads as a genuine MISS, which is
+		// what routes the caller into the backoff check instead of trusting an empty
+		// "connects nowhere" set.
+		Where("connected_system <> ?", unreadableMarker).
 		Where(predicate, args...).
 		Find(&models).Error; err != nil {
 		return nil, false, fmt.Errorf("failed to list gate edges for %s: %w", systemSymbol, err)
@@ -100,7 +112,9 @@ func (r *GormGateEdgeRepository) GateWaypointOf(ctx context.Context, systemSymbo
 // dead-era row for that system) then inserts the fresh set stamped with the open
 // era and the current sync time. Delete-then-insert (not per-row upsert) gives
 // correct "the adjacency is now exactly this" semantics: a connection dropped
-// upstream disappears here too.
+// upstream disappears here too. The all-rows delete also clears any negative-result
+// backoff MARKER for the system (sp-ikx1): a gate that becomes readable again is
+// self-healed off the backoff clock, no explicit reset needed.
 func (r *GormGateEdgeRepository) Replace(ctx context.Context, systemSymbol string, edges []system.GateEdge) error {
 	eraID := r.openEraID(ctx)
 	syncedAt := time.Now().Format(time.RFC3339)
@@ -130,6 +144,80 @@ func (r *GormGateEdgeRepository) Replace(ctx context.Context, systemSymbol strin
 	})
 }
 
+// UnreadableState returns systemSymbol's persisted negative-result backoff (sp-ikx1),
+// era-scoped: the consecutive-failed-probe count and the last-probe timestamp off the
+// marker row (connected_system = ""). ok=false when no marker exists for the open era
+// (never failed, cleared by a successful Replace, or left behind by a closed era — an
+// era close resets the backoff exactly like the rest of the gate cache). A marker whose
+// timestamp is missing/unparseable also reads as ok=false, so a corrupt row degrades to
+// "re-probe now", never a permanent skip.
+func (r *GormGateEdgeRepository) UnreadableState(ctx context.Context, systemSymbol string) (int, time.Time, bool, error) {
+	var m GateEdgeModel
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	err := r.db.WithContext(ctx).
+		Where("system_symbol = ? AND connected_system = ?", systemSymbol, unreadableMarker).
+		Where(predicate, args...).
+		First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return 0, time.Time{}, false, nil
+		}
+		return 0, time.Time{}, false, fmt.Errorf("failed to read gate backoff for %s: %w", systemSymbol, err)
+	}
+	if m.UnreadableSince == "" {
+		return 0, time.Time{}, false, nil
+	}
+	lastProbe, perr := time.Parse(time.RFC3339, m.UnreadableSince)
+	if perr != nil {
+		return 0, time.Time{}, false, nil
+	}
+	return m.AttemptCount, lastProbe, true, nil
+}
+
+// MarkUnreadable records (or extends) systemSymbol's negative-result backoff (sp-ikx1):
+// it upserts the marker row (connected_system = "") with an incremented attempt count
+// and now as the last-probe time, returning the new count. The increment reads the
+// CURRENT open-era count first, so a fresh era (whose era-scoped read misses the old
+// marker) restarts the backoff at attempt 1. The old marker is deleted across ALL eras
+// before insert, mirroring Replace, so a dead-era marker cannot accumulate. Persisted so
+// a daemon restart resumes the backoff instead of re-storming the API (RULINGS #2).
+func (r *GormGateEdgeRepository) MarkUnreadable(ctx context.Context, systemSymbol, gateWaypoint string, now time.Time) (int, error) {
+	eraID := r.openEraID(ctx)
+	predicate, args := eraScopePredicate(eraID)
+	attempts := 0
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing GateEdgeModel
+		ferr := tx.Where("system_symbol = ? AND connected_system = ?", systemSymbol, unreadableMarker).
+			Where(predicate, args...).
+			First(&existing).Error
+		if ferr == nil {
+			attempts = existing.AttemptCount
+		} else if ferr != gorm.ErrRecordNotFound {
+			return fmt.Errorf("failed to read gate backoff for %s: %w", systemSymbol, ferr)
+		}
+		attempts++
+
+		if err := tx.Where("system_symbol = ? AND connected_system = ?", systemSymbol, unreadableMarker).
+			Delete(&GateEdgeModel{}).Error; err != nil {
+			return fmt.Errorf("failed to clear gate backoff marker for %s: %w", systemSymbol, err)
+		}
+		return tx.Create(&GateEdgeModel{
+			SystemSymbol:    systemSymbol,
+			ConnectedSystem: unreadableMarker,
+			GateWaypoint:    gateWaypoint,
+			EraID:           eraID,
+			SyncedAt:        "",
+			UnreadableSince: now.UTC().Format(time.RFC3339),
+			AttemptCount:    attempts,
+		}).Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return attempts, nil
+}
+
 // Adjacency returns every stored system's neighbor edges, era-scoped, sorted by
 // neighbor symbol for a stable `system gates` overview. Edges carry
 // UnderConstruction so the verb can flag unbuilt gates. Pure read; the service
@@ -138,6 +226,9 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 	var models []GateEdgeModel
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	if err := r.db.WithContext(ctx).
+		// Marker rows (sp-ikx1) are not edges — a "" connected_system must never surface
+		// as a neighbor in the overview or the frontier scanner's BFS.
+		Where("connected_system <> ?", unreadableMarker).
 		Where(predicate, args...).
 		Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("failed to list gate adjacency: %w", err)

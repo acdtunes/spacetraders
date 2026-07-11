@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -53,30 +54,88 @@ var ErrUnroutable = errors.New("no jump-gate route")
 // requires it ends ErrUnroutable.
 var ErrGateUnreadable = errors.New("jump-gate connections unreadable")
 
+// BackoffSchedule is the exponential re-probe schedule for an unreadable gate
+// (sp-ikx1): the nth consecutive failure waits Initial * Multiplier^(n-1), capped at
+// Max. Injected from config (RULINGS #5); DefaultBackoffSchedule is the ruled fallback.
+type BackoffSchedule struct {
+	Initial    time.Duration
+	Multiplier float64
+	Max        time.Duration
+}
+
+// DefaultBackoffSchedule is the Admiral-ruled default: 5m → 30m → 2h (5m, 5m×6=30m,
+// 30m×6=180m capped to 2h, then 2h). Config overrides it in production; this is what
+// a Service built without WithBackoff uses so callers/tests need no wiring.
+var DefaultBackoffSchedule = BackoffSchedule{Initial: 5 * time.Minute, Multiplier: 6, Max: 2 * time.Hour}
+
+// durationFor returns the backoff window after the attempts'th consecutive failed probe
+// (attempts is 1-based: 1 after the first failure). It multiplies up from Initial and
+// caps at Max, breaking early on the cap so a large attempt count cannot overflow.
+func (b BackoffSchedule) durationFor(attempts int) time.Duration {
+	if attempts <= 1 {
+		return b.Initial
+	}
+	d := b.Initial
+	for i := 1; i < attempts; i++ {
+		d = time.Duration(float64(d) * b.Multiplier)
+		if d >= b.Max {
+			return b.Max
+		}
+	}
+	return d
+}
+
 // Service resolves and caches gate routes. Its dependencies mirror
 // GetJumpGateConnectionsHandler's (apiClient for the live gate fetch, graphProvider
 // to find a charted system's own gate, playerRepo for the token) plus the edge
-// store that makes the topology persistent and multi-hop-walkable.
+// store that makes the topology persistent and multi-hop-walkable. clock and backoff
+// drive the negative-result re-probe schedule for unreadable gates (sp-ikx1).
 type Service struct {
 	store         system.GateEdgeRepository
 	apiClient     gateAPI
 	graphProvider system.ISystemGraphProvider
 	playerRepo    player.PlayerRepository
+	clock         shared.Clock
+	backoff       BackoffSchedule
 }
 
-// NewService wires the gate-graph service.
+// Option customizes a Service at construction (functional options keep the 4-arg
+// constructor stable for the many existing call sites while letting the daemon inject
+// the configured backoff schedule and, in tests, a controllable clock).
+type Option func(*Service)
+
+// WithBackoff sets the unreadable-gate re-probe schedule (sp-ikx1), wired from config.
+func WithBackoff(b BackoffSchedule) Option {
+	return func(s *Service) { s.backoff = b }
+}
+
+// WithClock injects the clock the backoff windows are measured against — the real clock
+// in production, a MockClock in tests that need to advance past a backoff window.
+func WithClock(c shared.Clock) Option {
+	return func(s *Service) { s.clock = c }
+}
+
+// NewService wires the gate-graph service. Without options it uses the real clock and
+// DefaultBackoffSchedule; the daemon passes WithBackoff(config) and tests pass WithClock.
 func NewService(
 	store system.GateEdgeRepository,
 	apiClient gateAPI,
 	graphProvider system.ISystemGraphProvider,
 	playerRepo player.PlayerRepository,
+	opts ...Option,
 ) *Service {
-	return &Service{
+	s := &Service{
 		store:         store,
 		apiClient:     apiClient,
 		graphProvider: graphProvider,
 		playerRepo:    playerRepo,
+		clock:         shared.NewRealClock(),
+		backoff:       DefaultBackoffSchedule,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Connections returns systemSymbol's directly-reachable neighbor edges,
@@ -91,6 +150,21 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 	}
 	if ok {
 		return edges, nil
+	}
+	// A miss/stale set would normally re-fetch. But an UNREADABLE gate (one whose live
+	// fetch keeps 400ing) is a persisted miss FOREVER — re-fetching it every reconcile
+	// tick is the sp-ikx1 storm (1 req/s of guaranteed 400s). Honor the negative-result
+	// backoff first: if the system is backed off and its next-probe time has not arrived,
+	// skip the API call silently and report it unreadable, exactly as a real 400 would —
+	// the BFS excludes the node either way. The backoff is persisted, so this holds across
+	// a daemon restart instead of re-storming on boot (RULINGS #2).
+	if attempts, lastProbe, backedOff, err := s.store.UnreadableState(ctx, systemSymbol); err != nil {
+		return nil, err
+	} else if backedOff {
+		nextProbe := lastProbe.Add(s.backoff.durationFor(attempts))
+		if s.clock.Now().Before(nextProbe) {
+			return nil, fmt.Errorf("%w for %s (backing off, next probe %s)", ErrGateUnreadable, systemSymbol, nextProbe.Format(time.RFC3339))
+		}
 	}
 	return s.fetchAndStore(ctx, systemSymbol, playerID)
 }
@@ -120,8 +194,10 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 	if err != nil {
 		// A per-system fetch failure (a frontier gate the API refuses, 400 "no ship
 		// present") is NOT a whole-route failure: tag it ErrGateUnreadable so the BFS
-		// excludes just this node and continues (sp-qxa4). We return BEFORE Replace, so
-		// nothing is persisted and the next fetch re-probes this system.
+		// excludes just this node and continues (sp-qxa4). Record/extend the persisted
+		// negative-result backoff so this doomed gate is not re-probed every tick
+		// (sp-ikx1) — the enter/extend INFO line is logged there, once per transition.
+		s.enterBackoff(ctx, systemSymbol, gateWaypoint, err)
 		return nil, fmt.Errorf("%w for %s (%s): %v", ErrGateUnreadable, systemSymbol, gateWaypoint, err)
 	}
 
@@ -145,6 +221,35 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		return nil, err
 	}
 	return edges, nil
+}
+
+// enterBackoff persists (or extends) the negative-result backoff for an unreadable gate
+// and logs the ONE INFO line the operator sees — carrying the attempt count and the
+// computed next-probe time (sp-ikx1). It fires only when a live probe actually failed
+// (once per backoff transition, at 5m/30m/2h boundaries), so the log is a handful of
+// lines per gate per day instead of the ~2,880 the old per-tick "will re-probe next
+// fetch" line produced. A persistence failure is logged and swallowed: the gate is still
+// excluded from the build, and the worst case degrades to the pre-fix behavior (re-probe
+// next tick), never a routing error.
+func (s *Service) enterBackoff(ctx context.Context, systemSymbol, gateWaypoint string, cause error) {
+	logger := logging.LoggerFromContext(ctx)
+	attempts, err := s.store.MarkUnreadable(ctx, systemSymbol, gateWaypoint, s.clock.Now())
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("gate %s unreadable but backoff could not be persisted — will re-probe next fetch", systemSymbol), map[string]interface{}{
+			"action": "gate_graph_backoff_persist_failed",
+			"system": systemSymbol,
+			"error":  err.Error(),
+		})
+		return
+	}
+	nextProbe := s.clock.Now().Add(s.backoff.durationFor(attempts))
+	logger.Log("INFO", fmt.Sprintf("gate %s unreadable — backing off (attempt %d), next probe %s", systemSymbol, attempts, nextProbe.Format(time.RFC3339)), map[string]interface{}{
+		"action":        "gate_graph_unreadable_backoff",
+		"system":        systemSymbol,
+		"attempt":       attempts,
+		"next_probe_at": nextProbe.Format(time.RFC3339),
+		"cause":         cause.Error(),
+	})
 }
 
 // gateUnderConstruction resolves a connected gate's build state with a per-gate
@@ -205,7 +310,6 @@ func (s *Service) token(ctx context.Context, playerID int) (string, error) {
 // when no route exists within MaxJumpPath (including when the only route required an
 // excluded gate), or an underlying store/token error otherwise (fail closed).
 func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error) {
-	logger := logging.LoggerFromContext(ctx)
 	return bfsPath(fromSystem, toSystem, MaxJumpPath, func(systemSymbol string) ([]string, error) {
 		edges, err := s.Connections(ctx, systemSymbol, playerID)
 		if err != nil {
@@ -216,12 +320,10 @@ func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerI
 			// A route that genuinely REQUIRES this node then ends ErrUnroutable (an
 			// honest no-path), never silently rerouted through the unverified gate.
 			// Any OTHER error (store/DB, token) still fails the whole search closed.
+			// The exclusion is SILENT here (sp-ikx1): logging it every BFS traversal is
+			// the 23k-line spam this fix removes — the operator signal is the single
+			// enter/extend line enterBackoff emits when a probe actually fails.
 			if errors.Is(err, ErrGateUnreadable) {
-				logger.Log("INFO", fmt.Sprintf("gate %s unreadable — edge excluded this build, will re-probe next fetch", systemSymbol), map[string]interface{}{
-					"action": "gate_graph_unreadable_edge_excluded",
-					"system": systemSymbol,
-					"error":  err.Error(),
-				})
 				return nil, nil
 			}
 			return nil, err

@@ -69,6 +69,18 @@ func SetDefaults(cfg *Config) {
 	if cfg.Routing.Timeout.VRP == 0 {
 		cfg.Routing.Timeout.VRP = 120 * time.Second
 	}
+	// Gate-graph negative-result backoff (sp-ikx1). Defaults yield the ruled
+	// 5m → 30m → 2h re-probe schedule for an unreadable jump gate (5m, 5m×6=30m,
+	// 30m×6=180m capped to 2h, then 2h). RULINGS #5: knobs, not constants.
+	if cfg.Routing.GateBackoff.Initial == 0 {
+		cfg.Routing.GateBackoff.Initial = 5 * time.Minute
+	}
+	if cfg.Routing.GateBackoff.Multiplier == 0 {
+		cfg.Routing.GateBackoff.Multiplier = 6
+	}
+	if cfg.Routing.GateBackoff.Max == 0 {
+		cfg.Routing.GateBackoff.Max = 2 * time.Hour
+	}
 
 	// Daemon defaults
 	if cfg.Daemon.Address == "" {

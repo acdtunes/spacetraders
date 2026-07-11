@@ -2,6 +2,7 @@ package system
 
 import (
 	"context"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -134,11 +135,29 @@ type GateEdgeRepository interface {
 	GateWaypointOf(ctx context.Context, systemSymbol string) (gateWaypoint string, ok bool, err error)
 	// Replace atomically swaps systemSymbol's stored edge set for edges, stamping
 	// the open era and a fresh sync timestamp. An empty edges slice clears the
-	// system's rows (a system whose gate genuinely connects nowhere).
+	// system's rows (a system whose gate genuinely connects nowhere). A successful
+	// Replace also clears any negative-result backoff marker for the system — a gate
+	// that becomes readable again re-probes on the normal TTL, not the backoff clock.
 	Replace(ctx context.Context, systemSymbol string, edges []GateEdge) error
 	// Adjacency returns every stored system's neighbor edges (era-scoped), for the
 	// `system gates` overview. Edges carry UnderConstruction so the verb can mark
 	// unbuilt gates the captain must not chart a route through. Pure read — no live
-	// fetch-through.
+	// fetch-through. Negative-result backoff markers are NOT edges and are excluded.
 	Adjacency(ctx context.Context) (map[string][]GateEdge, error)
+	// UnreadableState returns the persisted negative-result backoff for a system whose
+	// live gate fetch keeps failing (sp-ikx1): the consecutive-failure count and the
+	// timestamp of the last failed probe. ok=false when the system is NOT backed off
+	// (never failed in this era, or the backoff was cleared by a successful Replace).
+	// The caller derives the next-probe time from these two facts and its backoff
+	// schedule; storing the raw facts (not a computed deadline) keeps the schedule a
+	// config knob (RULINGS #5). Era-scoped exactly like Edges, so an era close resets
+	// the backoff along with the rest of the gate cache.
+	UnreadableState(ctx context.Context, systemSymbol string) (attempts int, lastProbe time.Time, ok bool, err error)
+	// MarkUnreadable records (or extends) the negative-result backoff for a system whose
+	// live gate fetch just failed: it increments the consecutive-failure count and stamps
+	// now as the last-probe time, returning the new count. Persisted (not in-memory) so a
+	// daemon restart resumes the backoff instead of re-storming the API every tick — the
+	// sp-o8wi lesson applied to API spend (RULINGS #2). gateWaypoint is the system's own
+	// gate (recorded for observability; may be empty when not yet known).
+	MarkUnreadable(ctx context.Context, systemSymbol, gateWaypoint string, now time.Time) (attempts int, err error)
 }

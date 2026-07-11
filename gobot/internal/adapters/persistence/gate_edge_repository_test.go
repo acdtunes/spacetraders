@@ -254,3 +254,136 @@ func TestGateEdgeRepository_EmptySyncedAt_MissAndFlaggedStale(t *testing.T) {
 	require.Len(t, adjacency["X1-KA42"], 1)
 	require.True(t, adjacency["X1-KA42"][0].Stale, "Adjacency must flag the invalidated row Stale")
 }
+
+// --- sp-ikx1: persisted negative-result backoff for unreadable gates ---
+
+// MarkUnreadable persists a backoff marker that UnreadableState reads back, and a repeat
+// failure increments the attempt count — the raw facts the service turns into a re-probe
+// schedule.
+func TestGateEdgeRepository_MarkUnreadable_RoundTripAndIncrements(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+	t0 := time.Now().UTC().Truncate(time.Second)
+
+	attempts, err := repo.MarkUnreadable(ctx, "X1-XX56", "X1-XX56-GATE", t0)
+	require.NoError(t, err)
+	require.Equal(t, 1, attempts, "the first failed probe is attempt 1")
+
+	gotAttempts, lastProbe, ok, err := repo.UnreadableState(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.True(t, ok, "the marker must read back as backed off")
+	require.Equal(t, 1, gotAttempts)
+	require.WithinDuration(t, t0, lastProbe, time.Second)
+
+	// A second failure five minutes later increments to attempt 2 and re-stamps the time.
+	t1 := t0.Add(5 * time.Minute)
+	attempts, err = repo.MarkUnreadable(ctx, "X1-XX56", "X1-XX56-GATE", t1)
+	require.NoError(t, err)
+	require.Equal(t, 2, attempts)
+	gotAttempts, lastProbe, ok, err = repo.UnreadableState(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, 2, gotAttempts)
+	require.WithinDuration(t, t1, lastProbe, time.Second)
+}
+
+// RULINGS #2: the backoff is persisted, not in-memory, so a daemon restart (a brand-new
+// repository over the same DB) resumes it instead of re-storming the API on boot.
+func TestGateEdgeRepository_Backoff_SurvivesRestart(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+	ctx := context.Background()
+	t0 := time.Now().UTC().Truncate(time.Second)
+
+	_, err = persistence.NewGormGateEdgeRepository(db).MarkUnreadable(ctx, "X1-XX56", "X1-XX56-GATE", t0)
+	require.NoError(t, err)
+
+	// A fresh repository instance (the restart) still sees the backoff.
+	restarted := persistence.NewGormGateEdgeRepository(db)
+	attempts, lastProbe, ok, err := restarted.UnreadableState(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.True(t, ok, "backoff must survive a restart — a reboot must not re-storm the API")
+	require.Equal(t, 1, attempts)
+	require.WithinDuration(t, t0, lastProbe, time.Second)
+}
+
+// A backoff marker is NOT an edge: a system with only a marker reads as a MISS (routing
+// then honors the backoff), and the marker never surfaces in the adjacency overview or
+// the frontier scanner's BFS.
+func TestGateEdgeRepository_MarkerRow_ExcludedFromEdgesAndAdjacency(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+	_, err = repo.MarkUnreadable(ctx, "X1-XX56", "X1-XX56-GATE", time.Now())
+	require.NoError(t, err)
+
+	edges, ok, err := repo.Edges(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.False(t, ok, "a marker-only system must read as a miss, never a fresh empty hit")
+	require.Empty(t, edges)
+
+	adjacency, err := repo.Adjacency(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, adjacency, "X1-XX56", "a backoff marker must not surface as an edge in the overview")
+}
+
+// Item 4/self-heal: when an unreadable gate becomes readable, Replace writes its edges
+// AND clears the backoff marker, so the gate rejoins the normal TTL instead of the
+// backoff clock.
+func TestGateEdgeRepository_Replace_ClearsBackoffMarker(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+	_, err = repo.MarkUnreadable(ctx, "X1-XX56", "X1-XX56-GATE", time.Now())
+	require.NoError(t, err)
+	_, _, ok, _ := repo.UnreadableState(ctx, "X1-XX56")
+	require.True(t, ok, "precondition: backed off")
+
+	require.NoError(t, repo.Replace(ctx, "X1-XX56", []system.GateEdge{
+		{ConnectedSystem: "X1-NBR", GateWaypoint: "X1-NBR-GATE"},
+	}))
+
+	_, _, ok, err = repo.UnreadableState(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.False(t, ok, "a successful Replace must clear the backoff marker (self-heal)")
+
+	edges, hit, err := repo.Edges(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.True(t, hit, "the now-readable gate's edges must read back as a hit")
+	require.Equal(t, []string{"X1-NBR"}, connectedSystems(edges))
+}
+
+// Item 5: an era close resets the backoff. The marker is era-scoped exactly like edges,
+// so once a new era opens the old marker is out of scope and the gate re-probes fresh.
+func TestGateEdgeRepository_Backoff_ResetOnEraClose(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+	_, err = repo.MarkUnreadable(ctx, "X1-XX56", "X1-XX56-GATE", time.Now())
+	require.NoError(t, err)
+	_, _, ok, _ := repo.UnreadableState(ctx, "X1-XX56")
+	require.True(t, ok, "backed off in era 1")
+
+	// Close era 1 and open era 2 (a universe reset).
+	require.NoError(t, db.Model(&persistence.EraModel{}).Where("era_id = ?", 1).
+		Update("closed_at", time.Now()).Error)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "rigel", AgentSymbol: "RIGEL", PlayerID: 1}).Error)
+
+	_, _, ok, err = repo.UnreadableState(ctx, "X1-XX56")
+	require.NoError(t, err)
+	require.False(t, ok, "an era close must reset the backoff — the new era re-probes fresh")
+}

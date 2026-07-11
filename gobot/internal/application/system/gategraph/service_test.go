@@ -163,6 +163,15 @@ func (f *freshStore) Adjacency(ctx context.Context) (map[string][]system.GateEdg
 	return nil, nil
 }
 
+// freshStore never misses, so the backoff path is never consulted — these satisfy the
+// interface and assert (by never being exercised) that a fresh hit needs no backoff read.
+func (f *freshStore) UnreadableState(ctx context.Context, s string) (int, time.Time, bool, error) {
+	return 0, time.Time{}, false, nil
+}
+func (f *freshStore) MarkUnreadable(ctx context.Context, s, gate string, now time.Time) (int, error) {
+	return 0, nil
+}
+
 func edgesTo(systems ...string) []system.GateEdge {
 	edges := make([]system.GateEdge, 0, len(systems))
 	for _, s := range systems {
@@ -304,6 +313,15 @@ func (m *missStore) Replace(ctx context.Context, s string, e []system.GateEdge) 
 }
 func (m *missStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
 	return nil, nil
+}
+
+// missStore's fetch-through tests all SUCCEED on GetJumpGate, so backoff is never
+// entered — a no-op backoff (never backed off) keeps every miss flowing to the probe.
+func (m *missStore) UnreadableState(ctx context.Context, s string) (int, time.Time, bool, error) {
+	return 0, time.Time{}, false, nil
+}
+func (m *missStore) MarkUnreadable(ctx context.Context, s, gate string, now time.Time) (int, error) {
+	return 0, nil
 }
 
 // fakeGateAPI serves a fixed connections list and per-gate construction state; a
@@ -467,12 +485,22 @@ func TestService_Path_InvalidatedOriginRow_ReprobesBeforeRouting(t *testing.T) {
 
 // --- sp-qxa4: one unreadable gate must not abort an unrelated route ---
 
-// perSystemMissStore forces fetch-through for every system and resolves each
-// system's own gate as "<system>-GATE" (so GateWaypointOf never needs a system
-// graph). It records which systems were persisted, so a test can prove an unreadable
-// system is left UNPERSISTED (to re-probe next fetch).
+// perSystemMissStore forces fetch-through for every EDGE read (Edges always misses),
+// resolves each system's own gate as "<system>-GATE" (so GateWaypointOf never needs a
+// system graph), and carries a real in-memory negative-result backoff (backoff map) so a
+// test can drive the persisted-backoff behavior with a MockClock exactly as the GORM store
+// would. replaced records Replace calls (edge writes); backoff records MarkUnreadable
+// (marker writes) — the two are separate, matching production, so a test can prove an
+// unreadable system is MARKED (backoff) rather than written as an edge set.
 type perSystemMissStore struct {
 	replaced map[string][]system.GateEdge
+	backoff  map[string]backoffEntry
+}
+
+// backoffEntry is one system's in-memory marker: consecutive failures + last-probe time.
+type backoffEntry struct {
+	attempts  int
+	lastProbe time.Time
 }
 
 func (m *perSystemMissStore) Edges(ctx context.Context, s string) ([]system.GateEdge, bool, error) {
@@ -486,22 +514,47 @@ func (m *perSystemMissStore) Replace(ctx context.Context, s string, e []system.G
 		m.replaced = map[string][]system.GateEdge{}
 	}
 	m.replaced[s] = e
+	// A successful edge write clears any backoff marker — a gate that becomes readable
+	// again self-heals off the backoff clock (matches GormGateEdgeRepository.Replace).
+	delete(m.backoff, s)
 	return nil
 }
 func (m *perSystemMissStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
 	return nil, nil
 }
+func (m *perSystemMissStore) UnreadableState(ctx context.Context, s string) (int, time.Time, bool, error) {
+	e, ok := m.backoff[s]
+	if !ok {
+		return 0, time.Time{}, false, nil
+	}
+	return e.attempts, e.lastProbe, true, nil
+}
+func (m *perSystemMissStore) MarkUnreadable(ctx context.Context, s, gate string, now time.Time) (int, error) {
+	if m.backoff == nil {
+		m.backoff = map[string]backoffEntry{}
+	}
+	attempts := m.backoff[s].attempts + 1
+	m.backoff[s] = backoffEntry{attempts: attempts, lastProbe: now}
+	return attempts, nil
+}
 
 // perSystemGateAPI serves each origin system's own connection list and can fail
 // GetJumpGate for a specific gate waypoint (the unreadable frontier gate). Every
-// probed waypoint reads as built unless listed under construction.
+// probed waypoint reads as built unless listed under construction. jumpGateCalls counts
+// GetJumpGate invocations per gate waypoint so a test can prove the backoff actually
+// SUPPRESSES probes (the sp-ikx1 storm-stop), not merely that routing still works.
 type perSystemGateAPI struct {
 	connectionsBySystem map[string][]string // origin system -> connected gate waypoints
 	jumpGateErr         map[string]error    // gate waypoint -> live-fetch error (unreadable)
 	underConstruction   map[string]bool
+	jumpGateCalls       map[string]int // gate waypoint -> number of GetJumpGate probes
 }
 
 func (f *perSystemGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
+	if f.jumpGateCalls == nil {
+		f.jumpGateCalls = map[string]int{}
+	}
+	f.jumpGateCalls[wp]++
 	if err := f.jumpGateErr[wp]; err != nil {
 		return nil, err
 	}
@@ -521,8 +574,9 @@ func (l *captureLogger) Log(_, message string, _ map[string]interface{}) {
 // The incident (TORWIND-21 DP51→KA42): DP51 gates to BOTH X1-XX56 (an unswept
 // frontier system whose live gate fetch 400s — "no ship present") and X1-MID (which
 // reaches KA42). One unreadable sibling gate must NOT abort the route — the BFS
-// excludes XX56 and routes DP51→MID→KA42, leaves XX56 unpersisted so it re-probes
-// next fetch, and logs the skip honestly.
+// excludes XX56 and routes DP51→MID→KA42. XX56 is not written as an edge set (it is
+// recorded as a backoff MARKER instead, sp-ikx1), and the honest enter-backoff line
+// names the excluded gate.
 func TestService_Path_UnreadableSiblingGate_RoutesAround(t *testing.T) {
 	store := &perSystemMissStore{}
 	api := &perSystemGateAPI{
@@ -546,11 +600,15 @@ func TestService_Path_UnreadableSiblingGate_RoutesAround(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected the route around the unreadable gate %v, got %v", want, got)
 	}
-	// XX56 was NOT persisted — left stale/unverified to re-probe next fetch.
+	// XX56 was NOT written as an edge set (it is a backoff marker, not a readable system).
 	if _, persisted := store.replaced["X1-XX56"]; persisted {
-		t.Fatal("the unreadable system must not be persisted (leave it to re-probe next fetch)")
+		t.Fatal("the unreadable system must not be written as an edge set")
 	}
-	// The skip is logged honestly, naming the excluded gate.
+	// It IS recorded as a backoff marker so the next tick does not re-probe it (sp-ikx1).
+	if _, backedOff, _ := backoffOf(store, "X1-XX56"); !backedOff {
+		t.Fatal("the unreadable system must be recorded as backed off")
+	}
+	// The skip is logged honestly (the enter-backoff line), naming the excluded gate.
 	found := false
 	for _, m := range logger.messages {
 		if strings.Contains(m, "X1-XX56") && strings.Contains(m, "unreadable") {
@@ -560,6 +618,12 @@ func TestService_Path_UnreadableSiblingGate_RoutesAround(t *testing.T) {
 	if !found {
 		t.Fatalf("the excluded gate must be logged honestly, got messages: %v", logger.messages)
 	}
+}
+
+// backoffOf is a tiny helper reading the in-memory store's backoff for assertions.
+func backoffOf(store *perSystemMissStore, system string) (attempts int, ok bool, lastProbe time.Time) {
+	a, lp, present, _ := store.UnreadableState(context.Background(), system)
+	return a, present, lp
 }
 
 // When the ONLY path to the destination runs through the unreadable gate, fail-closed
@@ -583,8 +647,8 @@ func TestService_Path_UnreadableGateRequired_Unroutable(t *testing.T) {
 }
 
 // A live GetJumpGate failure surfaces as ErrGateUnreadable — distinct from a store
-// error — and the system is NOT persisted, so the next fetch re-probes it.
-func TestService_Connections_GetJumpGateFailure_UnreadableAndUnpersisted(t *testing.T) {
+// error — is NOT written as an edge set, and records a backoff marker.
+func TestService_Connections_GetJumpGateFailure_UnreadableAndMarked(t *testing.T) {
 	store := &perSystemMissStore{}
 	api := &perSystemGateAPI{
 		jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("api 400: no ship present")},
@@ -596,6 +660,180 @@ func TestService_Connections_GetJumpGateFailure_UnreadableAndUnpersisted(t *test
 		t.Fatalf("a live gate-fetch failure must be ErrGateUnreadable, got %v", err)
 	}
 	if _, persisted := store.replaced["X1-XX56"]; persisted {
-		t.Fatal("an unreadable system must not be persisted")
+		t.Fatal("an unreadable system must not be written as an edge set")
+	}
+	if _, backedOff, _ := backoffOf(store, "X1-XX56"); !backedOff {
+		t.Fatal("an unreadable system must be recorded as backed off")
+	}
+}
+
+// --- sp-ikx1: unreadable-gate negative-result backoff ---
+
+// The storm stop: once an unreadable gate has been probed and 400'd, it is NOT
+// re-probed on the next tick — the persisted backoff suppresses the API call until the
+// window elapses. This is the 1 req/s of guaranteed 400s the fix reclaims.
+func TestService_Connections_UnreadableGate_BacksOffNoReprobe(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("400 no ship present")}}
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	clock := &shared.MockClock{CurrentTime: base}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
+	ctx := context.Background()
+
+	// First fetch: a real probe that 400s.
+	if _, err := svc.Connections(ctx, "X1-XX56", 1); !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("first fetch must be ErrGateUnreadable, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-XX56-GATE"]; got != 1 {
+		t.Fatalf("first fetch must probe exactly once, got %d", got)
+	}
+
+	// 30s later (well within the 5m initial window): still unreadable, but NO new probe.
+	clock.Advance(30 * time.Second)
+	if _, err := svc.Connections(ctx, "X1-XX56", 1); !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("a backed-off gate must still report unreadable, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-XX56-GATE"]; got != 1 {
+		t.Fatalf("storm-stop: a backed-off gate must NOT be re-probed (want 1 probe, got %d)", got)
+	}
+}
+
+// The re-probe interval follows the ruled 5m → 30m → 2h schedule, driven end-to-end
+// through the service and store with a controllable clock: a probe fires only once its
+// window has elapsed, and the window escalates then caps.
+func TestService_Connections_BackoffEscalatesThenCaps(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("400 no ship present")}}
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	clock := &shared.MockClock{CurrentTime: base}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
+	ctx := context.Background()
+	probe := func() { _, _ = svc.Connections(ctx, "X1-XX56", 1) }
+	calls := func() int { return api.jumpGateCalls["X1-XX56-GATE"] }
+
+	probe() // t0: attempt 1 → next probe at t0+5m
+	if calls() != 1 {
+		t.Fatalf("want 1 probe after first fetch, got %d", calls())
+	}
+
+	// Just before 5m: no probe. At 5m: probe (attempt 2 → next +30m).
+	clock.Advance(5*time.Minute - time.Second)
+	probe()
+	if calls() != 1 {
+		t.Fatalf("before the 5m window elapses the gate must not be re-probed, got %d", calls())
+	}
+	clock.Advance(time.Second)
+	probe()
+	if calls() != 2 {
+		t.Fatalf("at 5m the gate must be re-probed once (want 2 total, got %d)", calls())
+	}
+
+	// Just before +30m: no probe. At +30m: probe (attempt 3 → next +2h).
+	clock.Advance(30*time.Minute - time.Second)
+	probe()
+	if calls() != 2 {
+		t.Fatalf("the 30m window must hold, got %d probes", calls())
+	}
+	clock.Advance(time.Second)
+	probe()
+	if calls() != 3 {
+		t.Fatalf("at +30m the gate must be re-probed (want 3 total, got %d)", calls())
+	}
+
+	// Just before +2h: no probe. At +2h: probe (attempt 4 → still capped at +2h).
+	clock.Advance(2*time.Hour - time.Second)
+	probe()
+	if calls() != 3 {
+		t.Fatalf("the 2h cap window must hold, got %d probes", calls())
+	}
+	clock.Advance(time.Second)
+	probe()
+	if calls() != 4 {
+		t.Fatalf("at +2h the capped window must re-probe (want 4 total, got %d)", calls())
+	}
+}
+
+// The schedule is a pure function of the config, so the ruled default and an arbitrary
+// custom schedule both compute correctly — RULINGS #5: the windows are knobs, not
+// constants baked into the code.
+func TestBackoffSchedule_DurationFor(t *testing.T) {
+	def := DefaultBackoffSchedule // 5m, ×6, cap 2h
+	for _, c := range []struct {
+		attempts int
+		want     time.Duration
+	}{
+		{1, 5 * time.Minute}, {2, 30 * time.Minute}, {3, 2 * time.Hour}, {4, 2 * time.Hour}, {50, 2 * time.Hour},
+	} {
+		if got := def.durationFor(c.attempts); got != c.want {
+			t.Fatalf("default schedule attempt %d: want %v, got %v", c.attempts, c.want, got)
+		}
+	}
+
+	custom := BackoffSchedule{Initial: time.Minute, Multiplier: 2, Max: 10 * time.Minute} // 1,2,4,8,cap 10
+	for _, c := range []struct {
+		attempts int
+		want     time.Duration
+	}{
+		{1, time.Minute}, {2, 2 * time.Minute}, {3, 4 * time.Minute}, {4, 8 * time.Minute}, {5, 10 * time.Minute}, {6, 10 * time.Minute},
+	} {
+		if got := custom.durationFor(c.attempts); got != c.want {
+			t.Fatalf("custom schedule attempt %d: want %v, got %v", c.attempts, c.want, got)
+		}
+	}
+}
+
+// A READABLE gate is untouched by the backoff: it fetches cleanly, is written as an edge
+// set, and never records a backoff marker.
+func TestService_Connections_ReadableGate_NeverBacksOff(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{connectionsBySystem: map[string][]string{"X1-OK": {"X1-NBR-GATE"}}}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	edges, err := svc.Connections(context.Background(), "X1-OK", 1)
+	if err != nil {
+		t.Fatalf("a readable gate must fetch cleanly, got %v", err)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-NBR" {
+		t.Fatalf("expected the one real edge to X1-NBR, got %v", edges)
+	}
+	if _, backedOff, _ := backoffOf(store, "X1-OK"); backedOff {
+		t.Fatal("a readable gate must never be backed off")
+	}
+	if _, persisted := store.replaced["X1-OK"]; !persisted {
+		t.Fatal("a readable gate's edges must be written as an edge set")
+	}
+}
+
+// The operator signal: exactly ONE enter-backoff INFO line per probe failure, carrying
+// the next-probe time; the skipped re-checks between windows are silent (this is what
+// replaces the old ~23k-line per-tick spam).
+func TestService_Backoff_LogsOnceWithNextProbe_SilentBetween(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("400 no ship present")}}
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	clock := &shared.MockClock{CurrentTime: base}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
+	logger := &captureLogger{}
+	ctx := logging.WithLogger(context.Background(), logger)
+
+	// First probe fails → one enter-backoff line carrying the next-probe time (t0+5m).
+	_, _ = svc.Connections(ctx, "X1-XX56", 1)
+	wantNext := base.Add(5 * time.Minute).Format(time.RFC3339)
+	enterLines := 0
+	for _, m := range logger.messages {
+		if strings.Contains(m, "backing off") && strings.Contains(m, wantNext) {
+			enterLines++
+		}
+	}
+	if enterLines != 1 {
+		t.Fatalf("expected exactly one enter-backoff line carrying next-probe %s, got messages: %v", wantNext, logger.messages)
+	}
+
+	// A skipped re-check within the window logs nothing new (silence between).
+	countAfterEnter := len(logger.messages)
+	clock.Advance(30 * time.Second)
+	_, _ = svc.Connections(ctx, "X1-XX56", 1)
+	if len(logger.messages) != countAfterEnter {
+		t.Fatalf("a backed-off skip must be silent, new messages: %v", logger.messages[countAfterEnter:])
 	}
 }

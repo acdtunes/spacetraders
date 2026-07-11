@@ -629,6 +629,14 @@ func run(cfg *config.Config) error {
 	// both the trade-route circuit and the one-shot arb so they see one cache/graph.
 	gateGraphService := gategraph.NewService(
 		persistence.NewGormGateEdgeRepository(db), apiClient, graphService, playerRepo,
+		// sp-ikx1: back off re-probing an unreadable jump gate (5m→30m→2h) instead of
+		// re-fetching it every reconcile tick — the negative-result backoff is persisted
+		// on the gate_edges row so a restart resumes it rather than re-storming the API.
+		gategraph.WithBackoff(gategraph.BackoffSchedule{
+			Initial:    cfg.Routing.GateBackoff.Initial,
+			Multiplier: cfg.Routing.GateBackoff.Multiplier,
+			Max:        cfg.Routing.GateBackoff.Max,
+		}),
 	)
 	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
 	// sp-8l3o: the shared ship-arrival event bus lets travel() wait out a hull

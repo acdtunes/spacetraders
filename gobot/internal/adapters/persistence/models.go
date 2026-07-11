@@ -545,6 +545,14 @@ func (SpendReservationModel) TableName() string {
 // connected_system) pair is the primary key — a system's whole edge set is
 // REPLACED on each sync (delete-then-insert), so a since-severed connection cannot
 // linger and a re-sync also purges any dead-era row for that system.
+//
+// MARKER ROWS (sp-ikx1): a row whose ConnectedSystem is "" is NOT an edge — it is the
+// persisted negative-result backoff marker for an UNREADABLE system (a frontier gate
+// whose live fetch 400s, "no ship present"). At most one per (system, era). Its
+// UnreadableSince/AttemptCount carry the backoff state; its "" connected_system is the
+// structural sentinel that distinguishes it from a real edge (ExtractSystemSymbol never
+// yields "", so an edge's ConnectedSystem is always non-empty). Edges/Adjacency EXCLUDE
+// marker rows (connected_system <> ''); UnreadableState/MarkUnreadable read/write them.
 type GateEdgeModel struct {
 	SystemSymbol    string `gorm:"column:system_symbol;primaryKey"`
 	ConnectedSystem string `gorm:"column:connected_system;primaryKey"`
@@ -556,6 +564,15 @@ type GateEdgeModel struct {
 	// under-construction edge, and such an edge refreshes on a SHORTER TTL than a
 	// healthy one so a completed build is noticed within the same era.
 	UnderConstruction bool `gorm:"column:under_construction;not null;default:false"`
+	// UnreadableSince is the RFC3339 timestamp of the LAST failed live gate probe, set
+	// only on a marker row (connected_system = ""). Empty on every real edge row. With
+	// AttemptCount it is the persisted negative-result cache (sp-ikx1): an unreadable
+	// gate is not re-probed every 30s tick — the service backs it off 5m→30m→2h.
+	// Persisted, not in-memory, so a restart resumes the backoff (RULINGS #2).
+	UnreadableSince string `gorm:"column:unreadable_since"`
+	// AttemptCount is the consecutive-failed-probe count on a marker row; it drives the
+	// backoff schedule. 0 on every real edge row.
+	AttemptCount int `gorm:"column:attempt_count;not null;default:0"`
 }
 
 func (GateEdgeModel) TableName() string {

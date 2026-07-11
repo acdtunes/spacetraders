@@ -18,6 +18,25 @@ type RoutingConfig struct {
 	// tour engine work regardless of the daemon's cwd (the launchd daemon's cwd is not
 	// the repo root, which DOA'd the first tour on the old cwd-relative constant).
 	ModelArtifactPath string `mapstructure:"model_artifact_path"`
+
+	// GateBackoff tunes the gate-graph negative-result backoff (sp-ikx1): how long an
+	// UNREADABLE jump gate (one whose live fetch 400s, "no ship present") waits before it
+	// is re-probed, so a doomed frontier gate is not re-fetched every reconcile tick.
+	GateBackoff GateBackoffConfig `mapstructure:"gate_backoff"`
+}
+
+// GateBackoffConfig is the exponential schedule for re-probing an unreadable jump gate
+// (sp-ikx1). The nth consecutive failure waits Initial * Multiplier^(n-1), capped at Max.
+// The ruled defaults (Initial 5m, Multiplier 6, Max 2h) yield exactly 5m → 30m → 2h → 2h…
+// — RULINGS #5: these are config, not constants, so the Admiral can retune the API-spend
+// vs. staleness trade-off without a rebuild.
+type GateBackoffConfig struct {
+	// Initial is the first backoff window (after the first failed probe).
+	Initial time.Duration `mapstructure:"initial"`
+	// Multiplier grows the window on each subsequent consecutive failure.
+	Multiplier float64 `mapstructure:"multiplier"`
+	// Max caps the window — the longest an unreadable gate ever waits between probes.
+	Max time.Duration `mapstructure:"max"`
 }
 
 // RoutingTimeoutConfig holds timeout configuration for routing operations
