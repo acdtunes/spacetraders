@@ -120,7 +120,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 	// container_id — it was never a container claim. Without this guard it
 	// would fall straight into the lookup below, ask the container reader
 	// about an empty ID, get back "not found", and get reaped by
-	// isClaimOrphaned exactly like a dead CLI-runner's claim. A captain
+	// IsClaimOrphaned exactly like a dead CLI-runner's claim. A captain
 	// reservation has no container to go stale, so it is excluded before the
 	// lookup ever happens, not just from the orphan verdict.
 	if ship.IsReservedByCaptain() {
@@ -134,7 +134,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 		return nil
 	}
 
-	if !isClaimOrphaned(status, found) {
+	if !IsClaimOrphaned(status, found) {
 		return nil
 	}
 
@@ -150,8 +150,11 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 	return nil
 }
 
-// isClaimOrphaned reports whether a ship claim whose owning container has the
-// given (status, found) is a stale artifact that is safe to clear.
+// IsClaimOrphaned reports whether a ship claim whose owning container has the
+// given (status, found) is a stale artifact that is safe to clear. Exported so
+// the scout-post coordinator's fleet orphan sweep reaches the same verdict as
+// refresh-time reconciliation (sp-6zgs) — one predicate, so the two paths can
+// never diverge on which claims are safe to reap.
 //
 // Orphaned iff the container row is GONE, the container is PENDING, or the
 // container has reached a TERMINAL state (COMPLETED/FAILED/STOPPED).
@@ -170,7 +173,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 //
 // RUNNING / INTERRUPTED / STOPPING are live or recoverable — a claim through one
 // of those is never cleared.
-func isClaimOrphaned(status string, found bool) bool {
+func IsClaimOrphaned(status string, found bool) bool {
 	if !found {
 		return true
 	}

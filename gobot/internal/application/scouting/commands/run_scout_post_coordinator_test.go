@@ -125,6 +125,20 @@ func (r *fakeScoutShipRepo) FindIdleByPlayer(_ context.Context, _ shared.PlayerI
 	return idle, nil
 }
 
+// FindActiveByPlayer returns the ASSIGNED hulls (container claim OR captain
+// reservation), derived from entity state like FindIdleByPlayer — the roster the
+// orphan sweep enumerates (sp-6zgs). A hull the sweep frees flips to idle, so a
+// later FindIdleByPlayer in the same tick surfaces it, exactly like the DB.
+func (r *fakeScoutShipRepo) FindActiveByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	var active []*navigation.Ship
+	for _, s := range r.ships {
+		if s.IsAssigned() {
+			active = append(active, s)
+		}
+	}
+	return active, nil
+}
+
 func (r *fakeScoutShipRepo) FindByContainer(_ context.Context, containerID string, _ shared.PlayerID) ([]*navigation.Ship, error) {
 	var matched []*navigation.Ship
 	for _, s := range r.ships {
@@ -222,6 +236,22 @@ type fakeContainerStatusQuery struct {
 
 func (q *fakeContainerStatusQuery) ListByStatusSimple(_ context.Context, status string, _ *int) ([]persistence.ContainerSummary, error) {
 	return q.byStatus[status], nil
+}
+
+// ContainerStatus resolves a single container's status from the SAME byStatus
+// fixture (sp-6zgs), so a test that already declares a container RUNNING via
+// byStatus needs no second wiring — the orphan sweep reads liveness through the
+// same source the manning passes do. An ID absent from every status bucket
+// reports found=false, the gone-container case.
+func (q *fakeContainerStatusQuery) ContainerStatus(_ context.Context, containerID string, _ shared.PlayerID) (string, bool, error) {
+	for status, summaries := range q.byStatus {
+		for _, s := range summaries {
+			if s.ID == containerID {
+				return status, true, nil
+			}
+		}
+	}
+	return "", false, nil
 }
 
 // fakeMarketProvider returns one marketplace waypoint per system so every post is
@@ -400,6 +430,112 @@ func TestScoutPost_HealthyTour_LeftUntouched(t *testing.T) {
 	require.Empty(t, shipRepo.releases, "a live tour's hull is never reclaimed")
 	require.Empty(t, daemonClient.started, "a live tour is never respawned")
 	require.Equal(t, "live-tour", postRepo.find("X1-GZ7").TourContainerID)
+}
+
+// sp-6zgs orphan-sweep (headline): an ACTIVE scout probe whose owning container is
+// gone — its post died in a reconciler outage / reset, so NO post slot references it
+// and the idle scan (FindIdleByPlayer) never sees it (assignment_status=active). The
+// coordinator's orphan sweep frees it back to the idle pool and, since it already sits
+// in an unmanned post's system, the SAME tick re-seats it in-system — the captain's
+// "same-system re-seat beats a 6-hop relay" ask. Reuses refresh_ship's IsClaimOrphaned
+// verdict (sp-vjwb) rather than rebuilding the orphan predicate.
+func TestScoutPost_OrphanSweep_FreesActiveProbeWithDeadContainer_ReseatsInSystem(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-C81", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	orphan := newScoutTestSatellite(t, "PROBE-ORPHAN", "X1-C81-A1")
+	require.NoError(t, orphan.AssignToContainer("dead-tour-C81", clock)) // active, but its container is gone
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{orphan}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	// "dead-tour-C81" is in NO status bucket → ContainerStatus reports it gone.
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Contains(t, shipRepo.releases, "PROBE-ORPHAN", "the orphaned probe must be freed from its dead container")
+	require.Len(t, shipRepo.claims, 1, "the freed probe re-mans its own system's post the same tick")
+	require.Equal(t, "PROBE-ORPHAN", shipRepo.claims[0].ship)
+	require.Equal(t, "PROBE-ORPHAN", postRepo.find("X1-C81").AssignedHull, "post re-seated in-system by the swept probe")
+	require.Len(t, daemonClient.persisted, 1, "a fresh in-system scout tour is spawned")
+}
+
+// A probe on a RUNNING container is never swept — it is a live tour the sweep must not
+// rip away (the IsClaimOrphaned live-state guard). It sits in a system with no post of
+// its own, so ONLY the sweep could touch it; a post elsewhere keeps reconcileOnce from
+// early-returning on an empty table.
+func TestScoutPost_OrphanSweep_LiveContainerNotSwept(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-OTHER", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	live := newScoutTestSatellite(t, "PROBE-LIVE", "X1-C81-A1")
+	require.NoError(t, live.AssignToContainer("live-tour-C81", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{live}, clock: clock}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-tour-C81", ContainerType: "SCOUT", Status: "RUNNING"}},
+	}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, &fakeScoutDaemonClient{}, cq, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.NotContains(t, shipRepo.releases, "PROBE-LIVE", "a probe on a RUNNING container is never swept")
+}
+
+// A probe on an INTERRUPTED container (mid daemon restart-recovery) is never swept:
+// IsClaimOrphaned treats it as recoverable, and ripping the claim would race recovery.
+func TestScoutPost_OrphanSweep_InterruptedContainerNotSwept(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-OTHER", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	recovering := newScoutTestSatellite(t, "PROBE-RECOVER", "X1-C81-A1")
+	require.NoError(t, recovering.AssignToContainer("interrupted-tour", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{recovering}, clock: clock}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"INTERRUPTED": {{ID: "interrupted-tour", ContainerType: "SCOUT", Status: "INTERRUPTED"}},
+	}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, &fakeScoutDaemonClient{}, cq, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.NotContains(t, shipRepo.releases, "PROBE-RECOVER", "a probe on an INTERRUPTED container is never swept")
+}
+
+// A captain-reserved probe is ACTIVE but owns no container (ContainerID is ""), so a
+// naive orphan check would see "container gone" and reap it. The sweep must skip captain
+// reservations (sp-i1ku) exactly as refresh_ship's reconciler does — a reservation has
+// no container to go stale.
+func TestScoutPost_OrphanSweep_CaptainReservedNotSwept(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-C81", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	reserved := newScoutTestSatellite(t, "PROBE-RESERVED", "X1-C81-A1")
+	require.NoError(t, reserved.ReserveByCaptain("manual bridge use", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{reserved}, clock: clock}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, &fakeScoutDaemonClient{}, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.NotContains(t, shipRepo.releases, "PROBE-RESERVED", "a captain reservation has no container to orphan and is never swept")
+	require.Empty(t, shipRepo.claims, "the reserved probe is not re-seated onto the post")
+}
+
+// A probe whose container reached a TERMINAL state (COMPLETED here; FAILED/STOPPED
+// alike) is swept: a terminal container can never resume, so its claim is stale
+// (IsClaimOrphaned). The freed probe returns to the idle pool.
+func TestScoutPost_OrphanSweep_TerminalContainerSwept(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-C81", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	orphan := newScoutTestSatellite(t, "PROBE-DONE", "X1-C81-A1")
+	require.NoError(t, orphan.AssignToContainer("completed-tour", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{orphan}, clock: clock}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"COMPLETED": {{ID: "completed-tour", ContainerType: "SCOUT", Status: "COMPLETED"}},
+	}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, &fakeScoutDaemonClient{}, cq, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Contains(t, shipRepo.releases, "PROBE-DONE", "a probe on a COMPLETED container is swept (the claim can never resume)")
 }
 
 // Acceptance (3), in-system-scoped (sp-qxa4): the old "zero satellites idle while

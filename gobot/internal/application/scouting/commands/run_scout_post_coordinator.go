@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipqueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -168,9 +169,16 @@ type RunScoutPostCoordinatorResponse struct {
 
 // ContainerStatusQuery reads container lifecycle state so the reconciler can tell
 // a live tour from a dead or completed one. Satisfied by the GORM container
-// repository (ListByStatusSimple).
+// repository (ListByStatusSimple + ContainerStatus).
 type ContainerStatusQuery interface {
 	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
+
+	// ContainerStatus resolves a SINGLE container's status and existence, so the
+	// orphan sweep can ask IsClaimOrphaned about the exact container a scout hull
+	// claims (sp-6zgs). found=false means the row is gone. Satisfied by the GORM
+	// container repository's ContainerStatus (the same per-ID read refresh_ship's
+	// stale-claim reconciler uses).
+	ContainerStatus(ctx context.Context, containerID string, playerID shared.PlayerID) (string, bool, error)
 }
 
 // MarketWaypointProvider lists the marketplace waypoints in a system — the tour a
@@ -540,6 +548,15 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// ahead of the manning passes and can never affect them (RULINGS #4).
 	h.recordScoutFreshness(ctx, cmd, posts)
 
+	// Pass 0 (orphan sweep, sp-6zgs): free any scout hull whose owning container is
+	// orphaned but that NO post slot references — a probe stranded active when its post
+	// died in a reconciler outage / reset (the KN67 far-cluster probes). Such a hull is
+	// invisible to both Pass 1 (no slot points at it) and the idle scan (it is active,
+	// not idle), so it sits claimed-but-driverless forever. Running BEFORE the manning
+	// passes returns it to the idle pool in time for Pass 2a to re-seat it in its own
+	// system this same tick — the captain's "same-system re-seat beats a 6-hop relay".
+	h.sweepOrphanedScoutHulls(ctx, cmd, posts)
+
 	running, err := h.containerIDSet(ctx, cmd, "RUNNING")
 	if err != nil {
 		return err
@@ -656,6 +673,81 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	}
 
 	return nil
+}
+
+// releaseReasonScoutOrphanSwept marks a scout hull freed by the coordinator's orphan
+// sweep (sp-6zgs): an active probe whose owning container is orphaned and which no post
+// slot manages, returned to the idle pool for in-system re-seat. Distinct from
+// stale_claim_reconciled (refresh-time, sp-vjwb) so the audit trail names WHICH
+// reconciler freed the hull.
+const releaseReasonScoutOrphanSwept = "scout_orphan_swept"
+
+// sweepOrphanedScoutHulls frees scout hulls stranded active on an orphaned container that
+// NO post slot references (sp-6zgs) — see the Pass 0 comment in reconcileOnce. It reuses
+// refresh_ship's IsClaimOrphaned verdict (sp-vjwb) so the sweep and refresh-time
+// reconciliation can never disagree on which claims are safe to reap, and it is pure
+// best-effort: any read error is logged and skipped, never aborting the reconcile pass.
+func (h *RunScoutPostCoordinatorHandler) sweepOrphanedScoutHulls(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, posts []*domainScouting.ScoutPost) {
+	logger := common.LoggerFromContext(ctx)
+
+	// Container IDs a post slot already owns — its tour OR its in-flight reposition relay.
+	// A hull claimed through one of these is Pass 1 / Pass 1.5 territory (they reclaim it
+	// against the post), so the sweep skips it regardless of that container's state: the
+	// sweep touches ONLY fleet orphans whose post is gone, and is a strict no-op for every
+	// post-referenced hull.
+	postContainers := make(map[string]bool)
+	for _, post := range posts {
+		for _, slot := range post.Slots() {
+			if t := slot.TourContainerID(); t != "" {
+				postContainers[t] = true
+			}
+			if r := slot.RepositionContainerID(); r != "" {
+				postContainers[r] = true
+			}
+		}
+	}
+
+	actives, err := h.shipRepo.FindActiveByPlayer(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Scout orphan sweep skipped: failed to list active hulls: %v", err), nil)
+		return
+	}
+
+	for _, ship := range actives {
+		// Only expendable scout hulls; only real container claims. A captain reservation is
+		// an active assignment with NO container (sp-i1ku) — nothing to go stale — so it must
+		// be excluded before the container lookup, exactly as refresh_ship's reconciler does,
+		// or it would be reaped as "container gone".
+		if !ship.IsScoutType() || !ship.IsAssigned() || ship.IsReservedByCaptain() {
+			continue
+		}
+		containerID := ship.ContainerID()
+		if postContainers[containerID] {
+			continue // a post slot manages this claim — not the sweep's job
+		}
+
+		status, found, err := h.containerQuery.ContainerStatus(ctx, containerID, cmd.PlayerID)
+		if err != nil {
+			// Can't determine the owner's state — keep the claim (no positive orphan
+			// evidence), mirroring refresh_ship's conservative stance. Next tick retries.
+			continue
+		}
+		if !shipqueries.IsClaimOrphaned(status, found) {
+			continue // RUNNING / INTERRUPTED / STOPPING — live or recoverable, never reap
+		}
+
+		ship.ForceRelease(releaseReasonScoutOrphanSwept, h.clock)
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Scout orphan sweep freed %s but failed to persist the release: %v", ship.ShipSymbol(), err), nil)
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Scout orphan swept: %s freed from orphaned container %s — returning to the idle pool for in-system re-seat", ship.ShipSymbol(), containerID), map[string]interface{}{
+			"action":             "scout_orphan_swept",
+			"ship_symbol":        ship.ShipSymbol(),
+			"orphaned_container": containerID,
+			"container_status":   status,
+		})
+	}
 }
 
 // warnUndersizedPosts emits a DEFERRED scout.post_undersized event for any STANDING
