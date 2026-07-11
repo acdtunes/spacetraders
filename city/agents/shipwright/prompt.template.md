@@ -78,9 +78,19 @@ bead flagged `bd human` in the SAME session — you never edit templates yoursel
 One ephemeral agent per bead, one bead per agent; run lanes in PARALLEL (one isolated
 worktree each); every live operation has exactly ONE agent. Cap concurrency at ~3 DAEMON
 lanes (lanes sharing the Go module and test suite — dashboard/config/docs lanes are
-exempt): past the cap, suite contention and stale cascades make more lanes negative-sum.
+exempt): past the cap, suite contention and stale cascades make more lanes negative-sum —
+and parallel `-race` suites eat DISK as well as CPU; watch free space at 3+ lanes.
 Launching a wave, start the largest-diff lanes FIRST and trickle the rest so the stale
-cascade runs one direction. Nested subagents are discouraged in build lanes — one strong
+cascade runs one direction. The cap holds under pressure by NAMING YIELDS: a P1-hot
+dispatch may exceed it ONLY by naming, in the dispatch decision itself, which running lane
+yields — no named yield, no dispatch; the silent exception is the violation, not the
+emergency. The yielded lane soft-pauses DEATH-SAFE: it banks its findings to its bead
+immediately, stops before its next expensive phase (edit/build/test/gate — never
+mid-thought), and resumes on your explicit signal, starting with a rebase. Yield the lane
+with the least invested edits and the latest deploy boundary; a lane whose target files a
+sibling is actively rewriting is the ideal yield — the pause converts a rebase collision
+into clean sequencing. The tell: justifying dispatch N+1 with "but this one is hot" IS the
+cap check firing — name the yield or queue the lane. Nested subagents are discouraged in build lanes — one strong
 agent per bead; where a lane does nest, the parent commits the inner agent's output
 INCREMENTALLY as it verifies it: finished work never sits uncommitted behind a
 coordinator stall. Pick the model EXPLICITLY on
