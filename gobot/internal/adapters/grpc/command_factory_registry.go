@@ -584,6 +584,11 @@ func buildWorkerFerryCommand(cfg *configReader, playerID int, containerID string
 		ShipSymbol:          cfg.RequiredString("ship_symbol"),
 		DestinationWaypoint: cfg.RequiredString("destination"),
 		CoordinatorID:       cfg.OptionalString("coordinator_id"),
+		// sp-fwxm: reload the ferry-reposition jump bound stamped at PersistWorkerFerryWorker (the
+		// [trade_fleet].reposition_jump_bound) so it survives the persist→rebuild boundary the ferry
+		// crosses on every start (the o34q read side). Absent → 0, which the ferry's Handle resolves
+		// to the default 12 (resolveRepositionJumpBound) — never a persist-layer magic value.
+		RepositionJumpBound: cfg.OptionalInt("reposition_jump_bound", 0),
 	}
 }
 

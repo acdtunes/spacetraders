@@ -146,6 +146,16 @@ func (s *DaemonServer) PersistWorkerFerryWorker(
 		"ship_symbol":    shipSymbol,
 		"destination":    destinationWaypoint,
 		"coordinator_id": coordinatorID,
+		// sp-fwxm: the ferry-reposition jump bound, sourced from the daemon's live [trade_fleet]
+		// config (the SAME daemon-global tuning the tour reposition rides, sp-kl16 — a ferry is a
+		// hull MOVE, so it earns the same stored-adjacency reach past unreadable frontier gates).
+		// Persisted as-is (0 too, so an absent knob survives a rebuild unchanged);
+		// buildWorkerFerryCommand reads it back and the ferry's Handle resolves 0/absent → its
+		// default 12. This is the o34q WRITE side — unlike the TOP-LEVEL tour, the ferry IS
+		// persisted via PersistContainer and rebuilt on every start, so an unstamped bound would be
+		// DROPPED and the cross-cluster leg would silently degrade to the strict fail-closed
+		// resolver (the vdld far-cluster launch the fix unblocks).
+		"reposition_jump_bound": s.tradeFleetConfig.RepositionJumpBound,
 	}
 
 	containerEntity := container.NewContainer(
