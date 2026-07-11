@@ -108,6 +108,7 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_replan_limit",
 	"trade_fleet_reserve",
 	"trade_fleet_reserve_treasury_pct",
+	"trade_fleet_relaunch_backoff_max_minutes",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -170,5 +171,9 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	// the counter-cyclical floor is ON in production without the captain having to name it.
 	if tf.WorkingCapitalReserveTreasuryPct != 0 {
 		config["trade_fleet_reserve_treasury_pct"] = tf.WorkingCapitalReserveTreasuryPct
+	}
+	// sp-1pli: unset defers to the coordinator's own default ceiling (30 min).
+	if tf.RelaunchBackoffMaxMinutes != 0 {
+		config["trade_fleet_relaunch_backoff_max_minutes"] = tf.RelaunchBackoffMaxMinutes
 	}
 }

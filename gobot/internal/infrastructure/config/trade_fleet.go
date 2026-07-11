@@ -50,6 +50,17 @@ type TradeFleetConfig struct {
 	// pending the trade-analyst's ruling). Config, not a constant (RULINGS #5), so the ruled
 	// number lands on a restart with no redeploy.
 	WorkingCapitalReserveTreasuryPct int `mapstructure:"working_capital_reserve_treasury_pct"`
+
+	// RelaunchBackoffMaxMinutes caps the per-hull ADAPTIVE relaunch backoff (sp-1pli): when a
+	// hull's continuous tour exits unproductive (fast-fail — no plausible trade leg flown), the
+	// coordinator doubles THAT hull's relaunch cooldown from CooldownSeconds, up to this
+	// ceiling, instead of retrying the full discovery+solver pass at the base cooldown forever.
+	// Any PRODUCTIVE exit resets the hull straight back to the base cooldown. In minutes (not
+	// seconds, unlike its siblings above) because 30 default minutes is the natural unit for a
+	// human-tuned ceiling. 0/absent → 30 min. Escalation state is in-memory only (not persisted
+	// like the base cooldown) — a coordinator restart resets every hull to base, a deliberate,
+	// self-healing trade-off (see the handler's hullBackoff doc).
+	RelaunchBackoffMaxMinutes int `mapstructure:"relaunch_backoff_max_minutes"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

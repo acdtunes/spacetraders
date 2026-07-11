@@ -40,6 +40,26 @@ const (
 	// cooldown. It is fixed, not configurable: a finite tour would exit after N tours
 	// and park the hull — exactly the captain-time sink this coordinator retires.
 	tourIterationsContinuous = -1
+
+	// defaultRelaunchBackoffMaxSeconds is the ceiling for the per-hull ADAPTIVE
+	// relaunch backoff (sp-1pli) when the config leaves it unset. When a hull's
+	// continuous tour exits unproductive (fast-fail, see minProductiveTourDuration),
+	// the coordinator doubles that hull's relaunch cooldown from the base
+	// (defaultTradeFleetCooldownSeconds or CooldownSecs) up to this ceiling, instead
+	// of retrying the full discovery+solver pass every base cooldown forever against a
+	// fleet-wide-infeasible market (862 tour-run log lines in 20 minutes prompted this
+	// bead). 30min is the brief's own stated ceiling.
+	defaultRelaunchBackoffMaxSeconds = 1800
+
+	// minProductiveTourDuration is the fast-fail line between an honest trade leg and
+	// a tour that never really flew (sp-1pli). It is a hardcoded mechanism constant,
+	// not a config knob (RULINGS #5 governs operational values; this is an internal
+	// classification threshold) — deliberately conservative/asymmetric: biased toward
+	// NOT escalating rather than wrongly punishing a hull that spent its one sp-zhii
+	// rescue-reposition jump before ultimately starving, which can look identical to a
+	// short real trade leg from duration alone. A missed escalation just costs one more
+	// base-cooldown cycle before the next fast-fail exit catches it.
+	minProductiveTourDuration = 90 * time.Second
 )
 
 // RunTradeFleetCoordinatorCommand launches the standing trade-fleet coordinator for
@@ -86,6 +106,11 @@ type RunTradeFleetCoordinatorCommand struct {
 	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor percent, passed
 	// verbatim to each StartTourRun. 0 => the tour's 40% default resolved at build.
 	WorkingCapitalReserveTreasuryPct int
+
+	// RelaunchBackoffMaxSecs caps the per-hull ADAPTIVE relaunch backoff (sp-1pli);
+	// <=0 uses defaultRelaunchBackoffMaxSeconds. See relaunchBackoffMaxDuration and the
+	// handler's hullBackoff/cooldownFor for the escalation mechanism itself.
+	RelaunchBackoffMaxSecs int
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -144,6 +169,14 @@ type RunTradeFleetCoordinatorHandler struct {
 	// reconcile pass honestly rather than silently launching nothing; wired via
 	// SetTourLauncher, mirroring the contract coordinator's SetIdleArbLauncher idiom.
 	launcher TourLauncher
+
+	// backoff tracks each hull's adaptive relaunch cooldown (sp-1pli), keyed by ship
+	// symbol. Deliberately in-memory only, NOT derived from persisted ship state like
+	// the base cooldown (RULINGS #2 would prefer that, but no persisted field carries
+	// "consecutive unproductive tour count") — a coordinator restart resets every hull
+	// to the base cooldown, a documented, self-healing trade-off: worst case is one
+	// extra fast-fail cycle per hull before backoff re-accumulates.
+	backoff map[string]*hullBackoff
 }
 
 // NewRunTradeFleetCoordinatorHandler wires the coordinator. clock defaults to the real
@@ -154,7 +187,7 @@ func NewRunTradeFleetCoordinatorHandler(shipRepo navigation.ShipRepository, cloc
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
-	return &RunTradeFleetCoordinatorHandler{shipRepo: shipRepo, clock: clock}
+	return &RunTradeFleetCoordinatorHandler{shipRepo: shipRepo, clock: clock, backoff: make(map[string]*hullBackoff)}
 }
 
 // SetTourLauncher wires the daemon-server launcher each relaunch spawns its tour
@@ -180,13 +213,14 @@ func (h *RunTradeFleetCoordinatorHandler) Handle(ctx context.Context, request co
 	}
 
 	result := &RunTradeFleetCoordinatorResponse{Errors: []string{}}
-	logger.Log("INFO", fmt.Sprintf("Trade fleet coordinator starting (tick %s, cooldown %s, max_concurrent %s, enabled %t)",
-		tick, cmd.cooldownDuration(), maxConcurrentLabel(cmd.MaxConcurrentTours), cmd.Enabled), map[string]interface{}{
-		"action":         "trade_fleet_coordinator_start",
-		"container_id":   cmd.ContainerID,
-		"enabled":        cmd.Enabled,
-		"cooldown_secs":  int(cmd.cooldownDuration().Seconds()),
-		"max_concurrent": cmd.MaxConcurrentTours,
+	logger.Log("INFO", fmt.Sprintf("Trade fleet coordinator starting (tick %s, cooldown %s, backoff_max %s, max_concurrent %s, enabled %t)",
+		tick, cmd.cooldownDuration(), cmd.relaunchBackoffMaxDuration(), maxConcurrentLabel(cmd.MaxConcurrentTours), cmd.Enabled), map[string]interface{}{
+		"action":           "trade_fleet_coordinator_start",
+		"container_id":     cmd.ContainerID,
+		"enabled":          cmd.Enabled,
+		"cooldown_secs":    int(cmd.cooldownDuration().Seconds()),
+		"backoff_max_secs": int(cmd.relaunchBackoffMaxDuration().Seconds()),
+		"max_concurrent":   cmd.MaxConcurrentTours,
 	})
 
 	for {
@@ -250,7 +284,8 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	// tick and the tests are stable.
 	sort.Slice(idle, func(i, j int) bool { return idle[i].ShipSymbol() < idle[j].ShipSymbol() })
 
-	cooldown := cmd.cooldownDuration()
+	baseCooldown := cmd.cooldownDuration()
+	backoffMax := cmd.relaunchBackoffMaxDuration()
 	maxConcurrent := cmd.MaxConcurrentTours
 	now := h.clock.Now()
 	launched := 0
@@ -266,6 +301,10 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 			})
 			break
 		}
+
+		// cooldown is BASE unless sp-1pli's adaptive backoff has escalated this
+		// specific hull past a run of unproductive exits — see cooldownFor.
+		cooldown := h.cooldownFor(ship, baseCooldown, backoffMax, logger)
 
 		if remaining := cooldownRemaining(ship, now, cooldown); remaining > 0 {
 			logger.Log("INFO", fmt.Sprintf(
@@ -379,6 +418,73 @@ func cooldownRemaining(ship *navigation.Ship, now time.Time, cooldown time.Durat
 	return cooldown - elapsed
 }
 
+// hullBackoff is the adaptive per-hull relaunch-cooldown state sp-1pli tracks in
+// memory (RunTradeFleetCoordinatorHandler.backoff). cooldown starts at the base and
+// only ever changes through cooldownFor: doubled (clamped to the configured max) on a
+// freshly-scored unproductive exit, reset to base on a freshly-scored productive one.
+// scoredRelease is the release timestamp already folded into cooldown/
+// consecutiveUnproductive — it guards against rescoring the SAME parked exit on every
+// subsequent reconcile tick while the hull just sits out its cooldown, which would
+// otherwise runaway-escalate a single unproductive tour to the max within a few ticks
+// instead of once per real tour cycle ("no per-tick spam", per the bead).
+type hullBackoff struct {
+	consecutiveUnproductive int
+	cooldown                time.Duration
+	scoredRelease           time.Time
+}
+
+// cooldownFor resolves the relaunch cooldown to apply to one idle hull this pass
+// (sp-1pli). A hull that has never toured (no release recorded) is unscored and uses
+// base, exactly like cooldownRemaining's own nil-check — never-toured hulls have
+// nothing to be adaptive about.
+//
+// Otherwise the hull's last release is scored AT MOST ONCE (guarded by
+// scoredRelease): a tour that ran for at least minProductiveTourDuration before
+// exiting is productive and resets the hull straight back to base; a shorter exit is
+// an unproductive fast-fail and DOUBLES the hull's cooldown, clamped to max. Every
+// escalation (never a reset) logs one INFO line — the bead's explicit ask, and the
+// only log this method emits, so an idle hull merely waiting out an already-scored
+// cooldown across many ticks stays silent.
+func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, base, max time.Duration, logger common.ContainerLogger) time.Duration {
+	assignment := ship.Assignment()
+	if assignment == nil || assignment.ReleasedAt() == nil {
+		return base // never toured — nothing to score
+	}
+	releasedAt := *assignment.ReleasedAt()
+
+	bo := h.backoff[ship.ShipSymbol()]
+	if bo == nil {
+		bo = &hullBackoff{cooldown: base}
+		h.backoff[ship.ShipSymbol()] = bo
+	}
+
+	if !releasedAt.After(bo.scoredRelease) {
+		return bo.cooldown // this exit was already scored on a prior tick
+	}
+	bo.scoredRelease = releasedAt
+
+	if releasedAt.Sub(assignment.AssignedAt()) >= minProductiveTourDuration {
+		bo.consecutiveUnproductive = 0
+		bo.cooldown = base
+		return bo.cooldown
+	}
+
+	bo.consecutiveUnproductive++
+	bo.cooldown *= 2
+	if bo.cooldown > max {
+		bo.cooldown = max
+	}
+	logger.Log("INFO", fmt.Sprintf(
+		"Trade hull %s cooldown escalating to %s after %d consecutive unproductive exit(s) — fleet-wide infeasibility backoff",
+		ship.ShipSymbol(), bo.cooldown.Truncate(time.Second), bo.consecutiveUnproductive), map[string]interface{}{
+		"action":                   "trade_fleet_backoff_escalate",
+		"ship_symbol":              ship.ShipSymbol(),
+		"new_cooldown_secs":        int(bo.cooldown.Seconds()),
+		"consecutive_unproductive": bo.consecutiveUnproductive,
+	})
+	return bo.cooldown
+}
+
 // priorExitReason returns the release reason stamped on the hull when its last tour
 // terminated, or "" if none — read-only (the coordinator never rewrites it, so
 // honest-exit telemetry is untouched).
@@ -404,6 +510,16 @@ func (c *RunTradeFleetCoordinatorCommand) cooldownDuration() time.Duration {
 	secs := c.CooldownSecs
 	if secs <= 0 {
 		secs = defaultTradeFleetCooldownSeconds
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// relaunchBackoffMaxDuration resolves the command's adaptive-backoff ceiling (sp-1pli),
+// applying the default when unset.
+func (c *RunTradeFleetCoordinatorCommand) relaunchBackoffMaxDuration() time.Duration {
+	secs := c.RelaunchBackoffMaxSecs
+	if secs <= 0 {
+		secs = defaultRelaunchBackoffMaxSeconds
 	}
 	return time.Duration(secs) * time.Second
 }

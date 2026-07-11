@@ -116,6 +116,19 @@ func parkedTradeHull(t *testing.T, symbol string, releaseSecs int, exitReason st
 	return ship
 }
 
+// parkedTradeHullGap models a trade hull whose prior tour ran for EXACTLY
+// (releaseSecs - assignSecs) seconds before an honest exit (sp-1pli). Unlike
+// parkedTradeHull (a fixed 300s gap, always well above minProductiveTourDuration), this
+// lets a test control whether the exit lands on the productive or unproductive side of
+// the adaptive-backoff fast-fail line.
+func parkedTradeHullGap(t *testing.T, symbol string, assignSecs, releaseSecs int, exitReason string) *navigation.Ship {
+	t.Helper()
+	ship := tradeHull(t, symbol)
+	require.NoError(t, ship.AssignToContainer("tour-prev-"+symbol, clockAt(assignSecs)))
+	ship.ForceRelease(exitReason, clockAt(releaseSecs))
+	return ship
+}
+
 // runningTradeHull models a trade hull mid-tour: a live container claim.
 func runningTradeHull(t *testing.T, symbol string) *navigation.Ship {
 	t.Helper()
@@ -378,4 +391,177 @@ func TestTradeHandle_WrongRequestType(t *testing.T) {
 	h := newTradeHandler(&fakeTradeShipRepo{}, &fakeTourLauncher{}, clockAt(0))
 	_, err := h.Handle(tradeCtx(&tradeCaptureLogger{}), &struct{ common.Request }{})
 	require.Error(t, err)
+}
+
+// ---- sp-1pli: adaptive per-hull relaunch backoff ---------------------------
+//
+// The trade fleet coordinator relaunches every idle hull on a flat per-hull cooldown
+// (180s default) forever, even when EVERY relaunch immediately exits margins-death
+// (fleet-wide infeasibility) — burning a full discovery+solver pass, and the API/log
+// volume that comes with it, every single cooldown window. These tests drive that
+// escalation through reconcileOnce exactly like the tests above, distinguishing
+// "would launch under the OLD flat cooldown" from "held under the NEW escalated one"
+// by picking `now` to land strictly between the two cooldown values — the same
+// discriminating-boundary style TestTradeReconcile_CooldownSurvivesCoordinatorRestart
+// already uses for the base cooldown.
+//
+// The productivity signal is a fast-fail duration heuristic (minProductiveTourDuration
+// = 90s): a tour that ran assignedAt->releasedAt for at least 90s flew a plausible
+// trade leg (productive); shorter is treated as an immediate margins-death fast-fail
+// (unproductive). Every fixture above (parkedTradeHull's fixed 300s gap) sits well
+// above this line, so all 13 pre-existing tests are unaffected by construction.
+
+// A single unproductive exit (20s, well under the 90s line) DOUBLES the hull's
+// cooldown from the base 180s to 360s on the very pass that scores it. At now=300s
+// (280s since the 20s release) the OLD flat 180s cooldown would already have cleared
+// (280 >= 180), but the freshly-escalated 360s has not (280 < 360) — so the hull is
+// held, proving the escalation actually changed the relaunch decision, not just an
+// internal counter. The single INFO escalation line is asserted verbatim.
+func TestTradeFleetBackoff_UnproductiveExit_EscalatesCooldown(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-90", 0, 20, "margins_died_both_systems")
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	h := newTradeHandler(repo, launcher, clockAt(300))
+
+	launched, err := h.reconcileOnce(tradeCtx(logger), tradeCmd())
+	require.NoError(t, err)
+	require.Equal(t, 0, launched, "280s clears the old flat 180s cooldown but not the escalated 360s one")
+	require.Empty(t, launcher.launches)
+	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 6m0s after 1 consecutive"))
+}
+
+// Calling reconcileOnce again against the SAME unchanged parked hull (no new tour
+// cycle in between — exactly what happens every tick while a hull just sits out its
+// cooldown) must NOT rescore the identical exit a second time. Without the
+// scoredRelease guard, a single unproductive tour would runaway-escalate toward the
+// max within a couple of ticks instead of once per real tour cycle — violating the
+// bead's explicit "no per-tick spam" requirement.
+func TestTradeFleetBackoff_SameExitScoredOnce_NoDoubleEscalationAcrossTicks(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-91", 0, 20, "margins_died_both_systems")
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	clock := clockAt(1000)
+	h := newTradeHandler(repo, launcher, clock)
+	cmd := tradeCmd()
+
+	// Tick 1: scores the exit (unproductive) -> 180s escalates to 360s. 980s clears it.
+	launched1, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched1)
+
+	// Tick 2: same handler (backoff state persists), same unchanged ship (the fake
+	// launcher never mutates ship state, so it still reads as the identical 20s exit).
+	launched2, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched2, "still clears the (unchanged) 360s cooldown, but must not rescore")
+
+	escalations := 0
+	for _, m := range logger.messages {
+		if strings.Contains(m, "cooldown escalating") {
+			escalations++
+		}
+	}
+	require.Equal(t, 1, escalations, "the same tour exit must be scored exactly once, not once per tick")
+}
+
+// Two GENUINE consecutive unproductive tour cycles on the same hull double the
+// cooldown twice: 180s -> 360s -> 720s. Each cycle is driven by directly re-assigning
+// and releasing the ship (simulating what the real daemon does between fake-launcher
+// calls, which deliberately never touches ship state itself — see fakeTourLauncher's
+// doc comment), advancing the SAME mock clock instance across one persistent handler
+// so both the backoff map and the escalation math accumulate exactly as they would in
+// production.
+func TestTradeFleetBackoff_CompoundingUnproductiveExits_DoublesEachTime(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-92", 0, 20, "margins_died_both_systems") // 1st: 20s, unproductive
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	clock := clockAt(1000)
+	h := newTradeHandler(repo, launcher, clock)
+	cmd := tradeCmd()
+
+	// Pass 1: 180s -> 360s. 1000-20=980s >= 360s -> launches.
+	launched1, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched1)
+
+	// 2nd tour cycle: another short, unproductive exit.
+	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1015)) // 15s, unproductive
+
+	clock.CurrentTime = baseTime.Add(2000 * time.Second) // 2000-1015=985s
+	launched2, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched2, "360s -> 720s escalation; 985s still clears it")
+	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 12m0s after 2 consecutive"))
+}
+
+// A PRODUCTIVE exit (>= 90s) resets a previously-escalated hull straight back to base,
+// not merely to "one step down". After one prior unproductive cycle escalates 180s ->
+// 360s, a second cycle running 150s (comfortably >= the 90s line) must drop the
+// cooldown all the way back to 180s. now is picked to land strictly between the two:
+// 200s elapsed clears a correctly-reset 180s base but would still be held under a
+// wrongly-retained 360s — a discriminating boundary, same style as the escalation test
+// above. No escalation line is logged for a productive (reset) exit.
+func TestTradeFleetBackoff_ProductiveExit_ResetsToBase(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-93", 0, 20, "margins_died_both_systems") // 1st: 20s, unproductive
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	clock := clockAt(1000)
+	h := newTradeHandler(repo, launcher, clock)
+	cmd := tradeCmd()
+
+	// Pass 1: 180s -> 360s escalation; 980s clears it. Own logger — this pass is
+	// EXPECTED to log an escalation, so it must not leak into pass 2's assertion.
+	logger1 := &tradeCaptureLogger{}
+	launched1, err := h.reconcileOnce(tradeCtx(logger1), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched1)
+
+	// 2nd tour cycle: a real trade leg this time (150s >= 90s line) -> productive.
+	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1150)) // 150s, productive
+
+	clock.CurrentTime = baseTime.Add(1350 * time.Second) // 1350-1150=200s: >=180s base, <360s stale escalated
+	logger2 := &tradeCaptureLogger{}
+	launched2, err := h.reconcileOnce(tradeCtx(logger2), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched2, "a productive exit must reset to the 180s base, not remain at the stale 360s")
+	require.False(t, logger2.loggedContaining("cooldown escalating"), "a productive (reset) exit logs no escalation")
+}
+
+// The backoff ceiling is a config value (RelaunchBackoffMaxSecs, RULINGS #5), not a
+// hardcoded cap — this test exercises both its resolution AND the clamp it enforces in
+// one pass: base 180s, ceiling configured to 400s. A first unproductive exit escalates
+// to 360s (under the ceiling, unaffected). A second unproductive exit would naturally
+// double to 720s, but must clamp at the configured 400s instead. now is picked to land
+// strictly between the two (500s elapsed): clears a correctly-clamped 400s but would
+// still be held under an unclamped 720s.
+func TestTradeFleetBackoff_MaxClamp_HonorsConfiguredCeiling(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-94", 0, 20, "margins_died_both_systems") // 1st: 20s, unproductive
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	clock := clockAt(1000)
+	h := newTradeHandler(repo, launcher, clock)
+	cmd := tradeCmd()
+	cmd.RelaunchBackoffMaxSecs = 400
+
+	// Pass 1: 180s -> 360s (under the 400s ceiling). 980s clears it.
+	launched1, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched1)
+
+	// 2nd unproductive cycle: would double to 720s, must clamp to 400s instead.
+	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1015)) // 15s, unproductive
+
+	clock.CurrentTime = baseTime.Add(1515 * time.Second) // 1515-1015=500s: >=400s clamp, <720s unclamped
+	launched2, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched2, "500s clears the clamped 400s ceiling but would not clear an unclamped 720s")
+	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 6m40s after 2 consecutive"),
+		"6m40s = 400s, the configured ceiling — not 12m0s (720s), what an unclamped doubling would produce")
 }

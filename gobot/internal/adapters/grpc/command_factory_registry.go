@@ -506,6 +506,9 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// sp-yqx4: raw pass-through — the coordinator only relays this to StartTourRun; the
 		// tour build resolves 0/absent → the 40% default at the point of enforcement.
 		WorkingCapitalReserveTreasuryPct: cfg.OptionalInt("trade_fleet_reserve_treasury_pct", 0),
+		// sp-1pli: minutes on config, seconds on the command (matches CooldownSecs) — converted
+		// here, the one crossing point, so every downstream read is uniformly in seconds.
+		RelaunchBackoffMaxSecs: cfg.OptionalInt("trade_fleet_relaunch_backoff_max_minutes", 0) * 60,
 	}
 }
 

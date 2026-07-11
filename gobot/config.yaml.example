@@ -233,6 +233,13 @@ trade_fleet:
   # absolute reserve binds exactly as before; below it the proportional floor keeps buying
   # feasible while the 50000 lower bound stands.
   # working_capital_reserve_treasury_pct: 40
+  # relaunch_backoff_max_minutes (sp-1pli): ceiling for the per-hull ADAPTIVE relaunch
+  # backoff. When a hull's continuous tour exits unproductive (fast-fail — no plausible
+  # trade leg flown), its relaunch cooldown DOUBLES from cooldown_seconds, up to this
+  # ceiling, instead of retrying the full discovery+solver pass every cooldown_seconds
+  # forever against a fleet-wide-infeasible market. Any productive exit resets the hull
+  # straight back to cooldown_seconds. 0/absent => 30 min.
+  # relaunch_backoff_max_minutes: 30
 
 # Worker-rebalancer coordinator (sp-f5pr): the STANDING coordinator that ferries idle
 # undedicated light-haulers cross-system to worker-starved factory systems, so a factory
