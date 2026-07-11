@@ -22,8 +22,9 @@ import (
 // Fails SAFE everywhere: whenever it cannot or should not deposit — no
 // co-located warehouse, no space, over the capital ceiling, unreadable treasury
 // — it declines (deposited=false, nil err) and the caller sells at market
-// exactly as before. The whole path is additionally gated OFF by config
-// (planner_stock_enabled) and by the depositor being wired at all.
+// exactly as before. The feature is LIVE BY DEFAULT (Admiral: no dark-shipping);
+// the coordinator runs this path unless the planner_stock_disabled escape hatch
+// is set, and it is a no-op if the depositor is not wired at all.
 
 // factoryDepositWorkingCapitalReserve mirrors the non-tunable 50k working-capital
 // reserve (sp-bp6f) that the pre-positioning capital ceiling is held junior to.
