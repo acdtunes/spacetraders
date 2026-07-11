@@ -696,7 +696,27 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 	}
 
 	if !ok {
-		r.log("WARNING", "No ship_symbol in metadata, cannot signal completion", nil)
+		// A WorkerCompletedEvent is a single-ship worker's signal to its parent
+		// coordinator, keyed on ship_symbol and routed by coordinator_id (the
+		// coordinator subscribes via SubscribeWorkerCompleted(containerID)). A
+		// container with no ship_symbol is ship-less BY DESIGN — the same truth
+		// createShipAssignments already encodes ("No ship_symbol in config = no
+		// ships to assign (e.g. scout-fleet-assignment)"): goods_factory /
+		// manufacturing coordinators, scout-fleet-assignment, siting, and every
+		// other coordinator/dispatcher type reaches a clean exit with no single
+		// ship to name. Only a container whose coordinator IS awaiting a signal
+		// (coordinator_id present) but that cannot name its ship is a genuine
+		// should-have-signalled-but-couldn't defect — that stays a WARNING. The
+		// ship-less coordinator path (sp-hehz) was crying wolf at WARNING on every
+		// clean exit / chain tick / scout reset; downgrade it to DEBUG so a normal
+		// completion produces no spurious warn while the real defect still surfaces.
+		if awaitingCoordinatorID, _ := metadata["coordinator_id"].(string); awaitingCoordinatorID != "" {
+			r.log("WARNING", "No ship_symbol in metadata, cannot signal completion to awaiting coordinator", map[string]interface{}{
+				"coordinator_id": awaitingCoordinatorID,
+			})
+		} else {
+			r.log("DEBUG", "Ship-less container clean exit; no worker completion to signal", nil)
+		}
 		return
 	}
 
