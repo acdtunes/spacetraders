@@ -396,6 +396,15 @@ func RecordTourLanesStaleExcluded(playerID int, system string, count int) {
 	}
 }
 
+// RecordTourCandidateDropped records `count` profitable lanes dropped from tour candidate
+// assembly for `reason` globally (sp-mtvg). No-op when metrics are disabled, so a metrics
+// miss never touches the tour planning path (RULINGS #4).
+func RecordTourCandidateDropped(playerID int, reason string, count int) {
+	if globalTourStalenessCollector != nil {
+		globalTourStalenessCollector.RecordCandidateDropped(playerID, reason, count)
+	}
+}
+
 // RecordAbsorptionConsultVerdict records one consult-apply verdict globally (sp-dp92
 // P6). engine distinguishes the emitting engine ("idle_arb"|"trade_route"); verdict
 // uses each engine's own native vocabulary (idle_arb: skip_reserved|pass; trade_route:

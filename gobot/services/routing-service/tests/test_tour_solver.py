@@ -49,6 +49,41 @@ def test_solver_respects_two_system_cap():
     systems = {l["system_symbol"] for l in out["legs"]}
     assert len(systems) <= 2  # maxTourSystems enforced even when 3 allowed
 
+def test_out_of_horizon_lane_invisible_until_sink_system_allowed():
+    # sp-mtvg mechanism lock (the live-replay result, distilled): a good sourced cheap
+    # in S1 with its ONLY rich sink in S2. This is NOT dropped by any good/price/volume
+    # filter — it is simply absent whenever S2 is outside allowed_systems, because the
+    # sink market never enters the snapshot the solver sees. The fix is observability;
+    # this test PINS that the horizon guard itself is unchanged, so an accidental future
+    # widening (which the flat-hop travel model would mis-price) trips here.
+    snapshot = [
+        snap("SRC", "S1", "LASER_RIFLES", ask=16549, bid=0, tv=30),   # cheap export source
+        snap("SINK", "S2", "LASER_RIFLES", ask=61320, bid=30627, tv=6),  # rich import sink
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=225, fuel_current=2300, fuel_capacity=2300,
+                engine_speed=36, cargo=[])
+
+    def cons(allowed):
+        return dict(max_hops=6, max_spend=5_000_000, min_margin_per_unit=1,
+                    working_capital_reserve=0, allowed_systems=allowed,
+                    max_snapshot_age_minutes=75, expected_model_version="1@e")
+
+    def laser_units(out):
+        return sum(t["units"] for l in out["legs"] for t in l["trades"]
+                   if t["good_symbol"] == "LASER_RIFLES")
+
+    # Sink system out of the tour graph (the real ZC66-hauler horizon): lane invisible.
+    only_src = solve_tour(snapshot, ship, cons(["S1"]), MODEL)
+    assert laser_units(only_src) == 0
+
+    # Sink system in scope: the SAME good, prices, and volumes now trade — proving the
+    # exclusion was purely the missing sink system, never a good-level filter.
+    both = solve_tour(snapshot, ship, cons(["S1", "S2"]), MODEL)
+    assert both["feasible"]
+    assert laser_units(both) > 0
+
+
 def test_solver_prefers_nearer_equal_sink():
     # Two sinks with IDENTICAL bids: equal profit either way, so the cph
     # tiebreak must pick the nearer one — only possible with the real

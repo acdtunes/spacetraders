@@ -357,6 +357,60 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	}, nil
 }
 
+// BestSinksAcrossSystems returns, for each requested good, the single highest-bid
+// sell destination ACROSS ALL SYSTEMS for the player (sp-mtvg). EXPORT markets are
+// excluded so the result mirrors the tour snapshot's sink eligibility — an EXPORT bid
+// is a low sellback the solver zeroes (sp-9mkf), never a real sell destination. Rows
+// older than maxAge (relative to now) are excluded so a moved price never reports a
+// phantom sink. A good with no fresh non-EXPORT sink is simply absent from the map.
+//
+// It backs the tour coordinator's out-of-horizon lane diagnostic: a returned sink whose
+// SystemSymbol falls outside the 1-gate-hop tour graph is a profitable lane the planner
+// structurally cannot see. Read-only and best-effort by contract (the caller treats any
+// error as "no diagnostic this cycle"); it never participates in trade selection.
+func (r *MarketRepositoryGORM) BestSinksAcrossSystems(
+	ctx context.Context,
+	goods []string,
+	playerID int,
+	maxAge time.Duration,
+	now time.Time,
+) (map[string]market.GlobalSinkResult, error) {
+	out := map[string]market.GlobalSinkResult{}
+	if len(goods) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		GoodSymbol     string
+		WaypointSymbol string
+		PurchasePrice  int
+	}
+	// DISTINCT ON (good_symbol) ... ORDER BY good_symbol, purchase_price DESC keeps the
+	// single best (highest-bid) sink row per good in one indexed pass (Postgres).
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("DISTINCT ON (good_symbol) good_symbol, waypoint_symbol, purchase_price").
+		Where("player_id = ?", playerID).
+		Where("good_symbol IN ?", goods).
+		Where("last_updated >= ?", now.Add(-maxAge)).
+		Where("(trade_type IS NULL OR trade_type <> ?)", string(market.TradeTypeExport)).
+		Order("good_symbol, purchase_price DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to find best sinks across systems: %w", err)
+	}
+	for _, row := range rows {
+		if row.PurchasePrice <= 0 {
+			continue
+		}
+		out[row.GoodSymbol] = market.GlobalSinkResult{
+			WaypointSymbol: row.WaypointSymbol,
+			SystemSymbol:   shared.ExtractSystemSymbol(row.WaypointSymbol),
+			Bid:            row.PurchasePrice,
+		}
+	}
+	return out, nil
+}
+
 // FindAllMarketsInSystem returns all distinct market waypoint symbols in a system
 // This is used for fleet rebalancing to discover all available markets
 // Excludes FUEL_STATION waypoints (filters by type, not by trade good count)

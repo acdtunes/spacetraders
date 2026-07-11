@@ -776,6 +776,10 @@ func run(cfg *config.Config) error {
 		routingClient, marketScanner, nil, apiClient,
 	)
 	tourCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-mtvg: wire the global best-sink reader so the tour coordinator can SEE (and count
+	// on tour_candidates_dropped_total) the profitable exotic lanes whose sink is beyond the
+	// 1-gate-hop tour graph. The raw GORM repo carries BestSinksAcrossSystems; read-only.
+	tourCoordinatorHandler.SetOutOfHorizonSinkScanner(marketRepo)
 	// sp-wj0h: inject the config-resolved ABSOLUTE artifact path so the executor reads
 	// the market model regardless of the daemon's cwd (the launchd daemon's cwd is not
 	// the repo root, which DOA'd the first tour on the old cwd-relative constant).

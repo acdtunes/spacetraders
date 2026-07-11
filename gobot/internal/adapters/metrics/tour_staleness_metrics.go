@@ -27,6 +27,19 @@ type TourStalenessMetricsCollector struct {
 	// on its own, plus player_id for multi-tenant separation (every sibling collector
 	// carries it).
 	staleExcludedTotal *prometheus.CounterVec
+
+	// candidatesDroppedTotal increments once per profitable lane the tour candidate
+	// assembly drops for a reason OTHER than staleness, labeled by that reason
+	// (sp-mtvg). The load-bearing reason is "counterparty_system_unreachable": a good
+	// with a cheap source IN the tour graph but its best sink in a system OUTSIDE it
+	// (>1 gate hop away) — the lane the solver can never plan because source and sink
+	// never co-occur in one snapshot. This is the counter that makes the "exotic
+	// good-level blind spot" (20k+ LASER_RIFLES/HOLOGRAPHICS/QUANTUM_DRIVES bids never
+	// traded) LOUD instead of silent: an operator watching this climb sees the tour's
+	// 1-hop horizon leaking long-haul value in real time, the signal that was absent
+	// when the leak got misdiagnosed as a price/volume filter. Pure OBSERVATION
+	// (RULINGS #4) — the guarded horizon itself is unchanged.
+	candidatesDroppedTotal *prometheus.CounterVec
 }
 
 // NewTourStalenessMetricsCollector creates a new tour-staleness metrics collector.
@@ -41,6 +54,15 @@ func NewTourStalenessMetricsCollector() *TourStalenessMetricsCollector {
 			},
 			[]string{"player_id", "system"},
 		),
+		candidatesDroppedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_candidates_dropped_total",
+				Help:      "Profitable tour lanes dropped from candidate assembly by reason (sp-mtvg); reason=counterparty_system_unreachable flags a lane whose best sink is beyond the 1-gate-hop tour graph",
+			},
+			[]string{"player_id", "reason"},
+		),
 	}
 }
 
@@ -50,7 +72,10 @@ func (c *TourStalenessMetricsCollector) Register() error {
 	if Registry == nil {
 		return nil // Metrics not enabled
 	}
-	return Registry.Register(c.staleExcludedTotal)
+	if err := Registry.Register(c.staleExcludedTotal); err != nil {
+		return err
+	}
+	return Registry.Register(c.candidatesDroppedTotal)
 }
 
 // RecordStaleExcluded records `count` lanes dropped for staleness in `system`. count
@@ -61,4 +86,14 @@ func (c *TourStalenessMetricsCollector) RecordStaleExcluded(playerID int, system
 		return
 	}
 	c.staleExcludedTotal.WithLabelValues(strconv.Itoa(playerID), system).Add(float64(count))
+}
+
+// RecordCandidateDropped records `count` profitable lanes dropped from tour candidate
+// assembly for `reason` (sp-mtvg). count <= 0 or an empty reason is a no-op. Best-effort
+// and nil-safe: a recording miss never panics the tour path (RULINGS #4).
+func (c *TourStalenessMetricsCollector) RecordCandidateDropped(playerID int, reason string, count int) {
+	if c == nil || c.candidatesDroppedTotal == nil || count <= 0 || reason == "" {
+		return
+	}
+	c.candidatesDroppedTotal.WithLabelValues(strconv.Itoa(playerID), reason).Add(float64(count))
 }

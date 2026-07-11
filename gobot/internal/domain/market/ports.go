@@ -115,6 +115,18 @@ type BestMarketBuyingResult struct {
 	Supply         string
 }
 
+// GlobalSinkResult is the best sell destination for a good ACROSS ALL SYSTEMS (the
+// single highest bid, EXPORT markets excluded so it mirrors the tour snapshot's sink
+// eligibility — an EXPORT bid is a low sellback, zeroed there per sp-9mkf). It backs the
+// tour coordinator's out-of-horizon lane diagnostic (sp-mtvg): a sink whose System falls
+// outside the 1-gate-hop tour graph is a profitable lane the planner structurally cannot
+// see. SystemSymbol is derived from the waypoint (X1-XT71-A1 → X1-XT71).
+type GlobalSinkResult struct {
+	WaypointSymbol string
+	SystemSymbol   string
+	Bid            int // What the market pays us (purchase_price), the sell-side quote
+}
+
 // BestBuyingMarketResult represents the result of finding the best market to buy from
 // Scored by trade type (EXPORT > EXCHANGE > IMPORT), then by supply and activity
 type BestBuyingMarketResult struct {

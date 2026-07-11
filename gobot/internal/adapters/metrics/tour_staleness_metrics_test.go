@@ -81,7 +81,66 @@ func TestTourStalenessMetrics_LabelsAndValues(t *testing.T) {
 func TestTourStalenessMetrics_NilSafe(t *testing.T) {
 	var nilC *TourStalenessMetricsCollector
 	nilC.RecordStaleExcluded(1, "X1-XT71", 1)
+	nilC.RecordCandidateDropped(1, "counterparty_system_unreachable", 1)
 
 	empty := &TourStalenessMetricsCollector{}
 	empty.RecordStaleExcluded(1, "X1-XT71", 1)
+	empty.RecordCandidateDropped(1, "counterparty_system_unreachable", 1)
+}
+
+// TestTourCandidatesDropped_RegisterAndExport proves the sp-mtvg drop-reason counter
+// REGISTERS on the daemon's registry AND appears by name once observed (the same
+// registered-but-never-exported trap the staleness counter guards against).
+func TestTourCandidatesDropped_RegisterAndExport(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourStalenessMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	c.RecordCandidateDropped(2, "counterparty_system_unreachable", 1)
+
+	families, err := Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, f := range families {
+		got[f.GetName()] = true
+	}
+	if !got["spacetraders_daemon_tour_candidates_dropped_total"] {
+		t.Errorf("tour_candidates_dropped_total registered but not exported on the registry")
+	}
+}
+
+// TestTourCandidatesDropped_LabelsAndValues pins the {player_id, reason} label set,
+// that repeat records ACCUMULATE per reason (Add semantics), and that a non-positive
+// count or empty reason is a no-op (never a spurious zero-observation series).
+func TestTourCandidatesDropped_LabelsAndValues(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourStalenessMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	c.RecordCandidateDropped(7, "counterparty_system_unreachable", 2)
+	c.RecordCandidateDropped(7, "counterparty_system_unreachable", 1)
+	c.RecordCandidateDropped(7, "counterparty_system_unreachable", 0) // no-op
+	c.RecordCandidateDropped(7, "", 5)                                // no-op: empty reason
+
+	got, ok := gatherCounter(t, Registry,
+		"spacetraders_daemon_tour_candidates_dropped_total",
+		map[string]string{"player_id": "7", "reason": "counterparty_system_unreachable"})
+	if !ok {
+		t.Fatalf("series not found")
+	}
+	if got != 3 {
+		t.Errorf("accumulated = %v, want 3", got)
+	}
 }

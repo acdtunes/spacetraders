@@ -41,6 +41,21 @@ const (
 	// caps hops in the constraint it sends.
 	maxTourHops    = 6
 	maxTourSystems = 2
+	// unreachableLaneReason labels the sp-mtvg drop counter: a good with a cheap source
+	// IN the tour graph but its best sink in a system OUTSIDE it (>1 gate hop away), so
+	// source and sink never co-occur in one snapshot and the solver can never plan the
+	// lane. This is the "exotic good-level blind spot" the diagnostic makes loud.
+	unreachableLaneReason = "counterparty_system_unreachable"
+	// unreachableLaneMinSpreadPerUnit gates the diagnostic to materially profitable
+	// lanes: the observed exotic misses run 14k–37k/u (LASER_RIFLES 14,078; HOLOGRAPHICS
+	// ~19,800; QUANTUM_DRIVES ~37,000), so a 5k floor captures that class while filtering
+	// routine sub-5k cross-map spreads that would only add noise. A tuning knob, not a
+	// trade gate — it only decides what the observation counts.
+	unreachableLaneMinSpreadPerUnit = 5000
+	// unreachableLaneLogTopN caps how many of the richest dropped lanes are named in the
+	// log line per plan (the counter still aggregates ALL of them); mirrors the solver's
+	// TOP_REJECTED_N observability parity so the log can't spam.
+	unreachableLaneLogTopN = 3
 	// defaultModelArtifactPath is where the checked-in market-model artifact lives
 	// relative to the daemon's working directory (repo root). The executor reads
 	// fit_version + era from it at launch to bind the planner to the exact model —
@@ -288,6 +303,24 @@ type RunTourCoordinatorHandler struct {
 	// runs, so it is loaded under recoveryOnce and never mutated per-run.
 	recoveryHalfLives map[string]float64
 	recoveryOnce      sync.Once
+
+	// sinkScanner backs the out-of-horizon lane diagnostic (sp-mtvg): after building the
+	// in-scope snapshot, the coordinator asks it for each in-scope-sourced good's best sink
+	// ACROSS ALL SYSTEMS, and counts+logs the lanes whose best sink lies beyond the
+	// 1-gate-hop tour graph — the "exotic good-level blind spot" made loud. Optional and
+	// nil-safe: unset (tests, or metrics-disabled builds) → the diagnostic no-ops and the
+	// tour plans exactly as before (RULINGS #4 — observation never gates the trade path).
+	sinkScanner outOfHorizonSinkScanner
+}
+
+// outOfHorizonSinkScanner reads the global best sell destination per good (across ALL
+// systems), the seam the tour coordinator uses to SEE sinks its 1-gate-hop snapshot
+// cannot (sp-mtvg). The concrete *persistence.MarketRepositoryGORM satisfies it; the
+// daemon injects it via SetOutOfHorizonSinkScanner. Kept as a narrow local port (not a
+// method on the wide market.MarketRepository interface) so no mock/test double outside
+// this diagnostic is disturbed.
+type outOfHorizonSinkScanner interface {
+	BestSinksAcrossSystems(ctx context.Context, goods []string, playerID int, maxAge time.Duration, now time.Time) (map[string]market.GlobalSinkResult, error)
 }
 
 // NewRunTourCoordinatorHandler wires the tour coordinator with the same driven ports
@@ -338,6 +371,14 @@ func (h *RunTourCoordinatorHandler) SetPrePositioning(
 	h.demandMiner = miner
 	h.prePositioning = cfg
 	h.depositCeilingPct = capitalCeilingPct
+}
+
+// SetOutOfHorizonSinkScanner wires the global best-sink reader that backs the
+// out-of-horizon lane diagnostic (sp-mtvg). The daemon injects the concrete market repo;
+// left unset the diagnostic no-ops (RULINGS #4). Optional-port pattern, like the setters
+// below.
+func (h *RunTourCoordinatorHandler) SetOutOfHorizonSinkScanner(s outOfHorizonSinkScanner) {
+	h.sinkScanner = s
 }
 
 // SetGateGraph wires the multi-jump gate-graph resolver into the delegated movement
@@ -1261,6 +1302,9 @@ func (h *RunTourCoordinatorHandler) planForState(
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// sp-mtvg: make the 1-gate-hop horizon's dropped exotic lanes LOUD. Best-effort and
+	// read-only — it never touches snapshot/plan and any error is swallowed (RULINGS #4).
+	h.recordUnreachableLanes(ctx, allowedSystems, snapshot, cmd.PlayerID)
 	// sp-dchv Lane C: assemble haul-to-storage deposit candidates for the planner to
 	// price against arb sells. Empty when pre-positioning is off, no warehouse is in
 	// the tour graph, or the capital ceiling is unreadable (fail closed) — the tour
@@ -1289,6 +1333,133 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// re-read of the ledger. Nil when the ledger is unwired / consult killed, which
 	// simply yields no burn-in samples.
 	return plan, snapshot, absorptionView, nil
+}
+
+// recordUnreachableLanes is the sp-mtvg out-of-horizon lane diagnostic. Given the
+// just-built in-scope snapshot, it finds each good the hull can SOURCE cheaply within the
+// tour graph whose best sink (across ALL systems) lies OUTSIDE it — a profitable lane the
+// 1-gate-hop horizon structurally hides from the solver (the source and its sink never
+// co-occur in one snapshot, so no filter ever "rejects" the good; it simply never has a
+// sell destination present). It counts every such lane on
+// tour_candidates_dropped_total{reason=counterparty_system_unreachable} and names the
+// richest few by spread in one log line, converting the silent leak into a legible signal
+// so the class can never again be misdiagnosed as a price/volume filter.
+//
+// Read-only, best-effort, nil-safe: an unset scanner (tests / metrics-disabled), an empty
+// snapshot, or any read error yields no diagnostic and never touches the plan (RULINGS #4).
+// The guarded 1-hop horizon itself is unchanged — this only makes what it drops visible.
+func (h *RunTourCoordinatorHandler) recordUnreachableLanes(
+	ctx context.Context,
+	allowedSystems []string,
+	snapshot []routing.TourGoodSnapshot,
+	playerID int,
+) {
+	if h.sinkScanner == nil || len(snapshot) == 0 {
+		return
+	}
+	goods := inScopeSourcedGoods(snapshot)
+	if len(goods) == 0 {
+		return
+	}
+	sinks, err := h.sinkScanner.BestSinksAcrossSystems(ctx, goods, playerID, maxListingAge, h.clock.Now())
+	if err != nil || len(sinks) == 0 {
+		return
+	}
+	dropped := computeUnreachableLanes(allowedSystems, snapshot, sinks)
+	if len(dropped) == 0 {
+		return
+	}
+	metrics.RecordTourCandidateDropped(playerID, unreachableLaneReason, len(dropped))
+	// Name the richest lanes by spread (bounded) so the counter's rate carries exemplars.
+	top := dropped
+	if len(top) > unreachableLaneLogTopN {
+		top = top[:unreachableLaneLogTopN]
+	}
+	parts := make([]string, 0, len(top))
+	for _, l := range top {
+		parts = append(parts, fmt.Sprintf("%s %s(%d)->%s@%s(%d) spread %d/u",
+			l.Good, l.SourceWaypoint, l.Ask, l.SinkWaypoint, l.SinkSystem, l.Bid, l.Spread))
+	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Tour horizon dropped %d profitable lane(s) whose best sink is beyond the gate-neighbor graph (sp-mtvg): %s",
+		len(dropped), strings.Join(parts, "; ")),
+		map[string]interface{}{
+			"action":          "tour_candidates_dropped",
+			"reason":          unreachableLaneReason,
+			"count":           len(dropped),
+			"allowed_systems": strings.Join(allowedSystems, ","),
+		})
+}
+
+// unreachableLane is one profitable lane the tour horizon hides: a good sourceable in the
+// tour graph whose best sink sits in an out-of-graph system (sp-mtvg).
+type unreachableLane struct {
+	Good           string
+	SourceWaypoint string
+	SinkWaypoint   string
+	SinkSystem     string
+	Ask            int
+	Bid            int
+	Spread         int
+}
+
+// inScopeSourcedGoods returns the goods with a positive in-scope BUY quote (Ask>0) in the
+// snapshot — the goods the hull can actually source within the tour graph, the only ones
+// whose out-of-graph sinks are a genuine missed lane rather than noise.
+func inScopeSourcedGoods(snapshot []routing.TourGoodSnapshot) []string {
+	seen := map[string]bool{}
+	var goods []string
+	for _, r := range snapshot {
+		if r.Ask > 0 && !seen[r.Good] {
+			seen[r.Good] = true
+			goods = append(goods, r.Good)
+		}
+	}
+	return goods
+}
+
+// computeUnreachableLanes is the pure detection core of the sp-mtvg diagnostic. For each
+// good with a cheap in-scope source (min Ask>0 in the snapshot), it flags the good when
+// its best sink (from `sinks`, the global cross-system scan) lies OUTSIDE allowedSystems
+// and clears the materiality floor. Returned richest-spread-first. Pure — no clock, no
+// metrics, no IO — so the flagging rules are unit-tested directly.
+func computeUnreachableLanes(
+	allowedSystems []string,
+	snapshot []routing.TourGoodSnapshot,
+	sinks map[string]market.GlobalSinkResult,
+) []unreachableLane {
+	cheapestAsk := map[string]int{}
+	sourceWp := map[string]string{}
+	for _, r := range snapshot {
+		if r.Ask <= 0 {
+			continue
+		}
+		if cur, ok := cheapestAsk[r.Good]; !ok || r.Ask < cur {
+			cheapestAsk[r.Good] = r.Ask
+			sourceWp[r.Good] = r.Waypoint
+		}
+	}
+	allowed := map[string]bool{}
+	for _, s := range allowedSystems {
+		allowed[s] = true
+	}
+	var dropped []unreachableLane
+	for good, ask := range cheapestAsk {
+		sink, ok := sinks[good]
+		if !ok || allowed[sink.SystemSymbol] {
+			continue // no known sink, or the sink is already reachable in the tour graph
+		}
+		spread := sink.Bid - ask
+		if spread < unreachableLaneMinSpreadPerUnit {
+			continue
+		}
+		dropped = append(dropped, unreachableLane{
+			Good: good, SourceWaypoint: sourceWp[good], SinkWaypoint: sink.WaypointSymbol,
+			SinkSystem: sink.SystemSymbol, Ask: ask, Bid: sink.Bid, Spread: spread,
+		})
+	}
+	sort.Slice(dropped, func(i, j int) bool { return dropped[i].Spread > dropped[j].Spread })
+	return dropped
 }
 
 // depositCandidates assembles the haul-to-storage deposit sinks for the planner
