@@ -29,4 +29,18 @@ type ManufacturingConfig struct {
 	// that idled the tour fleet. 0/absent → the 40% default (common.DefaultReserveTreasuryPct,
 	// pending the trade-analyst's ruling). Config, not a constant (RULINGS #5).
 	WorkingCapitalReserveTreasuryPct int `mapstructure:"working_capital_reserve_treasury_pct"`
+
+	// InputPriceCeilingMultiplier is the ladder-chase ceiling on factory INPUT buys (sp-iv65),
+	// threaded into goods_factory_coordinator (RunFactoryCoordinatorCommand): an input buy
+	// aborts when its live ask exceeds this multiple of the good's trailing-median ask,
+	// stopping a chain from chasing its own supply ladder up (the ADV_CIRC 4x-market leak,
+	// −2.2M/hr). 0/absent → the 1.5 default the guard resolves at the point of use — a
+	// protective default that turns a GUARD on, not money movement, so a default is correct
+	// (RULINGS #5). Config, not a constant, so a captain retunes it live.
+	InputPriceCeilingMultiplier float64 `mapstructure:"input_price_ceiling_multiplier"`
+
+	// InputPriceCeilingDisabled is the emergency off-switch for the ladder-chase ceiling
+	// (RULINGS #5): true skips the guard entirely, for a captain who needs a factory to buy
+	// through a genuine price spike. Absent/false keeps the guard on at its default multiplier.
+	InputPriceCeilingDisabled bool `mapstructure:"input_price_ceiling_disabled"`
 }

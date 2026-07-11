@@ -174,6 +174,11 @@ type ProductionExecutor struct {
 	// wires the real DB-backed ledger via SetSpendLedger). Injected by setter, not constructor,
 	// so the package's existing test fixtures and the executor's many call sites stay untouched.
 	spendLedger SpendReservationLedger
+	// priceHistory backs the input price ceiling (sp-iv65): the trailing-median-ask source a
+	// factory input buy is checked against before it dispatches. nil disables the ceiling — the
+	// same optional-port fail-OPEN contract as apiClient/spendLedger (tests wire nothing; the
+	// daemon wires the DB-backed price history repo via SetPriceHistoryReader).
+	priceHistory InputPriceHistoryReader
 }
 
 // SetSpendLedger wires the cross-container concurrent spend cap (sp-w3he). The daemon calls
@@ -291,6 +296,19 @@ func (e *ProductionExecutor) buyGood(
 		"supply":       marketResult.Supply,
 		"trade_volume": marketResult.TradeVolume,
 	})
+
+	// Ladder-chase price ceiling (sp-iv65): refuse this input buy BEFORE navigating if the
+	// live ask exceeds the trailing-median ceiling. Checked pre-nav (the ask is already known
+	// from FindExportMarket) so a doomed buy never wastes a flight+dock at the market. The
+	// coordinator ChainMarginGuard (sp-2dv4) projects the chain ONCE at launch; this catches
+	// the ask laddering up DURING the buy round, which that projection structurally cannot see.
+	if e.inputPriceCeilingParked(ctx, marketResult.WaypointSymbol, node.Good, marketResult.Price) {
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        0,
+			WaypointSymbol:   marketResult.WaypointSymbol,
+		}, nil
+	}
 
 	// Navigate to market and dock
 	playerIDValue := shared.MustNewPlayerID(playerID)
@@ -618,6 +636,21 @@ func (e *ProductionExecutor) fabricateGood(
 	}
 	if stockedResult != nil {
 		return stockedResult, nil
+	}
+
+	// Chain-level negative-margin gate (sp-iv65): before buying ANY input, refuse a
+	// fabrication that is structurally underwater — summed input ask already above the
+	// output's resale bid — even when no single input trips the per-buy ceiling. Scoped to
+	// resale runs (inputs-only construction supply has no resale sink and is governed by the
+	// construction pipeline's own economics + the bp6f #3 harvest guard), mirroring the
+	// coordinator ChainMarginGuard's scope. Parks with a zero-spend result like the other
+	// recoverable-condition returns in this file.
+	if !inputsOnly && len(node.Children) > 0 && e.inputRoundMarginParked(ctx, node, systemSymbol, playerID) {
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        0,
+			WaypointSymbol:   factoryMarket.WaypointSymbol,
+		}, nil
 	}
 
 	// Step 1: Recursively produce all required inputs

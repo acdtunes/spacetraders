@@ -610,6 +610,10 @@ func run(cfg *config.Config) error {
 	// and collectively breach the reserve. This DB-backed reservation ledger (shared across all
 	// factory containers) serializes their in-flight input spend and closes that race.
 	factoryCoordinatorHandler.SetSpendLedger(persistence.NewSpendReservationLedger(db))
+	// sp-iv65: wire the trailing-median source for the ladder-chase input price ceiling. The
+	// priceHistoryRepo (already built above for the market scanner) reads the sell_price series
+	// buyGood checks each input ask against; left unset the ceiling is fail-open.
+	factoryCoordinatorHandler.SetPriceHistoryReader(priceHistoryRepo)
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
 	}

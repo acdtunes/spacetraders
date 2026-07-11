@@ -152,6 +152,14 @@ func (h *RunFactoryCoordinatorHandler) SetSpendLedger(ledger mfgServices.SpendRe
 	h.productionExecutor.SetSpendLedger(ledger)
 }
 
+// SetPriceHistoryReader wires the trailing-median source for the factory input price
+// ceiling (sp-iv65) into the production executor. The daemon calls this after construction
+// with the DB-backed price history repo (main.go), the same setter-injection pattern as
+// SetSpendLedger; left unset the ceiling is fail-open, which is what every test caller wants.
+func (h *RunFactoryCoordinatorHandler) SetPriceHistoryReader(reader mfgServices.InputPriceHistoryReader) {
+	h.productionExecutor.SetPriceHistoryReader(reader)
+}
+
 // Handle executes the factory coordinator command
 func (h *RunFactoryCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*RunFactoryCoordinatorCommand)
@@ -273,6 +281,12 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	if cmd.WorkingCapitalReserveTreasuryPct > 0 {
 		ctx = common.WithReserveTreasuryPct(ctx, cmd.WorkingCapitalReserveTreasuryPct)
 	}
+	// sp-iv65: stamp the ladder-chase input price ceiling config so each parallel worker's
+	// buyGood resolves it race-free off ctx (same singleton-executor reasoning as the reserve
+	// above). A 0 multiplier resolves to the 1.5 default at the point of use; disabled=true is
+	// the emergency off-switch. Stamped unconditionally so a directly-built command (0/false)
+	// still runs the guard at its default when a price-history reader is wired.
+	ctx = mfgServices.WithInputPriceCeiling(ctx, cmd.InputPriceCeilingMultiplier, cmd.InputPriceCeilingDisabled)
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,

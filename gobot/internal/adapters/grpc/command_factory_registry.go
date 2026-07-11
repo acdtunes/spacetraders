@@ -788,6 +788,12 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// deadlocked by a reserve above the balance; a positive value is the captain's
 		// [manufacturing] override.
 		WorkingCapitalReserveTreasuryPct: resolveReserveTreasuryPct(cfg.OptionalInt("working_capital_reserve_treasury_pct", 0)),
+		// sp-iv65: the ladder-chase input price ceiling. 0/absent → the executor resolves the
+		// 1.5 default at the point of use (the guard runs ON in production without the captain
+		// naming it); a set value is the captain's [manufacturing] override. The disable flag
+		// is the emergency off-switch (RULINGS #5).
+		InputPriceCeilingMultiplier: cfg.OptionalFloat("input_price_ceiling_multiplier", 0),
+		InputPriceCeilingDisabled:   cfg.OptionalBool("input_price_ceiling_disabled"),
 	}
 }
 

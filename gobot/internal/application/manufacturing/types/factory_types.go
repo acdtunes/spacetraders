@@ -60,6 +60,15 @@ type RunFactoryCoordinatorCommand struct {
 	// common.DefaultReserveTreasuryPct (40) so production runs the proportional floor while a
 	// command built directly (tests) keeps the absolute behavior.
 	WorkingCapitalReserveTreasuryPct int
+	// InputPriceCeilingMultiplier is the ladder-chase ceiling on factory INPUT buys (sp-iv65):
+	// an input aborts when its live ask exceeds this multiple of the good's trailing-median ask.
+	// 0/absent resolves to defaultInputPriceCeilingMultiplier (1.5) at the point of use — a
+	// protective default that turns the GUARD on, not money movement (RULINGS #5). Fed from the
+	// goods_factory launch config's input_price_ceiling_multiplier key.
+	InputPriceCeilingMultiplier float64
+	// InputPriceCeilingDisabled is the emergency off-switch for the ladder-chase ceiling
+	// (RULINGS #5): true skips the guard entirely. Fed from input_price_ceiling_disabled.
+	InputPriceCeilingDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

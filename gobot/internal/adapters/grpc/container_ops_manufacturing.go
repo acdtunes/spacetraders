@@ -310,6 +310,8 @@ func (s *DaemonServer) CleanupStaleManufacturingWorkers(
 var manufacturingConfigKeys = []string{
 	"working_capital_reserve",
 	"working_capital_reserve_treasury_pct",
+	"input_price_ceiling_multiplier",
+	"input_price_ceiling_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -352,5 +354,16 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	// floor is ON in production without the captain naming it.
 	if s.manufacturingConfig.WorkingCapitalReserveTreasuryPct != 0 {
 		config["working_capital_reserve_treasury_pct"] = s.manufacturingConfig.WorkingCapitalReserveTreasuryPct
+	}
+	// sp-iv65: the ladder-chase input price ceiling. Only written when the captain set a
+	// non-zero multiplier — an unset key defers to the goods_factory build's 1.5 default
+	// (the guard runs ON in production without the captain naming it, a protective default,
+	// RULINGS #5). The disable flag is written only when true, so absent/false keeps the
+	// guard on; the clear in resolveManufacturingConfig makes turning it back on take effect.
+	if s.manufacturingConfig.InputPriceCeilingMultiplier != 0 {
+		config["input_price_ceiling_multiplier"] = s.manufacturingConfig.InputPriceCeilingMultiplier
+	}
+	if s.manufacturingConfig.InputPriceCeilingDisabled {
+		config["input_price_ceiling_disabled"] = true
 	}
 }
