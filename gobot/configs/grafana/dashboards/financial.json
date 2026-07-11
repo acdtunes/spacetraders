@@ -172,77 +172,6 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Treasury minus the 50k working-capital reserve floor (buy-time guard; tours shrink or skip buys that would pierce it).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "unit": "locale",
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 100000
-              },
-              {
-                "color": "green",
-                "value": 500000
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
-        "y": 1
-      },
-      "id": 3,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT balance_after - 50000 FROM transactions WHERE player_id=(SELECT MAX(id) FROM players) ORDER BY \"timestamp\" DESC LIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Headroom Above Reserve Floor",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
       "description": "Fleet-expansion spend booked in the last 24h.",
       "fieldConfig": {
         "defaults": {
@@ -267,7 +196,7 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 12,
+        "x": 8,
         "y": 1
       },
       "id": 4,
@@ -327,8 +256,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 8,
-        "x": 16,
+        "w": 12,
+        "x": 12,
         "y": 1
       },
       "id": 5,
@@ -590,7 +519,23 @@
             "spanNulls": true
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "costs"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -619,7 +564,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) * 4 AS \"revenue\", COALESCE(SUM(amount) FILTER (WHERE amount < 0), 0) * 4 AS \"costs\" FROM transactions WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) * 4 AS \"revenue\", COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) * 4 AS \"costs\" FROM transactions WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -631,29 +576,43 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Per-operation attribution from the income ledger over the last 24h. Stocker deposits book zero revenue by design (spend-only lane).",
+      "description": "Realized contract profit per hour. operation_type='contract' spans exactly CONTRACT_ACCEPTED/CONTRACT_FULFILLED (revenue, positive) and PURCHASE_CARGO/REFUEL (costs, negative) with no leakage either direction (live-verified), so SUM(amount) over that filter is net contract profit directly. 15m buckets x4 for cr/hr, mirroring Revenue vs Costs; current incomplete bucket excluded so the right edge does not dive.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": []
+          "mappings": [],
+          "unit": "locale",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
+        "h": 8,
         "w": 24,
         "x": 0,
         "y": 15
       },
-      "id": 11,
+      "id": 109,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "show": false
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "showHeader": true
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -661,14 +620,14 @@
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
-          "format": "table",
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(operation_type, '(untagged)') AS \"Operation\", COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) AS \"Revenue\", COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) AS \"Costs\", SUM(amount) AS \"Net\", COUNT(*) AS \"Txns\" FROM transactions WHERE created_at >= NOW() - INTERVAL '24 hours' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY SUM(amount) DESC",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"contract profit/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='contract' AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
-      "title": "P/L by Operation (24h)",
-      "type": "table"
+      "title": "Contract Profit (cr/hr)",
+      "type": "timeseries"
     },
     {
       "collapsed": false,
@@ -676,7 +635,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 23
       },
       "id": 12,
       "panels": [],
@@ -717,7 +676,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 23
+        "y": 24
       },
       "id": 13,
       "options": {
@@ -788,7 +747,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 27
+        "y": 28
       },
       "id": 14,
       "options": {
@@ -849,7 +808,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 23
+        "y": 24
       },
       "id": 15,
       "options": {
@@ -907,7 +866,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 23
+        "y": 24
       },
       "id": 16,
       "options": {
@@ -938,56 +897,12 @@
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Income-ledger attribution per trade heavy over the last 6h. Net includes open inventory (a heavy mid-buy shows negative until it sells).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 31
-      },
-      "id": 17,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT metadata->>'ship_symbol' AS \"Ship\", SUM(amount) AS \"Net\", COALESCE(SUM(amount) FILTER (WHERE category='TRADING_REVENUE'), 0) AS \"Revenue\", COALESCE(-SUM(amount) FILTER (WHERE category IN ('TRADING_COSTS','FUEL_COSTS')), 0) AS \"Costs\", COUNT(DISTINCT related_entity_id) AS \"Runs\" FROM transactions WHERE operation_type='tour' AND created_at >= NOW() - INTERVAL '6 hours' AND player_id=(SELECT MAX(id) FROM players) AND metadata->>'ship_symbol' IS NOT NULL GROUP BY 1 ORDER BY SUM(amount) DESC",
-          "refId": "A"
-        }
-      ],
-      "title": "Per-Heavy Tour Profit (6h)",
-      "type": "table"
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 32
       },
       "id": 100,
       "panels": [],
@@ -1028,7 +943,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 39
+        "y": 33
       },
       "id": 101,
       "options": {
@@ -1099,7 +1014,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 43
+        "y": 37
       },
       "id": 102,
       "options": {
@@ -1160,7 +1075,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 39
+        "y": 33
       },
       "id": 103,
       "options": {
@@ -1218,7 +1133,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 39
+        "y": 33
       },
       "id": 104,
       "options": {
@@ -1254,7 +1169,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 47
+        "y": 41
       },
       "id": 106,
       "panels": [],
@@ -1291,7 +1206,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 48
+        "y": 42
       },
       "id": 107,
       "options": {
@@ -1383,7 +1298,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 48
+        "y": 42
       },
       "id": 108,
       "options": {
