@@ -69,6 +69,14 @@ type RunFactoryCoordinatorCommand struct {
 	// InputPriceCeilingDisabled is the emergency off-switch for the ladder-chase ceiling
 	// (RULINGS #5): true skips the guard entirely. Fed from input_price_ceiling_disabled.
 	InputPriceCeilingDisabled bool
+	// InputSupplyGateParkLevel is the cached supply level at or below which a factory INPUT buy
+	// parks (sp-a5j7) — the LEADING guard to the LAGGING price ceiling. "" resolves to
+	// defaultSupplyGateParkLevel (SCARCE) at the point of use; a parked buy still proceeds when
+	// the feed leg clears at the live ask. Fed from input_supply_gate_park_level.
+	InputSupplyGateParkLevel string
+	// InputSupplyGateDisabled is the emergency off-switch for the supply-state gate (RULINGS #5):
+	// true skips the guard entirely. Fed from input_supply_gate_disabled.
+	InputSupplyGateDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

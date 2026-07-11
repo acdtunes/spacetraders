@@ -297,6 +297,20 @@ func (e *ProductionExecutor) buyGood(
 		"trade_volume": marketResult.TradeVolume,
 	})
 
+	// Supply-state gate (sp-a5j7): the LEADING guard. Refuse this input buy BEFORE navigating
+	// when the market's cached supply is depleted (SCARCE) unless the feed leg still clears at
+	// the live ask. Supply is the CAUSAL signal — a depleted market is what ladders the ask up
+	// — so this fires BEFORE the price ceiling below, which is the LAGGING backstop that only
+	// sees the ask after it has already moved. Both are independent (RULINGS #4): clearing the
+	// supply gate does not bypass the ceiling. Ordered supply-gate → ceiling → capital-floor.
+	if e.inputSupplyGateParked(ctx, marketResult, node.Good, systemSymbol, playerID) {
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        0,
+			WaypointSymbol:   marketResult.WaypointSymbol,
+		}, nil
+	}
+
 	// Ladder-chase price ceiling (sp-iv65): refuse this input buy BEFORE navigating if the
 	// live ask exceeds the trailing-median ceiling. Checked pre-nav (the ask is already known
 	// from FindExportMarket) so a doomed buy never wastes a flight+dock at the market. The

@@ -312,6 +312,8 @@ var manufacturingConfigKeys = []string{
 	"working_capital_reserve_treasury_pct",
 	"input_price_ceiling_multiplier",
 	"input_price_ceiling_disabled",
+	"input_supply_gate_park_level",
+	"input_supply_gate_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -365,5 +367,16 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.InputPriceCeilingDisabled {
 		config["input_price_ceiling_disabled"] = true
+	}
+	// sp-a5j7: the LEADING supply-state gate. Only written when the captain set a park level —
+	// an unset key defers to the goods_factory build's SCARCE default (the guard runs ON in
+	// production without the captain naming it, RULINGS #5). The disable flag is written only
+	// when true, so absent/false keeps the guard on; the clear in resolveManufacturingConfig
+	// makes turning it back on take effect.
+	if s.manufacturingConfig.InputSupplyGateParkLevel != "" {
+		config["input_supply_gate_park_level"] = s.manufacturingConfig.InputSupplyGateParkLevel
+	}
+	if s.manufacturingConfig.InputSupplyGateDisabled {
+		config["input_supply_gate_disabled"] = true
 	}
 }

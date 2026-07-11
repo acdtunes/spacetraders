@@ -43,4 +43,18 @@ type ManufacturingConfig struct {
 	// (RULINGS #5): true skips the guard entirely, for a captain who needs a factory to buy
 	// through a genuine price spike. Absent/false keeps the guard on at its default multiplier.
 	InputPriceCeilingDisabled bool `mapstructure:"input_price_ceiling_disabled"`
+
+	// InputSupplyGateParkLevel is the cached supply level at or below which a factory INPUT buy
+	// parks (sp-a5j7), threaded into goods_factory_coordinator (RunFactoryCoordinatorCommand):
+	// the LEADING guard to the LAGGING price ceiling above. Supply is the CAUSAL signal — a
+	// depleted market is what ladders the ask up — so a buy into a SCARCE market is refused
+	// before it pushes the ladder another rung (the D39/ADV_CIRC supply event). "" → the SCARCE
+	// default the guard resolves at the point of use; raise to "LIMITED" to park one state
+	// earlier. A buy into a parked level still proceeds when the feed leg clears at the live ask.
+	InputSupplyGateParkLevel string `mapstructure:"input_supply_gate_park_level"`
+
+	// InputSupplyGateDisabled is the emergency off-switch for the supply-state gate (RULINGS #5):
+	// true skips the guard entirely, for a captain who must feed a factory through a genuine
+	// supply crunch. Absent/false keeps the guard on at its default (park SCARCE, warn LIMITED).
+	InputSupplyGateDisabled bool `mapstructure:"input_supply_gate_disabled"`
 }

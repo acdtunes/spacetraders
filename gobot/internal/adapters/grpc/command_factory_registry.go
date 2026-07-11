@@ -794,6 +794,11 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// is the emergency off-switch (RULINGS #5).
 		InputPriceCeilingMultiplier: cfg.OptionalFloat("input_price_ceiling_multiplier", 0),
 		InputPriceCeilingDisabled:   cfg.OptionalBool("input_price_ceiling_disabled"),
+		// sp-a5j7: the LEADING supply-state gate. "" → the executor resolves the SCARCE default
+		// at the point of use (the guard runs ON in production without the captain naming it); a
+		// set value (e.g. "LIMITED") tightens it. The disable flag is the RULINGS #5 off-switch.
+		InputSupplyGateParkLevel: cfg.OptionalString("input_supply_gate_park_level"),
+		InputSupplyGateDisabled:  cfg.OptionalBool("input_supply_gate_disabled"),
 	}
 }
 
