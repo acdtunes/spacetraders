@@ -529,6 +529,7 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		StartJitterMaxSecs:            cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
 		MaxRepositionJumps:            cfg.OptionalInt("max_reposition_jumps", 0),
 		RepositionFailureCooldownSecs: cfg.OptionalInt("reposition_failure_cooldown_secs", 0),
+		CoverageSpreadDisabled:        cfg.OptionalBool("coverage_spread_disabled"),
 	}
 }
 

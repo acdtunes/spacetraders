@@ -40,4 +40,14 @@ type ScoutingConfig struct {
 	// TORWIND-66 corpses / 15min). 0/absent => 1800s (30 min): long enough that a broken
 	// post is retried on the order of the frontier's own change cadence, not every 30s tick.
 	RepositionFailureCooldownSecs int `mapstructure:"reposition_failure_cooldown_secs"`
+
+	// CoverageSpreadDisabled turns OFF the sp-6ovd coverage-first manning order in the
+	// standing scout_post_coordinator, reverting to the legacy depth-first order (all of a
+	// post's slots before the next post's). false/absent => LIVE: the reconciler interleaves
+	// unmanned slots by tier so a scarce idle-probe pool spreads one-per-uncovered-system
+	// before piling a multi-hull post's extra slots — the durable fix for the reconciler
+	// herding the whole probe group onto one target per cycle (7->BT82, 8->GS93) while
+	// HZ30/PD44/YP16/FQ55 stayed dark. RULINGS #5 disable escape: a captain can pin
+	// depth-first without a redeploy; not expected to be set in normal operation.
+	CoverageSpreadDisabled bool `mapstructure:"coverage_spread_disabled"`
 }

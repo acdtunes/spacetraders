@@ -296,6 +296,7 @@ var scoutingConfigKeys = []string{
 	"tour_start_jitter_max_seconds",
 	"max_reposition_jumps",
 	"reposition_failure_cooldown_secs",
+	"coverage_spread_disabled",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -327,6 +328,12 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	}
 	if sc.RepositionFailureCooldownSecs != 0 {
 		config["reposition_failure_cooldown_secs"] = sc.RepositionFailureCooldownSecs
+	}
+	// Boolean disable escape (sp-6ovd): inject ONLY when set true — false/absent defers to the
+	// coordinator's live-by-default coverage-first order, so an unset knob writes no key. Listed
+	// in scoutingConfigKeys so a stale true from a prior boot is cleared before this re-inject.
+	if sc.CoverageSpreadDisabled {
+		config["coverage_spread_disabled"] = true
 	}
 }
 

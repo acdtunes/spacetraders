@@ -159,6 +159,16 @@ type RunScoutPostCoordinatorCommand struct {
 	// crash-loop the dispatcher and flood the event queue. <= 0 uses
 	// defaultRepositionFailureCooldown, mirroring TickIntervalSecs.
 	RepositionFailureCooldownSecs int
+
+	// CoverageSpreadDisabled reverts the sp-6ovd coverage-first manning order to the legacy
+	// depth-first order (all of a post's slots before the next post's). Default false = LIVE:
+	// unmannedSlotTargets interleaves by slot tier so a scarce idle-probe pool spreads
+	// one-per-uncovered-system before it piles a multi-hull post's extra slots — the durable
+	// fix for the reconciler herding the whole probe group onto one target per cycle while
+	// distinct high-value systems stayed dark. The escape ([scouting] coverage_spread_disabled)
+	// exists per RULINGS #5 so a captain can pin depth-first without a redeploy; it is not
+	// expected to be set in normal operation.
+	CoverageSpreadDisabled bool
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -635,7 +645,7 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	}
 
 	// Pass 2: man the unmanned slots, standing posts first.
-	targets := h.unmannedSlotTargets(posts, removed)
+	targets := h.unmannedSlotTargets(posts, removed, cmd.CoverageSpreadDisabled)
 	if len(targets) == 0 {
 		return nil
 	}
@@ -1016,7 +1026,7 @@ func (h *RunScoutPostCoordinatorHandler) reconcileRepositioningSlots(
 // repositioning, in a non-retired post. Standing posts sort before sweep-once (the
 // freshness backbone is manned first), deterministic by system within a kind, and
 // primary-before-extra within a post — so manning order is stable and testable.
-func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool) []slotTarget {
+func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool, spreadDisabled bool) []slotTarget {
 	ordered := make([]*domainScouting.ScoutPost, 0, len(posts))
 	for _, post := range posts {
 		if removed[post.SystemSymbol] {
@@ -1026,13 +1036,49 @@ func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScou
 	}
 	sortPostsByPriority(ordered)
 
-	var targets []slotTarget
+	// Group each post's unmanned slots in slot order, keeping the posts in priority
+	// order. maxDepth is the deepest post's unmanned-slot count.
+	perPost := make([][]slotTarget, 0, len(ordered))
+	maxDepth := 0
 	for _, post := range ordered {
+		var slots []slotTarget
 		for _, slot := range post.Slots() {
 			if slot.AssignedHull() != "" || slot.RepositionContainerID() != "" {
 				continue
 			}
-			targets = append(targets, slotTarget{post: post, slot: slot})
+			slots = append(slots, slotTarget{post: post, slot: slot})
+		}
+		if len(slots) == 0 {
+			continue
+		}
+		perPost = append(perPost, slots)
+		if len(slots) > maxDepth {
+			maxDepth = len(slots)
+		}
+	}
+
+	targets := make([]slotTarget, 0, len(ordered))
+	if spreadDisabled {
+		// Legacy depth-first (sp-6ovd disable escape): every one of a post's slots before
+		// the next post's — the pre-fix order, byte-identical for single-hull posts.
+		for _, slots := range perPost {
+			targets = append(targets, slots...)
+		}
+		return targets
+	}
+
+	// sp-6ovd coverage-first: interleave by slot TIER across the priority-ordered posts —
+	// every post's first unmanned slot, THEN every post's second, and so on. With a scarce
+	// idle-probe pool (pass 2b consumes one satellite per target in order) this spreads one
+	// probe per uncovered system before piling a multi-hull post's extra slots, so distinct
+	// high-value systems stop going dark while the pool drains into one post's N slots. The
+	// FULL set of targets is unchanged — only the order — so once coverage is met a multi-hull
+	// post still fills all its slots; single-hull-only fleets are unaffected (one tier).
+	for depth := 0; depth < maxDepth; depth++ {
+		for _, slots := range perPost {
+			if depth < len(slots) {
+				targets = append(targets, slots[depth])
+			}
 		}
 	}
 	return targets

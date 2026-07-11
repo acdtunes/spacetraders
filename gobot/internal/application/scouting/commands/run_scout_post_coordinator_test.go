@@ -661,6 +661,78 @@ func TestScoutPost_SortPostsByPriority_StandingBeforeSweepOnce(t *testing.T) {
 		"standing posts sort before sweep-once, deterministic by system within a kind")
 }
 
+// A multi-hull post fully unmanned must not starve DISTINCT uncovered systems (sp-6ovd):
+// the reconciler herded the whole idle-probe group onto the top-priority multi-hull post
+// per cycle (live evidence: 7→BT82, then 8→GS93) while HZ30/PD44/YP16/FQ55 stayed dark
+// with zero probes — over-scout where 1 suffices AND uncovered high-value systems.
+// unmannedSlotTargets is the ordering BOTH manning passes (2a in-system, 2b reposition)
+// consume from a scarce pool, so the coverage-first contract is pinned directly (mirrors
+// the sortPostsByPriority direct test above): the first N targets, one per unmanned post,
+// must cover N DISTINCT systems before any system gets a second probe.
+func TestScoutPost_UnmannedSlotTargets_CoverageBeforeDepth(t *testing.T) {
+	// X1-AAA sorts first (lexicographic, all standing) AND is multi-hull with 8 unmanned
+	// slots — the herd magnet. Four single-hull posts each need exactly one probe.
+	multi := &domainScouting.ScoutPost{
+		SystemSymbol: "X1-AAA",
+		Kind:         domainScouting.PostKindStanding,
+		Hulls:        8,
+		ExtraSlots:   make([]domainScouting.ScoutPostSlot, 7), // 7 extras + primary = 8 unmanned slots
+	}
+	posts := []*domainScouting.ScoutPost{
+		multi,
+		{SystemSymbol: "X1-BBB", Kind: domainScouting.PostKindStanding},
+		{SystemSymbol: "X1-CCC", Kind: domainScouting.PostKindStanding},
+		{SystemSymbol: "X1-DDD", Kind: domainScouting.PostKindStanding},
+		{SystemSymbol: "X1-EEE", Kind: domainScouting.PostKindStanding},
+	}
+
+	h := &RunScoutPostCoordinatorHandler{}
+	targets := h.unmannedSlotTargets(posts, map[string]bool{}, false)
+
+	require.Len(t, targets, 12, "every unmanned slot is still a target (8 multi-hull + 4 single-hull)")
+
+	// The first 5 targets — one per unmanned post — must cover 5 DISTINCT systems.
+	firstFive := make([]string, 0, 5)
+	firstCovered := map[string]bool{}
+	for _, tgt := range targets[:5] {
+		firstFive = append(firstFive, tgt.post.SystemSymbol)
+		firstCovered[tgt.post.SystemSymbol] = true
+	}
+	require.Len(t, firstCovered, 5,
+		"coverage-first: the first probe reaches every uncovered system before any gets a second (first five: %v)", firstFive)
+
+	// Depth is preserved once coverage is achieved: the multi-hull post still gets all 8.
+	perSystem := map[string]int{}
+	for _, tgt := range targets {
+		perSystem[tgt.post.SystemSymbol]++
+	}
+	require.Equal(t, 8, perSystem["X1-AAA"], "the multi-hull post still gets all 8 of its slots — depth resumes after coverage")
+}
+
+// The disable escape (RULINGS #5, live-by-default) reverts to the legacy depth-first
+// order — all of a post's slots before the next post — so the spread is provably the
+// DEFAULT and a captain can turn it off without a redeploy (sp-6ovd).
+func TestScoutPost_UnmannedSlotTargets_DisableEscape_RevertsToDepthFirst(t *testing.T) {
+	multi := &domainScouting.ScoutPost{
+		SystemSymbol: "X1-AAA",
+		Kind:         domainScouting.PostKindStanding,
+		Hulls:        3,
+		ExtraSlots:   make([]domainScouting.ScoutPostSlot, 2),
+	}
+	posts := []*domainScouting.ScoutPost{
+		multi,
+		{SystemSymbol: "X1-BBB", Kind: domainScouting.PostKindStanding},
+	}
+
+	h := &RunScoutPostCoordinatorHandler{}
+	targets := h.unmannedSlotTargets(posts, map[string]bool{}, true)
+
+	require.Len(t, targets, 4)
+	got := []string{targets[0].post.SystemSymbol, targets[1].post.SystemSymbol, targets[2].post.SystemSymbol, targets[3].post.SystemSymbol}
+	require.Equal(t, []string{"X1-AAA", "X1-AAA", "X1-AAA", "X1-BBB"}, got,
+		"disable escape: depth-first — the multi-hull post's 3 slots precede the next post")
+}
+
 // Only the in-system satellite is ever selected; the out-of-system one is left idle,
 // never claimed (sp-qxa4 in-system-only matching), even though it sorts first.
 func TestScoutPost_SelectsInSystemSatellite_CrossSystemLeftIdle(t *testing.T) {
