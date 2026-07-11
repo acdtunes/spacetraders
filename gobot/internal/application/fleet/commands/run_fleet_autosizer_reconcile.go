@@ -208,6 +208,15 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 	st := h.coordinatorState(cmd.ContainerID)
 	in := h.readTickInputs(ctx, cmd.PlayerID)
 
+	// The live-resolved params every provider reads this tick (sp-ts82 live-config discipline): the
+	// providers are constructed once at boot but see the current config.yaml value through here.
+	params := DemandParams{
+		LightRotationSlots:          cfg.LightRotationSlots,
+		WarehouseMinTickPersistence: cfg.WarehouseMinChainTickPersistence,
+		WarehouseMinRealizedPerHour: cfg.WarehouseMinChainRealizedPerHour,
+		MaxWarehouseHulls:           cfg.MaxWarehouseHulls,
+	}
+
 	purchasesThisTick := 0
 	anyUnmetNoBuy := false
 
@@ -216,7 +225,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		if cfg.classDisabled(class) {
 			continue
 		}
-		d, err := p.Demand(ctx, cmd.PlayerID, DemandParams{LightRotationSlots: cfg.LightRotationSlots})
+		d, err := p.Demand(ctx, cmd.PlayerID, params)
 		if err != nil {
 			// An infra fault reading one class must not abort the whole tick — log and move on;
 			// the class simply does not size this pass (fail-safe: no buy).
@@ -240,6 +249,23 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		}
 		if unmetNoBuy {
 			anyUnmetNoBuy = true
+		}
+	}
+
+	// Warehouse DISPATCH (sp-1j3f): after the buy pass, place idle/stranded warehouse hulls onto the
+	// durable chains. This runs every tick the warehouse class is enabled — a hull stranded when vdld
+	// retires its chain must be re-sited even on a tick that buys nothing. The plan was computed by
+	// the warehouse provider's Demand() above; here we apply it (respecting dry-run).
+	if !cfg.classDisabled(HullClassWarehouse) && h.warehouse != nil {
+		dres := h.warehouse.DispatchPlanned(ctx, cmd.PlayerID, cfg.DryRun)
+		if dres.Dispatched > 0 || dres.Stranded > 0 || dres.Uncovered > 0 {
+			logger.Log("INFO", fmt.Sprintf("Autosizer warehouse dispatch: %d placed, %d still stranded, %d durable target(s) uncovered", dres.Dispatched, dres.Stranded, dres.Uncovered), map[string]interface{}{
+				"action":       "autosizer_warehouse_dispatch",
+				"container_id": cmd.ContainerID,
+				"dispatched":   dres.Dispatched,
+				"stranded":     dres.Stranded,
+				"uncovered":    dres.Uncovered,
+			})
 		}
 	}
 

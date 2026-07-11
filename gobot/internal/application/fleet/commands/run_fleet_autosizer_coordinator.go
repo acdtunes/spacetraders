@@ -52,6 +52,14 @@ const (
 type DemandParams struct {
 	// LightRotationSlots is the C3 rotation divisor inverted: K chains need K × this workers.
 	LightRotationSlots float64
+	// WarehouseMinTickPersistence is the hysteresis: a chain must sit in the running portfolio this
+	// many consecutive ticks before a warehouse follows it (sp-1j3f).
+	WarehouseMinTickPersistence int
+	// WarehouseMinRealizedPerHour is the pay gate: only a chain earning at least this realized $/hr
+	// (rh2z chain_pnl) pulls a warehouse.
+	WarehouseMinRealizedPerHour float64
+	// MaxWarehouseHulls caps the warehouse demand regardless of how many durable chains exist.
+	MaxWarehouseHulls int
 }
 
 // ClassDemandProvider reads one hull class's demand each tick (the pluggable-provider seam,
@@ -158,6 +166,11 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	notifier  PurchaseNotifier
 	metrics   MetricsSink
 
+	// warehouse is the typed handle to the warehouse provider (sp-1j3f). Held in addition to its
+	// slot in providers so the reconcile loop can invoke its DISPATCH step (place idle/stranded hulls
+	// on durable chains) after the buy pass. nil until wired, in which case dispatch is skipped.
+	warehouse *WarehouseDemandProvider
+
 	mu    sync.Mutex
 	state map[string]*autosizerState // keyed by container ID
 }
@@ -188,6 +201,16 @@ func NewRunFleetAutosizerCoordinatorHandler(clock shared.Clock) *RunFleetAutosiz
 
 // AddDemandProvider registers a class demand provider. Registration order is evaluation order.
 func (h *RunFleetAutosizerCoordinatorHandler) AddDemandProvider(p ClassDemandProvider) {
+	h.providers = append(h.providers, p)
+}
+
+// SetWarehouseProvider wires the warehouse provider (sp-1j3f). It registers the provider in the
+// evaluation loop (its Demand() feeds the buy path like any class) AND keeps a typed handle so the
+// reconcile loop can run its DISPATCH step each tick — placing idle/stranded warehouse hulls on the
+// durable chains, which the generic buy path cannot do. Call this INSTEAD of AddDemandProvider for
+// the warehouse class.
+func (h *RunFleetAutosizerCoordinatorHandler) SetWarehouseProvider(p *WarehouseDemandProvider) {
+	h.warehouse = p
 	h.providers = append(h.providers, p)
 }
 
