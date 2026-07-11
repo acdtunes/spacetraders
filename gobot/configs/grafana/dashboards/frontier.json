@@ -886,24 +886,124 @@
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Marker rows on gate_edges (connected_system=''). sp-ikx1 backoff: gates whose waypoint 400s on read get a marker instead of a real edge, carrying unreadable_since and attempt_count, so the gate-graph builder stops re-probing them every 30s tick until the backoff window (5m -> 30m -> 2h) elapses. Global/shared, no player_id.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
       "gridPos": {
         "h": 6,
-        "w": 16,
+        "w": 4,
         "x": 8,
         "y": 40
       },
       "id": 20,
       "options": {
-        "code": {
-          "language": "plaintext",
-          "showLineNumbers": false,
-          "showMiniMap": false
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "content": "### Unreadable / backed-off gates — pending live migration (sp-ikx1)\n\nsp-ikx1 merged to main **during this dashboard's build** (commit `97490b2`): negative-result backoff (5m -> 30m -> 2h) for gates that 400 on read, so the gate-graph builder stops re-probing them every 30s tick. State is persisted as **marker rows** on `gate_edges` — a row with `connected_system=''` is not a real edge, it is the backoff marker for an unreadable system, carrying `unreadable_since` (RFC3339 text) and `attempt_count` (int).\n\nAs of this build the live database has **not yet run that migration** — `unreadable_since`/`attempt_count` do not exist on the running `gate_edges` table (checked live via `information_schema.columns`). They land once the owning daemon restarts onto the new binary.\n\nThis panel stays a placeholder because a query against those columns would fail live today, and every panel in this dashboard was validated live before being written. Once the migration lands, replace this text panel with: a count of marker rows (`connected_system=''`), and a breakdown by `attempt_count`/backoff tier.",
-        "mode": "markdown"
+        "textMode": "value",
+        "wideLayout": true
       },
-      "title": "Unreadable / Backed-Off Gates (sp-ikx1 merged, migration pending)",
-      "type": "text"
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM gate_edges WHERE connected_system=''",
+          "refId": "A"
+        }
+      ],
+      "title": "Gates Currently in Probe-Backoff (sp-ikx1 markers)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Per-system detail for gate_edges marker rows (connected_system=''). attempt_count is the sp-ikx1 backoff tier (5m -> 30m -> 2h between re-probes); \"Unreadable For\" is elapsed time since unreadable_since (RFC3339 text, cast to timestamptz).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Unreadable For (s)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "id": 21,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT system_symbol AS \"System\", attempt_count AS \"Attempts (Backoff Tier)\", EXTRACT(EPOCH FROM (NOW() - unreadable_since::timestamptz))::int AS \"Unreadable For (s)\" FROM gate_edges WHERE connected_system='' ORDER BY attempt_count DESC, unreadable_since ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Backoff Detail by System (attempt_count / age)",
+      "type": "table"
     }
   ],
   "refresh": "1m",
