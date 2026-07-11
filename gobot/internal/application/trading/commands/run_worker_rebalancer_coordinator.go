@@ -9,6 +9,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -190,6 +192,13 @@ type RunWorkerRebalancerCoordinatorHandler struct {
 	// disables ferrying entirely (fail-closed park), so it is wired via SetGateGraph
 	// rather than the constructor — mirroring the trade-route/scout coordinators.
 	gateGraph GateGraph
+
+	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
+	// when a reconcile pass fails with the identical error for DefaultStreakThreshold
+	// consecutive ticks — the silent-stuck class becomes an interrupt-visible captain
+	// event instead of ERROR lines nothing reads. Optional-injection via
+	// SetEventRecorder, nil-safe like the contract coordinator's captainEvents.
+	captainEvents captain.EventRecorder
 }
 
 // NewRunWorkerRebalancerCoordinatorHandler wires the coordinator. clock defaults to the
@@ -220,6 +229,14 @@ func NewRunWorkerRebalancerCoordinatorHandler(
 // like the sibling coordinators; nil leaves ferrying disabled (fail-closed park).
 func (h *RunWorkerRebalancerCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.gateGraph = g
+}
+
+// SetEventRecorder wires the captain outbox the coordinator emits its error-loop
+// event through (sp-6wxq). Optional-injection like SetGateGraph: without it the
+// streak monitor still tracks and logs, it just cannot escalate to a captain
+// event (nil-safe, see health.RecordErrorLoop).
+func (h *RunWorkerRebalancerCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
+	h.captainEvents = rec
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -270,6 +287,13 @@ func (h *RunWorkerRebalancerCoordinatorHandler) Handle(ctx context.Context, requ
 		"dry_run":      cmd.DryRun,
 	})
 
+	// errMon makes a reconcile pass that fails with the identical error every tick
+	// observable (sp-e2l1): once the streak crosses DefaultStreakThreshold it emits a
+	// captain event instead of just another ERROR line. One per Handle invocation so
+	// the streak persists across ticks; noteReconcile keeps reconcileOnce — the tested
+	// unit — unchanged.
+	errMon := health.NewMonitor(health.DefaultStreakThreshold)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -284,12 +308,31 @@ func (h *RunWorkerRebalancerCoordinatorHandler) Handle(ctx context.Context, requ
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Worker rebalancer reconcile failed: %v", err), nil)
 		}
+		h.noteReconcile(ctx, cmd, errMon, err)
 
 		select {
 		case <-time.After(tick):
 		case <-ctx.Done():
 			return result, ctx.Err()
 		}
+	}
+}
+
+// noteReconcile records one reconcile pass at the "reconcile" streak checkpoint
+// (sp-6wxq): a nil err is a success that resets the streak; a non-nil err that
+// repeats identically for DefaultStreakThreshold consecutive passes crosses and
+// emits the coordinator error-loop captain event. Edge-triggered and nil-safe on
+// the recorder (health.RecordErrorLoop). A per-hull ferry failure is logged and
+// swallowed inside reconcileOnce, so only a pass-level error (e.g. the fleet
+// listing failing, or gateGraph unwired) — the genuine silent-stuck signal — is
+// tracked here.
+func (h *RunWorkerRebalancerCoordinatorHandler) noteReconcile(ctx context.Context, cmd *RunWorkerRebalancerCoordinatorCommand, errMon *health.Monitor, err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if streak, crossed := errMon.Note("reconcile", msg); crossed {
+		health.RecordErrorLoop(h.captainEvents, common.LoggerFromContext(ctx), cmd.ContainerID, cmd.PlayerID.Value(), "reconcile", err, streak)
 	}
 }
 

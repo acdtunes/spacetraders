@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -177,6 +179,14 @@ type RunTradeFleetCoordinatorHandler struct {
 	// to the base cooldown, a documented, self-healing trade-off: worst case is one
 	// extra fast-fail cycle per hull before backoff re-accumulates.
 	backoff map[string]*hullBackoff
+
+	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
+	// when a reconcile pass fails with the identical error for DefaultStreakThreshold
+	// consecutive ticks — the s88 silent-stuck class (a launcher never wired, or the
+	// fleet listing failing forever) becomes an interrupt-visible captain event instead
+	// of ERROR lines nothing outside the container reads. Optional-injection via
+	// SetEventRecorder, nil-safe like the contract coordinator's captainEvents.
+	captainEvents captain.EventRecorder
 }
 
 // NewRunTradeFleetCoordinatorHandler wires the coordinator. clock defaults to the real
@@ -196,6 +206,14 @@ func NewRunTradeFleetCoordinatorHandler(shipRepo navigation.ShipRepository, cloc
 // launch), never a panic.
 func (h *RunTradeFleetCoordinatorHandler) SetTourLauncher(launcher TourLauncher) {
 	h.launcher = launcher
+}
+
+// SetEventRecorder wires the captain outbox the coordinator emits its
+// error-loop event through (sp-6wxq). Optional-injection like SetTourLauncher:
+// without it the streak monitor still tracks and logs, it just cannot escalate
+// to a captain event (nil-safe, see health.RecordErrorLoop).
+func (h *RunTradeFleetCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
+	h.captainEvents = rec
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -223,6 +241,13 @@ func (h *RunTradeFleetCoordinatorHandler) Handle(ctx context.Context, request co
 		"max_concurrent":   cmd.MaxConcurrentTours,
 	})
 
+	// errMon makes a reconcile pass that fails with the identical error every tick
+	// observable (sp-e2l1): once the streak crosses DefaultStreakThreshold it emits a
+	// captain event instead of just another ERROR line. Created once per Handle
+	// invocation (one container run) and threaded into reconcileOnce, so the streak
+	// persists across ticks and the crossing is unit-testable at the reconcile seam.
+	errMon := health.NewMonitor(health.DefaultStreakThreshold)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -237,6 +262,14 @@ func (h *RunTradeFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Trade fleet reconcile failed: %v", err), nil)
 		}
+		// Streak-track the pass outcome (sp-6wxq): a non-error pass resets the streak,
+		// a pass that fails with the identical error every tick (launcher unwired, or
+		// the fleet listing failing) crosses the threshold and emits the error-loop
+		// captain event instead of only logging ERROR forever. Placed here rather than
+		// inside reconcileOnce so its signature — the unit the tests drive — is
+		// unchanged; the per-hull launch-failure "candidates>0 but 0 launched" case is
+		// deliberately not tracked (0-launched is ambiguous with all-cooling-down).
+		h.noteReconcile(ctx, cmd, errMon, err)
 
 		select {
 		case <-time.After(tick):
@@ -357,6 +390,21 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	}
 
 	return launched, nil
+}
+
+// noteReconcile records one reconcile pass at the "reconcile" streak checkpoint
+// (sp-6wxq): a nil err is a success that resets the streak; a non-nil err that
+// repeats identically for DefaultStreakThreshold consecutive passes crosses and
+// emits the coordinator error-loop captain event. Edge-triggered — only the exact
+// crossing pass emits — and nil-safe on the recorder via health.RecordErrorLoop.
+func (h *RunTradeFleetCoordinatorHandler) noteReconcile(ctx context.Context, cmd *RunTradeFleetCoordinatorCommand, errMon *health.Monitor, err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if streak, crossed := errMon.Note("reconcile", msg); crossed {
+		health.RecordErrorLoop(h.captainEvents, common.LoggerFromContext(ctx), cmd.ContainerID, cmd.PlayerID.Value(), "reconcile", err, streak)
+	}
 }
 
 // partitionTradeFleet splits a fleet snapshot into the 'trade'-dedicated hulls that

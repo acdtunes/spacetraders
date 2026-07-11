@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	shipqueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -435,6 +436,13 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 		return result, ctx.Err()
 	}
 
+	// errMon makes a reconcile pass that fails with the identical error every tick
+	// observable (sp-e2l1): once the streak crosses DefaultStreakThreshold it emits a
+	// captain event instead of just another ERROR line. One per Handle invocation so
+	// the streak persists across ticks; noteReconcile keeps reconcileOnce — the tested
+	// unit — unchanged, and reuses the already-wired eventStore as the recorder.
+	errMon := health.NewMonitor(health.DefaultStreakThreshold)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -442,10 +450,12 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 		default:
 		}
 
-		if err := h.reconcileOnce(ctx, cmd); err != nil {
+		err := h.reconcileOnce(ctx, cmd)
+		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Scout post reconcile failed: %v", err), nil)
 		}
+		h.noteReconcile(ctx, cmd, errMon, err)
 		result.Ticks++
 
 		select {
@@ -501,6 +511,24 @@ func (h *RunScoutPostCoordinatorHandler) sleepInterruptibly(ctx context.Context,
 type slotTarget struct {
 	post *domainScouting.ScoutPost
 	slot domainScouting.ScoutSlotRef
+}
+
+// noteReconcile records one reconcile pass at the "reconcile" streak checkpoint
+// (sp-6wxq): a nil err is a success that resets the streak; a non-nil err that
+// repeats identically for DefaultStreakThreshold consecutive passes crosses and
+// emits the coordinator error-loop captain event. It reuses the already-wired
+// eventStore (captain.EventStore embeds EventRecorder) as the recorder, so no new
+// injection is needed — nil-safe when the store is unwired (tests), edge-triggered.
+// Per-post failures inside reconcileOnce are logged WARNING and swallowed there, so
+// only a pass-level error — the genuine silent-stuck signal — is tracked here.
+func (h *RunScoutPostCoordinatorHandler) noteReconcile(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, errMon *health.Monitor, err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if streak, crossed := errMon.Note("reconcile", msg); crossed {
+		health.RecordErrorLoop(h.eventStore, common.LoggerFromContext(ctx), cmd.ContainerID, cmd.PlayerID.Value(), "reconcile", err, streak)
+	}
 }
 
 // reconcileOnce is one reconcile pass over the posts table. It is the unit the

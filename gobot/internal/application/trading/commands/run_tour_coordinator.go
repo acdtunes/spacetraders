@@ -16,9 +16,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -375,6 +377,14 @@ type RunTourCoordinatorHandler struct {
 	// nil-safe: unset (tests, or metrics-disabled builds) → the diagnostic no-ops and the
 	// tour plans exactly as before (RULINGS #4 — observation never gates the trade path).
 	sinkScanner outOfHorizonSinkScanner
+
+	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
+	// when the continuous loop's dynamic-budget resolve fails with the same cause
+	// (live treasury unreadable) for DefaultStreakThreshold consecutive iterations —
+	// the one unbounded in-loop silent-retry in this otherwise worker-shaped
+	// coordinator (the 7z7j fail-closed pause+continue). Optional-injection via
+	// SetEventRecorder, nil-safe like the contract coordinator's captainEvents.
+	captainEvents captain.EventRecorder
 }
 
 // outOfHorizonSinkScanner reads the global best sell destination per good (across ALL
@@ -492,6 +502,37 @@ type RepositionStatePersister interface {
 // arb SetCostPersister optional-injection idiom.
 func (h *RunTourCoordinatorHandler) SetRepositionPersister(p RepositionStatePersister) {
 	h.repositionPersister = p
+}
+
+// SetEventRecorder wires the captain outbox the coordinator emits its error-loop
+// event through (sp-6wxq). Optional-injection like the other setters: without it
+// the streak monitor still tracks and logs, it just cannot escalate to a captain
+// event (nil-safe, see health.RecordErrorLoop).
+func (h *RunTourCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
+	h.captainEvents = rec
+}
+
+// errTourBudgetUnreadable is the constant streak key for the dynamic-budget resolve
+// checkpoint (sp-6wxq). Constant so consecutive unreadable-treasury iterations count
+// as the SAME error and accumulate toward the threshold (a varying message would
+// reset the streak every pass).
+var errTourBudgetUnreadable = errors.New("dynamic tour budget unresolved: live treasury unreadable")
+
+// noteTourBudget records one iteration of the continuous loop's dynamic-budget
+// resolve at the "resolve_tour_budget" streak checkpoint (sp-6wxq). unreadable=true
+// is a failure (the 7z7j fail-closed pause) that, repeated for DefaultStreakThreshold
+// consecutive iterations, crosses and emits the coordinator error-loop captain event;
+// a readable resolve resets the streak. Edge-triggered and nil-safe on the recorder
+// (health.RecordErrorLoop). Only reached on the dynamic-budget path (an explicit
+// --max-spend never resolves, so this checkpoint stays inert for it).
+func (h *RunTourCoordinatorHandler) noteTourBudget(ctx context.Context, cmd *RunTourCoordinatorCommand, budgetMon *health.Monitor, unreadable bool) {
+	msg := ""
+	if unreadable {
+		msg = errTourBudgetUnreadable.Error()
+	}
+	if streak, crossed := budgetMon.Note("resolve_tour_budget", msg); crossed {
+		health.RecordErrorLoop(h.captainEvents, common.LoggerFromContext(ctx), cmd.ContainerID, cmd.PlayerID, "resolve_tour_budget", errTourBudgetUnreadable, streak)
+	}
 }
 
 // Handle executes the one-shot tour. A fail-open no-op and a stranded-cargo veto both
@@ -661,6 +702,15 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		episode = repositionEpisode{repositioned: true, toSystem: cmd.RepositionTargetSystem}
 	}
 
+	// budgetMon makes a continuous run that can never re-resolve its dynamic budget
+	// observable (sp-e2l1/sp-6wxq): the 7z7j fail-closed pause+continue below is the
+	// one UNBOUNDED silent retry in this otherwise worker-shaped coordinator — a
+	// treasury source wired but unreadable every iteration loops WARNING+backoff
+	// forever. Once the streak crosses, it emits a captain event; a readable resolve
+	// resets it. Created once per execute (one continuous run) so the streak persists
+	// across the loop's iterations.
+	budgetMon := health.NewMonitor(health.DefaultStreakThreshold)
+
 	for continuous || response.ToursCompleted < iterations {
 		// A stop/shutdown cancels ctx (interruptAllContainers escalates the STOPPING
 		// flag to a ctx cancel). Exit RESUMABLE at the tour boundary by returning the
@@ -697,11 +747,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
 					"backoff_seconds": int(tourTreasuryRetryBackoff.Seconds()),
 				})
+				h.noteTourBudget(ctx, cmd, budgetMon, true)
 				if werr := h.legs.sleepInterruptibly(ctx, tourTreasuryRetryBackoff); werr != nil {
 					return werr
 				}
 				continue
 			}
+			h.noteTourBudget(ctx, cmd, budgetMon, false) // readable resolve resets the streak
 			tourMaxSpend = resolved
 			// sp-fbih P13: record the RESOLVED dynamic cap (25% of live treasury) the exact
 			// value nj2b's Guards panel proxies with a treasury x 0.25 line. Only on the dynamic

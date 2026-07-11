@@ -592,6 +592,7 @@ func run(cfg *config.Config) error {
 	// path `workflow tour-run` uses. Tuning is resolved live from config.yaml [trade_fleet].
 	tradeFleetCoordinatorHandler := tradeRouteCmd.NewRunTradeFleetCoordinatorHandler(shipRepo, nil) // nil = use RealClock
 	tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)
+	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeFleetCoordinatorCommand](med, tradeFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}
@@ -744,6 +745,7 @@ func run(cfg *config.Config) error {
 	// cache/graph) to rank the nearest idle light by jump hops. nil would disable ferrying
 	// (fail-closed park).
 	workerRebalancerCoordinatorHandler.SetGateGraph(gateGraphService)
+	workerRebalancerCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunWorkerRebalancerCoordinatorCommand](med, workerRebalancerCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register WorkerRebalancerCoordinator handler: %w", err)
 	}
@@ -786,6 +788,7 @@ func run(cfg *config.Config) error {
 	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
 		gateGraphService, marketRepoAdapter, shipRepo, playerRepo,
 	))
+	frontierExpansionHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {
 		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
 	}
@@ -849,6 +852,7 @@ func run(cfg *config.Config) error {
 	// of the cross-engine coordination. TourConsultDisabled is the operator escape hatch;
 	// the shared PlannedTTLSlack sizes reservation lifetimes.
 	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TourConsultDisabled, cfg.Absorption.PlannedTTLSlack)
+	tourCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop event when the dynamic-budget resolve stays unreadable
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}
