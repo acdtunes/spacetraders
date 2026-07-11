@@ -400,6 +400,15 @@ func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
 	}
 }
 
+// SetTourFactoryGoodAcquisitionCost records the per-unit price a tour paid to
+// acquire a factory good (source=stock|market) — the C1 (sp-64je) T2 acceptance
+// series. No-op until the global tour collector is wired.
+func SetTourFactoryGoodAcquisitionCost(playerID int, good, source string, unitPrice float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.SetFactoryGoodAcquisitionCost(playerID, good, source, unitPrice)
+	}
+}
+
 // ObserveTourPlanRate observes one tour plan's credits/hour globally (sp-1wp8),
 // phase="projected" at plan-accept or phase="realized" at completion. No-op when
 // metrics are disabled, so a metrics miss never touches the trade path (RULINGS #4).

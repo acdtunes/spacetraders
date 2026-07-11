@@ -326,8 +326,9 @@ func (c *GRPCRoutingClient) OptimizeTradeTour(
 	cons domainRouting.TourConstraints,
 	deposits []domainRouting.TourDepositCandidate,
 	absorption []domainRouting.TourMarketAbsorption,
+	stockSources []domainRouting.TourStockSource,
 ) (*domainRouting.TourPlan, error) {
-	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons, deposits, absorption))
+	pbResp, err := c.client.OptimizeTradeTour(ctx, buildTourRequest(snapshot, waypoints, ship, cons, deposits, absorption, stockSources))
 	if err != nil {
 		return nil, fmt.Errorf("gRPC OptimizeTradeTour failed: %w", err)
 	}
@@ -344,6 +345,7 @@ func buildTourRequest(
 	cons domainRouting.TourConstraints,
 	deposits []domainRouting.TourDepositCandidate,
 	absorption []domainRouting.TourMarketAbsorption,
+	stockSources []domainRouting.TourStockSource,
 ) *pb.OptimizeTradeTourRequest {
 	pbSnapshot := make([]*pb.MarketGoodSnapshot, len(snapshot))
 	for i, s := range snapshot {
@@ -418,6 +420,26 @@ func buildTourRequest(
 		return pbAbsorption[i].Side < pbAbsorption[j].Side
 	})
 
+	// Stock sources (C1, sp-64je): warehouse stock offered as zero-ask-at-basis
+	// withdrawal sources — the buy-side mirror of the deposit sinks. Emitted in a
+	// deterministic (waypoint, good) order for reproducible payloads and logs.
+	pbStockSources := make([]*pb.StockSource, 0, len(stockSources))
+	for _, s := range stockSources {
+		pbStockSources = append(pbStockSources, &pb.StockSource{
+			GoodSymbol:      s.Good,
+			UnitsAvailable:  int32(s.UnitsAvailable),
+			UnitAsk:         int32(s.UnitAsk),
+			StorageWaypoint: s.StorageWaypoint,
+			StorageSystem:   s.StorageSystem,
+		})
+	}
+	sort.Slice(pbStockSources, func(i, j int) bool {
+		if pbStockSources[i].StorageWaypoint != pbStockSources[j].StorageWaypoint {
+			return pbStockSources[i].StorageWaypoint < pbStockSources[j].StorageWaypoint
+		}
+		return pbStockSources[i].GoodSymbol < pbStockSources[j].GoodSymbol
+	})
+
 	return &pb.OptimizeTradeTourRequest{
 		Snapshot: pbSnapshot,
 		Ship: &pb.TourShip{
@@ -442,6 +464,7 @@ func buildTourRequest(
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,
 		Absorption:        pbAbsorption,
+		StockSources:      pbStockSources,
 	}
 }
 
@@ -472,6 +495,7 @@ func tourPlanFromPb(resp *pb.OptimizeTradeTourResponse) *domainRouting.TourPlan 
 				ExpectedUnitPrice: int(tr.GetExpectedUnitPrice()),
 				IsBuy:             tr.GetIsBuy(),
 				IsDeposit:         tr.GetIsDeposit(),
+				IsStock:           tr.GetIsStock(),
 			})
 		}
 		plan.Legs = append(plan.Legs, domainLeg)

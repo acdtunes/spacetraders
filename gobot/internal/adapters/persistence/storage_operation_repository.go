@@ -38,18 +38,71 @@ func (r *StorageOperationRepository) Create(ctx context.Context, operation *stor
 	return nil
 }
 
-// Update saves changes to an existing storage operation
+// Update saves changes to an existing storage operation.
+//
+// It OMITS the cost_basis column: basis is managed out-of-band by
+// SaveOperationBasis (C1, sp-64je) and the domain operation does not carry it, so
+// a full-row Save would otherwise clobber it to "". Status/error updates and
+// basis updates are therefore independent and neither wipes the other.
 func (r *StorageOperationRepository) Update(ctx context.Context, operation *storage.StorageOperation) error {
 	model, err := r.toModel(operation)
 	if err != nil {
 		return fmt.Errorf("failed to convert to model: %w", err)
 	}
 
-	if err := r.db.WithContext(ctx).Save(model).Error; err != nil {
+	if err := r.db.WithContext(ctx).Omit("CostBasis").Save(model).Error; err != nil {
 		return fmt.Errorf("failed to update storage operation: %w", err)
 	}
 
 	return nil
+}
+
+// SaveOperationBasis persists the per-good weighted-average cost basis for a
+// storage operation (C1, sp-64je) via a targeted column update, so it does not
+// interact with the domain operation's own fields (see Update). Best-effort at
+// the call site: a failure is non-fatal — basis re-derives on the next deposit,
+// else fails closed on restart (the good is simply not offered as a stock source).
+func (r *StorageOperationRepository) SaveOperationBasis(ctx context.Context, operationID string, basis map[string]int) error {
+	payload, err := json.Marshal(basis)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cost basis: %w", err)
+	}
+
+	if err := r.db.WithContext(ctx).
+		Model(&StorageOperationModel{}).
+		Where("id = ?", operationID).
+		Update("cost_basis", string(payload)).Error; err != nil {
+		return fmt.Errorf("failed to save cost basis: %w", err)
+	}
+
+	return nil
+}
+
+// LoadOperationBasis reads the persisted per-good cost basis for a storage
+// operation, used to seed the in-memory coordinator on recovery (RULINGS #2).
+// Returns an empty map when none is stored or the operation is gone.
+func (r *StorageOperationRepository) LoadOperationBasis(ctx context.Context, operationID string) (map[string]int, error) {
+	var model StorageOperationModel
+	if err := r.db.WithContext(ctx).
+		Select("cost_basis").
+		Where("id = ?", operationID).
+		First(&model).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return map[string]int{}, nil
+		}
+		return nil, fmt.Errorf("failed to load cost basis: %w", err)
+	}
+
+	if model.CostBasis == "" {
+		return map[string]int{}, nil
+	}
+
+	basis := map[string]int{}
+	if err := json.Unmarshal([]byte(model.CostBasis), &basis); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cost basis: %w", err)
+	}
+
+	return basis, nil
 }
 
 // FindByID retrieves a storage operation by its ID

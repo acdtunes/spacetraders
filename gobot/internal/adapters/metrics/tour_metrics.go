@@ -87,6 +87,15 @@ type TourMetricsCollector struct {
 	// same yardstick. Samples pair 1:1 per flown tour (the initial accepted plan only —
 	// intra-tour replans are recovery, not selection).
 	planRate *prometheus.HistogramVec
+
+	// factoryGoodAcquisitionCost records the per-unit price a tour paid to ACQUIRE a
+	// factory good, labeled by good and source=stock|market (C1, sp-64je). It is the
+	// T2 acceptance series for planner-visible stock: as tours withdraw factory output
+	// from warehouse stock at cost basis (source=stock) instead of buying our own
+	// output at laddered market asks (source=market), the acquisition cost must track
+	// the RESTED ask series, not the ladder. A gauge (last-write-wins per good+source):
+	// the analyst reads the level and its stock/market split, not a distribution.
+	factoryGoodAcquisitionCost *prometheus.GaugeVec
 }
 
 // NewTourMetricsCollector creates a new tour metrics collector (sp-fbih).
@@ -173,6 +182,16 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 			},
 			[]string{"player_id", "phase"},
 		),
+
+		factoryGoodAcquisitionCost: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_factory_good_acquisition_cost",
+				Help:      "Per-unit price a tour paid to acquire a factory good, by source (source=stock: withdrawn from warehouse at cost basis; source=market: bought at market ask). The C1 (sp-64je) T2 acceptance series — must track the rested ask, not the ladder.",
+			},
+			[]string{"player_id", "good_symbol", "source"},
+		),
 	}
 }
 
@@ -192,6 +211,7 @@ func (c *TourMetricsCollector) Register() error {
 		c.resolvedMaxSpend,
 		c.jumpLoadedTotal,
 		c.planRate,
+		c.factoryGoodAcquisitionCost,
 	}
 
 	for _, metric := range metrics {
@@ -253,6 +273,15 @@ func (c *TourMetricsCollector) SetResolvedMaxSpend(playerID int, maxSpend int64)
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.resolvedMaxSpend.WithLabelValues(strconv.Itoa(playerID)).Set(float64(maxSpend))
+}
+
+// SetFactoryGoodAcquisitionCost records the per-unit price a tour paid to acquire
+// a factory good (source=stock|market) — the C1 (sp-64je) T2 acceptance series.
+func (c *TourMetricsCollector) SetFactoryGoodAcquisitionCost(playerID int, good, source string, unitPrice float64) {
+	if c == nil || c.factoryGoodAcquisitionCost == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	c.factoryGoodAcquisitionCost.WithLabelValues(strconv.Itoa(playerID), good, source).Set(unitPrice)
 }
 
 // RecordJumpLoaded records one committed margins-death reposition jump by whether it

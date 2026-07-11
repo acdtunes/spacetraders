@@ -109,11 +109,21 @@ class TourHandlerMixin:
                                units_planned=a.units_planned,
                                units_recovering=a.units_recovering)
                           for a in request.absorption]
+            # C1 (sp-64je): warehouse stock offered as zero-ask-at-basis withdrawal
+            # sources (factory output at recorded cost basis). Absent (pre-C1 shape)
+            # -> [] -> the solver plans against market buys unchanged.
+            stock_sources = [dict(good_symbol=s.good_symbol,
+                                  units_available=s.units_available,
+                                  unit_ask=s.unit_ask,
+                                  storage_waypoint=s.storage_waypoint,
+                                  storage_system=s.storage_system)
+                             for s in request.stock_sources]
 
             result = solve_tour(snapshot, ship, constraints, self.tour_model,
                                 waypoints=waypoints,
                                 deposit_candidates=deposit_candidates,
-                                absorption=absorption)
+                                absorption=absorption,
+                                stock_sources=stock_sources)
 
             response = routing_pb2.OptimizeTradeTourResponse(
                 feasible=result["feasible"],
@@ -124,6 +134,7 @@ class TourHandlerMixin:
                     trades=[routing_pb2.TourTrade(
                         good_symbol=t["good_symbol"], units=t["units"],
                         is_buy=t["is_buy"], is_deposit=t["is_deposit"],
+                        is_stock=t.get("is_stock", False),
                         expected_unit_price=t["expected_unit_price"])
                         for t in leg["trades"]],
                     projected_leg_profit=leg["projected_leg_profit"],

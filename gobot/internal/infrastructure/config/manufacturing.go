@@ -81,4 +81,10 @@ type ManufacturingConfig struct {
 	// true skips it entirely, for a captain who must keep a chain running through an accounting
 	// gap. Absent/false keeps the kill-switch on at its defaults.
 	ChainPnLKillDisabled bool `mapstructure:"chain_pnl_kill_disabled"`
+
+	// PlannerStockEnabled turns on planner-visible stock (C1, sp-64je): harvested root
+	// output deposits into a co-located warehouse at cost basis instead of selling at
+	// market, so the tour solver withdraws it at basis. Default OFF (deploy flips it);
+	// fails safe to market-sell when no warehouse/space/treasury is available.
+	PlannerStockEnabled bool `mapstructure:"planner_stock_enabled"`
 }

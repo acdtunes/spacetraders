@@ -301,6 +301,11 @@ type StorageOperationModel struct {
 	UpdatedAt      time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
 	StartedAt      *time.Time   `gorm:"column:started_at"`
 	StoppedAt      *time.Time   `gorm:"column:stopped_at"`
+	// CostBasis is a JSON map[good]int of the per-good weighted-average unit cost
+	// basis of deposited stock (C1, sp-64je). It is managed OUT-OF-BAND from the
+	// operation's domain fields by the CostBasisStore (a targeted column update),
+	// so the full-row operation Update omits it — see StorageOperationRepository.
+	CostBasis string `gorm:"column:cost_basis;type:text"`
 }
 
 func (StorageOperationModel) TableName() string {

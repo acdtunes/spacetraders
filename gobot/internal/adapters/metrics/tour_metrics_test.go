@@ -100,6 +100,7 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 	c.ObserveDuration(1, 420)
 	c.SetResolvedMaxSpend(1, 250000)
 	c.RecordJumpLoaded(1, true)
+	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100)
 
 	families, err := Registry.Gather()
 	if err != nil {
@@ -117,11 +118,56 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 		"spacetraders_daemon_tour_duration_seconds",
 		"spacetraders_daemon_tour_resolved_max_spend",
 		"spacetraders_daemon_tour_jump_loaded_total",
+		"spacetraders_daemon_tour_factory_good_acquisition_cost",
 	} {
 		if !got[want] {
 			t.Errorf("metric %q registered but not exported on the registry", want)
 		}
 	}
+}
+
+// TestTourMetrics_FactoryGoodAcquisitionCost pins the C1 (sp-64je) T2 series: the
+// per-good acquisition price splits by source, so the stock (basis) and market
+// (ladder) series for one good are distinct and each holds its last-set value —
+// exactly what lets the analyst check that acquisition tracks the rested ask, not
+// the ladder.
+func TestTourMetrics_FactoryGoodAcquisitionCost(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100)
+	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "market", 340)
+
+	const name = "spacetraders_daemon_tour_factory_good_acquisition_cost"
+	stock, ok := gatherGauge(t, Registry, name, map[string]string{"player_id": "1", "good_symbol": "CLOTHING", "source": "stock"})
+	if !ok || stock != 100 {
+		t.Fatalf("expected stock acquisition cost 100, got %v (ok=%v)", stock, ok)
+	}
+	market, ok := gatherGauge(t, Registry, name, map[string]string{"player_id": "1", "good_symbol": "CLOTHING", "source": "market"})
+	if !ok || market != 340 {
+		t.Fatalf("expected market acquisition cost 340, got %v (ok=%v)", market, ok)
+	}
+
+	// A re-record on the stock series is last-write-wins (a gauge), independent of market.
+	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 110)
+	stock, _ = gatherGauge(t, Registry, name, map[string]string{"player_id": "1", "good_symbol": "CLOTHING", "source": "stock"})
+	if stock != 110 {
+		t.Fatalf("expected stock series to update to 110, got %v", stock)
+	}
+}
+
+// A nil collector and nil gauge must never panic (best-effort, RULINGS #4).
+func TestTourMetrics_FactoryGoodAcquisitionCost_NilSafe(t *testing.T) {
+	var c *TourMetricsCollector
+	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100) // nil receiver
+	(&TourMetricsCollector{}).SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100)
+	SetTourFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100) // nil global
 }
 
 // TestTourMetrics_LabelsAndValues pins the label sets and that repeat records accumulate on

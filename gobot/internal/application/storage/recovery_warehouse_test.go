@@ -90,3 +90,41 @@ func TestRecovery_RebuildsWarehouseCargoFromLiveShipState(t *testing.T) {
 	_, registered := coordinator.GetStorageShipBySymbol("HULL-STORE-1")
 	require.True(t, registered, "the warehouse hull must be re-registered with the coordinator")
 }
+
+// C1 (sp-64je): on restart, units are rebuilt from the live ship API but the
+// cost basis is reloaded from durable storage and re-seeded. After recovery, the
+// solver-facing GetCostBasis reports the persisted basis for the recovered stock.
+func TestRecovery_ReseedsCostBasisForRecoveredStock(t *testing.T) {
+	op, err := storage.NewWarehouseOperation(
+		"warehouse-X1-HOME-A1", 1, "X1-HOME-A1",
+		[]string{"HULL-STORE-1"}, []string{"CLOTHING"}, nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, op.Start())
+
+	repo := &stubWarehouseOpRepo{running: []*storage.StorageOperation{op}}
+	apiClient := &stubWarehouseAPIClient{ships: map[string]*navigation.ShipData{
+		"HULL-STORE-1": {
+			Symbol:   "HULL-STORE-1",
+			Location: "X1-HOME-A1",
+			Cargo: &navigation.CargoData{
+				Capacity:  120,
+				Units:     40,
+				Inventory: []shared.CargoItem{{Symbol: "CLOTHING", Units: 40}},
+			},
+		},
+	}}
+
+	coordinator := NewInMemoryStorageCoordinator()
+	store := newFakeBasisStore()
+	store.toLoad["warehouse-X1-HOME-A1"] = map[string]int{"CLOTHING": 65}
+	coordinator.SetCostBasisStore(store)
+
+	svc := NewStorageRecoveryService(repo, apiClient, coordinator)
+	_, err = svc.RecoverStorageOperations(context.Background(), 1, "token")
+	require.NoError(t, err)
+
+	basis, known := coordinator.GetCostBasis("warehouse-X1-HOME-A1", "CLOTHING")
+	require.True(t, known, "cost basis must be re-seeded from durable storage on recovery")
+	require.Equal(t, 65, basis)
+}

@@ -66,6 +66,22 @@ type InMemoryStorageCoordinator struct {
 	// construct the struct directly with tiny overrides.
 	cargoWaitGracePeriod time.Duration
 	cargoWaitMaxAttempts int
+
+	// operationBasis records the per-(operation, good) weighted-average unit
+	// cost basis of deposited stock (C1, sp-64je). Written only by
+	// ConfirmDepositWithBasis (the factory-output deposit path); read by
+	// GetCostBasis so the tour solver can price warehouse stock as a
+	// zero-ask-at-basis source. A good absent here has an UNKNOWN basis
+	// (fail-closed — not offered as a solver stock source). Lazily initialised
+	// so the test constructor and NewInMemoryStorageCoordinator need no change.
+	// See coordinator_basis.go.
+	operationBasis map[string]map[string]int
+
+	// basisStore optionally persists operationBasis so it survives daemon
+	// restart (RULINGS #2). nil (the default) keeps basis in-memory only —
+	// tests, and deployments not using planner-visible stock. See
+	// coordinator_basis.go.
+	basisStore CostBasisStore
 }
 
 // NewInMemoryStorageCoordinator creates a new storage coordinator
@@ -488,18 +504,29 @@ func (c *InMemoryStorageCoordinator) ReserveSpaceForDeposit(operationID string, 
 }
 
 // ConfirmDeposit converts a space reservation into actual cargo after successful API transfer.
+// It records NO cost basis (the contract/gas deposit paths); the good's basis
+// stays UNKNOWN. The factory-output path uses ConfirmDepositWithBasis instead
+// (C1, sp-64je, coordinator_basis.go).
 func (c *InMemoryStorageCoordinator) ConfirmDeposit(shipSymbol, goodSymbol string, units int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.confirmDepositLocked(shipSymbol, goodSymbol, units)
+}
+
+// confirmDepositLocked converts a space reservation into actual cargo and wakes
+// waiters. Caller must hold c.mu. Returns false if the ship is unknown or the
+// ship-level ConfirmDeposit fails (capacity invariant). Shared by ConfirmDeposit
+// and ConfirmDepositWithBasis.
+func (c *InMemoryStorageCoordinator) confirmDepositLocked(shipSymbol, goodSymbol string, units int) bool {
 	ship, exists := c.storageShips[shipSymbol]
 	if !exists {
-		return
+		return false
 	}
 
 	// Convert reservation to actual cargo
 	if err := ship.ConfirmDeposit(goodSymbol, units); err != nil {
-		return
+		return false
 	}
 
 	c.notifyDepositSubscribers(shipSymbol, goodSymbol, units)
@@ -508,6 +535,7 @@ func (c *InMemoryStorageCoordinator) ConfirmDeposit(shipSymbol, goodSymbol strin
 	operationID := ship.OperationID()
 	key := waiterQueueKey{operationID: operationID, goodSymbol: goodSymbol}
 	c.processWaiterQueue(key)
+	return true
 }
 
 // ReleaseReservedSpace releases a space reservation when a transfer fails.

@@ -891,6 +891,22 @@ func run(cfg *config.Config) error {
 	// Create storage coordinator for STORAGE_ACQUIRE_DELIVER tasks
 	// This enables manufacturing pipelines to acquire cargo from storage ships
 	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
+	// C1 (sp-64je): durable cost-basis persistence for planner-visible stock. The
+	// storage operation repo persists per-good basis out-of-band and reloads it on
+	// recovery (RULINGS #2); nil-safe if omitted.
+	storageCoordinator.SetCostBasisStore(storageOperationRepo)
+	// C1 (sp-64je): wire the factory planner-visible-stock deposit path. Harvested
+	// root output deposits into a co-located warehouse at cost basis instead of
+	// selling at market when [manufacturing] planner_stock_enabled is set; the
+	// capital ceiling reuses contract.pre_positioning.capital_ceiling_pct. The
+	// factory handler was constructed earlier (before the storage coordinator
+	// existed), so it is wired here.
+	factoryCoordinatorHandler.SetPlannerStockDepositor(
+		goodsServices.NewPlannerStockDepositor(
+			storageCoordinator, storageOperationRepo, med, apiClient,
+			cfg.Contract.PrePositioning.CapitalCeilingPct,
+		),
+	)
 	// Register storage executor and enable storage support on COLLECT_SELL executor
 	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, mfgSeller, storageCoordinator, apiClient, shipRepo)
 

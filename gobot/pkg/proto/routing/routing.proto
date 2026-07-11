@@ -384,6 +384,17 @@ message TourTrade {
   // shape (a deposit is a sell-with-no-buy whose "revenue" is inventory value,
   // not cash); existing sell semantics untouched.
   bool is_deposit = 5;
+  // is_stock marks a BUY-side tranche that is a WITHDRAWAL of factory output from
+  // warehouse stock at cost basis (C1, sp-64je), not a market purchase.
+  // expected_unit_price is the recorded cost basis (the flat source price the stock
+  // pool was priced at), NOT a market ask — the executor withdraws via
+  // TryReserveCargo/TransferCargo/ConfirmTransfer instead of buying, and books the
+  // acquisition at basis. is_buy is true for a stock withdrawal (it acquires cargo);
+  // is_deposit is always false. Additive to the deposit shape (a stock draw is a
+  // buy-with-no-market-spend whose "cost" is the sunk basis); existing buy semantics
+  // untouched — an old executor ignoring field 6 treats it as a normal buy at
+  // expected_unit_price, which is the basis, so it still never overpays.
+  bool is_stock = 6;
 }
 
 // TradeTourLeg is one market stop of the planned tour.
@@ -456,6 +467,25 @@ message MarketAbsorption {
   double units_recovering = 5;   // decayed EXECUTED residual — consume capacity ONLY
 }
 
+// StockSource is one planner-visible-stock offer (C1, sp-64je): factory output
+// deposited into a warehouse at a recorded cost basis that the tour may WITHDRAW
+// instead of buying our own output at the laddered market ask. The mirror image of
+// DepositCandidate — a zero-ask SOURCE rather than a synthetic sink. The Go daemon
+// assembles these from the running warehouse op: units_available is the on-hand
+// stock net of outstanding cross-tour reservations, unit_ask is the weighted-average
+// cost basis. The solver treats (storage_waypoint, good_symbol) as a flat BUY pool
+// priced at unit_ask (no depth decay — a withdrawal has no market price impact — and
+// no A-cap, bounded by units_available), and prices withdrawal legs against real
+// market buys on margin so the tour draws from stock only when it is the cheaper
+// acquisition (the export-ask-subsidy inversion becomes structurally impossible).
+message StockSource {
+  string good_symbol = 1;
+  int32 units_available = 2;   // reservable on-hand stock (Go-side: available minus outstanding reservations)
+  int32 unit_ask = 3;          // flat source price = recorded cost basis
+  string storage_waypoint = 4; // the warehouse hull's waypoint (the source node)
+  string storage_system = 5;   // system the warehouse is in (makes the source routable)
+}
+
 message OptimizeTradeTourRequest {
   repeated MarketGoodSnapshot snapshot = 1;
   TourShip ship = 2;
@@ -468,6 +498,11 @@ message OptimizeTradeTourRequest {
   // solver nets out of available tranche capacity (sp-78ai L3). Empty (the pre-sp-78ai
   // shape) → no netting, plans against full depth unchanged.
   repeated MarketAbsorption absorption = 6;
+  // stock_sources offers warehouse stock as zero-ask-at-basis withdrawal sources
+  // (C1, sp-64je). Empty (the pre-C1 shape) → no stock legs, the solver plans against
+  // market buys unchanged. Additive-field precedent (sp-dchv/sp-78ai): an old solver
+  // ignores field 7 and behaves exactly as it does now (version-skew safe).
+  repeated StockSource stock_sources = 7;
 }
 
 message OptimizeTradeTourResponse {

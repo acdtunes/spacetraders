@@ -285,6 +285,34 @@ def _build_deposit_sinks(deposit_candidates, markets, allowed_systems):
     return sinks
 
 
+def _build_stock_sources(stock_sources, markets, allowed_systems):
+    """Index warehouse stock as zero-ask-at-basis withdrawal SOURCES and make each
+    storage waypoint a routable node in `markets` (C1, sp-64je) — the buy-side mirror
+    of `_build_deposit_sinks`.
+
+    Returns {(waypoint, good): {"ask": basis, "units_available": n}}. A source with a
+    non-positive units_available or unit_ask is dropped (nothing to withdraw / no basis),
+    as is one whose storage system is outside the tour's allowed set (unreachable — fail
+    closed). The storage waypoint is added to `markets` as an empty-goods node when it is
+    not already a scanned market so the beam search can route to it; the stock good is NOT
+    written into markets[wp]["goods"] — it lives only in the returned source map so a real
+    market row and the stock source coexist at the same waypoint and price independently."""
+    sources = {}
+    for c in stock_sources or []:
+        wp = c.get("storage_waypoint")
+        good = c.get("good_symbol")
+        units = c.get("units_available", 0)
+        ask = c.get("unit_ask", 0)
+        system = c.get("storage_system", "")
+        if not wp or not good or units <= 0 or ask <= 0:
+            continue
+        if system and system not in allowed_systems:
+            continue  # source outside the tour graph — unreachable, fail closed
+        sources[(wp, good)] = {"ask": ask, "units_available": units}
+        markets.setdefault(wp, {"system": system, "goods": {}})
+    return sources
+
+
 def _make_travel_fn(constraints, markets, ship, waypoints=None):
     """Travel-seconds fn(a, b). Precedence: caller-supplied `_travel_fn`
     hook > coordinate mode (CRUISE formula on request-carried TourWaypoint
@@ -328,11 +356,11 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
 
 def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None,
-                   absorption_index=None):
+                   absorption_index=None, stock_sources=None):
     """Greedy tranche allocation over one hop sequence (the LP stage).
 
     Returns dict(profit, spend, seconds, cph, legs, held_liquidation,
-    deposit_value) where legs carry only the market stops with at least one
+    deposit_value, stock_value) where legs carry only the market stops with at least one
     trade (no-trade hops are pruned and travel re-chained). Hold accounting: a
     unit bought at leg i and sold at leg j occupies hold slots [i, j); launch
     cargo occupies from the start until its sell leg. Slot occupancy never
@@ -348,9 +376,17 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     `absorption_index` (sp-78ai L3) maps (waypoint, good, side) -> (units_planned,
     units_recovering): outstanding cross-container depth netted out of each market
     pool at construction (see net_absorption). Empty/None -> no netting.
+
+    `stock_sources` (C1, sp-64je) maps (waypoint, good) -> {"ask", "units_available"}
+    for warehouse-stock WITHDRAWAL sources — the buy-side mirror of deposit sinks. A
+    stock source supplies a good at a flat cost basis (= "ask") with no depth decay and
+    no A-cap, and a withdrawal leg competes with real market buys on margin so the
+    allocator draws from stock only when it is the cheaper acquisition. Empty/None -> no
+    stock legs, plans against market buys unchanged.
     """
     deposit_sinks = deposit_sinks or {}
     absorption_index = absorption_index or {}
+    stock_sources = stock_sources or {}
     n = len(seq)
     hold_cap = ship["hold_capacity"]
     initial = {}
@@ -407,10 +443,30 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             deposit_pools[pkey] = _TranchePool([(sink["units_wanted"], sink["bid"])])
         return deposit_pools[pkey]
 
+    # Stock sources reachable at each leg's waypoint (C1, sp-64je) — the buy-side
+    # mirror of deposit_by_wp.
+    stock_by_wp = {}
+    for (wp, good), src in stock_sources.items():
+        stock_by_wp.setdefault(wp, {})[good] = src
+
+    stock_pools = {}
+
+    def stock_pool(wp, good):
+        pkey = (wp, good)
+        if pkey not in stock_pools:
+            src = stock_sources[(wp, good)]
+            # Flat single tranche: NO depth decay (a withdrawal is not a market buy —
+            # no price impact) and NO A-cap (depth = units_available, already bounded
+            # Go-side by on-hand stock net of cross-tour reservations). Shared per
+            # (waypoint, good) across revisits, exactly like the market pools.
+            stock_pools[pkey] = _TranchePool([(src["units_available"], src["ask"])])
+        return stock_pools[pkey]
+
     # Candidate pairings. Buys and sells at repeat visits of the same market
     # share one pool per (waypoint, good) — depth is a property of the market,
     # not of the leg index. Each pairing carries a kind: "market" (arb sell or
-    # launch liquidation) or "deposit" (sp-dchv haul-to-storage sink).
+    # launch liquidation), "deposit" (sp-dchv haul-to-storage sink), or "stock"
+    # (C1 warehouse-stock withdrawal at basis).
     pairs = []  # (good, buy_leg or None for launch cargo, sell_leg, kind)
     for j in range(n):
         for good, row in markets[seq[j]]["goods"].items():
@@ -434,6 +490,15 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                 brow = markets[seq[i]]["goods"].get(good)
                 if brow and brow["ask"] > 0:
                     pairs.append((good, i, j, "deposit"))
+        # Stock pairings (C1, sp-64je): a good stocked in a warehouse at an earlier leg
+        # i is WITHDRAWN at basis (leg i) and sold at market leg j (kind "stock"). The
+        # buy-side mirror of deposit pairings — a real acquisition drawn from the flat
+        # stock pool at basis, never launch cargo, sold at the market's real bid.
+        for i in range(j):
+            for good in stock_by_wp.get(seq[i], ()):
+                srow = markets[seq[j]]["goods"].get(good)
+                if srow and srow["bid"] > 0:
+                    pairs.append((good, i, j, "stock"))
 
     occ = [total_initial] * n   # hold occupancy per travel slot
     initial_left = dict(initial)
@@ -449,6 +514,13 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             return deposit_pool(seq[j], good)
         return pool(sell_pools, seq[j], good, is_buy=False)
 
+    def source_for(kind, i, good):
+        # A stock pairing WITHDRAWS from the flat warehouse stock pool at basis; every
+        # other pairing (market/deposit) BUYS from the decaying, A-capped market buy pool.
+        if kind == "stock":
+            return stock_pool(seq[i], good)
+        return pool(buy_pools, seq[i], good, is_buy=True)
+
     while True:
         best = None
         for good, i, j, kind in alive:
@@ -463,7 +535,7 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                 margin = sell_price          # cash recovery: no acquisition cost
                 buy_price = 0
             else:
-                buy_rem, buy_price = pool(buy_pools, seq[i], good, is_buy=True).head()
+                buy_rem, buy_price = source_for(kind, i, good).head()
                 if buy_rem <= 0 or buy_price <= 0:
                     continue
                 margin = sell_price - buy_price
@@ -486,7 +558,7 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             for k in range(j, n):
                 occ[k] -= units
         else:
-            pool(buy_pools, seq[i], good, is_buy=True).take(units)
+            source_for(kind, i, good).take(units)
             spend += units * buy_price
             for k in range(i, j):
                 occ[k] += units
@@ -514,14 +586,24 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     deposit_value = sum(units * sell_price
                         for _good, _i, _j, units, _buy_price, sell_price, kind in allocations
                         if kind == "deposit")
+    # Stock value (C1, sp-64je): the basis-value of factory output WITHDRAWN from
+    # warehouse stock (units*basis) — the acquisition the tour drew at basis instead of
+    # buying at the laddered market ask. Reported apart (like deposit_value) so a
+    # projection can show how much output realization moved to withdrawal-at-basis.
+    # Stock draws always have a real buy_leg, so they are disjoint from held_liquidation.
+    stock_value = sum(units * buy_price
+                      for _good, _i, _j, units, buy_price, _sell_price, kind in allocations
+                      if kind == "stock")
 
     # Assemble per-leg trades, then prune hops where nothing happens.
-    leg_trades = [{} for _ in range(n)]  # (good, is_buy, is_deposit, price) -> units
+    leg_trades = [{} for _ in range(n)]  # (good, is_buy, is_deposit, is_stock, price) -> units
     for good, i, j, units, buy_price, sell_price, kind in allocations:
         if i is not None:
-            k = (good, True, False, buy_price)
+            # A stock pairing's BUY leg is a warehouse WITHDRAWAL at basis (is_stock);
+            # market/deposit buys are ordinary market purchases.
+            k = (good, True, False, kind == "stock", buy_price)
             leg_trades[i][k] = leg_trades[i].get(k, 0) + units
-        k = (good, False, kind == "deposit", sell_price)
+        k = (good, False, kind == "deposit", False, sell_price)
         leg_trades[j][k] = leg_trades[j].get(k, 0) + units
 
     legs = []
@@ -530,11 +612,12 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             continue
         trades = []
         entries = leg_trades[idx].items()
-        for (good, is_buy, is_deposit, price), units in sorted(
-                entries, key=lambda e: (e[0][1], e[0][0], e[0][2], e[0][3])):
+        for (good, is_buy, is_deposit, is_stock, price), units in sorted(
+                entries, key=lambda e: (e[0][1], e[0][0], e[0][2], e[0][3], e[0][4])):
             # sells (is_buy=False) sort first: dock order frees hold before buys
             trades.append(dict(good_symbol=good, units=units, is_buy=is_buy,
-                               is_deposit=is_deposit, expected_unit_price=price))
+                               is_deposit=is_deposit, is_stock=is_stock,
+                               expected_unit_price=price))
         leg_profit = sum(t["units"] * t["expected_unit_price"] * (-1 if t["is_buy"] else 1)
                          for t in trades)
         legs.append(dict(waypoint_symbol=seq[idx],
@@ -553,10 +636,12 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
 
     cph = profit / (seconds / 3600.0) if seconds > 0 else 0.0
     return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs,
-                held_liquidation=held_liquidation, deposit_value=deposit_value)
+                held_liquidation=held_liquidation, deposit_value=deposit_value,
+                stock_value=stock_value)
 
 
-def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None):
+def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
+                   stock_sources=None):
     """Beam search over hop sequences; every prefix is a candidate tour.
 
     Ranking uses an optimistic MULTI-GOOD hold-packing bound (sp-gm00): for
@@ -583,6 +668,10 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None):
     Returns candidate sequences (tuples) sorted best-bound-first.
     """
     deposit_sinks = deposit_sinks or {}
+    stock_sources = stock_sources or {}
+    stock_by_wp = {}
+    for (wp, good), src in stock_sources.items():
+        stock_by_wp.setdefault(wp, {})[good] = src
     max_hops = constraints.get("max_hops") or MAX_HOPS_DEFAULT
     max_hops = min(max_hops, MAX_HOPS_DEFAULT)
     start_system = ship["current_system"]
@@ -613,6 +702,15 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None):
             dsink = deposit_sinks.get((wp_to, good))
             if dsink and brow["ask"] > 0 and dsink["bid"] > brow["ask"]:
                 spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"]))
+        # Stock source at wp_from (C1, sp-64je): a good stocked in the warehouse here is
+        # WITHDRAWN at basis and sold at wp_to's market bid. Credit it in the packing
+        # bound (source-side mirror of the deposit sink) so the beam explores sequences
+        # that reach the warehouse to draw cheap stock — otherwise a stock waypoint whose
+        # market goods are thin could lose the beam cut and its stock never be planned.
+        for good, ssrc in stock_by_wp.get(wp_from, {}).items():
+            srow = goods_to.get(good)
+            if srow and srow["bid"] > ssrc["ask"]:
+                spreads.append((srow["bid"] - ssrc["ask"], ssrc["units_available"]))
         spreads.sort(reverse=True)
         gain, cap = 0, hold
         for spread, depth in spreads:
@@ -670,7 +768,7 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None):
 def _infeasible(reason, model_version, top_rejected=None):
     return dict(feasible=False, infeasible_reason=reason, legs=[],
                 projected_profit=0, projected_credits_per_hour=0.0,
-                held_liquidation=0, deposit_value=0,
+                held_liquidation=0, deposit_value=0, stock_value=0,
                 top_rejected=top_rejected or [], model_version=model_version)
 
 
@@ -691,7 +789,8 @@ def _index_absorption(absorption):
 
 
 def solve_tour(snapshot, ship, constraints, model, waypoints=None,
-               deposit_candidates=None, absorption=None, objective=None):
+               deposit_candidates=None, absorption=None, objective=None,
+               stock_sources=None):
     """Plan the best multi-hop trade tour for one hull. Pure; proto-shaped dicts.
 
     `waypoints` mirrors OptimizeTradeTourRequest.waypoints (coords for the
@@ -779,9 +878,15 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # markets[wp]["goods"], so real market rows and the deposit sink coexist at the
     # same waypoint without collision and are priced independently.
     deposit_sinks = _build_deposit_sinks(deposit_candidates, markets, allowed)
+    # Stock sources (C1, sp-64je): index warehouse stock as zero-ask-at-basis
+    # withdrawal sources and make each storage waypoint routable — the buy-side mirror
+    # of the deposit sinks, priced independently from any real market row at the same
+    # waypoint. Absent -> {} -> the tour plans against market buys unchanged.
+    stock_source_idx = _build_stock_sources(stock_sources, markets, allowed)
     absorption_index = _index_absorption(absorption)
     travel_fn = _make_travel_fn(constraints, markets, ship, waypoints)
-    candidates = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks)
+    candidates = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
+                                stock_source_idx)
     if not candidates:
         return _infeasible("no_candidate_tours", model_version)
 
@@ -789,10 +894,10 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     seen = set()
     for seq in candidates[:FULL_SCORE_TOP_N]:
         result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
-                                deposit_sinks, absorption_index)
+                                deposit_sinks, absorption_index, stock_source_idx)
         signature = tuple((l["waypoint_symbol"],
                            tuple((t["good_symbol"], t["units"], t["is_buy"],
-                                  t["is_deposit"], t["expected_unit_price"])
+                                  t["is_deposit"], t["is_stock"], t["expected_unit_price"])
                                  for t in l["trades"]))
                           for l in result["legs"])
         if signature in seen:
@@ -844,5 +949,6 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
                 projected_credits_per_hour=best["cph"],
                 held_liquidation=best["held_liquidation"],
                 deposit_value=best["deposit_value"],
+                stock_value=best["stock_value"],
                 top_rejected=rejected(scored[1:], winner=best),
                 model_version=model_version)

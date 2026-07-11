@@ -87,6 +87,16 @@ func (s *StorageRecoveryService) RecoverStorageOperations(
 		if shipsRecovered > 0 {
 			result.OperationsRecovered++
 		}
+		// C1 (sp-64je): re-seed the operation's cost basis from durable storage
+		// once its ships (and therefore live units) are back. Units come from the
+		// ship API; basis cannot, so it is reloaded here. Optional capability
+		// (only the in-memory coordinator carries it) — no-op otherwise / without
+		// a store, keeping the domain StorageCoordinator interface unchanged.
+		if seeder, ok := s.coordinator.(interface {
+			LoadAndSeedBasis(context.Context, string)
+		}); ok {
+			seeder.LoadAndSeedBasis(ctx, op.ID())
+		}
 	}
 
 	log.Printf(recoveryLogPrefix+" Recovery complete: %d operations, %d ships registered, %d errors",
