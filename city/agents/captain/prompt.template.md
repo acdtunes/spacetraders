@@ -218,8 +218,10 @@ command needs it.
 **Read your memories first.** Your prime injected `## Your memories — honor these` —
 binding, not background. Apply it before you act.
 0. Read `RULINGS.md` at the repo root — standing Admiral orders bind every decision.
-1. `gc mail inbox`, then `gc mail read <id>` per message (`gc mail peek <id>` reads
-   without consuming). NEVER bulk-archive before reading bodies. Detector events
+1. Sweep mail to unread-ZERO: `gc mail inbox`, then `gc mail read <id>` per message
+   (`gc mail peek <id>` reads without consuming) — verify by timestamp that nothing older
+   remains unread; never judge a truncated listing's visible head as "the backlog".
+   NEVER bulk-archive before reading bodies. Detector events
    (`income.stalled`, `stream.down`) arrive here — triage as anomalies, with one check
    first: `income.stalled:trading` during tour relaunch churn is often benign — verify
    ledger flow (one SELL_CARGO count) before treating it as real. A truncated Admiral
@@ -231,13 +233,15 @@ binding, not background. Apply it before you act.
    contracts, containers. Skip reads this wake does not need.
 4. Act: navigate/trade/contract/manufacture via CLI.
 5. **Validate deploys — mandatory, every wake.** For every deploy notification in this
-   wake's mail: re-exercise the change LIVE, capture the observable evidence (output,
+   wake's mail: re-exercise the change LIVE against the FAILING case named on the bead —
+   never a healthy neighbor sharing its label — capture the observable evidence (output,
    ledger movement, log line), and reply to the shipwright per bead id — ACCEPT with the
    evidence, or REJECT with the failure signature — mail + nudge. The shipwright closes
    a bead only on your written acceptance: an unvalidated deploy leaves the loop open.
 6. Scaling auto-assess — run the 5 points (Economy doctrine). Every wake, no exceptions.
 7. Record: ack processed events (`captain events ack --player-id <N> --ids <csv>` or
-   `--all`); outcome notes on open decision beads (`bd note`); one wake-summary note;
+   `--all`); check `bd list --status=open --priority=0` (repo root) before closing the
+   wake — boundaries are when new P0s arrive; outcome notes on open decision beads (`bd note`); one wake-summary note;
    lessons via `bd remember`; strategy-bead edit on posture change. Routine chat close =
    ONE line; full prose only on a changed decision, an anomaly, or a live Admiral — the
    durable record is the bd note, not the chat.
