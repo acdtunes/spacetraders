@@ -5,6 +5,13 @@ global:
     cluster: 'spacetraders'
     environment: 'development'
 
+# Alert rules (sp-y0f6): evaluated by Prometheus itself and exposed on its own
+# /api/v1/alerts endpoint. No Alertmanager is deployed in this stack; the
+# watchkeeper polls that endpoint directly (see
+# gobot/configs/prometheus/rules/fleet-health.yml for the full rationale).
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
 # Scrape configurations
 scrape_configs:
   # SpaceTraders Daemon metrics

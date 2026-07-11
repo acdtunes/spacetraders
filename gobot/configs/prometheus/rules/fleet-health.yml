@@ -1,0 +1,106 @@
+# Fleet-health alert rules (sp-y0f6).
+#
+# Built to close the 2026-07-11 incident (sp-4hl5): the fleet earned zero
+# revenue for 2h50m and NO automated signal fired — a human caught it only by
+# eyeballing a treasury chart, ~60 minutes after onset. Root cause (ggk2): a
+# reserve-floor fix made a 1M credit reserve effective for the first time, and
+# the tour planner (an unenumerated consumer of that value) computed
+# spend_cap = max(0, 25%*T - 1M) = 0, idling all 9 earners for exactly 2h50m.
+#
+# These rules are evaluated by Prometheus itself and exposed on its own
+# /api/v1/alerts endpoint. There is no Alertmanager deployment in this stack,
+# so the watchkeeper's detectPrometheusAlerts detector
+# (gobot/internal/captain/detectors.go) polls that endpoint directly, once
+# per tick, and records one interrupt-class prometheus.alert_firing event per
+# firing alertname — which forces an immediate captain wake via the existing
+# wake mechanism (see gobot/internal/domain/captain/events.go,
+# DefaultInterruptTypes). This is the lightest correct join to an existing
+# poller rather than a new standing loop, per the no-monitoring-between-wakes
+# doctrine.
+#
+# All four metric names and label values below were confirmed live against
+# this stack's own Prometheus (localhost:9091) before this file was written.
+groups:
+  - name: fleet-health
+    rules:
+      # EarnerDark: exactly the 2026-07-11 signature. Zero heavy SELL revenue
+      # over a rolling 20-minute window while at least one TRADING container
+      # is still RUNNING — i.e. tours keep relaunching, so this is a live
+      # stall, not an expected all-hands-idle state (e.g. a deliberate
+      # maintenance window with zero containers up, which this expression
+      # does not match since the container-running clause requires > 0).
+      # Deliberately no `for:` clause: the 20m rate() window IS the detection
+      # budget. Holding the alert pending for an additional `for:` duration on
+      # top of an already-20m window would blow the bead's 20-minute
+      # acceptance criterion (fire within 20 min of onset).
+      - alert: EarnerDark
+        expr: |
+          sum by (player_id) (rate(spacetraders_daemon_transactions_total{category="TRADING_REVENUE",type="SELL_CARGO"}[20m])) == 0
+          and
+          sum by (player_id) (spacetraders_daemon_container_running_total{container_type="TRADING"}) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fleet earning zero revenue for 20+ min with tours still running (player {{ $labels.player_id }})"
+          description: >-
+            No SELL_CARGO transactions in the trailing 20 minutes while at
+            least one TRADING container is RUNNING — the exact 2026-07-11
+            signature (sp-4hl5): tours keep relaunching but nothing sells,
+            usually a spend_cap / feasibility miscalculation idling every
+            earner. Check the tour planner's spend_cap computation and any
+            recent reserve/threshold config change first.
+
+      # BurstSaturation: the 00:56Z burst-saturation lesson (bead notes:
+      # "p95 rate_limit_wait > 1s sustained 3+ min -> page"). p95 over a 5m
+      # rate() window of the *_bucket histogram, summed by (le) across every
+      # other label (endpoint/method/etc — none of which are player-scoped,
+      # since API rate-limit budget is fleet-wide, not per-player).
+      - alert: BurstSaturation
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(spacetraders_daemon_api_rate_limit_wait_seconds_bucket[5m]))) > 1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API rate-limit wait p95 > 1s sustained 3+ minutes"
+          description: >-
+            The fleet is spending real wall-clock time queued on the API rate
+            limiter, not just approaching it — throughput is already
+            degraded. Check concurrent-lane count against the current budget.
+
+      # ApproachCeiling: the approach-warning companion named in the bead
+      # notes ("utilization > 85% sustained 10m as the approach-warning"), a
+      # heads-up ahead of BurstSaturation's harder wait-time symptom. Total
+      # request rate as a fraction of the known 2 req/s fleet-wide budget.
+      - alert: ApproachCeiling
+        expr: |
+          sum(rate(spacetraders_daemon_api_requests_total[5m])) / 2.0 > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API request rate above 85% of budget sustained 10+ minutes"
+          description: >-
+            Fleet-wide request rate is approaching the rate-limit ceiling
+            (2 req/s budget). Early warning ahead of BurstSaturation — check
+            for a runaway coordinator or an unplanned concurrency increase.
+
+      # StarvationWave: tour-exit starvation rate spiking, calibrated from
+      # tonight's 123/hr crisis down to a conservative ~30/hr threshold (bead
+      # notes), so it fires as a leading indicator well before a repeat
+      # reaches anywhere near that scale — ideally before EarnerDark itself
+      # would trip. *3600 converts the per-second rate() to an hourly rate to
+      # match the calibration units.
+      - alert: StarvationWave
+        expr: |
+          sum by (player_id) (rate(spacetraders_daemon_tour_exit_total{reason="starvation"}[15m])) * 3600 > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tour starvation-exit rate above 30/hr sustained 5+ minutes (player {{ $labels.player_id }})"
+          description: >-
+            Tours are exiting on starvation (no feasible cargo) well above
+            baseline — the leading indicator this bead designed to precede an
+            EarnerDark flatline. Check tour feasibility / spend_cap before
+            revenue actually goes to zero.
