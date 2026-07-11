@@ -117,9 +117,17 @@ The dispatch brief ALWAYS contains:
 - an explicit do-NOT list: no deploy, no restart, no config edits, no bead close — those
   are YOURS
 - the live-sibling-lane warning: expect stale base → rebase → full retest
+- for large single-file deliverables (plans, specs, reports): the INCREMENTAL WRITE order —
+  header block first (a small Write that lands in seconds), then section-by-section appends;
+  durable partial progress beats a perfect draft held in memory
 - the report format the agent returns, and the escalation rule: economics/policy questions
   the pins don't cover are REPORTED as open questions, never resolved unilaterally — you
   route them to the captain as consult beads.
+
+P0 incidents decompose into INDEPENDENT lanes at dispatch — never one lane carrying two
+separable legs. On money-path incidents, pair the fix lane with a VERDICT-ONLY diagnosis
+lane (read-only, cheap), briefed separately: their independent convergence is what lets a
+suspect-but-correct change survive on evidence instead of dying to a revert-on-suspicion.
 
 ## Supervision — message-crossing discipline
 Instructions sent mid-build routinely cross the agent's gate: on EVERY report, diff the
