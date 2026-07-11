@@ -84,6 +84,21 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 	systemSymbol string,
 	playerID int,
 ) (map[string]string, error) {
+	return dc.AssignShipsToMarketsWithHint(ctx, ships, targetMarkets, systemSymbol, playerID, domainContract.PrePositionHint{})
+}
+
+// AssignShipsToMarketsWithHint is AssignShipsToMarkets plus the sp-1ef0 contract
+// pre-position hint. When the hint clears its confidence guard, one idle hull is biased
+// toward the predicted next-source market; otherwise the result is identical to the
+// legacy distance-based assignment.
+func (dc *DistributionChecker) AssignShipsToMarketsWithHint(
+	ctx context.Context,
+	ships []*navigation.Ship,
+	targetMarkets []string,
+	systemSymbol string,
+	playerID int,
+	hint domainContract.PrePositionHint,
+) (map[string]string, error) {
 	if len(ships) == 0 || len(targetMarkets) == 0 {
 		return make(map[string]string), nil
 	}
@@ -93,7 +108,7 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 		return nil, err
 	}
 
-	domainAssignments, err := dc.delegateShipAssignment(ships, targetWaypoints)
+	domainAssignments, err := dc.delegateShipAssignment(ships, targetWaypoints, hint)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +119,9 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 func (dc *DistributionChecker) delegateShipAssignment(
 	ships []*navigation.Ship,
 	targetWaypoints []*shared.Waypoint,
+	hint domainContract.PrePositionHint,
 ) ([]domainContract.Assignment, error) {
-	domainAssignments, err := dc.fleetAssigner.AssignShipsToTargets(ships, targetWaypoints)
+	domainAssignments, err := dc.fleetAssigner.AssignShipsToTargetsWithHint(ships, targetWaypoints, hint)
 	if err != nil {
 		return nil, fmt.Errorf("ship assignment failed: %w", err)
 	}

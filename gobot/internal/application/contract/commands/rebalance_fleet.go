@@ -8,6 +8,8 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
@@ -24,6 +26,14 @@ type RebalanceContractFleetHandler struct {
 	marketRepo          MarketRepository
 	converter           system.IWaypointConverter
 	distributionChecker *appContract.DistributionChecker
+
+	// Contract pre-position (sp-1ef0): optional collaborators. When both are wired and
+	// the feature is enabled, an idle hull is biased toward the predicted next-source
+	// market during a delivery leg. Either being nil disables pre-position (the handler
+	// falls back to pure distance-based rebalancing).
+	contractRepo   domainContract.ContractRepository
+	sourceFinder   SourceMarketFinder
+	prepositionCfg SourcePrepositionConfig
 }
 
 // MarketRepository defines the interface for market data access needed by rebalancing
@@ -31,13 +41,51 @@ type MarketRepository interface {
 	FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error)
 }
 
-// NewRebalanceContractFleetHandler creates a new rebalance fleet handler
+// SourceMarketFinder resolves a contract good to the in-system market that sells it,
+// using scanned market availability (sp-1ef0). It must NOT resurrect the persisted
+// purchase-history tracking removed in 71aceda — that biased coverage toward
+// frequently-used markets over true availability; the cheapest currently-selling market
+// is the honest next-source signal.
+type SourceMarketFinder interface {
+	FindCheapestMarketSelling(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.CheapestMarketResult, error)
+}
+
+// DefaultPrepositionConfidenceThreshold gates the same-good-remaining signal when the
+// operator leaves the threshold unset. 0.8 admits the near-certain single-good case
+// (confidence 1.0) and rejects the ambiguous multi-good case (confidence 0.5).
+const DefaultPrepositionConfidenceThreshold = 0.8
+
+// SourcePrepositionConfig is the live-config seam (RULINGS #5) for contract source
+// pre-positioning. Disabled is the escape hatch: default OFF means the feature is ON, so
+// an absent key reads as enabled and the default-ON intent survives a recovery from a
+// config predating the key.
+type SourcePrepositionConfig struct {
+	Disabled            bool
+	ConfidenceThreshold float64
+}
+
+// threshold returns the configured confidence gate, or the default when unset.
+func (c SourcePrepositionConfig) threshold() float64 {
+	if c.ConfidenceThreshold <= 0 {
+		return DefaultPrepositionConfidenceThreshold
+	}
+	return c.ConfidenceThreshold
+}
+
+// NewRebalanceContractFleetHandler creates a new rebalance fleet handler.
+//
+// contractRepo, sourceFinder and prepositionCfg wire the sp-1ef0 contract pre-position
+// hint. Passing a nil contractRepo or sourceFinder disables pre-position and preserves
+// the original distance-only behavior.
 func NewRebalanceContractFleetHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MarketRepository,
 	converter system.IWaypointConverter,
+	contractRepo domainContract.ContractRepository,
+	sourceFinder SourceMarketFinder,
+	prepositionCfg SourcePrepositionConfig,
 ) *RebalanceContractFleetHandler {
 	return &RebalanceContractFleetHandler{
 		mediator:            mediator,
@@ -46,6 +94,9 @@ func NewRebalanceContractFleetHandler(
 		marketRepo:          marketRepo,
 		converter:           converter,
 		distributionChecker: appContract.NewDistributionChecker(graphProvider, converter),
+		contractRepo:        contractRepo,
+		sourceFinder:        sourceFinder,
+		prepositionCfg:      prepositionCfg,
 	}
 }
 
@@ -224,8 +275,13 @@ func (h *RebalanceContractFleetHandler) assignShipsToMarkets(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
+	// sp-1ef0: derive an optional contract pre-position hint. When it clears the
+	// confidence guard, one idle hull is biased toward the predicted next source; the
+	// predicted market is folded into the target set so the assigner can honor it.
+	hint, targetMarkets := h.computePrePositionHint(ctx, cmd, targetMarkets)
+
 	logger.Log("INFO", "Assigning ships to markets...", nil)
-	assignments, err := h.distributionChecker.AssignShipsToMarkets(ctx, ships, targetMarkets, cmd.SystemSymbol, cmd.PlayerID.Value())
+	assignments, err := h.distributionChecker.AssignShipsToMarketsWithHint(ctx, ships, targetMarkets, cmd.SystemSymbol, cmd.PlayerID.Value(), hint)
 	if err != nil {
 		return fmt.Errorf("failed to assign ships to markets: %w", err)
 	}
@@ -233,6 +289,88 @@ func (h *RebalanceContractFleetHandler) assignShipsToMarkets(
 	result.Assignments = assignments
 	logger.Log("INFO", fmt.Sprintf("Generated %d ship assignments", len(assignments)), nil)
 	return nil
+}
+
+// computePrePositionHint derives the same-contract/same-good/multi-delivery-remaining
+// pre-position hint (sp-1ef0). It returns an inactive (zero) hint whenever the feature is
+// disabled, the collaborators are absent, no active contract yields a near-certain
+// signal, or the good is not currently sold anywhere in-system. On a strong signal it
+// resolves the good to its cheapest-selling market (live availability, never purchase
+// history) and returns that market as the hint plus the target set augmented to include
+// it. The confidence guard (Confidence >= threshold) is enforced here and re-checked in
+// the domain assigner.
+func (h *RebalanceContractFleetHandler) computePrePositionHint(
+	ctx context.Context,
+	cmd *RebalanceContractFleetCommand,
+	targetMarkets []string,
+) (domainContract.PrePositionHint, []string) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.prepositionCfg.Disabled || h.contractRepo == nil || h.sourceFinder == nil {
+		return domainContract.PrePositionHint{}, targetMarkets
+	}
+
+	contracts, err := h.contractRepo.FindActiveContracts(ctx, cmd.PlayerID.Value())
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Pre-position: failed to load active contracts: %v", err), nil)
+		return domainContract.PrePositionHint{}, targetMarkets
+	}
+
+	threshold := h.prepositionCfg.threshold()
+
+	// Strongest same-good-remaining prediction across active contracts. Each prediction
+	// is derived from a SINGLE contract's own deliveries (same-contract only) — selecting
+	// the most-certain one is not cross-contract inference.
+	best := domainContract.SourcePrediction{}
+	for _, c := range contracts {
+		if c == nil || !c.Accepted() || c.Fulfilled() {
+			continue
+		}
+		pred := domainContract.PredictNextContractSource(c, 0)
+		if pred.HasPrediction && pred.Confidence > best.Confidence {
+			best = pred
+		}
+	}
+
+	if !best.HasPrediction || best.Confidence < threshold {
+		// Guard: no signal, or a weak/ambiguous one — no wasted move.
+		return domainContract.PrePositionHint{}, targetMarkets
+	}
+
+	res, err := h.sourceFinder.FindCheapestMarketSelling(ctx, best.Good, cmd.SystemSymbol, cmd.PlayerID.Value())
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Pre-position: failed to resolve source market for %s: %v", best.Good, err), nil)
+		return domainContract.PrePositionHint{}, targetMarkets
+	}
+	if res == nil || res.WaypointSymbol == "" {
+		// No in-system market currently sells the good — nothing to pre-position toward.
+		return domainContract.PrePositionHint{}, targetMarkets
+	}
+
+	logger.Log("INFO", "Contract pre-position: biasing idle hull toward predicted next source", map[string]interface{}{
+		"action":         "contract_preposition",
+		"good":           best.Good,
+		"predicted_wp":   res.WaypointSymbol,
+		"confidence":     best.Confidence,
+		"threshold":      threshold,
+		"remaining_unit": best.RemainingUnits,
+	})
+
+	return domainContract.PrePositionHint{
+		TargetWaypoint: res.WaypointSymbol,
+		Confidence:     best.Confidence,
+		Threshold:      threshold,
+	}, ensureContains(targetMarkets, res.WaypointSymbol)
+}
+
+// ensureContains returns markets with symbol appended when it is not already present.
+func ensureContains(markets []string, symbol string) []string {
+	for _, m := range markets {
+		if m == symbol {
+			return markets
+		}
+	}
+	return append(markets, symbol)
 }
 
 func (h *RebalanceContractFleetHandler) executeParallelRepositioning(

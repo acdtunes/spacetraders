@@ -100,19 +100,33 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 	}, nil
 }
 
+// PrePositionHint biases one idle hull toward a predicted next-source market during
+// assignment (sp-1ef0 contract pre-position). It is honored only when TargetWaypoint is
+// set AND Confidence clears Threshold — the confidence guard that bounds wasted-move
+// risk. A zero-value hint (or any sub-threshold one) leaves distance-based round-robin
+// exactly as it was, so the no-signal path is untouched.
+type PrePositionHint struct {
+	// TargetWaypoint is the predicted next-source market symbol. Empty disables the hint.
+	TargetWaypoint string
+	// Confidence is the same-good-remaining signal's near-certainty in [0,1].
+	Confidence float64
+	// Threshold is the minimum confidence to act on the hint (from live config).
+	Threshold float64
+}
+
+// active reports whether the hint names a target and clears the confidence guard.
+func (h PrePositionHint) active() bool {
+	return h.TargetWaypoint != "" && h.Confidence > 0 && h.Confidence >= h.Threshold
+}
+
 // AssignShipsToTargets distributes ships across target waypoints using
-// balanced round-robin with distance optimization.
+// balanced round-robin with distance optimization. It is the no-hint entry point;
+// see AssignShipsToTargetsWithHint for the contract pre-position variant.
 //
 // Business Rules:
 //   - Maximum MaxShipsPerMarket ships per target (prevents over-concentration)
 //   - Assigns each ship to nearest available target
 //   - Ensures balanced distribution across all targets
-//
-// Algorithm:
-//  1. Calculate max ships per target (balanced distribution)
-//  2. Cap at MaxShipsPerMarket to prevent clustering
-//  3. For each ship, select nearest target with capacity
-//  4. Track assignments and capacities
 //
 // Parameters:
 //   - ships: Fleet to distribute
@@ -123,6 +137,25 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 func (fa *FleetAssigner) AssignShipsToTargets(
 	ships []*navigation.Ship,
 	targetWaypoints []*shared.Waypoint,
+) ([]Assignment, error) {
+	return fa.AssignShipsToTargetsWithHint(ships, targetWaypoints, PrePositionHint{})
+}
+
+// AssignShipsToTargetsWithHint is AssignShipsToTargets plus an optional contract
+// pre-position hint (sp-1ef0). When the hint clears its confidence guard, the idle hull
+// nearest the predicted next-source market is placed onto it FIRST — overriding pure
+// distance so it is already close when the contract's next same-good delivery begins —
+// and the remaining hulls distribute by distance as before. Below the guard (or with an
+// empty/absent hint) the result is identical to the legacy round-robin.
+//
+// Algorithm:
+//  1. Cap ships per target (balanced distribution, MaxShipsPerMarket ceiling).
+//  2. If the hint is active, reserve one slot at the predicted market for the nearest hull.
+//  3. Distribute the rest to their nearest target with remaining capacity.
+func (fa *FleetAssigner) AssignShipsToTargetsWithHint(
+	ships []*navigation.Ship,
+	targetWaypoints []*shared.Waypoint,
+	hint PrePositionHint,
 ) ([]Assignment, error) {
 	if len(ships) == 0 || len(targetWaypoints) == 0 {
 		return []Assignment{}, nil
@@ -145,9 +178,28 @@ func (fa *FleetAssigner) AssignShipsToTargets(
 
 	// Assignment list
 	var assignments []Assignment
+	remaining := ships
 
-	// For each ship, find nearest target with available capacity
-	for _, ship := range ships {
+	// Pre-position: when the same-good/multi-delivery-remaining signal clears the
+	// confidence guard, bias the idle hull nearest the predicted next source onto it so
+	// it is closer when the next delivery starts. Below the guard we fall straight
+	// through to distance round-robin (the guard — no wasted move on a weak signal).
+	if hint.active() {
+		if target := findTargetWaypoint(targetWaypoints, hint.TargetWaypoint); target != nil {
+			if ship := nearestShipToTarget(remaining, target); ship != nil {
+				assignments = append(assignments, Assignment{
+					ShipSymbol:     ship.ShipSymbol(),
+					TargetWaypoint: target.Symbol,
+					Distance:       ship.CurrentLocation().DistanceTo(target),
+				})
+				targetCounts[target.Symbol]++
+				remaining = shipsExcept(remaining, ship.ShipSymbol())
+			}
+		}
+	}
+
+	// For each remaining ship, find nearest target with available capacity
+	for _, ship := range remaining {
 		var bestTarget *shared.Waypoint
 		bestDistance := math.MaxFloat64
 		currentLocation := ship.CurrentLocation()
@@ -180,4 +232,40 @@ func (fa *FleetAssigner) AssignShipsToTargets(
 	}
 
 	return assignments, nil
+}
+
+// findTargetWaypoint returns the target waypoint with the given symbol, or nil when the
+// predicted market is not among the discovered targets.
+func findTargetWaypoint(targets []*shared.Waypoint, symbol string) *shared.Waypoint {
+	for _, wp := range targets {
+		if wp.Symbol == symbol {
+			return wp
+		}
+	}
+	return nil
+}
+
+// nearestShipToTarget returns the ship closest to target, or nil when ships is empty.
+func nearestShipToTarget(ships []*navigation.Ship, target *shared.Waypoint) *navigation.Ship {
+	var best *navigation.Ship
+	bestDistance := math.MaxFloat64
+	for _, ship := range ships {
+		d := ship.CurrentLocation().DistanceTo(target)
+		if d < bestDistance {
+			bestDistance = d
+			best = ship
+		}
+	}
+	return best
+}
+
+// shipsExcept returns ships with the named ship removed (preserving order).
+func shipsExcept(ships []*navigation.Ship, exclude string) []*navigation.Ship {
+	out := make([]*navigation.Ship, 0, len(ships))
+	for _, ship := range ships {
+		if ship.ShipSymbol() != exclude {
+			out = append(out, ship)
+		}
+	}
+	return out
 }

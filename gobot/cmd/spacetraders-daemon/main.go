@@ -480,7 +480,17 @@ func run(cfg *config.Config) error {
 	// warehouse (sp-dchv Lane B/D) so it can be wired with inventory-first
 	// sourcing — see "Inventory-first contract sourcing" below.
 
-	rebalanceFleetHandler := contractCmd.NewRebalanceContractFleetHandler(med, shipRepo, graphService, marketRepo, waypointConverter)
+	// sp-1ef0: contractRepo + marketRepo (as SourceMarketFinder) + live config wire the
+	// contract source pre-position hint. marketRepo satisfies both the market-discovery
+	// and the cheapest-selling (availability-based) source resolution interfaces.
+	rebalanceFleetHandler := contractCmd.NewRebalanceContractFleetHandler(
+		med, shipRepo, graphService, marketRepo, waypointConverter,
+		contractRepo, marketRepo,
+		contractCmd.SourcePrepositionConfig{
+			Disabled:            cfg.Contract.SourcePreposition.Disabled,
+			ConfidenceThreshold: cfg.Contract.SourcePreposition.ConfidenceThreshold,
+		},
+	)
 	if err := mediator.RegisterHandler[*contractCmd.RebalanceContractFleetCommand](med, rebalanceFleetHandler); err != nil {
 		return fmt.Errorf("failed to register RebalanceContractFleet handler: %w", err)
 	}
