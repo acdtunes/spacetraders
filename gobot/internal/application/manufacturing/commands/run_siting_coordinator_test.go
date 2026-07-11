@@ -96,6 +96,24 @@ func (f *fakeWorkerCounter) CountWorkers(ctx context.Context, playerID int) (int
 	return f.count, f.err
 }
 
+type fakeWorkerReachabilityProvider struct {
+	// bySystem maps a candidate system → staffing-reachability signal ∈ [0,1] (1 = an idle
+	// worker is in-system, 0 = no worker can reach it). A missing system defaults to 1
+	// (fully reachable / neutral), mirroring the production nil/error fallback.
+	bySystem map[string]float64
+	err      error
+}
+
+func (f *fakeWorkerReachabilityProvider) Reachability(ctx context.Context, playerID int, system string) (float64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	if v, ok := f.bySystem[system]; ok {
+		return v, nil
+	}
+	return 1, nil // no entry → fully reachable (neutral, no penalty)
+}
+
 type fakeScoutDemandEmitter struct {
 	emitted    []string // systems
 	suppressed map[string]bool

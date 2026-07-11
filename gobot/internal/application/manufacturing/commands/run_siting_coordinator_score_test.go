@@ -20,6 +20,16 @@ func plProj(byKey map[string]ChainProjection) *fakeChainProjector {
 	return &fakeChainProjector{byKey: byKey}
 }
 
+// scoreWithReach runs SCORE with a projector and an optional worker-reachability provider
+// (no alignment), so the reachability term can be pinned in isolation.
+func scoreWithReach(cmd *RunSitingCoordinatorCommand, projector ChainProjector, reach WorkerReachabilityProvider, candidates []SitingCandidate) []ScoredCandidate {
+	h := NewRunSitingCoordinatorHandler(&fakeSitingScanner{}, projector, &fakeChainController{}, nil)
+	if reach != nil {
+		h.SetWorkerReachabilityProvider(reach)
+	}
+	return h.score(context.Background(), cmd, resolveSitingConfig(cmd), candidates)
+}
+
 // Base math: no alignment, fresh data, private inputs → Score = ProjectedPL × 1.0.
 func TestScore_BaseMathIsProjectedPL(t *testing.T) {
 	cmd := &RunSitingCoordinatorCommand{PlayerID: 1}
@@ -161,6 +171,88 @@ func TestScore_RankedDescending(t *testing.T) {
 	got := scoreWith(cmd, proj, nil, cands)
 	if len(got) != 3 || got[0].Good != "HIGH" || got[1].Good != "MID" || got[2].Good != "LOW" {
 		t.Errorf("want HIGH>MID>LOW, got %v/%v/%v", got[0].Good, got[1].Good, got[2].Good)
+	}
+}
+
+// Worker reachability (sp-3vg8): an unstaffable chain — no in-system idle worker AND no
+// ferry path in (signal 0) — is penalized its whole projected value and ranks below an
+// otherwise-equal staffable chain (in-system idle worker, signal 1). The weight is UNSET here,
+// proving the term is LIVE BY DEFAULT (0 → resolves to 1.0). This is the C81/GS93 fix: vdld
+// deprioritizes far-cluster chains that pass the margin guard but cannot be manned.
+func TestScore_UnstaffableWorkerScoresBelowStaffable(t *testing.T) {
+	cmd := &RunSitingCoordinatorCommand{PlayerID: 1}
+	cands := []SitingCandidate{
+		{Good: "ELEC", System: "X1-STAFF", InputMarkets: []string{"M1"}},
+		{Good: "ELEC", System: "X1-EMPTY", InputMarkets: []string{"M2"}},
+	}
+	proj := plProj(map[string]ChainProjection{
+		"ELEC@X1-STAFF": {ProjectedPL: 1000, Proceed: true},
+		"ELEC@X1-EMPTY": {ProjectedPL: 1000, Proceed: true},
+	})
+	reach := &fakeWorkerReachabilityProvider{bySystem: map[string]float64{
+		"X1-STAFF": 1.0, // idle worker already in-system
+		"X1-EMPTY": 0.0, // no in-system idle worker AND no ferry path in
+	}}
+	got := scoreWithReach(cmd, proj, reach, cands)
+
+	bySys := map[string]ScoredCandidate{}
+	for _, s := range got {
+		bySys[s.System] = s
+	}
+	// Staffable: no penalty → score 1000.
+	if bySys["X1-STAFF"].Unreachability != 0 || bySys["X1-STAFF"].Score != 1000 {
+		t.Errorf("staffable unreachability=%v score=%v, want 0/1000", bySys["X1-STAFF"].Unreachability, bySys["X1-STAFF"].Score)
+	}
+	// Unstaffable: penalty = 1.0×1000×(1−0) = 1000 → score 0.
+	if bySys["X1-EMPTY"].Unreachability != 1000 || bySys["X1-EMPTY"].Score != 0 {
+		t.Errorf("unstaffable unreachability=%v score=%v, want 1000/0", bySys["X1-EMPTY"].Unreachability, bySys["X1-EMPTY"].Score)
+	}
+	// Deprioritized: the staffable chain ranks strictly first.
+	if got[0].System != "X1-STAFF" {
+		t.Errorf("staffable must rank first; got %v then %v", got[0].System, got[1].System)
+	}
+	if !(bySys["X1-EMPTY"].Score < bySys["X1-STAFF"].Score) {
+		t.Errorf("unstaffable score %v must be below staffable %v", bySys["X1-EMPTY"].Score, bySys["X1-STAFF"].Score)
+	}
+}
+
+// A ferry-reachable but distant worker (signal 0.25) is penalized in proportion to the
+// unreachability fraction (1 − signal = 0.75), not hard-gated — the analyst's weight tunes
+// how sharply distance discounts the site.
+func TestScore_PartialReachabilityProportionalPenalty(t *testing.T) {
+	cmd := &RunSitingCoordinatorCommand{PlayerID: 1, WeightWorkerReachability: 1.0}
+	cands := []SitingCandidate{{Good: "ELEC", System: "X1-FAR", InputMarkets: []string{"M1"}}}
+	proj := plProj(map[string]ChainProjection{"ELEC@X1-FAR": {ProjectedPL: 1000, Proceed: true}})
+	reach := &fakeWorkerReachabilityProvider{bySystem: map[string]float64{"X1-FAR": 0.25}}
+	got := scoreWithReach(cmd, proj, reach, cands)
+	// penalty = 1.0×1000×0.75 = 750 → score 250.
+	if got[0].Unreachability != 750 || got[0].Score != 250 {
+		t.Errorf("partial reach unreachability=%v score=%v, want 750/250", got[0].Unreachability, got[0].Score)
+	}
+}
+
+// A reachability read error does NOT drop or penalize the candidate — the signal falls back
+// to 1.0 (fully reachable / neutral), so a transient gate-graph read never nukes the portfolio.
+func TestScore_ReachabilityErrorIsNeutralNotDrop(t *testing.T) {
+	cmd := &RunSitingCoordinatorCommand{PlayerID: 1, WeightWorkerReachability: 1.0}
+	cands := []SitingCandidate{{Good: "ELEC", System: "X1-AA", InputMarkets: []string{"M1"}}}
+	proj := plProj(map[string]ChainProjection{"ELEC@X1-AA": {ProjectedPL: 1000, Proceed: true}})
+	reach := &fakeWorkerReachabilityProvider{err: errors.New("gate graph down")}
+	got := scoreWithReach(cmd, proj, reach, cands)
+	if len(got) != 1 || got[0].Unreachability != 0 || got[0].Score != 1000 {
+		t.Errorf("reach error must be neutral (no penalty), candidate kept; got %+v", got)
+	}
+}
+
+// With no reachability provider wired the term is neutral (no penalty) — backward-compatible:
+// scoring falls back to branchPL × alignment − competition − staleness alone.
+func TestScore_NoReachabilityProviderIsNeutral(t *testing.T) {
+	cmd := &RunSitingCoordinatorCommand{PlayerID: 1}
+	cands := []SitingCandidate{{Good: "ELEC", System: "X1-AA", InputMarkets: []string{"M1"}}}
+	proj := plProj(map[string]ChainProjection{"ELEC@X1-AA": {ProjectedPL: 1000, Proceed: true}})
+	got := scoreWithReach(cmd, proj, nil, cands)
+	if len(got) != 1 || got[0].Unreachability != 0 || got[0].Score != 1000 {
+		t.Errorf("nil reach provider must be neutral; got %+v", got)
 	}
 }
 

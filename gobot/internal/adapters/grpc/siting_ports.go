@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -307,6 +308,92 @@ func (w *sitingWorkerCounter) CountWorkers(ctx context.Context, playerID int) (i
 		}
 	}
 	return n, nil
+}
+
+// --- SCORE: worker-reachability provider (sp-3vg8 manning-feasibility) ---
+
+// sitingRepositionGraph is the narrow stored-adjacency reach the reachability provider needs:
+// the ordered ferry hop path between two systems (satisfied by gategraph.Service.RepositionPath,
+// the fwxm/kl16/o34q primitive). A path of length N is N−1 jumps; any error (e.g. ErrUnroutable)
+// means no ferry path within the graph's reposition reach.
+type sitingRepositionGraph interface {
+	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
+}
+
+// sitingWorkerReachabilityProvider is the concrete goodsCmd.WorkerReachabilityProvider (sp-3vg8):
+// it answers "can an idle manufacturing worker man a chain in this system?" by REUSING the
+// fleet's own idle-worker locator (contract.FindIdleLightHaulers — the same Role/idle/claim
+// semantics the worker rebalancer uses; the command hull stays reserved by default) and the
+// stored-adjacency ferry reach (RepositionPath). It invents no routing. The signal ∈ [0,1]:
+//   - 1.0          an idle worker is already IN-SYSTEM (distance 0, fully staffable);
+//   - 1/(1+hops)   the nearest idle-worker pool is `hops` ferry-jumps away (decays with distance);
+//   - 0.0          NO idle worker exists fleet-wide, OR none can ferry in within the graph's
+//     reposition reach (the C81/GS93 case: cleared the margin guard, cannot be manned).
+//
+// The SCORE step turns (1 − signal) into the unreachability penalty (weight × branchPL × frac).
+// A ship-repo read error propagates so SCORE treats it as neutral (no penalty): a transient read
+// must never nuke the portfolio. The distance grading is a monotonic default; the Analyst tunes
+// the sharpness with the live-by-default siting_weight_worker_reachability knob (RULINGS #5).
+type sitingWorkerReachabilityProvider struct {
+	shipRepo  navigation.ShipRepository
+	gateGraph sitingRepositionGraph
+}
+
+// NewSitingWorkerReachabilityProvider wires the siting scorer's manning-feasibility signal from
+// the fleet ship repo (idle-worker locations) and the shared stored-adjacency gate graph (ferry
+// reach). Returned as the goodsCmd port so the daemon injects it via SetWorkerReachabilityProvider
+// once the shared gate-graph service is constructed.
+func NewSitingWorkerReachabilityProvider(shipRepo navigation.ShipRepository, gateGraph sitingRepositionGraph) goodsCmd.WorkerReachabilityProvider {
+	return &sitingWorkerReachabilityProvider{shipRepo: shipRepo, gateGraph: gateGraph}
+}
+
+func newSitingWorkerReachabilityProvider(shipRepo navigation.ShipRepository, gateGraph sitingRepositionGraph) *sitingWorkerReachabilityProvider {
+	return &sitingWorkerReachabilityProvider{shipRepo: shipRepo, gateGraph: gateGraph}
+}
+
+func (p *sitingWorkerReachabilityProvider) Reachability(ctx context.Context, playerID int, system string) (float64, error) {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, err
+	}
+	// The fleet-wide idle-worker pool (Role=HAULER, idle, non-dedicated; command hull reserved),
+	// grouped to the systems they currently sit in. One fetch serves both the in-system check and
+	// the nearest-pool ferry search.
+	idle, _, err := contract.FindIdleLightHaulers(ctx, pid, p.shipRepo, "")
+	if err != nil {
+		return 0, err
+	}
+	workerSystems := make(map[string]struct{})
+	for _, s := range idle {
+		loc := s.CurrentLocation()
+		if loc == nil {
+			continue
+		}
+		sys := shared.ExtractSystemSymbol(loc.Symbol)
+		if sys == system {
+			return 1.0, nil // an idle worker is already in-system → fully staffable
+		}
+		workerSystems[sys] = struct{}{}
+	}
+	if len(workerSystems) == 0 {
+		return 0.0, nil // no idle worker anywhere → unstaffable
+	}
+	// Nearest idle-worker pool by ferry hops over the stored adjacency (maxJumps 0 = the graph's
+	// own reposition reach). A source that cannot route in is skipped.
+	best := -1
+	for src := range workerSystems {
+		path, err := p.gateGraph.RepositionPath(ctx, src, system, 0)
+		if err != nil || len(path) < 2 {
+			continue
+		}
+		if hops := len(path) - 1; best < 0 || hops < best {
+			best = hops
+		}
+	}
+	if best < 0 {
+		return 0.0, nil // no ferry path in from any idle-worker system → unstaffable
+	}
+	return 1.0 / float64(1+best), nil
 }
 
 // --- EMIT: scout-demand emitter (captain scout-post-proposal channel) ---

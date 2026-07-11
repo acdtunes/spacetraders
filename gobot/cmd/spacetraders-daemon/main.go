@@ -689,6 +689,14 @@ func run(cfg *config.Config) error {
 		}),
 	)
 	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-3vg8: now that the shared stored-adjacency gate graph exists (built just above), wire
+	// the siting scorer's worker-reachability signal. The provider reuses the fleet's idle-worker
+	// locator + RepositionPath (no reinvented routing), so vdld deprioritizes far-cluster chains it
+	// cannot man (C81/GS93) instead of launching them workerless. The penalty weight is live by
+	// default (siting_weight_worker_reachability → 1.0); the Analyst tunes it from config.yaml.
+	sitingCoordinatorHandler.SetWorkerReachabilityProvider(
+		grpc.NewSitingWorkerReachabilityProvider(shipRepo, gateGraphService),
+	)
 	// sp-8l3o: the shared ship-arrival event bus lets travel() wait out a hull
 	// re-adopted mid-transit before any movement (jump/navigate) instead of 4214'ing
 	// and burning the container restart budget on a routine arrival.

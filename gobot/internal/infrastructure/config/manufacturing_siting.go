@@ -58,6 +58,13 @@ type SitingConfig struct {
 	// projection). 0/absent → 1.0.
 	WeightStaleness float64 `mapstructure:"weight_staleness"`
 
+	// WeightWorkerReachability scales the worker-unreachability penalty (sp-3vg8): a candidate
+	// system with no in-system idle worker AND no ferry path in is deprioritized so vdld stops
+	// launching chains it cannot man (the C81/GS93 workerless-launch fix). LIVE BY DEFAULT —
+	// 0/absent → 1.0 (a fully-unstaffable site loses ~its whole projected value); set a smaller
+	// value to soften the penalty, or a larger one to make it near-hard-gate. The Analyst owns it.
+	WeightWorkerReachability float64 `mapstructure:"weight_worker_reachability"`
+
 	// MaxChainsPerSystem caps standing chains concentrated in one system (concentration cap).
 	// 0/absent → the 3 default.
 	MaxChainsPerSystem int `mapstructure:"max_chains_per_system"`

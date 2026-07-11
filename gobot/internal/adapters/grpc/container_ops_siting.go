@@ -75,6 +75,7 @@ var sitingConfigKeys = []string{
 	"siting_weight_tour_alignment",
 	"siting_weight_input_competition",
 	"siting_weight_staleness",
+	"siting_weight_worker_reachability",
 	"siting_max_chains_per_system",
 	"siting_max_chains_per_input_market",
 	"siting_retire_hysteresis_ticks",
@@ -134,6 +135,9 @@ func (s *DaemonServer) injectSitingConfig(config map[string]interface{}) {
 	}
 	if sc.WeightStaleness != 0 {
 		config["siting_weight_staleness"] = sc.WeightStaleness
+	}
+	if sc.WeightWorkerReachability != 0 {
+		config["siting_weight_worker_reachability"] = sc.WeightWorkerReachability
 	}
 	if sc.MaxChainsPerSystem != 0 {
 		config["siting_max_chains_per_system"] = sc.MaxChainsPerSystem

@@ -5,7 +5,8 @@
 //
 //	SCAN     enumerate candidate (good, system) factory sites that pass the export-site
 //	         hard gate + in-system input eligibility (a5j7 supply-first) + data freshness.
-//	SCORE    branchPL projection × tour-alignment − input-competition − staleness.
+//	SCORE    branchPL projection × tour-alignment − input-competition − staleness −
+//	         worker-unreachability (sp-3vg8: a chain that cannot be manned scores down).
 //	MAINTAIN pick the top-K portfolio (K = floor(workers / workers_per_chain), C3), subject
 //	         to per-system and per-input-market concentration caps.
 //	ACT      launch missing top-K chains THROUGH the existing guard stack (the launched
@@ -42,18 +43,19 @@ const (
 	// Config defaults (RULINGS #5: every operational value is a config key, filled here only
 	// when the launch config leaves it unset — the Analyst owns the weights). Documented on
 	// config.SitingConfig.
-	defaultSitingTickSeconds       = 900 // 15min — siting is strategic, not per-second
-	defaultSitingWorkersPerChain   = 3.5 // C3 rotation math: K = floor(workers / this)
-	defaultSitingFreshnessMaxSecs  = 7200
-	defaultSitingEmitStalenessSecs = 1800
-	defaultSitingWeightAlignment   = 1.0
-	defaultSitingWeightCompetition = 1.0
-	defaultSitingWeightStaleness   = 1.0
-	defaultSitingMaxChainsSystem   = 3
-	defaultSitingMaxChainsInput    = 2
-	defaultSitingRetireHysteresis  = 2
-	defaultSitingEffectSelfcheck   = 4
-	defaultSitingScoutCooldownSecs = 3600
+	defaultSitingTickSeconds        = 900 // 15min — siting is strategic, not per-second
+	defaultSitingWorkersPerChain    = 3.5 // C3 rotation math: K = floor(workers / this)
+	defaultSitingFreshnessMaxSecs   = 7200
+	defaultSitingEmitStalenessSecs  = 1800
+	defaultSitingWeightAlignment    = 1.0
+	defaultSitingWeightCompetition  = 1.0
+	defaultSitingWeightStaleness    = 1.0
+	defaultSitingWeightReachability = 1.0
+	defaultSitingMaxChainsSystem    = 3
+	defaultSitingMaxChainsInput     = 2
+	defaultSitingRetireHysteresis   = 2
+	defaultSitingEffectSelfcheck    = 4
+	defaultSitingScoutCooldownSecs  = 3600
 
 	// rankingLogLimit bounds how many ranked candidates are logged per tick so the ranking
 	// log stays readable on a large candidate set (the frontier rankingLogLimit idiom).
@@ -81,12 +83,13 @@ func (c SitingCandidate) Key() string { return c.Good + "@" + c.System }
 // value MAINTAIN ranks by; the components are retained for the ranking log and metrics.
 type ScoredCandidate struct {
 	SitingCandidate
-	ProjectedPL   int     // branchPL per-pass absolute credits — a MONOTONIC ranking proxy
-	TourAlignment float64 // realized tour-throughput weight (1.0 neutral when unavailable)
-	Competition   float64 // input-competition penalty (subtracted)
-	Staleness     float64 // staleness discount (subtracted)
-	Score         float64 // final: ProjectedPL × alignment − competition − staleness
-	Proceed       bool    // launch-guard verdict; false = 2dv4 veto, excluded from top-K
+	ProjectedPL    int     // branchPL per-pass absolute credits — a MONOTONIC ranking proxy
+	TourAlignment  float64 // realized tour-throughput weight (1.0 neutral when unavailable)
+	Competition    float64 // input-competition penalty (subtracted)
+	Staleness      float64 // staleness discount (subtracted)
+	Unreachability float64 // worker-unreachability penalty (subtracted; sp-3vg8)
+	Score          float64 // final: PL × alignment − competition − staleness − unreachability
+	Proceed        bool    // launch-guard verdict; false = 2dv4 veto, excluded from top-K
 }
 
 // RunningChain is one factory chain currently live for the player (a goods_factory
@@ -159,6 +162,22 @@ type WorkerCounter interface {
 	CountWorkers(ctx context.Context, playerID int) (int, error)
 }
 
+// WorkerReachabilityProvider returns a staffing-reachability SIGNAL ∈ [0,1] for placing a
+// factory chain in a system (sp-3vg8): how easily an idle manufacturing worker can man it.
+// 1 = an idle worker is already in-system (distance 0, fully staffable); a value in (0,1)
+// decays with the ferry hop-distance from the nearest idle-worker pool; 0 = NO idle worker
+// can reach the system at all (no in-system idle worker AND no ferry path in). SCORE turns
+// the signal into an unreachability penalty (weight × branchPL × (1 − signal)), so a chain
+// that cannot be manned is deprioritized even when the launch guard clears it on margin —
+// the era-1 capacity-without-workers lesson, mechanized into siting (C81/GS93). The concrete
+// impl reuses the stored-adjacency ferry reach (gategraph RepositionPath) + the idle-worker
+// locator (FindIdleLightHaulers) — it does NOT reinvent graph routing. Optional: a nil
+// provider (or a read error) yields signal 1.0, so the term is neutral (no penalty) and
+// scoring falls back to branchPL alone — a transient gate-graph read never nukes the portfolio.
+type WorkerReachabilityProvider interface {
+	Reachability(ctx context.Context, playerID int, system string) (signal float64, err error)
+}
+
 // ScoutDemandEmitter posts scout-demand for a stale-but-promising candidate system (EMIT).
 // The concrete impl wraps the captain scout-post-proposal event channel (deduped via
 // HasSince over the cooldown). Optional: a nil emitter disables EMIT.
@@ -186,19 +205,20 @@ type RunSitingCoordinatorCommand struct {
 	// DryRun evaluates + logs every decision but takes no ACT action (watch mode).
 	DryRun bool
 
-	TickIntervalSecs        int
-	TopK                    int
-	WorkersPerChain         float64
-	FreshnessMaxSecs        int
-	EmitStalenessSecs       int
-	WeightTourAlignment     float64
-	WeightInputCompetition  float64
-	WeightStaleness         float64
-	MaxChainsPerSystem      int
-	MaxChainsPerInputMarket int
-	RetireHysteresisTicks   int
-	EffectSelfcheckTicks    int
-	ScoutDemandCooldownSecs int
+	TickIntervalSecs         int
+	TopK                     int
+	WorkersPerChain          float64
+	FreshnessMaxSecs         int
+	EmitStalenessSecs        int
+	WeightTourAlignment      float64
+	WeightInputCompetition   float64
+	WeightStaleness          float64
+	WeightWorkerReachability float64
+	MaxChainsPerSystem       int
+	MaxChainsPerInputMarket  int
+	RetireHysteresisTicks    int
+	EffectSelfcheckTicks     int
+	ScoutDemandCooldownSecs  int
 }
 
 // RunSitingCoordinatorResponse reports reconcile progress. Because the loop is infinite it
@@ -220,9 +240,10 @@ type RunSitingCoordinatorHandler struct {
 	clock      shared.Clock
 
 	// Optional collaborators wired via setters (the codebase's optional-injection idiom).
-	alignment TourAlignmentProvider
-	workers   WorkerCounter
-	emitter   ScoutDemandEmitter
+	alignment    TourAlignmentProvider
+	workers      WorkerCounter
+	emitter      ScoutDemandEmitter
+	reachability WorkerReachabilityProvider
 
 	mu    sync.Mutex
 	state map[string]*sitingCoordinatorState // keyed by container ID
@@ -278,6 +299,13 @@ func (h *RunSitingCoordinatorHandler) SetWorkerCounter(w WorkerCounter) { h.work
 // EMIT (the coordinator still scans/scores/acts).
 func (h *RunSitingCoordinatorHandler) SetScoutDemandEmitter(e ScoutDemandEmitter) { h.emitter = e }
 
+// SetWorkerReachabilityProvider wires the staffing-reachability signal for SCORE (sp-3vg8).
+// Leaving it unset makes the reachability term neutral (no penalty) — scoring ranks on
+// branchPL × alignment − competition − staleness alone, exactly as before the term landed.
+func (h *RunSitingCoordinatorHandler) SetWorkerReachabilityProvider(r WorkerReachabilityProvider) {
+	h.reachability = r
+}
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunSitingCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -330,9 +358,10 @@ type sitingRunConfig struct {
 	FreshnessMax    time.Duration
 	EmitStaleness   time.Duration
 
-	WeightAlignment   float64
-	WeightCompetition float64
-	WeightStaleness   float64
+	WeightAlignment    float64
+	WeightCompetition  float64
+	WeightStaleness    float64
+	WeightReachability float64
 
 	MaxChainsPerSystem      int
 	MaxChainsPerInputMarket int
@@ -353,6 +382,7 @@ func resolveSitingConfig(cmd *RunSitingCoordinatorCommand) sitingRunConfig {
 		WeightAlignment:         cmd.WeightTourAlignment,
 		WeightCompetition:       cmd.WeightInputCompetition,
 		WeightStaleness:         cmd.WeightStaleness,
+		WeightReachability:      cmd.WeightWorkerReachability,
 		MaxChainsPerSystem:      cmd.MaxChainsPerSystem,
 		MaxChainsPerInputMarket: cmd.MaxChainsPerInputMarket,
 		RetireHysteresisTicks:   cmd.RetireHysteresisTicks,
@@ -379,6 +409,9 @@ func resolveSitingConfig(cmd *RunSitingCoordinatorCommand) sitingRunConfig {
 	}
 	if c.WeightStaleness <= 0 {
 		c.WeightStaleness = defaultSitingWeightStaleness
+	}
+	if c.WeightReachability <= 0 {
+		c.WeightReachability = defaultSitingWeightReachability
 	}
 	if c.MaxChainsPerSystem <= 0 {
 		c.MaxChainsPerSystem = defaultSitingMaxChainsSystem
