@@ -85,6 +85,7 @@ type DaemonServer struct {
 	manufacturingMetricsCollector *metrics.ManufacturingMetricsCollector
 	absorptionMetricsCollector    *metrics.AbsorptionMetricsCollector
 	tourMetricsCollector          *metrics.TourMetricsCollector
+	scoutMetricsCollector         *metrics.ScoutMetricsCollector
 
 	// contractConfig carries the idle-arb harvest knobs (sp-1z2h / sp-uohe)
 	// from config.yaml. ContractFleetCoordinator injects them into the
@@ -373,6 +374,22 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register tour staleness metrics collector: %w", err)
 		}
 		metrics.SetGlobalTourStalenessCollector(tourStalenessCollector)
+
+		// Create scout freshness collector (sp-dp92 P7): the scout post coordinator's
+		// reconcile sweep SETS this gauge directly on its own ticker — event-driven like
+		// absorption above, no polling goroutine, so registration + the global wire is the
+		// whole lifecycle here too.
+		scoutCollector := metrics.NewScoutMetricsCollector()
+		if err := scoutCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register scout metrics collector: %w", err)
+		}
+
+		// Set global scout collector for the scout post coordinator to record through
+		metrics.SetGlobalScoutCollector(scoutCollector)
+
+		// Store reference for lifecycle management
+		server.scoutMetricsCollector = scoutCollector
 	}
 
 	// Register container specs for launch and recovery

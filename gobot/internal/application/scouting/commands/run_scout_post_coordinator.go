@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -139,6 +140,17 @@ type GateGraph interface {
 	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
 }
 
+// MarketFreshnessProvider computes, per POSTED system, the worst-case cached
+// market-data staleness — MAX(now - last_updated) across that system's markets —
+// backing the scout_freshness_actual_seconds gauge (sp-dp92 P7). One call per
+// sweep covers every system for the player in a single query. Satisfied by the
+// GORM market repository (MarketRepositoryGORM.MaxAgeSecondsBySystem). Optional:
+// nil disables the gauge entirely (pure OBSERVATION, RULINGS #4) — every pre-dp92
+// caller/test that never wires it is unaffected.
+type MarketFreshnessProvider interface {
+	MaxAgeSecondsBySystem(ctx context.Context, playerID int) (map[string]float64, error)
+}
+
 // RunScoutPostCoordinatorHandler reconciles the desired-state posts table every
 // tick. Each post has HullBudget() manning SLOTS — one for a single-hull post, N for
 // a multi-probe post (sp-enry) — and every slot is manned, repaired, and repositioned
@@ -183,6 +195,14 @@ type RunScoutPostCoordinatorHandler struct {
 	// (fail-closed), while single-hull posts (which never partition) are unaffected. Wired
 	// via SetRoutingClient so every pre-enry caller/test that never wires it is unchanged.
 	routingClient routing.RoutingClient
+
+	// marketFreshnessProvider supplies scout_freshness_actual_seconds' raw ages
+	// (sp-dp92 P7): MAX(now - last_updated) per system with cached market rows,
+	// read once per sweep. nil disables the gauge — pure OBSERVATION (RULINGS #4),
+	// never a decision input — so it is wired via SetMarketFreshnessProvider
+	// rather than the constructor, mirroring SetGateGraph/SetRoutingClient; every
+	// pre-dp92 caller/test that never wires it is unaffected.
+	marketFreshnessProvider MarketFreshnessProvider
 
 	// repositionBackoffUntil rate-limits reposition DISPATCH per post slot (key
 	// playerID|system[|slotIndex] → earliest next dispatch time) so a relay that fails
@@ -305,6 +325,15 @@ func (h *RunScoutPostCoordinatorHandler) SetEventStore(s captain.EventStore) {
 	h.eventStore = s
 }
 
+// SetMarketFreshnessProvider wires the scout_freshness_actual_seconds gauge's data
+// source (sp-dp92 P7). The daemon injects the same GORM market repository the rest
+// of the coordinator already reads through. Optional-injection (like SetGateGraph):
+// nil (the default) leaves the gauge unrecorded, so every pre-dp92 caller/test that
+// never wires it behaves exactly as before.
+func (h *RunScoutPostCoordinatorHandler) SetMarketFreshnessProvider(p MarketFreshnessProvider) {
+	h.marketFreshnessProvider = p
+}
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -393,6 +422,10 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// meet its own freshness contract, BEFORE the manning passes — a pure observation
 	// over the freshly-loaded post state that never mutates a post or aborts the tick.
 	h.warnUndersizedPosts(ctx, cmd, posts)
+
+	// Freshness gauge (sp-dp92 P7): pure OBSERVATION, so it runs unconditionally
+	// ahead of the manning passes and can never affect them (RULINGS #4).
+	h.recordScoutFreshness(ctx, cmd, posts)
 
 	running, err := h.containerIDSet(ctx, cmd, "RUNNING")
 	if err != nil {
@@ -571,6 +604,34 @@ func (h *RunScoutPostCoordinatorHandler) warnUndersizedPosts(ctx context.Context
 			"hulls":          hulls,
 			"required_hulls": required,
 		})
+	}
+}
+
+// recordScoutFreshness sets the scout_freshness_actual_seconds gauge (sp-dp92 P7)
+// for every POSTED system this pass is about to reconcile — i.e. exactly the
+// systems in posts, one entry per active ScoutPost. A single provider read covers
+// every system for the player (MarketFreshnessProvider.MaxAgeSecondsBySystem); a
+// post whose system has no cached market rows yet (freshly posted, nothing scanned
+// this era) simply has no entry in the returned map and is skipped this sweep — its
+// gauge appears once a scan lands. Pure OBSERVATION (RULINGS #4): no provider wired,
+// or a read error, is logged (once, not per-post) and the reconcile pass continues
+// completely unaffected — a metrics gap must never block manning.
+func (h *RunScoutPostCoordinatorHandler) recordScoutFreshness(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, posts []*domainScouting.ScoutPost) {
+	if h.marketFreshnessProvider == nil {
+		return
+	}
+	playerID := cmd.PlayerID.Value()
+	ages, err := h.marketFreshnessProvider.MaxAgeSecondsBySystem(ctx, playerID)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Scout freshness gauge: failed to compute market ages: %v", err), nil)
+		return
+	}
+	for _, post := range posts {
+		age, ok := ages[post.SystemSymbol]
+		if !ok {
+			continue // nothing cached for this system yet — no series this sweep
+		}
+		metrics.RecordScoutFreshness(playerID, post.SystemSymbol, age)
 	}
 }
 

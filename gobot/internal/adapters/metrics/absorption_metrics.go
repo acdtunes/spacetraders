@@ -27,6 +27,13 @@ type AbsorptionMetricsCollector struct {
 	// re-bought into ground still recovering from its own dump (the cross-plan ladder
 	// class the L5 retirement must measure).
 	ladderIncidentsTotal *prometheus.CounterVec
+
+	// consultVerdictsTotal increments once per absorption-consult verdict applied at a
+	// lane/plan exclusion site (sp-dp92 P6): verdict is "skip_reserved"|"pass", engine
+	// distinguishes which caller consulted (idle_arb's tour planner vs the trade-route
+	// coordinator's lane filter) since both apply the same verdict shape against the
+	// same underlying absorption read.
+	consultVerdictsTotal *prometheus.CounterVec
 }
 
 // NewAbsorptionMetricsCollector creates a new absorption metrics collector.
@@ -51,6 +58,16 @@ func NewAbsorptionMetricsCollector() *AbsorptionMetricsCollector {
 			},
 			[]string{"player_id", "good_symbol"},
 		),
+
+		consultVerdictsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "absorption_consult_verdicts_total",
+				Help:      "Absorption-consult verdicts applied at a lane/plan exclusion site, by verdict and consulting engine",
+			},
+			[]string{"player_id", "verdict", "engine"},
+		),
 	}
 }
 
@@ -64,6 +81,7 @@ func (c *AbsorptionMetricsCollector) Register() error {
 	metrics := []prometheus.Collector{
 		c.capBindingTotal,
 		c.ladderIncidentsTotal,
+		c.consultVerdictsTotal,
 	}
 
 	for _, metric := range metrics {
@@ -91,4 +109,14 @@ func (c *AbsorptionMetricsCollector) RecordLadderIncident(playerID int, goodSymb
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.ladderIncidentsTotal.WithLabelValues(strconv.Itoa(playerID), goodSymbol).Inc()
+}
+
+// RecordConsultVerdict records one absorption-consult verdict applied at a lane/plan
+// exclusion site. verdict is "skip_reserved"|"pass"; engine identifies the consulting
+// call site (e.g. "idle_arb"|"trade_route").
+func (c *AbsorptionMetricsCollector) RecordConsultVerdict(playerID int, verdict, engine string) {
+	if c == nil || c.consultVerdictsTotal == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	c.consultVerdictsTotal.WithLabelValues(strconv.Itoa(playerID), verdict, engine).Inc()
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 const marketDataTable = "market_data"
@@ -387,6 +388,51 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 	}
 
 	return waypoints, nil
+}
+
+// MaxAgeSecondsBySystem returns, for every system with at least one cached
+// market row for playerID, the current worst-case staleness in seconds —
+// MAX(now - last_updated) across that system's markets, i.e. the age of the
+// single OLDEST row (sp-dp92 P7: backs the scout_freshness_actual_seconds
+// gauge). One query per sweep covers every system in a single pass rather
+// than one query per POSTED system; the coordinator's sweep looks up just
+// the systems it has POSTED coverage for in the returned map. System is
+// derived from each row's waypoint_symbol via shared.ExtractSystemSymbol so
+// this reuses the same waypoint-to-system parsing rule the rest of the
+// codebase shares, instead of a dialect-specific SQL substring/group-by.
+func (r *MarketRepositoryGORM) MaxAgeSecondsBySystem(
+	ctx context.Context,
+	playerID int,
+) (map[string]float64, error) {
+	var rows []struct {
+		WaypointSymbol string
+		LastUpdated    time.Time
+	}
+
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("waypoint_symbol, last_updated").
+		Where("player_id = ?", playerID).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute market freshness: %w", err)
+	}
+
+	oldest := make(map[string]time.Time)
+	for _, row := range rows {
+		system := shared.ExtractSystemSymbol(row.WaypointSymbol)
+		if existing, ok := oldest[system]; !ok || row.LastUpdated.Before(existing) {
+			oldest[system] = row.LastUpdated
+		}
+	}
+
+	now := time.Now()
+	ages := make(map[string]float64, len(oldest))
+	for system, ts := range oldest {
+		ages[system] = now.Sub(ts).Seconds()
+	}
+
+	return ages, nil
 }
 
 // openEraID mirrors GormWaypointRepository.openEraID: the open era is the highest

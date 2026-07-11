@@ -60,6 +60,11 @@ var (
 	// tour_lanes_stale_excluded_total counter through it.
 	globalTourStalenessCollector *TourStalenessMetricsCollector
 
+	// globalScoutCollector is the singleton scout metrics collector (sp-dp92 P7).
+	// Set by SetGlobalScoutCollector() when metrics are enabled; the scout post
+	// coordinator's reconcile sweep emits the market-freshness gauge through it.
+	globalScoutCollector *ScoutMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -79,6 +84,7 @@ type MetricsRecorder interface {
 	RecordContainerCompletion(containerInfo ContainerInfo)
 	RecordContainerRestart(containerInfo ContainerInfo)
 	RecordContainerIteration(containerInfo ContainerInfo)
+	RecordContainerExit(containerInfo ContainerInfo)
 }
 
 // NavigationMetricsRecorder defines the interface for recording navigation metrics
@@ -136,6 +142,13 @@ func RecordContainerRestart(containerInfo ContainerInfo) {
 func RecordContainerIteration(containerInfo ContainerInfo) {
 	if globalCollector != nil {
 		globalCollector.RecordContainerIteration(containerInfo)
+	}
+}
+
+// RecordContainerExit records a container terminal exit event globally (sp-dp92 P9).
+func RecordContainerExit(containerInfo ContainerInfo) {
+	if globalCollector != nil {
+		globalCollector.RecordContainerExit(containerInfo)
 	}
 }
 
@@ -380,6 +393,35 @@ func SetGlobalTourStalenessCollector(collector *TourStalenessMetricsCollector) {
 func RecordTourLanesStaleExcluded(playerID int, system string, count int) {
 	if globalTourStalenessCollector != nil {
 		globalTourStalenessCollector.RecordStaleExcluded(playerID, system, count)
+	}
+}
+
+// RecordAbsorptionConsultVerdict records one consult-apply verdict globally (sp-dp92
+// P6). engine distinguishes the emitting engine ("idle_arb"|"trade_route"); verdict
+// uses each engine's own native vocabulary (idle_arb: skip_reserved|pass; trade_route:
+// clear|shadow|reserved-depth|unreadable). No-op when metrics are disabled (RULINGS #4).
+func RecordAbsorptionConsultVerdict(playerID int, verdict, engine string) {
+	if globalAbsorptionCollector != nil {
+		globalAbsorptionCollector.RecordConsultVerdict(playerID, verdict, engine)
+	}
+}
+
+// SetGlobalScoutCollector sets the global scout metrics collector (sp-dp92 P7).
+func SetGlobalScoutCollector(collector *ScoutMetricsCollector) {
+	globalScoutCollector = collector
+}
+
+// GetGlobalScoutCollector returns the global scout metrics collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalScoutCollector() *ScoutMetricsCollector {
+	return globalScoutCollector
+}
+
+// RecordScoutFreshness sets the scout market-freshness gauge for one (player, system)
+// globally (sp-dp92 P7). No-op when metrics are disabled (RULINGS #4).
+func RecordScoutFreshness(playerID int, system string, ageSeconds float64) {
+	if globalScoutCollector != nil {
+		globalScoutCollector.RecordFreshness(playerID, system, ageSeconds)
 	}
 }
 

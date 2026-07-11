@@ -669,6 +669,11 @@ func run(cfg *config.Config) error {
 	// SAME store the watchkeeper reads, so the warning rides the next wake. nil would
 	// leave the warning off (pre-k7q5 behavior).
 	scoutPostCoordinatorHandler.SetEventStore(captainEventRepo)
+	// sp-dp92 P7: wire the scout_freshness_actual_seconds gauge's data source — the SAME
+	// GORM market repository the rest of the coordinator already reads through, so no
+	// extra DB connection or cache. nil (the pre-dp92 default) leaves the gauge unrecorded;
+	// this is pure OBSERVATION and never affects manning (RULINGS #4).
+	scoutPostCoordinatorHandler.SetMarketFreshnessProvider(marketRepo)
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)

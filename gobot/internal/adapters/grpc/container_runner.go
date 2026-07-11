@@ -240,6 +240,7 @@ func (r *ContainerRunner) terminalizeClaimFailure(err error) {
 	r.mu.Unlock()
 
 	metrics.RecordContainerCompletion(r.containerEntity)
+	metrics.RecordContainerExit(r.containerEntity)
 
 	if r.containerRepo != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
@@ -565,6 +566,7 @@ func (r *ContainerRunner) finishCleanExit() {
 
 	// Record completion metrics
 	metrics.RecordContainerCompletion(r.containerEntity)
+	metrics.RecordContainerExit(r.containerEntity)
 
 	r.log("INFO", "Container completed successfully", map[string]interface{}{
 		"iterations": r.containerEntity.CurrentIteration(),
@@ -746,6 +748,7 @@ func (r *ContainerRunner) handleError(err error) {
 
 	// Record failure metrics
 	metrics.RecordContainerCompletion(r.containerEntity)
+	metrics.RecordContainerExit(r.containerEntity)
 
 	// NOTE: the terminal FAILED row is intentionally NOT persisted here (sp-v63s).
 	// handleError runs on EVERY failed iteration, including transient ones the

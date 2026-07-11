@@ -14,10 +14,17 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
+
+// absorptionEngineTradeRoute identifies this engine's consult verdicts for the
+// absorption_consult_verdicts_total metric (sp-dp92 P6), mirroring the sibling
+// absorptionEngineIdleArb/absorptionEngineTour ledger-engine tags even though this
+// file never itself writes to the ledger (READ-ONLY, see file doc comment above).
+const absorptionEngineTradeRoute = "trade-route"
 
 // absorptionConsult is one scan pass's batched ledger read plus its fail-closed
 // state — the same per-pass-read/thread-to-every-candidate shape idle-arb's L2
@@ -105,6 +112,7 @@ func (h *RunTradeRouteCoordinatorHandler) filterShadowedLanes(
 	lanes []trading.ArbitrageLane,
 	consult absorptionConsult,
 	shipCapacity int,
+	playerID int,
 ) []trading.ArbitrageLane {
 	if !consult.active {
 		return lanes
@@ -114,9 +122,15 @@ func (h *RunTradeRouteCoordinatorHandler) filterShadowedLanes(
 	for _, lane := range lanes {
 		verdict := consult.evaluate(lane, shipCapacity)
 		if verdict == absorptionVerdictClear {
+			metrics.RecordAbsorptionConsultVerdict(playerID, "pass", absorptionEngineTradeRoute)
 			kept = append(kept, lane)
 			continue
 		}
+		// Metrics (sp-dp92 P6): every non-clear verdict (shadow, reserved-depth,
+		// unreadable) rolls up to "skip_reserved" on the metric — same 2-value
+		// verdict shape as idle_arb's consult; the granular reason stays in the
+		// log line below via the full absorptionVerdict string.
+		metrics.RecordAbsorptionConsultVerdict(playerID, "skip_reserved", absorptionEngineTradeRoute)
 		logger.Log("INFO", fmt.Sprintf(
 			"Trade-route absorption consult: excluded lane %s %s->%s (verdict %s)",
 			lane.Good, lane.SourceWaypoint, lane.DestWaypoint, verdict),

@@ -26,6 +26,7 @@ type ContainerMetricsCollector struct {
 	containerDuration     *prometheus.HistogramVec
 	containerRestarts     *prometheus.CounterVec
 	containerIterations   *prometheus.CounterVec
+	containerExitTotal    *prometheus.CounterVec
 
 	// Ship metrics
 	shipsTotal      *prometheus.GaugeVec
@@ -114,6 +115,22 @@ func NewContainerMetricsCollector(
 			[]string{"player_id", "container_type"},
 		),
 
+		// Container exit counter (sp-dp92 P9): one increment per terminal
+		// container exit. Fired from the same 3 call sites as
+		// RecordContainerCompletion above (terminalizeClaimFailure,
+		// finishCleanExit's completion branch, handleError) so this stays a
+		// strict superset labeling of that existing signal rather than
+		// diverging semantics between the two families.
+		containerExitTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "container_exit_total",
+				Help:      "Total number of container terminal exits by command type and status",
+			},
+			[]string{"player_id", "command_type", "status"},
+		),
+
 		// Ship count by role/location
 		shipsTotal: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -152,6 +169,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.containerDuration,
 		c.containerRestarts,
 		c.containerIterations,
+		c.containerExitTotal,
 		c.shipsTotal,
 		c.shipStatusTotal,
 	}
@@ -344,4 +362,21 @@ func (c *ContainerMetricsCollector) RecordContainerIteration(containerInfo Conta
 	containerType := string(containerInfo.Type())
 
 	c.containerIterations.WithLabelValues(playerID, containerType).Inc()
+}
+
+// RecordContainerExit records a container terminal exit event (sp-dp92 P9).
+// Called from the same 3 sites RecordContainerCompletion already covers
+// (terminalizeClaimFailure, finishCleanExit, handleError) so container_exit_total
+// tracks exactly what container_total treats as terminal for this container.
+// Nil-safe per RULINGS #4 (observation only): a recording miss must never
+// panic a container's terminal exit path.
+func (c *ContainerMetricsCollector) RecordContainerExit(containerInfo ContainerInfo) {
+	if c == nil || c.containerExitTotal == nil {
+		return
+	}
+	playerID := strconv.Itoa(containerInfo.PlayerID())
+	commandType := string(containerInfo.Type())
+	status := string(containerInfo.Status())
+
+	c.containerExitTotal.WithLabelValues(playerID, commandType, status).Inc()
 }

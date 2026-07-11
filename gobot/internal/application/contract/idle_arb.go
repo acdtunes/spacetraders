@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
@@ -1044,9 +1045,12 @@ func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, 
 	// another engine has reserved in flight, or a recovering shadow still blocks — the
 	// cross-engine / cross-restart generalization of the mutex. Same structural hole
 	// as sp-i8vx (in-flight exposure), closed here from the market-absorption side.
+	// Metrics (sp-dp92 P6): observation only, mirrors the two outcomes of this guard.
 	if consult.reserved(good, sink) {
+		metrics.RecordAbsorptionConsultVerdict(d.playerID.Value(), "skip_reserved", absorptionEngineIdleArb)
 		return skipReasonReserved
 	}
+	metrics.RecordAbsorptionConsultVerdict(d.playerID.Value(), "pass", absorptionEngineIdleArb)
 	return skipNone
 }
 

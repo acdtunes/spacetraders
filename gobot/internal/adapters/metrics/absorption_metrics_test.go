@@ -60,6 +60,7 @@ func TestAbsorptionMetrics_RegisterAndExport(t *testing.T) {
 	// Observe one combination of each family so the registry has something to gather.
 	c.RecordCapBinding(1, "sell", "bound")
 	c.RecordLadderIncident(1, "IRON_ORE")
+	c.RecordConsultVerdict(1, "pass", "idle_arb")
 
 	families, err := Registry.Gather()
 	if err != nil {
@@ -72,6 +73,7 @@ func TestAbsorptionMetrics_RegisterAndExport(t *testing.T) {
 	for _, want := range []string{
 		"spacetraders_daemon_absorption_cap_binding_total",
 		"spacetraders_daemon_absorption_ladder_incidents_total",
+		"spacetraders_daemon_absorption_consult_verdicts_total",
 	} {
 		if !got[want] {
 			t.Errorf("metric %q registered but not exported on the registry", want)
@@ -97,9 +99,13 @@ func TestAbsorptionMetrics_LabelsAndValues(t *testing.T) {
 	c.RecordLadderIncident(7, "COPPER_ORE")
 	c.RecordLadderIncident(7, "COPPER_ORE")
 	c.RecordLadderIncident(7, "IRON_ORE")
+	c.RecordConsultVerdict(7, "skip_reserved", "trade_route")
+	c.RecordConsultVerdict(7, "skip_reserved", "trade_route")
+	c.RecordConsultVerdict(7, "pass", "idle_arb")
 
 	const capName = "spacetraders_daemon_absorption_cap_binding_total"
 	const ladderName = "spacetraders_daemon_absorption_ladder_incidents_total"
+	const verdictName = "spacetraders_daemon_absorption_consult_verdicts_total"
 
 	cases := []struct {
 		name   string
@@ -111,6 +117,8 @@ func TestAbsorptionMetrics_LabelsAndValues(t *testing.T) {
 		{"cap unbound buy", capName, map[string]string{"player_id": "7", "side": "buy", "outcome": "unbound"}, 1},
 		{"ladder copper", ladderName, map[string]string{"player_id": "7", "good_symbol": "COPPER_ORE"}, 2},
 		{"ladder iron", ladderName, map[string]string{"player_id": "7", "good_symbol": "IRON_ORE"}, 1},
+		{"verdict skip_reserved trade_route", verdictName, map[string]string{"player_id": "7", "verdict": "skip_reserved", "engine": "trade_route"}, 2},
+		{"verdict pass idle_arb", verdictName, map[string]string{"player_id": "7", "verdict": "pass", "engine": "idle_arb"}, 1},
 	}
 	for _, tc := range cases {
 		got, ok := gatherCounter(t, Registry, tc.metric, tc.labels)
@@ -131,8 +139,10 @@ func TestAbsorptionMetrics_NilSafe(t *testing.T) {
 	var nilC *AbsorptionMetricsCollector
 	nilC.RecordCapBinding(1, "sell", "bound")
 	nilC.RecordLadderIncident(1, "IRON_ORE")
+	nilC.RecordConsultVerdict(1, "pass", "idle_arb")
 
 	empty := &AbsorptionMetricsCollector{}
 	empty.RecordCapBinding(1, "buy", "unbound")
 	empty.RecordLadderIncident(1, "COPPER_ORE")
+	empty.RecordConsultVerdict(1, "skip_reserved", "trade_route")
 }

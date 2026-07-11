@@ -1980,3 +1980,82 @@ func TestScoutPost_SingleHull_RestartAdoptsCurrentMarketsWithoutRespawn(t *testi
 	require.True(t, ok, "a baseline is recorded on first sight after restart")
 	require.Len(t, snapshot, 5)
 }
+
+// ---- fakes & helpers: sp-dp92 scout freshness gauge -------------------------
+
+// fakeMarketFreshnessProvider stands in for MarketRepositoryGORM.MaxAgeSecondsBySystem
+// (sp-dp92 P7): a single batched read returning worst-case market staleness per system.
+// err simulates a read failure — the coordinator must log and continue, never abort the
+// sweep (RULINGS #4). calls counts invocations so a test can assert the provider is read
+// exactly once per sweep, not once per post.
+type fakeMarketFreshnessProvider struct {
+	ages  map[string]float64
+	err   error
+	calls int
+}
+
+func (f *fakeMarketFreshnessProvider) MaxAgeSecondsBySystem(_ context.Context, _ int) (map[string]float64, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.ages, nil
+}
+
+// Wiring: a wired provider is read exactly once per sweep and the reconcile pass still
+// mans the post normally — the gauge recording is pure OBSERVATION and never touches the
+// manning decision (RULINGS #4). The recorded value itself is asserted at the collector
+// level (scout_metrics_test.go); this test only pins the coordinator-side call contract.
+func TestScoutPost_Freshness_ProviderReadOncePerSweep(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	freshness := &fakeMarketFreshnessProvider{ages: map[string]float64{"X1-GZ7": 42}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.SetMarketFreshnessProvider(freshness)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Equal(t, 1, freshness.calls, "one batched read covers every POSTED system")
+	require.Len(t, shipRepo.claims, 1, "the freshness read must not affect normal manning")
+}
+
+// Fail-open: a provider read error is logged, not surfaced — the sweep must still man
+// the post exactly as if no provider were wired at all (RULINGS #4: a metrics gap must
+// never block manning).
+func TestScoutPost_Freshness_ProviderErrorFailsOpen(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	freshness := &fakeMarketFreshnessProvider{err: fmt.Errorf("db unreachable")}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.SetMarketFreshnessProvider(freshness)
+
+	err := handler.reconcileOnce(context.Background(), scoutPostTestCmd())
+
+	require.NoError(t, err, "a freshness read failure must never surface as a reconcile error")
+	require.Len(t, shipRepo.claims, 1, "manning proceeds unaffected by the metrics read failure")
+}
+
+// No-provider default: nil marketFreshnessProvider (the pre-dp92 default for every
+// existing caller/test) is a silent no-op, not a panic — mirrors SetGateGraph's
+// optional-injection contract.
+func TestScoutPost_Freshness_NilProviderIsNoop(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-GZ7-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Len(t, shipRepo.claims, 1, "manning is unaffected when no freshness provider is wired")
+}

@@ -119,7 +119,7 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	// silently lossy. READ-ONLY (trade-analyst Q1: "circuits write nothing").
 	ranked := trading.RankSpreads(listings)
 	consult := h.readAbsorption(ctx, playerID)
-	ranked = h.filterShadowedLanes(ctx, ranked, consult, shipCapacity)
+	ranked = h.filterShadowedLanes(ctx, ranked, consult, shipCapacity, playerID)
 	return rankLanesWithGatePenalty(ranked, shipCapacity, targetDest), nil
 }
 
