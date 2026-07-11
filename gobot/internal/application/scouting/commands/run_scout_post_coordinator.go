@@ -36,15 +36,26 @@ const (
 	// the VRP scout-all-markets path keys on.
 	marketplaceTrait = "MARKETPLACE"
 
-	// repositionRetryBackoff bounds how often the coordinator will DISPATCH a
-	// cross-gate relay for one post slot (sp-s232). The RUNNING-relay check already
-	// stops a second dispatch while a relay is airborne; this covers the AFTER-failure
-	// window so a relay that fails fast (an unroutable verdict that slipped past the
-	// pre-dispatch BFS, an API refusal at a hop) does not hot-loop re-dispatch every
-	// tick — the sp-py4n respawn-cap discipline applied to relays. In-memory and reset
-	// on restart (conservative: at most one immediate retry after a daemon restart,
-	// never a storm).
+	// repositionRetryBackoff is the SHORT floor armed at every dispatch (sp-s232): the
+	// RUNNING-relay check already stops a second dispatch while a relay is airborne, and
+	// this covers the brief window between a relay ending and the next reconcile pass so a
+	// relay that ends WITHOUT a clear FAILED verdict (restart-interrupted, a fast opaque
+	// exit) does not hot-loop re-dispatch. A relay that ends with an explicit FAILED status
+	// arms the much longer, config-tunable defaultRepositionFailureCooldown instead
+	// (noteRepositionFailure, sp-o34q) — the failure-aware cooldown that also rotates the
+	// probe to the next candidate post. In-memory and reset on restart (conservative: at
+	// most one immediate retry after a daemon restart, never a storm).
 	repositionRetryBackoff = 5 * time.Minute
+
+	// defaultRepositionFailureCooldown bounds how long a post whose reposition relay FAILED
+	// waits before the coordinator retries repositioning to it when the launch config leaves
+	// [scouting] reposition_failure_cooldown_secs unset (sp-o34q, RULINGS #5). 30 min is long
+	// enough that a genuinely-unroutable post is retried on the order of the frontier's own
+	// change cadence (a probe re-reading a gate, a new gate charted) rather than every 30s
+	// tick — the fix for the post-deploy crash-loop that produced ~20 corpses / 15min against
+	// a handful of dark posts. The probe is freed to the next candidate on each failure, so a
+	// long cooldown on one post never starves the others.
+	defaultRepositionFailureCooldown = 30 * time.Minute
 
 	// partitionAnchorFuelCapacity and partitionAnchorEngineSpeed are the synthetic
 	// probe configs the VRP partitioner anchors at a common waypoint (sp-enry). The
@@ -137,6 +148,15 @@ type RunScoutPostCoordinatorCommand struct {
 	// reaching the 6-12-jump posts the strict fetch-through cap rejects. <= 0 uses
 	// defaultMaxRepositionJumps, mirroring TickIntervalSecs.
 	MaxRepositionJumps int
+
+	// RepositionFailureCooldownSecs is how long a post whose reposition relay FAILED waits
+	// before the coordinator retries repositioning to it (sp-o34q [scouting]
+	// reposition_failure_cooldown_secs). On a relay failure the coordinator arms this cooldown
+	// on the post's slot, frees the probe, and services the NEXT candidate post this tick
+	// instead of respawning the same corpse — so a genuinely-unroutable post can no longer
+	// crash-loop the dispatcher and flood the event queue. <= 0 uses
+	// defaultRepositionFailureCooldown, mirroring TickIntervalSecs.
+	RepositionFailureCooldownSecs int
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -250,6 +270,16 @@ type RunScoutPostCoordinatorHandler struct {
 	repositionMu           sync.Mutex
 	repositionBackoffUntil map[string]time.Time
 
+	// repositionFailures counts CONSECUTIVE reposition-relay failures per post slot (same
+	// key shape as repositionBackoffUntil), so the failure log reports the Nth attempt and a
+	// completed relay resets the streak (sp-o34q). Guarded by repositionMu with the deadline
+	// map it travels with. repositionBackoffLoggedUntil records the deadline of the backoff
+	// episode already logged for a key, so a long cooldown is announced ONCE (state change)
+	// rather than every 30s tick — the fix for the event flood. Both in-memory, reset on
+	// restart (a lost streak only restarts the count; a lost log-marker re-announces once).
+	repositionFailures           map[string]int
+	repositionBackoffLoggedUntil map[string]time.Time
+
 	// driftPendingSince tracks, per partitioned post (key playerID|system — driftKey,
 	// the same un-suffixed shape as backoffKey's primary form, since drift is a
 	// whole-post property), when its market set FIRST started differing from its
@@ -312,16 +342,18 @@ func NewRunScoutPostCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 	return &RunScoutPostCoordinatorHandler{
-		postRepo:                    postRepo,
-		shipRepo:                    shipRepo,
-		daemonClient:                daemonClient,
-		containerQuery:              containerQuery,
-		marketProvider:              marketProvider,
-		clock:                       clock,
-		repositionBackoffUntil:      make(map[string]time.Time),
-		driftPendingSince:           make(map[string]time.Time),
-		singleHullMarketSnapshot:    make(map[string][]string),
-		singleHullDriftPendingSince: make(map[string]time.Time),
+		postRepo:                     postRepo,
+		shipRepo:                     shipRepo,
+		daemonClient:                 daemonClient,
+		containerQuery:               containerQuery,
+		marketProvider:               marketProvider,
+		clock:                        clock,
+		repositionBackoffUntil:       make(map[string]time.Time),
+		repositionFailures:           make(map[string]int),
+		repositionBackoffLoggedUntil: make(map[string]time.Time),
+		driftPendingSince:            make(map[string]time.Time),
+		singleHullMarketSnapshot:     make(map[string][]string),
+		singleHullDriftPendingSince:  make(map[string]time.Time),
 	}
 }
 
@@ -516,6 +548,14 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	if err != nil {
 		return err
 	}
+	// sp-o34q: the FAILED set lets pass 1.5 distinguish a relay that DIED (unroutable — arm
+	// the long failure cooldown and rotate the probe) from one that ARRIVED (reset the streak)
+	// or was merely restart-interrupted (keep the short floor). Without it every ended relay
+	// looked identical and a dark post's corpse was respawned every few minutes.
+	failed, err := h.containerIDSet(ctx, cmd, "FAILED")
+	if err != nil {
+		return err
+	}
 
 	removed := make(map[string]bool)
 
@@ -546,7 +586,7 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		if removed[post.SystemSymbol] {
 			continue
 		}
-		h.reconcileRepositioningSlots(ctx, cmd, post, running)
+		h.reconcileRepositioningSlots(ctx, cmd, post, running, completed, failed)
 	}
 
 	// Pass 2: man the unmanned slots, standing posts first.
@@ -789,13 +829,24 @@ func (h *RunScoutPostCoordinatorHandler) reconcileMannedSlots(
 	return false
 }
 
-// reconcileRepositioningSlots runs pass 1.5 over one post's slots: reclaim any ended
-// relay and clear its reference so pass 2 re-evaluates the slot (sp-s232).
+// reconcileRepositioningSlots runs pass 1.5 over one post's slots: reclaim any ended relay
+// and clear its reference so pass 2 re-evaluates the slot (sp-s232). The relay's TERMINAL
+// disposition (sp-o34q) decides what happens to the post's dispatch cooldown:
+//   - FAILED (the unroutable verdict): arm the LONG failure cooldown and count the attempt,
+//     so the coordinator stops respawning the same corpse every few minutes and the freed
+//     probe rotates to the next candidate this tick (the fix for the ~20-corpses/15min
+//     crash-loop).
+//   - COMPLETED (the probe arrived): reset the streak and clear any stale cooldown — pass 2a
+//     mans it in-system, and a post that finally succeeded starts clean.
+//   - neither (restart-interrupted / fast opaque exit): keep only the short dispatch floor
+//     armed at dispatch — not a routing failure, so it never arms the long cooldown.
 func (h *RunScoutPostCoordinatorHandler) reconcileRepositioningSlots(
 	ctx context.Context,
 	cmd *RunScoutPostCoordinatorCommand,
 	post *domainScouting.ScoutPost,
 	running map[string]bool,
+	completed map[string]bool,
+	failed map[string]bool,
 ) {
 	logger := common.LoggerFromContext(ctx)
 	for _, slot := range post.Slots() {
@@ -806,11 +857,34 @@ func (h *RunScoutPostCoordinatorHandler) reconcileRepositioningSlots(
 		if running[relayID] {
 			continue // relay airborne — leave it; pass 2 skips this slot
 		}
+
 		h.reclaimHullFromContainer(ctx, cmd, relayID, "scout_reposition_ended")
-		logger.Log("INFO", fmt.Sprintf("Scout reposition relay for post %s ended (container %s not running) — re-evaluating next tick", post.SystemSymbol, relayID), map[string]interface{}{
-			"action":        "scout_reposition_relay_ended",
-			"system_symbol": post.SystemSymbol,
-		})
+		key := backoffKey(cmd.PlayerID.Value(), post.SystemSymbol, slot.Index())
+		switch {
+		case failed[relayID]:
+			cooldown := repositionFailureCooldown(cmd)
+			attempt := h.noteRepositionFailure(key, cooldown)
+			logger.Log("WARNING", fmt.Sprintf("Scout reposition relay for post %s FAILED (attempt %d, container %s) — cooling down %s, freeing the probe to the next candidate", post.SystemSymbol, attempt, relayID, cooldown), map[string]interface{}{
+				"action":        "scout_reposition_failed",
+				"system_symbol": post.SystemSymbol,
+				"attempt":       attempt,
+				"relay":         relayID,
+				"cooldown_secs": int(cooldown.Seconds()),
+			})
+		case completed[relayID]:
+			h.resetRepositionFailures(key)
+			logger.Log("INFO", fmt.Sprintf("Scout reposition relay for post %s arrived (container %s) — hull idle in-system, re-manning locally", post.SystemSymbol, relayID), map[string]interface{}{
+				"action":        "scout_reposition_arrived",
+				"system_symbol": post.SystemSymbol,
+				"relay":         relayID,
+			})
+		default:
+			logger.Log("INFO", fmt.Sprintf("Scout reposition relay for post %s ended (container %s not running) — re-evaluating next tick", post.SystemSymbol, relayID), map[string]interface{}{
+				"action":        "scout_reposition_relay_ended",
+				"system_symbol": post.SystemSymbol,
+			})
+		}
+
 		slot.SetRepositionContainerID("")
 		if err := h.postRepo.Upsert(ctx, post); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to clear ended reposition relay on post %s: %v", post.SystemSymbol, err), nil)
@@ -1411,12 +1485,18 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedSlot(
 		return
 	}
 
-	// A recent relay for this slot failed — don't hot-loop re-dispatch (sp-py4n).
+	// A recent relay for this slot failed — don't hot-loop re-dispatch (sp-py4n). Announce the
+	// skip ONCE per cooldown episode (sp-o34q): a standing dark post used to log this on every
+	// 30s tick, the ~20-events/15min flood the captain flagged. noteRepositionBackoffLogged
+	// keys the announcement on the exact backoff deadline, so a new failure (a later deadline)
+	// re-announces once and a steady cooldown stays quiet.
 	if h.repositionBackedOff(key) {
-		logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: reposition backing off after a recent relay — retrying shortly", post.SystemSymbol), map[string]interface{}{
-			"action":        "scout_reposition_backoff",
-			"system_symbol": post.SystemSymbol,
-		})
+		if h.noteRepositionBackoffLogged(key) {
+			logger.Log("INFO", fmt.Sprintf("Scout post %s unmanned: reposition backing off after a recent relay — retrying shortly", post.SystemSymbol), map[string]interface{}{
+				"action":        "scout_reposition_backoff",
+				"system_symbol": post.SystemSymbol,
+			})
+		}
 		return
 	}
 
@@ -1546,6 +1626,16 @@ func resolveMaxRepositionJumps(cmd *RunScoutPostCoordinatorCommand) int {
 	return cmd.MaxRepositionJumps
 }
 
+// repositionFailureCooldown resolves the FAILED-relay cooldown (sp-o34q): the launch config's
+// [scouting] reposition_failure_cooldown_secs when positive, else the 30-min default. Mirrors
+// resolveMaxRepositionJumps' <= 0 → default shape.
+func repositionFailureCooldown(cmd *RunScoutPostCoordinatorCommand) time.Duration {
+	if cmd.RepositionFailureCooldownSecs <= 0 {
+		return defaultRepositionFailureCooldown
+	}
+	return time.Duration(cmd.RepositionFailureCooldownSecs) * time.Second
+}
+
 // selectNearestSatelliteByHops returns the index (into idleSats) of the satellite
 // FEWEST jump hops from postSystem, its hop count, and ok=false when none can be
 // jump-routed there (sp-s232). Distance is the RepositionPath BFS length over the
@@ -1656,6 +1746,58 @@ func (h *RunScoutPostCoordinatorHandler) noteRepositionDispatch(key string) {
 		h.repositionBackoffUntil = make(map[string]time.Time)
 	}
 	h.repositionBackoffUntil[key] = h.clock.Now().Add(repositionRetryBackoff)
+}
+
+// noteRepositionFailure records a FAILED reposition relay for key (sp-o34q): it increments the
+// consecutive-failure streak and arms the LONG failure cooldown — OVERRIDING the short dispatch
+// floor — and returns the new streak count for the failure log. Rotation to the next candidate
+// falls out of the backed-off slot being skipped without consuming the shared probe.
+func (h *RunScoutPostCoordinatorHandler) noteRepositionFailure(key string, cooldown time.Duration) int {
+	h.repositionMu.Lock()
+	defer h.repositionMu.Unlock()
+	if h.repositionBackoffUntil == nil {
+		h.repositionBackoffUntil = make(map[string]time.Time)
+	}
+	if h.repositionFailures == nil {
+		h.repositionFailures = make(map[string]int)
+	}
+	h.repositionFailures[key]++
+	h.repositionBackoffUntil[key] = h.clock.Now().Add(cooldown)
+	return h.repositionFailures[key]
+}
+
+// resetRepositionFailures clears a post's failure streak, cooldown, and once-logged marker
+// (sp-o34q) — called when a relay COMPLETES, so a post that finally succeeded starts clean and
+// the next failure is counted from one. delete on a nil map is a no-op, so this is safe on the
+// struct-literal handler the tests build.
+func (h *RunScoutPostCoordinatorHandler) resetRepositionFailures(key string) {
+	h.repositionMu.Lock()
+	defer h.repositionMu.Unlock()
+	delete(h.repositionFailures, key)
+	delete(h.repositionBackoffUntil, key)
+	delete(h.repositionBackoffLoggedUntil, key)
+}
+
+// noteRepositionBackoffLogged reports whether the CURRENT backoff episode for key has not yet
+// been announced, and marks it announced (sp-o34q). It keys the marker on the exact backoff
+// deadline, so each distinct cooldown window logs its skip reason exactly once — the fix for the
+// ~20-events/15min flood a standing dark post emitted every tick. A new failure arms a later
+// deadline, which reads as a new episode and logs once more.
+func (h *RunScoutPostCoordinatorHandler) noteRepositionBackoffLogged(key string) bool {
+	h.repositionMu.Lock()
+	defer h.repositionMu.Unlock()
+	until, ok := h.repositionBackoffUntil[key]
+	if !ok {
+		return false
+	}
+	if logged, ok := h.repositionBackoffLoggedUntil[key]; ok && logged.Equal(until) {
+		return false // this episode already announced
+	}
+	if h.repositionBackoffLoggedUntil == nil {
+		h.repositionBackoffLoggedUntil = make(map[string]time.Time)
+	}
+	h.repositionBackoffLoggedUntil[key] = until
+	return true
 }
 
 // backoffKey scopes the reposition backoff to (playerID, system, slot) so one player's

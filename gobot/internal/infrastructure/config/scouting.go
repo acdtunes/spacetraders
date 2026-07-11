@@ -31,4 +31,13 @@ type ScoutingConfig struct {
 	// so 0/absent => 12. The strict cap is deliberately NOT raised — only the probe class,
 	// whose arrival re-reads the gate it crossed, is allowed this reach.
 	MaxRepositionJumps int `mapstructure:"max_reposition_jumps"`
+
+	// RepositionFailureCooldownSecs is how long a scout post whose reposition relay FAILED
+	// waits before the coordinator retries repositioning to it (sp-o34q). On a failure the
+	// coordinator frees the probe and tries the NEXT candidate post this tick instead of
+	// respawning the same corpse, so one genuinely-unroutable post can no longer crash-loop
+	// the relay dispatcher and flood the event queue (the 25-min post-deploy incident: ~20
+	// TORWIND-66 corpses / 15min). 0/absent => 1800s (30 min): long enough that a broken
+	// post is retried on the order of the frontier's own change cadence, not every 30s tick.
+	RepositionFailureCooldownSecs int `mapstructure:"reposition_failure_cooldown_secs"`
 }

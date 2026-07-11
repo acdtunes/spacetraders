@@ -489,15 +489,16 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 // the latter two bound the debounced market-set re-cut (sp-ykhl, RULINGS #5).
 func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.RunScoutPostCoordinatorCommand{
-		PlayerID:                     shared.MustNewPlayerID(playerID),
-		ContainerID:                  cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:             cfg.OptionalInt("tick_interval_secs", 0),
-		MarketDriftThreshold:         cfg.OptionalInt("market_drift_threshold", 0),
-		MarketDriftMaxAgeSecs:        cfg.OptionalInt("market_drift_max_age_secs", 0),
-		UndersizedAvgHopSecs:         cfg.OptionalInt("undersized_avg_hop_secs", 0),
-		UndersizedRewarnCooldownSecs: cfg.OptionalInt("undersized_rewarn_cooldown_secs", 0),
-		StartJitterMaxSecs:           cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
-		MaxRepositionJumps:           cfg.OptionalInt("max_reposition_jumps", 0),
+		PlayerID:                      shared.MustNewPlayerID(playerID),
+		ContainerID:                   cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:              cfg.OptionalInt("tick_interval_secs", 0),
+		MarketDriftThreshold:          cfg.OptionalInt("market_drift_threshold", 0),
+		MarketDriftMaxAgeSecs:         cfg.OptionalInt("market_drift_max_age_secs", 0),
+		UndersizedAvgHopSecs:          cfg.OptionalInt("undersized_avg_hop_secs", 0),
+		UndersizedRewarnCooldownSecs:  cfg.OptionalInt("undersized_rewarn_cooldown_secs", 0),
+		StartJitterMaxSecs:            cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
+		MaxRepositionJumps:            cfg.OptionalInt("max_reposition_jumps", 0),
+		RepositionFailureCooldownSecs: cfg.OptionalInt("reposition_failure_cooldown_secs", 0),
 	}
 }
 
@@ -629,6 +630,16 @@ func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID st
 		ShipSymbol:          cfg.RequiredString("ship_symbol"),
 		DestinationWaypoint: cfg.RequiredString("destination"),
 		CoordinatorID:       cfg.OptionalString("coordinator_id"),
+		// sp-o34q: reload the expendable-probe reposition bound the coordinator selected.
+		// WITHOUT this the rebuilt relay ran at 0 -> travelWithJumpBound degraded to the
+		// strict fetch-through resolver -> a >5-jump post produced the verbatim ErrUnroutable
+		// "within N jumps" and crash-looped (8k9m's bound reached the in-memory command but was
+		// dropped across the persist/rebuild boundary). Absent (0) is the strict-resolver
+		// fallback, so a legacy/mis-wired config can never accidentally relax the sp-qxa4
+		// unreadable-gate discipline; only an explicitly persisted positive bound routes past
+		// unreadable gates. resolveScoutingConfig deliberately does NOT run for scout_reposition
+		// (only scout_tour/scout_post_coordinator), so this per-relay value is never clobbered.
+		MaxRepositionJumps: cfg.OptionalInt("max_reposition_jumps", 0),
 	}
 }
 

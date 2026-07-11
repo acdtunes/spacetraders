@@ -171,11 +171,19 @@ func (s *DaemonServer) PersistScoutRepositionWorker(
 	destinationWaypoint string,
 	playerID int,
 	coordinatorID string,
+	maxRepositionJumps int,
 ) error {
 	config := map[string]interface{}{
 		"ship_symbol":    shipSymbol,
 		"destination":    destinationWaypoint,
 		"coordinator_id": coordinatorID,
+		// sp-o34q: persist the expendable-probe reposition bound the coordinator resolved so
+		// the container's rebuild (buildScoutRepositionCommand) reloads it and the worker flies
+		// the stored-adjacency RepositionPath at that reach. Written unconditionally (not guarded
+		// on != 0 like the daemon-wide injectScoutingConfig knobs): this is a concrete per-relay
+		// decision the coordinator already made, and dropping a 0 would silently re-introduce the
+		// strict-cap regression. A 0 here is an explicit "use the strict resolver" fallback.
+		"max_reposition_jumps": maxRepositionJumps,
 	}
 
 	containerEntity := container.NewContainer(
@@ -287,6 +295,7 @@ func (s *DaemonServer) ScoutMarkets(
 var scoutingConfigKeys = []string{
 	"tour_start_jitter_max_seconds",
 	"max_reposition_jumps",
+	"reposition_failure_cooldown_secs",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -315,6 +324,9 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	}
 	if sc.MaxRepositionJumps != 0 {
 		config["max_reposition_jumps"] = sc.MaxRepositionJumps
+	}
+	if sc.RepositionFailureCooldownSecs != 0 {
+		config["reposition_failure_cooldown_secs"] = sc.RepositionFailureCooldownSecs
 	}
 }
 

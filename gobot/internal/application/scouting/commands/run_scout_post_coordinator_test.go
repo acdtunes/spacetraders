@@ -20,6 +20,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
+// primaryTestSlotIndex mirrors the domain's unexported primarySlotIndex (-1): the slot
+// index a single-hull post's primary slot reports, so a test can reconstruct the backoffKey
+// the coordinator scopes a single-hull post's reposition cooldown under.
+const primaryTestSlotIndex = -1
+
 // scoutCaptureLogger implements common.ContainerLogger and records message text so
 // tests can assert on the honest park/repair reasons the coordinator logs.
 type scoutCaptureLogger struct {
@@ -869,6 +874,147 @@ func TestScoutPost_Reposition_ArrivalMansInSystem(t *testing.T) {
 	require.Empty(t, daemonClient.repositioned, "no new relay — the satellite arrived, it is manned locally")
 	require.Len(t, shipRepo.claims, 1, "the satellite is claimed for the tour")
 	require.Equal(t, "SAT-1", shipRepo.claims[0].ship)
+}
+
+// sp-o34q: a relay that ended with an explicit FAILED status arms the LONG failure
+// cooldown, not the short dispatch floor. This is the fix for the post-deploy crash-loop:
+// the coordinator saw a genuinely-unroutable post's relay die, cleared the 5-min floor a
+// few ticks later, and re-dispatched the SAME corpse — ~20 relays / 15min. After the fix a
+// FAILED relay cools the post for defaultRepositionFailureCooldown (30 min), so a re-dispatch
+// that the 5-min floor would have allowed at +6min is still suppressed.
+func TestScoutPost_Reposition_RelayFailed_ArmsLongFailureCooldown(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
+		{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding},
+	}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	cq := &fakeContainerStatusQuery{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, cq, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-FAR": 2}}
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	// Tick 1: dispatch the relay (arms only the short dispatch floor).
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	require.Len(t, daemonClient.repositioned, 1, "tick 1 dispatches the relay")
+	relayID := daemonClient.repositioned[0]
+
+	// The relay ends FAILED (the unroutable verdict). Tick 2 (clock not advanced): reclaim
+	// the hull, clear the reference, arm the 30-min failure cooldown.
+	cq.byStatus = map[string][]persistence.ContainerSummary{
+		"FAILED": {{ID: relayID, ContainerType: "SCOUT_REPOSITION", Status: "FAILED"}},
+	}
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	require.Contains(t, shipRepo.releases, "SAT-1", "the failed relay's hull is reclaimed")
+	require.Empty(t, postRepo.find("X1-FAR").RepositionContainerID, "the failed relay reference is cleared")
+	require.Len(t, daemonClient.repositioned, 1, "no re-dispatch on the failing tick")
+	require.True(t, logger.loggedContaining("X1-FAR", "FAILED", "attempt 1"), "the failure is logged with its attempt count")
+
+	// Tick 3 at +6min: PAST the 5-min dispatch floor but INSIDE the 30-min failure cooldown.
+	// The reference is cleared and the hull is idle+routable, so the ONLY thing stopping a
+	// re-dispatch is the long cooldown. Before sp-o34q the 5-min floor had expired here and
+	// the same corpse was respawned.
+	clock.CurrentTime = clock.CurrentTime.Add(6 * time.Minute)
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	require.Len(t, daemonClient.repositioned, 1, "the failed post is still cooling down at +6min — no crash-loop re-dispatch")
+}
+
+// sp-o34q: the pass-2 "backing off" skip log is a STATE CHANGE, emitted once per cooldown
+// episode — not every 30s tick. This is the fix for the event flood: a single dark post used
+// to log its backoff on every reconcile, ~20+ events / 15min. Across three ticks inside one
+// cooldown window the skip reason is logged exactly once.
+func TestScoutPost_Reposition_BackoffSkip_LogsOncePerEpisode(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
+		{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding},
+	}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1")
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	cq := &fakeContainerStatusQuery{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, cq, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-FAR": 2}}
+	logger := &scoutCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	// Tick 1: dispatch. Tick 2: the relay FAILED — arm the cooldown; the freed, routable hull
+	// hits the backoff branch and logs the skip once (episode opens).
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	relayID := daemonClient.repositioned[0]
+	cq.byStatus = map[string][]persistence.ContainerSummary{
+		"FAILED": {{ID: relayID, ContainerType: "SCOUT_REPOSITION", Status: "FAILED"}},
+	}
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	// Ticks 3 and 4 advance a minute each — still inside the same cooldown episode.
+	clock.CurrentTime = clock.CurrentTime.Add(time.Minute)
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+	clock.CurrentTime = clock.CurrentTime.Add(time.Minute)
+	require.NoError(t, handler.reconcileOnce(ctx, scoutPostTestCmd()))
+
+	skips := 0
+	for _, m := range logger.messages {
+		if strings.Contains(m, "backing off") {
+			skips++
+		}
+	}
+	require.Equal(t, 1, skips, "the backoff skip is announced once per episode, not every tick (event-flood fix)")
+}
+
+// sp-o34q: a relay that COMPLETED (the probe arrived) resets the post's consecutive-failure
+// streak and clears its cooldown, so a post that finally succeeds starts clean — the next
+// failure is "attempt 1", never an inherited count, and no stale cooldown lingers on a
+// healthy post.
+func TestScoutPost_Reposition_CompletedRelay_ResetsFailureStreak(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-FAR", Kind: domainScouting.PostKindStanding, RepositionContainerID: "relay-done"}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-FAR-A1") // relay landed it idle in-system
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"COMPLETED": {{ID: "relay-done", ContainerType: "SCOUT_REPOSITION", Status: "COMPLETED"}},
+	}}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, cq, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{}}
+	// The post carried a failure streak and an armed cooldown from earlier dark ticks.
+	key := backoffKey(1, "X1-FAR", primaryTestSlotIndex)
+	handler.repositionFailures = map[string]int{key: 2}
+	handler.repositionBackoffUntil = map[string]time.Time{key: clock.Now().Add(30 * time.Minute)}
+	handler.repositionBackoffLoggedUntil = map[string]time.Time{}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Zero(t, handler.repositionFailures[key], "a completed relay resets the consecutive-failure streak")
+	require.False(t, handler.repositionBackedOff(key), "a completed relay clears the post's stale cooldown")
+	require.Equal(t, "SAT-1", postRepo.find("X1-FAR").AssignedHull, "the arrived satellite still mans the post in-system")
+}
+
+// sp-o34q: a post cooling down after a failed relay does NOT starve the other candidates.
+// pass-2b skips the backed-off post WITHOUT consuming the shared idle satellite, so the one
+// probe rotates to the next candidate this same tick. (Regression contract for "free the
+// probe to the next candidate on each failure".)
+func TestScoutPost_Reposition_CooledDownPost_ProbeRotatesToNextCandidate(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{
+		{PlayerID: 1, SystemSymbol: "X1-AAA", Kind: domainScouting.PostKindStanding}, // sorts first, cooling down
+		{PlayerID: 1, SystemSymbol: "X1-BBB", Kind: domainScouting.PostKindStanding}, // fresh candidate
+	}}
+	sat := newScoutTestSatellite(t, "SAT-1", "X1-SRC-A1") // the ONLY idle satellite, routable to both
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{sat}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(postRepo, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.gateGraph = &fakeGateGraph{hops: map[string]int{"X1-SRC->X1-AAA": 1, "X1-SRC->X1-BBB": 2}}
+	// X1-AAA is inside its failure cooldown.
+	handler.repositionBackoffUntil = map[string]time.Time{backoffKey(1, "X1-AAA", primaryTestSlotIndex): clock.Now().Add(30 * time.Minute)}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	require.Len(t, daemonClient.repositioned, 1, "exactly one relay dispatched — the freed probe, not two")
+	require.Empty(t, postRepo.find("X1-AAA").RepositionContainerID, "the cooling-down post is skipped, not re-dispatched")
+	require.Equal(t, daemonClient.repositioned[0], postRepo.find("X1-BBB").RepositionContainerID, "the probe rotates to the next candidate")
 }
 
 // In-system manning ALWAYS wins over repositioning for the same satellite (sp-s232):

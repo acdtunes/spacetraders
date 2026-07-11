@@ -91,7 +91,9 @@ func (c *DaemonClientLocal) PersistContainer(
 		if !ok {
 			return daemon.ErrInvalidCommandType
 		}
-		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID)
+		// sp-o34q: forward MaxRepositionJumps — the segment that dropped the bound on the way to
+		// the persisted config, degrading the live relay to the strict 5-jump resolver.
+		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID, cmd.MaxRepositionJumps)
 	case daemon.ContainerKindWorkerFerry:
 		cmd, ok := command.(*tradingCmd.WorkerFerryCommand)
 		if !ok {
