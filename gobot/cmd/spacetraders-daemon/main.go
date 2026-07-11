@@ -666,8 +666,11 @@ func run(cfg *config.Config) error {
 	// read, the buy+dedicate path, and the captain purchase notice — are assembled inside
 	// grpc.NewFleetAutosizerCoordinatorHandler. Heavies are wired but fail-closed (the unserved-lane
 	// read path is a banked seam), so only lights auto-buy live until that seam lands.
+	// sp-3yqa: goodsMarketLocator feeds the warehouse portfolio source (resolves each durable
+	// chain's in-system export waypoint — the warehouse's home). The warehouse class stays dormant
+	// until warehouse_hulls_enabled, so this wiring is safe to land ahead of opt-in.
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
-		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo,
+		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo, goodsMarketLocator,
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)

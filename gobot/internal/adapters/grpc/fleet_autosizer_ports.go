@@ -48,7 +48,10 @@ type serverStatusReader interface {
 
 // NewFleetAutosizerCoordinatorHandler assembles the autosizer handler (sp-1txd M6), wiring every
 // concrete port to the daemon's live collaborators and registering the light + heavy demand
-// providers.
+// providers. The WAREHOUSE class (sp-1j3f demand + dispatch) is registered too (sp-3yqa M6-equiv),
+// wired over its concrete read-path ports; it stays DORMANT until the captain opts in with
+// warehouse_hulls_enabled (the coordinator skips the class otherwise), so registering it changes
+// no live behaviour.
 func NewFleetAutosizerCoordinatorHandler(
 	server *DaemonServer,
 	apiClient *api.SpaceTradersClient,
@@ -57,6 +60,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	chainPnL goodsServices.ChainPnLReader,
 	waypointRepo *persistence.GormWaypointRepository,
 	eventStore captain.EventStore,
+	marketLocator *goodsServices.MarketLocator,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
 
@@ -65,6 +69,18 @@ func NewFleetAutosizerCoordinatorHandler(
 		shipRepo: shipRepo, server: server, chainPnL: chainPnL,
 	}))
 	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{shipRepo: shipRepo}))
+
+	// Warehouse class (sp-3yqa): the concrete read-path for the sp-1j3f WarehouseDemandProvider —
+	// the durable-chain portfolio (vdld chains ∩ export waypoint ∩ chain_pnl), the dedicated-hull
+	// pool, and the StartWarehouse dispatch bridge. SetWarehouseProvider both registers it in the
+	// demand loop AND hands the coordinator the typed handle its reconcile loop needs to run the
+	// anti-stranding DISPATCH step. Opt-in (warehouse_hulls_enabled, default off) so it is dormant
+	// until the captain enables it.
+	h.SetWarehouseProvider(fleetCmd.NewWarehouseDemandProvider(
+		newWarehousePortfolioSource(server.containerRepo, marketLocator, chainPnL),
+		newWarehouseHullSource(server.containerRepo, shipRepo),
+		newWarehouseDispatchBridge(server, shipRepo),
+	))
 
 	// Buy-path readers + writers.
 	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient})
