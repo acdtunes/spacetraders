@@ -112,6 +112,34 @@ func effectiveReserveFloor(ctx context.Context) int {
 	return defaultWorkingCapitalReserve
 }
 
+// resolveInputBuyFloor applies the sp-yqx4 counter-cyclical resolution to the ABSOLUTE
+// factory floor (effectiveReserveFloor's max(50k, configured)) once the live treasury is
+// known. When a coordinator has stamped a treasury-percent on ctx, the enforced floor
+// becomes max(50k, min(absolute, pct% × liveTreasury)) — so a factory input buy is not
+// deadlocked by a reserve above the treasury, the same trough that idled the tour fleet.
+// With no pct stamped (the sp-agzj/sp-kk61 default and every direct test) it returns the
+// absolute floor UNCHANGED, keeping the guard exactly as before. It logs when the
+// proportional floor binds below the absolute — the watch's counter-cyclical signal.
+//
+// liveTreasury MUST be a readable balance: both call sites fail CLOSED (park) on an
+// unreadable read BEFORE reaching here, so the LOWERED proportional floor is never
+// computed against a treasury the guard could not see (RULINGS #4).
+func resolveInputBuyFloor(ctx context.Context, absolute, liveTreasury int) int {
+	pct, ok := common.ReserveTreasuryPctFromContext(ctx)
+	if !ok {
+		return absolute
+	}
+	effective := int(common.EffectiveReserveFloor(int64(absolute), pct, int64(liveTreasury)))
+	if effective < absolute {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+			"Counter-cyclical factory working-capital floor engaged: proportional floor %d (%d%% of live treasury %d) below the configured %d reserve (sp-yqx4)",
+			effective, pct, liveTreasury, absolute), map[string]interface{}{
+			"effective_floor": effective, "configured_reserve": absolute, "treasury_pct": pct, "live_treasury": liveTreasury,
+		})
+	}
+	return effective
+}
+
 // SpendReservationLedger is the cross-container concurrent factory-input spend cap
 // (sp-w3he). The per-buy floor (sp-9aoc) checks live treasury per container, but N factory
 // containers can each pass that independent check inside the check->buy window and
@@ -451,6 +479,11 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		return true
 	}
 
+	// sp-yqx4: below ~2.5M treasury the proportional floor binds so a factory input buy can
+	// still proceed (a floor above the treasury would deadlock the factory as it did the tour
+	// fleet). No-op when no pct is stamped — the absolute floor above stands unchanged.
+	reserve = resolveInputBuyFloor(ctx, reserve, agentData.Credits)
+
 	if agentData.Credits-projectedCost < reserve {
 		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, reserve), map[string]interface{}{
 			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
@@ -502,6 +535,11 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		})
 		return "", true
 	}
+
+	// sp-yqx4: serialize the concurrent cap against the SAME counter-cyclical floor the
+	// per-buy check enforces (they must not disagree on where the line is). No-op with no pct
+	// stamped — the absolute floor stands, unchanged from sp-w3he.
+	reserve = resolveInputBuyFloor(ctx, reserve, agentData.Credits)
 
 	// Container id attributes the reservation to the owning factory (already threaded into
 	// ctx by the coordinator, sp-9aoc's operation context). Best-effort: the staleness sweep

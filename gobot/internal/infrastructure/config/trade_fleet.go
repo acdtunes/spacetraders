@@ -42,6 +42,14 @@ type TradeFleetConfig struct {
 	MinMargin             int   `mapstructure:"min_margin"`
 	ReplanLimit           int   `mapstructure:"replan_limit"`
 	WorkingCapitalReserve int64 `mapstructure:"working_capital_reserve"`
+
+	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor as a percent of
+	// LIVE treasury: each tour buy is floored at max(50k, min(working_capital_reserve, pct% ×
+	// treasury)) so a reserve above the treasury can no longer deadlock the fleet (6/9 heavies
+	// idled at sub-1M). 0/absent → the tour's 40% default (common.DefaultReserveTreasuryPct,
+	// pending the trade-analyst's ruling). Config, not a constant (RULINGS #5), so the ruled
+	// number lands on a restart with no redeploy.
+	WorkingCapitalReserveTreasuryPct int `mapstructure:"working_capital_reserve_treasury_pct"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

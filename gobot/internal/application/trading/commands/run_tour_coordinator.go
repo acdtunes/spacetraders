@@ -135,6 +135,13 @@ type RunTourCoordinatorCommand struct {
 	AgentSymbol           string
 	ContainerID           string // the tour id; groups this run's telemetry legs
 	WorkingCapitalReserve int64  // 0 → defaultWorkingCapitalReserve
+	// WorkingCapitalReserveTreasuryPct engages the sp-yqx4 counter-cyclical floor: at buy
+	// time the enforced floor becomes max(50k, min(WorkingCapitalReserve, pct% × live
+	// treasury)) so a reserve above the treasury can no longer deadlock the hull. 0 leaves
+	// the absolute floor in force (unchanged) — the daemon/CLI build paths resolve 0/absent
+	// to common.DefaultReserveTreasuryPct (40) so production always runs the proportional
+	// floor, while a command built directly (tests) keeps the absolute behavior.
+	WorkingCapitalReserveTreasuryPct int
 	// ModelArtifactPath overrides defaultModelArtifactPath (tests point it at a temp
 	// artifact); empty → the default repo-relative path.
 	ModelArtifactPath string
@@ -524,6 +531,15 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			cmd.ShipSymbol, defaultWorkingCapitalReserve, defaultWorkingCapitalReserve), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "resolved_reserve": defaultWorkingCapitalReserve,
 		})
+	}
+
+	// sp-yqx4: stamp the treasury-percent so the buy-time floor (reserveHeadroom) resolves
+	// the counter-cyclical max(50k, min(reserve, pct% × live treasury)) instead of the flat
+	// absolute reserve. Only when a pct is actually set (production build paths resolve
+	// 0/absent → 40); a directly-built command leaves it 0, keeping the absolute floor the
+	// sp-agzj/sp-ggk2 suites assert. Every downstream tour/leg/buy derives from this ctx.
+	if cmd.WorkingCapitalReserveTreasuryPct > 0 {
+		ctx = common.WithReserveTreasuryPct(ctx, cmd.WorkingCapitalReserveTreasuryPct)
 	}
 	maxHops := cmd.MaxHops
 	if maxHops <= 0 || maxHops > maxTourHops {

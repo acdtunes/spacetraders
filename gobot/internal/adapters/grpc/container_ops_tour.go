@@ -51,6 +51,7 @@ func (s *DaemonServer) StartTourRun(
 	minMargin int,
 	replanLimit int,
 	workingCapitalReserve int64,
+	workingCapitalReserveTreasuryPct int,
 	agentSymbol string,
 	iterations int,
 	playerID int,
@@ -81,7 +82,11 @@ func (s *DaemonServer) StartTourRun(
 		"min_margin":              minMargin,
 		"replan_limit":            replanLimit,
 		"working_capital_reserve": workingCapitalReserve,
-		"iterations":              iterations,
+		// sp-yqx4: the counter-cyclical floor percent. Persisted as-is (0 too); the tour
+		// build resolves 0/absent → the 40% default, so every tour — daemon relaunch, CLI,
+		// or recovery — runs the proportional floor unless the captain overrode the pct.
+		"working_capital_reserve_treasury_pct": workingCapitalReserveTreasuryPct,
+		"iterations":                           iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

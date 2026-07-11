@@ -79,6 +79,7 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 		spec.MinMargin,
 		spec.ReplanLimit,
 		spec.WorkingCapitalReserve,
+		spec.WorkingCapitalReserveTreasuryPct,
 		spec.AgentSymbol,
 		spec.Iterations,
 		spec.PlayerID,
@@ -106,6 +107,7 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_min_margin",
 	"trade_fleet_replan_limit",
 	"trade_fleet_reserve",
+	"trade_fleet_reserve_treasury_pct",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -162,5 +164,11 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	}
 	if tf.WorkingCapitalReserve != 0 {
 		config["trade_fleet_reserve"] = int(tf.WorkingCapitalReserve)
+	}
+	// sp-yqx4: only when the captain actually set an override — an unset key defers to the
+	// tour's 40% default (buildTourCoordinatorCommand resolves 0/absent → the default), so
+	// the counter-cyclical floor is ON in production without the captain having to name it.
+	if tf.WorkingCapitalReserveTreasuryPct != 0 {
+		config["trade_fleet_reserve_treasury_pct"] = tf.WorkingCapitalReserveTreasuryPct
 	}
 }

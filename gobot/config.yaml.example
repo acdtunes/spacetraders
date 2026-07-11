@@ -226,6 +226,13 @@ trade_fleet:
   # min_margin: 0
   # replan_limit: 0
   # working_capital_reserve: 0
+  # working_capital_reserve_treasury_pct (sp-yqx4): the counter-cyclical floor as a percent
+  # of LIVE treasury. Each tour buy is floored at max(50000, min(working_capital_reserve,
+  # pct% x treasury)) so a reserve above the treasury can no longer deadlock the fleet at
+  # sub-reserve balances. 0/absent => 40% (deadlock-proof default). Above ~2.5M treasury the
+  # absolute reserve binds exactly as before; below it the proportional floor keeps buying
+  # feasible while the 50000 lower bound stands.
+  # working_capital_reserve_treasury_pct: 40
 
 # Worker-rebalancer coordinator (sp-f5pr): the STANDING coordinator that ferries idle
 # undedicated light-haulers cross-system to worker-starved factory systems, so a factory
@@ -267,3 +274,8 @@ worker_rebalancer:
 # a fleet with no [manufacturing] section at all (pre-sp-kk61 behavior, unchanged).
 manufacturing:
   # working_capital_reserve: 0
+  # working_capital_reserve_treasury_pct (sp-yqx4): the counter-cyclical floor as a percent
+  # of LIVE treasury for goods_factory_coordinator input buys — each buy is floored at
+  # max(50000, min(working_capital_reserve, pct% x treasury)) so a factory below ~2.5M
+  # treasury is not deadlocked by a reserve above its balance. 0/absent => 40% default.
+  # working_capital_reserve_treasury_pct: 40

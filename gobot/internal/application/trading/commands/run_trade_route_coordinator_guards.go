@@ -4,6 +4,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -23,8 +24,16 @@ import (
 //     (unresolvable token, or GetAgent itself erroring); the caller MUST fail CLOSED
 //     — never spend on a balance it could not read (RULINGS #4). The read-failure
 //     cause is logged here; the caller logs the action it took.
-//   - available=true, readable=true   → headroom = liveBalance - reserve (may be
+//   - available=true, readable=true   → headroom = liveBalance - effectiveFloor (may be
 //     <= 0), and liveBalance is the live treasury the decision was made against.
+//
+// The floor subtracted is the ABSOLUTE reserve by default. When a coordinator has stamped
+// a treasury-percent on ctx (the tour's sp-yqx4 counter-cyclical floor — the trade-route
+// circuit never stamps, so it is unchanged), the floor becomes the proportional
+// max(50k, min(reserve, pct% × liveTreasury)) instead: below ~2.5M treasury a floor above
+// the balance can no longer strand the hull. The pct is read from the SAME live balance
+// this read already fetched — no extra API call. A read FAILURE still fails closed to
+// no-spend above (RULINGS #4), stronger than falling back to the absolute floor.
 func (h *RunTradeRouteCoordinatorHandler) reserveHeadroom(ctx context.Context, reserve int) (headroom, liveBalance int, available, readable bool) {
 	logger := common.LoggerFromContext(ctx)
 	if h.apiClient == nil {
@@ -47,7 +56,22 @@ func (h *RunTradeRouteCoordinatorHandler) reserveHeadroom(ctx context.Context, r
 		return 0, 0, true, false
 	}
 
-	return agentData.Credits - reserve, agentData.Credits, true, true
+	effectiveFloor := reserve
+	if pct, ok := common.ReserveTreasuryPctFromContext(ctx); ok {
+		effectiveFloor = int(common.EffectiveReserveFloor(int64(reserve), pct, int64(agentData.Credits)))
+		if effectiveFloor < reserve {
+			// sp-yqx4: the proportional floor bound BELOW the configured reserve — the
+			// counter-cyclical mode the watch must SEE engage. Logged here (the one live-read
+			// seam) with floor/pct/treasury so a sub-2.5M fleet trading its way up is legible.
+			logger.Log("INFO", fmt.Sprintf(
+				"Counter-cyclical working-capital floor engaged: proportional floor %d (%d%% of live treasury %d) below the configured %d reserve — allowance widened so the fleet can trade its way up (sp-yqx4)",
+				effectiveFloor, pct, agentData.Credits, reserve), map[string]interface{}{
+				"effective_floor": effectiveFloor, "configured_reserve": reserve, "treasury_pct": pct, "live_treasury": agentData.Credits,
+			})
+		}
+	}
+
+	return agentData.Credits - effectiveFloor, agentData.Credits, true, true
 }
 
 // spendFloorBreached live-checks whether spending projectedCost right now would

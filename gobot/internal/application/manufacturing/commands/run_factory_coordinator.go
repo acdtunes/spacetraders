@@ -265,6 +265,14 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// ProductionExecutor is a singleton shared across concurrent factory containers, so
 	// ctx (per-Handle) carries it race-free to every parallel worker's buyGood.
 	ctx = mfgServices.WithConfiguredReserve(ctx, cmd.WorkingCapitalReserve)
+	// sp-yqx4: stamp the treasury-percent so each input buy's floor resolves the
+	// counter-cyclical max(50k, min(reserve, pct% × live treasury)) instead of the flat
+	// absolute reserve — a factory is no longer deadlocked by a reserve above the treasury.
+	// Only when set (the goods_factory build resolves 0/absent → 40); a directly-built
+	// command leaves it 0, keeping the absolute floor the sp-agzj/kk61 suites assert.
+	if cmd.WorkingCapitalReserveTreasuryPct > 0 {
+		ctx = common.WithReserveTreasuryPct(ctx, cmd.WorkingCapitalReserveTreasuryPct)
+	}
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,

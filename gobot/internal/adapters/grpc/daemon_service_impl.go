@@ -1331,7 +1331,11 @@ func (s *daemonServiceImpl) StartTourRun(ctx context.Context, req *pb.StartTourR
 		iterations = int(*req.Iterations)
 	}
 
-	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, agentSymbol, iterations, playerID)
+	// sp-yqx4: the CLI/gRPC StartTourRun has no treasury-pct knob; pass 0 so the tour build
+	// resolves it to the 40% default — a captain CLI tour still runs the counter-cyclical
+	// floor (the deadlock fix is fleet-wide, not only the trade_fleet-relaunched hulls).
+	const workingCapitalReserveTreasuryPct = 0
+	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, workingCapitalReserveTreasuryPct, agentSymbol, iterations, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start tour-run: %w", err)
 	}

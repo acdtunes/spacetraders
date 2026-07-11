@@ -214,11 +214,12 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				"max_iterations": 5,
 			},
 			want: &goodsCmd.RunFactoryCoordinatorCommand{
-				PlayerID:      playerID,
-				TargetGood:    "MICROPROCESSORS",
-				SystemSymbol:  "X1-TEST",
-				ContainerID:   "goods-1",
-				MaxIterations: 5,
+				PlayerID:                         playerID,
+				TargetGood:                       "MICROPROCESSORS",
+				SystemSymbol:                     "X1-TEST",
+				ContainerID:                      "goods-1",
+				MaxIterations:                    5,
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
 			},
 		},
 		{
@@ -231,11 +232,12 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				"container_id":  "goods-2",
 			},
 			want: &goodsCmd.RunFactoryCoordinatorCommand{
-				PlayerID:      playerID,
-				TargetGood:    "IRON",
-				SystemSymbol:  "X1-TEST",
-				ContainerID:   "goods-2",
-				MaxIterations: 1,
+				PlayerID:                         playerID,
+				TargetGood:                       "IRON",
+				SystemSymbol:                     "X1-TEST",
+				ContainerID:                      "goods-2",
+				MaxIterations:                    1,
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
 			},
 		},
 		{
@@ -308,6 +310,7 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				MaxIterations: 1,
 				// WorkingCapitalReserve left at zero value: cleared by
 				// resolveManufacturingConfig since the live config is unset.
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default (reserve pct is not cleared, it defaults)
 			},
 		},
 		{
@@ -417,15 +420,16 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				"working_capital_reserve": 60000,
 			},
 			want: &tradingCmd.RunTourCoordinatorCommand{
-				ShipSymbol:            "SHIP-A",
-				PlayerID:              playerID,
-				ContainerID:           "tour-1",
-				AgentSymbol:           "TORWIND",
-				MaxHops:               4,
-				MaxSpend:              300000,
-				MinMargin:             5,
-				ReplanLimit:           2,
-				WorkingCapitalReserve: 60000,
+				ShipSymbol:                       "SHIP-A",
+				PlayerID:                         playerID,
+				ContainerID:                      "tour-1",
+				AgentSymbol:                      "TORWIND",
+				MaxHops:                          4,
+				MaxSpend:                         300000,
+				MinMargin:                        5,
+				ReplanLimit:                      2,
+				WorkingCapitalReserve:            60000,
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
 			},
 		},
 		{
@@ -442,10 +446,11 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				"iterations":   -1,
 			},
 			want: &tradingCmd.RunTourCoordinatorCommand{
-				ShipSymbol:  "SHIP-C",
-				PlayerID:    playerID,
-				ContainerID: "tour-inf",
-				Iterations:  -1,
+				ShipSymbol:                       "SHIP-C",
+				PlayerID:                         playerID,
+				ContainerID:                      "tour-inf",
+				Iterations:                       -1,
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
 			},
 		},
 		{
@@ -459,9 +464,10 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				"container_id": "tour-2",
 			},
 			want: &tradingCmd.RunTourCoordinatorCommand{
-				ShipSymbol:  "SHIP-B",
-				PlayerID:    playerID,
-				ContainerID: "tour-2",
+				ShipSymbol:                       "SHIP-B",
+				PlayerID:                         playerID,
+				ContainerID:                      "tour-2",
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
 			},
 		},
 		{
@@ -485,16 +491,17 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				"reposition_target_waypoint": "X1-S2-A",
 			},
 			want: &tradingCmd.RunTourCoordinatorCommand{
-				ShipSymbol:               "SHIP-R",
-				PlayerID:                 playerID,
-				ContainerID:              "tour-rpz",
-				Iterations:               -1,
-				RepositionDisabled:       true,
-				RepositionMinMargin:      40000,
-				RepositionMaxCandidates:  2,
-				RepositionInProgress:     true,
-				RepositionTargetSystem:   "X1-S2",
-				RepositionTargetWaypoint: "X1-S2-A",
+				ShipSymbol:                       "SHIP-R",
+				PlayerID:                         playerID,
+				ContainerID:                      "tour-rpz",
+				Iterations:                       -1,
+				RepositionDisabled:               true,
+				RepositionMinMargin:              40000,
+				RepositionMaxCandidates:          2,
+				RepositionInProgress:             true,
+				RepositionTargetSystem:           "X1-S2",
+				RepositionTargetWaypoint:         "X1-S2-A",
+				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
 			},
 		},
 		{

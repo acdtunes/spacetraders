@@ -55,7 +55,7 @@ func TestStartTourRun_StampsTradeOperationInLaunchConfig(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0 /* reserve treasury pct */, "AGENT", 1, playerID)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "TORWIND-19", result.ShipSymbol)

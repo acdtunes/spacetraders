@@ -309,6 +309,7 @@ func (s *DaemonServer) CleanupStaleManufacturingWorkers(
 // buildManufacturingCoordinatorCommand's reads.
 var manufacturingConfigKeys = []string{
 	"working_capital_reserve",
+	"working_capital_reserve_treasury_pct",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -345,5 +346,11 @@ func (s *DaemonServer) resolveManufacturingConfig(config map[string]interface{})
 func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) {
 	if s.manufacturingConfig.WorkingCapitalReserve != 0 {
 		config["working_capital_reserve"] = int(s.manufacturingConfig.WorkingCapitalReserve)
+	}
+	// sp-yqx4: only when the captain set an override — an unset key defers to the
+	// goods_factory build's 40% default (resolveReserveTreasuryPct), so the counter-cyclical
+	// floor is ON in production without the captain naming it.
+	if s.manufacturingConfig.WorkingCapitalReserveTreasuryPct != 0 {
+		config["working_capital_reserve_treasury_pct"] = s.manufacturingConfig.WorkingCapitalReserveTreasuryPct
 	}
 }

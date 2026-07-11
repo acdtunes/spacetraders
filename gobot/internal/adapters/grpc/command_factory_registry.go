@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	commonApp "github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
@@ -502,6 +503,9 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		MinMargin:             cfg.OptionalInt("trade_fleet_min_margin", 0),
 		ReplanLimit:           cfg.OptionalInt("trade_fleet_replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("trade_fleet_reserve", 0)),
+		// sp-yqx4: raw pass-through — the coordinator only relays this to StartTourRun; the
+		// tour build resolves 0/absent → the 40% default at the point of enforcement.
+		WorkingCapitalReserveTreasuryPct: cfg.OptionalInt("trade_fleet_reserve_treasury_pct", 0),
 	}
 }
 
@@ -734,6 +738,10 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// sp-agzj: unify the factory input floor with the fleet reserve. 0/absent → the
 		// coordinator's immutable 50k lower bound; a set value (the fleet's 1M) raises it.
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
+		// sp-yqx4: 0/absent → the 40% default so a factory below ~2.5M treasury is not
+		// deadlocked by a reserve above the balance; a positive value is the captain's
+		// [manufacturing] override.
+		WorkingCapitalReserveTreasuryPct: resolveReserveTreasuryPct(cfg.OptionalInt("working_capital_reserve_treasury_pct", 0)),
 	}
 }
 
@@ -848,6 +856,21 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 	}
 }
 
+// resolveReserveTreasuryPct maps a launch-config working_capital_reserve_treasury_pct to
+// the value the coordinator enforces (sp-yqx4). 0/absent/negative → the deadlock-proof 40%
+// default (common.DefaultReserveTreasuryPct), a positive value is the captain's override.
+// Applied at the TERMINAL command builders (tour, goods_factory) whose commands stamp the
+// pct onto ctx — so a config that never named the key still runs the counter-cyclical floor
+// in production, while the value stays operator-tunable (RULINGS #5). The trade_fleet
+// coordinator build forwards the RAW value (it only relays it to StartTourRun); the tour
+// build below performs the resolution once, at the point of enforcement.
+func resolveReserveTreasuryPct(configured int) int {
+	if configured <= 0 {
+		return commonApp.DefaultReserveTreasuryPct
+	}
+	return configured
+}
+
 // buildTourCoordinatorCommand rebuilds the one-shot guarded tour command (sp-1ek0) from
 // a persisted launch config so restart recovery can resume a RUNNING tour_run container.
 // ContainerID comes from the recovery-supplied containerID (the persisted row's ID),
@@ -875,7 +898,10 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// still defers to the coordinator's own default (0 → defaultWorkingCapitalReserve),
 		// so a captain CLI tour with no --reserve is unchanged.
 		WorkingCapitalReserve: int64(cfg.PresentOrFailInt("working_capital_reserve", 0)),
-		Iterations:            cfg.OptionalInt("iterations", 0),
+		// sp-yqx4: 0/absent → the 40% default so every rebuilt/relaunched/recovered tour runs
+		// the counter-cyclical floor; a positive value is the captain's [trade_fleet] override.
+		WorkingCapitalReserveTreasuryPct: resolveReserveTreasuryPct(cfg.OptionalInt("working_capital_reserve_treasury_pct", 0)),
+		Iterations:                       cfg.OptionalInt("iterations", 0),
 		// Reposition-on-margins-death knobs (sp-zhii). reposition_disabled defaults to
 		// false → the feature is ON for continuous runs (the captain filed sp-zhii to end
 		// the whack-a-mole); the floor/K default to 0 → the coordinator's own

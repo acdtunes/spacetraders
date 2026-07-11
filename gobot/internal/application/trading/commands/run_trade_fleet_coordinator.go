@@ -83,6 +83,9 @@ type RunTradeFleetCoordinatorCommand struct {
 	MinMargin             int
 	ReplanLimit           int
 	WorkingCapitalReserve int64
+	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor percent, passed
+	// verbatim to each StartTourRun. 0 => the tour's 40% default resolved at build.
+	WorkingCapitalReserveTreasuryPct int
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -98,15 +101,16 @@ type RunTradeFleetCoordinatorResponse struct {
 // persistence, and the operation="trade" stamp (StartTourRun), so the coordinator
 // stays a pure decision loop that claims nothing itself (RULINGS #3/#7).
 type TourLaunchSpec struct {
-	ShipSymbol            string
-	MaxHops               int
-	MaxSpend              int64
-	MinMargin             int
-	ReplanLimit           int
-	WorkingCapitalReserve int64
-	AgentSymbol           string
-	Iterations            int
-	PlayerID              int
+	ShipSymbol                       string
+	MaxHops                          int
+	MaxSpend                         int64
+	MinMargin                        int
+	ReplanLimit                      int
+	WorkingCapitalReserve            int64
+	WorkingCapitalReserveTreasuryPct int // sp-yqx4 counter-cyclical floor percent (0 → 40% default at build)
+	AgentSymbol                      string
+	Iterations                       int
+	PlayerID                         int
 }
 
 // TourLauncher starts one recovery-safe, guarded continuous tour container for an idle
@@ -277,15 +281,16 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		}
 
 		spec := TourLaunchSpec{
-			ShipSymbol:            ship.ShipSymbol(),
-			MaxHops:               cmd.MaxHops,
-			MaxSpend:              cmd.MaxSpend,
-			MinMargin:             cmd.MinMargin,
-			ReplanLimit:           cmd.ReplanLimit,
-			WorkingCapitalReserve: cmd.WorkingCapitalReserve,
-			AgentSymbol:           cmd.AgentSymbol,
-			Iterations:            tourIterationsContinuous,
-			PlayerID:              cmd.PlayerID.Value(),
+			ShipSymbol:                       ship.ShipSymbol(),
+			MaxHops:                          cmd.MaxHops,
+			MaxSpend:                         cmd.MaxSpend,
+			MinMargin:                        cmd.MinMargin,
+			ReplanLimit:                      cmd.ReplanLimit,
+			WorkingCapitalReserve:            cmd.WorkingCapitalReserve,
+			WorkingCapitalReserveTreasuryPct: cmd.WorkingCapitalReserveTreasuryPct,
+			AgentSymbol:                      cmd.AgentSymbol,
+			Iterations:                       tourIterationsContinuous,
+			PlayerID:                         cmd.PlayerID.Value(),
 		}
 		containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 		if lerr != nil {

@@ -21,4 +21,12 @@ type ManufacturingConfig struct {
 	// floor into a fleet-wide treasury trough (the 682k-buy / 53k-trough incident
 	// this bead follows up on).
 	WorkingCapitalReserve int64 `mapstructure:"working_capital_reserve"`
+
+	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor as a percent of
+	// LIVE treasury, threaded into goods_factory_coordinator (RunFactoryCoordinatorCommand):
+	// each input buy is floored at max(50k, min(working_capital_reserve, pct% × treasury)) so
+	// a reserve above the treasury can no longer park every factory buy — the same deadlock
+	// that idled the tour fleet. 0/absent → the 40% default (common.DefaultReserveTreasuryPct,
+	// pending the trade-analyst's ruling). Config, not a constant (RULINGS #5).
+	WorkingCapitalReserveTreasuryPct int `mapstructure:"working_capital_reserve_treasury_pct"`
 }

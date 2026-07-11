@@ -52,6 +52,14 @@ type RunFactoryCoordinatorCommand struct {
 	// working_capital_reserve key, the same knob the tour/trade/arb coordinators run — so
 	// a fleet reserving 1M no longer leaves its factories draining to 50k.
 	WorkingCapitalReserve int
+	// WorkingCapitalReserveTreasuryPct engages the sp-yqx4 counter-cyclical floor at each
+	// input buy: the enforced floor becomes max(50k, min(WorkingCapitalReserve, pct% × live
+	// treasury)) so a reserve above the treasury can no longer park every factory buy (the
+	// deadlock that idled the tour fleet applies identically to factories). 0 leaves the
+	// absolute floor in force; the goods_factory launch build resolves 0/absent to
+	// common.DefaultReserveTreasuryPct (40) so production runs the proportional floor while a
+	// command built directly (tests) keeps the absolute behavior.
+	WorkingCapitalReserveTreasuryPct int
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation
