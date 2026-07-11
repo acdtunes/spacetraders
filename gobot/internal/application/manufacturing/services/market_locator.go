@@ -337,6 +337,61 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 	}, nil
 }
 
+// EligibleSourceMedianAsk returns the median SELL price (ask) across all ELIGIBLE
+// (MODERATE+ supply) EXPORT markets for a good in a system, plus how many such sources
+// exist. This is the poison-proof ceiling baseline (sp-a5j7 Phase 2 / hzz5 X4): the iv65
+// ceiling's per-waypoint trailing median drags itself up behind a ladder (a laddering source
+// poisons its OWN baseline, so the 1.5x ceiling chases the ladder and never fires — the KA42
+// live failure). Computed over the SAME eligible source set the supply-first selector picks
+// from, a ladder cannot poison this: a source that ladders degrades out of MODERATE+ supply
+// and therefore drops out of both the candidate set AND this median.
+//
+// Eligibility mirrors FindExportMarketBySupplyPriority exactly: EXPORT trade type, supply
+// MODERATE or better (SCARCE/LIMITED excluded). count==0 means no eligible source (the
+// caller is on the rescue/fallback path and must use a different baseline). Ship types have
+// no supply semantics and return count==0.
+func (l *MarketLocator) EligibleSourceMedianAsk(
+	ctx context.Context,
+	good string,
+	systemSymbol string,
+	playerID int,
+) (median int, count int, err error) {
+	if isShipType(good) {
+		return 0, 0, nil
+	}
+
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to find markets for %s eligible-median: %w", good, err)
+	}
+
+	asks := make([]int, 0, len(marketWaypoints))
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil || tradeGood.TradeType() != market.TradeTypeExport {
+			continue
+		}
+		// MODERATE+ only — the identical eligibility filter as FindExportMarketBySupplyPriority.
+		if manufacturing.SupplyLevel(supplyOrEmpty(tradeGood)).Order()-manufacturing.SupplyLevelLimited.Order() < 1 {
+			continue
+		}
+		price := tradeGood.SellPrice()
+		if price <= 0 {
+			continue
+		}
+		asks = append(asks, price)
+	}
+
+	if len(asks) == 0 {
+		return 0, 0, nil
+	}
+	return medianInt(asks), len(asks), nil
+}
+
 // FindConstructionSource finds a market to BUY a good from for delivery to a
 // construction site. It is the construction-scoped source locator used both at
 // planning time and by the poll-loop recovery of deferred construction tasks.

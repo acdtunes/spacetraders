@@ -101,33 +101,35 @@ func inputPriceCeilingConfigFromContext(ctx context.Context) inputPriceCeilingCo
 }
 
 // inputPriceCeilingParked reports whether a factory input buy of `good` at `waypoint` for a
-// live `ask` must PARK because the ask exceeds the ladder-chase ceiling: the trailing-median
-// ask × the configured multiplier (sp-iv65). This is the per-buy backstop the coordinator
-// ChainMarginGuard (sp-2dv4) structurally cannot provide — that guard projects the chain
-// ONCE at launch, but the leak laddered the input ask up DURING the buy round.
+// live `ask` must PARK because the ask exceeds the ladder-chase ceiling: the CROSS-MARKET
+// median ask of ELIGIBLE (MODERATE+) sources × the configured multiplier (sp-iv65 origin;
+// baseline hardened by sp-a5j7 Phase 2 / hzz5 X4). This is the BACKSTOP to the supply-first
+// selector — it catches a chosen eligible source priced anomalously above its healthy peers,
+// and stale/cross-market anomalies the selector's point-in-time supply read misses.
 //
-// Fail OPEN (return false) when the reader port is unwired (nil) — the optional-port
-// contract the package's test fixtures rely on, identical to spendFloorBreached's
-// apiClient==nil. Fail CLOSED (return true, PARK) on any live-read failure OR when fewer
-// than inputPriceCeilingMinSamples rows exist in the window: a guard whose whole job is
-// refusing to overpay must never let a buy through because it went blind (RULINGS #4).
+// BASELINE FIX (hzz5 X4 — the iv65 live failure): the original iv65 ceiling used this good's
+// TRAILING PER-WAYPOINT median, which a ladder POISONS — a laddering source drags its own
+// trailing median up behind it, so the 1.5x ceiling chases the ladder and never fires (KA42:
+// ELECTRONICS laddered 8,973→12,976/u with ZERO parks because the 24h KA42 median was
+// self-inflated). The baseline is now the median ask of ELIGIBLE sources CROSS-MARKET
+// (EligibleSourceMedianAsk): a source that ladders degrades out of MODERATE+ supply and
+// therefore out of this median, so it is structurally un-poisonable.
+//
+// Fail CLOSED (PARK) when the eligible-median read itself fails — a guard whose job is
+// refusing to overpay must not let a buy through blind (RULINGS #4). When NO eligible source
+// exists (count==0) the buy is on the selector's rescue path, already price-validated by the
+// 1.2x rescue cap; this cross-market ceiling does not apply there, so it fails OPEN and defers.
 //
 // The park logs ONE INFO with good/ask/median/ceiling in the message TEXT (the container-log
-// renderer drops metadata, sp-iqyq) — a routine protective decline, not a solvency crisis,
-// so INFO not WARNING. No executor-side dedup: like every sibling park in this file it logs
-// per-park and relies on the container-log sink's 60s content-dedup; buyGood is one call per
-// good per pass (not per-tick), and once the park stops the buys the ask stabilizes so the
-// repeats collapse. A read/no-median fail-closed park logs WARNING (a blind guard is an
-// operational fault, not a routine decline).
-func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoint, good string, ask int) bool {
+// renderer drops metadata, sp-iqyq) — a routine protective decline. The blind fail-closed park
+// logs WARNING (an operational fault). No executor-side dedup: buyGood is one call per good per
+// pass and the container-log sink content-dedups at 60s.
+func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoint, good, systemSymbol string, playerID, ask int) bool {
 	logger := common.LoggerFromContext(ctx)
 
 	cfg := inputPriceCeilingConfigFromContext(ctx)
 	if cfg.disabled {
 		return false
-	}
-	if e.priceHistory == nil {
-		return false // fail OPEN: guard unavailable (optional-port test-fixture contract)
 	}
 
 	multiplier := cfg.multiplier
@@ -135,42 +137,30 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 		multiplier = defaultInputPriceCeilingMultiplier
 	}
 
-	since := e.clock.Now().Add(-inputPriceCeilingWindow)
-	history, err := e.priceHistory.GetPriceHistory(ctx, waypoint, good, since, 0)
+	median, count, err := e.marketLocator.EligibleSourceMedianAsk(ctx, good, systemSymbol, playerID)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf(
-			"Could not read %s price history at %s for the input price ceiling — parking input buy (fail-closed): %v",
-			good, waypoint, err,
+			"Could not read the eligible-source cross-market median for %s (system %s) for the input price ceiling — parking input buy (fail-closed): %v",
+			good, systemSymbol, err,
 		), map[string]interface{}{
 			"good": good, "market": waypoint, "action": "factory_parked", "reason": "price_ceiling_unreadable", "error": err.Error(),
 		})
 		return true
 	}
-
-	// sell_price is the ask we pay (domain: "What market charges us to buy") — the SAME
-	// series FindExportMarket.Price reads, so the median is a like-for-like baseline.
-	asks := make([]int, 0, len(history))
-	for _, h := range history {
-		asks = append(asks, h.SellPrice())
-	}
-	if len(asks) < inputPriceCeilingMinSamples {
-		logger.Log("WARNING", fmt.Sprintf(
-			"No trailing %s price history at %s within %s (%d samples) — parking input buy (fail-closed): median unavailable",
-			good, waypoint, inputPriceCeilingWindow, len(asks),
-		), map[string]interface{}{
-			"good": good, "market": waypoint, "action": "factory_parked", "reason": "price_ceiling_no_median", "samples": len(asks),
-		})
-		return true
+	if count < inputPriceCeilingMinSamples {
+		// No eligible (MODERATE+) source: the buy is on the selector's rescue path, already
+		// gated by the 1.2x rescue cap. The cross-market ceiling has no healthy peer set to
+		// price against here, so it defers rather than double-parking a validated rescue buy.
+		return false
 	}
 
-	median := medianInt(asks)
 	ceiling := int(float64(median) * multiplier)
 	if ask > ceiling {
 		logger.Log("INFO", fmt.Sprintf(
-			"Parked input purchase of %s at %s — ask %d exceeds price ceiling %d (%.2fx trailing median %d over %s): ladder-chase refused (sp-iv65)",
-			good, waypoint, ask, ceiling, multiplier, median, inputPriceCeilingWindow,
+			"Parked input purchase of %s at %s — ask %d exceeds price ceiling %d (%.2fx eligible cross-market median %d over %d source(s)): ladder-chase refused, poison-proof baseline (sp-a5j7)",
+			good, waypoint, ask, ceiling, multiplier, median, count,
 		), map[string]interface{}{
-			"good": good, "market": waypoint, "ask": ask, "median": median, "ceiling": ceiling, "multiplier": multiplier,
+			"good": good, "market": waypoint, "ask": ask, "median": median, "ceiling": ceiling, "multiplier": multiplier, "eligible_sources": count,
 			"action": "factory_parked", "reason": "price_ceiling",
 		})
 		return true

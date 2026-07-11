@@ -7,51 +7,24 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-iv65 (P1 money-integrity): the factory input buyer had NO price ceiling. The
-// ADVANCED_CIRCUITRY chain bought ELECTRONICS+MICROPROCESSORS inputs at ~19k/u — 4x
-// market, chasing its own supply ladder up — to fabricate a ~7k/u output: −6.6M in 3h.
-// This suite drives buyGood (via ProduceGood with a BUY node) and asserts the per-buy
-// ceiling: PARK the input (zero-spend result, no dispatch, no flight) when the live ask
-// exceeds the trailing-median × multiplier, PARK fail-CLOSED when the median is
-// unavailable/unreadable, and — the optional-port contract every other test relies on —
-// proceed unchanged when no price-history reader is wired.
+// sp-a5j7 Phase 2 / hzz5 X4: the input price ceiling is the BACKSTOP to the supply-first
+// selector, and its BASELINE is now the median ask of ELIGIBLE (MODERATE+) sources
+// CROSS-MARKET (EligibleSourceMedianAsk) — NOT the good's per-waypoint trailing median.
+//
+// WHY THE BASELINE CHANGED (the iv65 live failure): a per-waypoint trailing median is
+// SELF-POISONING — a laddering source drags its own trailing median up behind it, so the 1.5x
+// ceiling chases the ladder and never fires (KA42: ELECTRONICS laddered 8,973->12,976/u with
+// ZERO parks because the 24h KA42 median was self-inflated). The eligible cross-market median
+// is un-poisonable: a source that ladders degrades out of MODERATE+ supply and therefore out of
+// the median. This suite pins the cross-market ceiling and the poisoning-shape park.
 
-// ceilingMarketRepo prices a single EXPORT market for dockRaceGood at a configurable ask
-// (SellPrice — the price we PAY to buy), so a test can pin the ADV_CIRC ladder shape:
-// a live ask of 19000 against a ~4750 trailing median.
-type ceilingMarketRepo struct {
-	market.MarketRepository
-	ask int
-}
-
-func (r *ceilingMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
-	return []string{dockRaceMarketWP}, nil
-}
-
-func (r *ceilingMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*market.Market, error) {
-	if waypointSymbol != dockRaceMarketWP {
-		return nil, nil
-	}
-	supply := "HIGH"
-	activity := "STRONG"
-	// purchasePrice (the bid) is irrelevant to the ceiling; sellPrice is the ask we pay.
-	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, r.ask, r.ask, 10, market.TradeTypeExport)
-	if err != nil {
-		return nil, err
-	}
-	return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
-}
-
-// fakePriceHistoryReader returns a scripted trailing ask series (or an error) for the
-// ceiling's median. sellPrices is the historical ask series; an empty slice models "no
-// history in window" (median unavailable → fail closed). err models the live read failing.
+// fakePriceHistoryReader returns a scripted trailing ask series (or an error) — the trailing
+// median source for the sourcing RESCUE cap (a depleted-market buy is validated against it).
 type fakePriceHistoryReader struct {
 	sellPrices []int
 	err        error
@@ -74,217 +47,116 @@ func (r *fakePriceHistoryReader) GetPriceHistory(ctx context.Context, waypointSy
 	return out, nil
 }
 
-// newCeilingExecutor mirrors newDockRaceExecutor but prices the input at a configurable ask
-// and (optionally) wires a price-history reader so the ceiling is ACTIVE. apiClient stays
-// nil so the working-capital floor is OFF — this suite isolates the ceiling.
-func newCeilingExecutor(t *testing.T, ask int, reader InputPriceHistoryReader) (*ProductionExecutor, *dockRaceShipRepo, *dockRaceMediator) {
-	t.Helper()
-
-	repo := &dockRaceShipRepo{
-		location:      dockRaceOrigin,
-		navStatus:     navigation.NavStatusDocked,
-		cargoCapacity: 40,
-	}
-	mediator := &dockRaceMediator{
-		repo:        repo,
-		dockHandler: tactics.NewDockShipHandler(repo),
-	}
-	marketRepo := &ceilingMarketRepo{ask: ask}
-	marketLocator := NewMarketLocator(marketRepo, nil, nil, nil)
-
-	executor := NewProductionExecutorWithConfig(
-		mediator,
-		repo,
-		marketRepo,
-		marketLocator,
-		&dockRaceClock{},
-		[]time.Duration{time.Millisecond},
-		nil, // apiClient nil → spend floor off, so ONLY the ceiling can park
-	)
-	if reader != nil {
-		executor.SetPriceHistoryReader(reader)
-	}
-	return executor, repo, mediator
+// errFindAllMarketRepo errors on FindAllMarketsInSystem so EligibleSourceMedianAsk fails — the
+// ceiling's fail-closed path (RULINGS #4), tested directly since the selector would otherwise
+// surface the same read error first.
+type errFindAllMarketRepo struct {
+	market.MarketRepository
 }
 
-// ADV_CIRC pin: a live ask 4x the trailing median must PARK — zero spend, no dispatch, and
-// (checked pre-nav) no flight to the market. The exact leak shape: 19000 ask vs a 4750
-// median → ceiling 7125 at the default 1.5x. No ctx config is stamped, proving the default
-// multiplier is ON without the captain naming it.
-func TestBuyGood_InputPriceCeiling_ParksLadderPricedInput_ADVCIRC(t *testing.T) {
-	// sorted [4500,4600,4750,4900,5000] → median 4750, ceiling int(4750*1.5)=7125.
-	reader := &fakePriceHistoryReader{sellPrices: []int{4900, 4500, 5000, 4600, 4750}}
-	executor, repo, mediator := newCeilingExecutor(t, 19000, reader)
+func (r *errFindAllMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
+	return nil, errors.New("market DB unavailable")
+}
+
+// KA42 POISONING SHAPE (hzz5 X4 pin): a source the selector picks (top supply) whose ask is
+// anomalously above its HEALTHY PEERS must PARK — because the ceiling's baseline is the eligible
+// CROSS-MARKET median (~4,800), not the source's own self-inflated median (~12,976). The old
+// per-waypoint baseline would have set the ceiling at ~19,464 (1.5x its own 12,976) and NEVER
+// fired; the cross-market baseline sets it at 7,200 and parks the ladder.
+func TestInputPriceCeiling_ParksSourceOverCrossMarketMedian_KA42(t *testing.T) {
+	repo := &multiSourceMarketRepo{sources: []srcSpec{
+		{waypoint: "X1-DR-KA42", supply: supplyAbundant, ask: 12976}, // reads top-supply, priced like a ladder
+		{waypoint: "X1-DR-B", supply: supplyHigh, ask: 4800},
+		{waypoint: "X1-DR-C", supply: supplyHigh, ask: 4700},
+	}}
+	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, nil)
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("a ceiling-parked buy must be graceful, not an error: got %v", err)
+	result := produceBuy(t, executor, shipRepo, ctx)
+	if result == nil || result.QuantityAcquired != 0 || mediator.purchaseAttempts() != 0 {
+		t.Fatalf("a source over the eligible cross-market ceiling must PARK, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
 	}
-	if result == nil || result.QuantityAcquired != 0 || result.TotalCost != 0 {
-		t.Fatalf("a ceiling-parked buy must yield a zero-spend result, got %+v", result)
-	}
-	if mediator.purchaseAttempts() != 0 {
-		t.Fatalf("a ceiling-parked buy must dispatch ZERO purchases, got %d", mediator.purchaseAttempts())
-	}
-	if repo.dockCalls() != 0 {
-		t.Fatalf("a ceiling-parked buy must be refused BEFORE flying to the market (0 docks), got %d", repo.dockCalls())
-	}
-	// The park cause must be legible in the INFO message TEXT (sp-iqyq): good/ask/median/ceiling.
 	infos := logger.entriesWithLevel("INFO")
-	if !spendFloorWarnContains(infos, "ceiling") || !spendFloorWarnContains(infos, dockRaceGood) {
-		t.Fatalf("expected an INFO park naming the good and the ceiling, got: %+v", infos)
+	if !spendFloorWarnContains(infos, "cross-market median") || !spendFloorWarnContains(infos, "12976") {
+		t.Fatalf("expected a cross-market ceiling park naming the ask, got: %+v", infos)
 	}
-	if !spendFloorWarnContains(infos, "19000") || !spendFloorWarnContains(infos, "4750") {
-		t.Fatalf("expected the INFO park to carry the ask (19000) and median (4750) in the text, got: %+v", infos)
+	if !spendFloorWarnContains(infos, "4800") {
+		t.Fatalf("expected the park to carry the eligible cross-market median (4800), not the self-poisoned ~12976, got: %+v", infos)
 	}
 }
 
-// An ask comfortably under the ceiling proceeds exactly as before the guard existed: one
-// real purchase, a non-zero result, no park line. Proves the guard is not over-aggressive.
-func TestBuyGood_InputPriceCeiling_ProceedsWhenAskUnderCeiling(t *testing.T) {
-	// median 4750, ceiling 7125; ask 6000 < 7125 → proceed.
-	reader := &fakePriceHistoryReader{sellPrices: []int{4500, 4750, 5000}}
-	executor, repo, mediator := newCeilingExecutor(t, 6000, reader)
+// A pick within the cross-market ceiling proceeds — the guard is not over-aggressive when the
+// chosen source is priced in line with its healthy peers.
+func TestInputPriceCeiling_ProceedsUnderCrossMarketMedian(t *testing.T) {
+	repo := &multiSourceMarketRepo{sources: []srcSpec{
+		{waypoint: "X1-DR-A", supply: supplyHigh, ask: 4800},
+		{waypoint: "X1-DR-B", supply: supplyHigh, ask: 4900},
+		{waypoint: "X1-DR-C", supply: supplyHigh, ask: 5000},
+	}}
+	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, nil)
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("an under-ceiling buy must proceed, got error: %v", err)
-	}
-	if result == nil || result.QuantityAcquired <= 0 {
-		t.Fatalf("expected a successful purchase under the ceiling, got %+v", result)
-	}
-	if mediator.purchaseAttempts() != 1 {
-		t.Fatalf("expected exactly 1 purchase for an under-ceiling buy, got %d", mediator.purchaseAttempts())
+	result := produceBuy(t, executor, shipRepo, ctx)
+	if result == nil || result.QuantityAcquired <= 0 || mediator.purchaseAttempts() != 1 {
+		t.Fatalf("an in-line pick must proceed, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
 	}
 	if spendFloorWarnContains(logger.entriesWithLevel("INFO"), "ladder-chase refused") {
-		t.Fatalf("an under-ceiling buy must not log a ceiling park, got: %+v", logger.entriesWithLevel("INFO"))
+		t.Fatalf("an in-line pick must not log a ceiling park, got: %+v", logger.entriesWithLevel("INFO"))
 	}
 }
 
-// No trailing history in the window (0 samples) must fail CLOSED: the buy is parked, never
-// dispatched. A guard whose whole job is refusing to overpay must not let a buy through
-// because it went blind (RULINGS #4) — the ask here (6000) would clear any real ceiling.
-func TestBuyGood_InputPriceCeiling_FailsClosedWhenMedianUnavailable(t *testing.T) {
-	reader := &fakePriceHistoryReader{sellPrices: []int{}} // no samples in window
-	executor, repo, mediator := newCeilingExecutor(t, 6000, reader)
+// A tighter multiplier parks a pick the default 1.5x would clear — proving the ctx-threaded
+// input_price_ceiling_multiplier reaches the cross-market ceiling.
+func TestInputPriceCeiling_CustomMultiplierHonored(t *testing.T) {
+	repo := &multiSourceMarketRepo{sources: []srcSpec{
+		{waypoint: "X1-DR-PICK", supply: supplyAbundant, ask: 6000}, // top-supply pick
+		{waypoint: "X1-DR-B", supply: supplyHigh, ask: 4800},
+		{waypoint: "X1-DR-C", supply: supplyHigh, ask: 4700},
+	}}
+	// eligible median 4800: default ceiling 7200 (6000 clears), 1.2x ceiling 5760 (6000 parks).
+	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, nil)
+	ctx := WithInputPriceCeiling(common.WithLogger(context.Background(), &dwellCapturingLogger{}), 1.2, false)
+
+	result := produceBuy(t, executor, shipRepo, ctx)
+	if result == nil || result.QuantityAcquired != 0 || mediator.purchaseAttempts() != 0 {
+		t.Fatalf("ask 6000 must park under a 1.2x cross-market ceiling (5760), got result=%+v attempts=%d", result, mediator.purchaseAttempts())
+	}
+}
+
+// The emergency disable flag turns the ceiling OFF even for an over-median pick: the buy proceeds.
+func TestInputPriceCeiling_DisableFlagProceeds(t *testing.T) {
+	repo := &multiSourceMarketRepo{sources: []srcSpec{
+		{waypoint: "X1-DR-PICK", supply: supplyAbundant, ask: 12976},
+		{waypoint: "X1-DR-B", supply: supplyHigh, ask: 4800},
+	}}
+	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, nil)
+	ctx := WithInputPriceCeiling(common.WithLogger(context.Background(), &dwellCapturingLogger{}), 0, true) // disabled
+
+	result := produceBuy(t, executor, shipRepo, ctx)
+	if result == nil || result.QuantityAcquired <= 0 || mediator.purchaseAttempts() != 1 {
+		t.Fatalf("a disabled ceiling must proceed, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
+	}
+}
+
+// The eligible-median read itself failing must fail CLOSED (PARK) — a guard whose job is
+// refusing to overpay must not go blind (RULINGS #4). Tested directly on inputPriceCeilingParked
+// because the selector surfaces the same read error before the ceiling on the buyGood path.
+func TestInputPriceCeiling_FailsClosedOnReadError(t *testing.T) {
+	repo := &errFindAllMarketRepo{}
+	shipRepo := &dockRaceShipRepo{location: dockRaceOrigin, navStatus: navigation.NavStatusDocked, cargoCapacity: 40}
+	executor := NewProductionExecutorWithConfig(
+		&dockRaceMediator{repo: shipRepo}, shipRepo, repo, NewMarketLocator(repo, nil, nil, nil),
+		&dockRaceClock{}, []time.Duration{time.Millisecond}, nil,
+	)
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("a fail-closed ceiling park must be graceful, got %v", err)
-	}
-	if result == nil || result.QuantityAcquired != 0 || result.TotalCost != 0 {
-		t.Fatalf("a fail-closed ceiling park must yield a zero-spend result, got %+v", result)
-	}
-	if mediator.purchaseAttempts() != 0 {
-		t.Fatalf("a fail-closed ceiling park must dispatch ZERO purchases, got %d", mediator.purchaseAttempts())
+	if !executor.inputPriceCeilingParked(ctx, "X1-DR-X", dockRaceGood, "X1-DR", 1, 5000) {
+		t.Fatalf("a blind eligible-median read must fail CLOSED (park), got proceed")
 	}
 	if !spendFloorWarnContains(logger.entriesWithLevel("WARNING"), "fail-closed") {
-		t.Fatalf("expected a fail-closed WARNING (median unavailable), got: %+v", logger.entriesWithLevel("WARNING"))
-	}
-}
-
-// The history read itself erroring must also fail CLOSED — same discipline as the spend
-// floor's blind-read park.
-func TestBuyGood_InputPriceCeiling_FailsClosedWhenReaderErrors(t *testing.T) {
-	reader := &fakePriceHistoryReader{err: errors.New("price history DB unavailable")}
-	executor, repo, mediator := newCeilingExecutor(t, 6000, reader)
-	logger := &dwellCapturingLogger{}
-	ctx := common.WithLogger(context.Background(), logger)
-
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("a blind price-history read must park gracefully, got %v", err)
-	}
-	if result == nil || result.QuantityAcquired != 0 || mediator.purchaseAttempts() != 0 {
-		t.Fatalf("a fail-closed ceiling park must dispatch ZERO purchases and zero-spend, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
-	}
-	if !spendFloorWarnContains(logger.entriesWithLevel("WARNING"), "fail-closed") {
-		t.Fatalf("expected a fail-closed WARNING (read error), got: %+v", logger.entriesWithLevel("WARNING"))
-	}
-}
-
-// No reader wired (e.priceHistory == nil) fails OPEN: the ceiling is simply unavailable, so
-// even a wildly-over-market ask proceeds. This is the optional-port contract every other
-// test in this package relies on by wiring nothing — an explicit guard so a future change
-// that made nil fail-closed (silently parking every factory buy in the suite) is caught.
-func TestBuyGood_InputPriceCeiling_FailsOpenWhenNoReaderWired(t *testing.T) {
-	executor, repo, mediator := newCeilingExecutor(t, 19000, nil) // ask 19000, no ceiling wired
-
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("with no reader wired the ceiling must fail open and proceed, got error: %v", err)
-	}
-	if result == nil || result.QuantityAcquired <= 0 || mediator.purchaseAttempts() != 1 {
-		t.Fatalf("a fail-open (no-reader) buy must proceed to a real purchase, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
-	}
-}
-
-// The emergency disable flag turns the guard OFF even with a wired reader and a
-// ladder-priced ask: the buy proceeds. Proves the RULINGS #5 off-switch works.
-func TestBuyGood_InputPriceCeiling_DisableFlagProceeds(t *testing.T) {
-	reader := &fakePriceHistoryReader{sellPrices: []int{4750, 4750, 4750}}
-	executor, repo, mediator := newCeilingExecutor(t, 19000, reader) // would park at default
-	logger := &dwellCapturingLogger{}
-	ctx := WithInputPriceCeiling(common.WithLogger(context.Background(), logger), 0, true) // disabled
-
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("a disabled ceiling must proceed, got error: %v", err)
-	}
-	if result == nil || result.QuantityAcquired <= 0 || mediator.purchaseAttempts() != 1 {
-		t.Fatalf("a disabled ceiling must proceed to a real purchase, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
-	}
-}
-
-// A custom multiplier from config is honored: an ask that clears the default 1.5x ceiling
-// parks under a tighter 1.2x. Proves the ctx-threaded multiplier reaches the guard.
-func TestBuyGood_InputPriceCeiling_CustomMultiplierHonored(t *testing.T) {
-	// median 4750; default ceiling 7125 (6000 clears), 1.2x ceiling 5700 (6000 parks).
-	reader := &fakePriceHistoryReader{sellPrices: []int{4500, 4750, 5000}}
-	executor, repo, mediator := newCeilingExecutor(t, 6000, reader)
-	logger := &dwellCapturingLogger{}
-	ctx := WithInputPriceCeiling(common.WithLogger(context.Background(), logger), 1.2, false)
-
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("a tighter-multiplier park must be graceful, got %v", err)
-	}
-	if result == nil || result.QuantityAcquired != 0 || mediator.purchaseAttempts() != 0 {
-		t.Fatalf("ask 6000 must park under a 1.2x ceiling (5700), got result=%+v attempts=%d", result, mediator.purchaseAttempts())
-	}
-}
-
-// A STABLE-priced market records exactly ONE on-change history row. That single sample must
-// be a usable median (guard priceable), NOT treated as "unavailable" and parked — otherwise
-// every stable-priced input would park forever (the "guard rejects a class" fleet-killer).
-func TestBuyGood_InputPriceCeiling_SingleSampleStableMarketIsPriceable(t *testing.T) {
-	reader := &fakePriceHistoryReader{sellPrices: []int{4750}}      // one stable on-change row
-	executor, repo, mediator := newCeilingExecutor(t, 5000, reader) // 5000 < ceiling 7125
-	logger := &dwellCapturingLogger{}
-	ctx := common.WithLogger(context.Background(), logger)
-
-	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(ctx, repo.buildShip(), node, "X1-DR", 1, nil, false)
-	if err != nil {
-		t.Fatalf("a single-sample stable market must be priceable, got error: %v", err)
-	}
-	if result == nil || result.QuantityAcquired <= 0 || mediator.purchaseAttempts() != 1 {
-		t.Fatalf("a single-sample stable market under the ceiling must proceed, got result=%+v attempts=%d", result, mediator.purchaseAttempts())
-	}
-	if spendFloorWarnContains(logger.entriesWithLevel("WARNING"), "fail-closed") {
-		t.Fatalf("a single valid sample must NOT fail closed, got: %+v", logger.entriesWithLevel("WARNING"))
+		t.Fatalf("expected a fail-closed WARNING, got: %+v", logger.entriesWithLevel("WARNING"))
 	}
 }

@@ -282,46 +282,47 @@ func (e *ProductionExecutor) buyGood(
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Find best market selling this good
-	marketResult, err := e.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
+	// Supply-first source selection (sp-a5j7 Phase 2 — wedx restoration): choose the buy source
+	// by SUPPLY eligibility+ranking (MODERATE+, supply>activity>price), restoring the original
+	// SupplyChainResolver design the runtime input path bypassed for price-first. The selector
+	// RE-SOURCES to a healthy market instead of riding a depleting one down — the leading-
+	// indicator fix for every input blowup this era (parts -220k, the micro chase, electronics
+	// -891k, the -6.6M furnace, all begun at a SCARCE/LIMITED source). It returns the mode so
+	// buyGood applies the right downstream guards (the eligible path faces the cross-market
+	// ceiling; rescue/era-end were already price-validated inside the selector).
+	marketResult, mode, err := e.selectInputSource(ctx, node.Good, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find market selling %s: %w", node.Good, err)
 	}
+	if marketResult == nil || mode == sourceModeNone {
+		// No eligible source and no valid rescue: PARK (the selector logged the cause). A
+		// blocked chain waits for supply to regenerate rather than laddering a depleted market.
+		return &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: ""}, nil
+	}
 
-	logger.Log("INFO", fmt.Sprintf("Found export market for %s purchase", node.Good), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Selected supply-first source for %s purchase (%s)", node.Good, mode), map[string]interface{}{
 		"good":         node.Good,
 		"market":       marketResult.WaypointSymbol,
 		"price":        marketResult.Price,
 		"activity":     marketResult.Activity,
 		"supply":       marketResult.Supply,
 		"trade_volume": marketResult.TradeVolume,
+		"source_mode":  mode.String(),
 	})
 
-	// Supply-state gate (sp-a5j7): the LEADING guard. Refuse this input buy BEFORE navigating
-	// when the market's cached supply is depleted (SCARCE) unless the feed leg still clears at
-	// the live ask. Supply is the CAUSAL signal — a depleted market is what ladders the ask up
-	// — so this fires BEFORE the price ceiling below, which is the LAGGING backstop that only
-	// sees the ask after it has already moved. Both are independent (RULINGS #4): clearing the
-	// supply gate does not bypass the ceiling. Ordered supply-gate → ceiling → capital-floor.
-	if e.inputSupplyGateParked(ctx, marketResult, node.Good, systemSymbol, playerID) {
-		return &ProductionResult{
-			QuantityAcquired: 0,
-			TotalCost:        0,
-			WaypointSymbol:   marketResult.WaypointSymbol,
-		}, nil
-	}
-
-	// Ladder-chase price ceiling (sp-iv65): refuse this input buy BEFORE navigating if the
-	// live ask exceeds the trailing-median ceiling. Checked pre-nav (the ask is already known
-	// from FindExportMarket) so a doomed buy never wastes a flight+dock at the market. The
-	// coordinator ChainMarginGuard (sp-2dv4) projects the chain ONCE at launch; this catches
-	// the ask laddering up DURING the buy round, which that projection structurally cannot see.
-	if e.inputPriceCeilingParked(ctx, marketResult.WaypointSymbol, node.Good, marketResult.Price) {
-		return &ProductionResult{
-			QuantityAcquired: 0,
-			TotalCost:        0,
-			WaypointSymbol:   marketResult.WaypointSymbol,
-		}, nil
+	// The cross-market price ceiling applies on the ELIGIBLE path only — the BACKSTOP to the
+	// supply-first selector, catching a chosen eligible source priced anomalously above its
+	// healthy peers (the poison-proof cross-market baseline, sp-a5j7 Phase 2 / hzz5 X4). The
+	// rescue path was already validated by the 1.2x rescue cap and the era-end/disabled paths
+	// are intentional price-first, so re-gating them would veto a deliberate decision. The
+	// selector's MODERATE+ eligibility SUBSUMES the interim per-buy supply gate (sp-a5j7 Phase 1):
+	// a SCARCE/LIMITED source is never SELECTED here, so a buy-time supply park is redundant —
+	// the leading-indicator defense is now selection, not a post-selection veto. Ordered
+	// selector → ceiling → capital-floor (below).
+	if mode == sourceModeEligible {
+		if e.inputPriceCeilingParked(ctx, marketResult.WaypointSymbol, node.Good, systemSymbol, playerID, marketResult.Price) {
+			return &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: marketResult.WaypointSymbol}, nil
+		}
 	}
 
 	// Navigate to market and dock

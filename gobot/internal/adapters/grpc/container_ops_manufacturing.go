@@ -312,8 +312,9 @@ var manufacturingConfigKeys = []string{
 	"working_capital_reserve_treasury_pct",
 	"input_price_ceiling_multiplier",
 	"input_price_ceiling_disabled",
-	"input_supply_gate_park_level",
-	"input_supply_gate_disabled",
+	"input_rescue_multiplier",
+	"input_era_end_price_first",
+	"input_sourcing_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -368,15 +369,18 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	if s.manufacturingConfig.InputPriceCeilingDisabled {
 		config["input_price_ceiling_disabled"] = true
 	}
-	// sp-a5j7: the LEADING supply-state gate. Only written when the captain set a park level —
-	// an unset key defers to the goods_factory build's SCARCE default (the guard runs ON in
-	// production without the captain naming it, RULINGS #5). The disable flag is written only
-	// when true, so absent/false keeps the guard on; the clear in resolveManufacturingConfig
-	// makes turning it back on take effect.
-	if s.manufacturingConfig.InputSupplyGateParkLevel != "" {
-		config["input_supply_gate_park_level"] = s.manufacturingConfig.InputSupplyGateParkLevel
+	// sp-a5j7 Phase 2: supply-first sourcing (the wedx restoration). Only written when the
+	// captain set an override — an unset rescue multiplier defers to the goods_factory build's
+	// 1.2 default (supply-first runs ON in production without the captain naming it, RULINGS #5).
+	// The era-end and disable flags are written only when true, so absent/false keeps supply-first
+	// on; the clear in resolveManufacturingConfig makes turning them back off take effect.
+	if s.manufacturingConfig.InputRescueMultiplier != 0 {
+		config["input_rescue_multiplier"] = s.manufacturingConfig.InputRescueMultiplier
 	}
-	if s.manufacturingConfig.InputSupplyGateDisabled {
-		config["input_supply_gate_disabled"] = true
+	if s.manufacturingConfig.InputEraEndPriceFirst {
+		config["input_era_end_price_first"] = true
+	}
+	if s.manufacturingConfig.InputSourcingDisabled {
+		config["input_sourcing_disabled"] = true
 	}
 }

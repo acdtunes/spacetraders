@@ -69,14 +69,17 @@ type RunFactoryCoordinatorCommand struct {
 	// InputPriceCeilingDisabled is the emergency off-switch for the ladder-chase ceiling
 	// (RULINGS #5): true skips the guard entirely. Fed from input_price_ceiling_disabled.
 	InputPriceCeilingDisabled bool
-	// InputSupplyGateParkLevel is the cached supply level at or below which a factory INPUT buy
-	// parks (sp-a5j7) — the LEADING guard to the LAGGING price ceiling. "" resolves to
-	// defaultSupplyGateParkLevel (SCARCE) at the point of use; a parked buy still proceeds when
-	// the feed leg clears at the live ask. Fed from input_supply_gate_park_level.
-	InputSupplyGateParkLevel string
-	// InputSupplyGateDisabled is the emergency off-switch for the supply-state gate (RULINGS #5):
-	// true skips the guard entirely. Fed from input_supply_gate_disabled.
-	InputSupplyGateDisabled bool
+	// InputRescueMultiplier caps the supply-first sourcing rescue clause (sp-a5j7 Phase 2): a
+	// SCARCE/LIMITED source is bought only when no eligible source exists AND its ask is within
+	// this multiple of the trailing median. 0/absent → the 1.2 default. Fed from
+	// input_rescue_multiplier.
+	InputRescueMultiplier float64
+	// InputEraEndPriceFirst flips sourcing to price-first for the era-end window (< T-6h), the
+	// wedx exception. Fed from input_era_end_price_first.
+	InputEraEndPriceFirst bool
+	// InputSourcingDisabled is the RULINGS #5 escape hatch reverting sourcing to pure price-first.
+	// Fed from input_sourcing_disabled.
+	InputSourcingDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

@@ -287,11 +287,11 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// the emergency off-switch. Stamped unconditionally so a directly-built command (0/false)
 	// still runs the guard at its default when a price-history reader is wired.
 	ctx = mfgServices.WithInputPriceCeiling(ctx, cmd.InputPriceCeilingMultiplier, cmd.InputPriceCeilingDisabled)
-	// sp-a5j7: stamp the LEADING supply-state gate config the same way (same singleton-executor
-	// race reasoning). An empty park level resolves to the SCARCE default at the point of use;
-	// disabled=true is the emergency off-switch. Stamped unconditionally so a directly-built
-	// command ("", false) still runs the guard at its default (park SCARCE, warn LIMITED).
-	ctx = mfgServices.WithInputSupplyGate(ctx, cmd.InputSupplyGateParkLevel, cmd.InputSupplyGateDisabled)
+	// sp-a5j7 Phase 2: stamp the supply-first sourcing config the same way (same singleton-executor
+	// race reasoning). Rescue multiplier 0 resolves to the 1.2 default; era-end flips to
+	// price-first < T-6h; disabled reverts to pure price-first. Stamped unconditionally so a
+	// directly-built command (0, false, false) still runs supply-first at its default.
+	ctx = mfgServices.WithInputSourcing(ctx, cmd.InputRescueMultiplier, cmd.InputEraEndPriceFirst, cmd.InputSourcingDisabled)
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,

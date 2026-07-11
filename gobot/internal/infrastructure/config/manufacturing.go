@@ -44,17 +44,22 @@ type ManufacturingConfig struct {
 	// through a genuine price spike. Absent/false keeps the guard on at its default multiplier.
 	InputPriceCeilingDisabled bool `mapstructure:"input_price_ceiling_disabled"`
 
-	// InputSupplyGateParkLevel is the cached supply level at or below which a factory INPUT buy
-	// parks (sp-a5j7), threaded into goods_factory_coordinator (RunFactoryCoordinatorCommand):
-	// the LEADING guard to the LAGGING price ceiling above. Supply is the CAUSAL signal — a
-	// depleted market is what ladders the ask up — so a buy into a SCARCE market is refused
-	// before it pushes the ladder another rung (the D39/ADV_CIRC supply event). "" → the SCARCE
-	// default the guard resolves at the point of use; raise to "LIMITED" to park one state
-	// earlier. A buy into a parked level still proceeds when the feed leg clears at the live ask.
-	InputSupplyGateParkLevel string `mapstructure:"input_supply_gate_park_level"`
+	// InputRescueMultiplier caps the supply-first sourcing rescue clause (sp-a5j7 Phase 2, wedx
+	// restoration): when NO eligible (MODERATE+) source exists and the chain is blocked, a
+	// SCARCE/LIMITED source is bought ONLY if its ask is within this multiple of the good's
+	// trailing median. 0/absent → the 1.2 default the selector resolves at the point of use
+	// (tighter than the 1.5x ceiling — a rescue buy is already into a depleted market). Threaded
+	// into goods_factory_coordinator (RunFactoryCoordinatorCommand).
+	InputRescueMultiplier float64 `mapstructure:"input_rescue_multiplier"`
 
-	// InputSupplyGateDisabled is the emergency off-switch for the supply-state gate (RULINGS #5):
-	// true skips the guard entirely, for a captain who must feed a factory through a genuine
-	// supply crunch. Absent/false keeps the guard on at its default (park SCARCE, warn LIMITED).
-	InputSupplyGateDisabled bool `mapstructure:"input_supply_gate_disabled"`
+	// InputEraEndPriceFirst flips input sourcing to PRICE-FIRST for the era-end window (< T-6h),
+	// the wedx exception: mean-reversion has no time to work, so a cheap ask that clears margin
+	// NOW beats waiting for supply to regenerate. Absent/false keeps supply-first sourcing on;
+	// the daemon toggles this at the same boundary as the stocker rundown.
+	InputEraEndPriceFirst bool `mapstructure:"input_era_end_price_first"`
+
+	// InputSourcingDisabled is the RULINGS #5 escape hatch that reverts input sourcing to pure
+	// PRICE-FIRST (the pre-restoration behavior) — for a captain who must override the
+	// supply-first policy in an emergency. Absent/false keeps supply-first sourcing on.
+	InputSourcingDisabled bool `mapstructure:"input_sourcing_disabled"`
 }
