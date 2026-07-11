@@ -462,7 +462,7 @@ func TestRebalancer_Source_ExcludesDedicatedAndReserved(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried)
 	require.Len(t, shipRepo.claims, 1)
-	require.Contains(t, []string{"SRC-A", "SRC-B"}, shipRepo.claims[0].ship, "only an idle undedicated unreserved light is ferried")
+	require.Equal(t, "SRC-A", shipRepo.claims[0].ship, "the deterministic sorted pick is SRC-A (the first idle undedicated unreserved light), never the dedicated/reserved hulls")
 }
 
 // Never strip a source below one idle: with two vacancies but a single 2-idle source, the
@@ -652,6 +652,51 @@ func TestRebalancer_Cooldown_ExpiredAllowsFerry(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried, "a ferry older than the cooldown window no longer suppresses")
+}
+
+// ---- tests: dispatch rollback (spawnFerry StartContainer failure) ----------
+
+// spawnFerry rolls back cleanly when StartContainer fails mid-spawn (sp-sqh7): the
+// persist → claim → start sequence has already persisted the container and claimed the hull,
+// so a start failure must undo BOTH — releaseHull (ForceRelease) returns the claimed hull to
+// the idle pool, and StopContainer tears down the persisted-but-unstarted container. Without
+// the rollback the hull is stranded claimed to a dead container (the auditor's gap). The
+// fixture's startErr injects the failure; the tick logs-and-skips (no tick error, zero
+// ferried) rather than aborting the whole reconcile.
+func TestRebalancer_SpawnFerry_StartFailure_ReleasesHullAndStopsContainer(t *testing.T) {
+	clock := clockAt(0)
+	shipRepo := &fakeRebalancerShipRepo{clock: clock, ships: []*navigation.Ship{
+		rebalancerLight(t, "SRC-A", "X1-SRC-A1"),
+		rebalancerLight(t, "SRC-B", "X1-SRC-A2"),
+	}}
+	cq := &fakeRebalancerContainerQuery{factories: []ActiveFactoryContainer{
+		{SystemSymbol: "X1-DP51", StartedAt: baseTime.Add(-20 * time.Minute)},
+	}}
+	daemonClient := &fakeRebalancerDaemonClient{startErr: fmt.Errorf("daemon refused StartContainer")}
+	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
+	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
+	logger := &tradeCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	ferried, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+
+	require.NoError(t, err, "a per-ferry StartContainer failure is logged-and-skipped, not a tick error")
+	require.Zero(t, ferried, "the ferry that failed to start is not counted as dispatched")
+
+	// The hull WAS claimed (persist → claim succeeded) before StartContainer failed, so the
+	// rollback release below is load-bearing, not vacuous.
+	require.Len(t, shipRepo.claims, 1, "the source hull was claimed before the start attempt")
+	require.Equal(t, "SRC-A", shipRepo.claims[0].ship, "the deterministic sorted pick, SRC-A, is the claimed hull")
+
+	// Rollback action 1 — releaseHull: the claimed hull is force-released back to the idle pool.
+	require.Contains(t, shipRepo.releases, "SRC-A", "StartContainer failure releases the claimed hull (idle again for the next tick)")
+	require.True(t, shipRepo.ships[0].IsIdle(), "SRC-A is idle after the rollback, not stranded claimed to a dead container")
+
+	// Rollback action 2 — StopContainer: the persisted-but-unstarted container is torn down,
+	// and it is exactly the container that was persisted (not some stray ID).
+	require.Len(t, daemonClient.ferried, 1, "the ferry container was persisted before the start attempt")
+	require.Equal(t, daemonClient.ferried, daemonClient.stopped, "the persisted-but-unstarted container is exactly the one StopContainer tears down")
+	require.Empty(t, daemonClient.started, "no ferry is recorded as started when StartContainer fails")
 }
 
 // ---- tests: reclaim (arrival + interruption, one path) ---------------------
