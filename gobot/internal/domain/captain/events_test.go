@@ -3,7 +3,7 @@ package captain
 import "testing"
 
 // TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default
-// interrupt set to the ten event types the design approved: everything
+// interrupt set to the eleven event types the design approved: everything
 // else (workflow.finished, contract.completed, credits.threshold, ship.idle,
 // and — per sp-no9i — the self-healing single container.crashed) is deferred
 // and rides the next wake's batch instead of forcing one. The actionable
@@ -20,18 +20,23 @@ import "testing"
 // joined because the 2026-07-11 incident (sp-4hl5) it closes rode silently
 // for 2h50m — zero fleet revenue — precisely because nothing forced a wake; a
 // human caught it only by eyeballing a treasury chart ~60min after onset.
+// daemon.component_crashloop (sp-i01z) joined for the same reason as
+// coordinator.error_loop: a supervised safety-net component (the arrival
+// sweeper) crash-looping silently degrades the whole fleet, so the LOOP —
+// edge-triggered once per window — must force a wake, not ride the next one.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
-		EventWorkflowFailed:          true,
-		EventContainerCrashLoop:      true,
-		EventContainerLost:           true,
-		EventPinnedHullContainerless: true,
-		EventHeartbeatLost:           true,
-		EventContractFailed:          true,
-		EventIncomeStalled:           true,
-		EventStreamDown:              true,
-		EventCoordinatorErrorLoop:    true,
-		EventPrometheusAlertFiring:   true,
+		EventWorkflowFailed:           true,
+		EventContainerCrashLoop:       true,
+		EventContainerLost:            true,
+		EventPinnedHullContainerless:  true,
+		EventHeartbeatLost:            true,
+		EventContractFailed:           true,
+		EventIncomeStalled:            true,
+		EventStreamDown:               true,
+		EventCoordinatorErrorLoop:     true,
+		EventDaemonComponentCrashLoop: true,
+		EventPrometheusAlertFiring:    true,
 	}
 
 	got := DefaultInterruptTypes()

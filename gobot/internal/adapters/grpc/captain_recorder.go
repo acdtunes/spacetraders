@@ -23,6 +23,15 @@ func SetCaptainEventRecorder(rec captain.EventRecorder) {
 	captainRecorder = rec
 }
 
+// currentCaptainEventRecorder returns the recorder installed by main (may be
+// nil in minimal boots/tests). Package-internal: the daemon server hands it
+// to the supervise layer at Start (sp-i01z).
+func currentCaptainEventRecorder() captain.EventRecorder {
+	captainRecorderMu.RLock()
+	defer captainRecorderMu.RUnlock()
+	return captainRecorder
+}
+
 // recordCaptainEvent is fire-and-forget: outbox failures must never break
 // container execution, so errors are printed and swallowed.
 func recordCaptainEvent(t captain.EventType, ship string, playerID int, payload map[string]any) {

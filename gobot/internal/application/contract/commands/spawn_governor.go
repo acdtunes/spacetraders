@@ -59,8 +59,8 @@ var spawnBackoffSchedule = []time.Duration{
 
 // spawnGovernorConfig carries the governor's tunables so tests can drive it
 // with short, deterministic durations while production uses the named-constant
-// defaults (defaultSpawnGovernorConfig). Mirrors how newCoordinatorErrorMonitor
-// takes its threshold as a parameter with coordinatorErrorStreakThreshold as
+// defaults (defaultSpawnGovernorConfig). Mirrors how health.NewMonitor
+// takes its threshold as a parameter with health.DefaultStreakThreshold as
 // the wired-in default.
 type spawnGovernorConfig struct {
 	InstantDeathThreshold time.Duration

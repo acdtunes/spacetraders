@@ -28,6 +28,9 @@ type ContainerMetricsCollector struct {
 	containerIterations   *prometheus.CounterVec
 	containerExitTotal    *prometheus.CounterVec
 
+	// Supervised daemon background component restarts (sp-i01z)
+	daemonComponentRestarts *prometheus.CounterVec
+
 	// Ship metrics
 	shipsTotal      *prometheus.GaugeVec
 	shipStatusTotal *prometheus.GaugeVec
@@ -136,6 +139,19 @@ func NewContainerMetricsCollector(
 			[]string{"player_id", "command_type", "status"},
 		),
 
+		// Supervised daemon background component restarts (sp-i01z). Labeled
+		// by component only — a small fixed set (ship-state-sweeper,
+		// container-recovery, ...), deliberately NOT per-ship.
+		daemonComponentRestarts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "daemon",
+				Name:      "component_restarts_total",
+				Help:      "Restarts of supervised daemon background components",
+			},
+			[]string{"component"},
+		),
+
 		// Ship count by role/location
 		shipsTotal: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -184,6 +200,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.containerRestarts,
 		c.containerIterations,
 		c.containerExitTotal,
+		c.daemonComponentRestarts,
 		c.shipsTotal,
 		c.shipStatusTotal,
 		c.shipVersionConflicts,
@@ -399,4 +416,14 @@ func (c *ContainerMetricsCollector) RecordContainerExit(containerInfo ContainerI
 // RecordShipVersionConflict implements ShipWriteConflictRecorder (sp-60ff).
 func (c *ContainerMetricsCollector) RecordShipVersionConflict() {
 	c.shipVersionConflicts.Inc()
+}
+
+// RecordDaemonComponentRestart implements DaemonComponentRecorder (sp-i01z).
+// Nil-safe like the other recorders: a metrics miss must never take down the
+// supervise restart path that calls it.
+func (c *ContainerMetricsCollector) RecordDaemonComponentRestart(component string) {
+	if c == nil || c.daemonComponentRestarts == nil {
+		return
+	}
+	c.daemonComponentRestarts.WithLabelValues(component).Inc()
 }

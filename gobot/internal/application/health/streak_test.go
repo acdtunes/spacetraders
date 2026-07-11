@@ -1,4 +1,4 @@
-package commands
+package health
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ import (
 // TestErrorStreakTracker_BelowThreshold_NeverCrosses pins that a streak
 // shorter than the threshold never reports a crossing — no premature alarm.
 func TestErrorStreakTracker_BelowThreshold_NeverCrosses(t *testing.T) {
-	tr := newErrorStreakTracker(3)
+	tr := NewStreakTracker(3)
 	for i := 1; i <= 2; i++ {
 		streak, crossed := tr.Note("boom")
 		if crossed {
@@ -34,7 +34,7 @@ func TestErrorStreakTracker_BelowThreshold_NeverCrosses(t *testing.T) {
 // call reports crossed=true.
 func TestErrorStreakTracker_AtThreshold_CrossesExactlyOnce(t *testing.T) {
 	const threshold = 3
-	tr := newErrorStreakTracker(threshold)
+	tr := NewStreakTracker(threshold)
 
 	var crossings int
 	for i := 1; i <= threshold; i++ {
@@ -61,7 +61,7 @@ func TestErrorStreakTracker_AtThreshold_CrossesExactlyOnce(t *testing.T) {
 // resurfacing instead of going silent again after the first event.
 func TestErrorStreakTracker_PeriodicReCross_AtEveryMultiple(t *testing.T) {
 	const threshold = 3
-	tr := newErrorStreakTracker(threshold)
+	tr := NewStreakTracker(threshold)
 
 	var crossedAt []int
 	for i := 1; i <= threshold*3; i++ {
@@ -85,7 +85,7 @@ func TestErrorStreakTracker_PeriodicReCross_AtEveryMultiple(t *testing.T) {
 // error text — not just any failure — restarts the streak: two different
 // bugs firing alternately must not sum into one false alarm.
 func TestErrorStreakTracker_DifferentError_ResetsStreak(t *testing.T) {
-	tr := newErrorStreakTracker(3)
+	tr := NewStreakTracker(3)
 	tr.Note("error A")
 	tr.Note("error A")
 
@@ -104,7 +104,7 @@ func TestErrorStreakTracker_DifferentError_ResetsStreak(t *testing.T) {
 // consecutive, even if the loop later fails with the same message again.
 func TestErrorStreakTracker_Success_ResetsStreak(t *testing.T) {
 	const threshold = 3
-	tr := newErrorStreakTracker(threshold)
+	tr := NewStreakTracker(threshold)
 	tr.Note("boom")
 	tr.Note("boom")
 
@@ -128,7 +128,7 @@ func TestErrorStreakTracker_Success_ResetsStreak(t *testing.T) {
 // threshold disables alarming entirely (still tracks the streak count, but
 // never reports a crossing) rather than crossing on every call.
 func TestErrorStreakTracker_ZeroThreshold_NeverCrosses(t *testing.T) {
-	tr := newErrorStreakTracker(0)
+	tr := NewStreakTracker(0)
 	for i := 1; i <= 10; i++ {
 		if _, crossed := tr.Note("boom"); crossed {
 			t.Fatalf("iteration %d: zero threshold must never cross", i)
@@ -142,7 +142,7 @@ func TestErrorStreakTracker_ZeroThreshold_NeverCrosses(t *testing.T) {
 // successes or failures within the same loop iteration.
 func TestCoordinatorErrorMonitor_IndependentSites(t *testing.T) {
 	const threshold = 3
-	mon := newCoordinatorErrorMonitor(threshold)
+	mon := NewMonitor(threshold)
 
 	// Site A fails every iteration; site B succeeds every iteration in
 	// between. Interleave them the way a single Handle() loop iteration
@@ -170,7 +170,7 @@ func TestCoordinatorErrorMonitor_IndependentSites(t *testing.T) {
 // checkpoint's in-progress streak — they must not share state.
 func TestCoordinatorErrorMonitor_SuccessAtOneSiteDoesNotMaskAnother(t *testing.T) {
 	const threshold = 3
-	mon := newCoordinatorErrorMonitor(threshold)
+	mon := NewMonitor(threshold)
 
 	mon.Note("negotiate_contract", "boom")
 	mon.Note("negotiate_contract", "boom")
@@ -194,7 +194,7 @@ func TestCoordinatorErrorMonitor_SuccessAtOneSiteDoesNotMaskAnother(t *testing.T
 // without re-deriving it from logs.
 func TestBuildErrorLoopEvent_PopulatesFields(t *testing.T) {
 	cause := errors.New("failed to negotiate: API returned nil result or contract")
-	event := buildErrorLoopEvent("contract_fleet_coordinator-player-1-abc123", 42, "negotiate_contract", cause, 5)
+	event := NewErrorLoopEvent("contract_fleet_coordinator-player-1-abc123", 42, "negotiate_contract", cause, 5)
 
 	if event.Type != captain.EventCoordinatorErrorLoop {
 		t.Fatalf("expected type %q, got %q", captain.EventCoordinatorErrorLoop, event.Type)

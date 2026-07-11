@@ -9,6 +9,7 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
@@ -243,7 +244,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// single event, so nothing outside the container's own logs could see
 	// it was stuck. errMon makes that observable — edge-triggered, once per
 	// streak crossing, not once per iteration.
-	errMon := newCoordinatorErrorMonitor(coordinatorErrorStreakThreshold)
+	errMon := health.NewMonitor(health.DefaultStreakThreshold)
 
 	// gov (sp-lybx) is the per-hull spawn-storm guard: an escalating backoff
 	// after each instant worker death, plus a quarantine after N instant deaths
@@ -1202,7 +1203,7 @@ func (h *RunFleetCoordinatorHandler) recordErrorLoopEvent(ctx context.Context, c
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
-	event := buildErrorLoopEvent(cmd.ContainerID, cmd.PlayerID.Value(), checkpoint, cause, streak)
+	event := health.NewErrorLoopEvent(cmd.ContainerID, cmd.PlayerID.Value(), checkpoint, cause, streak)
 	recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := h.captainEvents.Record(recordCtx, event); err != nil {

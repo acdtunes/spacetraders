@@ -65,6 +65,17 @@ const (
 	// instead of riding the next one.
 	EventCoordinatorErrorLoop EventType = "coordinator.error_loop"
 
+	// EventDaemonComponentCrashLoop fires when a supervised daemon background
+	// component (ship-state sweeper, container recovery, samplers — NOT
+	// containers, which have container.crashloop) has crashed and been
+	// restarted crashLoopThreshold times within crashLoopWindow (see
+	// internal/infrastructure/supervise). Interrupt class for the same reason
+	// coordinator.error_loop is: a safety-net component dying in a loop (the
+	// arrival sweeper) silently degrades the whole fleet — it must wake the
+	// captain, not ride the next cadence. Edge-triggered once per window,
+	// never per-crash (sp-6g96 event-spam doctrine).
+	EventDaemonComponentCrashLoop EventType = "daemon.component_crashloop"
+
 	// EventWakeWatch is the synthetic marker emitted by the watchkeeper when a
 	// captain-armed one-shot wake watch fires (sp-oyer): a watched ship arrived,
 	// a watched container reached a terminal state, or the watch's deadline
@@ -131,6 +142,7 @@ func DefaultInterruptTypes() []EventType {
 		// is deferred; the interrupt-class crash signal is the crash LOOP below
 		// (N true deaths of one container in a window — see detectCrashLoops).
 		EventContainerCrashLoop,
+		EventDaemonComponentCrashLoop,
 		// container.lost is emitted at boot recovery for a container that was
 		// RUNNING/INTERRUPTED before shutdown but did NOT come back (recovery
 		// error, or a candidate that fell out of the pass uncategorized). Unlike

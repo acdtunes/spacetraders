@@ -8,6 +8,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 )
 
 // ClockDriftBuffer accounts for slight time differences between API server and local clock.
@@ -73,7 +74,9 @@ func (s *ShipStateScheduler) ScheduleArrival(ship *navigation.Ship) {
 	playerID := ship.PlayerID()
 
 	s.timers[timerKey] = time.AfterFunc(delay, func() {
-		s.handleArrival(symbol, playerID)
+		supervise.Guard("ship-arrival-timer", func() {
+			s.handleArrival(symbol, playerID)
+		})
 	})
 
 	fmt.Printf("Scheduled arrival for %s in %v\n", symbol, delay)
@@ -149,7 +152,9 @@ func (s *ShipStateScheduler) ScheduleCooldownClear(ship *navigation.Ship) {
 	playerID := ship.PlayerID()
 
 	s.timers[timerKey] = time.AfterFunc(delay, func() {
-		s.handleCooldownClear(symbol, playerID, timerKey)
+		supervise.Guard("ship-cooldown-timer", func() {
+			s.handleCooldownClear(symbol, playerID, timerKey)
+		})
 	})
 
 	fmt.Printf("Scheduled cooldown clear for %s in %v\n", symbol, delay)
@@ -251,23 +256,26 @@ func (s *ShipStateScheduler) PendingCount() int {
 	return len(s.timers)
 }
 
-// StartBackgroundSweeper starts a goroutine that periodically checks for stuck ships.
-// This provides resilience against failed timer callbacks (DB timeouts, save failures, etc.)
-func (s *ShipStateScheduler) StartBackgroundSweeper() {
-	go func() {
-		ticker := time.NewTicker(SweeperInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-s.stopCh:
-				return
-			case <-ticker.C:
-				s.sweepStuckShips()
-			}
-		}
-	}()
+// RunSweeper blocks, checking for stuck ships every SweeperInterval, until
+// ctx is canceled or Stop() is called. It runs under the daemon Supervisor
+// (sp-i01z): a panic inside a sweep pass is captured there and the sweeper
+// restarts with backoff instead of dying silently — before this, a dead
+// sweeper meant arrivals stopped being swept for the rest of the daemon's
+// life with zero signal. Replaces StartBackgroundSweeper.
+func (s *ShipStateScheduler) RunSweeper(ctx context.Context) error {
 	fmt.Printf("Background sweeper started (interval: %v)\n", SweeperInterval)
+	ticker := time.NewTicker(SweeperInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-s.stopCh:
+			return nil
+		case <-ticker.C:
+			s.sweepStuckShips()
+		}
+	}
 }
 
 // sweepStuckShips finds and transitions ships that are stuck in IN_TRANSIT with past arrival times.

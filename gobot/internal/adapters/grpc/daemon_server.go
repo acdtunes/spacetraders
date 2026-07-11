@@ -29,6 +29,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
 )
@@ -134,6 +135,13 @@ type DaemonServer struct {
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
+
+	// Supervised background components (sp-i01z). runCtx is the daemon
+	// lifetime context: canceled first thing in handleShutdown so supervised
+	// loops (sweeper) wind down in parallel with the container drain.
+	runCtx    context.Context
+	runCancel context.CancelFunc
+	sup       *supervise.Supervisor
 }
 
 // DutyCycleSampleInterval is how often the duty-cycle sampler snapshots
@@ -494,6 +502,18 @@ func NewDaemonServer(
 func (s *DaemonServer) Start() error {
 	fmt.Printf("Daemon server listening on unix socket: %s\n", s.listener.Addr().String())
 
+	// Supervised-component wiring (sp-i01z). The captain recorder was
+	// installed by main before Start; a nil recorder just means no events.
+	s.runCtx, s.runCancel = context.WithCancel(context.Background())
+	bootCtx, bootCancel := context.WithTimeout(s.runCtx, 10*time.Second)
+	s.sup = supervise.New(
+		currentCaptainEventRecorder(),
+		s.primaryPlayerID(bootCtx),
+		s.clock,
+		supervise.WithOnRestart(metrics.RecordDaemonComponentRestart),
+	)
+	bootCancel()
+
 	// Release all zombie assignments from previous daemon runs
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -534,8 +554,9 @@ func (s *DaemonServer) Start() error {
 		if err := s.shipStateScheduler.ScheduleAllPending(scheduleCtx); err != nil {
 			fmt.Printf("Warning: Failed to schedule pending state transitions: %v\n", err)
 		}
-		// Start background sweeper to catch ships that slip through due to failures
-		s.shipStateScheduler.StartBackgroundSweeper()
+		// Start background sweeper under supervision (sp-i01z): restarts
+		// with backoff on crash, escalates a crash loop to the captain.
+		s.sup.Go(s.runCtx, "ship-state-sweeper", s.shipStateScheduler.RunSweeper)
 	}
 
 	// Start the duty-cycle KPI sampler (sp-51ti). Unconditional, like the
@@ -575,15 +596,18 @@ func (s *DaemonServer) Start() error {
 	}
 
 	// Recover RUNNING containers from previous daemon instance
-	// This runs in the background to avoid blocking daemon startup
-	go func() {
-		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// This runs in the background to avoid blocking daemon startup.
+	// Guard, not sup.Go (sp-i01z): recovery re-adopts containers and is NOT
+	// safely re-runnable — a restart could double-adopt. One attempt, loudly
+	// logged, panic-isolated; error behavior identical to today.
+	go supervise.Guard("container-recovery", func() {
+		recoveryCtx, recoveryCancel := context.WithTimeout(s.runCtx, 30*time.Second)
 		defer recoveryCancel()
 
 		if err := s.RecoverRunningContainers(recoveryCtx); err != nil {
 			fmt.Printf("Warning: Container recovery failed: %v\n", err)
 		}
-	}()
+	})
 
 	// Start shutdown handler
 	go s.handleShutdown()
@@ -693,6 +717,12 @@ func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
 	fmt.Println("\nShutdown signal received, initiating graceful shutdown...")
 
+	// Cancel supervised components first (sp-i01z) so the sweeper stops
+	// scheduling new writes while containers drain.
+	if s.runCancel != nil {
+		s.runCancel()
+	}
+
 	// Stop ship state scheduler (cancels timers and stops background sweeper)
 	if s.shipStateScheduler != nil {
 		s.shipStateScheduler.Stop()
@@ -715,7 +745,30 @@ func (s *DaemonServer) handleShutdown() {
 		s.listener.Close()
 	}
 
+	// Join supervised components — they exit promptly on runCtx cancel.
+	if s.sup != nil {
+		s.sup.Wait()
+	}
+
 	close(s.done)
+}
+
+// primaryPlayerID resolves the player that daemon-scoped captain events are
+// attributed to: the open era's player (the same identity the zombie-release
+// block at Start uses), falling back to the first player row, else 0.
+func (s *DaemonServer) primaryPlayerID(ctx context.Context) int {
+	if s.db != nil {
+		eraRepo := persistence.NewEraRepository(s.db)
+		if openEra, err := eraRepo.FindOpenEra(ctx); err == nil && openEra != nil {
+			return openEra.PlayerID
+		}
+	}
+	if s.playerRepo != nil {
+		if players, err := s.playerRepo.ListAll(ctx); err == nil && len(players) > 0 {
+			return players[0].ID.Value()
+		}
+	}
+	return 0
 }
 
 // syncAllShipsOnStartup syncs all ships from API to database for all players.

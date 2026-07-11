@@ -17,6 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 )
 
 const dbOperationTimeout = 5 * time.Second
@@ -217,8 +218,11 @@ func (r *ContainerRunner) Start() error {
 	}
 
 	// Start heartbeat goroutine to update heartbeat_at periodically
-	// This allows detection of crashed containers that don't update their heartbeat
-	go r.runHeartbeat()
+	// This allows detection of crashed containers that don't update their heartbeat.
+	// Guarded (sp-i01z): a heartbeat panic is logged + suppressed — a dead
+	// heartbeat is already surfaced by the watchkeeper's container.heartbeat_lost,
+	// and the container itself keeps running.
+	go supervise.Guard("container-heartbeat:"+r.containerEntity.ID(), r.runHeartbeat)
 
 	// Execute the container operation
 	go r.execute()
@@ -432,7 +436,7 @@ func (r *ContainerRunner) execute() {
 		}
 
 		// Execute single iteration
-		if err := r.executeIteration(); err != nil {
+		if err := r.runIterationProtected(); err != nil {
 			// Check if error is due to context cancellation (shutdown signal)
 			// Don't retry on context cancellation - exit immediately
 			if r.ctx.Err() != nil {
@@ -692,6 +696,15 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 }
 
 // executeIteration executes a single iteration of the container operation
+// runIterationProtected wraps executeIteration in a panic barrier (sp-i01z):
+// a panic inside any command handler is converted to an error so the restart
+// machinery below handles it exactly like a returned error — before this,
+// one nil-deref in one coordinator killed the entire daemon process.
+func (r *ContainerRunner) runIterationProtected() (err error) {
+	defer supervise.CapturePanic(&err, "container:"+r.containerEntity.ID())
+	return r.executeIteration()
+}
+
 func (r *ContainerRunner) executeIteration() error {
 	r.log("INFO", "Executing iteration", map[string]interface{}{
 		"iteration": r.containerEntity.CurrentIteration() + 1,
