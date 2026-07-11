@@ -1,3 +1,5 @@
+> **STALE (pre-era-2).** Superseded by [FACTORY_DOCTRINE.md](FACTORY_DOCTRINE.md) — the era-2 validated doctrine (sp-hzz5). This file is design history only.
+
 # Manufacturing Operation Analysis Report
 
 **Analysis Period:** ~30 hours (2025-11-25 05:00 UTC to 2025-11-26 11:30 UTC)

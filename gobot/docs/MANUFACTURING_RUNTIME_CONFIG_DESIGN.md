@@ -1,3 +1,5 @@
+> **STALE (pre-era-2).** Superseded by [FACTORY_DOCTRINE.md](FACTORY_DOCTRINE.md) — the era-2 validated doctrine (sp-hzz5). This file is design history only.
+
 > STALE: the config package this described was removed 2026-07-05.
 
 # Manufacturing Runtime Configuration Design

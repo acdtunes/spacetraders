@@ -1,3 +1,5 @@
+> **STALE (pre-era-2).** Superseded by [FACTORY_DOCTRINE.md](FACTORY_DOCTRINE.md) — the era-2 validated doctrine (sp-hzz5). This file is design history only.
+
 # Goods Factory Dynamic Ship Discovery Enhancement
 
 ## Overview
