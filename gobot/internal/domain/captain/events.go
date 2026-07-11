@@ -104,6 +104,18 @@ const (
 	// the payload carries the hull count from the circuit math, not a default of 1,
 	// so a rich system is not under-provisioned the way XT71/UQ87 were.
 	EventScoutPostProposal EventType = "scout.post_proposal"
+
+	// EventPrometheusAlertFiring (sp-y0f6) fires once per Prometheus alertname
+	// found in the "firing" state on Prometheus's own /api/v1/alerts endpoint —
+	// EarnerDark, BurstSaturation, ApproachCeiling, StarvationWave (see
+	// gobot/configs/prometheus/rules/fleet-health.yml). It closes the
+	// 2026-07-11 gap: the fleet earned zero for 2h50m and nothing paged: a
+	// human caught the flatline on a chart ~60min after onset. Interrupt
+	// class — a revenue-critical stall must wake the captain, not ride the
+	// next cadence. The payload carries the alert's labels/annotations
+	// (alertname, summary, severity) so the wake mail explains WHY without a
+	// Grafana round-trip (see describePrometheusAlert in wake.go).
+	EventPrometheusAlertFiring EventType = "prometheus.alert_firing"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force
@@ -138,6 +150,11 @@ func DefaultInterruptTypes() []EventType {
 		EventIncomeStalled,
 		EventStreamDown,
 		EventCoordinatorErrorLoop,
+		// A firing Prometheus alert (EarnerDark/BurstSaturation/ApproachCeiling/
+		// StarvationWave) is by definition revenue-critical or capacity-critical —
+		// the 2026-07-11 incident this closes rode silently for 2h50m precisely
+		// because nothing forced a wake. Interrupt class (sp-y0f6).
+		EventPrometheusAlertFiring,
 	}
 }
 

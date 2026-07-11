@@ -2,6 +2,7 @@ package watchkeeper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -354,9 +355,40 @@ func composeWakeMail(playerID int, events []*captain.Event, now time.Time) (subj
 				fmt.Fprintf(&b, "\t↳ %s\n", desc)
 			}
 		}
+		// A firing Prometheus alert (sp-y0f6) rides this mail as a
+		// prometheus.alert_firing event; annotate it with the alertname and
+		// summary so the wake mail explains WHY without a Grafana round-trip.
+		if e.Type == captain.EventPrometheusAlertFiring {
+			if desc := describePrometheusAlert(e.Payload); desc != "" {
+				fmt.Fprintf(&b, "\t↳ %s\n", desc)
+			}
+		}
 		ids = append(ids, strconv.FormatInt(e.ID, 10))
 	}
 	fmt.Fprintf(&b, "\nack: spacetraders captain events ack --player-id %d --ids %s\n",
 		playerID, strings.Join(ids, ","))
 	return subject, b.String()
+}
+
+// describePrometheusAlert renders a prometheus.alert_firing event's payload
+// (sp-y0f6: alertname/summary/severity, see detectPrometheusAlerts) as a
+// one-line annotation for the wake mail. Returns "" on an empty or
+// unparseable payload, mirroring describeWatchFire's own fail-silent shape —
+// a malformed payload must not break mail composition.
+func describePrometheusAlert(payload string) string {
+	var p struct {
+		AlertName string `json:"alertname"`
+		Summary   string `json:"summary"`
+		Severity  string `json:"severity"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return ""
+	}
+	if p.AlertName == "" {
+		return ""
+	}
+	if p.Summary == "" {
+		return p.AlertName
+	}
+	return fmt.Sprintf("%s: %s", p.AlertName, p.Summary)
 }

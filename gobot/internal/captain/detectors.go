@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -96,6 +97,15 @@ type DetectorConfig struct {
 	PostProposalFreshness        time.Duration // freshness target the proposal's hull-count circuit math sizes for
 	PostProposalAvgHop           time.Duration // circuit-model average per-market hop (<= 0 uses the package default)
 	PostProposalCooldown         time.Duration // re-propose suppression window (<= 0 uses the package default)
+
+	// PrometheusAlertsURL is the base URL of the Prometheus instance whose OWN
+	// /api/v1/alerts endpoint (sp-y0f6) the detector polls directly — no
+	// Alertmanager hop needed, since Prometheus evaluates+exposes firing alerts
+	// on its own and the watchkeeper tick loop is already the cheap poller the
+	// no-monitoring-between-wakes doctrine wants (one more state read alongside
+	// the DB-backed detectors above, not a new standing loop). Empty disables
+	// the detector entirely (matches the ExpectedStreams idiom).
+	PrometheusAlertsURL string
 }
 
 // StandingCoordinatorFleet pairs a Ship.DedicatedFleet() tag with the
@@ -161,6 +171,19 @@ const (
 	defaultPostProposalCooldown         = 6 * time.Hour
 )
 
+// defaultPrometheusAlertsURL is the sp-y0f6 Prometheus base URL, wired by the
+// supervisor until CaptainConfig grows a tunable field (follow-up bead,
+// mirrors the crash-loop/pinned-hull/factory-stall defaults above). Matches
+// the host port gobot/docker-compose.metrics.yml maps Prometheus to
+// (9091:9090) — the same instance evaluating fleet-health.yml.
+const defaultPrometheusAlertsURL = "http://localhost:9091"
+
+// defaultPrometheusAlertsCooldown is the re-fire suppression window: a
+// sustained firing alert reads true on every poll, so without a cooldown the
+// SAME firing alert would emit a fresh interrupt event on every tick until it
+// clears (mirrors the sibling income/staleness detectors' HasSince idiom).
+const defaultPrometheusAlertsCooldown = 15 * time.Minute
+
 // RunDetectors writes synthetic strategic events for conditions that are
 // state (not daemon events): stale heartbeats, idle ships, credit crossings.
 // Dedup: an event is skipped while an unprocessed twin exists.
@@ -195,7 +218,17 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 	if err := detectScoutStaleness(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
-	return detectCreditsCrossing(ctx, store, cfg)
+	if err := detectCreditsCrossing(ctx, store, cfg); err != nil {
+		return err
+	}
+	// sp-y0f6: deliberately last in the chain. Every detector above depends on
+	// the same Postgres the rest of the app depends on, so its errors are
+	// effectively "the app is already broken." This one instead depends on a
+	// separate service's HTTP endpoint (Prometheus), which can be transiently
+	// unreachable (restart, redeploy, network blip) while the app is perfectly
+	// healthy. Keeping it last means that blip can only cost this detector's
+	// own poll for the tick — it can never mask another detector's run.
+	return detectPrometheusAlerts(ctx, store, cfg, now)
 }
 
 func detectStaleHeartbeats(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
@@ -1136,6 +1169,96 @@ func sortedFreshnessKeys(m map[string]systemMarketFreshness) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// prometheusAlertsAPIResponse is the subset of Prometheus's own
+// /api/v1/alerts response body (sp-y0f6) this detector reads. Prometheus
+// evaluates its rule_files and exposes the resulting alert states on this
+// endpoint WITHOUT requiring an Alertmanager deployment — there is none in
+// this stack today, so polling Prometheus directly is the lightest correct
+// join to the watchkeeper's existing tick loop.
+type prometheusAlertsAPIResponse struct {
+	Data struct {
+		Alerts []struct {
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
+			State       string            `json:"state"`
+		} `json:"alerts"`
+	} `json:"data"`
+}
+
+// detectPrometheusAlerts polls Prometheus's own alert-evaluation state
+// (sp-y0f6) and records one interrupt-class prometheus.alert_firing event per
+// firing alertname: EarnerDark, BurstSaturation, ApproachCeiling,
+// StarvationWave (gobot/configs/prometheus/rules/fleet-health.yml). This is
+// the alert layer for the 2026-07-11 incident (sp-4hl5): the fleet earned
+// zero for 2h50m and nothing paged, a human caught the flatline on a chart
+// ~60min after onset. Empty PrometheusAlertsURL disables the detector
+// entirely — no HTTP call, matching the ExpectedStreams/RegimeTripwires
+// "empty means off" idiom used throughout this file.
+//
+// Deliberately no DB parameter: unlike its siblings this detector's source of
+// truth is Prometheus's HTTP API, not the local database, so it mirrors
+// detectCreditsCrossing's signature rather than the db-taking majority.
+func detectPrometheusAlerts(ctx context.Context, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
+	if cfg.PrometheusAlertsURL == "" {
+		return nil // disabled
+	}
+	url := strings.TrimRight(cfg.PrometheusAlertsURL, "/") + "/api/v1/alerts"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("prometheus alerts request: %w", err)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("prometheus alerts fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("prometheus alerts fetch: unexpected status %d", resp.StatusCode)
+	}
+	var parsed prometheusAlertsAPIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return fmt.Errorf("prometheus alerts decode: %w", err)
+	}
+
+	for _, a := range parsed.Data.Alerts {
+		if a.State != "firing" {
+			continue // pending/inactive — not yet (or no longer) a real condition.
+		}
+		name := a.Labels["alertname"]
+		if name == "" {
+			continue
+		}
+		// Dedup per alertname, not per label set: the same alert re-evaluating
+		// firing=true on every poll must not re-wake the captain every tick
+		// while the underlying condition persists (mirrors the sibling
+		// detectors' HasSince cooldown idiom).
+		key := "alert:" + name
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventPrometheusAlertFiring, key, now.Add(-defaultPrometheusAlertsCooldown))
+		if err != nil {
+			return err
+		}
+		if recent {
+			continue
+		}
+		payload, err := json.Marshal(map[string]string{
+			"alertname": name,
+			"summary":   a.Annotations["summary"],
+			"severity":  a.Labels["severity"],
+		})
+		if err != nil {
+			return err
+		}
+		if err := store.Record(ctx, &captain.Event{
+			Type: captain.EventPrometheusAlertFiring, Ship: key, PlayerID: cfg.PlayerID,
+			Payload: string(payload),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func detectCreditsCrossing(ctx context.Context, store captain.EventStore, cfg DetectorConfig) error {

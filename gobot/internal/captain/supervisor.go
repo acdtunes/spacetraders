@@ -227,6 +227,10 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		PostProposalFreshness:           defaultPostProposalFreshness,
 		PostProposalAvgHop:              defaultPostProposalAvgHop,
 		PostProposalCooldown:            defaultPostProposalCooldown,
+
+		// sp-y0f6: Prometheus alert-firing poll, wired to a package default here
+		// until CaptainConfig grows a tunable field (mirrors the sp-k7q5 group above).
+		PrometheusAlertsURL: defaultPrometheusAlertsURL,
 	}
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation

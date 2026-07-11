@@ -3,7 +3,7 @@ package captain
 import "testing"
 
 // TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default
-// interrupt set to the nine event types the design approved: everything
+// interrupt set to the ten event types the design approved: everything
 // else (workflow.finished, contract.completed, credits.threshold, ship.idle,
 // and — per sp-no9i — the self-healing single container.crashed) is deferred
 // and rides the next wake's batch instead of forcing one. The actionable
@@ -16,7 +16,10 @@ import "testing"
 // recovery does not self-heal — it stays dead until someone acts, so a single
 // loss must force a wake. hull.containerless (sp-v63s) joined for the same
 // reason: a fleet-pinned hull sitting with no container is a stranded revenue
-// hull that stays dead until someone acts.
+// hull that stays dead until someone acts. prometheus.alert_firing (sp-y0f6)
+// joined because the 2026-07-11 incident (sp-4hl5) it closes rode silently
+// for 2h50m — zero fleet revenue — precisely because nothing forced a wake; a
+// human caught it only by eyeballing a treasury chart ~60min after onset.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
 		EventWorkflowFailed:          true,
@@ -28,6 +31,7 @@ func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 		EventIncomeStalled:           true,
 		EventStreamDown:              true,
 		EventCoordinatorErrorLoop:    true,
+		EventPrometheusAlertFiring:   true,
 	}
 
 	got := DefaultInterruptTypes()
@@ -59,6 +63,7 @@ func TestIsInterruptUnderDefaultSet(t *testing.T) {
 		{"contract.failed interrupts", EventContractFailed, true},
 		{"income.stalled interrupts", EventIncomeStalled, true},
 		{"stream.down interrupts", EventStreamDown, true},
+		{"prometheus.alert_firing interrupts (revenue/capacity-critical page, sp-y0f6)", EventPrometheusAlertFiring, true},
 		{"container.crashed defers (self-healing single, sp-no9i)", EventContainerCrashed, false},
 		{"workflow.finished defers", EventWorkflowFinished, false},
 		{"contract.completed defers", EventContractCompleted, false},
