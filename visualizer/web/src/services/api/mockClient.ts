@@ -7,7 +7,7 @@ import {
   demoGateProgress,
   isSignalLossWindow,
 } from '../../mocks/demoEvents';
-import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse } from '../../mocks/mockFlows';
+import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse, mockSystemWaypoints } from '../../mocks/mockFlows';
 import type { FlowWindow } from '../../types/flows';
 
 const DEFAULT_LIMIT = 20;
@@ -243,7 +243,10 @@ export async function mockRequest<T>(endpoint: string, options: ApiRequestOption
   if (path.includes('/waypoints') && path.match(/^\/systems\/[^/]+\/waypoints$/) && method === 'GET') {
     const systemSymbol = sanitizeId(path.split('/')[2]);
     const { page, limit } = getPageAndLimit(url.searchParams);
-    const waypoints = mockState.waypoints.filter((wp) => wp.systemSymbol === systemSymbol);
+    // Trade Flows demo systems carry their own intra-system waypoint fixture so the
+    // drilldown renders to scale; other systems fall back to the scenario waypoints.
+    const flowsWaypoints = mockSystemWaypoints(systemSymbol);
+    const waypoints = flowsWaypoints ?? mockState.waypoints.filter((wp) => wp.systemSymbol === systemSymbol);
     return paginate(waypoints, page, limit) as T;
   }
 

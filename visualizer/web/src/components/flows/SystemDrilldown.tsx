@@ -1,53 +1,106 @@
+import { useEffect, useRef, useState } from 'react';
 import type { LaneRecord, LiveFlow } from '../../types/flows';
+import type { Waypoint } from '../../types/spacetraders';
 import { NOIR } from '../../theme/noir';
-import { systemOf } from './flowGeometry';
+import { getWaypoints } from '../../services/api/systems';
+import { classifyLaneForSystem, residentFlows } from './drilldownGeometry';
+import { DrilldownHeader } from './DrilldownHeader';
+import { DrilldownScene } from './DrilldownScene';
 
 interface Props {
   systemSymbol: string;
   lanes: LaneRecord[];
   flows: LiveFlow[];
+  homeSystem: string | null;
+  feedLost: boolean;
   onClose: () => void;
 }
 
-const money = (n: number) => n.toLocaleString('en-US');
+// System drilldown v2: fetches the clicked system's waypoints (real intra-system
+// x/y via the existing /systems/:sym/waypoints endpoint) and renders them TO SCALE
+// with the actual realized trade routes, resident hulls, and daemon intent. The
+// fetch/compose lives here; the geometry is pure (drilldownGeometry) and the canvas
+// is DrilldownScene (Konva). The HOME badge shows when this is the headquarters.
+export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLost, onClose }: Props) {
+  const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ w: 0, h: 0 });
 
-// Drill-down: this system's local realized lanes (either endpoint in-system) and
-// the flows currently resident/inbound, same grammar as the galaxy detail panel.
-export function SystemDrilldown({ systemSymbol, lanes, flows, onClose }: Props) {
-  const localLanes = lanes.filter((l) => systemOf(l.from) === systemSymbol || systemOf(l.to) === systemSymbol);
-  const localFlows = flows.filter(
-    (f) => f.shipNav?.systemSymbol === systemSymbol ||
-      (f.currentLeg && (systemOf(f.currentLeg.from) === systemSymbol || systemOf(f.currentLeg.to) === systemSymbol)),
-  );
+  // Fetch this system's waypoints whenever the selection changes.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setWaypoints([]);
+    getWaypoints(systemSymbol)
+      .then((wps) => { if (!cancelled) setWaypoints(wps); })
+      .catch((e) => { if (!cancelled) setError(e?.message ?? 'failed to load waypoints'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [systemSymbol]);
+
+  // Measure the scene body so the Konva stage fills it (and tracks resizes).
+  useEffect(() => {
+    const measure = () => {
+      const el = bodyRef.current;
+      if (el) setDims({ w: el.clientWidth, h: el.clientHeight });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+
+  const isHome = homeSystem !== null && homeSystem === systemSymbol;
+  const laneCount = lanes.filter((l) => classifyLaneForSystem(l, systemSymbol) !== 'external').length;
+  const hullCount = residentFlows(flows, systemSymbol).length;
+  const hasScene = !loading && !error && waypoints.length > 0 && dims.w > 0 && dims.h > 0;
+
   return (
-    <div
-      className="absolute inset-y-4 right-4 w-96 overflow-auto rounded-lg p-4 text-sm backdrop-blur"
-      style={{ background: `${NOIR.panel}E6`, color: NOIR.ink, border: `1px solid ${NOIR.nebulaCore}` }}
+    <div className="absolute inset-4 rounded-lg overflow-hidden flex flex-col shadow-2xl"
+      style={{ background: NOIR.bg0, border: `1px solid ${NOIR.nebulaCore}` }}
     >
-      <div className="flex items-center justify-between mb-3">
-        <span className="font-mono" style={{ color: NOIR.accent }}>{systemSymbol}</span>
-        <button onClick={onClose} className="text-xs px-2 py-1 rounded" style={{ color: NOIR.muted, border: `1px solid ${NOIR.dim}` }}>
-          close
-        </button>
+      <DrilldownHeader
+        systemSymbol={systemSymbol}
+        isHome={isHome}
+        waypointCount={waypoints.length}
+        laneCount={laneCount}
+        hullCount={hullCount}
+        loading={loading}
+        error={error}
+        feedLost={feedLost}
+        onClose={onClose}
+      />
+
+      <div ref={bodyRef} className="relative flex-1" style={{ background: NOIR.bg0 }}>
+        {hasScene && (
+          <DrilldownScene
+            systemSymbol={systemSymbol}
+            waypoints={waypoints}
+            lanes={lanes}
+            flows={flows}
+            isHome={isHome}
+            width={dims.w}
+            height={dims.h}
+          />
+        )}
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: NOIR.muted }}>
+            Charting {systemSymbol} waypoints…
+          </div>
+        )}
+        {!loading && error && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: NOIR.bad }}>
+            {error}
+          </div>
+        )}
+        {!loading && !error && waypoints.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: NOIR.dim }}>
+            No charted waypoints in {systemSymbol}
+          </div>
+        )}
       </div>
-
-      <div className="text-xs mb-1" style={{ color: NOIR.muted }}>Local realized lanes</div>
-      {localLanes.length === 0 && <div className="text-xs" style={{ color: NOIR.dim }}>none in window</div>}
-      {localLanes.map((l, i) => (
-        <div key={i} className="flex justify-between text-xs font-mono mb-0.5">
-          <span>{l.from} → {l.to}</span>
-          <span style={{ color: l.realizedProfit >= 0 ? NOIR.good : NOIR.bad }}>{money(l.realizedProfit)}</span>
-        </div>
-      ))}
-
-      <div className="text-xs mt-3 mb-1" style={{ color: NOIR.muted }}>Flows here</div>
-      {localFlows.length === 0 && <div className="text-xs" style={{ color: NOIR.dim }}>none</div>}
-      {localFlows.map((f) => (
-        <div key={f.containerId} className="flex justify-between text-xs font-mono mb-0.5">
-          <span>{f.ship}</span>
-          <span style={{ color: NOIR.dim }}>{f.program}</span>
-        </div>
-      ))}
     </div>
   );
 }

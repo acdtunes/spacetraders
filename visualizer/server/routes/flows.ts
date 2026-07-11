@@ -3,8 +3,36 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import { computeGalaxyLayout } from '../utils/galaxyLayout.js';
 import { aggregateLanes } from '../utils/laneAggregation.js';
+import { homeSystemFromHeadquarters } from '../utils/homeSystem.js';
+import { SpaceTradersClient } from '../src/client.js';
 
 const router = Router();
+
+const API_BASE_URL = 'https://api.spacetraders.io/v2';
+
+// Best-effort home-system derivation for the galaxy/drilldown marker. The token
+// lives in PG players.token (the server already owns it); one GET /my/agent gives
+// the headquarters waypoint, whose first two segments are the home system. This
+// runs only on a topology cache MISS (~once/5min), so it adds zero polling. ANY
+// failure (no token, API down, malformed response) returns null and the field is
+// omitted — the Admiral directive is to render no marker rather than guess.
+async function deriveHomeSystem(client: {
+  query: (sql: string) => Promise<{ rows: any[] }>;
+}): Promise<string | null> {
+  try {
+    const tokenResult = await client.query(
+      `SELECT token FROM players WHERE token <> '' ORDER BY last_active DESC NULLS LAST, id LIMIT 1`,
+    );
+    const token = tokenResult.rows[0]?.token as string | undefined;
+    if (!token) return null;
+    const stClient = new SpaceTradersClient(API_BASE_URL, token);
+    const agent = await stClient.get('/my/agent');
+    return homeSystemFromHeadquarters(agent?.data?.headquarters);
+  } catch (error: any) {
+    console.error('Home-system derivation failed (omitting marker):', error?.message ?? error);
+    return null;
+  }
+}
 
 // Lazy pg pool — construction does NOT connect (mirrors routes/bot.ts). The
 // idle-client 'error' listener prevents a DB restart from crashing the process.
@@ -50,7 +78,14 @@ router.get('/topology', async (_req, res) => {
     }
     const layout = computeGalaxyLayout([...systemSet], edges.map((e) => ({ from: e.from, to: e.to })));
 
-    const payload = { systems: layout, edges, generatedAt: new Date().toISOString() };
+    const homeSystem = await deriveHomeSystem(client);
+
+    const payload = {
+      systems: layout,
+      edges,
+      ...(homeSystem ? { homeSystem } : {}),
+      generatedAt: new Date().toISOString(),
+    };
     topologyCache = { payload, builtAtMs: Date.now() };
     res.json(payload);
   } catch (error: any) {

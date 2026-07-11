@@ -46,3 +46,10 @@ export const useFlowStore = create<FlowState>((set) => ({
   closeDrilldown: () => set({ drilldownSystem: null }),
   setError: (error) => set({ error }),
 }));
+
+// Dev-only debugging affordance: expose the store so the flows tab can be driven
+// from the console / e2e (e.g. window.__flowStore.getState().openDrilldown('X1-UQ16')).
+// Guarded by import.meta.env.DEV, so it is stripped from production builds.
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
+  (window as unknown as { __flowStore?: typeof useFlowStore }).__flowStore = useFlowStore;
+}

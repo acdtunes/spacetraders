@@ -69,6 +69,7 @@ export default function FlowGalaxyScene() {
 
   const systemPos: Map<string, Point> = topology ? buildSystemIndex(topology) : new Map();
   const flows = live?.flows ?? [];
+  const homeSystem = topology?.homeSystem ?? null;
 
   // Mount the Stage unconditionally (even before topology loads) so stageRef is
   // attached by the time the centering effect fires. Gating the Stage behind a
@@ -101,24 +102,43 @@ export default function FlowGalaxyScene() {
             })}
           </Group>
 
-          {/* System nodes */}
+          {/* System nodes — the home system is ringed + always labeled (distinct
+              star treatment), so it reads apart from ordinary nodes at any zoom. */}
           <Group>
-            {topology.systems.map((s) => (
-              <Group key={s.symbol} x={s.x} y={s.y}>
-                <Circle
-                  radius={Math.max(2, 3 / scale)}
-                  fill={noirAlpha(NOIR.nebulaCore, 0.9)}
-                  stroke={NOIR.accent}
-                  strokeWidth={0.5 / scale}
-                  onMouseEnter={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; }}
-                  onMouseLeave={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'default'; }}
-                  onClick={() => openDrilldown(s.symbol)}
-                />
-                {scale > 0.3 && (
-                  <Text text={s.symbol} fontSize={Math.max(5, 8 / scale)} fill={NOIR.dim} x={4 / scale} y={-4 / scale} listening={false} />
-                )}
-              </Group>
-            ))}
+            {topology.systems.map((s) => {
+              const isHome = homeSystem !== null && s.symbol === homeSystem;
+              const nodeR = Math.max(2, 3 / scale);
+              return (
+                <Group key={s.symbol} x={s.x} y={s.y}>
+                  {isHome && (
+                    <>
+                      <Circle radius={nodeR + 9 / scale} stroke={NOIR.star} strokeWidth={1 / scale} opacity={0.9} listening={false} />
+                      <Circle radius={nodeR + 5 / scale} stroke={noirAlpha(NOIR.star, 0.5)} strokeWidth={0.75 / scale} listening={false} />
+                    </>
+                  )}
+                  <Circle
+                    radius={nodeR}
+                    fill={isHome ? NOIR.star : noirAlpha(NOIR.nebulaCore, 0.9)}
+                    stroke={isHome ? NOIR.star : NOIR.accent}
+                    strokeWidth={0.5 / scale}
+                    onMouseEnter={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; }}
+                    onMouseLeave={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'default'; }}
+                    onClick={() => openDrilldown(s.symbol)}
+                  />
+                  {(isHome || scale > 0.3) && (
+                    <Text
+                      text={isHome ? `★ ${s.symbol} · HOME` : s.symbol}
+                      fontSize={Math.max(5, 8 / scale)}
+                      fontStyle={isHome ? 'bold' : 'normal'}
+                      fill={isHome ? NOIR.star : NOIR.dim}
+                      x={(isHome ? nodeR + 9 / scale : 4 / scale)}
+                      y={-4 / scale}
+                      listening={false}
+                    />
+                  )}
+                </Group>
+              );
+            })}
           </Group>
 
           {/* Plan paths for flows that actually published intent */}

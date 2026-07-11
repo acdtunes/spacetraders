@@ -99,5 +99,6 @@ export interface TopologyEdge {
 export interface TopologyResponse {
   systems: TopologySystem[];
   edges: TopologyEdge[];
+  homeSystem?: string;   // server-derived from /my/agent; absent when unknown (never guessed)
   generatedAt: string;
 }

@@ -21,4 +21,15 @@ describe('mockClient /flows dispatch', () => {
     if (res.feedLost) expect(res.flows).toEqual([]);
     else expect(res.flows.length).toBe(3);
   });
+
+  it('serves the demo drilldown system waypoints to scale (incl. the jump gate)', async () => {
+    const res = await mockRequest<{ data: Array<{ symbol: string; type: string; x: number; y: number }> }>(
+      '/systems/X1-NK36/waypoints?page=1&limit=20',
+    );
+    expect(res.data.length).toBeGreaterThan(2);
+    expect(res.data.some((w) => w.type === 'JUMP_GATE')).toBe(true);
+    expect(res.data.some((w) => w.symbol === 'X1-NK36-FE8A')).toBe(true);
+    // Real intra-system coordinates (not all zero) so the fit transform has extent.
+    expect(res.data.some((w) => w.x !== 0 || w.y !== 0)).toBe(true);
+  });
 });

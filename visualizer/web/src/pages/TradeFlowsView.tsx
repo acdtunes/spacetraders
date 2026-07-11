@@ -16,6 +16,7 @@ export function TradeFlowsView() {
   const setWindow = useFlowStore((s) => s.setWindow);
   const live = useFlowStore((s) => s.live);
   const lanes = useFlowStore((s) => s.lanes);
+  const topology = useFlowStore((s) => s.topology);
   const lastPlanAt = useFlowStore((s) => s.lastPlanAt);
   const selectedFlowId = useFlowStore((s) => s.selectedFlowId);
   const drilldownSystem = useFlowStore((s) => s.drilldownSystem);
@@ -58,6 +59,8 @@ export function TradeFlowsView() {
           systemSymbol={drilldownSystem}
           lanes={lanes?.lanes ?? []}
           flows={flows}
+          homeSystem={topology?.homeSystem ?? null}
+          feedLost={live?.feedLost ?? false}
           onClose={closeDrilldown}
         />
       )}
