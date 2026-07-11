@@ -50,23 +50,38 @@ groups:
             earner. Check the tour planner's spend_cap computation and any
             recent reserve/threshold config change first.
 
-      # BurstSaturation: the 00:56Z burst-saturation lesson (bead notes:
-      # "p95 rate_limit_wait > 1s sustained 3+ min -> page"). p95 over a 5m
-      # rate() window of the *_bucket histogram, summed by (le) across every
-      # other label (endpoint/method/etc — none of which are player-scoped,
-      # since API rate-limit budget is fleet-wide, not per-player).
+      # BurstSaturation (re-tuned, sp-yeiq): p95 rate-limit wait over a 5m
+      # rate() window of the *_bucket histogram, summed by (le). The wait is
+      # the time each request blocks in the process-wide token-bucket limiter
+      # (rate.NewLimiter(2/s, burst 30) in internal/adapters/api/client.go);
+      # ALL daemon lanes share that one limiter, so queuing here is the fleet's
+      # DESIGNED pacing mechanism, fired fleet-wide (not per-player).
+      #
+      # Threshold arithmetic: at a 2 req/s drain, a wait of W seconds means
+      # ~2*W requests are queued ahead of you. The former "> 1s for 3m" tripped
+      # at only ~2-deep — reachable by any normal multi-lane burst — which is
+      # why it cried wolf every few minutes all session and was dismissed 10+
+      # times (the sp-yeiq root cause). Re-tuned to "> 2s for 10m": a p95 wait
+      # above 2s (~4+ deep at p95) held for a full 10 minutes is a genuine
+      # sustained backlog, not routine busy-pacing nor a transient cluster the
+      # 5m rate() window would otherwise smear past a short for:. Pairs with
+      # ApproachCeiling (throughput > 85% for 10m, warning): same 10m
+      # "sustained" bar, this is the harder critical that co-fires once the
+      # queue itself — not just throughput — is degraded.
       - alert: BurstSaturation
         expr: |
-          histogram_quantile(0.95, sum by (le) (rate(spacetraders_daemon_api_rate_limit_wait_seconds_bucket[5m]))) > 1
-        for: 3m
+          histogram_quantile(0.95, sum by (le) (rate(spacetraders_daemon_api_rate_limit_wait_seconds_bucket[5m]))) > 2
+        for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "API rate-limit wait p95 > 1s sustained 3+ minutes"
+          summary: "API rate-limit wait p95 > 2s sustained 10+ minutes"
           description: >-
-            The fleet is spending real wall-clock time queued on the API rate
-            limiter, not just approaching it — throughput is already
-            degraded. Check concurrent-lane count against the current budget.
+            The fleet is spending real wall-clock time queued on the shared API
+            rate limiter (p95 > 2s ≈ 4+ requests deep) sustained 10m — genuine
+            throughput degradation, not routine busy-pacing. Check the
+            concurrent-lane count against the 2 req/s budget; if lanes are
+            ungated, see the autosizer api_util follow-up (sp-yeiq).
 
       # ApproachCeiling: the approach-warning companion named in the bead
       # notes ("utilization > 85% sustained 10m as the approach-warning"), a
