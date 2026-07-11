@@ -127,3 +127,16 @@ func TestManufacturingConfig_ResolveLiveValueOverwritesStalePersisted(t *testing
 	require.True(t, ok)
 	require.Equal(t, 750000, cmd.WorkingCapitalReserve, "manufacturing_coordinator must rebuild with the LIVE 750k reserve, not the stale 1M")
 }
+
+// sp-xdk6: the export-ask-subsidy rest knobs round-trip through the full inject→build path. Unset
+// leaves both at their zero values (the coordinator resolves the 90min window default at the point
+// of use, and the signal stays ON); a configured window + disable flag reach the built command.
+func TestManufacturingConfig_RestSignalRoundTrip(t *testing.T) {
+	unset := buildGoodsFactoryCmd(t, config.ManufacturingConfig{})
+	require.Equal(t, 0, unset.RestWindowMinutes, "unset window must stay 0 (defers to the 90min default at the point of use)")
+	require.False(t, unset.RestSignalDisabled, "unset disable flag must stay false (signal ON by default)")
+
+	set := buildGoodsFactoryCmd(t, config.ManufacturingConfig{RestWindowMinutes: 120, RestSignalDisabled: true})
+	require.Equal(t, 120, set.RestWindowMinutes, "configured rest window must reach the built command")
+	require.True(t, set.RestSignalDisabled, "configured disable flag must reach the built command")
+}

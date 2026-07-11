@@ -846,6 +846,12 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// The disable flag is the RULINGS #5 emergency off-switch.
 		InputRecoveryReattemptMinutes: cfg.OptionalInt("input_recovery_reattempt_minutes", 0),
 		AntiCycleDisabled:             cfg.OptionalBool("anti_cycle_disabled"),
+		// sp-xdk6: the export-ask-subsidy rest signal. 0/absent → the coordinator resolves the 90min
+		// recovery-window default at the point of use (the signal runs ON in production without the
+		// captain naming it); a set value is the analyst's [manufacturing] override. The disable flag
+		// is the RULINGS #5 emergency off-switch.
+		RestWindowMinutes:  cfg.OptionalInt("rest_window_minutes", 0),
+		RestSignalDisabled: cfg.OptionalBool("rest_signal_disabled"),
 	}
 }
 

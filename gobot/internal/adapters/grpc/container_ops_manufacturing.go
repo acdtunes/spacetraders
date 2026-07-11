@@ -321,6 +321,8 @@ var manufacturingConfigKeys = []string{
 	"planner_stock_disabled",
 	"input_recovery_reattempt_minutes",
 	"anti_cycle_disabled",
+	"rest_window_minutes",
+	"rest_signal_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -417,5 +419,16 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.AntiCycleDisabled {
 		config["anti_cycle_disabled"] = true
+	}
+	// sp-xdk6: the export-ask-subsidy rest signal. Only written when the captain set a non-zero
+	// rest window — an unset key defers to the goods_factory build's 90min default (the signal runs
+	// ON in production without the captain naming it, a protective default that can only STOP a lift,
+	// RULINGS #5). The disable flag is written only when true, so absent/false keeps the signal on;
+	// the clear in resolveManufacturingConfig makes turning it back on take effect.
+	if s.manufacturingConfig.RestWindowMinutes != 0 {
+		config["rest_window_minutes"] = s.manufacturingConfig.RestWindowMinutes
+	}
+	if s.manufacturingConfig.RestSignalDisabled {
+		config["rest_signal_disabled"] = true
 	}
 }

@@ -105,6 +105,20 @@ type ManufacturingConfig struct {
 	// Absent/false keeps the anti-cycle on at its default half-life.
 	AntiCycleDisabled bool `mapstructure:"anti_cycle_disabled"`
 
+	// RestWindowMinutes is the export-ask-subsidy rest recovery window (sp-xdk6, redesign C4),
+	// threaded into goods_factory_coordinator: when a chain's OWN output market's ask ladders above
+	// the eligible cross-source median (the mechanized 8w40 signal), the coordinator rests it and
+	// holds it OFF the next lift for this many minutes before a one-iteration re-attempt. 0/absent →
+	// the 90min default the coordinator resolves at the point of use (the K2 rotation "one recovery
+	// window"; the signal runs ON in production without the captain naming it — it can only STOP a
+	// lift, RULINGS #5). Config, not a constant, so the analyst retunes the number live.
+	RestWindowMinutes int `mapstructure:"rest_window_minutes"`
+
+	// RestSignalDisabled is the emergency off-switch for the export-ask-subsidy rest signal (RULINGS
+	// #5): true skips detection/rest entirely, for a captain who must keep a chain lifting through a
+	// genuine own-market premium. Absent/false keeps the signal on at its default window.
+	RestSignalDisabled bool `mapstructure:"rest_signal_disabled"`
+
 	// Siting nests the factory SITING coordinator's knobs (sp-vdld) under
 	// [manufacturing.siting] — the standing brain that scans/scores/sizes/launches
 	// factory chains. Injected into the siting_coordinator container's launch config

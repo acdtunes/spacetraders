@@ -110,6 +110,18 @@ type RunFactoryCoordinatorCommand struct {
 	// still refuses depleted sources — the anti-cycle only escalates that park to a recovery-clock
 	// pause). Absent/false keeps the anti-cycle on. Fed from anti_cycle_disabled.
 	AntiCycleDisabled bool
+	// RestWindowMinutes is how long the export-ask-subsidy rest signal (sp-xdk6, redesign C4) holds a
+	// chain OFF its next lift after its OWN output market's ask laddered above the eligible
+	// cross-source median — the mechanized 8w40 signal. 0/absent resolves to the 90min default at the
+	// point of use (the K2 rotation "one recovery window"; the signal runs ON in production without
+	// the captain naming it — it can only STOP a lift, so a protective default is correct, RULINGS
+	// #5). Fed from rest_window_minutes.
+	RestWindowMinutes int
+	// RestSignalDisabled is the emergency off-switch for the export-ask-subsidy rest signal (RULINGS
+	// #5): true skips detection/rest entirely, for a captain who must keep a chain lifting through a
+	// genuine own-market premium. Absent/false keeps the signal on at its default window. Fed from
+	// rest_signal_disabled.
+	RestSignalDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

@@ -110,6 +110,15 @@ type RunFactoryCoordinatorHandler struct {
 	inputPauseMu    sync.Mutex
 	inputPauseState map[string]*inputPauseEntry
 
+	// exportRestMu guards exportRestState, the per-container export-ask-subsidy rest state (sp-xdk6):
+	// a resting chain's recovery-window clock (when it may lift again) plus the cached rest line to
+	// re-report while it rests. Drives once-per-episode dedup (rest counter/WARN emit once on
+	// lifting→resting, resume INFO once on resting→lifting) AND the recovery-window backoff (a
+	// resting chain sleeps until liftAllowedAt instead of re-polling every 45s). The OUTPUT-LADDER
+	// sibling of inputPauseState. Keyed by ContainerID (one container = one chain).
+	exportRestMu    sync.Mutex
+	exportRestState map[string]*exportRestEntry
+
 	// plannerStock deposits harvested root output into a co-located warehouse at
 	// cost basis instead of selling it at market (C1, sp-64je). LIVE BY DEFAULT:
 	// the daemon wires it unconditionally and it runs unless the run's
@@ -179,6 +188,7 @@ func NewRunFactoryCoordinatorHandler(
 		noWorkState:        make(map[string]*noWorkTracker),
 		chainPnLKillState:  make(map[string]bool),
 		inputPauseState:    make(map[string]*inputPauseEntry),
+		exportRestState:    make(map[string]*exportRestEntry),
 	}
 }
 
@@ -269,9 +279,17 @@ func (h *RunFactoryCoordinatorHandler) backoffNoWork(ctx context.Context, contai
 	// no-work poll — a just-flickering-marginal well re-poisons under early-recovery buys, so a
 	// paused chain sleeps until its re-attempt is due (zero polling during recovery). Any other
 	// no-work reason (a margin park, a no-hull park) keeps the normal short backoff.
+	//
+	// sp-xdk6: an export-ask-subsidy rest sleeps for its recovery WINDOW (same reasoning — re-lifting
+	// an over-drawn output market during early recovery re-ladders it). The input-pause delay is
+	// checked FIRST so it wins precedence; the two are mutually exclusive in practice (an
+	// input-paused chain returns before the rest is ever armed), so this only ever fires for a chain
+	// resting purely on the output-ladder signal.
 	delay := noWorkIterationDelay
 	if reattemptDelay, paused := h.inputPauseReattemptDelay(containerID); paused {
 		delay = reattemptDelay
+	} else if restDelay, resting := h.exportRestReattemptDelay(containerID); resting {
+		delay = restDelay
 	}
 
 	if shouldLog {
@@ -370,6 +388,22 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		}
 	}
 
+	// Step 0.6: Export-ask-subsidy REST recovery window (sp-xdk6). If this chain is mid-rest (its
+	// own output market laddered above the eligible median last tick) and the recovery window has
+	// NOT elapsed, do ZERO work this tick — skip the tree build and every market read — and let
+	// Handle's backoff sleep the container to the window. This is the "held off the lift during
+	// recovery" half of the signal: re-lifting an over-drawn market during early recovery just
+	// re-ladders it, so a resting chain reads nothing until the window is up. Checked AFTER the
+	// input-pause window above so an input-paused chain (the upstream cause) wins precedence. Scoped
+	// to resale runs; when the signal is disabled the window is ignored (Step 2.45 clears any stale
+	// rest).
+	if !cmd.InputsOnly && !cmd.RestSignalDisabled {
+		if restMsg, withinWindow := h.exportRestWithinWindow(cmd.ContainerID); withinWindow {
+			response.NoWorkReason = restMsg
+			return nil
+		}
+	}
+
 	// Step 1: Build dependency tree
 	dependencyTree, err := h.buildDependencyTree(ctx, cmd)
 	if err != nil {
@@ -413,6 +447,27 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 			return nil
 		}
 		h.clearInputLayerPause(ctx, cmd)
+	}
+
+	// Step 2.45: Export-ask-subsidy REST signal (sp-xdk6, analyst redesign C4). AFTER the input-pause
+	// (which wins precedence — an input-poisoned chain isn't lifting to over-draw anything) and
+	// BEFORE the margin guard + C2 kill, ask whether this chain's OWN output market's ask has
+	// laddered above the eligible cross-source median (EligibleSourceMedianAsk, the a5j7 baseline
+	// reused). When it has, REST the chain onto the recovery-window clock: emit the rest (once per
+	// episode), set the NoWorkReason, and return pre-spend (zero credits, worker freed) — Handle's
+	// backoff then sleeps the container for the rest window before the one-iteration re-attempt.
+	// Placed here so an over-lifted chain gets the proper recovery-window rest rather than the margin
+	// guard's short 45s park or a lagging C2 P&L kill (the ask ladder is the LEADING symptom of the
+	// same phenomenon C2 catches late). Scoped to resale runs (!InputsOnly). On a recovered market
+	// (own ask ≤ median) it lifts any standing rest and falls through to the margin guard + production.
+	if !cmd.InputsOnly {
+		rest := h.evaluateExportRest(ctx, cmd, dependencyTree)
+		if rest.Rested {
+			h.recordExportRest(ctx, cmd, rest)
+			response.NoWorkReason = rest.RestMessage()
+			return nil
+		}
+		h.clearExportRest(ctx, cmd)
 	}
 
 	// Step 2.5: Pre-spend chain-margin + absorption guard (sp-2dv4, money-integrity

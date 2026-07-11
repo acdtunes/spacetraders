@@ -477,6 +477,17 @@ func NewDaemonServer(
 		}
 		metrics.SetGlobalChainInputPauseCollector(chainInputPauseCollector)
 
+		// Create export-rest collector (sp-xdk6): the goods_factory coordinator's export-ask-subsidy
+		// rest signal emits the rest-episode counter through the global set here — the OUTPUT-LADDER
+		// side of the self-pruning portfolio (the input-pause counter above is the input side, the
+		// chain-P&L kill counter the realized-P&L side). Event-driven (no polling goroutine).
+		chainExportRestCollector := metrics.NewChainExportRestMetricsCollector()
+		if err := chainExportRestCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register chain export-rest metrics collector: %w", err)
+		}
+		metrics.SetGlobalChainExportRestCollector(chainExportRestCollector)
+
 		// Create factory-siting collector (sp-vdld): the siting coordinator's ACT and EMIT
 		// steps emit the launch/retire/scout-demand decision counters through the global set
 		// here — the observability for the standing "brain" that automates factory placement.

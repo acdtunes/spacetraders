@@ -81,6 +81,13 @@ var (
 	// side of the self-pruning portfolio, alongside the chain-P&L kill counter above).
 	globalChainInputPauseCollector *ChainInputPauseMetricsCollector
 
+	// globalChainExportRestCollector is the singleton export-ask-subsidy rest collector
+	// (sp-xdk6). Set by SetGlobalChainExportRestCollector() when metrics are enabled; the
+	// goods_factory coordinator emits the export-rest episode counter through it (the
+	// OUTPUT-LADDER side of the self-pruning portfolio, alongside the input-pause and
+	// chain-P&L kill counters above).
+	globalChainExportRestCollector *ChainExportRestMetricsCollector
+
 	// globalSitingCollector is the singleton factory-siting collector (sp-vdld). Set by
 	// SetGlobalSitingCollector() when metrics are enabled; the siting coordinator's ACT and
 	// EMIT steps increment the launch/retire/scout-demand counters through it.
@@ -588,6 +595,27 @@ func GetGlobalChainInputPauseCollector() *ChainInputPauseMetricsCollector {
 func RecordChainInputPause(good string) {
 	if globalChainInputPauseCollector != nil {
 		globalChainInputPauseCollector.RecordPause(good)
+	}
+}
+
+// SetGlobalChainExportRestCollector sets the global export-ask-subsidy rest collector (sp-xdk6).
+// Pass nil to clear it (e.g. in test cleanup).
+func SetGlobalChainExportRestCollector(collector *ChainExportRestMetricsCollector) {
+	globalChainExportRestCollector = collector
+}
+
+// GetGlobalChainExportRestCollector returns the global export-rest collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalChainExportRestCollector() *ChainExportRestMetricsCollector {
+	return globalChainExportRestCollector
+}
+
+// RecordChainExportRest increments a chain's export-rest-episode counter globally (sp-xdk6).
+// No-op when metrics are disabled, so a metrics miss never touches the rest-check path
+// (RULINGS #4).
+func RecordChainExportRest(good string) {
+	if globalChainExportRestCollector != nil {
+		globalChainExportRestCollector.RecordRest(good)
 	}
 }
 
