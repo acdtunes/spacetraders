@@ -227,12 +227,45 @@ func waitForShipArrivalCore(
 				})
 
 			case fresh.NavStatus() != domainNavigation.NavStatusInTransit:
-				logger.Log("INFO", "Arrival resync confirmed ship left transit", map[string]interface{}{
-					"ship_symbol": shipSymbol,
-					"action":      "arrival_wait_resync_confirmed",
-					"status":      string(fresh.NavStatus()),
+				// fresh is no longer IN_TRANSIT — normally the arrival. But a
+				// resync can also return a STALE PRE-DEPARTURE snapshot: a
+				// repo/nav-cache read that has not yet caught up to this leg's
+				// departure still shows the hull DOCKED/IN_ORBIT at the ORIGIN
+				// (the sp-n7yp/sp-ynuf nav-cache race, in the "hasn't propagated
+				// the departure yet" direction). Confirming off that snapshot
+				// reports the hull at its destination while it is really still at
+				// the start of the leg — the sp-d6gl false positive (TORWIND-37: a
+				// 2m33s gate hop "confirmed" ~30s in off a stale pre-departure
+				// snapshot, the tour completed with the hull at origin, the
+				// downstream jump hard-crashed).
+				//
+				// At/after the scheduled arrival (dueIn<=0) a not-in-transit read
+				// is overwhelmingly the genuine arrival, so the on-time path is
+				// unchanged — confirm on the status change alone as before. BEFORE
+				// it, confirm only when the AUTHORITATIVE position proves the hull
+				// actually reached the destination it is heading to (a genuine
+				// early arrival, which must still pass) rather than still sitting
+				// at the origin. A stale origin snapshot falls through to keep
+				// polling until the cache catches up (then this same branch
+				// confirms at the destination, or the IN_TRANSIT branches take
+				// over) or the budget deadline parks it (sp-7yej honest exit).
+				if dueIn <= 0 || arrivedAtDestination(fresh, ship) {
+					logger.Log("INFO", "Arrival resync confirmed ship left transit", map[string]interface{}{
+						"ship_symbol": shipSymbol,
+						"action":      "arrival_wait_resync_confirmed",
+						"status":      string(fresh.NavStatus()),
+					})
+					return applyArrival(ship)
+				}
+				logger.Log("WARNING", "Arrival resync not-in-transit before ETA but hull still at origin - stale pre-departure snapshot, continuing to wait", map[string]interface{}{
+					"ship_symbol":    shipSymbol,
+					"action":         "arrival_wait_resync_stale_predeparture",
+					"attempt":        attempt,
+					"due_in_seconds": int(dueIn.Seconds()),
+					"fresh_status":   string(fresh.NavStatus()),
+					"fresh_location": shipLocationSymbol(fresh),
+					"destination":    shipLocationSymbol(ship),
 				})
-				return applyArrival(ship)
 
 			case arrivalIsPast(fresh, time.Now()):
 				// Still IN_TRANSIT but the ship's own ETA has already passed:
@@ -301,6 +334,34 @@ func waitForShipArrivalCore(
 func arrivalIsPast(fresh *domainNavigation.Ship, now time.Time) bool {
 	arrival := fresh.ArrivalTime()
 	return arrival != nil && now.After(*arrival)
+}
+
+// arrivedAtDestination reports whether the resynced snapshot fresh proves the
+// hull has actually reached the destination the in-transit ship is heading to,
+// as opposed to a stale pre-departure snapshot still at the origin (sp-d6gl).
+// While IN_TRANSIT, ship.CurrentLocation() is the destination (StartTransit sets
+// it on departure), and a genuine arrival leaves the hull there; a pre-departure
+// snapshot is still at the origin, which — because a leg's origin and
+// destination are always distinct (StartTransit rejects a same-waypoint hop) —
+// carries a different symbol. A nil location on either side cannot be proven
+// arrived, so it returns false and the wait falls back to the ETA/budget rather
+// than confirm on missing data.
+func arrivedAtDestination(fresh, ship *domainNavigation.Ship) bool {
+	dest := ship.CurrentLocation()
+	at := fresh.CurrentLocation()
+	if dest == nil || at == nil {
+		return false
+	}
+	return at.Symbol == dest.Symbol
+}
+
+// shipLocationSymbol is a nil-safe accessor for a ship's current-location
+// symbol, used only for diagnostics in the stale-snapshot log line.
+func shipLocationSymbol(ship *domainNavigation.Ship) string {
+	if loc := ship.CurrentLocation(); loc != nil {
+		return loc.Symbol
+	}
+	return ""
 }
 
 // applyArrival transitions ship's local NavStatus via Arrive() when it is

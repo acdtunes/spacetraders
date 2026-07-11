@@ -73,7 +73,21 @@ func (noopLogger) Log(string, string, map[string]interface{}) {}
 
 func newArrivalWaitTestShip(t *testing.T, navStatus domainNavigation.NavStatus) *domainNavigation.Ship {
 	t.Helper()
-	loc := mustWaypoint(t, "X1-TEST-A", 0, 0)
+	// "X1-TEST-A" is the in-transit ship's DESTINATION: StartTransit sets
+	// currentLocation to the destination while IN_TRANSIT, so a wait's ship is
+	// always sitting at (heading to) this waypoint. A resync fixture placed at a
+	// DIFFERENT waypoint via newArrivalWaitTestShipAt therefore models the stale
+	// pre-departure snapshot still at the ORIGIN (sp-d6gl).
+	return newArrivalWaitTestShipAt(t, navStatus, "X1-TEST-A")
+}
+
+// newArrivalWaitTestShipAt is newArrivalWaitTestShip with an explicit current
+// location so a resync fixture can be placed at the ORIGIN (a waypoint distinct
+// from the in-transit ship's "X1-TEST-A" destination) to model the stale
+// pre-departure snapshot the sp-d6gl safety-resync must reject as arrival.
+func newArrivalWaitTestShipAt(t *testing.T, navStatus domainNavigation.NavStatus, locationSymbol string) *domainNavigation.Ship {
+	t.Helper()
+	loc := mustWaypoint(t, locationSymbol, 0, 0)
 	fuel, err := shared.NewFuel(100, 100)
 	if err != nil {
 		t.Fatalf("NewFuel: %v", err)
@@ -328,6 +342,115 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 	err := waitForShipArrivalCore(ctx, repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, time.Second)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+}
+
+// --- sp-d6gl: stale pre-departure snapshot must not confirm arrival ----------
+
+// TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfirmUntilAtDestination
+// is the sp-d6gl headline regression. A safety resync fired BEFORE the
+// scheduled arrival reads a STALE PRE-DEPARTURE snapshot: the nav-cache has not
+// yet caught up to this leg's departure, so FindBySymbol returns the hull NOT
+// in transit and still sitting at the ORIGIN (a waypoint distinct from the
+// destination it is really heading to) — the sp-n7yp/sp-ynuf nav-cache race, in
+// the "hasn't caught up to the departure" direction.
+//
+// Before the fix, arrival_wait.go accepted any not-in-transit resync as arrival
+// and returned success off that first stale poll, reporting the hull at its
+// destination while it was still at the start of the leg (TORWIND-37: a 2m33s
+// gate hop "confirmed" ~30s in, the tour completed with the hull at origin, the
+// downstream jump hard-crashed). The wait must instead reject the stale
+// snapshot and confirm ONLY once the resync shows the hull genuinely arrived AT
+// THE DESTINATION.
+//
+// Harness-honesty (the sp-trnp miss this bead exists to correct): the fixture
+// MODELS THE STALL — the first resync returns the pre-departure origin snapshot,
+// a later one the true destination arrival — instead of arriving synchronously
+// and hiding the race. On unfixed code this test fails (success after 1 resync,
+// repo.calls==1); on fixed code the stale poll is ignored and confirmation lands
+// on the destination poll (repo.calls==2).
+func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfirmUntilAtDestination(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit) // heading to X1-TEST-A
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost / not yet published
+
+	repo := &fakeShipQueryRepo{}
+	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
+		if repo.calls == 1 {
+			// STALE pre-departure snapshot: not in transit, still at the ORIGIN.
+			return newArrivalWaitTestShipAt(t, domainNavigation.NavStatusInOrbit, "X1-TEST-ORIGIN"), nil
+		}
+		// Cache caught up: the hull has genuinely arrived AT THE DESTINATION.
+		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil // at X1-TEST-A
+	}
+
+	// waitTimeSeconds=1 keeps both resyncs firmly BEFORE the scheduled arrival
+	// (dueIn>0) — the exact window the false positive lived in. The small budget
+	// bounds the ETA-aligned reschedule so the destination poll lands fast.
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected the wait to ignore the stale pre-departure snapshot and confirm on the real destination arrival, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d after the true destination arrival, got status %s", ship.NavStatus())
+	}
+	if repo.calls != 2 {
+		t.Fatalf("expected the wait to reject the 1 stale pre-departure (origin) snapshot and confirm only on the destination arrival (2 resyncs), got %d — a not-in-transit snapshot at the ORIGIN was accepted as arrival before the ETA (sp-d6gl false positive)", repo.calls)
+	}
+}
+
+// TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPosition
+// is the sp-d6gl over-correction guard: a genuine EARLY arrival — the resync
+// shows the hull not in transit and AT THE DESTINATION well before the
+// scheduled ETA — must still confirm. The position, not the clock, is the proof
+// the hull actually landed, so the fix must not reject real early arrivals just
+// because the ETA has not elapsed.
+func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPosition(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit) // heading to X1-TEST-A
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+		// Live data: the hull genuinely arrived early, sitting AT THE DESTINATION.
+		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil // at X1-TEST-A
+	}}
+
+	// waitTimeSeconds=1 puts the resync firmly BEFORE the scheduled arrival.
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected a genuine early destination arrival to confirm, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d on the early arrival, got status %s", ship.NavStatus())
+	}
+	if repo.calls != 1 {
+		t.Fatalf("expected the early destination arrival to confirm on the first resync, got %d resyncs", repo.calls)
+	}
+}
+
+// TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged pins
+// that the fix leaves the normal on-time path untouched: once the scheduled
+// arrival is due (dueIn<=0), a not-in-transit resync confirms on the status
+// change alone, exactly as before sp-d6gl — the position guard applies only
+// BEFORE the ETA. Modeled with a resync reporting a location that is NOT the
+// destination to prove the past-ETA branch is deliberately position-independent
+// (it must not start rejecting an on-time arrival whose reported waypoint
+// differs).
+func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+		return newArrivalWaitTestShipAt(t, domainNavigation.NavStatusInOrbit, "X1-TEST-ELSEWHERE"), nil
+	}}
+
+	// waitTimeSeconds=0: the scheduled arrival is immediately due, so the first
+	// resync fires AT/PAST the ETA — the normal on-time arrival window.
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected an on-time (past-ETA) arrival to confirm on status alone, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d on the on-time arrival, got status %s", ship.NavStatus())
+	}
+	if repo.calls != 1 {
+		t.Fatalf("expected the past-ETA arrival to confirm on the first resync, got %d resyncs", repo.calls)
 	}
 }
 
