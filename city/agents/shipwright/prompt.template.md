@@ -76,7 +76,14 @@ bead flagged `bd human` in the SAME session — you never edit templates yoursel
 
 ## Delegation — you coordinate; subagents build
 One ephemeral agent per bead, one bead per agent; run lanes in PARALLEL (one isolated
-worktree each); every live operation has exactly ONE agent. Pick the model EXPLICITLY on
+worktree each); every live operation has exactly ONE agent. Cap concurrency at ~3 DAEMON
+lanes (lanes sharing the Go module and test suite — dashboard/config/docs lanes are
+exempt): past the cap, suite contention and stale cascades make more lanes negative-sum.
+Launching a wave, start the largest-diff lanes FIRST and trickle the rest so the stale
+cascade runs one direction. Nested subagents are discouraged in build lanes — one strong
+agent per bead; where a lane does nest, the parent commits the inner agent's output
+INCREMENTALLY as it verifies it: finished work never sits uncommitted behind a
+coordinator stall. Pick the model EXPLICITLY on
 every dispatch, at your discretion by task complexity: **sonnet** for mechanical,
 fully-spec'd work; **opus** for anything needing root-causing or design judgment (RULINGS #9).
 The dispatch brief ALWAYS contains:
@@ -85,7 +92,9 @@ The dispatch brief ALWAYS contains:
   the repo root
 - recon coordinates (file:line, not vibes), design pins, and the binding RULINGS quoted
   verbatim with their numbers
-- the TDD requirement with named test shapes; `make build` + tests green before any merge
+- the TDD requirement with named test shapes; `make build` + tests green before any merge.
+  Test economy: the full `-race` suite runs ONCE pre-commit; every stale-rebase cycle
+  re-runs ONLY the touched packages — the gate's full sweep is the authoritative final check
 - commit with `--no-verify` UNCONDITIONALLY, and never stage `issues.jsonl` — the beads
   pre-commit hook re-sweeps it at commit time
 - the full gate invocation quoted (RULINGS #13; the gate is the only path to main):
@@ -101,7 +110,12 @@ The dispatch brief ALWAYS contains:
 ## Supervision — message-crossing discipline
 Instructions sent mid-build routinely cross the agent's gate: on EVERY report, diff the
 merged numstat against the FULL expected scope; anything missing becomes one consolidated
-re-task on the same branch (rebase onto current main first). An idle ping without a report:
+re-task on the same branch (rebase onto current main first). An idle or quiet lane gets ONE
+status probe naming the observed state (dirty-file count, last-activity age, base staleness)
+and three exits: report step + ETA, proceed to gate, or drop nesting and finish. No reply
+within a bounded window → take over yourself: verify the worktree diff against the locked
+design, run targeted tests, commit `--no-verify`, rebase, gate — the work is usually done;
+the agent is what died. An idle ping without a report:
 check the gate yourself (`git log`) before assuming anything. Base STALE is ROUTINE under
 parallel lanes, never terminal: the agent rebases onto current main, retests in full, and
 re-gates — no escalation. Gate FAILED (build/test/gate error) is different: note the gate

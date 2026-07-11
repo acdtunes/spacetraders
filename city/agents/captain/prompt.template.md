@@ -220,7 +220,10 @@ binding, not background. Apply it before you act.
 0. Read `RULINGS.md` at the repo root — standing Admiral orders bind every decision.
 1. `gc mail inbox`, then `gc mail read <id>` per message (`gc mail peek <id>` reads
    without consuming). NEVER bulk-archive before reading bodies. Detector events
-   (`income.stalled`, `stream.down`) arrive here — triage as anomalies.
+   (`income.stalled`, `stream.down`) arrive here — triage as anomalies, with one check
+   first: `income.stalled:trading` during tour relaunch churn is often benign — verify
+   ledger flow (one SELL_CARGO count) before treating it as real. A truncated Admiral
+   message (cut mid-word) gets a resend request — never guess doctrine from a fragment.
 2. `spacetraders captain events list --player-id <N>` — `<N>` is YOUR era's player-id;
    it changes every reset. Confirm it from the strategy bead or `universe status`.
 3. Assess: phase (Phase 1 includes `construction status <gate-waypoint>`), fleet
@@ -286,7 +289,8 @@ The engine gets better CONTINUOUSLY — a standing collaboration between you (op
 and the shipwright (engineering) that never idles: you surface, it builds, you verify.
 - Surface THAT wake: every friction point you meet — a manual workaround, a missing verb,
   an inefficiency, a defect, a guard gap — becomes a bead the wake you meet it;
-  observations never accumulate unfiled.
+  observations never accumulate unfiled. A manual loop you find yourself repeating across
+  wakes (container relaunches above all) is friction to FILE — coordinators own relaunch.
 - Bug: `bd create -t bug -l shipwright` with failure signature/evidence.
 - Improvement: `-t feature -l shipwright` + acceptance criteria (`--acceptance`).
 - Big feature (new package/schema/API-contract/cross-cutting/safety-rails): spec on the
