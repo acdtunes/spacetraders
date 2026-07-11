@@ -24,15 +24,33 @@ Two-stage solve per the approved design (spec decision #4):
    (plan Task 5 note). If a future case breaks that independence, swap in
    OR-Tools GLOP behind the same function signature.
 
-Selection (Admiral decision 2026-07-09, amending spec §Solve step 4):
-winner = max projected PROFIT; credits/hour is computed, reported in the
-response, and used as the tiebreak between equal-profit tours. Rationale:
-single-tour $/hr prefers concentrated dumping (it ignores the sink-crush
-externality the D39 incident demonstrated); the graduation gate measures
-REALIZED $/hr in the field and catches profit-primary underperformance
-before autonomy. Every hop must add positive marginal profit — allocations
-only exist at margin >= the min-margin gate, and hops with no allocation
-are pruned from the plan.
+Selection (Admiral decision 2026-07-09, amending spec §Solve step 4;
+objective made switchable under sp-1wp8): the DEFAULT winner = max projected
+PROFIT; credits/hour is computed, reported in the response, and used as the
+tiebreak between equal-profit tours. The 2026-07-09 rationale: single-tour
+$/hr prefers concentrated dumping (it ignores the sink-crush externality the
+D39 incident demonstrated); the graduation gate measures REALIZED $/hr in
+the field and catches profit-primary underperformance before autonomy.
+
+sp-1wp8 (Admiral program order: the objective becomes $/HOUR) adds a
+RATE-primary selection — winner = max projected cph, profit tiebreak — as an
+explicit `objective` parameter / TOUR_SOLVER_OBJECTIVE env switch, default
+"profit". Two things changed since the 2026-07-09 decision: (a) the
+concentrated-dumping rationale is now structurally mitigated by the sp-78ai
+absorption ledger (fleet-wide A-cap netting + recovery shadows bound
+concentration in QUANTITY space before selection sees the candidates), and
+(b) the docstring's own promise that inter-system crossings "cost … in the
+$/hr objective" was dead under profit-primary selection (time only reached
+the tiebreak). The DEFAULT stays profit-primary until the offline replay
+(replay_objective.py) shows a clear fleet-$/hr win — the analyst's Q3 bar:
+the objective of a live engine is replay-validated, never A/B-tested on a
+hunch. Zero-time safety: if ANY scored candidate carries no positive time
+estimate, rate mode falls back to profit ordering wholesale (a rate against
+a guess is not a ranking; divide-by-zero can never decide selection).
+
+Every hop must add positive marginal profit under EITHER objective —
+allocations only exist at margin >= the min-margin gate, and hops with no
+allocation are pruned from the plan.
 
 Ladder cap (harbormaster A-capped ruling, same date): no tour plan may
 schedule more than MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE tranches for
@@ -68,6 +86,7 @@ filtering, dict shapes mirror routing.proto snake_case 1:1.
 """
 import logging
 import math
+import os
 import time
 
 logger = logging.getLogger(__name__)
@@ -90,7 +109,55 @@ INTRA_SYSTEM_TRAVEL_SECONDS = 300   # flat fallback when no coords in the reques
 INTER_SYSTEM_TRAVEL_SECONDS = 1800  # flat fallback; = 2*GATE_HOP + JUMP_COOLDOWN scale
 DWELL_SECONDS_PER_LEG = 60          # dock + transact allowance per market stop
 
+# Selection objective (sp-1wp8): "profit" = max projected profit, cph tiebreak (the
+# 2026-07-09 Admiral default); "rate" = max projected cph, profit tiebreak. Resolved
+# per solve: explicit `objective` argument > TOUR_SOLVER_OBJECTIVE env > profit. The
+# env switch (RULINGS #5: a deploy-config knob, not a hardcode) is how the flip ships
+# WITHOUT a proto change — the request and response shapes are untouched either way.
+OBJECTIVE_PROFIT = "profit"
+OBJECTIVE_RATE = "rate"
+OBJECTIVE_ENV_VAR = "TOUR_SOLVER_OBJECTIVE"
+
 _warned_tiers = set()
+_logged_objective = set()
+
+
+def _resolve_objective(objective):
+    """Resolve the selection objective: explicit argument > env > profit default.
+    An unrecognized value falls back to profit (fail toward the proven default,
+    never toward an accidental objective flip) with a once-per-process log."""
+    if objective in (OBJECTIVE_PROFIT, OBJECTIVE_RATE):
+        return objective
+    env = os.environ.get(OBJECTIVE_ENV_VAR, "").strip().lower()
+    if env == OBJECTIVE_RATE:
+        if OBJECTIVE_RATE not in _logged_objective:
+            _logged_objective.add(OBJECTIVE_RATE)
+            logger.info("tour-solver: selection objective RATE (cph-primary) via %s",
+                        OBJECTIVE_ENV_VAR)
+        return OBJECTIVE_RATE
+    if env and env != OBJECTIVE_PROFIT and env not in _logged_objective:
+        _logged_objective.add(env)
+        logger.warning("tour-solver: unrecognized %s=%r — defaulting to profit-primary",
+                       OBJECTIVE_ENV_VAR, env)
+    return OBJECTIVE_PROFIT
+
+
+def _sort_scored(scored, objective):
+    """Order fully-scored candidates by the selection objective (sp-1wp8); returns
+    the objective that ACTUALLY ordered the list.
+
+    profit (default): (-profit, -cph, summary) — byte-identical to the 2026-07-09
+    Admiral decision. rate: (-cph, -profit, summary) — fastest money first, equal
+    rates break on absolute profit. Zero-time pin: rate ordering applies ONLY when
+    every candidate carries a positive time estimate; any seconds<=0 candidate
+    (degenerate input — a real plan always dwells >=60s/leg) drops the WHOLE
+    selection back to profit ordering (and reports so), so a divide-by-zero
+    artifact can never out-rank real plans."""
+    if objective == OBJECTIVE_RATE and all(r["seconds"] > 0 for r, _ in scored):
+        scored.sort(key=lambda rs: (-rs[0]["cph"], -rs[0]["profit"], rs[1]))
+        return OBJECTIVE_RATE
+    scored.sort(key=lambda rs: (-rs[0]["profit"], -rs[0]["cph"], rs[1]))
+    return OBJECTIVE_PROFIT
 
 
 def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
@@ -624,7 +691,7 @@ def _index_absorption(absorption):
 
 
 def solve_tour(snapshot, ship, constraints, model, waypoints=None,
-               deposit_candidates=None, absorption=None):
+               deposit_candidates=None, absorption=None, objective=None):
     """Plan the best multi-hop trade tour for one hull. Pure; proto-shaped dicts.
 
     `waypoints` mirrors OptimizeTradeTourRequest.waypoints (coords for the
@@ -640,9 +707,15 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     depth (net_absorption) without touching per-tranche prices. None/empty -> no
     netting, plans against full depth byte-identical to pre-sp-78ai.
 
+    `objective` (sp-1wp8): OBJECTIVE_PROFIT (default) or OBJECTIVE_RATE — see the
+    module docstring's Selection section. None resolves via TOUR_SOLVER_OBJECTIVE,
+    falling back to profit. Selection-only: candidate generation, tranche pricing,
+    guards, and the response shape are identical under both.
+
     Fail-loud contract: missing artifact or version mismatch are structured
     infeasible reasons, never a silent fallback (spec error-handling table).
     """
+    objective = _resolve_objective(objective)
     if not model:
         return _infeasible("model_artifact_missing", "")
     model_version = f"{model['fit_version']}@{model['era']}"
@@ -693,16 +766,29 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
         seen.add(signature)
         summary = "→".join(l["waypoint_symbol"] for l in result["legs"]) or "→".join(seq)
         scored.append((result, summary))
-    # Profit-primary selection, cph tiebreak (Admiral decision — docstring).
-    scored.sort(key=lambda rs: (-rs[0]["profit"], -rs[0]["cph"], rs[1]))
+    # Objective-ordered selection (sp-1wp8): profit-primary by default (the
+    # 2026-07-09 Admiral decision), cph-primary under OBJECTIVE_RATE. `effective`
+    # is what actually ordered the list (rate falls back to profit on any
+    # zero-time candidate), so the rejection reasons below can never claim a
+    # comparison the sort didn't make.
+    effective = _sort_scored(scored, objective)
 
     def rejected(entries, winner=None):
         # winner=None only on the infeasible path, where the sort invariant
-        # guarantees every entry has profit <= 0 (first branch).
+        # guarantees every entry has profit <= 0 (first branch — under BOTH
+        # objectives an all-nonpositive pool sorts a nonpositive candidate first).
         out = []
         for result, summary in entries[:TOP_REJECTED_N]:
             if result["profit"] <= 0:
                 reason = "no profitable allocation under tranche decay/guards"
+            elif effective == OBJECTIVE_RATE:
+                # Rate-primary honesty: name the cph comparison that decided it.
+                if result["cph"] < winner["cph"]:
+                    reason = (f"cph {result['cph']:,.0f}/hr < winner "
+                              f"{winner['cph']:,.0f}/hr (profit {result['profit']:,})")
+                else:
+                    reason = (f"cph tie, profit {result['profit']:,} <= winner "
+                              f"{winner['profit']:,}")
             elif result["profit"] < winner["profit"]:
                 reason = (f"profit {result['profit']:,} < winner "
                           f"{winner['profit']:,} (cph {result['cph']:,.0f}/hr)")

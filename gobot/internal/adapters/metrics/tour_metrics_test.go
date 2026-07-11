@@ -229,3 +229,38 @@ func TestTourMetrics_NilSafe(t *testing.T) {
 	empty.SetResolvedMaxSpend(1, 200)
 	empty.RecordJumpLoaded(1, false)
 }
+
+// TestTourMetrics_PlanRateHistogram_RegistersExportsAndPairsPhases (sp-1wp8): the
+// tour_plan_rate histogram registers, exports once observed, keys projected and realized
+// as SEPARATE phase series (the pair is what makes ranking quality measurable), and
+// accepts a negative realized rate (a losing tour) without panicking.
+func TestTourMetrics_PlanRateHistogram_RegistersExportsAndPairsPhases(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	c.ObservePlanRate(9, "projected", 390000) // the 42-min-rifles class
+	c.ObservePlanRate(9, "projected", 150000)
+	c.ObservePlanRate(9, "realized", 212000)
+	c.ObservePlanRate(9, "realized", -18000) // a losing tour is still an observation
+
+	projected, ok := gatherHistogramCount(t, Registry, "spacetraders_daemon_tour_plan_rate",
+		map[string]string{"player_id": "9", "phase": "projected"})
+	if !ok || projected != 2 {
+		t.Fatalf("expected 2 projected observations on the phase=projected series, got %d (ok=%v)", projected, ok)
+	}
+	realized, ok := gatherHistogramCount(t, Registry, "spacetraders_daemon_tour_plan_rate",
+		map[string]string{"player_id": "9", "phase": "realized"})
+	if !ok || realized != 2 {
+		t.Fatalf("expected 2 realized observations on the phase=realized series, got %d (ok=%v)", realized, ok)
+	}
+
+	// The nil-safe contract every sibling emitter keeps (RULINGS #4).
+	var nilC *TourMetricsCollector
+	nilC.ObservePlanRate(9, "projected", 1)
+}

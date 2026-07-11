@@ -44,6 +44,14 @@ const (
 	// hull), so a handful of extra planner calls at that boundary is cheap insurance
 	// against a wasted jump.
 	repositionMaxCandidatesDefault = 3
+
+	// repositionReplanAllowanceSeconds prices the post-jump re-plan overhead (snapshot
+	// assembly + the solver call + the reserve round-trip) into a candidate's
+	// time-to-value for the sp-1wp8 rate ranking. Small next to the jump and the plan
+	// itself, but pricing it keeps the denominator honest end-to-end: the rate a
+	// candidate is ranked on is fresh profit over EVERYTHING between "decide to jump"
+	// and "profit booked".
+	repositionReplanAllowanceSeconds = 60.0
 )
 
 // repositionEpisode is the in-memory state of the current margins-death episode (sp-zhii):
@@ -78,6 +86,12 @@ type repositionScore struct {
 	prerank     int
 	freshProfit int64
 	feasible    bool
+	// rate is the candidate's projected fresh credits/HOUR over its full time-to-value
+	// (jump + re-plan + the plan's own projected wall-clock) — the sp-1wp8 ranking key.
+	// hasRate=false means the pre-flight plan carried no usable time estimate (cph<=0);
+	// the episode then falls back to absolute-fresh ordering (selectRepositionWinner).
+	rate    float64
+	hasRate bool
 	// reason is WHY a non-feasible candidate was rejected, for the ranking log (sp-lxwn):
 	// the solver's OWN infeasibility reason (e.g. "no_profitable_tour"), a "planner-error"
 	// marker when the pre-flight CALL itself failed, or "" for a contender. Empty renders as
@@ -143,12 +157,14 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		floor = repositionMinMarginDefault
 	}
 
-	// Evaluate at most K pre-ranked candidates with a real planner call, ranking them by
-	// planned FRESH profit (total minus held-liquidation minus synthetic deposit value —
-	// the honest new-cash-earning a relocation buys, so a laden hull's launch-liquidation
-	// can't flatter a dead ground into looking worth the jump).
+	// Evaluate at most K pre-ranked candidates with a real planner call. Each feasible
+	// candidate carries its planned FRESH profit (total minus held-liquidation minus
+	// synthetic deposit value — the honest new-cash-earning a relocation buys, so a laden
+	// hull's launch-liquidation can't flatter a dead ground into looking worth the jump)
+	// AND its projected fresh-$/HOUR (sp-1wp8): the winner is the best RATE among
+	// floor-clearing candidates, because a fresh=200k ground five minutes of plan away
+	// earns more per hour than a fresh=345k ground twenty-five minutes away.
 	var evaluated []repositionScore
-	var best *repositionScore
 	for i, cand := range candidates {
 		if i >= k {
 			break
@@ -158,10 +174,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		if perr == nil && plan != nil && plan.Feasible {
 			s.feasible = true
 			s.freshProfit = plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
-			if best == nil || s.freshProfit > best.freshProfit {
-				chosen := s
-				best = &chosen
-			}
+			s.rate, s.hasRate = repositionCandidateRate(s.freshProfit, plan)
 		} else {
 			// sp-lxwn: capture WHY this candidate is not a contender so the ranking log names
 			// it. The solver returns "no_profitable_tour" for a tapped/depleted ground (it built
@@ -172,6 +185,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		evaluated = append(evaluated, s)
 	}
 
+	best, _, _ := selectRepositionWinner(evaluated, floor)
 	logRepositionRanking(logger, cmd.ShipSymbol, currentSystem, evaluated, best, floor)
 
 	if best == nil || best.freshProfit < floor {
@@ -186,9 +200,14 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// cooldown-riding travel machinery (sp-wc5h; SkipClaim — the container already holds
 	// the hull, RULINGS #7), then clear the persisted flag once it lands.
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: true, TargetSystem: best.system, TargetWaypoint: best.waypoint})
-	logger.Log("INFO", fmt.Sprintf("Reposition: margins died at %s - jumping to %s (%s), planned fresh profit %d >= floor %d, then re-planning there", currentSystem, best.system, best.waypoint, best.freshProfit, floor), map[string]interface{}{
+	rateNote := ""
+	if best.hasRate {
+		rateNote = fmt.Sprintf(" (projected %.0f fresh/hr)", best.rate)
+	}
+	logger.Log("INFO", fmt.Sprintf("Reposition: margins died at %s - jumping to %s (%s), planned fresh profit %d >= floor %d%s, then re-planning there", currentSystem, best.system, best.waypoint, best.freshProfit, floor, rateNote), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "from_system": currentSystem, "to_system": best.system,
 		"to_waypoint": best.waypoint, "planned_fresh_profit": best.freshProfit, "floor": floor,
+		"planned_fresh_rate_per_hour": best.rate,
 	})
 
 	// sp-ed4i look-back loading: the reposition jump was a structural deadhead (RepositionToWaypoint
@@ -305,6 +324,75 @@ func freshListings(listings []trading.GoodListing, now time.Time, maxAge time.Du
 		}
 	}
 	return fresh
+}
+
+// repositionCandidateRate prices a candidate as projected FRESH credits/HOUR over its
+// full time-to-value (sp-1wp8): the one-way jump (crossSystemHopSeconds — reposition
+// candidates are one gate hop away by construction, buildRepositionCandidates), the
+// post-jump re-plan allowance, and the candidate plan's own projected wall-clock,
+// recovered by inverting the solver's cph (cph = profit/(seconds/3600) ⇒ seconds =
+// profit/cph×3600 — pure algebra on the response, no proto change). ok=false when the
+// plan carries no usable time estimate (cph<=0, e.g. a degenerate/mocked planner);
+// callers then fall back to absolute-fresh ordering rather than ranking a real rate
+// against a guess (the sp-1wp8 divide-by-zero regression pin).
+func repositionCandidateRate(freshProfit int64, plan *routing.TourPlan) (float64, bool) {
+	if plan == nil || plan.ProjectedProfit <= 0 || plan.ProjectedCreditsPerHour <= 0 {
+		return 0, false
+	}
+	planSeconds := float64(plan.ProjectedProfit) / plan.ProjectedCreditsPerHour * 3600
+	hours := (crossSystemHopSeconds + repositionReplanAllowanceSeconds + planSeconds) / 3600
+	return float64(freshProfit) / hours, true
+}
+
+// selectRepositionWinner picks the reposition destination (sp-1wp8): the highest
+// projected fresh-$/hr among FLOOR-CLEARING feasible candidates — the floor stays
+// ABSOLUTE (a blazing rate on a sub-floor fresh profit never justifies the jump) —
+// with equal-rate ties broken on absolute fresh profit. When any floor-clearing
+// candidate lacks a time estimate the whole choice falls back to absolute-fresh
+// ordering (rateMode=false): comparing a real rate against a guess is not a ranking.
+// profitMax names the absolute-fresh leader among the same floor-clearing set so the
+// ranking log can show when rate REORDERED the choice (the acceptance evidence).
+// When no candidate clears the floor, winner is the best feasible by fresh profit —
+// preserving the pre-sp-1wp8 caller contract where the floor gate and the honest
+// "best X < floor" exit log read it; winner is nil only when nothing is feasible.
+func selectRepositionWinner(evaluated []repositionScore, floor int64) (winner, profitMax *repositionScore, rateMode bool) {
+	var clearing []*repositionScore
+	for i := range evaluated {
+		if evaluated[i].feasible && evaluated[i].freshProfit >= floor {
+			clearing = append(clearing, &evaluated[i])
+		}
+	}
+	if len(clearing) == 0 {
+		var best *repositionScore
+		for i := range evaluated {
+			s := &evaluated[i]
+			if s.feasible && (best == nil || s.freshProfit > best.freshProfit) {
+				best = s
+			}
+		}
+		return best, best, false
+	}
+	rateMode = true
+	for _, s := range clearing {
+		if !s.hasRate {
+			rateMode = false
+			break
+		}
+	}
+	winner, profitMax = clearing[0], clearing[0]
+	for _, s := range clearing[1:] {
+		if s.freshProfit > profitMax.freshProfit {
+			profitMax = s
+		}
+		if rateMode {
+			if s.rate > winner.rate || (s.rate == winner.rate && s.freshProfit > winner.freshProfit) {
+				winner = s
+			}
+		} else if s.freshProfit > winner.freshProfit {
+			winner = s
+		}
+	}
+	return winner, profitMax, rateMode
 }
 
 // repositionCandidateReason renders WHY a pre-flight candidate is not a contender, for the
@@ -435,7 +523,12 @@ func (h *RunTourCoordinatorHandler) persistReposition(ctx context.Context, cmd *
 //   - infeasible: the solver declined a real tour (the ground itself cannot be toured);
 //   - fresh=N,below-floor: tourable, but the planned fresh margin is under the relocation
 //     floor (RULINGS #5) — feasible yet not worth the jump, NOT the same as infeasible;
-//   - fresh=N: tourable and clears the floor (a real contender / the chosen one).
+//   - fresh=N[,rate=R/hr]: tourable and clears the floor (a real contender / the chosen
+//     one), with its projected fresh-$/hr when the plan carried a time estimate (sp-1wp8).
+//
+// sp-1wp8 acceptance evidence: when the RATE ordering chose a different candidate than
+// absolute fresh profit would have, the chosen note names the out-ranked profit-max
+// candidate ("rate-reorder over profit-max …") so both orderings are visible on the line.
 func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem string, evaluated []repositionScore, best *repositionScore, floor int64) {
 	parts := make([]string, 0, len(evaluated))
 	for _, s := range evaluated {
@@ -451,6 +544,8 @@ func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem 
 			parts = append(parts, fmt.Sprintf("%s(prerank=%d,%s)", s.system, s.prerank, reason))
 		case s.freshProfit < floor:
 			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d,below-floor)", s.system, s.prerank, s.freshProfit))
+		case s.hasRate:
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d,rate=%.0f/hr)", s.system, s.prerank, s.freshProfit, s.rate))
 		default:
 			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d)", s.system, s.prerank, s.freshProfit))
 		}
@@ -459,6 +554,16 @@ func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem 
 	switch {
 	case best != nil && best.freshProfit >= floor:
 		chosen = fmt.Sprintf("%s (fresh %d)", best.system, best.freshProfit)
+		// Re-derive the choice context from the same pure selector the caller used, so the
+		// annotation can never drift from the actual decision: in rate mode the chosen
+		// line carries the winner's rate, and — when rate REORDERED the choice — names the
+		// profit-max candidate it out-ranked (both orderings visible, sp-1wp8).
+		if _, profitMax, rateMode := selectRepositionWinner(evaluated, floor); rateMode && best.hasRate {
+			chosen = fmt.Sprintf("%s (fresh %d, rate %.0f/hr)", best.system, best.freshProfit, best.rate)
+			if profitMax != nil && profitMax.system != best.system {
+				chosen += fmt.Sprintf("; rate-reorder over profit-max %s (fresh %d)", profitMax.system, profitMax.freshProfit)
+			}
+		}
 	case best != nil:
 		// A best feasible candidate exists but falls under the floor — name it so the log
 		// shows the ground WAS tourable, just not worth the jump (distinct from all-infeasible).

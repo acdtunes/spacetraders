@@ -657,3 +657,102 @@ def test_netting_buy_side_advances_source_price():
     buys = [(t["units"], t["expected_unit_price"]) for l in out["legs"]
             for t in l["trades"] if l["waypoint_symbol"] == "A" and t["is_buy"]]
     assert buys == [(40, 110)], out                    # one tranche at the advanced buy step
+
+
+# --- sp-1wp8: selection objective (profit default, rate switchable) ---
+
+def _objective_fixture():
+    """Two disjoint lanes from HOME: a FAST small one (A1->A2, 8k in ~4min,
+    ~120k/hr) and a SLOW bigger one (B1->B2, 12k in ~2h, ~6k/hr). Profit-primary
+    tours the big/combined manifest; rate-primary must take the fast lane."""
+    snapshot = [
+        snap("A1", "S1", "G_FAST", ask=100, bid=0, tv=40),
+        snap("A2", "S1", "G_FAST", ask=999, bid=300, tv=40),
+        snap("B1", "S1", "G_BIG", ask=100, bid=0, tv=40),
+        snap("B2", "S1", "G_BIG", ask=999, bid=400, tv=40),
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="HOME", current_system="S1",
+                hold_capacity=40, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    times = {("HOME", "A1"): 60, ("A1", "A2"): 60,
+             ("HOME", "B1"): 3600, ("B1", "B2"): 3600}
+
+    def travel(a, b):
+        if a == b:
+            return 0
+        return times.get((a, b)) or times.get((b, a)) or 3600
+
+    cons = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e",
+                _travel_fn=travel)
+    return snapshot, ship, cons
+
+
+def test_default_objective_is_profit_primary_and_rate_flips_to_fast_dense():
+    snapshot, ship, cons = _objective_fixture()
+
+    # Default (no objective, no env): profit-primary — the winner books the BIG
+    # sink's revenue (a B2 sell leg exists), whatever else it packs.
+    out_profit = solve_tour(snapshot, ship, cons, MODEL)
+    assert out_profit["feasible"]
+    profit_sinks = {l["waypoint_symbol"] for l in out_profit["legs"]
+                    for t in l["trades"] if not t["is_buy"]}
+    assert "B2" in profit_sinks, f"profit-primary must take the bigger manifest, sold at {profit_sinks}"
+
+    # objective="rate": cph-primary — the winner is the FAST lane alone (~120k/hr
+    # beats any manifest that rides the 2h B corridor), with a strictly higher cph
+    # and strictly lower absolute profit than the profit-primary choice (proof the
+    # two objectives genuinely diverged on this fixture).
+    out_rate = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out_rate["feasible"]
+    rate_stops = {l["waypoint_symbol"] for l in out_rate["legs"]}
+    assert rate_stops <= {"A1", "A2"}, f"rate-primary must fly the fast lane only, got {rate_stops}"
+    assert out_rate["projected_credits_per_hour"] > out_profit["projected_credits_per_hour"]
+    assert out_rate["projected_profit"] < out_profit["projected_profit"]
+
+
+def test_objective_env_var_selects_rate_and_explicit_argument_wins(monkeypatch):
+    snapshot, ship, cons = _objective_fixture()
+
+    # Env-selected rate mode (the production switch: no proto change).
+    monkeypatch.setenv("TOUR_SOLVER_OBJECTIVE", "rate")
+    out_env = solve_tour(snapshot, ship, cons, MODEL)
+    stops = {l["waypoint_symbol"] for l in out_env["legs"]}
+    assert stops <= {"A1", "A2"}, f"TOUR_SOLVER_OBJECTIVE=rate must select rate mode, got {stops}"
+
+    # An explicit argument beats the env (the replay harness's lever).
+    out_explicit = solve_tour(snapshot, ship, cons, MODEL, objective="profit")
+    sinks = {l["waypoint_symbol"] for l in out_explicit["legs"]
+             for t in l["trades"] if not t["is_buy"]}
+    assert "B2" in sinks, f"explicit objective='profit' must override the env, sold at {sinks}"
+
+    # An unrecognized env value fails toward the proven default (profit).
+    monkeypatch.setenv("TOUR_SOLVER_OBJECTIVE", "bogus")
+    out_bogus = solve_tour(snapshot, ship, cons, MODEL)
+    bogus_sinks = {l["waypoint_symbol"] for l in out_bogus["legs"]
+                   for t in l["trades"] if not t["is_buy"]}
+    assert "B2" in bogus_sinks
+
+
+def test_sort_scored_zero_time_falls_back_to_profit_ordering():
+    # The sp-1wp8 regression pin: a seconds<=0 candidate (degenerate input) drops
+    # the WHOLE selection back to profit ordering — a divide-by-zero artifact
+    # (cph=0 on instant profit) must never decide selection in either direction.
+    from utils.tour_solver import _sort_scored, OBJECTIVE_RATE, OBJECTIVE_PROFIT
+    scored = [
+        (dict(profit=50, cph=99_999.0, seconds=10), "fast"),
+        (dict(profit=100, cph=0.0, seconds=0), "instant-degenerate"),
+    ]
+    effective = _sort_scored(scored, OBJECTIVE_RATE)
+    assert effective == OBJECTIVE_PROFIT
+    assert scored[0][1] == "instant-degenerate"  # profit ordering: 100 first
+
+    # With every candidate carrying real time, rate mode orders by cph.
+    scored = [
+        (dict(profit=100, cph=6_000.0, seconds=60_000), "slow-big"),
+        (dict(profit=50, cph=99_999.0, seconds=10), "fast"),
+    ]
+    effective = _sort_scored(scored, OBJECTIVE_RATE)
+    assert effective == OBJECTIVE_RATE
+    assert scored[0][1] == "fast"

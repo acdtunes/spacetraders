@@ -194,7 +194,7 @@ func TestRankSpreadsForHold_HeavyHullPrefersDeepLaneOverThinOne(t *testing.T) {
 	}
 
 	// Weighting must never mutate the lane's real, unpenalized economics - the
-	// same "ranking-only adjustment" contract rankLanesWithGatePenalty upholds.
+	// same "ranking-only adjustment" contract rankLanesByCircuitRate upholds.
 	for _, l := range lanes {
 		if l.Good == "THINGOOD" && (l.SpreadPerUnit != 8000 || l.CappedSpread != 160000) {
 			t.Fatalf("THINGOOD's real economics must be untouched, got spread/u=%d capped=%d", l.SpreadPerUnit, l.CappedSpread)

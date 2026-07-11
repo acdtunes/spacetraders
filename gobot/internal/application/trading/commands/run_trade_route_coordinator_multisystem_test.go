@@ -13,12 +13,12 @@ import (
 )
 
 // sp-wlev — scanLanes now looks one jump-gate hop beyond the home system so the
-// ranker can surface gate-crossing lanes alongside home-system ones, penalized
-// via rankLanesWithGatePenalty to reflect the jump+cooldown time cost RankSpreads'
-// pure per-unit-spread view can't see. These tests exercise that aggregation
-// through scanLanes itself (not the already-covered pure functions), because
-// aggregation only pays off when BOTH the neighbor-discovery wiring and the
-// penalty are actually applied end to end.
+// ranker can surface gate-crossing lanes alongside home-system ones, RATE-ranked
+// via rankLanesByCircuitRate (sp-1wp8) so the jump+cooldown time cost RankSpreads'
+// pure per-unit-spread view can't see enters as circuit hours. These tests
+// exercise that aggregation through scanLanes itself (not the already-covered
+// pure functions), because aggregation only pays off when BOTH the
+// neighbor-discovery wiring and the rate ranking are actually applied end to end.
 
 // msMediator answers GetJumpGateConnectionsQuery for the multi-system scanLanes
 // tests; scanLanes never dispatches anything else.
@@ -149,11 +149,12 @@ func TestScanLanes_NeighborQueryFails_FailsOpenToHomeSystemOnly(t *testing.T) {
 	}
 }
 
-// End-to-end proof that scanLanes actually applies rankLanesWithGatePenalty (not
+// End-to-end proof that scanLanes actually applies rankLanesByCircuitRate (not
 // just RankSpreads) to its aggregated output: GOOD_B's raw cross-system spread
-// (600) beats GOOD_A's same-system spread (500), but after the 200/unit gate
-// penalty GOOD_B nets 400 < 500, so GOOD_A must rank first.
-func TestScanLanes_CrossSystemLane_PenaltyCanLoseToSameSystemLane(t *testing.T) {
+// (550) beats GOOD_A's same-system spread (500), but its +10% value lead is
+// smaller than the gate's ~17.6% circuit-time premium (33,000/1.3067h ≈
+// 25,255/hr < 30,000/1.111h = 27,000/hr), so GOOD_A must rank first.
+func TestScanLanes_CrossSystemLane_RateCanLoseToSameSystemLane(t *testing.T) {
 	marketRepo := &msMarketRepo{
 		waypointsBySystem: map[string][]string{
 			"X1-HOME": {"X1-HOME-A1", "X1-HOME-A2", "X1-HOME-B1"},
@@ -163,10 +164,10 @@ func TestScanLanes_CrossSystemLane_PenaltyCanLoseToSameSystemLane(t *testing.T) 
 			// GOOD_A: same-system lane, spread 500 (600-100), volume 60.
 			"X1-HOME-A1": {symbol: "GOOD_A", bid: 50, ask: 100, volume: 60, tradeType: market.TradeTypeExport},
 			"X1-HOME-A2": {symbol: "GOOD_A", bid: 600, ask: 650, volume: 60, tradeType: market.TradeTypeImport},
-			// GOOD_B: cross-system lane, raw spread 600 (beats GOOD_A's 500) but loses
-			// once the 200/unit penalty knocks its effective spread down to 400.
+			// GOOD_B: cross-system lane, raw spread 550 (beats GOOD_A's 500) but loses
+			// on RATE once its circuit pays the round-trip jump surcharge.
 			"X1-HOME-B1": {symbol: "GOOD_B", bid: 50, ask: 100, volume: 60, tradeType: market.TradeTypeExport},
-			"X1-NEAR-B2": {symbol: "GOOD_B", bid: 700, ask: 750, volume: 60, tradeType: market.TradeTypeImport},
+			"X1-NEAR-B2": {symbol: "GOOD_B", bid: 650, ask: 700, volume: 60, tradeType: market.TradeTypeImport},
 		},
 	}
 	mediator := &msMediator{connections: map[string][]string{"X1-HOME": {"X1-NEAR"}}}
@@ -180,11 +181,11 @@ func TestScanLanes_CrossSystemLane_PenaltyCanLoseToSameSystemLane(t *testing.T) 
 		t.Fatalf("expected both lanes ranked, got %d: %+v", len(lanes), lanes)
 	}
 	if lanes[0].Good != "GOOD_A" {
-		t.Fatalf("expected the same-system lane GOOD_A first once the cross-system penalty applies (raw 600 -> penalized 400 < 500), got %q first", lanes[0].Good)
+		t.Fatalf("expected the same-system lane GOOD_A first on rate (27,000/hr vs the surcharged 25,255/hr), got %q first", lanes[0].Good)
 	}
-	// The cross-system lane's REAL (unpenalized) spread must survive unmutated
-	// for downstream reporting (e.g. FirstDisciplinedLane, the response's Good).
-	if lanes[1].Good != "GOOD_B" || lanes[1].SpreadPerUnit != 600 {
-		t.Fatalf("expected GOOD_B second with its real spread=600 intact, got %+v", lanes[1])
+	// The cross-system lane's REAL spread must survive unmutated for downstream
+	// reporting (e.g. FirstDisciplinedLane, the response's Good).
+	if lanes[1].Good != "GOOD_B" || lanes[1].SpreadPerUnit != 550 {
+		t.Fatalf("expected GOOD_B second with its real spread=550 intact, got %+v", lanes[1])
 	}
 }

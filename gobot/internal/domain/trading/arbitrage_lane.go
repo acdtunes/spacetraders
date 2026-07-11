@@ -143,7 +143,7 @@ func RankSpreads(listings []GoodListing) []ArbitrageLane {
 // This is a standalone, single-system convenience path (and the direct subject of
 // this package's hold-fit tests below). The production multi-system coordinator
 // does NOT compose this function — it calls HoldFitWeight directly inside its own
-// unified ranking pass (application-layer rankLanesWithGatePenalty), because that
+// unified ranking pass (application-layer rankLanesByCircuitRate), because that
 // pass must ALSO apply a cross-system gate penalty, and two independent
 // from-scratch re-rankings cannot be chained (each recomputes its score purely
 // from a lane's own fields, so whichever runs last silently discards the other's
@@ -163,7 +163,7 @@ func RankSpreadsForHold(listings []GoodListing, shipCapacity int) []ArbitrageLan
 // lane whose cap is a small sliver of the hold scores close to 0.
 //
 // Exported so the application-layer coordinator can fold hold-fit directly into
-// its own unified ranking pass (rankLanesWithGatePenalty) alongside the
+// its own unified ranking pass (rankLanesByCircuitRate) alongside the
 // cross-system gate penalty, rather than chaining two separate from-scratch
 // re-rankings that would silently cancel each other out. Callers must guard
 // shipCapacity > 0 themselves; this function does not special-case shipCapacity
@@ -181,7 +181,7 @@ func HoldFitWeight(volumeCap, shipCapacity int) float64 {
 
 // reorderByHoldFit re-ranks lanes by CappedSpread × HoldFitWeight, descending,
 // tie-broken by the lane's real SpreadPerUnit desc then Good asc — the same
-// ranking-only-adjustment contract rankLanesWithGatePenalty follows elsewhere: it
+// ranking-only-adjustment contract rankLanesByCircuitRate follows elsewhere: it
 // reorders the slice but never mutates a lane's real, unpenalized economics
 // (SpreadPerUnit, VolumeCap, CappedSpread all pass through untouched).
 func reorderByHoldFit(lanes []ArbitrageLane, shipCapacity int) []ArbitrageLane {

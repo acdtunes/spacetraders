@@ -18,9 +18,10 @@ import (
 // ranking (rather than ranking each system separately) is what lets a good that
 // only exports in one system and only imports in another form a lane at all —
 // trading.RankSpreads pairs listings purely by good and waypoint, indifferent to
-// which system either side is in. Cross-system candidates are then penalized via
-// rankLanesWithGatePenalty to reflect the jump+cooldown time cost a raw per-unit
-// spread can't see.
+// which system either side is in. Candidates are then RATE-ranked via
+// rankLanesByCircuitRate (sp-1wp8) — per-circuit value over estimated circuit
+// hours, a gate-crossing circuit paying its jump+cooldown surcharge in the
+// denominator — the time cost a raw per-unit spread can't see.
 //
 // Neighbor discovery is fail-open: a system with no jump gate, or a discovery
 // query that errors, simply contributes no extra listings — never an aborted
@@ -101,26 +102,26 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		}
 	}
 
-	// Hold-vs-absorption weighting (sp-pnx0) and the cross-system jump-gate
-	// penalty are folded into ONE scoring pass inside rankLanesWithGatePenalty,
+	// Hold-vs-absorption weighting (sp-pnx0) and the cross-system circuit-time
+	// surcharge are folded into ONE scoring pass inside rankLanesByCircuitRate,
 	// not chained as two sequential re-rankings: both are "recompute-from-
 	// scratch" rankers that derive their score purely from each lane's own
 	// fields, ignoring input order, so composing them as funcB(funcA(lanes))
 	// would let funcB silently discard funcA's reordering. Start from the
 	// plain trading.RankSpreads order (not RankSpreadsForHold) since hold-fit
 	// weighting is applied here via shipCapacity instead. targetDest (sp-xwa1)
-	// waives the cross-system penalty for the operator-directed lane only —
-	// see rankLanesWithGatePenalty's doc.
+	// ranks the operator-directed lane at the in-system baseline — see
+	// rankLanesByCircuitRate's doc.
 	//
 	// The absorption consult (sp-78ai L4) runs as its own step BEFORE
-	// rankLanesWithGatePenalty, not folded into it: rankLanesWithGatePenalty is a
+	// rankLanesByCircuitRate, not folded into it: rankLanesByCircuitRate is a
 	// pure reorder (every input lane comes back out, just resequenced), while the
 	// consult REMOVES lanes outright — mixing the two would make the reorder step
 	// silently lossy. READ-ONLY (trade-analyst Q1: "circuits write nothing").
 	ranked := trading.RankSpreads(listings)
 	consult := h.readAbsorption(ctx, playerID)
 	ranked = h.filterShadowedLanes(ctx, ranked, consult, shipCapacity, playerID)
-	return rankLanesWithGatePenalty(ranked, shipCapacity, targetDest), nil
+	return rankLanesByCircuitRate(ranked, shipCapacity, targetDest), nil
 }
 
 // collectSystemListings reads every cached market in one system into flat

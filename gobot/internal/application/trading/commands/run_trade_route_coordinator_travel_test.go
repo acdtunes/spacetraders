@@ -66,16 +66,17 @@ func TestCalculateCooldownWaitBudget_MirrorsArrivalWaitPattern(t *testing.T) {
 	}
 }
 
-// rankLanesWithGatePenalty must leave a same-system-only ranking untouched:
-// with no cross-system lane present, no penalty ever applies, so the order
-// RankSpreads already produced must survive unchanged.
-func TestRankLanesWithGatePenalty_AllSameSystem_OrderUnchanged(t *testing.T) {
+// rankLanesByCircuitRate must leave a same-system-only ranking untouched:
+// with no cross-system lane present every lane divides by the same in-system
+// circuit baseline, so the order RankSpreads already produced must survive
+// unchanged.
+func TestRankLanesByCircuitRate_AllSameSystem_OrderUnchanged(t *testing.T) {
 	lanes := []trading.ArbitrageLane{
 		{Good: "A", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-AAA-2", SpreadPerUnit: 500, VolumeCap: 20, CappedSpread: 10000},
 		{Good: "B", SourceWaypoint: "X1-AAA-3", DestWaypoint: "X1-AAA-4", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	got := rankLanesWithGatePenalty(lanes, 0, "")
+	got := rankLanesByCircuitRate(lanes, 0, "")
 
 	if len(got) != 2 || got[0].Good != "A" || got[1].Good != "B" {
 		t.Fatalf("expected order [A, B] unchanged, got %+v", got)
@@ -83,45 +84,46 @@ func TestRankLanesWithGatePenalty_AllSameSystem_OrderUnchanged(t *testing.T) {
 }
 
 // A cross-system lane must lose ranking priority to a same-system lane it
-// only narrowly beat on raw spread - the penalty represents the jump
-// cooldown's opportunity cost against an equally-profitable same-system
-// lane. Critically, the ORIGINAL lane values (SpreadPerUnit, CappedSpread)
-// must survive unmutated: the penalty affects ordering only, never the
+// only narrowly beat on raw value — its circuit spends the round-trip
+// jump+cooldown surcharge not trading, so a +12.5% value lead loses to the
+// ~17.6% time premium on RATE (9,000/1.3067h ≈ 6,886/hr < 8,000/1.111h =
+// 7,200/hr). Critically, the ORIGINAL lane values (SpreadPerUnit,
+// CappedSpread) must survive unmutated: rate affects ordering only, never the
 // lane's real economics that ClearsFloor()/the executor read.
-func TestRankLanesWithGatePenalty_CloseCall_SameSystemLaneWins(t *testing.T) {
+func TestRankLanesByCircuitRate_CloseCall_SameSystemLaneWins(t *testing.T) {
 	lanes := []trading.ArbitrageLane{
-		// cross-system: raw spread 500, penalty 200 -> effective 300 * volCap 20 = 6000
-		{Good: "X", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-BBB-1", SpreadPerUnit: 500, VolumeCap: 20, CappedSpread: 10000},
-		// same-system: raw spread 400, no penalty -> effective 400 * volCap 20 = 8000 > 6000
+		// cross-system: value 450×20 = 9,000 over the surcharged circuit → ~6,886/hr
+		{Good: "X", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-BBB-1", SpreadPerUnit: 450, VolumeCap: 20, CappedSpread: 9000},
+		// same-system: value 400×20 = 8,000 over the baseline circuit → 7,200/hr
 		{Good: "Y", SourceWaypoint: "X1-AAA-2", DestWaypoint: "X1-AAA-3", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	got := rankLanesWithGatePenalty(lanes, 0, "")
+	got := rankLanesByCircuitRate(lanes, 0, "")
 
 	if len(got) != 2 || got[0].Good != "Y" || got[1].Good != "X" {
-		t.Fatalf("expected penalty to flip order to [Y, X], got %+v", got)
+		t.Fatalf("expected the rate ranking to flip order to [Y, X], got %+v", got)
 	}
 	// The demoted cross-system lane's REAL economics must be untouched.
-	if got[1].SpreadPerUnit != 500 || got[1].CappedSpread != 10000 {
+	if got[1].SpreadPerUnit != 450 || got[1].CappedSpread != 9000 {
 		t.Fatalf("cross-system lane's real spread/capped-spread must survive unmutated, got %+v", got[1])
 	}
 }
 
-// A cross-system lane with an overwhelming lead must still win: the penalty
-// is a proportionate tiebreaker for close calls, not a hard demotion of
-// every cross-system lane regardless of size.
-func TestRankLanesWithGatePenalty_OverwhelmingLead_CrossSystemStillWins(t *testing.T) {
+// A cross-system lane with an overwhelming lead must still win: the gate
+// surcharge is a proportionate time premium for close calls, not a hard
+// demotion of every cross-system lane regardless of size.
+func TestRankLanesByCircuitRate_OverwhelmingLead_CrossSystemStillWins(t *testing.T) {
 	lanes := []trading.ArbitrageLane{
-		// cross-system: raw spread 2000, penalty 200 -> effective 1800 * volCap 20 = 36000
+		// cross-system: value 2000×20 = 40,000 over the surcharged circuit → ~30,612/hr
 		{Good: "X", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-BBB-1", SpreadPerUnit: 2000, VolumeCap: 20, CappedSpread: 40000},
-		// same-system: raw spread 400, no penalty -> effective 400 * volCap 20 = 8000
+		// same-system: value 400×20 = 8,000 over the baseline circuit → 7,200/hr
 		{Good: "Y", SourceWaypoint: "X1-AAA-2", DestWaypoint: "X1-AAA-3", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	got := rankLanesWithGatePenalty(lanes, 0, "")
+	got := rankLanesByCircuitRate(lanes, 0, "")
 
 	if len(got) != 2 || got[0].Good != "X" || got[1].Good != "Y" {
-		t.Fatalf("expected cross-system lane to still win despite penalty, got %+v", got)
+		t.Fatalf("expected cross-system lane to still win despite the surcharge, got %+v", got)
 	}
 }
 

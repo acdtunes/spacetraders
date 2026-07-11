@@ -11,41 +11,42 @@ import (
 // sp-xwa1 - the --dest lane-targeting override. These tests cover the three
 // acceptance bullets directly:
 //   - a directed target PINS that lane instead of whatever the ranker would
-//     otherwise have chosen, and the cross-system gate penalty is waived for
-//     it alone (TestRankLanesWithGatePenalty_TargetDest_*, TestSelectLane_Directed_Pins*)
-//   - the undirected auto-scan path is untouched - still penalizes every
-//     cross-system lane, still defers to trading.FirstDisciplinedLane
+//     otherwise have chosen, and the cross-system gate charge is waived for
+//     it alone (TestRankLanesByCircuitRate_TargetDest_*, TestSelectLane_Directed_Pins*)
+//   - the undirected auto-scan path is untouched - still surcharges every
+//     cross-system lane's circuit time, still defers to trading.FirstDisciplinedLane
 //     (TestSelectLane_Undirected_*)
 //   - a directed lane still respects the sp-bp6f working-capital spend floor
 //     (TestTradeRouteCoordinator_TargetDest_DirectedLane_StillRespectsSpendFloor)
 
-// Reuses the same proportions as TestRankLanesWithGatePenalty_CloseCall_SameSystemLaneWins
+// Reuses the same proportions as TestRankLanesByCircuitRate_CloseCall_SameSystemLaneWins
 // (run_trade_route_coordinator_travel_test.go): a cross-system lane (X) whose
-// raw spread (500) only just trails a same-system lane (Y, 400) once the
-// 200/unit penalty applies (500-200=300 < 400). With no target, Y must still
-// win - no regression. Once X becomes the operator's directed target, the
-// penalty is waived for X alone and its raw spread (500) wins outright,
-// while Y's own economics never change.
-func TestRankLanesWithGatePenalty_TargetDest_WaivesPenaltyOnlyForTargetedLane(t *testing.T) {
+// value lead over the same-system lane Y (9,000 vs 8,000 per circuit, +12.5%)
+// is smaller than the gate's ~17.6% time premium, so X's rate (~6,886/hr)
+// trails Y's (7,200/hr). With no target, Y must still win - no regression.
+// Once X becomes the operator's directed target it is ranked at the in-system
+// baseline (9,000/1.111h = 8,100/hr > 7,200/hr) and wins outright, while Y's
+// own economics never change.
+func TestRankLanesByCircuitRate_TargetDest_WaivesSurchargeOnlyForTargetedLane(t *testing.T) {
 	lanes := []trading.ArbitrageLane{
-		{Good: "X", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-BBB-1", SpreadPerUnit: 500, VolumeCap: 20, CappedSpread: 10000},
+		{Good: "X", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-BBB-1", SpreadPerUnit: 450, VolumeCap: 20, CappedSpread: 9000},
 		{Good: "Y", SourceWaypoint: "X1-AAA-2", DestWaypoint: "X1-AAA-3", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	t.Run("undirected: penalty still applies, same-system lane wins", func(t *testing.T) {
-		ranked := rankLanesWithGatePenalty(lanes, 0, "")
+	t.Run("undirected: the gate surcharge still applies, same-system lane wins", func(t *testing.T) {
+		ranked := rankLanesByCircuitRate(lanes, 0, "")
 		if ranked[0].Good != "Y" {
-			t.Fatalf("expected Y first (X's 500 penalized to 300 < Y's 400), got %q first", ranked[0].Good)
+			t.Fatalf("expected Y first (X's 9,000 over the surcharged circuit ~6,886/hr < Y's 7,200/hr), got %q first", ranked[0].Good)
 		}
 	})
 
-	t.Run("directed at X: penalty waived for X only, X wins", func(t *testing.T) {
-		ranked := rankLanesWithGatePenalty(lanes, 0, "X1-BBB-1")
+	t.Run("directed at X: surcharge waived for X only, X wins", func(t *testing.T) {
+		ranked := rankLanesByCircuitRate(lanes, 0, "X1-BBB-1")
 		if ranked[0].Good != "X" {
-			t.Fatalf("expected X first once its own penalty is waived (raw 500 > Y's 400), got %q first", ranked[0].Good)
+			t.Fatalf("expected X first once ranked at the in-system baseline (8,100/hr > 7,200/hr), got %q first", ranked[0].Good)
 		}
-		if ranked[0].SpreadPerUnit != 500 {
-			t.Fatalf("waiver is ranking-only - X's real SpreadPerUnit must stay 500, got %d", ranked[0].SpreadPerUnit)
+		if ranked[0].SpreadPerUnit != 450 {
+			t.Fatalf("waiver is ranking-only - X's real SpreadPerUnit must stay 450, got %d", ranked[0].SpreadPerUnit)
 		}
 	})
 }

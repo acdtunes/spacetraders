@@ -390,6 +390,15 @@ func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
 	}
 }
 
+// ObserveTourPlanRate observes one tour plan's credits/hour globally (sp-1wp8),
+// phase="projected" at plan-accept or phase="realized" at completion. No-op when
+// metrics are disabled, so a metrics miss never touches the trade path (RULINGS #4).
+func ObserveTourPlanRate(playerID int, phase string, creditsPerHour float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.ObservePlanRate(playerID, phase, creditsPerHour)
+	}
+}
+
 // SetGlobalTourStalenessCollector sets the global planner staleness-exclusion
 // collector (sp-k7q5 layer 2).
 func SetGlobalTourStalenessCollector(collector *TourStalenessMetricsCollector) {

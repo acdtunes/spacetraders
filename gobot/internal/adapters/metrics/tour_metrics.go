@@ -14,6 +14,12 @@ import (
 // _seconds suffix convention.
 var tourDurationBuckets = []float64{5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800, 43200}
 
+// tourPlanRateBuckets bounds the tour_plan_rate histogram (sp-1wp8): credits/hour, from
+// break-even (a realized loss lands in the le=0 bucket) through the manual-lane class
+// (~390k/hr, the 42-min-rifles evidence) up past the fleet-level 1.6-3.2M/hr band, densest
+// in the 100-800k range where single-hull plan rates live.
+var tourPlanRateBuckets = []float64{0, 25000, 50000, 100000, 150000, 200000, 300000, 400000, 600000, 800000, 1200000, 1600000, 2400000, 3200000}
+
 // TourMetricsCollector holds the six tour/trading emission counters+histogram+gauge the
 // sp-fbih instrumentation sweep adds (bopj P3-P5 + nj2b P11-P13). Like the absorption
 // burn-in collector (sp-8cz9) they are EVENT-EMITTED from the tour coordinator via the
@@ -71,6 +77,16 @@ type TourMetricsCollector struct {
 	// reads (HU21->UQ16 <30% empty). Counted only after the jump commits (a resumable
 	// travel failure counts nothing), so it measures real crossings.
 	jumpLoadedTotal *prometheus.CounterVec
+
+	// planRate observes each tour plan's credits-per-hour twice (sp-1wp8): once at
+	// plan-accept with the solver's PROJECTED cph (phase=projected), once at the tour's
+	// honest completion with the REALIZED cash profit over actual wall-clock
+	// (phase=realized). The projected/realized pair is what makes ranking quality
+	// MEASURABLE: a systematic projected≫realized gap means the time or price estimator
+	// is flattering plans, and any future long-haul lane (sp-mepj) is judged on this
+	// same yardstick. Samples pair 1:1 per flown tour (the initial accepted plan only —
+	// intra-tour replans are recovery, not selection).
+	planRate *prometheus.HistogramVec
 }
 
 // NewTourMetricsCollector creates a new tour metrics collector (sp-fbih).
@@ -146,6 +162,17 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 			},
 			[]string{"player_id", "loaded"},
 		),
+
+		planRate: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_plan_rate",
+				Help:      "Tour plan credits-per-hour by phase (phase=projected at plan-accept from the solver's cph; phase=realized at completion from cash profit over actual wall-clock) — the sp-1wp8 $/hour yardstick",
+				Buckets:   tourPlanRateBuckets,
+			},
+			[]string{"player_id", "phase"},
+		),
 	}
 }
 
@@ -164,6 +191,7 @@ func (c *TourMetricsCollector) Register() error {
 		c.durationSeconds,
 		c.resolvedMaxSpend,
 		c.jumpLoadedTotal,
+		c.planRate,
 	}
 
 	for _, metric := range metrics {
@@ -235,4 +263,15 @@ func (c *TourMetricsCollector) RecordJumpLoaded(playerID int, loaded bool) {
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.jumpLoadedTotal.WithLabelValues(strconv.Itoa(playerID), strconv.FormatBool(loaded)).Inc()
+}
+
+// ObservePlanRate observes one tour plan's credits/hour (sp-1wp8) under
+// phase="projected" (plan-accept, the solver's cph) or phase="realized" (tour
+// completion, cash profit over actual wall-clock; may be negative — a loss lands in
+// the le=0 bucket).
+func (c *TourMetricsCollector) ObservePlanRate(playerID int, phase string, creditsPerHour float64) {
+	if c == nil || c.planRate == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	c.planRate.WithLabelValues(strconv.Itoa(playerID), phase).Observe(creditsPerHour)
 }

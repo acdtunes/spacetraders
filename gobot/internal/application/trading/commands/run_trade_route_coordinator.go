@@ -606,7 +606,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		// scanned, without inferring it from nav destinations. laneLogPayload carries
 		// the SELECTED lane's full identity (both endpoints' waypoint+system, margin,
 		// cross-system flag); laneLogCandidates attaches the top-ranked shortlist so a
-		// penalized-but-present cross-system lane (see rankLanesWithGatePenalty) is
+		// surcharged-but-present cross-system lane (see rankLanesByCircuitRate) is
 		// verifiable in the log even when a home lane wins the selection.
 		selectionPayload := laneLogPayload(lane)
 		selectionPayload["ship_symbol"] = cmd.ShipSymbol

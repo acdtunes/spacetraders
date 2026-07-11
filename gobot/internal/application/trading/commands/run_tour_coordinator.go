@@ -795,6 +795,19 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		"projected_deposit_value": plan.DepositValue,
 		"cph":                     plan.ProjectedCreditsPerHour, "model": modelVersion,
 	})
+	// sp-1wp8: pair every accepted plan's PROJECTED rate with a REALIZED rate at the
+	// tour's honest completion, so ranking quality is measurable (a systematic
+	// projected≫realized gap means the estimator flatters plans). Projected = the
+	// solver's own cph, observed ONCE per tour for the plan that won selection
+	// (intra-tour replans are recovery, not selection — they emit nothing, keeping
+	// the projected/realized samples paired 1:1). Realized is observed at the
+	// success return below: cash profit booked this tour over its actual wall-clock,
+	// covering execution AND any replans. Error exits observe nothing — the runner
+	// re-adopts and re-runs the tour, and a truncated observation would double-count
+	// one logical tour (the same discipline as the exit-reason metrics).
+	metrics.ObserveTourPlanRate(cmd.PlayerID, "projected", plan.ProjectedCreditsPerHour)
+	acceptedAt := h.clock.Now()
+	spentBefore, revenueBefore := response.TotalSpent, response.TotalRevenue
 
 	// Execute plan legs; on degradation, re-plan from current position/cargo (bounded
 	// by replanLimit PER TOUR).
@@ -836,7 +849,24 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 			break
 		}
 	}
+	if rate, ok := realizedRatePerHour(
+		(response.TotalRevenue-revenueBefore)-(response.TotalSpent-spentBefore),
+		h.clock.Now().Sub(acceptedAt).Seconds()); ok {
+		metrics.ObserveTourPlanRate(cmd.PlayerID, "realized", rate)
+	}
 	return true, "", nil
+}
+
+// realizedRatePerHour converts a tour's booked cash profit and elapsed wall-clock into
+// credits/hour for the sp-1wp8 realized-rate observation. ok=false on a non-positive
+// elapsed (a frozen test clock, or clock skew) — no honest rate exists there, and a
+// divide-by-zero must never reach the histogram. Profit may be negative (a losing tour
+// is a real observation; it lands in the histogram's le=0 bucket).
+func realizedRatePerHour(profit int64, elapsedSeconds float64) (float64, bool) {
+	if elapsedSeconds <= 0 {
+		return 0, false
+	}
+	return float64(profit) / (elapsedSeconds / 3600), true
 }
 
 // executePlan flies the legs of a single plan. It returns degraded=true when a

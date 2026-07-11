@@ -12,12 +12,19 @@ HOST="${ROUTING_HOST:-0.0.0.0}"
 PORT="${ROUTING_PORT:-50051}"
 TSP_TIMEOUT="${TSP_TIMEOUT:-5}"
 VRP_TIMEOUT="${VRP_TIMEOUT:-30}"
+# sp-1wp8: tour selection objective. The LAUNCH default is "rate" ($/hour-primary)
+# per the offline replay verdict (+29-32% projected fleet-$/hr over profit-primary
+# on 48h of reconstructed real snapshots; replay_objective.py). The solver's own
+# in-code default stays "profit" (fail-safe), so an operator reverts by exporting
+# TOUR_SOLVER_OBJECTIVE=profit — no code change, next restart applies it.
+export TOUR_SOLVER_OBJECTIVE="${TOUR_SOLVER_OBJECTIVE:-rate}"
 
 echo "Starting Routing Service..."
 echo "Host: $HOST"
 echo "Port: $PORT"
 echo "TSP Timeout: ${TSP_TIMEOUT}s"
 echo "VRP Timeout: ${VRP_TIMEOUT}s"
+echo "Tour objective: ${TOUR_SOLVER_OBJECTIVE}"
 
 # Check if virtual environment exists
 if [ ! -d "$SCRIPT_DIR/venv" ]; then
