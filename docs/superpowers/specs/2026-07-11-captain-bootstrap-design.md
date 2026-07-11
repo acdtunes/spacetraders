@@ -51,7 +51,7 @@ It is a **reconciler, not a stored-cursor script** — this is what makes it ide
 
 ### Capital-staged acquisitions
 
-Bootstrap holds an **ordered acquisition priority** — probes (→3) → light haulers (→4–5, hub-placed) → gate materials (via `construction start`) — and each tick fires **the highest-priority acquisition that clears BOTH gates**:
+Bootstrap holds an **ordered acquisition priority** — probes (→3) → light haulers (→ **one per viable contract hub, capped at `hauler_target`** 4–5) → gate materials (via `construction start`) — and each tick fires **the highest-priority acquisition that clears BOTH gates**:
 
 - **Readiness gate** — needed and unblocked? (haulers need hub data; the gate needs the $/hr bar.)
 - **Capital gate** — affordable *within the captain's guardrail*? Price-checked, spend ≤ 50% of current treasury (which by construction leaves the other half as working buffer), one decision line emitted.
@@ -61,8 +61,16 @@ Staging falls out for free: a ~40k probe clears immediately; a ~300k hauler does
 ### Phases (derived from observation, not stored)
 
 - **DATA** — buy probes → 3 (staged, guarded), assign every probe to `scout-all-markets`. Exit when market coverage ≥ `coverage_bar`.
-- **INCOME** — retire the frigate from contract work; select contract hubs from the market data; buy 4–5 light haulers (staged) placed on hubs; run `batch-contract`. Exit when realized $/hr ≥ `income_bar`.
+- **INCOME** — retire the frigate from contract work; select contract hubs from the market data; buy light haulers — **one per viable hub, capped at `hauler_target` (4–5)** — staged, placed on hubs; run `batch-contract`. Exit when realized $/hr ≥ `income_bar`.
 - **GATE** — discover the jump-gate construction site; ensure the manufacturing coordinator is running (the executor); `construction start <site>` **+ the L57 adoption bounce** (a freshly-created pipeline is inert until the manufacturing coordinator adopts it at startup); monitor `construction status` until complete → `COMPLETE`.
+
+### Fleet scaling & hand-off
+
+Bootstrap is a **deterministic cold-start ramp to fixed Phase-1 targets** — probes → 3; contract haulers → one per viable hub (capped at `hauler_target`) — staged to capital. It is **not** a demand-driven autoscaler.
+
+The demand-driven autoscaler — the standing `fleet-autosizer` (sp-1txd) — **stays off for the entire bootstrap run**: both buying hulls at once would issue conflicting purchases against the same treasury. At `COMPLETE`, bootstrap launches the autosizer and the other standing coordinators as its hand-off; from there the autosizer owns all fleet scaling to demand.
+
+**Gate-construction workers.** Producing and delivering the gate materials needs worker hulls, run by the manufacturing coordinator (the construction executor). Bootstrap sizes them deterministically (autosizer still off): (1) **repurpose first** — when GATE begins and contracts wind down, idle INCOME haulers are claimed by the manufacturing coordinator for produce/deliver tasks, so the income fleet becomes the seed construction workforce; (2) **top-up to the pipeline's shape** — once `construction start` reveals the producing chains, target ~one worker per active gate-material chain + 1–2 delivery haulers, capped at `gate_worker_target`, buying the delta (staged) only if the pool is short; (3) **keep a cash earner** — if the pipeline market-acquires any materials, keep `min_contract_earners` haulers on contracts through GATE and move the rest to construction. Acquisition priority extends: probes → contract haulers → gate workers (mostly repurposed) → gate materials. *(Admiral to confirm this rule.)*
 
 ---
 
@@ -83,10 +91,12 @@ Strict dependency line (each phase's exit is the next's entry). Each merge is a 
 - `bootstrap_disabled` (false) — the emergency escape.
 - `probe_target` (3) — DATA target.
 - `coverage_bar` — DATA→INCOME exit (fresh markets in the home system(s)).
-- `hauler_target` (4–5) — INCOME hull count.
+- `hauler_target` (4–5) — INCOME hull cap (actual = one per viable contract hub, up to this).
 - `income_bar` — INCOME→GATE exit ($/hr threshold).
 - `reserve_margin` (0.5) — the ≤50%-per-decision guardrail; also the pacer.
 - `tick_seconds` — reconcile cadence.
+- `gate_worker_target` — cap on gate-construction workers (actual = ~one per active gate-material chain + delivery, up to this).
+- `min_contract_earners` — haulers kept on contracts through GATE to fund material acquisition.
 
 ## Reuse (build nothing that already exists — captain verification gate)
 
