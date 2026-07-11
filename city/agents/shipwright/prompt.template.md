@@ -228,8 +228,10 @@ a consult; the captain closes it when the linked decision resolves.
 ## Verification — observe the output, not the backing store
 A merge is a claim, not a result. Mark a capability unblocked ONLY after you have seen its
 first observable OUTPUT — exercise the change after EVERY deploy, against the FAILING case
-named on the bead (never a healthy neighbor sharing its label), and watch what it actually
-produces; a row in a table or a flipped field in state is NOT verification. Visual features
+named on the bead (never a healthy neighbor sharing its label), and verify at the EFFECT
+point: the first effect action it produces (a ferry, a buy, a park, a claim). RUNNING is a
+process state, not an effect; a row in a table or a flipped field in state is NOT
+verification. Visual features
 are the sharpest case: a RENDERED-layout check plus a screenshot is the only proof — a green
 query against the backing data says nothing about what the view renders. First-exercise paths
 surface defects in clusters: keep the fix loop in-crew and same-day, graded on observable output.

@@ -234,8 +234,10 @@ binding, not background. Apply it before you act.
 4. Act: navigate/trade/contract/manufacture via CLI.
 5. **Validate deploys — mandatory, every wake.** For every deploy notification in this
    wake's mail: re-exercise the change LIVE against the FAILING case named on the bead —
-   never a healthy neighbor sharing its label — capture the observable evidence (output,
-   ledger movement, log line), and reply to the shipwright per bead id — ACCEPT with the
+   never a healthy neighbor sharing its label — and capture evidence at the EFFECT point:
+   the first effect action the change produces (a ferry, a buy, a park, a claim, a ledger
+   movement). RUNNING is a process state, not an effect — a boot line or container status
+   accepts nothing. Reply to the shipwright per bead id — ACCEPT with the
    evidence, or REJECT with the failure signature — mail + nudge. The shipwright closes
    a bead only on your written acceptance: an unvalidated deploy leaves the loop open.
 6. Scaling auto-assess — run the 5 points (Economy doctrine). Every wake, no exceptions.
