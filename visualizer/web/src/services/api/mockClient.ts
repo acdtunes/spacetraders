@@ -7,6 +7,8 @@ import {
   demoGateProgress,
   isSignalLossWindow,
 } from '../../mocks/demoEvents';
+import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse } from '../../mocks/mockFlows';
+import type { FlowWindow } from '../../types/flows';
 
 const DEFAULT_LIMIT = 20;
 
@@ -149,6 +151,24 @@ function demoBotRequest<T>(path: string, searchParams: URLSearchParams, nowMs: n
   return {} as T;
 }
 
+// Demo-mode /flows/* namespace (Trade Flows tab). Deterministic from the caller
+// clock so a fleet-stopped demo still interpolates. During the recurring
+// signal-loss drill the LIVE feed goes dark (feedLost envelope) while topology
+// and lanes — which are PG-backed in production and survive daemon loss — keep
+// serving, so the tab degrades exactly as designed.
+function demoFlowsRequest<T>(path: string, searchParams: URLSearchParams, nowMs: number): T {
+  if (path === '/flows/topology') return mockTopology as T;
+  if (path === '/flows/lanes') {
+    const w = (searchParams.get('window') as FlowWindow) || '6h';
+    const window: FlowWindow = w === '1h' || w === '6h' || w === '24h' ? w : '6h';
+    return mockLanes(window) as T;
+  }
+  if (path === '/flows/live') {
+    return (isSignalLossWindow(nowMs) ? mockFeedLostResponse(nowMs) : mockLiveFlows(nowMs)) as T;
+  }
+  return {} as T;
+}
+
 export async function mockRequest<T>(endpoint: string, options: ApiRequestOptions = {}): Promise<T> {
   startMockScenarioIfNeeded();
 
@@ -247,6 +267,11 @@ export async function mockRequest<T>(endpoint: string, options: ApiRequestOption
   if (path === '/mock/advance' && method === 'POST') {
     advanceShipScenario();
     return undefined as T;
+  }
+
+  // Trade Flows namespace (demo — see demoFlowsRequest).
+  if (path.startsWith('/flows/')) {
+    return demoFlowsRequest<T>(path, url.searchParams, Date.now());
   }
 
   // Bot operations namespace (demo Operational Pulse — see demoBotRequest).

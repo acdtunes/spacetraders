@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Navigation } from './components/Navigation';
 import { MapView } from './pages/MapView';
 import { FinancialDashboard } from './pages/FinancialDashboard';
+import { TradeFlowsView } from './pages/TradeFlowsView';
 
 function App() {
   return (
@@ -12,6 +13,7 @@ function App() {
           <Routes>
             <Route path="/" element={<MapView />} />
             <Route path="/financial" element={<FinancialDashboard />} />
+            <Route path="/trade-flows" element={<TradeFlowsView />} />
           </Routes>
         </div>
       </div>
