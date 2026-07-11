@@ -36,7 +36,11 @@ Examples:
 * [spacetraders workflow batch-contract](spacetraders_workflow_batch-contract.md)	 - Execute batch contract workflow
 * [spacetraders workflow scout-all-markets](spacetraders_workflow_scout-all-markets.md)	 - Automatically assign all probe/satellite ships to scout all non-fuel-station markets
 * [spacetraders workflow scout-markets](spacetraders_workflow_scout-markets.md)	 - Deploy fleet to scout markets with VRP optimization
+* [spacetraders workflow siting-coordinator](spacetraders_workflow_siting-coordinator.md)	 - Start the standing factory-siting coordinator (automates factory discovery, placement, and capacity planning)
+* [spacetraders workflow stocker](spacetraders_workflow_stocker.md)	 - Fly one dedicated hull as a warehouse-filling stocker loop (as a daemon container)
 * [spacetraders workflow tour-run](spacetraders_workflow_tour-run.md)	 - Fly one idle hull through planner-chosen, guarded multi-hop trade tours (as a daemon container)
+* [spacetraders workflow trade-fleet-coordinator](spacetraders_workflow_trade-fleet-coordinator.md)	 - Start the standing trade-fleet coordinator (keeps continuous tours alive on 'trade' hulls)
 * [spacetraders workflow trade-route](spacetraders_workflow_trade-route.md)	 - Fly one idle hull through the top-ranked arbitrage circuit (as a daemon container)
 * [spacetraders workflow warehouse](spacetraders_workflow_warehouse.md)	 - Park an idle hull as a passive inventory warehouse at a home waypoint (as a daemon container)
+* [spacetraders workflow worker-rebalancer-coordinator](spacetraders_workflow_worker-rebalancer-coordinator.md)	 - Start the standing worker-rebalancer coordinator (ferries idle lights to worker-starved factory systems)
 

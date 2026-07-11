@@ -48,5 +48,8 @@ Examples:
 * [spacetraders ship refuel](spacetraders_ship_refuel.md)	 - Refuel a ship at its current location
 * [spacetraders ship release](spacetraders_ship_release.md)	 - Clear a captain reservation on a ship
 * [spacetraders ship reserve](spacetraders_ship_reserve.md)	 - Reserve a ship for the captain's direct manual use
+* [spacetraders ship reserve-cargo](spacetraders_ship_reserve-cargo.md)	 - Mark a cargo good as do-not-sell on a ship
+* [spacetraders ship reserved-cargo](spacetraders_ship_reserved-cargo.md)	 - Show a ship's cargo do-not-sell reservations
 * [spacetraders ship sell](spacetraders_ship_sell.md)	 - Sell cargo from a ship
+* [spacetraders ship unreserve-cargo](spacetraders_ship_unreserve-cargo.md)	 - Release a reserved cargo good for sale on a ship
 

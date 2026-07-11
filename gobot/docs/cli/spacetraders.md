@@ -35,6 +35,7 @@ Examples:
 * [spacetraders container](spacetraders_container.md)	 - Manage background containers
 * [spacetraders contract](spacetraders_contract.md)	 - Manage contract operations
 * [spacetraders fleet](spacetraders_fleet.md)	 - Manage dedicated fleets
+* [spacetraders frontier](spacetraders_frontier.md)	 - Standing frontier expansion: auto-buy probes and seed frontier scouts
 * [spacetraders goods](spacetraders_goods.md)	 - Manage automated goods production
 * [spacetraders health](spacetraders_health.md)	 - Check daemon health status
 * [spacetraders history](spacetraders_history.md)	 - Cross-era priors: query history across universe resets

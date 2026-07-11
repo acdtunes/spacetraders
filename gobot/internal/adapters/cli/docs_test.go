@@ -145,6 +145,38 @@ func TestDocsMarkdownCommandOmitsAutoGenTag(t *testing.T) {
 		"generated markdown must not carry a date-stamped footer — it would dirty every committed file on every regen")
 }
 
+// TestDocsManCommandPreservesAngleBracketPlaceholders guards the SYNOPSIS
+// line against go-md2man's raw-HTML handling: a bare <token> in a cobra Use
+// line (e.g. `list <system-symbol> <waypoint-symbol>`) parses as an inline
+// HTML tag, which the roff renderer drops silently — a 2026-07 audit found 17
+// commands whose man pages had lost every positional-arg and flag-value
+// placeholder this way. The assertion is on the placeholder text itself, not
+// any particular troff escaping of the brackets, so it pins "the information
+// survives" rather than one renderer's representation.
+func TestDocsManCommandPreservesAngleBracketPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	root := NewRootCommand()
+
+	target, _, err := root.Find([]string{"docs", "man"})
+	require.NoError(t, err)
+	require.NoError(t, target.Flags().Set("dir", dir))
+	require.NoError(t, target.RunE(target, nil))
+
+	// Pure positional placeholders: Use "list <system-symbol> <waypoint-symbol>".
+	content, err := os.ReadFile(filepath.Join(dir, "spacetraders-shipyard-list.1"))
+	require.NoError(t, err)
+	require.Contains(t, string(content), "system-symbol",
+		"positional-arg placeholder must survive man rendering")
+	require.Contains(t, string(content), "waypoint-symbol",
+		"positional-arg placeholder must survive man rendering")
+
+	// Flag-value alternative inside brackets: Use "... [--next-wake-at +3h|<RFC3339>] ...".
+	content, err = os.ReadFile(filepath.Join(dir, "spacetraders-captain-wake-set.1"))
+	require.NoError(t, err)
+	require.Contains(t, string(content), "RFC3339",
+		"flag-value placeholder must survive man rendering")
+}
+
 // TestDocsManCommandOmitsAutoGenTag mirrors
 // TestDocsMarkdownCommandOmitsAutoGenTag for the man-page generator. Man
 // pages (build/man/man1) are gitignored so a date footer wouldn't dirty a
