@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strings"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -12,21 +13,68 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
+// pgQueryExecModeParam pins pgx's DefaultQueryExecMode to "cache_describe" on
+// every PostgreSQL connection this process opens.
+//
+// sp-6g96 Fix 3: pgx's default mode (QueryExecModeCacheStatement) caches a
+// server-side prepared statement's row description (result type) for the life
+// of the physical connection. AutoMigrate can legitimately change a table's
+// shape while an already-pooled connection still holds a stale cached plan for
+// that exact SQL text; reusing it then fails with SQLSTATE 0A000 ("cached plan
+// must not change result type") — a spurious, alarming-looking error that is
+// really just a stale client-side cache, not a real schema problem, and it
+// otherwise requires a full process restart (to drop the pool) to clear.
+// QueryExecModeCacheDescribe keeps the extended query protocol (still faster
+// than simple_protocol) but re-describes the result shape on every execution
+// instead of trusting a cached one, which eliminates 0A000 without giving up
+// prepared-statement performance entirely. Confirmed against the vendored
+// jackc/pgx/v5 v5.6.0 source (conn.go): pgx.ParseConfig funnels any DSN key it
+// doesn't recognize as a dedicated connection setting into RuntimeParams, and
+// reads "default_query_exec_mode" specifically from there — so this single
+// param works identically whether the DSN is URL-style or libpq
+// keyword/value-style.
+const pgQueryExecModeParam = "default_query_exec_mode=cache_describe"
+
+// withQueryExecMode appends pgQueryExecModeParam to a PostgreSQL DSN, handling
+// both connection-string styles Postgres accepts: URL style
+// ("postgres://user:pass@host/db?sslmode=require", the shape cfg.URL /
+// DATABASE_URL conventionally uses) and libpq keyword/value style
+// ("host=... port=... ...", the shape buildPostgresDSN itself constructs from
+// individual config fields below).
+func withQueryExecMode(dsn string) string {
+	if strings.Contains(dsn, "://") {
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		return dsn + sep + pgQueryExecModeParam
+	}
+	return dsn + " " + pgQueryExecModeParam
+}
+
+// buildPostgresDSN builds the DSN NewConnection hands to the postgres
+// dialector: cfg.URL verbatim if provided (it takes precedence), otherwise a
+// DSN assembled from the individual connection fields — either way with the
+// pgx query-exec-mode hardening from withQueryExecMode applied on top, so
+// every postgres connection path gets it, not just one.
+func buildPostgresDSN(cfg *config.DatabaseConfig) string {
+	var dsn string
+	if cfg.URL != "" {
+		dsn = cfg.URL
+	} else {
+		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name, cfg.SSLMode)
+	}
+	return withQueryExecMode(dsn)
+}
+
 // NewConnection creates a new database connection using the new config system
 func NewConnection(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	var dialector gorm.Dialector
 
 	switch cfg.Type {
 	case "postgres":
-		// Use URL if provided, otherwise build DSN from individual fields
-		var dsn string
-		if cfg.URL != "" {
-			dsn = cfg.URL
-		} else {
-			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-				cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name, cfg.SSLMode)
-		}
-		dialector = postgres.Open(dsn)
+		dialector = postgres.Open(buildPostgresDSN(cfg))
 
 	case "sqlite":
 		// Use Path for SQLite (can be file path or ":memory:")

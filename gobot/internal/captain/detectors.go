@@ -18,8 +18,19 @@ import (
 )
 
 type DetectorConfig struct {
-	PlayerID          int
-	ShipIdle          time.Duration
+	PlayerID int
+	// ShipIdle is retained for config plumbing (CaptainConfig back-compat) but,
+	// as of sp-6g96, no longer drives ship.idle's dedup window: idle firing is
+	// now deduped by IdleEpisodes (fire once per continuous idle episode, a
+	// state-change not an elapsed-time cooldown). See detectIdleShips.
+	ShipIdle time.Duration
+	// IdleEpisodes (sp-6g96) replaces a rolling-time-window cooldown for
+	// ship.idle. A nil tracker is safe (no dedup) — matches every caller from
+	// before sp-6g96 that does not set this field — while the Supervisor wires
+	// its own long-lived instance so the alarm fires once per continuous idle
+	// episode instead of re-arming purely because time elapsed while the ship
+	// never actually left idle.
+	IdleEpisodes      *episodeTracker
 	StaleHeartbeat    time.Duration
 	CreditsThresholds []int
 	LastCredits       int // credits at the previous poll; 0 disables crossing detection
@@ -60,6 +71,14 @@ type DetectorConfig struct {
 	// may sit with no running container before it fires an interrupt-class
 	// hull.containerless event. <= 0 disables the detector.
 	PinnedHullContainerless time.Duration
+
+	// ContainerlessEpisodes (sp-6g96) replaces a rolling-time-window cooldown
+	// for hull.containerless, mirroring IdleEpisodes above: nil is safe (no
+	// dedup), and the Supervisor wires its own long-lived instance so a
+	// stranded pinned hull wakes the captain once per continuous stranding
+	// episode instead of re-alarming purely because a cooldown window lapsed
+	// while the hull never actually recovered. See detectContainerlessPinnedHulls.
+	ContainerlessEpisodes *episodeTracker
 
 	// StandingCoordinatorFleets (sp-jetm) parametrizes which DedicatedFleet tags
 	// are pool-managed by a standing coordinator container rather than pinned
@@ -304,17 +323,80 @@ func configReferencesAny(config string, shipSymbols []string) bool {
 	return false
 }
 
+// episodeTracker deduplicates a per-ship alarm to fire once per CONTINUOUS
+// episode of an alarmed state. It replaces the rolling-time-window HasSince
+// cooldown for ship.idle and hull.containerless (sp-6g96): that cooldown
+// re-armed purely by elapsed time, so a ship deliberately left idle (or a
+// hull deliberately left stranded) in the SAME state for hours would re-fire
+// — and, being interrupt class for hull.containerless, re-wake the captain —
+// every time the cooldown window lapsed, even though nothing had actually
+// changed. An episodeTracker instead remembers which ships currently have an
+// OPEN episode: enter reports whether this call starts a new one (true the
+// first time, false on every subsequent call while the ship stays alarmed);
+// clear closes the episode (the ship left the alarmed state), re-arming enter
+// to report a fresh episode the next time the ship becomes alarmed again.
+//
+// Nil-safe by design: a nil *episodeTracker — the zero value of the
+// DetectorConfig fields below, e.g. every test literal from before sp-6g96
+// that never sets them — makes enter always report true (no dedup at all)
+// and clear a no-op, so callers that never wire a tracker keep compiling and
+// keep their prior behavior unchanged.
+//
+// Not safe for concurrent use, but none is needed: the Supervisor that owns
+// the long-lived tracker instance runs its tick loop strictly sequentially
+// (see Supervisor.Run), so two ticks can never call enter/clear concurrently.
+type episodeTracker struct {
+	active map[string]bool
+}
+
+// enter reports whether ship is starting a NEW episode: true the first time
+// it is seen (or the first time again after a clear), false on every
+// subsequent call while it remains in the tracker.
+func (t *episodeTracker) enter(ship string) bool {
+	if t == nil {
+		return true
+	}
+	if t.active == nil {
+		t.active = make(map[string]bool)
+	}
+	if t.active[ship] {
+		return false
+	}
+	t.active[ship] = true
+	return true
+}
+
+// clear ends ship's episode, if any, so the next enter call reports a fresh
+// one. A no-op for a ship with no open episode (or a nil tracker).
+func (t *episodeTracker) clear(ship string) {
+	if t == nil {
+		return
+	}
+	delete(t.active, ship)
+}
+
 func detectIdleShips(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
 	// A ship is idle if it is not IN_TRANSIT and no RUNNING container's config
 	// references it. Container config is JSON text; a LIKE match on the quoted
 	// symbol is the pragmatic join (config stores "ship_symbol":"X").
+	//
+	// sp-6g96: fetches ALL of the player's ships rather than pre-filtering
+	// IN_TRANSIT out in SQL, so a ship that leaves idle by starting a new
+	// transit — not just by being claimed by a container — still reaches the
+	// IdleEpisodes.clear() below. Without this, a transit-only exit would
+	// never close the ship's idle episode, wrongly suppressing a legitimately
+	// later idle episode after the transit ends.
 	var ships []persistence.ShipModel
 	if err := db.WithContext(ctx).
-		Where("player_id = ? AND nav_status != ?", cfg.PlayerID, "IN_TRANSIT").
+		Where("player_id = ?", cfg.PlayerID).
 		Find(&ships).Error; err != nil {
 		return err
 	}
 	for _, s := range ships {
+		if s.NavStatus == "IN_TRANSIT" {
+			cfg.IdleEpisodes.clear(s.ShipSymbol)
+			continue
+		}
 		var busy int64
 		if err := db.WithContext(ctx).Model(&persistence.ContainerModel{}).
 			Where("player_id = ? AND status = ? AND config LIKE ?",
@@ -323,13 +405,15 @@ func detectIdleShips(ctx context.Context, db *gorm.DB, store captain.EventStore,
 			return err
 		}
 		if busy > 0 {
+			cfg.IdleEpisodes.clear(s.ShipSymbol)
 			continue
 		}
-		// Idle is a persistent state, not an edge: cooldown on ANY recent
-		// idle event (processed or not) prevents a session-burn loop where
-		// each processed event is re-emitted on the next poll.
-		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventShipIdle, s.ShipSymbol, now.Add(-cfg.ShipIdle))
-		if err != nil || recent {
+		// Idle is a persistent state, not an edge: fire once per CONTINUOUS
+		// idle episode (sp-6g96 state-change dedup, not a rolling time
+		// cooldown) — entering idle emits, staying idle does not, and leaving
+		// (transit or claimed, above) re-arms so the NEXT idle episode emits
+		// again regardless of how much or little time has passed.
+		if !cfg.IdleEpisodes.enter(s.ShipSymbol) {
 			continue
 		}
 		_ = store.Record(ctx, &captain.Event{
@@ -395,12 +479,14 @@ func detectContainerlessPinnedHulls(ctx context.Context, db *gorm.DB, store capt
 			return err
 		}
 		if busy > 0 {
+			cfg.ContainerlessEpisodes.clear(s.ShipSymbol)
 			continue
 		}
 		// Pool-managed fleet with its coordinator up → containerless is by design,
 		// regardless of how long. Skip before the age gate so a pool hull idle for
 		// hours between claims never fires (see doc comment above).
 		if pooledFleets[s.DedicatedFleet] {
+			cfg.ContainerlessEpisodes.clear(s.ShipSymbol)
 			continue
 		}
 		// Age gate: only a hull containerless for >= threshold is anomalous. Anchor
@@ -408,13 +494,15 @@ func detectContainerlessPinnedHulls(ctx context.Context, db *gorm.DB, store capt
 		// never held an assignment (released_at NULL) is a launch/config concern, not
 		// a silent death — leave it to detectIdleShips rather than false-alarm here.
 		if s.ReleasedAt == nil || s.ReleasedAt.After(cutoff) {
+			cfg.ContainerlessEpisodes.clear(s.ShipSymbol)
 			continue
 		}
-		// Containerless is a persistent state, not an edge: cooldown on ANY recent
-		// twin (processed or not) so an interrupt-class event does not re-wake the
-		// captain every poll while the hull stays stranded (mirrors detectIdleShips).
-		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventPinnedHullContainerless, s.ShipSymbol, cutoff)
-		if err != nil || recent {
+		// Containerless is a persistent state, not an edge: fire once per
+		// CONTINUOUS containerless episode (sp-6g96 state-change dedup, not a
+		// rolling time cooldown) — mirrors detectIdleShips. Entering emits;
+		// staying containerless does not; leaving (busy or pool-exempt, above)
+		// re-arms so the NEXT stranding emits again regardless of elapsed time.
+		if !cfg.ContainerlessEpisodes.enter(s.ShipSymbol) {
 			continue
 		}
 		containerlessMinutes := int(now.Sub(*s.ReleasedAt).Minutes())

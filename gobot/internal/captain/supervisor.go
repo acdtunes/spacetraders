@@ -104,13 +104,28 @@ type Supervisor struct {
 	// once is harmless and, in fact, desirable — a fresh process SHOULD re-state
 	// what is down.
 	sessionDownAlerted map[string]time.Time
+
+	// sp-6g96: long-lived episode-dedup trackers for the state-change detectors
+	// (ship.idle, hull.containerless), reused across every Tick. DetectorConfig's
+	// IdleEpisodes/ContainerlessEpisodes are nil-safe-by-design (see episodeTracker
+	// in detectors.go) specifically so a caller that forgets to wire them keeps
+	// compiling — but that safety net means a fresh nil tracker built inside Tick
+	// every 30s would silently reproduce the exact pre-sp-6g96 spam (no dedup at
+	// all) instead of gating on state transitions. Constructing these once here,
+	// not per-tick, is what makes the dedup real in production.
+	idleEpisodes          *episodeTracker
+	containerlessEpisodes *episodeTracker
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
 	if cfg.EngineMode != "bridge" {
 		return nil, fmt.Errorf("watchkeeper: unsupported engine_mode %q (only \"bridge\" is supported)", cfg.EngineMode)
 	}
-	s := &Supervisor{db: db, store: store, ws: ws, cfg: cfg, statePath: ws.StatePath()}
+	s := &Supervisor{
+		db: db, store: store, ws: ws, cfg: cfg, statePath: ws.StatePath(),
+		idleEpisodes:          &episodeTracker{},
+		containerlessEpisodes: &episodeTracker{},
+	}
 	s.restoreState(time.Now())
 	return s, nil
 }
@@ -216,6 +231,8 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		RegimeTripwires:           regimePolicy.Tripwires,
 		PinnedHullContainerless:   defaultPinnedHullContainerless,
 		StandingCoordinatorFleets: defaultStandingCoordinatorFleets,
+		IdleEpisodes:              s.idleEpisodes,
+		ContainerlessEpisodes:     s.containerlessEpisodes,
 
 		// sp-k7q5 layers 2+3, wired to package defaults here until CaptainConfig grows
 		// tunable fields (mirrors FactoryIncomeStall / CrashLoop above).

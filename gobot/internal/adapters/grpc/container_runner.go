@@ -630,12 +630,32 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 	if !success {
 		eventType = captain.EventWorkflowFailed
 	}
-	recordCaptainEvent(eventType, shipSymbol, playerID, map[string]any{
-		"container_id": containerID,
-		"command_type": string(r.containerEntity.Type()),
-		"success":      success,
-		"error":        errMsg,
-	})
+	// sp-6g96 Fix 2: workflow.finished is SCOPED by parentage (workflow.failed
+	// stays unconditional — this only ever suppresses the success path). A
+	// coordinator-spawned (parented) container's clean exit is the ordinary,
+	// self-absorbed rotation completion the bead identifies as producing dozens
+	// of clean exits/hour by design: the parent coordinator itself consumes the
+	// completion and acts on it, so a generic workflow.finished to the
+	// watchkeeper too is pure noise. A parentless container (human/CLI-launched:
+	// captain-authority moves, manual liquidations, canaries, one-shot ferries)
+	// has no coordinator waiting on it, so it must still emit — a human, or a
+	// sp-oyer wake.watch armed on it, is the only consumer of that signal.
+	//
+	// Residual gap (accepted, not fixed here): a wake.watch armed as
+	// container:<ID>:terminal (watch.go) on a PARENTED container's clean exit
+	// can now never observe a "matched" fire — only ever a deadline-fire, since
+	// the workflow.finished it keys off is suppressed at the source. No captain
+	// workflow currently arms watches on coordinator-spawned children, so this
+	// is a documented blind spot rather than a regression.
+	suppressed := success && r.containerEntity.ParentContainerID() != nil
+	if !suppressed {
+		recordCaptainEvent(eventType, shipSymbol, playerID, map[string]any{
+			"container_id": containerID,
+			"command_type": string(r.containerEntity.Type()),
+			"success":      success,
+			"error":        errMsg,
+		})
+	}
 
 	// A contract workflow reaching a terminal state is a first-class strategic
 	// signal, not merely "a workflow finished": in ADDITION to the generic

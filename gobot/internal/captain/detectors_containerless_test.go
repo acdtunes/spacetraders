@@ -49,7 +49,17 @@ func TestContainerlessPinnedHull_FiresOneInterruptEvent(t *testing.T) {
 	released := now.Add(-12 * time.Minute)
 	insertDedicatedShip(t, db, playerID, "TORWIND-19", "trade", &released, 160, 225)
 
-	cfg := DetectorConfig{PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour}
+	// sp-6g96: ContainerlessEpisodes must be a shared, long-lived tracker across
+	// both detectContainerlessPinnedHulls calls below, per the caller contract
+	// documented on episodeTracker itself — a nil tracker (the zero value this
+	// cfg would otherwise carry) is a deliberate no-dedup no-op, not a default
+	// dedup behavior, so the "re-running must not duplicate" assertion below
+	// requires wiring one instance and reusing it, mirroring how
+	// TestIdleShipEpisodeDedup wires IdleEpisodes.
+	cfg := DetectorConfig{
+		PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour,
+		ContainerlessEpisodes: &episodeTracker{},
+	}
 	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
 
 	events := containerlessEvents(t, store, playerID)
@@ -66,6 +76,52 @@ func TestContainerlessPinnedHull_FiresOneInterruptEvent(t *testing.T) {
 	// Re-running the detector must not duplicate while the state persists (no spam).
 	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
 	require.Len(t, containerlessEvents(t, store, playerID), 1, "the detector must be edge-triggered, not per-poll")
+}
+
+// TestContainerlessPinnedHullEpisodeDedup pins the sp-6g96 replacement for the
+// old rolling-time-window cooldown on hull.containerless, mirroring
+// TestIdleShipEpisodeDedup's matrix: enter emits, staying does not (no matter
+// how much time passes without a real change), and leaving (a container
+// claims the hull) then re-entering (the claim goes away) emits again
+// immediately — proving the dedup is keyed on state, not the clock.
+func TestContainerlessPinnedHullEpisodeDedup(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	released := now.Add(-12 * time.Minute)
+	insertDedicatedShip(t, db, playerID, "TORWIND-ED1", "trade", &released, 0, 225)
+
+	cfg := DetectorConfig{
+		PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour,
+		ContainerlessEpisodes: &episodeTracker{},
+	}
+
+	// Enter: the first tick past the threshold emits.
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
+	require.Len(t, containerlessEvents(t, store, playerID), 1)
+
+	// Stay: the hull never recovered, so it must NOT re-emit even hours later
+	// with no state change — the old cooldown WOULD have re-fired here purely
+	// because a time window lapsed; that is exactly the behavior sp-6g96 removes.
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now.Add(4*time.Hour)))
+	require.Len(t, containerlessEvents(t, store, playerID), 1,
+		"containerless event re-emitted while hull never recovered: not an episode boundary")
+
+	// Leave: a RUNNING container claims the hull — the episode closes.
+	claim := persistence.ContainerModel{
+		ID: "c-claim-ed1", PlayerID: playerID, Status: "RUNNING",
+		Config: `{"ship_symbol":"TORWIND-ED1"}`,
+	}
+	require.NoError(t, db.Create(&claim).Error)
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now.Add(5*time.Hour)))
+	require.Len(t, containerlessEvents(t, store, playerID), 1, "hull claimed by a running container: must not emit again")
+
+	// Re-enter: the container goes away — released_at is unchanged (already
+	// well past the threshold), so the hull is immediately containerless again
+	// — a NEW episode, emitting again right away regardless of elapsed time.
+	require.NoError(t, db.Delete(&claim).Error)
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now.Add(5*time.Hour+time.Second)))
+	require.Len(t, containerlessEvents(t, store, playerID), 2,
+		"re-entering containerless after recovery must emit again immediately")
 }
 
 // A pinned hull WITH a running container is healthy — silent.

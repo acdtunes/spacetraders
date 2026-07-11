@@ -467,32 +467,54 @@ func TestDetectorsSilentWhenFleetDown(t *testing.T) {
 	require.Empty(t, events, "detectors fired while fleet down: spurious wake")
 }
 
-func TestIdleShipCooldownPreventsSessionBurnLoop(t *testing.T) {
+// TestIdleShipEpisodeDedup pins the sp-6g96 replacement for the old rolling-
+// time-window cooldown: ship.idle now fires once per CONTINUOUS idle episode
+// (state-change dedup), not once per elapsed-time window. The exact matrix
+// required by sp-6g96: enter emits, staying does not (no matter how much time
+// passes without a real change), and leaving-then-re-entering emits again
+// immediately (no matter how LITTLE time has passed) — proving the dedup is
+// keyed on state, not the clock.
+func TestIdleShipEpisodeDedup(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()
 	require.NoError(t, db.Create(&persistence.ShipModel{
 		ShipSymbol: "IDLE-1", PlayerID: playerID, NavStatus: "DOCKED",
 	}).Error)
-	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: 30 * time.Minute}
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, IdleEpisodes: &episodeTracker{}}
 
+	// Enter: the first tick while idle emits.
 	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
 	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
-
-	// Processing the event must NOT allow an immediate re-emit.
 	require.NoError(t, store.MarkProcessed(context.Background(), []int64{events[0].ID}, now))
-	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
-	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
-	require.NoError(t, err)
-	require.Empty(t, events, "idle event re-emitted within cooldown: session-burn loop")
 
-	// After the cooldown window the reminder is legitimate again.
-	require.NoError(t, db.Exec("UPDATE captain_events SET created_at = ?", now.Add(-2*time.Hour)).Error)
-	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
+	// Stay: the ship never left idle, so it must NOT re-emit even hours later
+	// with no state change — the old cooldown WOULD have re-fired here purely
+	// because a time window lapsed; that is exactly the behavior sp-6g96 removes.
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(4*time.Hour)))
 	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
 	require.NoError(t, err)
-	require.Len(t, events, 1)
+	require.Empty(t, events, "idle event re-emitted while ship never left idle: not an episode boundary")
+
+	// Leave: a RUNNING container claims the ship — the episode closes.
+	claim := persistence.ContainerModel{
+		ID: "c-claim", PlayerID: playerID, Status: "RUNNING",
+		Config: `{"ship_symbol":"IDLE-1"}`,
+	}
+	require.NoError(t, db.Create(&claim).Error)
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(5*time.Hour)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Empty(t, events, "ship claimed by a running container: must not emit idle")
+
+	// Re-enter: the container goes away — the ship is idle again, a NEW
+	// episode, so it must emit again immediately regardless of elapsed time.
+	require.NoError(t, db.Delete(&claim).Error)
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(5*time.Hour+time.Second)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "re-entering idle after leaving must emit again immediately")
 }
 
 func TestStaleHeartbeatCooldownPreventsSessionBurnLoop(t *testing.T) {
