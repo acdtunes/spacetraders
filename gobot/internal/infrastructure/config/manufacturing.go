@@ -62,4 +62,23 @@ type ManufacturingConfig struct {
 	// PRICE-FIRST (the pre-restoration behavior) — for a captain who must override the
 	// supply-first policy in an emergency. Absent/false keeps supply-first sourcing on.
 	InputSourcingDisabled bool `mapstructure:"input_sourcing_disabled"`
+
+	// ChainPnLKillThresholdPerHour is the realized-P&L/hr floor below which a chain auto-pauses
+	// (sp-rh2z, analyst redesign C2), threaded into goods_factory_coordinator: the coordinator
+	// computes each chain's realized P&L over the rolling window (factory local sells + tour
+	// realized net − input cost − lift) and pauses the chain pre-spend when it falls below this
+	// per-hour figure, making the portfolio self-pruning. 0/absent → the 30000 default the
+	// coordinator resolves at the point of use (the kill-switch runs ON in production without
+	// the captain naming it — it can only STOP spend, so a protective default is correct,
+	// RULINGS #5). Config, not a constant, so a captain retunes it live.
+	ChainPnLKillThresholdPerHour int `mapstructure:"chain_pnl_kill_threshold_per_hour"`
+
+	// ChainPnLWindowHours is the trailing window the realized P&L is measured over (sp-rh2z).
+	// 0/absent → the 6h default. Config so a captain widens/narrows the pruning horizon live.
+	ChainPnLWindowHours int `mapstructure:"chain_pnl_window_hours"`
+
+	// ChainPnLKillDisabled is the emergency off-switch for the chain P&L kill-switch (RULINGS #5):
+	// true skips it entirely, for a captain who must keep a chain running through an accounting
+	// gap. Absent/false keeps the kill-switch on at its defaults.
+	ChainPnLKillDisabled bool `mapstructure:"chain_pnl_kill_disabled"`
 }

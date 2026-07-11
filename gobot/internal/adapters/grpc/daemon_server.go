@@ -445,6 +445,18 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register fleet-health metrics collector: %w", err)
 		}
 		metrics.SetGlobalFleetHealthCollector(fleetHealthCollector)
+
+		// Create chain-P&L collector (sp-rh2z): the goods_factory coordinator's kill-switch
+		// emits the realized-P&L/hr gauge and the kill-episode counter through the global set
+		// here — the chain accounting the realization side previously lacked, and the
+		// ChainPnLKill alert's source. Event-driven (no polling goroutine), mirroring the
+		// fleet-health collector above.
+		chainPnLCollector := metrics.NewChainPnLMetricsCollector()
+		if err := chainPnLCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register chain-P&L metrics collector: %w", err)
+		}
+		metrics.SetGlobalChainPnLCollector(chainPnLCollector)
 	}
 
 	// Register container specs for launch and recovery

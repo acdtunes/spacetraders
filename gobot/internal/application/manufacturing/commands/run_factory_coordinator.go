@@ -80,12 +80,26 @@ type RunFactoryCoordinatorHandler struct {
 	chainMarginGuard   *mfgServices.ChainMarginGuard
 	clock              shared.Clock
 
+	// chainPnLReader is the optional DB-backed realized-P&L ledger the kill-switch judges
+	// (sp-rh2z). nil disables the kill-switch (fail-OPEN) — the optional-port contract the
+	// test fixtures rely on, identical to the executor's priceHistory/spendLedger. The daemon
+	// wires the real reader via SetChainPnLReader.
+	chainPnLReader mfgServices.ChainPnLReader
+
 	// noWorkMu guards noWorkState. This handler is a singleton shared across
 	// every concurrent goods_factory container (main.go constructs it once),
 	// so the no-work log-dedup state is keyed by ContainerID to keep sibling
 	// factories from contaminating each other's state (sp-2q2o).
 	noWorkMu    sync.Mutex
 	noWorkState map[string]*noWorkTracker
+
+	// chainPnLKillMu guards chainPnLKillState, the per-container "currently auto-paused"
+	// flag the kill-switch uses for episode dedup (sp-rh2z): the kill counter/WARN emit
+	// once on running→paused and the resume INFO once on paused→running, not on every
+	// re-check. Keyed by ContainerID for the same singleton-across-containers reason as
+	// noWorkState (one container = one chain).
+	chainPnLKillMu    sync.Mutex
+	chainPnLKillState map[string]bool
 }
 
 // noWorkTracker remembers one container's last-logged no-work reason and
@@ -141,6 +155,7 @@ func NewRunFactoryCoordinatorHandler(
 		chainMarginGuard:   chainMarginGuard,
 		clock:              clock,
 		noWorkState:        make(map[string]*noWorkTracker),
+		chainPnLKillState:  make(map[string]bool),
 	}
 }
 
@@ -341,6 +356,27 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 			return nil
 		}
 		logger.Log("INFO", proj.ProceedMessage(), proj.LogFields(response.FactoryID))
+	}
+
+	// Step 2.6: Chain P&L kill-switch (sp-rh2z, analyst redesign C2). AFTER the pre-spend
+	// margin guard, project this chain's REALIZED P&L/hr over the rolling window (factory local
+	// sells + tour realized net − input cost − lift). When it falls below the kill threshold,
+	// auto-PAUSE the chain pre-spend (zero credits committed, same clean partial-success
+	// contract as the margin guard) and let the -1 container's re-invocation loop RESUME it
+	// automatically once the window recovers — the portfolio becomes self-pruning. Scoped to
+	// resale runs (!InputsOnly) like the margin guard: an inputs-only construction feeder
+	// realizes its value later through the construction pipeline, not through sells, so realized
+	// P&L is not its success signal. FAILS OPEN (RULINGS #4, unlike the pre-spend guards which
+	// fail closed): every blind/disabled/unreadable/pre-realization path PROCEEDS — the switch
+	// can only stop spend, and an accounting outage must not halt production.
+	if !cmd.InputsOnly {
+		verdict := h.evaluateChainPnLKill(ctx, cmd)
+		if verdict.Killed {
+			h.recordChainPnLKill(ctx, cmd, verdict)
+			response.NoWorkReason = verdict.KillMessage()
+			return nil
+		}
+		h.clearChainPnLKill(ctx, cmd, verdict)
 	}
 
 	// Step 3: Wait for an idle hauler.

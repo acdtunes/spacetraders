@@ -80,6 +80,20 @@ type RunFactoryCoordinatorCommand struct {
 	// InputSourcingDisabled is the RULINGS #5 escape hatch reverting sourcing to pure price-first.
 	// Fed from input_sourcing_disabled.
 	InputSourcingDisabled bool
+	// ChainPnLKillThresholdPerHour is the realized-P&L/hr floor below which the chain
+	// auto-pauses (sp-rh2z): the coordinator computes this chain's realized P&L over the
+	// rolling window (factory local sells + tour realized net − input cost − lift) and pauses
+	// the chain — pre-spend, next iteration — when it falls below this per-hour figure. 0/absent
+	// resolves to the 30000 default at the point of use (the kill-switch runs ON in production
+	// without the captain naming it). Fed from chain_pnl_kill_threshold_per_hour.
+	ChainPnLKillThresholdPerHour int
+	// ChainPnLWindowHours is the trailing window the realized P&L is measured over (sp-rh2z).
+	// 0/absent resolves to the 6h default. Fed from chain_pnl_window_hours.
+	ChainPnLWindowHours int
+	// ChainPnLKillDisabled is the emergency off-switch for the chain P&L kill-switch (RULINGS #5):
+	// true skips it entirely, for a captain who must keep a chain running through an accounting
+	// gap. Absent/false keeps the kill-switch on at its defaults. Fed from chain_pnl_kill_disabled.
+	ChainPnLKillDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

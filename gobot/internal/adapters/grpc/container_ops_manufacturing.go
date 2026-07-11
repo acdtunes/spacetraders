@@ -315,6 +315,9 @@ var manufacturingConfigKeys = []string{
 	"input_rescue_multiplier",
 	"input_era_end_price_first",
 	"input_sourcing_disabled",
+	"chain_pnl_kill_threshold_per_hour",
+	"chain_pnl_window_hours",
+	"chain_pnl_kill_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -382,5 +385,20 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.InputSourcingDisabled {
 		config["input_sourcing_disabled"] = true
+	}
+	// sp-rh2z: the chain P&L kill-switch. Only written when the captain set a non-zero
+	// threshold/window — an unset key defers to the goods_factory build's 30000/hr + 6h defaults
+	// (the kill-switch runs ON in production without the captain naming it, a protective default
+	// that can only STOP spend, RULINGS #5). The disable flag is written only when true, so
+	// absent/false keeps the switch on; the clear in resolveManufacturingConfig makes turning it
+	// back on take effect.
+	if s.manufacturingConfig.ChainPnLKillThresholdPerHour != 0 {
+		config["chain_pnl_kill_threshold_per_hour"] = s.manufacturingConfig.ChainPnLKillThresholdPerHour
+	}
+	if s.manufacturingConfig.ChainPnLWindowHours != 0 {
+		config["chain_pnl_window_hours"] = s.manufacturingConfig.ChainPnLWindowHours
+	}
+	if s.manufacturingConfig.ChainPnLKillDisabled {
+		config["chain_pnl_kill_disabled"] = true
 	}
 }

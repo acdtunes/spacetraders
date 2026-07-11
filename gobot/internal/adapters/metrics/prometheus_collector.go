@@ -70,6 +70,11 @@ var (
 	// coordinator's reposition exit path emits the stranded-hull counter through it.
 	globalFleetHealthCollector *FleetHealthMetricsCollector
 
+	// globalChainPnLCollector is the singleton chain-P&L collector (sp-rh2z). Set by
+	// SetGlobalChainPnLCollector() when metrics are enabled; the goods_factory coordinator's
+	// kill-switch emits the realized-P&L/hr gauge and the kill-episode counter through it.
+	globalChainPnLCollector *ChainPnLMetricsCollector
+
 	// globalAPIBudgetTracker is the singleton API request-budget tracker
 	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -474,6 +479,35 @@ func GetGlobalFleetHealthCollector() *FleetHealthMetricsCollector {
 func RecordHullStranded(ship, system string) {
 	if globalFleetHealthCollector != nil {
 		globalFleetHealthCollector.RecordHullStranded(ship, system)
+	}
+}
+
+// SetGlobalChainPnLCollector sets the global chain-P&L collector (sp-rh2z). Pass nil to
+// clear it (e.g. in test cleanup).
+func SetGlobalChainPnLCollector(collector *ChainPnLMetricsCollector) {
+	globalChainPnLCollector = collector
+}
+
+// GetGlobalChainPnLCollector returns the global chain-P&L collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalChainPnLCollector() *ChainPnLMetricsCollector {
+	return globalChainPnLCollector
+}
+
+// RecordChainPnLRealizedPerHour sets a chain's realized-P&L/hr gauge globally (sp-rh2z).
+// No-op when metrics are disabled, so a metrics miss never touches the kill-check path
+// (RULINGS #4).
+func RecordChainPnLRealizedPerHour(good string, perHour float64) {
+	if globalChainPnLCollector != nil {
+		globalChainPnLCollector.RecordRealizedPerHour(good, perHour)
+	}
+}
+
+// RecordChainPnLKill increments a chain's kill-episode counter globally (sp-rh2z). No-op
+// when metrics are disabled (RULINGS #4).
+func RecordChainPnLKill(good string) {
+	if globalChainPnLCollector != nil {
+		globalChainPnLCollector.RecordKill(good)
 	}
 }
 

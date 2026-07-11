@@ -800,6 +800,13 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		InputRescueMultiplier: cfg.OptionalFloat("input_rescue_multiplier", 0),
 		InputEraEndPriceFirst: cfg.OptionalBool("input_era_end_price_first"),
 		InputSourcingDisabled: cfg.OptionalBool("input_sourcing_disabled"),
+		// sp-rh2z: the chain P&L kill-switch. 0/absent → the coordinator resolves the 30000/hr
+		// threshold + 6h window defaults at the point of use (the switch runs ON in production
+		// without the captain naming it); a set value is the captain's [manufacturing] override.
+		// The disable flag is the RULINGS #5 emergency off-switch.
+		ChainPnLKillThresholdPerHour: cfg.OptionalInt("chain_pnl_kill_threshold_per_hour", 0),
+		ChainPnLWindowHours:          cfg.OptionalInt("chain_pnl_window_hours", 0),
+		ChainPnLKillDisabled:         cfg.OptionalBool("chain_pnl_kill_disabled"),
 	}
 }
 

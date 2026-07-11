@@ -614,6 +614,11 @@ func run(cfg *config.Config) error {
 	// priceHistoryRepo (already built above for the market scanner) reads the sell_price series
 	// buyGood checks each input ask against; left unset the ceiling is fail-open.
 	factoryCoordinatorHandler.SetPriceHistoryReader(priceHistoryRepo)
+	// sp-rh2z: wire the DB-backed realized-P&L ledger the chain kill-switch judges (per-good
+	// factory buys/sells + tour realized net + refuel pool over the rolling window). Left unset
+	// the kill-switch is fail-open (disabled) — the optional-port contract; the daemon turns it
+	// on by injecting the real reader here.
+	factoryCoordinatorHandler.SetChainPnLReader(persistence.NewGormChainPnLRepository(db))
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
 	}
