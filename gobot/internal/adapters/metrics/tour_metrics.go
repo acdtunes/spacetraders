@@ -62,6 +62,15 @@ type TourMetricsCollector struct {
 	// current cap. Not set on the explicit --max-spend constant path (nothing dynamic to
 	// track there).
 	resolvedMaxSpend *prometheus.GaugeVec
+
+	// jumpLoadedTotal increments once per COMMITTED margins-death reposition jump
+	// (sp-ed4i), labeled loaded=true when the jump carried a look-back manifest
+	// (departure-system exports bought for the destination's imports) and loaded=false
+	// when it flew empty (no cross-system lane cleared the money floors). The empty-rate
+	// (loaded=false / total) is the deadhead metric the look-back-loading acceptance bar
+	// reads (HU21->UQ16 <30% empty). Counted only after the jump commits (a resumable
+	// travel failure counts nothing), so it measures real crossings.
+	jumpLoadedTotal *prometheus.CounterVec
 }
 
 // NewTourMetricsCollector creates a new tour metrics collector (sp-fbih).
@@ -127,6 +136,16 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 			},
 			[]string{"player_id"},
 		),
+
+		jumpLoadedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_jump_loaded_total",
+				Help:      "Margins-death reposition jumps by whether they carried a look-back manifest (loaded=true|false) — the deadhead empty-rate (sp-ed4i)",
+			},
+			[]string{"player_id", "loaded"},
+		),
 	}
 }
 
@@ -144,6 +163,7 @@ func (c *TourMetricsCollector) Register() error {
 		c.exitTotal,
 		c.durationSeconds,
 		c.resolvedMaxSpend,
+		c.jumpLoadedTotal,
 	}
 
 	for _, metric := range metrics {
@@ -205,4 +225,14 @@ func (c *TourMetricsCollector) SetResolvedMaxSpend(playerID int, maxSpend int64)
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.resolvedMaxSpend.WithLabelValues(strconv.Itoa(playerID)).Set(float64(maxSpend))
+}
+
+// RecordJumpLoaded records one committed margins-death reposition jump by whether it
+// carried a look-back manifest (sp-ed4i). loaded=true → the departure-export manifest
+// rode the jump; loaded=false → an empty deadhead.
+func (c *TourMetricsCollector) RecordJumpLoaded(playerID int, loaded bool) {
+	if c == nil || c.jumpLoadedTotal == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	c.jumpLoadedTotal.WithLabelValues(strconv.Itoa(playerID), strconv.FormatBool(loaded)).Inc()
 }

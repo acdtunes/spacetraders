@@ -43,6 +43,11 @@ type tourFixture struct {
 	bid     map[string]map[string]int // waypoint -> good -> bid (PurchasePrice, sell revenue)
 	ask     map[string]map[string]int // waypoint -> good -> ask (SellPrice, buy cost)
 	tv      map[string]map[string]int // waypoint -> good -> tradeVolume
+	// tradeType maps waypoint -> good -> trade type (EXPORT/IMPORT/EXCHANGE). Absent →
+	// EXPORT, the pre-existing default every non-look-back test relies on. sp-ed4i uses it
+	// to model a real IMPORT sink so the look-back sink discipline (sp-9mkf: never sell into
+	// an exporter's bid) is exercised, not bypassed.
+	tradeType map[string]map[string]string
 
 	// neighbors maps a system to the systems one jump-gate hop away (the fake's answer to
 	// GetJumpGateConnectionsQuery). Drives both the tour graph's neighbor scan and the
@@ -110,6 +115,13 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	case *shipCargo.PurchaseCargoCommand:
 		m.fx.mu.Lock()
 		price := m.fx.ask[m.fx.location][cmd.GoodSymbol]
+		// Honor the sp-9mkf per-tranche buy ceiling like the real PurchaseCargoCommand
+		// handler: a live ask above MaxAskPerUnit aborts the buy (zero units) rather than
+		// overpaying. MaxAskPerUnit==0 means no ceiling (the pre-ceiling callers/tests).
+		if cmd.MaxAskPerUnit > 0 && price > cmd.MaxAskPerUnit {
+			m.fx.mu.Unlock()
+			return &shipCargo.PurchaseCargoResponse{UnitsAdded: 0, CeilingAborted: true, CeilingObservedAsk: price}, nil
+		}
 		units := cmd.Units
 		m.fx.cargo[cmd.GoodSymbol] += units
 		m.fx.timeline = append(m.fx.timeline, "BUY:"+cmd.GoodSymbol)
@@ -193,8 +205,20 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 	supply, activity := "MODERATE", "STRONG"
 	var tgs []market.TradeGood
 	for good := range goods {
+		// Per-good trade type (sp-ed4i): defaults to EXPORT (the pre-existing behavior) so a
+		// good is a real IMPORT sink only where a test declares it, letting the look-back
+		// sink discipline be exercised rather than bypassed.
+		tt := market.TradeTypeExport
+		if byGood, ok := r.fx.tradeType[waypointSymbol]; ok {
+			switch byGood[good] {
+			case "IMPORT":
+				tt = market.TradeTypeImport
+			case "EXCHANGE":
+				tt = market.TradeTypeExchange
+			}
+		}
 		g, err := market.NewTradeGood(good, &supply, &activity,
-			r.fx.bid[waypointSymbol][good], r.fx.ask[waypointSymbol][good], r.fx.tv[waypointSymbol][good], market.TradeTypeExport)
+			r.fx.bid[waypointSymbol][good], r.fx.ask[waypointSymbol][good], r.fx.tv[waypointSymbol][good], tt)
 		if err != nil {
 			r.t.Fatalf("trade good: %v", err)
 		}

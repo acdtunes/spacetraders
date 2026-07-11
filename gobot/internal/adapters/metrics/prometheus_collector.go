@@ -365,6 +365,15 @@ func RecordTourExit(playerID int, reason string) {
 	}
 }
 
+// RecordTourJumpLoaded records one committed margins-death reposition jump globally by
+// whether it carried a look-back manifest (sp-ed4i). No-op when metrics are disabled, so
+// a metrics miss never touches the trade path (RULINGS #4).
+func RecordTourJumpLoaded(playerID int, loaded bool) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordJumpLoaded(playerID, loaded)
+	}
+}
+
 // ObserveTourDuration observes one tour-run wall-time (seconds) globally at honest
 // completion (sp-fbih P12). No-op when metrics are disabled.
 func ObserveTourDuration(playerID int, seconds float64) {

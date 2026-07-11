@@ -104,6 +104,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	cmd *RunTourCoordinatorCommand,
 	response *RunTourCoordinatorResponse,
 	episode *repositionEpisode,
+	netBought map[string]int,
 	maxHops int,
 	maxSpend, reserve int64,
 	modelVersion string,
@@ -189,13 +190,27 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		"ship_symbol": cmd.ShipSymbol, "from_system": currentSystem, "to_system": best.system,
 		"to_waypoint": best.waypoint, "planned_fresh_profit": best.freshProfit, "floor": floor,
 	})
+
+	// sp-ed4i look-back loading: the reposition jump was a structural deadhead (RepositionToWaypoint
+	// is a pure empty move). Before jumping, buy the best floor-clearing manifest of THIS system's
+	// exports that the destination imports, so the crossing carries value. It is booked into
+	// netBought/response, rides the jump, and the post-jump re-plan liquidates it as launch cargo
+	// (sp-m5kv). No floor-clearing lane → nothing bought → an empty jump, exactly as pre-sp-ed4i.
+	// Persisted-in-progress is set FIRST (above), so a restart mid-load resumes the jump carrying
+	// whatever was already bought (RULINGS #2). Best-effort: it never blocks the reposition rescue.
+	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, best.system, maxSpend, reserve)
+
 	if terr := h.legs.RepositionToWaypoint(ctx, cmd.ShipSymbol, best.waypoint, cmd.PlayerID); terr != nil {
 		// Leave the persisted in-progress state set: a restart resumes toward the same
-		// destination. Surface the error resumable (the runner re-adopts and retries).
+		// destination (carrying any look-back cargo already bought). Surface the error
+		// resumable (the runner re-adopts and retries).
 		metrics.RecordTourReposition(cmd.PlayerID, "failed") // sp-fbih P3: jump attempted, travel errored (resumable)
 		return false, fmt.Errorf("reposition jump of %s to %s failed: %w", cmd.ShipSymbol, best.waypoint, terr)
 	}
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})
+	// sp-ed4i: the crossing committed — record whether it carried a manifest (loaded) or flew
+	// empty, so the deadhead empty-rate (loaded=false / total) is a dashboard read.
+	metrics.RecordTourJumpLoaded(cmd.PlayerID, loadedUnits > 0)
 
 	episode.repositioned = true
 	episode.fromSystem = currentSystem

@@ -99,6 +99,7 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 	c.RecordExit(1, "starvation")
 	c.ObserveDuration(1, 420)
 	c.SetResolvedMaxSpend(1, 250000)
+	c.RecordJumpLoaded(1, true)
 
 	families, err := Registry.Gather()
 	if err != nil {
@@ -115,6 +116,7 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 		"spacetraders_daemon_tour_exit_total",
 		"spacetraders_daemon_tour_duration_seconds",
 		"spacetraders_daemon_tour_resolved_max_spend",
+		"spacetraders_daemon_tour_jump_loaded_total",
 	} {
 		if !got[want] {
 			t.Errorf("metric %q registered but not exported on the registry", want)
@@ -150,6 +152,9 @@ func TestTourMetrics_LabelsAndValues(t *testing.T) {
 	c.ObserveDuration(7, 3600)
 	c.SetResolvedMaxSpend(7, 100000)
 	c.SetResolvedMaxSpend(7, 250000) // last-write-wins
+	c.RecordJumpLoaded(7, true)      // a loaded look-back jump
+	c.RecordJumpLoaded(7, false)     // an empty deadhead
+	c.RecordJumpLoaded(7, false)     // another empty — both labels accumulate independently
 
 	const (
 		repoName  = "spacetraders_daemon_tour_repositions_total"
@@ -158,6 +163,7 @@ func TestTourMetrics_LabelsAndValues(t *testing.T) {
 		exitName  = "spacetraders_daemon_tour_exit_total"
 		capName   = "spacetraders_daemon_tour_resolved_max_spend"
 		durName   = "spacetraders_daemon_tour_duration_seconds"
+		loadName  = "spacetraders_daemon_tour_jump_loaded_total"
 	)
 
 	counterCases := []struct {
@@ -174,6 +180,8 @@ func TestTourMetrics_LabelsAndValues(t *testing.T) {
 		{"floor shrink", floorName, map[string]string{"player_id": "7", "action": "shrink"}, 2},
 		{"exit starvation", exitName, map[string]string{"player_id": "7", "reason": "starvation"}, 1},
 		{"exit iterations", exitName, map[string]string{"player_id": "7", "reason": "iterations_exhausted"}, 1},
+		{"jump loaded true", loadName, map[string]string{"player_id": "7", "loaded": "true"}, 1},
+		{"jump loaded false", loadName, map[string]string{"player_id": "7", "loaded": "false"}, 2},
 	}
 	for _, tc := range counterCases {
 		got, ok := gatherCounter(t, Registry, tc.metric, tc.labels)
@@ -210,6 +218,7 @@ func TestTourMetrics_NilSafe(t *testing.T) {
 	nilC.RecordExit(1, "starvation")
 	nilC.ObserveDuration(1, 10)
 	nilC.SetResolvedMaxSpend(1, 100)
+	nilC.RecordJumpLoaded(1, true)
 
 	empty := &TourMetricsCollector{}
 	empty.RecordReposition(1, "failed")
@@ -218,4 +227,5 @@ func TestTourMetrics_NilSafe(t *testing.T) {
 	empty.RecordExit(1, "iterations_exhausted")
 	empty.ObserveDuration(1, 20)
 	empty.SetResolvedMaxSpend(1, 200)
+	empty.RecordJumpLoaded(1, false)
 }

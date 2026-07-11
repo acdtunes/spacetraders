@@ -685,7 +685,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// rotates off the drained ground instead of dying on it (the fail-open above no
 		// longer intercepts continuous runs).
 		if continuous {
-			repositioned, rerr := h.maybeReposition(ctx, cmd, response, &episode, maxHops, tourMaxSpend, reserve, modelVersion)
+			repositioned, rerr := h.maybeReposition(ctx, cmd, response, &episode, netBought, maxHops, tourMaxSpend, reserve, modelVersion)
 			if rerr != nil {
 				return rerr
 			}
