@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -47,6 +48,42 @@ func (r *capturingLogRepo) find(level, substr string) (capturedLogLine, bool) {
 	return capturedLogLine{}, false
 }
 
+// snapshot returns a copy of every captured line under the lock. Callers that want
+// to show the sink in a failure message MUST use this and never read the entries
+// slice directly: ContainerRunner.Log persists each line on a detached goroutine
+// (container_runner.go), so an unsynchronized read of entries races that writer —
+// the -race trip the single read at the assertion caused (sp-yon7).
+func (r *capturingLogRepo) snapshot() []capturedLogLine {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]capturedLogLine, len(r.entries))
+	copy(out, r.entries)
+	return out
+}
+
+// waitForLog blocks until a captured line at the given level whose message contains
+// substr appears, or the deadline elapses. ContainerRunner.Log persists each line
+// asynchronously (so the claim path never blocks on the log sink), so an audit line
+// lands shortly AFTER the synchronous Start() that triggered it returns; a single
+// read of the sink races that goroutine and intermittently sees it empty (sp-yon7).
+// Polling a mutex-guarded read with a bounded deadline removes the ordering flake
+// without weakening the assertion — the line must still appear.
+func (r *capturingLogRepo) waitForLog(t *testing.T, level, substr string, timeout time.Duration) capturedLogLine {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if line, ok := r.find(level, substr); ok {
+			return line
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for a %s log containing %q; got: %+v",
+				timeout, level, substr, r.snapshot())
+			return capturedLogLine{} // unreachable: Fatalf stops the test
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // sp-sg35 part 3 — the captain-authority exemption (the permit half). A deliberate
 // captain CLI manual op (navigate/dock/orbit/refuel/jettison) carries the
 // captainManualAuthorityKey flag, so it may operate a fleet-dedicated hull without
@@ -79,8 +116,10 @@ func TestCaptainManualAuthorityOverridesForeignDedication(t *testing.T) {
 	require.Equal(t, containerID, hull.ContainerID())
 
 	// Every override MUST be audited: one WARNING line naming ship, op, dedication.
-	line, ok := logs.find("WARNING", "Captain-authority override")
-	require.True(t, ok, "every captain override must log one audit line; got: %+v", logs.entries)
+	// The audit line persists on Log's detached goroutine, so wait for it instead of
+	// reading the sink once (sp-yon7): the single read raced that goroutine — seeing an
+	// empty sink, and tripping -race on the unsynchronized entries read in the message.
+	line := logs.waitForLog(t, "WARNING", "Captain-authority override", 2*time.Second)
 	require.Equal(t, "TORWIND-19", line.metadata["ship_symbol"])
 	require.Equal(t, "NAVIGATE", line.metadata["op"])
 	require.Equal(t, "trade", line.metadata["dedicated_fleet"])
@@ -116,7 +155,7 @@ func TestWithoutCaptainAuthorityForeignDedicationStillRejected(t *testing.T) {
 	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
 	require.False(t, hull.IsAssigned())
 	if _, overrode := logs.find("WARNING", "Captain-authority override"); overrode {
-		t.Fatalf("no override may be logged without the captain-authority flag: %+v", logs.entries)
+		t.Fatalf("no override may be logged without the captain-authority flag: %+v", logs.snapshot())
 	}
 }
 
