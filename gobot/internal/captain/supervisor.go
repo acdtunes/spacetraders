@@ -115,6 +115,22 @@ type Supervisor struct {
 	// not per-tick, is what makes the dedup real in production.
 	idleEpisodes          *episodeTracker
 	containerlessEpisodes *episodeTracker
+
+	// briefing (sp-g2w6) composes the compact fleet+financial snapshot prepended
+	// to each wake. Lazily built on first wake so the universe-status source
+	// (SetUniverseWatch, wired after construction) is available for the era-end
+	// countdown. nil until then; the composer is fail-open regardless.
+	briefing *Briefing
+
+	// promAlertsURL is the Prometheus base URL the per-tick alert detector polls
+	// (sp-y0f6). NewSupervisor defaults it to defaultPrometheusAlertsURL so
+	// production is unchanged; it is a struct field rather than a hardcoded
+	// constant purely so tests can blank it — otherwise every Tick in the suite
+	// reaches out to whatever real Prometheus happens to run on the dev box, and
+	// a firing alert there injects spurious prometheus.alert_firing events that
+	// break the wake/cap/bridge assertions (empty means off, matching the
+	// detector's own idiom).
+	promAlertsURL string
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
@@ -125,6 +141,7 @@ func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg conf
 		db: db, store: store, ws: ws, cfg: cfg, statePath: ws.StatePath(),
 		idleEpisodes:          &episodeTracker{},
 		containerlessEpisodes: &episodeTracker{},
+		promAlertsURL:         defaultPrometheusAlertsURL,
 	}
 	s.restoreState(time.Now())
 	return s, nil
@@ -245,9 +262,10 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		PostProposalAvgHop:              defaultPostProposalAvgHop,
 		PostProposalCooldown:            defaultPostProposalCooldown,
 
-		// sp-y0f6: Prometheus alert-firing poll, wired to a package default here
-		// until CaptainConfig grows a tunable field (mirrors the sp-k7q5 group above).
-		PrometheusAlertsURL: defaultPrometheusAlertsURL,
+		// sp-y0f6: Prometheus alert-firing poll. Sourced from s.promAlertsURL
+		// (defaulted to defaultPrometheusAlertsURL in NewSupervisor) so tests can
+		// blank it and stay isolated from any Prometheus running on the dev box.
+		PrometheusAlertsURL: s.promAlertsURL,
 	}
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation

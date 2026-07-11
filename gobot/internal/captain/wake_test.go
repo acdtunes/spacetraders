@@ -53,6 +53,7 @@ func newBridgeSupervisor(t *testing.T) (*Supervisor, *captainStores, *fakeGatewa
 	sup, err := NewSupervisor(db, store, NewWorkspace(dir), cfg)
 	require.NoError(t, err)
 	sup.gw = gw
+	sup.promAlertsURL = "" // isolate the suite from any Prometheus on the dev box (sp-y0f6)
 	return sup, &captainStores{store: store, playerID: playerID, dir: dir}, gw
 }
 
@@ -73,6 +74,7 @@ func reopenBridgeSupervisor(t *testing.T, db *gorm.DB, playerID int, store capta
 	sup, err := NewSupervisor(db, store, NewWorkspace(dir), cfg)
 	require.NoError(t, err)
 	sup.gw = gw
+	sup.promAlertsURL = "" // isolate the suite from any Prometheus on the dev box (sp-y0f6)
 	return sup, gw
 }
 

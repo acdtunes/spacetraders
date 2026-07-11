@@ -91,6 +91,13 @@ func (s *Supervisor) firstWakeDue(now time.Time, events []*captain.Event, policy
 
 func (s *Supervisor) firstWake(ctx context.Context, now time.Time, agent string, events []*captain.Event) (bool, error) {
 	subject, body := composeWakeMail(s.cfg.PlayerID, events, now)
+	// Prepend the sp-g2w6 fleet+financial briefing (fail-open: an empty block on
+	// any read failure or when disabled — never blocks the wake). composeBriefing
+	// runs BEFORE recordWake stamps lastSession, so its "since last wake" deltas
+	// still measure the gap to the PREVIOUS wake.
+	if brief := s.composeBriefing(ctx, now); brief != "" {
+		body = brief + "\n" + body
+	}
 	if err := s.gw.SendMail(ctx, agent, subject, body); err != nil {
 		return true, err
 	}

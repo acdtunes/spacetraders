@@ -63,4 +63,11 @@ type CaptainConfig struct {
 	// (EventCreditsThreshold in internal/domain/captain/events.go) applied to
 	// the token-budget proxy instead of live in-game agent credits. Default 80.
 	QuotaAlertThresholdPct *int `mapstructure:"quota_alert_threshold_pct" validate:"omitempty,min=1,max=100"`
+
+	// BriefingDisabled is the sp-g2w6 wake-briefing escape hatch (RULINGS #5:
+	// live by default). The watchkeeper prepends a compact fleet+financial
+	// snapshot to every wake unless this is set. A briefing read failure never
+	// blocks a wake (fail-open), so this exists only to silence the block
+	// entirely, not to guard against errors.
+	BriefingDisabled bool `mapstructure:"briefing_disabled"`
 }
