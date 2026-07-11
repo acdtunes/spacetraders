@@ -6,6 +6,9 @@ import {
   laneProfitColor,
   laneWidth,
   planPathPoints,
+  offsetSegmentRight,
+  pointAlong,
+  laneDashPhase,
 } from '../flowGeometry';
 import { mockTopology, mockLiveFlows } from '../../../mocks/mockFlows';
 import type { LiveFlow } from '../../../types/flows';
@@ -84,5 +87,58 @@ describe('planPathPoints', () => {
     const segments = planPathPoints(tour, idx);
     expect(segments.length).toBe(tour.remainingHops.length);
     for (const seg of segments) expect(seg).toHaveLength(4); // [x1,y1,x2,y2]
+  });
+});
+
+describe('offsetSegmentRight', () => {
+  it('shifts a horizontal segment sideways by exactly offsetPx, perpendicular to travel', () => {
+    const { from, to } = offsetSegmentRight({ x: 0, y: 0 }, { x: 10, y: 0 }, 2);
+    // Normal (dy,-dx)/|d| of (10,0) is (0,-1): both endpoints move by (0,-2).
+    expect(from).toEqual({ x: 0, y: -2 });
+    expect(to).toEqual({ x: 10, y: -2 });
+  });
+
+  it('offsets the reverse direction to the OPPOSITE side (bidirectional lanes never overlap)', () => {
+    const fwd = offsetSegmentRight({ x: 0, y: 0 }, { x: 10, y: 0 }, 2);
+    const rev = offsetSegmentRight({ x: 10, y: 0 }, { x: 0, y: 0 }, 2);
+    // Forward sits at y=-2, reverse at y=+2 — mirror images across the true line.
+    expect(fwd.from.y).toBeCloseTo(-2, 6);
+    expect(rev.from.y).toBeCloseTo(2, 6);
+  });
+
+  it('keeps the offset vector perpendicular to the segment with magnitude offsetPx', () => {
+    const a = { x: -30, y: 40 };
+    const b = { x: 90, y: -10 };
+    const off = offsetSegmentRight(a, b, 5);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const ox = off.from.x - a.x;
+    const oy = off.from.y - a.y;
+    expect(dx * ox + dy * oy).toBeCloseTo(0, 6);          // perpendicular
+    expect(Math.hypot(ox, oy)).toBeCloseTo(5, 6);         // magnitude preserved
+  });
+
+  it('returns the endpoints unchanged for a degenerate zero-length segment', () => {
+    const p = { x: 7, y: 7 };
+    expect(offsetSegmentRight(p, { ...p }, 3)).toEqual({ from: p, to: { ...p } });
+  });
+});
+
+describe('pointAlong', () => {
+  it('returns the endpoints at t=0 and t=1 and the midpoint at t=0.5', () => {
+    const a = { x: 0, y: 0 };
+    const b = { x: 8, y: 4 };
+    expect(pointAlong(a, b, 0)).toEqual(a);
+    expect(pointAlong(a, b, 1)).toEqual(b);
+    expect(pointAlong(a, b, 0.5)).toEqual({ x: 4, y: 2 });
+  });
+});
+
+describe('laneDashPhase', () => {
+  it('decreases over time so dashes crawl toward the destination', () => {
+    expect(laneDashPhase(2000, 1)).toBeLessThan(laneDashPhase(1000, 1));
+  });
+  it('scale-normalizes so on-screen crawl speed holds while zooming', () => {
+    expect(Math.abs(laneDashPhase(1000, 2))).toBeLessThan(Math.abs(laneDashPhase(1000, 1)));
   });
 });

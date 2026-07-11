@@ -1,4 +1,4 @@
-import type { LaneRecord, LiveFlow } from '../../types/flows';
+import type { FlowTranche, LaneRecord, LiveFlow } from '../../types/flows';
 import { systemOf, type Point } from './flowGeometry';
 
 // Geometry for the system drilldown: waypoints rendered TO SCALE from their real
@@ -167,4 +167,143 @@ export function intentWaypointsInSystem(flow: LiveFlow, systemSymbol: string): s
   }
   // Drop a leading duplicate if the first hop equals the hull's waypoint.
   return anchors.filter((s, i) => i === 0 || s !== anchors[i - 1]);
+}
+
+// ---- The selected flow's ACTUAL ordered tour route ---------------------------
+// Distinct from the aggregate realized lanes: this is the connected path a ship
+// is actually flying — currentLeg + remainingHops at waypoint granularity — with
+// its stops numbered in tour order and each stop's buy/sell intent distinguishable.
+
+export type StopKind = 'buy' | 'sell' | 'mixed' | 'none';
+
+// Classify a stop from its tranches: all buys, all sells, both (mixed), or none.
+export function hopKind(tranches: FlowTranche[]): StopKind {
+  if (tranches.length === 0) return 'none';
+  let anyBuy = false;
+  let anySell = false;
+  for (const tr of tranches) {
+    if (tr.isBuy) anyBuy = true;
+    else anySell = true;
+  }
+  if (anyBuy && anySell) return 'mixed';
+  return anyBuy ? 'buy' : 'sell';
+}
+
+export interface RouteStop {
+  index: number;     // 1-based position in the full remaining tour
+  waypoint: string;
+  kind: StopKind;
+}
+
+// The full remaining tour as globally-ordered, buy/sell-classified stops. Reads
+// only published remainingHops, so it is empty (never fabricated) on feed loss.
+export function tourRouteStops(flow: LiveFlow): RouteStop[] {
+  return flow.remainingHops.map((hop, i) => ({
+    index: i + 1,
+    waypoint: hop.waypoint,
+    kind: hopKind(hop.tranches),
+  }));
+}
+
+export type AnchorKind = StopKind | 'depart' | 'entry' | 'exit';
+
+export interface RouteAnchor {
+  index: number;            // stop number (0 for the leading depart/entry anchor)
+  point: Point;             // world-space position
+  kind: AnchorKind;
+  waypoint: string | null;  // null for gate transit anchors (entry/exit)
+}
+
+// The selected flow's route as a drawable, ordered anchor list for THIS system.
+// The path starts at the current leg's tail (the in-system departure waypoint, or
+// the gate when the ship is arriving from elsewhere), threads each in-system stop
+// at its true position, and terminates at the gate the first time the route leaves
+// the system — so the connected path reads as "flew in from here, hits stops
+// 1..n, then exits toward the gate". Cross-system continuations collapse to that
+// single gate exit (their positions are off this view). Empty when nothing is
+// drawable (no leg and no hops, or the needed waypoints/gate are unavailable).
+export function tourRoutePathInSystem(
+  flow: LiveFlow,
+  systemSymbol: string,
+  wpIndex: Map<string, Point>,
+  gate: Point | null,
+): RouteAnchor[] {
+  const anchors: RouteAnchor[] = [];
+
+  // Leading anchor: where the current leg is coming FROM.
+  const leg = flow.currentLeg;
+  if (leg) {
+    const fromInSystem = systemOf(leg.from) === systemSymbol;
+    const toInSystem = systemOf(leg.to) === systemSymbol;
+    if (fromInSystem) {
+      const p = wpIndex.get(leg.from);
+      if (p) anchors.push({ index: 0, point: p, kind: 'depart', waypoint: leg.from });
+    } else if (toInSystem && gate) {
+      anchors.push({ index: 0, point: gate, kind: 'entry', waypoint: null });
+    }
+  }
+
+  for (const stop of tourRouteStops(flow)) {
+    if (systemOf(stop.waypoint) === systemSymbol) {
+      const p = wpIndex.get(stop.waypoint);
+      if (p) anchors.push({ index: stop.index, point: p, kind: stop.kind, waypoint: stop.waypoint });
+    } else {
+      // First stop that leaves the system: draw the exit toward the gate, then
+      // stop — the remainder of the tour lives outside this view.
+      if (gate) anchors.push({ index: stop.index, point: gate, kind: 'exit', waypoint: null });
+      break;
+    }
+  }
+
+  // A lone leading anchor with no stops is not a route — drop it.
+  return anchors.some((a) => a.index > 0) ? anchors : [];
+}
+
+// The hull's real-time position WITHIN this system, in world (waypoint) space.
+// An in-flight hull is interpolated along its current leg using departedAt/
+// arrivesAt with the same clamp as domain/ship.ts (before departure -> origin,
+// after arrival -> destination): between the two waypoints for an intra-system
+// leg, or between the in-system waypoint and the gate when the leg enters/leaves
+// the system. A docked/orbiting hull (no leg, or unusable timestamps) sits at its
+// last-known waypoint. null when the hull has no resolvable presence here — so
+// the caller renders nothing rather than guessing.
+export function interpolateHullInSystem(
+  flow: LiveFlow,
+  systemSymbol: string,
+  wpIndex: Map<string, Point>,
+  gate: Point | null,
+  nowMs: number,
+): Point | null {
+  const leg = flow.currentLeg;
+  if (leg) {
+    const fromInSystem = systemOf(leg.from) === systemSymbol;
+    const toInSystem = systemOf(leg.to) === systemSymbol;
+    let a: Point | null = null;
+    let b: Point | null = null;
+    if (fromInSystem && toInSystem) {
+      a = wpIndex.get(leg.from) ?? null;
+      b = wpIndex.get(leg.to) ?? null;
+    } else if (fromInSystem) {
+      a = wpIndex.get(leg.from) ?? null;
+      b = gate;
+    } else if (toInSystem) {
+      a = gate;
+      b = wpIndex.get(leg.to) ?? null;
+    }
+    const dep = Date.parse(leg.departedAt);
+    const arr = Date.parse(leg.arrivesAt);
+    if (a && b && !Number.isNaN(dep) && !Number.isNaN(arr)) {
+      const progress = (nowMs - dep) / Math.max(arr - dep, 1);
+      const t = Math.max(0, Math.min(1, progress));
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+  }
+
+  // Not interpolating (docked/orbiting, or unusable leg) — sit at the waypoint.
+  const wpSym = hullWaypointInSystem(flow, systemSymbol);
+  if (wpSym) {
+    const p = wpIndex.get(wpSym);
+    if (p) return p;
+  }
+  return null;
 }

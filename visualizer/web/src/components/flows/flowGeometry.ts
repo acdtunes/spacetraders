@@ -74,6 +74,40 @@ export function laneWidth(profit: number, scale: number): number {
   return Math.max(0.5, mag / scale);
 }
 
+// Shift a segment sideways by `offsetPx` along its right-hand unit normal
+// (dy,-dx)/|d|. The reversed direction yields the opposite normal, so a lane pair
+// realized in BOTH directions (A->B and B->A are distinct aggregation keys) lands
+// on opposite sides of the true line — parallel, never overlapping, never a
+// directionless smear — with no cross-lane lookup. Degenerate (zero-length)
+// segments pass through untouched so we never divide by zero.
+export function offsetSegmentRight(from: Point, to: Point, offsetPx: number): { from: Point; to: Point } {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { from, to };
+  const nx = dy / len;
+  const ny = -dx / len;
+  return {
+    from: { x: from.x + nx * offsetPx, y: from.y + ny * offsetPx },
+    to: { x: to.x + nx * offsetPx, y: to.y + ny * offsetPx },
+  };
+}
+
+// A point at fraction t (0..1) along from->to. Used to anchor a mid-lane
+// arrowhead a little short of the destination node (the TradeRouteLayer idiom).
+export function pointAlong(from: Point, to: Point, t: number): Point {
+  return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+}
+
+// Marching-dash phase for a lane. Canvas/Konva shift the dash pattern BACKWARD as
+// the offset grows, so we negate: the phase decreases over time and the dashes
+// crawl TOWARD the destination. Scale-normalized (÷ scale) so the on-screen crawl
+// speed holds steady while zooming, matching the lane stroke-width convention.
+const LANE_DASH_SPEED_PX_PER_SEC = 14;
+export function laneDashPhase(nowMs: number, scale: number): number {
+  return -((nowMs / 1000) * LANE_DASH_SPEED_PX_PER_SEC) / Math.max(scale, 1e-6);
+}
+
 // Remaining planned hops as polyline segments in system space. Consecutive hop
 // waypoints (and the current leg's destination as the first anchor) are paired.
 export function planPathPoints(flow: LiveFlow, systemPos: Map<string, Point>): number[][] {

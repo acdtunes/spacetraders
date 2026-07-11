@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Circle, Text, Group, Line } from 'react-konva';
 import type Konva from 'konva';
 import { useFlowStore } from '../../store/flowStore';
+import { useRafClock } from '../../hooks/useRafClock';
 import { CANVAS_CONSTANTS } from '../../constants/canvas';
 import { NOIR, noirAlpha } from '../../theme/noir';
 import { buildSystemIndex, type Point } from './flowGeometry';
@@ -19,21 +20,11 @@ export default function FlowGalaxyScene() {
 
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(0.5);
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [dashOffset, setDashOffset] = useState(0);
+  const nowMs = useRafClock();
   const centeredRef = useRef<string | null>(null);
 
   const width = window.innerWidth;
   const height = window.innerHeight - 64; // minus nav bar
-
-  // Advance the interpolation clock + lane dash once a second.
-  useEffect(() => {
-    const id = setInterval(() => {
-      setNowMs(Date.now());
-      setDashOffset((d) => (d + 1) % 1000);
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
 
   // Center once per topology (mirrors GalaxyView's centeredKeyRef guard).
   useEffect(() => {
@@ -81,7 +72,7 @@ export default function FlowGalaxyScene() {
         <Layer>
           {topology && (
             <>
-          <FlowLaneLayer lanes={lanes} systemPos={systemPos} scale={scale} dashOffset={dashOffset} />
+          <FlowLaneLayer lanes={lanes} systemPos={systemPos} scale={scale} nowMs={nowMs} />
 
           {/* Gate edges as hairlines (dashed when under construction) */}
           <Group listening={false}>

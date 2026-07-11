@@ -3,6 +3,7 @@ import type { LaneRecord, LiveFlow } from '../../types/flows';
 import type { Waypoint } from '../../types/spacetraders';
 import { NOIR } from '../../theme/noir';
 import { getWaypoints } from '../../services/api/systems';
+import { useRafClock } from '../../hooks/useRafClock';
 import { classifyLaneForSystem, residentFlows } from './drilldownGeometry';
 import { DrilldownHeader } from './DrilldownHeader';
 import { DrilldownScene } from './DrilldownScene';
@@ -13,6 +14,8 @@ interface Props {
   flows: LiveFlow[];
   homeSystem: string | null;
   feedLost: boolean;
+  selectedFlowId: string | null;
+  onSelectFlow: (containerId: string) => void;
   onClose: () => void;
 }
 
@@ -21,12 +24,13 @@ interface Props {
 // with the actual realized trade routes, resident hulls, and daemon intent. The
 // fetch/compose lives here; the geometry is pure (drilldownGeometry) and the canvas
 // is DrilldownScene (Konva). The HOME badge shows when this is the headquarters.
-export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLost, onClose }: Props) {
+export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLost, selectedFlowId, onSelectFlow, onClose }: Props) {
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ w: 0, h: 0 });
+  const nowMs = useRafClock();
 
   // Fetch this system's waypoints whenever the selection changes.
   useEffect(() => {
@@ -83,6 +87,9 @@ export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLo
             isHome={isHome}
             width={dims.w}
             height={dims.h}
+            nowMs={nowMs}
+            selectedFlowId={selectedFlowId}
+            onSelectFlow={onSelectFlow}
           />
         )}
         {loading && (

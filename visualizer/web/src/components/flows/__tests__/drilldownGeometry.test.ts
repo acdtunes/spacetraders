@@ -9,9 +9,13 @@ import {
   residentFlows,
   hullWaypointInSystem,
   intentWaypointsInSystem,
+  hopKind,
+  tourRouteStops,
+  tourRoutePathInSystem,
+  interpolateHullInSystem,
   type WaypointPoint,
 } from '../drilldownGeometry';
-import type { LaneRecord, LiveFlow } from '../../../types/flows';
+import type { FlowTranche, LaneRecord, LiveFlow } from '../../../types/flows';
 
 const wps: WaypointPoint[] = [
   { symbol: 'X1-UQ16-FF5F', type: 'PLANET', x: -100, y: -100 },
@@ -176,5 +180,137 @@ describe('intentWaypointsInSystem', () => {
 
   it('is empty when the flow has no in-system presence or intent', () => {
     expect(intentWaypointsInSystem(baseFlow({}), 'X1-UQ16')).toEqual([]);
+  });
+});
+
+const tranche = (isBuy: boolean): FlowTranche => ({ good: 'G', isBuy, units: 1, expectedUnitPrice: 1 });
+
+describe('hopKind', () => {
+  it('classifies a stop by its tranches: all-buy, all-sell, mixed, or none', () => {
+    expect(hopKind([tranche(true), tranche(true)])).toBe('buy');
+    expect(hopKind([tranche(false)])).toBe('sell');
+    expect(hopKind([tranche(true), tranche(false)])).toBe('mixed');
+    expect(hopKind([])).toBe('none');
+  });
+});
+
+describe('tourRouteStops', () => {
+  it('emits the remaining hops as globally-ordered 1-based stops with buy/sell kind', () => {
+    const flow = baseFlow({
+      remainingHops: [
+        { waypoint: 'X1-UQ16-FF5F', tranches: [tranche(false)] },       // sell
+        { waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(true)] },        // buy
+        { waypoint: 'X1-JP61-A1', tranches: [tranche(true), tranche(false)] }, // mixed, cross-system
+      ],
+    });
+    expect(tourRouteStops(flow)).toEqual([
+      { index: 1, waypoint: 'X1-UQ16-FF5F', kind: 'sell' },
+      { index: 2, waypoint: 'X1-UQ16-ZZ3F', kind: 'buy' },
+      { index: 3, waypoint: 'X1-JP61-A1', kind: 'mixed' },
+    ]);
+  });
+
+  it('is empty for a flow with no remaining hops', () => {
+    expect(tourRouteStops(baseFlow({}))).toEqual([]);
+  });
+});
+
+describe('tourRoutePathInSystem', () => {
+  const idx = buildWaypointIndex(wps);
+  const gate = gateAnchor(wps)!;
+
+  it('walks depart -> in-system stops -> gate exit, numbering stops by global order', () => {
+    // Intra-system current leg (FF5F -> XB8B, both here) then a cross-system stop.
+    const flow = baseFlow({
+      currentLeg: { from: 'X1-UQ16-FF5F', to: 'X1-UQ16-XB8B', departedAt: '', arrivesAt: '' },
+      remainingHops: [
+        { waypoint: 'X1-UQ16-XB8B', tranches: [tranche(false)] }, // stop 1, sell, in-system
+        { waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(true)] },  // stop 2, buy, in-system
+        { waypoint: 'X1-JP61-A1', tranches: [tranche(false)] },   // stop 3, cross-system -> gate exit
+      ],
+    });
+    const anchors = tourRoutePathInSystem(flow, 'X1-UQ16', idx, gate);
+    expect(anchors.map((a) => ({ index: a.index, kind: a.kind, waypoint: a.waypoint }))).toEqual([
+      { index: 0, kind: 'depart', waypoint: 'X1-UQ16-FF5F' },
+      { index: 1, kind: 'sell', waypoint: 'X1-UQ16-XB8B' },
+      { index: 2, kind: 'buy', waypoint: 'X1-UQ16-ZZ3F' },
+      { index: 3, kind: 'exit', waypoint: null },
+    ]);
+    // The exit anchor sits at the gate; in-system anchors at their true positions.
+    expect(anchors[3].point).toEqual(gate);
+    expect(anchors[1].point).toEqual({ x: 0, y: 50 }); // XB8B
+  });
+
+  it('leads with a gate ENTRY anchor when the ship is arriving from another system', () => {
+    const flow = baseFlow({
+      currentLeg: { from: 'X1-JP61-A1', to: 'X1-UQ16-ZZ3F', departedAt: '', arrivesAt: '' },
+      remainingHops: [{ waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(true)] }],
+    });
+    const anchors = tourRoutePathInSystem(flow, 'X1-UQ16', idx, gate);
+    expect(anchors[0]).toEqual({ index: 0, kind: 'entry', waypoint: null, point: gate });
+    expect(anchors[1]).toMatchObject({ index: 1, kind: 'buy', waypoint: 'X1-UQ16-ZZ3F' });
+  });
+
+  it('stays entirely in-system when the route never leaves (no gate anchors)', () => {
+    const flow = baseFlow({
+      currentLeg: { from: 'X1-UQ16-FF5F', to: 'X1-UQ16-ZZ3F', departedAt: '', arrivesAt: '' },
+      remainingHops: [
+        { waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(false)] },
+        { waypoint: 'X1-UQ16-XB8B', tranches: [tranche(true)] },
+      ],
+    });
+    const anchors = tourRoutePathInSystem(flow, 'X1-UQ16', idx, gate);
+    expect(anchors.every((a) => a.kind !== 'exit' && a.kind !== 'entry')).toBe(true);
+    expect(anchors.map((a) => a.kind)).toEqual(['depart', 'sell', 'buy']);
+  });
+
+  it('is empty when the flow has no route to draw', () => {
+    expect(tourRoutePathInSystem(baseFlow({}), 'X1-UQ16', idx, gate)).toEqual([]);
+  });
+});
+
+describe('interpolateHullInSystem', () => {
+  const idx = buildWaypointIndex(wps);
+  const gate = gateAnchor(wps)!;
+  const leg = (from: string, to: string, dep: number, arr: number) => ({
+    from, to, departedAt: new Date(dep).toISOString(), arrivesAt: new Date(arr).toISOString(),
+  });
+
+  it('interpolates halfway between two in-system waypoints on an intra-system leg', () => {
+    const flow = baseFlow({ currentLeg: leg('X1-UQ16-FF5F', 'X1-UQ16-ZZ3F', 0, 1000) });
+    const p = interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 500)!;
+    expect(p.x).toBeCloseTo(0, 6);  // midpoint of (-100,-100) and (100,100)
+    expect(p.y).toBeCloseTo(0, 6);
+  });
+
+  it('clamps to the origin before departure and the destination after arrival', () => {
+    const flow = baseFlow({ currentLeg: leg('X1-UQ16-FF5F', 'X1-UQ16-ZZ3F', 1000, 2000) });
+    expect(interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 0)).toEqual({ x: -100, y: -100 });
+    expect(interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 5000)).toEqual({ x: 100, y: 100 });
+  });
+
+  it('interpolates from the in-system waypoint toward the gate when the ship is exiting', () => {
+    const flow = baseFlow({ currentLeg: leg('X1-UQ16-FF5F', 'X1-JP61-A1', 0, 1000) });
+    const p = interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 500)!;
+    expect(p.x).toBeCloseTo((-100 + gate.x) / 2, 6); // midpoint FF5F -> gate
+    expect(p.y).toBeCloseTo((-100 + gate.y) / 2, 6);
+  });
+
+  it('interpolates from the gate toward the in-system waypoint when the ship is entering', () => {
+    const flow = baseFlow({ currentLeg: leg('X1-JP61-A1', 'X1-UQ16-ZZ3F', 0, 1000) });
+    const p = interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 500)!;
+    expect(p.x).toBeCloseTo((gate.x + 100) / 2, 6); // midpoint gate -> ZZ3F
+    expect(p.y).toBeCloseTo((gate.y + 100) / 2, 6);
+  });
+
+  it('sits a docked/orbiting hull at its actual waypoint (no current leg)', () => {
+    const flow = baseFlow({
+      shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-XB8B', x: 0, y: 0, arrivalTime: null },
+    });
+    expect(interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 500)).toEqual({ x: 0, y: 50 });
+  });
+
+  it('returns null when the hull is neither in transit here nor docked here', () => {
+    expect(interpolateHullInSystem(baseFlow({}), 'X1-UQ16', idx, gate, 500)).toBeNull();
   });
 });

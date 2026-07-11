@@ -19,6 +19,7 @@ export function TradeFlowsView() {
   const topology = useFlowStore((s) => s.topology);
   const lastPlanAt = useFlowStore((s) => s.lastPlanAt);
   const selectedFlowId = useFlowStore((s) => s.selectedFlowId);
+  const selectFlow = useFlowStore((s) => s.selectFlow);
   const drilldownSystem = useFlowStore((s) => s.drilldownSystem);
   const closeDrilldown = useFlowStore((s) => s.closeDrilldown);
   const error = useFlowStore((s) => s.error);
@@ -61,6 +62,8 @@ export function TradeFlowsView() {
           flows={flows}
           homeSystem={topology?.homeSystem ?? null}
           feedLost={live?.feedLost ?? false}
+          selectedFlowId={selectedFlowId}
+          onSelectFlow={selectFlow}
           onClose={closeDrilldown}
         />
       )}
