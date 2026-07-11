@@ -296,6 +296,252 @@
         "x": 0,
         "y": 6
       },
+      "id": 110,
+      "panels": [],
+      "title": "Inventory Value (Mark-to-Bid)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Total value of all cargo currently aboard the fleet (in transit + stored), marked to the best-known bid (MAX purchase_price) across scouted markets per good. This is an OPTIMISTIC CEILING, not a guaranteed realization \u2014 selling this much volume would move prices and may exceed what markets can actually absorb. Goods with no scouted market price at 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 7
+      },
+      "id": 111,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH fleet_inv AS (SELECT g->>'symbol' AS good, SUM((g->>'units')::int) AS units FROM ships, jsonb_array_elements(cargo_inventory::jsonb) g WHERE cargo_units > 0 AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1), px AS (SELECT good_symbol, MAX(purchase_price) AS best_bid FROM market_data WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1) SELECT COALESCE(SUM(f.units*COALESCE(p.best_bid,0)), 0) AS \"value\" FROM fleet_inv f LEFT JOIN px p ON p.good_symbol=f.good",
+          "refId": "A"
+        }
+      ],
+      "title": "Fleet Inventory Value",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Value of cargo aboard hulls currently serving as warehouse storage (ship symbols listed in storage_operations.storage_ships for RUNNING ops), marked to best-known bid. At an era reset, stored goods are a TOTAL LOSS \u2014 this number is pure downside risk parked in warehouse hulls, not banked profit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 7
+      },
+      "id": 112,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH fleet_inv AS (SELECT s.ship_symbol, g->>'symbol' AS good, (g->>'units')::int AS units FROM ships s, jsonb_array_elements(s.cargo_inventory::jsonb) g WHERE s.cargo_units > 0 AND s.player_id=(SELECT MAX(id) FROM players) AND EXISTS (SELECT 1 FROM storage_operations so, jsonb_array_elements_text(so.storage_ships::jsonb) ss(ship_symbol) WHERE so.status='RUNNING' AND so.player_id=(SELECT MAX(id) FROM players) AND ss.ship_symbol = s.ship_symbol)), px AS (SELECT good_symbol, MAX(purchase_price) AS best_bid FROM market_data WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1) SELECT COALESCE(SUM(f.units*COALESCE(p.best_bid,0)), 0) AS \"value\" FROM fleet_inv f LEFT JOIN px p ON p.good_symbol=f.good",
+          "refId": "A"
+        }
+      ],
+      "title": "Stored Value",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Value of cargo aboard all other laden hulls (tour legs, factory workflows, relocation \u2014 anything not parked as warehouse storage), marked to best-known bid. Same optimistic-ceiling caveat as the fleet total: realized value depends on market absorption at sale time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 7
+      },
+      "id": 113,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH fleet_inv AS (SELECT s.ship_symbol, g->>'symbol' AS good, (g->>'units')::int AS units FROM ships s, jsonb_array_elements(s.cargo_inventory::jsonb) g WHERE s.cargo_units > 0 AND s.player_id=(SELECT MAX(id) FROM players) AND NOT EXISTS (SELECT 1 FROM storage_operations so, jsonb_array_elements_text(so.storage_ships::jsonb) ss(ship_symbol) WHERE so.status='RUNNING' AND so.player_id=(SELECT MAX(id) FROM players) AND ss.ship_symbol = s.ship_symbol)), px AS (SELECT good_symbol, MAX(purchase_price) AS best_bid FROM market_data WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1) SELECT COALESCE(SUM(f.units*COALESCE(p.best_bid,0)), 0) AS \"value\" FROM fleet_inv f LEFT JOIN px p ON p.good_symbol=f.good",
+          "refId": "A"
+        }
+      ],
+      "title": "In-Transit / Working Value",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Per-good breakdown of the fleet total above: units held, best-known bid, mark-to-bid value, and the stored share (aboard warehouse hulls per storage_operations.storage_ships, RUNNING) vs in-transit/working. Sorted by value. Valuation is an optimistic ceiling \u2014 realized value depends on market absorption; stored goods are a total loss at an era reset.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 114,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH fleet_inv AS (SELECT s.ship_symbol, g->>'symbol' AS good, (g->>'units')::int AS units, EXISTS (SELECT 1 FROM storage_operations so, jsonb_array_elements_text(so.storage_ships::jsonb) ss(ship_symbol) WHERE so.status='RUNNING' AND so.player_id=(SELECT MAX(id) FROM players) AND ss.ship_symbol = s.ship_symbol) AS is_stored FROM ships s, jsonb_array_elements(s.cargo_inventory::jsonb) g WHERE s.cargo_units > 0 AND s.player_id=(SELECT MAX(id) FROM players)), agg AS (SELECT good, SUM(units) AS units, SUM(units) FILTER (WHERE is_stored) AS stored_units FROM fleet_inv GROUP BY 1), px AS (SELECT good_symbol, MAX(purchase_price) AS best_bid FROM market_data WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1) SELECT a.good AS \"Good\", a.units AS \"Units\", COALESCE(p.best_bid,0) AS \"Best Bid\", a.units*COALESCE(p.best_bid,0) AS \"Value\", ROUND(100.0*COALESCE(a.stored_units,0)/NULLIF(a.units,0),1) AS \"Stored %\" FROM agg a LEFT JOIN px p ON p.good_symbol=a.good ORDER BY 4 DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Inventory by Good",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
       "id": 6,
       "panels": [],
       "title": "Income Ledger (full history)",
@@ -335,7 +581,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 7
+        "y": 22
       },
       "id": 7,
       "options": {
@@ -402,7 +648,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 11
+        "y": 26
       },
       "id": 8,
       "options": {
@@ -467,7 +713,7 @@
         "h": 8,
         "w": 12,
         "x": 4,
-        "y": 7
+        "y": 22
       },
       "id": 9,
       "options": {
@@ -541,7 +787,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 7
+        "y": 22
       },
       "id": 10,
       "options": {
@@ -599,7 +845,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 30
       },
       "id": 109,
       "options": {
@@ -635,7 +881,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 38
       },
       "id": 12,
       "panels": [],
@@ -676,7 +922,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 24
+        "y": 39
       },
       "id": 13,
       "options": {
@@ -747,7 +993,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 28
+        "y": 43
       },
       "id": 14,
       "options": {
@@ -808,7 +1054,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 24
+        "y": 39
       },
       "id": 15,
       "options": {
@@ -866,7 +1112,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 24
+        "y": 39
       },
       "id": 16,
       "options": {
@@ -902,7 +1148,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 47
       },
       "id": 100,
       "panels": [],
@@ -943,7 +1189,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 33
+        "y": 48
       },
       "id": 101,
       "options": {
@@ -1014,7 +1260,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 37
+        "y": 52
       },
       "id": 102,
       "options": {
@@ -1075,7 +1321,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 33
+        "y": 48
       },
       "id": 103,
       "options": {
@@ -1133,7 +1379,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 33
+        "y": 48
       },
       "id": 104,
       "options": {
@@ -1169,7 +1415,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 56
       },
       "id": 106,
       "panels": [],
@@ -1206,7 +1452,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 42
+        "y": 57
       },
       "id": 107,
       "options": {
@@ -1298,7 +1544,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 42
+        "y": 57
       },
       "id": 108,
       "options": {
