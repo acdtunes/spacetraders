@@ -285,6 +285,55 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 			},
 		},
 		{
+			// sp-kk61: a working_capital_reserve surviving in a persisted launch
+			// config (e.g. from a prior boot when [manufacturing] was configured)
+			// must NOT leak into the rebuilt command once the live config is unset —
+			// resolveManufacturingConfig clears it before this shared test server's
+			// zero-value manufacturingConfig re-injects nothing. Exercised through
+			// buildCommandForType, the exact entry point restart recovery uses.
+			name:        "goods_factory_coordinator clears stale working_capital_reserve",
+			commandType: "goods_factory_coordinator",
+			containerID: "goods-3",
+			launchConfig: map[string]interface{}{
+				"target_good":             "IRON",
+				"system_symbol":           "X1-TEST",
+				"container_id":            "goods-3",
+				"working_capital_reserve": 1000000,
+			},
+			want: &goodsCmd.RunFactoryCoordinatorCommand{
+				PlayerID:      playerID,
+				TargetGood:    "IRON",
+				SystemSymbol:  "X1-TEST",
+				ContainerID:   "goods-3",
+				MaxIterations: 1,
+				// WorkingCapitalReserve left at zero value: cleared by
+				// resolveManufacturingConfig since the live config is unset.
+			},
+		},
+		{
+			// Same guarantee for the other build path (sp-kk61): manufacturing_coordinator
+			// resolves through the identical resolveManufacturingConfig hook.
+			name:        "manufacturing_coordinator clears stale working_capital_reserve",
+			commandType: "manufacturing_coordinator",
+			containerID: "mfg-3",
+			launchConfig: map[string]interface{}{
+				"system_symbol":           "X1-TEST",
+				"container_id":            "mfg-3",
+				"working_capital_reserve": 1000000,
+			},
+			want: &goodsCmd.RunParallelManufacturingCoordinatorCommand{
+				SystemSymbol:           "X1-TEST",
+				PlayerID:               playerID,
+				ContainerID:            "mfg-3",
+				MinPurchasePrice:       1000,
+				MaxConcurrentTasks:     3,
+				MaxPipelines:           3,
+				MaxCollectionPipelines: 0,
+				Strategy:               "prefer-fabricate",
+				// WorkingCapitalReserve left at zero value, same reasoning as above.
+			},
+		},
+		{
 			name:        "gas_coordinator",
 			commandType: "gas_coordinator",
 			containerID: "gas-1",

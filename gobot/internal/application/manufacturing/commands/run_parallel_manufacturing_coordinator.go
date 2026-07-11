@@ -44,6 +44,14 @@ type RunParallelManufacturingCoordinatorCommand struct {
 	MaxCollectionPipelines int           // Maximum active collection pipelines (0 = unlimited)
 	SupplyPollInterval     time.Duration // How often to poll factory supply (default 30s)
 	Strategy               string        // Acquisition strategy: prefer-buy, prefer-fabricate, smart (default: prefer-fabricate)
+	// WorkingCapitalReserve carries the same [manufacturing].working_capital_reserve
+	// knob as goods_factory_coordinator's RunFactoryCoordinatorCommand (sp-kk61),
+	// resolved into launch config by the daemon's resolveManufacturingConfig on every
+	// build. This subsystem's purchaser (ManufacturingPurchaser) has no spend-floor
+	// enforcement of its own yet, so the value is carried for reachability/future use
+	// only — it is not read anywhere downstream today. Enforcement here is tracked as
+	// a follow-up bead, not part of this fix.
+	WorkingCapitalReserve int
 }
 
 // RunParallelManufacturingCoordinatorResponse is never returned (infinite loop)

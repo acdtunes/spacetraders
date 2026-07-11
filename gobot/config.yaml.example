@@ -251,3 +251,19 @@ worker_rebalancer:
   ferry_cooldown_seconds: 600      # per-system suppress window after a ferry targets it (default 600)
   max_concurrent_ferries: 2        # cap on simultaneously-running ferries (default 2)
   max_lights_per_system: 0         # per-system light cap incl. in-flight ferries (0 = uncapped, default)
+
+# Manufacturing coordinators (sp-kk61): working_capital_reserve is the factory
+# input-buy spend floor. goods_factory_coordinator enforces it immediately — the
+# effective floor at every input purchase is max(50000, working_capital_reserve),
+# the 50000 an immutable lower bound (sp-agzj). manufacturing_coordinator (the
+# parallel task-based pipeline coordinator) carries the same value through for
+# reachability, but its purchaser does not yet enforce a floor at purchase time
+# (tracked as a follow-up).
+#
+# THIS SECTION IS LIVE (sp-ts82 pattern): resolved from THIS file on every
+# coordinator build — creation AND restart recovery — so a retune reaches an
+# already-running coordinator after a daemon restart, no redeploy needed.
+# Absent/0 => goods_factory_coordinator's standing 50k floor; unset here matches
+# a fleet with no [manufacturing] section at all (pre-sp-kk61 behavior, unchanged).
+manufacturing:
+  # working_capital_reserve: 0

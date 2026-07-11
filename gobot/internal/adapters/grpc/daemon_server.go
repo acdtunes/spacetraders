@@ -110,6 +110,14 @@ type DaemonServer struct {
 	// restarting, no code redeploy.
 	workerRebalancerConfig config.WorkerRebalancerConfig
 
+	// manufacturingConfig carries the manufacturing coordinators' working-capital
+	// reserve knob (sp-kk61) from config.yaml. Both goods_factory_coordinator and
+	// manufacturing_coordinator resolve it into the coordinator container's launch
+	// config on every build (creation + restart recovery via
+	// resolveManufacturingConfig), so a captain raises the factory input-buy spend
+	// floor above its 50k default by editing config and restarting, no code redeploy.
+	manufacturingConfig config.ManufacturingConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -141,6 +149,7 @@ func NewDaemonServer(
 	contractConfig config.ContractConfig,
 	tradeFleetConfig config.TradeFleetConfig,
 	workerRebalancerConfig config.WorkerRebalancerConfig,
+	manufacturingConfig config.ManufacturingConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -200,6 +209,7 @@ func NewDaemonServer(
 		contractConfig:         contractConfig,
 		tradeFleetConfig:       tradeFleetConfig,
 		workerRebalancerConfig: workerRebalancerConfig,
+		manufacturingConfig:    manufacturingConfig,
 		shutdownChan:           make(chan os.Signal, 1),
 		done:                   make(chan struct{}),
 	}

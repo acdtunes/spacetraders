@@ -426,6 +426,16 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "worker_rebalancer_coordinator" {
 		s.resolveWorkerRebalancerConfig(config)
 	}
+	// sp-kk61: same live-config discipline for the manufacturing coordinators'
+	// working-capital reserve. Both goods_factory_coordinator (singleton
+	// ProductionExecutor, sp-agzj's max(50000, configured) input-buy floor) and
+	// manufacturing_coordinator (parallel task-based pipelines) resolve
+	// [manufacturing].working_capital_reserve fresh on every build — creation and
+	// restart recovery alike — so a config.yaml retune reaches a recovered
+	// coordinator with no redeploy.
+	if commandType == "goods_factory_coordinator" || commandType == "manufacturing_coordinator" {
+		s.resolveManufacturingConfig(config)
+	}
 	return spec.BuildCommand(config, playerID, containerID)
 }
 
@@ -737,6 +747,12 @@ func buildManufacturingCoordinatorCommand(cfg *configReader, playerID int, conta
 		MaxPipelines:           cfg.OptionalInt("max_pipelines", 3),
 		MaxCollectionPipelines: cfg.OptionalInt("max_collection_pipelines", 0),
 		Strategy:               cfg.OptionalStringDefault("strategy", "prefer-fabricate"),
+		// sp-kk61: the same [manufacturing].working_capital_reserve knob as
+		// goods_factory_coordinator, resolved by resolveManufacturingConfig. 0/absent
+		// leaves it unset — this subsystem (TaskExecutorRegistry/ManufacturingPurchaser)
+		// has no floor-enforcement of its own yet, so the field is populated for
+		// reachability/future use, with enforcement tracked as a follow-up.
+		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
 	}
 }
 
@@ -846,14 +862,14 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 // persisted iterations survives the rebuild so a -1 run resumes continuous.
 func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &tradingCmd.RunTourCoordinatorCommand{
-		ShipSymbol:            cfg.RequiredString("ship_symbol"),
-		PlayerID:              playerID,
-		ContainerID:           containerID,
-		AgentSymbol:           cfg.OptionalString("agent_symbol"),
-		MaxHops:               cfg.OptionalInt("max_hops", 0),
-		MaxSpend:              int64(cfg.OptionalInt("max_spend", 0)),
-		MinMargin:             cfg.OptionalInt("min_margin", 0),
-		ReplanLimit:           cfg.OptionalInt("replan_limit", 0),
+		ShipSymbol:  cfg.RequiredString("ship_symbol"),
+		PlayerID:    playerID,
+		ContainerID: containerID,
+		AgentSymbol: cfg.OptionalString("agent_symbol"),
+		MaxHops:     cfg.OptionalInt("max_hops", 0),
+		MaxSpend:    int64(cfg.OptionalInt("max_spend", 0)),
+		MinMargin:   cfg.OptionalInt("min_margin", 0),
+		ReplanLimit: cfg.OptionalInt("replan_limit", 0),
 		// sp-ggk2 RULINGS #4: the reserve is a money guard — a PRESENT-but-unparseable
 		// value fails the build (fail closed), never a silent 0 → 50k floor. An absent key
 		// still defers to the coordinator's own default (0 → defaultWorkingCapitalReserve),

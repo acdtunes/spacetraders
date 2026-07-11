@@ -300,3 +300,50 @@ func (s *DaemonServer) CleanupStaleManufacturingWorkers(
 
 	return count, nil
 }
+
+// manufacturingConfigKeys enumerates every launch-config key the manufacturing
+// coordinators' working-capital reserve knob occupies. resolveManufacturingConfig
+// clears this before re-injecting the live value, so a stale persisted copy from a
+// prior boot can never shadow the current config.yaml (sp-ts82). Keep in lockstep
+// with injectManufacturingConfig and buildGoodsFactoryCoordinatorCommand /
+// buildManufacturingCoordinatorCommand's reads.
+var manufacturingConfigKeys = []string{
+	"working_capital_reserve",
+}
+
+// resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
+// the manufacturing coordinators' working-capital reserve (sp-kk61). It clears any
+// working_capital_reserve key already in the launch config (a stale copy persisted
+// at a prior boot) and re-injects the daemon's boot-loaded value, so the rebuilt
+// command reflects the CURRENT config.yaml on every build — creation and restart
+// recovery alike, for BOTH goods_factory_coordinator and manufacturing_coordinator.
+//
+// This is what makes the factory input-buy spend floor operator-reachable: before
+// this, no CLI flag or config key populated RunFactoryCoordinatorCommand's
+// WorkingCapitalReserve field at all, so every factory was stuck at the
+// coordinator's immutable 50k lower bound (sp-agzj) with no way to raise it — the
+// gap tonight's 682k factory input buy rode into a fleet-wide 53k treasury trough.
+// The clear is essential to honesty: dropping the knob from config.yaml must fall
+// back to the 50k floor, and that can only happen if the stale persisted key is
+// removed rather than left to shadow the now-absent live value.
+func (s *DaemonServer) resolveManufacturingConfig(config map[string]interface{}) {
+	for _, key := range manufacturingConfigKeys {
+		delete(config, key)
+	}
+	s.injectManufacturingConfig(config)
+}
+
+// injectManufacturingConfig writes the working-capital reserve knob from
+// config.yaml (s.manufacturingConfig) into a coordinator container's launch config
+// (sp-kk61). Only written when the captain actually set it (non-zero), so an unset
+// knob defers to goods_factory_coordinator's documented 50k floor (RULINGS #5) —
+// the daemon never hardcodes the operational value. manufacturing_coordinator
+// (parallel task-based pipelines) reads the same key so the value is uniformly
+// reachable across both command types, though its purchaser has no floor
+// enforcement of its own yet (tracked separately). Callers go through
+// resolveManufacturingConfig so any stale persisted key is cleared first (sp-ts82).
+func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) {
+	if s.manufacturingConfig.WorkingCapitalReserve != 0 {
+		config["working_capital_reserve"] = int(s.manufacturingConfig.WorkingCapitalReserve)
+	}
+}
