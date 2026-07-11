@@ -48,7 +48,7 @@ redesign moves complexity from input trees to output realization.
 
 - **X1 — Recursive fabricate ladders beyond depth-1.** Raw inputs are 0.29% of buys;
   depth-1 (buy inputs at market, lift output) captures everything. The furnace class
-  lived in the recursion. (Build bead: sp-jav2, era-3 boot candidate.)
+  lived in the recursion. (Build bead: sp-jav2, building this era per Admiral no-deferral order.)
 - **X2 — One of the two coordinator designs.** One job, one design; the shipwright
   designates the survivor. (sp-jav2.)
 - **X3 — Standing tail chains under ~50k/hr feed value.** Five goods carry 80%+ of
@@ -59,7 +59,7 @@ redesign moves complexity from input trees to output realization.
 
 ## CHANGE (ranked by expected $/hr × build cost)
 
-- **C1 — PLANNER-VISIBLE STOCK (the headline; era-3's FIRST build; sp-64je).**
+- **C1 — PLANNER-VISIBLE STOCK (the headline; BUILT 2026-07-11 this era, Admiral-pulled-forward; sp-64je).**
   Unify factory output with the warehouse/pre-positioning model: a factory IS a stocker
   whose acquisition method is "lift cheap local production." Output deposits into
   warehouse stock with cost basis recorded; the tour solver sees stock as a reservable
