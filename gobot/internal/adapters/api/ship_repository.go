@@ -8,11 +8,13 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -20,6 +22,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
+
+// shipVersionConflicts counts Save calls whose row version moved past the
+// entity's loaded version — i.e. another writer committed in between and is
+// about to be last-write-wins clobbered (sp-60ff probe; the mailbox, sp-eum3,
+// is gated on this reading). Mirrored to prometheus; kept as a package
+// atomic so tests and debuggers can read it without a registry.
+var shipVersionConflicts atomic.Int64
 
 // shipListCacheTTL defines how long ship list cache is valid
 // 15 seconds is enough to prevent redundant calls across coordinators
@@ -672,7 +681,7 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 		PlayerID:         ship.PlayerID().Value(),
 		AssignmentStatus: "idle",
 		SyncedAt:         r.clock.Now(),
-		Version:          1,
+		Version:          ship.PersistedVersion() + 1,
 	}
 
 	// Navigation state
@@ -822,13 +831,46 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	return model
 }
 
-// Save persists ship aggregate state (including full state) to DB
+// Save persists ship aggregate state (including full state) to DB.
+// When the entity carries a known row version, the upsert is guarded with
+// `DO UPDATE ... WHERE ships.version = <loaded>` (postgres and sqlite both
+// support upsert-where): RowsAffected == 0 means another writer committed
+// since this entity was loaded. That is DETECTION-ONLY telemetry (sp-60ff):
+// we count + log, then apply the legacy last-write-wins upsert so behavior
+// is unchanged. The reading gates the mailbox (sp-eum3), which then migrates
+// the remaining writers (sp-wa7c).
 func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error {
 	if r.db == nil {
 		return fmt.Errorf("database not configured")
 	}
 
 	model := r.shipToModel(ship)
+
+	if loaded := ship.PersistedVersion(); loaded > 0 {
+		res := r.db.WithContext(ctx).
+			Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+				Where: clause.Where{Exprs: []clause.Expression{
+					clause.Eq{Column: clause.Column{Table: "ships", Name: "version"}, Value: loaded},
+				}},
+				UpdateAll: true,
+			}).
+			Create(&model)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected > 0 {
+			ship.SetPersistedVersion(loaded + 1)
+			r.shipListCache.Delete(ship.PlayerID().Value())
+			return nil
+		}
+		// Conflict: the row moved past our loaded version.
+		shipVersionConflicts.Add(1)
+		metrics.RecordShipVersionConflict()
+		log.Printf("ERROR: ship %s save conflict — row version moved past %d (concurrent writer; sp-60ff probe); applying last-write-wins fallback",
+			ship.ShipSymbol(), loaded)
+	}
+
 	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
@@ -837,6 +879,7 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 		Create(&model).Error
 
 	if err == nil {
+		ship.SetPersistedVersion(model.Version)
 		// Invalidate cache to ensure assignment changes are immediately visible
 		// This prevents stale assignment data from causing ships to be incorrectly
 		// seen as idle when they've been assigned to containers (e.g., storage ships)
@@ -1415,6 +1458,7 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	// protections it cannot read.
 	overrides, corrupt := parseReservationOverrides(model.ReservationOverrides)
 	ship.SetReservationOverrides(overrides, corrupt)
+	ship.SetPersistedVersion(model.Version)
 	return ship, nil
 }
 

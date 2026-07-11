@@ -103,6 +103,13 @@ type MetricsRecorder interface {
 	RecordContainerExit(containerInfo ContainerInfo)
 }
 
+// ShipWriteConflictRecorder is implemented by collectors that track the
+// sp-60ff ship-row version tripwire. Separate single-method interface so
+// existing MetricsRecorder implementations keep compiling.
+type ShipWriteConflictRecorder interface {
+	RecordShipVersionConflict()
+}
+
 // NavigationMetricsRecorder defines the interface for recording navigation metrics
 type NavigationMetricsRecorder interface {
 	RecordRouteCompletion(playerID int, status navigation.RouteStatus, duration float64, distance int, fuelConsumed int)
@@ -165,6 +172,19 @@ func RecordContainerIteration(containerInfo ContainerInfo) {
 func RecordContainerExit(containerInfo ContainerInfo) {
 	if globalCollector != nil {
 		globalCollector.RecordContainerExit(containerInfo)
+	}
+}
+
+// RecordShipVersionConflict records a ship save whose row version moved past
+// the entity's loaded version (a concurrent-writer clobber, sp-60ff). No-op
+// when metrics are disabled or the global collector doesn't implement the
+// recorder, so a metrics miss never touches the save path (RULINGS #4).
+func RecordShipVersionConflict() {
+	if globalCollector == nil {
+		return
+	}
+	if rec, ok := globalCollector.(ShipWriteConflictRecorder); ok {
+		rec.RecordShipVersionConflict()
 	}
 }
 

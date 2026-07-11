@@ -32,6 +32,11 @@ type ContainerMetricsCollector struct {
 	shipsTotal      *prometheus.GaugeVec
 	shipStatusTotal *prometheus.GaugeVec
 
+	// shipVersionConflicts counts Save calls whose row version moved past the
+	// entity's loaded version (sp-60ff tripwire). Unlabeled — the paired
+	// ERROR log (ship_repository.go Save) carries the ship symbol.
+	shipVersionConflicts prometheus.Counter
+
 	// Lifecycle
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -152,6 +157,15 @@ func NewContainerMetricsCollector(
 			},
 			[]string{"player_id", "status"},
 		),
+
+		// sp-60ff tripwire: ship saves that raced past their loaded version.
+		// Unlabeled — the paired ERROR log carries the ship symbol.
+		shipVersionConflicts: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "ship",
+			Name:      "version_conflicts_total",
+			Help:      "Ship row writes that raced past their loaded version (concurrent-writer clobbers)",
+		}),
 	}
 
 	return collector
@@ -172,6 +186,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.containerExitTotal,
 		c.shipsTotal,
 		c.shipStatusTotal,
+		c.shipVersionConflicts,
 	}
 
 	for _, metric := range metrics {
@@ -379,4 +394,9 @@ func (c *ContainerMetricsCollector) RecordContainerExit(containerInfo ContainerI
 	status := string(containerInfo.Status())
 
 	c.containerExitTotal.WithLabelValues(playerID, commandType, status).Inc()
+}
+
+// RecordShipVersionConflict implements ShipWriteConflictRecorder (sp-60ff).
+func (c *ContainerMetricsCollector) RecordShipVersionConflict() {
+	c.shipVersionConflicts.Inc()
 }

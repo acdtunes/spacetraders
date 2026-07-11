@@ -107,6 +107,12 @@ type Ship struct {
 	// reserved (nothing is sold from this hull) rather than risk selling a good the
 	// unreadable override set had protected (sp-1vhv, RULINGS #4).
 	reservationStateCorrupt bool
+
+	// persistedVersion is the ships.version value this entity was loaded at
+	// (0 = never loaded from a row, e.g. API-born). Infrastructure carries it
+	// for the Save CAS tripwire (sp-60ff): it is NOT domain state and has no
+	// behavior here.
+	persistedVersion int
 }
 
 // NewShip creates a new Ship entity with validation
@@ -420,6 +426,14 @@ func (s *Ship) Arrive() error {
 	s.navStatus = NavStatusInOrbit
 	return nil
 }
+
+// PersistedVersion reports the row version this entity was reconstructed at
+// (0 = unknown/API-born). See sp-60ff conflict telemetry.
+func (s *Ship) PersistedVersion() int { return s.persistedVersion }
+
+// SetPersistedVersion is called by the persistence layer at reconstruction
+// and after a committed save.
+func (s *Ship) SetPersistedVersion(v int) { s.persistedVersion = v }
 
 // StartTransit begins transit to destination
 func (s *Ship) StartTransit(destination *shared.Waypoint) error {
