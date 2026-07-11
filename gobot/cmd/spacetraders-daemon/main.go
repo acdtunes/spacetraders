@@ -27,10 +27,7 @@ import (
 	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -54,7 +51,6 @@ import (
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
@@ -892,48 +888,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register FindFactoryForGas handler: %w", err)
 	}
 
-	// Manufacturing handlers (depends on daemonClientLocal)
-	// Create manufacturing repositories (pipeline repo needed by demand finder)
-	manufacturingPipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
-	manufacturingTaskRepo := persistence.NewGormManufacturingTaskRepository(db)
-	manufacturingFactoryStateRepo := persistence.NewGormManufacturingFactoryStateRepository(db)
 	storageOperationRepo := persistence.NewStorageOperationRepository(db, nil) // nil = use RealClock
-
-	// Create demand finder for manufacturing opportunities
-	// Pipeline repo is used to filter out goods that already have active pipelines
-	manufacturingDemandFinder := tradingServices.NewManufacturingDemandFinder(
-		tradingMarketRepo, graphService, goods.ExportToImportMap, goodsResolver, manufacturingPipelineRepo,
-	)
-
-	// Create collection opportunity finder for COLLECT_SELL pipelines
-	// Finds factories with HIGH/ABUNDANT supply to collect from
-	// Also finds storage-based opportunities (e.g., HYDROCARBON from gas siphoning)
-	collectionOpportunityFinder := tradingServices.NewCollectionOpportunityFinder(
-		tradingMarketRepo, manufacturingPipelineRepo,
-	).WithStorageRepo(storageOperationRepo)
-
-	// Create task queue (in-memory with DB backing)
-	taskQueue := tradingServices.NewTaskQueue()
-
-	// Create factory state tracker
-	factoryTracker := manufacturing.NewFactoryStateTracker()
-
-	// Create pipeline planner
-	// Note: storageOperationRepo enables STORAGE_ACQUIRE_DELIVER tasks for gas goods.
-	// containerRepo gates those tasks on the storage coordinator's container actually
-	// being alive, not just its storage_operations row status (sp-86yb defense-in-depth).
-	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator, storageOperationRepo, containerRepo)
-
-	// Manufacturing task worker services - using strategy pattern for task execution
-	mfgNavigator := mfgServices.NewManufacturingNavigator(med, shipRepo)
-	mfgPurchaser := mfgServices.NewManufacturingPurchaser(med, shipRepo, tradingMarketRepo)
-	mfgSeller := mfgServices.NewManufacturingSeller(med, shipRepo)
-
-	// Create task executors using strategy pattern
-	taskExecutorRegistry := mfgServices.NewTaskExecutorRegistry()
-	taskExecutorRegistry.Register(mfgServices.NewAcquireDeliverExecutor(mfgNavigator, mfgPurchaser, mfgSeller))
-	taskExecutorRegistry.Register(mfgServices.NewCollectSellExecutor(mfgNavigator, mfgPurchaser, mfgSeller))
-	taskExecutorRegistry.Register(mfgServices.NewLiquidateExecutor(mfgNavigator, mfgSeller))
 
 	// Create storage coordinator for STORAGE_ACQUIRE_DELIVER tasks
 	// This enables manufacturing pipelines to acquire cargo from storage ships
@@ -954,13 +909,6 @@ func run(cfg *config.Config) error {
 			cfg.Contract.PrePositioning.CapitalCeilingPct,
 		),
 	)
-	// Register storage executor and enable storage support on COLLECT_SELL executor
-	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, mfgSeller, storageCoordinator, apiClient, shipRepo)
-
-	// Register DELIVER_TO_CONSTRUCTION executor so construction pipeline tasks can execute
-	constructionSiteRepo := api.NewConstructionSiteRepository(apiClient, playerRepo)
-	mfgServices.RegisterConstructionExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, constructionSiteRepo, manufacturingPipelineRepo, manufacturingTaskRepo)
-
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
 	gasCoordinatorHandler := gasCmd.NewRunGasCoordinatorHandler(
@@ -1007,14 +955,6 @@ func run(cfg *config.Config) error {
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
 		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
 	}
-
-	// Create storage recovery service for daemon restart resilience
-	// This recovers storage ship cargo state from API when daemon restarts
-	storageRecoveryService := storageApp.NewStorageRecoveryService(
-		storageOperationRepo,
-		apiClient,
-		storageCoordinator,
-	)
 
 	// Wire the tour coordinator's haul-to-storage pre-positioning subsystem (sp-dchv
 	// Lane C), now that the shared storage coordinator + operation repo exist. The
@@ -1071,50 +1011,9 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register StockerCoordinator handler: %w", err)
 	}
 
-	// Manufacturing task worker handler
-	manufacturingTaskWorkerHandler := tradingCmd.NewRunManufacturingTaskWorkerHandler(
-		taskExecutorRegistry,
-		manufacturingTaskRepo,
-	)
-	if err := mediator.RegisterHandler[*tradingCmd.RunManufacturingTaskWorkerCommand](med, manufacturingTaskWorkerHandler); err != nil {
-		return fmt.Errorf("failed to register RunManufacturingTaskWorker handler: %w", err)
-	}
-
-	// Parallel manufacturing coordinator handler
-	// Note: SupplyMonitor is created at runtime in the Handle method (needs playerID)
-	parallelManufacturingCoordinatorHandler := tradingCmd.NewRunParallelManufacturingCoordinatorHandler(
-		manufacturingDemandFinder,
-		collectionOpportunityFinder, // For COLLECT_SELL pipeline discovery
-		pipelinePlanner,
-		taskQueue,
-		factoryTracker,
-		shipRepo,
-		manufacturingPipelineRepo,
-		manufacturingTaskRepo,
-		manufacturingFactoryStateRepo,
-		tradingMarketRepo, // For SupplyMonitor creation
-		containerRepo,     // For cleaning up orphaned PENDING containers
-		med,
-		daemonClientLocal, // For spawning worker containers
-		nil,               // Use default RealClock
-		graphService,      // WaypointProvider for task source location lookups
-	)
-	// Wire the ship event bus so the coordinator can subscribe to worker/task
-	// events and the supply monitor can publish TasksBecameReady events.
-	// Without this the handler nil-derefs the event bus on its goroutine and
-	// crashes the whole daemon (mirrors the contract coordinator wiring above).
-	parallelManufacturingCoordinatorHandler.SetEventSubscriber(shipEventBus)
-	parallelManufacturingCoordinatorHandler.SetEventPublisher(shipEventBus)
-	// Enable storage ship recovery on daemon restart
-	parallelManufacturingCoordinatorHandler.SetStorageRecoveryService(storageRecoveryService)
-	// Enable STORAGE_ACQUIRE_DELIVER task creation for goods produced by storage operations
-	parallelManufacturingCoordinatorHandler.SetStorageOperationRepository(storageOperationRepo)
-	// Gate SupplyMonitor's ongoing storage-source lookups on coordinator liveness too
-	// (sp-86yb defense-in-depth; pipelinePlanner's own check was wired at construction).
-	parallelManufacturingCoordinatorHandler.SetContainerStatusReader(containerRepo)
-	if err := mediator.RegisterHandler[*tradingCmd.RunParallelManufacturingCoordinatorCommand](med, parallelManufacturingCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register RunParallelManufacturingCoordinator handler: %w", err)
-	}
+	// sp-jav2 X2: the parallel task-style manufacturing coordinator and its task worker were
+	// retired. The survivor goods_factory_coordinator (registered above) is the sole factory
+	// coordinator design.
 
 	fmt.Println("\n✓ Daemon is ready to accept connections")
 	fmt.Println("Press Ctrl+C to stop")

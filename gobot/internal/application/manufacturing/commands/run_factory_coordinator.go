@@ -366,6 +366,12 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// price-first < T-6h; disabled reverts to pure price-first. Stamped unconditionally so a
 	// directly-built command (0, false, false) still runs supply-first at its default.
 	ctx = mfgServices.WithInputSourcing(ctx, cmd.InputRescueMultiplier, cmd.InputEraEndPriceFirst, cmd.InputSourcingDisabled)
+	// sp-jav2 / FACTORY_DOCTRINE X1: stamp the fabricate depth cap so the SupplyChainResolver (a
+	// boot singleton shared across sibling factory containers) reads it race-free off ctx. maxDepth
+	// 0 resolves to the depth-1 default at the point of use — fabricate the output, buy its inputs;
+	// disabled=true restores the original unbounded recursion. Stamped unconditionally so a
+	// directly-built command (0/false) still caps at depth-1.
+	ctx = mfgServices.WithFabricateDepthCap(ctx, cmd.FabricateMaxDepth, cmd.FabricateDepthCapDisabled)
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,

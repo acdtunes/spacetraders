@@ -1703,44 +1703,6 @@ type GasExtractionOperationResponse struct {
 	Errors     []string
 }
 
-// StartParallelManufacturingCoordinator starts a parallel task-based manufacturing coordinator
-func (c *DaemonClient) StartParallelManufacturingCoordinator(
-	ctx context.Context,
-	systemSymbol string,
-	playerID int,
-	minPrice int,
-	maxWorkers int,
-	maxPipelines int,
-	maxCollectionPipelines int,
-	minBalance int,
-	strategy string,
-) (*StartManufacturingCoordinatorResult, error) {
-	resp, err := c.client.StartParallelManufacturingCoordinator(ctx, &pb.StartParallelManufacturingCoordinatorRequest{
-		PlayerId:               int32(playerID),
-		SystemSymbol:           systemSymbol,
-		MinPrice:               int32(minPrice),
-		MaxWorkers:             int32(maxWorkers),
-		MaxPipelines:           int32(maxPipelines),
-		MaxCollectionPipelines: int32(maxCollectionPipelines),
-		MinBalance:             int32(minBalance),
-		Strategy:               strategy,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &StartManufacturingCoordinatorResult{
-		ContainerID:  resp.ContainerId,
-		SystemSymbol: resp.SystemSymbol,
-		MinPrice:     int(resp.MinPrice),
-		MaxWorkers:   int(resp.MaxWorkers),
-		MaxPipelines: int(resp.MaxPipelines),
-		MinBalance:   int(resp.MinBalance),
-		Status:       resp.Status,
-		Message:      resp.Message,
-	}, nil
-}
-
 // GasExtractionOperation starts a gas extraction operation with siphon and transport ships
 func (c *DaemonClient) GasExtractionOperation(
 	ctx context.Context,

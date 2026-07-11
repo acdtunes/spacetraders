@@ -126,7 +126,8 @@ func TestRecoverySkipsWorkerIdentifiedByParentContainerID(t *testing.T) {
 }
 
 func TestRecoveryMarksKnownWorkerCommandTypesInterrupted(t *testing.T) {
-	workerTypes := []string{"manufacturing_task_worker", "gas_siphon_worker", "storage_ship"}
+	// sp-jav2 X2: manufacturing_task_worker retired; gas_siphon_worker + storage_ship remain.
+	workerTypes := []string{"gas_siphon_worker", "storage_ship"}
 	for _, workerType := range workerTypes {
 		t.Run(workerType, func(t *testing.T) {
 			s, db, playerID := newRecoveryTestServer(t)
@@ -320,7 +321,7 @@ func TestRecoverySkipsDeadEraWorkerBeforeCoordinatorCheck(t *testing.T) {
 	deadPlayer := persistence.PlayerModel{AgentSymbol: "DEAD-ERA-WORKER-AGENT", Token: "dead-tok-2", CreatedAt: time.Now()}
 	require.NoError(t, db.Create(&deadPlayer).Error)
 	parent := "dead-coord-1"
-	insertRunningContainer(t, db, "zombie-worker-1", "manufacturing_task_worker", "WORKER",
+	insertRunningContainer(t, db, "zombie-worker-1", "gas_siphon_worker", "WORKER",
 		`{"ship_symbol":"SHIP-Z","coordinator_id":"dead-coord-1"}`, deadPlayer.ID, &parent)
 
 	require.NoError(t, s.RecoverRunningContainers(context.Background()))

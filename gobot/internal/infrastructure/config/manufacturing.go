@@ -11,10 +11,10 @@ package config
 // for that knob, so the daemon injects only the key the captain actually set —
 // it never hardcodes an operational value.
 type ManufacturingConfig struct {
-	// WorkingCapitalReserve is the per-run spend floor threaded into both
-	// goods_factory_coordinator (RunFactoryCoordinatorCommand) and
-	// manufacturing_coordinator (RunParallelManufacturingCoordinatorCommand)
-	// commands. 0/absent leaves goods_factory's own immutable 50000 lower bound
+	// WorkingCapitalReserve is the per-run spend floor threaded into the
+	// goods_factory_coordinator (RunFactoryCoordinatorCommand) command (sp-jav2 X2:
+	// the parallel manufacturing_coordinator that also read it is retired).
+	// 0/absent leaves goods_factory's own immutable 50000 lower bound
 	// untouched (sp-agzj: effectiveReserveFloor = max(50000, WorkingCapitalReserve));
 	// a configured value raises it — e.g. matching the fleet's [trade_fleet]
 	// working_capital_reserve so a factory input buy can no longer ride the 50k
@@ -43,6 +43,20 @@ type ManufacturingConfig struct {
 	// (RULINGS #5): true skips the guard entirely, for a captain who needs a factory to buy
 	// through a genuine price spike. Absent/false keeps the guard on at its default multiplier.
 	InputPriceCeilingDisabled bool `mapstructure:"input_price_ceiling_disabled"`
+
+	// FabricateMaxDepth caps how deep the SupplyChainResolver fabricates (sp-jav2 / FACTORY_DOCTRINE
+	// X1). Root is depth 0, its direct inputs depth 1; a node past this depth resolves to a
+	// market-BUY instead of a recursive sub-chain. 0/absent → the depth-1 default at the point of
+	// use — the resolver fabricates the output and buys its inputs, which the analyst brief
+	// established captures the entire realizable margin (raw inputs ~0.29% of spend, market-buy
+	// ruled correct sp-naw6, and the furnace class lived in the recursion). A protective default
+	// that turns a GUARD on, not money movement, so a live-by-default is correct (RULINGS #5).
+	FabricateMaxDepth int `mapstructure:"fabricate_max_depth"`
+
+	// FabricateDepthCapDisabled is the emergency off-switch for the fabricate depth cap (RULINGS
+	// #5): true restores the original unbounded recursion. Absent/false keeps the cap on at its
+	// default depth.
+	FabricateDepthCapDisabled bool `mapstructure:"fabricate_depth_cap_disabled"`
 
 	// InputRescueMultiplier caps the supply-first sourcing rescue clause (sp-a5j7 Phase 2, wedx
 	// restoration): when NO eligible (MODERATE+) source exists and the chain is blocked, a

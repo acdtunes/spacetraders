@@ -385,7 +385,6 @@ func containerSpecList() []ContainerSpec {
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		{CommandType: "fleet_autosizer", build: buildFleetAutosizerCommand},
-		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "warehouse", build: buildWarehouseCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
@@ -406,7 +405,6 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "refuel_ship", build: buildRefuelShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "jettison_cargo", build: buildJettisonCargoCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "scout_fleet_assignment", build: buildScoutFleetAssignmentCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "manufacturing_task_worker", IsWorker: true},
 		{CommandType: "gas_siphon_worker", IsWorker: true},
 		{CommandType: "storage_ship", IsWorker: true},
 	}
@@ -454,14 +452,13 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "worker_rebalancer_coordinator" {
 		s.resolveWorkerRebalancerConfig(config)
 	}
-	// sp-kk61: same live-config discipline for the manufacturing coordinators'
-	// working-capital reserve. Both goods_factory_coordinator (singleton
-	// ProductionExecutor, sp-agzj's max(50000, configured) input-buy floor) and
-	// manufacturing_coordinator (parallel task-based pipelines) resolve
-	// [manufacturing].working_capital_reserve fresh on every build — creation and
-	// restart recovery alike — so a config.yaml retune reaches a recovered
-	// coordinator with no redeploy.
-	if commandType == "goods_factory_coordinator" || commandType == "manufacturing_coordinator" {
+	// sp-kk61: same live-config discipline for the goods_factory_coordinator's working-capital
+	// reserve (singleton ProductionExecutor, sp-agzj's max(50000, configured) input-buy floor):
+	// [manufacturing].working_capital_reserve is resolved fresh on every build — creation and
+	// restart recovery alike — so a config.yaml retune reaches a recovered coordinator with no
+	// redeploy. (sp-jav2 X2: the parallel manufacturing_coordinator that shared this branch is
+	// retired.)
+	if commandType == "goods_factory_coordinator" {
 		s.resolveManufacturingConfig(config)
 	}
 	// sp-vdld: same live-config discipline for the siting coordinator. Its
@@ -847,6 +844,12 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// is the emergency off-switch (RULINGS #5).
 		InputPriceCeilingMultiplier: cfg.OptionalFloat("input_price_ceiling_multiplier", 0),
 		InputPriceCeilingDisabled:   cfg.OptionalBool("input_price_ceiling_disabled"),
+		// sp-jav2 / FACTORY_DOCTRINE X1: the fabricate depth cap. 0/absent → the resolver resolves
+		// the depth-1 default at the point of use (the cap runs ON in production without the captain
+		// naming it — fabricate the output, buy its inputs); a set value is the captain's
+		// [manufacturing] override. The disable flag is the RULINGS #5 emergency off-switch.
+		FabricateMaxDepth:         cfg.OptionalInt("fabricate_max_depth", 0),
+		FabricateDepthCapDisabled: cfg.OptionalBool("fabricate_depth_cap_disabled"),
 		// sp-a5j7 Phase 2: supply-first sourcing (the wedx restoration). Rescue multiplier 0 →
 		// the executor resolves the 1.2 default; era-end flips to price-first < T-6h; the disable
 		// flag is the RULINGS #5 escape hatch back to pure price-first.
@@ -902,25 +905,6 @@ func buildSitingCoordinatorCommand(cfg *configReader, playerID int, containerID 
 		RetireHysteresisTicks:   cfg.OptionalInt("siting_retire_hysteresis_ticks", 0),
 		EffectSelfcheckTicks:    cfg.OptionalInt("siting_effect_selfcheck_ticks", 0),
 		ScoutDemandCooldownSecs: cfg.OptionalInt("siting_scout_demand_cooldown_secs", 0),
-	}
-}
-
-func buildManufacturingCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &goodsCmd.RunParallelManufacturingCoordinatorCommand{
-		SystemSymbol:           cfg.RequiredString("system_symbol"),
-		PlayerID:               playerID,
-		ContainerID:            cfg.RequiredString("container_id"),
-		MinPurchasePrice:       cfg.OptionalInt("min_price", 1000),
-		MaxConcurrentTasks:     cfg.OptionalInt("max_workers", 3),
-		MaxPipelines:           cfg.OptionalInt("max_pipelines", 3),
-		MaxCollectionPipelines: cfg.OptionalInt("max_collection_pipelines", 0),
-		Strategy:               cfg.OptionalStringDefault("strategy", "prefer-fabricate"),
-		// sp-kk61: the same [manufacturing].working_capital_reserve knob as
-		// goods_factory_coordinator, resolved by resolveManufacturingConfig. 0/absent
-		// leaves it unset — this subsystem (TaskExecutorRegistry/ManufacturingPurchaser)
-		// has no floor-enforcement of its own yet, so the field is populated for
-		// reachability/future use, with enforcement tracked as a follow-up.
-		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
 	}
 }
 

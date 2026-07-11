@@ -15,28 +15,25 @@ import (
 func NewOperationsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "operations",
-		Short: "Manage resource extraction and manufacturing operations",
-		Long: `Unified management for resource operations including gas extraction and manufacturing.
+		Short: "Manage resource extraction operations",
+		Long: `Management for resource operations (gas extraction).
 
 This command provides a single entry point for starting, monitoring, and stopping
-both gas extraction and manufacturing operations.
+gas extraction operations. (sp-jav2: the parallel manufacturing coordinator was
+retired; goods manufacturing runs as the goods_factory_coordinator, launched
+elsewhere. The stop verb still targets any lingering legacy manufacturing
+containers for cleanup.)
 
 Examples:
-  # Start both gas and manufacturing operations
-  spacetraders operations start --system X1-AU21 --gas --manufacturing
-
-  # Start only gas extraction
+  # Start gas extraction
   spacetraders operations start --system X1-AU21 --gas --siphons SIPHON-1,SIPHON-2 --storage STORAGE-1
-
-  # Start only manufacturing
-  spacetraders operations start --system X1-AU21 --manufacturing --min-price 2000
 
   # View status of all operations
   spacetraders operations status
 
   # Stop operations by type
   spacetraders operations stop --gas
-  spacetraders operations stop --manufacturing`,
+  spacetraders operations stop --manufacturing  # legacy container cleanup`,
 	}
 
 	cmd.AddCommand(newOperationsStartCommand())
@@ -53,9 +50,8 @@ func newOperationsStartCommand() *cobra.Command {
 		systemSymbol string
 		dryRun       bool
 
-		// Operation type flags
-		enableGas           bool
-		enableManufacturing bool
+		// Operation type flag
+		enableGas bool
 
 		// Gas-specific flags
 		siphonsCsv string
@@ -63,51 +59,28 @@ func newOperationsStartCommand() *cobra.Command {
 		gasGiant   string
 		force      bool
 		maxLegTime int
-
-		// Manufacturing-specific flags
-		minPrice               int
-		maxWorkers             int
-		maxPipelines           int
-		maxCollectionPipelines int
-		minBalance             int
-		strategy               string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start resource operations in a system",
-		Long: `Start gas extraction and/or manufacturing operations in a system.
-
-At least one of --gas or --manufacturing must be specified.
+		Short: "Start gas extraction operations in a system",
+		Long: `Start gas extraction operations in a system.
 
 Gas Extraction:
   Deploys siphon ships to extract resources from gas giants and storage ships
-  to buffer the extracted resources. Manufacturing haulers will automatically
-  pick up buffered resources via STORAGE_ACQUIRE_DELIVER tasks.
-
-Manufacturing:
-  Discovers high-demand goods, manufactures them using the supply chain,
-  and sells them for profit using a task-based pipeline architecture.
+  to buffer the extracted resources for downstream haulers.
 
 Examples:
-  # Start both operations
-  spacetraders operations start --system X1-AU21 --gas --manufacturing \
-    --siphons SIPHON-1 --storage STORAGE-1 --min-price 2000
-
-  # Gas only with auto-selected gas giant
+  # Gas extraction with auto-selected gas giant
   spacetraders operations start --system X1-AU21 --gas \
     --siphons SIPHON-1,SIPHON-2 --storage STORAGE-1
 
-  # Manufacturing only with custom strategy
-  spacetraders operations start --system X1-AU21 --manufacturing \
-    --strategy prefer-fabricate --max-workers 5
-
-  # Dry run to preview operations
-  spacetraders operations start --system X1-AU21 --gas --manufacturing --dry-run`,
+  # Dry run to preview the operation
+  spacetraders operations start --system X1-AU21 --gas --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate at least one operation type is specified
-			if !enableGas && !enableManufacturing {
-				return fmt.Errorf("at least one of --gas or --manufacturing must be specified")
+			// Validate the operation type is specified
+			if !enableGas {
+				return fmt.Errorf("--gas must be specified")
 			}
 
 			// Validate system symbol
@@ -157,12 +130,6 @@ Examples:
 				results = append(results, result)
 			}
 
-			// Start manufacturing if enabled
-			if enableManufacturing {
-				result := startManufacturingOperation(client, playerID, systemSymbol, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance, strategy, dryRun)
-				results = append(results, result)
-			}
-
 			// Display summary
 			fmt.Println("\nOperation Summary")
 			fmt.Println("─────────────────")
@@ -195,9 +162,8 @@ Examples:
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview operations without executing")
 
-	// Operation type flags
+	// Operation type flag
 	cmd.Flags().BoolVar(&enableGas, "gas", false, "Enable gas extraction operation")
-	cmd.Flags().BoolVar(&enableManufacturing, "manufacturing", false, "Enable manufacturing operation")
 
 	// Gas-specific flags
 	cmd.Flags().StringVar(&siphonsCsv, "siphons", "", "Comma-separated siphon ship symbols (required for gas)")
@@ -205,14 +171,6 @@ Examples:
 	cmd.Flags().StringVar(&gasGiant, "gas-giant", "", "Gas giant waypoint (optional, auto-selects if not provided)")
 	cmd.Flags().BoolVar(&force, "force", false, "Override fuel validation warnings (gas)")
 	cmd.Flags().IntVar(&maxLegTime, "max-leg-time", 0, "Max time per leg in minutes (gas, 0 = no limit)")
-
-	// Manufacturing-specific flags
-	cmd.Flags().IntVar(&minPrice, "min-price", 1000, "Minimum purchase price threshold (manufacturing)")
-	cmd.Flags().IntVar(&maxWorkers, "max-workers", 5, "Maximum parallel workers (manufacturing)")
-	cmd.Flags().IntVar(&maxPipelines, "max-pipelines", 3, "Maximum concurrent fabrication pipelines (manufacturing)")
-	cmd.Flags().IntVar(&maxCollectionPipelines, "max-collection-pipelines", 0, "Maximum concurrent collection pipelines (0 = unlimited)")
-	cmd.Flags().IntVar(&minBalance, "min-balance", 0, "Minimum credit balance to maintain (manufacturing)")
-	cmd.Flags().StringVar(&strategy, "strategy", "prefer-fabricate", "Acquisition strategy: prefer-buy, prefer-fabricate, smart")
 
 	cmd.MarkFlagRequired("system")
 
@@ -259,46 +217,6 @@ func startGasOperation(client *DaemonClient, playerID int, gasGiant, siphonsCsv,
 
 	return operationResult{
 		operationType: "Gas Extraction",
-		containerID:   result.ContainerID,
-	}
-}
-
-// startManufacturingOperation starts a manufacturing operation
-func startManufacturingOperation(client *DaemonClient, playerID int, systemSymbol string, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance int, strategy string, dryRun bool) operationResult {
-	fmt.Printf("Manufacturing:\n")
-	fmt.Printf("  Min Price:               %d\n", minPrice)
-	fmt.Printf("  Max Workers:             %d\n", maxWorkers)
-	fmt.Printf("  Max Fabrication Pipelines: %d\n", maxPipelines)
-	if maxCollectionPipelines > 0 {
-		fmt.Printf("  Max Collection Pipelines: %d\n", maxCollectionPipelines)
-	} else {
-		fmt.Printf("  Max Collection Pipelines: unlimited\n")
-	}
-	fmt.Printf("  Strategy:                %s\n", strategy)
-	if minBalance > 0 {
-		fmt.Printf("  Min Balance:             %d\n", minBalance)
-	}
-	fmt.Println()
-
-	if dryRun {
-		// For dry run, we just show the configuration
-		fmt.Println("  [DRY RUN] Would start manufacturing coordinator with above settings")
-		return operationResult{
-			operationType: "Manufacturing",
-			containerID:   "(dry-run)",
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance, strategy)
-	if err != nil {
-		return operationResult{operationType: "Manufacturing", err: err}
-	}
-
-	return operationResult{
-		operationType: "Manufacturing",
 		containerID:   result.ContainerID,
 	}
 }

@@ -69,6 +69,14 @@ type RunFactoryCoordinatorCommand struct {
 	// InputPriceCeilingDisabled is the emergency off-switch for the ladder-chase ceiling
 	// (RULINGS #5): true skips the guard entirely. Fed from input_price_ceiling_disabled.
 	InputPriceCeilingDisabled bool
+	// FabricateMaxDepth caps how deep the SupplyChainResolver fabricates (sp-jav2 X1): a node past
+	// this depth (root == 0, inputs == 1) resolves to a market-BUY instead of a recursive sub-chain.
+	// 0/absent resolves to defaultFabricateMaxDepth (1) at the point of use — "buy inputs, lift
+	// output" (RULINGS #5). Fed from fabricate_max_depth.
+	FabricateMaxDepth int
+	// FabricateDepthCapDisabled is the emergency off-switch for the fabricate depth cap (RULINGS #5):
+	// true restores the original unbounded recursion. Fed from fabricate_depth_cap_disabled.
+	FabricateDepthCapDisabled bool
 	// InputRescueMultiplier caps the supply-first sourcing rescue clause (sp-a5j7 Phase 2): a
 	// SCARCE/LIMITED source is bought only when no eligible source exists AND its ask is within
 	// this multiple of the trailing median. 0/absent → the 1.2 default. Fed from

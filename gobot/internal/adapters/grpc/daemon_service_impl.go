@@ -1495,57 +1495,6 @@ func (s *daemonServiceImpl) GetFactoryStatus(ctx context.Context, req *pb.GetFac
 	}, nil
 }
 
-// StartParallelManufacturingCoordinator initiates parallel task-based manufacturing operations
-func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Context, req *pb.StartParallelManufacturingCoordinatorRequest) (*pb.StartParallelManufacturingCoordinatorResponse, error) {
-	// Resolve player ID
-	playerID := int(req.PlayerId)
-
-	// Default max workers if not provided
-	maxWorkers := int(req.MaxWorkers)
-	if maxWorkers == 0 {
-		maxWorkers = 5
-	}
-
-	// Max pipelines: 0 means DISABLED (no fabrication pipelines)
-	// CLI defaults to 3 when flag not specified, so 0 must be explicit
-	maxPipelines := int(req.MaxPipelines)
-
-	// Default min price if not provided
-	minPrice := int(req.MinPrice)
-	if minPrice <= 0 {
-		minPrice = 1000
-	}
-
-	// Default min balance (0 = no limit)
-	minBalance := int(req.MinBalance)
-
-	// Max collection pipelines (0 = unlimited, no default applied)
-	maxCollectionPipelines := int(req.MaxCollectionPipelines)
-
-	// Default strategy to prefer-fabricate (recursive supply chain manufacturing)
-	strategy := req.Strategy
-	if strategy == "" {
-		strategy = "prefer-fabricate"
-	}
-
-	// Start parallel coordinator via DaemonServer (creates container and runs in background)
-	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance, strategy)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start parallel manufacturing coordinator: %w", err)
-	}
-
-	return &pb.StartParallelManufacturingCoordinatorResponse{
-		ContainerId:  containerID,
-		SystemSymbol: req.SystemSymbol,
-		MinPrice:     int32(minPrice),
-		MaxWorkers:   int32(maxWorkers),
-		MaxPipelines: int32(maxPipelines),
-		MinBalance:   int32(minBalance),
-		Status:       "RUNNING",
-		Message:      "Parallel manufacturing coordinator started successfully",
-	}, nil
-}
-
 // JettisonCargo jettisons cargo from a ship
 func (s *daemonServiceImpl) JettisonCargo(ctx context.Context, req *pb.JettisonCargoRequest) (*pb.JettisonCargoResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)

@@ -15,10 +15,9 @@ var (
 type ContainerKind string
 
 const (
-	ContainerKindContractWorkflow        ContainerKind = "contract_workflow"
-	ContainerKindManufacturingTaskWorker ContainerKind = "manufacturing_task_worker"
-	ContainerKindGasSiphonWorker         ContainerKind = "gas_siphon_worker"
-	ContainerKindStorageShip             ContainerKind = "storage_ship"
+	ContainerKindContractWorkflow ContainerKind = "contract_workflow"
+	ContainerKindGasSiphonWorker  ContainerKind = "gas_siphon_worker"
+	ContainerKindStorageShip      ContainerKind = "storage_ship"
 	// ContainerKindScoutTour is a scout_tour spawned as a managed worker by the
 	// scout_post_coordinator (sp-cxpq): persisted with a coordinator_id so restart
 	// recovery skips it and the coordinator respawns it.
@@ -80,10 +79,4 @@ type DaemonClient interface {
 	// StopContainer stops a running container
 	// containerID: The container to stop
 	StopContainer(ctx context.Context, containerID string) error
-
-	// CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
-	// are RUNNING but have no recent log activity (likely crashed without cleanup).
-	// staleTimeoutMinutes: How long (in minutes) a worker can go without activity before being stale.
-	// Returns the number of workers cleaned up.
-	CleanupStaleManufacturingWorkers(ctx context.Context, playerID int, staleTimeoutMinutes int) (int64, error)
 }

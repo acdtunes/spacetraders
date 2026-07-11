@@ -211,11 +211,12 @@ func TestEveryPersistedCommandTypeIsRegistered(t *testing.T) {
 		// coordinators / one-shots
 		"scout_tour", "scout_post_coordinator", "contract_workflow", "contract_fleet_coordinator",
 		"purchase_ship", "batch_purchase_ships", "goods_factory_coordinator",
-		"manufacturing_coordinator", "gas_coordinator", "trade_route", "arb_run", "tour_run",
+		"gas_coordinator", "trade_route", "arb_run", "tour_run",
 		"navigate_ship", "dock_ship", "orbit_ship", "refuel_ship",
 		"jettison_cargo", "scout_fleet_assignment",
 		// workers (recovered via their coordinator, never standalone)
-		"manufacturing_task_worker", "gas_siphon_worker", "storage_ship",
+		// (sp-jav2 X2: manufacturing_coordinator + manufacturing_task_worker retired.)
+		"gas_siphon_worker", "storage_ship",
 	}
 	for _, commandType := range created {
 		spec, ok := s.containerSpecs[commandType]

@@ -11,9 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
-	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
-	domainMfg "github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -134,48 +132,6 @@ func TestPersistStorageShip_StoresTypeStatusParentAndConfig(t *testing.T) {
 	}, containerConfig(t, model))
 }
 
-func TestPersistManufacturingTaskWorker_StoresTaskConfigAndLinksParent(t *testing.T) {
-	client, _, db, playerID := newLocalClientHarness(t)
-	task := domainMfg.NewLiquidationTask(playerID, "SHIP-MFG", "FUEL", 10, "X1-M-M1")
-	cmd := &mfgServices.WorkerCommand{
-		ShipSymbol:     "SHIP-MFG",
-		Task:           task,
-		PlayerID:       playerID,
-		ContainerID:    "mfg-1",
-		CoordinatorID:  "mfg-coord-1",
-		PipelineNumber: 2,
-		ProductGood:    "FUEL",
-	}
-
-	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindManufacturingTaskWorker, "mfg-1", uint(playerID), cmd))
-
-	model := loadContainerRow(t, db, "mfg-1")
-	require.Equal(t, "MANUFACTURING_TASK_WORKER", model.ContainerType)
-	require.Equal(t, "manufacturing_task_worker", model.CommandType)
-	require.Equal(t, "PENDING", model.Status)
-	require.NotNil(t, model.ParentContainerID)
-	require.Equal(t, "mfg-coord-1", *model.ParentContainerID)
-	require.Equal(t, map[string]interface{}{
-		"ship_symbol":     "SHIP-MFG",
-		"player_id":       float64(playerID),
-		"task_id":         task.ID(),
-		"task_type":       "LIQUIDATE",
-		"good":            "FUEL",
-		"pipeline_id":     "",
-		"coordinator_id":  "mfg-coord-1",
-		"pipeline_number": float64(2),
-		"product_good":    "FUEL",
-	}, containerConfig(t, model))
-}
-
-func TestLocalClientPersistManufacturingTaskWorker_RejectsWrongCommandType(t *testing.T) {
-	client, _, _, playerID := newLocalClientHarness(t)
-
-	err := client.PersistContainer(context.Background(), daemon.ContainerKindManufacturingTaskWorker, "mfg-bad", uint(playerID), "not-a-command")
-
-	require.ErrorIs(t, err, daemon.ErrInvalidCommandType)
-}
-
 func TestLocalClientStartGasSiphonWorker_RegistersRunner(t *testing.T) {
 	client, server, _, playerID := newLocalClientHarness(t)
 	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindGasSiphonWorker, "siphon-run", uint(playerID), siphonWorkerCommand(playerID)))
@@ -211,27 +167,6 @@ func TestLocalClientStartContractWorkflow_RegistersRunner(t *testing.T) {
 	require.NoError(t, client.StartContainer(context.Background(), daemon.ContainerKindContractWorkflow, "cw-run"))
 
 	runner := server.registeredRunner("cw-run")
-	require.NotNil(t, runner)
-	runner.cancelFunc()
-}
-
-func TestLocalClientStartManufacturingTaskWorker_RegistersRunner(t *testing.T) {
-	client, server, db, playerID := newLocalClientHarness(t)
-	task := domainMfg.NewLiquidationTask(playerID, "SHIP-MFG", "FUEL", 10, "X1-M-M1")
-	taskRepo := persistence.NewGormManufacturingTaskRepository(db)
-	require.NoError(t, taskRepo.Create(context.Background(), task))
-	cmd := &mfgServices.WorkerCommand{
-		ShipSymbol:    "SHIP-MFG",
-		Task:          task,
-		PlayerID:      playerID,
-		ContainerID:   "mfg-run",
-		CoordinatorID: "mfg-coord-1",
-	}
-	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindManufacturingTaskWorker, "mfg-run", uint(playerID), cmd))
-
-	require.NoError(t, client.StartContainer(context.Background(), daemon.ContainerKindManufacturingTaskWorker, "mfg-run"))
-
-	runner := server.registeredRunner("mfg-run")
 	require.NotNil(t, runner)
 	runner.cancelFunc()
 }

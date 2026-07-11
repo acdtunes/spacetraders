@@ -241,52 +241,6 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 			},
 		},
 		{
-			name:        "manufacturing_coordinator",
-			commandType: "manufacturing_coordinator",
-			containerID: "mfg-1",
-			launchConfig: map[string]interface{}{
-				"system_symbol":            "X1-TEST",
-				"min_price":                2000,
-				"max_workers":              5,
-				"max_pipelines":            4,
-				"max_collection_pipelines": 2,
-				"min_balance":              50000,
-				"container_id":             "mfg-1",
-				"mode":                     "parallel_task_based",
-				"strategy":                 "smart",
-			},
-			want: &goodsCmd.RunParallelManufacturingCoordinatorCommand{
-				SystemSymbol:           "X1-TEST",
-				PlayerID:               playerID,
-				ContainerID:            "mfg-1",
-				MinPurchasePrice:       2000,
-				MaxConcurrentTasks:     5,
-				MaxPipelines:           4,
-				MaxCollectionPipelines: 2,
-				Strategy:               "smart",
-			},
-		},
-		{
-			name:        "manufacturing_coordinator defaults",
-			commandType: "manufacturing_coordinator",
-			containerID: "mfg-2",
-			launchConfig: map[string]interface{}{
-				"system_symbol": "X1-TEST",
-				"container_id":  "mfg-2",
-				"strategy":      "",
-			},
-			want: &goodsCmd.RunParallelManufacturingCoordinatorCommand{
-				SystemSymbol:           "X1-TEST",
-				PlayerID:               playerID,
-				ContainerID:            "mfg-2",
-				MinPurchasePrice:       1000,
-				MaxConcurrentTasks:     3,
-				MaxPipelines:           3,
-				MaxCollectionPipelines: 0,
-				Strategy:               "prefer-fabricate",
-			},
-		},
-		{
 			// sp-kk61: a working_capital_reserve surviving in a persisted launch
 			// config (e.g. from a prior boot when [manufacturing] was configured)
 			// must NOT leak into the rebuilt command once the live config is unset —
@@ -311,29 +265,6 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				// WorkingCapitalReserve left at zero value: cleared by
 				// resolveManufacturingConfig since the live config is unset.
 				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default (reserve pct is not cleared, it defaults)
-			},
-		},
-		{
-			// Same guarantee for the other build path (sp-kk61): manufacturing_coordinator
-			// resolves through the identical resolveManufacturingConfig hook.
-			name:        "manufacturing_coordinator clears stale working_capital_reserve",
-			commandType: "manufacturing_coordinator",
-			containerID: "mfg-3",
-			launchConfig: map[string]interface{}{
-				"system_symbol":           "X1-TEST",
-				"container_id":            "mfg-3",
-				"working_capital_reserve": 1000000,
-			},
-			want: &goodsCmd.RunParallelManufacturingCoordinatorCommand{
-				SystemSymbol:           "X1-TEST",
-				PlayerID:               playerID,
-				ContainerID:            "mfg-3",
-				MinPurchasePrice:       1000,
-				MaxConcurrentTasks:     3,
-				MaxPipelines:           3,
-				MaxCollectionPipelines: 0,
-				Strategy:               "prefer-fabricate",
-				// WorkingCapitalReserve left at zero value, same reasoning as above.
 			},
 		},
 		{
@@ -669,8 +600,6 @@ func TestRecoveryFactoryRejectsMissingOrWrongTypedFields(t *testing.T) {
 		{"goods missing target_good", "goods_factory_coordinator", map[string]interface{}{"container_id": "c", "system_symbol": "X"}, "target_good"},
 		{"goods missing system_symbol", "goods_factory_coordinator", map[string]interface{}{"container_id": "c", "target_good": "G"}, "system_symbol"},
 		{"goods missing container_id", "goods_factory_coordinator", map[string]interface{}{"target_good": "G", "system_symbol": "X"}, "container_id"},
-		{"manufacturing missing container_id", "manufacturing_coordinator", map[string]interface{}{"system_symbol": "X"}, "container_id"},
-		{"manufacturing missing system_symbol", "manufacturing_coordinator", map[string]interface{}{"container_id": "c"}, "system_symbol"},
 		{"gas missing gas_operation_id", "gas_coordinator", map[string]interface{}{"gas_giant": "G", "container_id": "c", "siphon_ships": []interface{}{"A"}, "storage_ships": []interface{}{"B"}}, "gas_operation_id"},
 		{"gas empty gas_giant", "gas_coordinator", map[string]interface{}{"gas_operation_id": "o", "gas_giant": "", "container_id": "c", "siphon_ships": []interface{}{"A"}, "storage_ships": []interface{}{"B"}}, "gas_giant"},
 		{"gas missing siphon_ships", "gas_coordinator", map[string]interface{}{"gas_operation_id": "o", "gas_giant": "G", "container_id": "c", "storage_ships": []interface{}{"B"}}, "siphon"},

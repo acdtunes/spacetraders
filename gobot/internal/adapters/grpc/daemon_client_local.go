@@ -74,8 +74,6 @@ func (c *DaemonClientLocal) PersistContainer(
 			return daemon.ErrInvalidCommandType
 		}
 		return c.server.PersistContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
-	case daemon.ContainerKindManufacturingTaskWorker:
-		return c.server.PersistManufacturingTaskWorkerContainer(ctx, containerID, playerID, command)
 	case daemon.ContainerKindGasSiphonWorker:
 		return c.server.PersistGasSiphonWorkerContainer(ctx, containerID, playerID, command)
 	case daemon.ContainerKindStorageShip:
@@ -118,8 +116,6 @@ func (c *DaemonClientLocal) StartContainer(
 	switch kind {
 	case daemon.ContainerKindContractWorkflow:
 		return c.server.StartContractWorkflow(ctx, containerID)
-	case daemon.ContainerKindManufacturingTaskWorker:
-		return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID)
 	case daemon.ContainerKindGasSiphonWorker:
 		return c.server.StartGasSiphonWorkerContainer(ctx, containerID)
 	case daemon.ContainerKindStorageShip:
@@ -140,14 +136,4 @@ func (c *DaemonClientLocal) StartContainer(
 func (c *DaemonClientLocal) StopContainer(ctx context.Context, containerID string) error {
 	// Call server's StopContainer method directly (bypasses gRPC layer)
 	return c.server.StopContainer(containerID)
-}
-
-// CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
-// are RUNNING but have no recent log activity (likely crashed without cleanup).
-func (c *DaemonClientLocal) CleanupStaleManufacturingWorkers(
-	ctx context.Context,
-	playerID int,
-	staleTimeoutMinutes int,
-) (int64, error) {
-	return c.server.CleanupStaleManufacturingWorkers(ctx, playerID, staleTimeoutMinutes)
 }

@@ -168,6 +168,26 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 		}
 	}
 
+	// Fabricate depth cap (sp-jav2 / FACTORY_DOCTRINE X1): beyond the configured fabricate depth,
+	// resolve this input to a market-BUY instead of recursing into its sub-chain. len(path) is the
+	// current node's depth (root == 0, its direct inputs == 1), so with the default cap of 1 the
+	// root fabricates and every input is bought — "buy inputs, lift output". Recursive fabricate
+	// ladders past depth-1 are dead weight (raw inputs ~0.29% of spend; market-buy ruled correct,
+	// sp-naw6), and the furnace class lived in the recursion. buyGood re-resolves the source at
+	// buy time and PARKS gracefully if none exists, so a market-less BUY leaf is safe here — we
+	// populate market hints when available for downstream tree consumers, but the node stands
+	// without them. isTargetGood (the root) is exempt; disabled restores the unbounded recursion.
+	depthCfg := fabricateDepthConfigFromContext(ctx)
+	if !isTargetGood && !depthCfg.disabled && len(path) >= depthCfg.maxDepth {
+		node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionBuy)
+		if marketData, _ := r.findBestMarketToBuyFrom(ctx, goodSymbol, systemSymbol, playerID); marketData != nil {
+			node.MarketActivity = marketData.Activity
+			node.SupplyLevel = marketData.Supply
+			node.WaypointSymbol = marketData.WaypointSymbol
+		}
+		return node, nil
+	}
+
 	// Strategy says to fabricate (or good not available for purchase)
 	inputs, exists := r.supplyChainMap[goodSymbol]
 	if !exists {

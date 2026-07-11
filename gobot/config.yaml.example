@@ -362,6 +362,18 @@ manufacturing:
   # to the selector's park-and-retry.
   # input_recovery_reattempt_minutes: 194
   # anti_cycle_disabled: false
+  #
+  # fabricate_max_depth (sp-jav2 / FACTORY_DOCTRINE X1): how deep the SupplyChainResolver
+  # fabricates before resolving an input to a market-BUY. Root is depth 0, its direct inputs
+  # depth 1; a node past this depth is bought, not fabricated into its own sub-chain. Recursive
+  # fabricate ladders past depth-1 are dead weight — raw inputs are ~0.29% of spend, market-buy
+  # was ruled the permanently-correct acquisition (sp-naw6, flip conditions never fired across 397
+  # markets), and the furnace class of losses lived in the recursion. 0/absent => depth-1 default
+  # ("buy inputs, lift output"); the cap is ON in production without naming it here — it only
+  # redirects an input from fabrication to a market-buy, never money movement. fabricate_depth_cap_disabled:
+  # emergency off-switch (RULINGS #5) restoring the original unbounded recursion.
+  # fabricate_max_depth: 1
+  # fabricate_depth_cap_disabled: false
 
 # Scouting subsystem (sp-x8i5): phase-jitter to keep a large scout fleet's tour
 # rotations decohered. ~45 scouts restarting their rotation in near-lockstep
