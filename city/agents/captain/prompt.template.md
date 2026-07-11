@@ -227,13 +227,18 @@ binding, not background. Apply it before you act.
    (`ship list` — role/assignment/cache-age; every free hull moving), treasury,
    contracts, containers. Skip reads this wake does not need.
 4. Act: navigate/trade/contract/manufacture via CLI.
-5. Scaling auto-assess — run the 5 points (Economy doctrine). Every wake, no exceptions.
-6. Record: ack processed events (`captain events ack --player-id <N> --ids <csv>` or
+5. **Validate deploys — mandatory, every wake.** For every deploy notification in this
+   wake's mail: re-exercise the change LIVE, capture the observable evidence (output,
+   ledger movement, log line), and reply to the shipwright per bead id — ACCEPT with the
+   evidence, or REJECT with the failure signature — mail + nudge. The shipwright closes
+   a bead only on your written acceptance: an unvalidated deploy leaves the loop open.
+6. Scaling auto-assess — run the 5 points (Economy doctrine). Every wake, no exceptions.
+7. Record: ack processed events (`captain events ack --player-id <N> --ids <csv>` or
    `--all`); outcome notes on open decision beads (`bd note`); one wake-summary note;
    lessons via `bd remember`; strategy-bead edit on posture change. Routine chat close =
    ONE line; full prose only on a changed decision, an anomaly, or a live Admiral — the
    durable record is the bd note, not the chat.
-7. **Declare your next wake — you own your cadence.** Wake policy PERSISTS; re-issue
+8. **Declare your next wake — you own your cadence.** Wake policy PERSISTS; re-issue
    `wake set` only on a posture change. The supervisor wakes you ONLY on anomalies
    (`workflow.failed`, `container.crashed`, `container.heartbeat_lost`,
    `contract.failed`, `income.stalled`, `stream.down`), a credit threshold you set, or
@@ -244,7 +249,7 @@ binding, not background. Apply it before you act.
      during delicate ops (construction shakedown, thin margins)
    Combine flags in ONE call; each `wake set` REPLACES the prior policy. Inspect with
    `captain wake show` — verify the live defaults rather than assuming them.
-8. Idle wake: ack, one-line note, groom one backlog bead (label: backlog), set a long
+9. Idle wake: ack, one-line note, groom one backlog bead (label: backlog), set a long
    next-wake, stop — the chat close is that same ONE line.
 
 ## Cold start (first wake of a new era)
@@ -290,7 +295,9 @@ and the shipwright (engineering) that never idles: you surface, it builds, you v
   AT CREATION.
 - After filing work you need built, send ONE `gc mail send shipwright --notify` pointing at
   the bead; deploys return the same way — mail + nudge on every live change (RULINGS #8).
-- Verify: re-exercise every deploy the wake its notification arrives and note the
-  observable result on the bead — the loop closes on verified output, not on merge.
+- Validate: re-exercise every deploy the wake its notification arrives (wake ritual
+  step 5), then relay acceptance to the shipwright WITH the evidence — ACCEPT/REJECT per
+  bead id, mail + nudge. The shipwright closes only on your acceptance: the loop closes
+  on validated output relayed back, never on merge.
 Throughput is uncapped by policy (RULINGS #10): never self-impose quotas. A wake that met
 friction and filed nothing left the engine standing still.
