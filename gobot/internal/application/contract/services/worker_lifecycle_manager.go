@@ -146,7 +146,16 @@ func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
 
 	reclaimed := 0
 	for _, worker := range failedContainers {
-		if worker.ContainerType != "CONTRACT_WORKFLOW" {
+		// The contract coordinator spawns two worker kinds and must reclaim BOTH when a
+		// daemon restart interrupts them (markWorkerInterrupted marks them FAILED with the
+		// ship claim preserved): CONTRACT_WORKFLOW delivery workers and CARGO_LIQUIDATION
+		// self-clear workers (sp-39oi). Leaving the liquidation worker out would deadlock an
+		// interrupted liquidation hull — claimed to a dead container, invisible to discovery
+		// (FindAllByPlayer does not reconcile stale claims; only the external RefreshShip
+		// query does) — the fleet-killer class of not reclaiming the spawner's own hulls.
+		// Force-release returns the hull to idle; if it is still laden it re-parks and the
+		// coordinator re-dispatches liquidation on the next pass.
+		if worker.ContainerType != "CONTRACT_WORKFLOW" && worker.ContainerType != "CARGO_LIQUIDATION" {
 			continue
 		}
 		ships, err := m.shipRepo.FindByContainer(ctx, worker.ID, shared.MustNewPlayerID(playerID))

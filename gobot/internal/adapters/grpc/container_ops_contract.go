@@ -294,3 +294,41 @@ func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
 		config["idle_arb_blacklist"] = ia.Blacklist
 	}
 }
+
+// autoLiquidationConfigKeys enumerates every launch-config key the parked-hull
+// auto-liquidation knobs occupy (sp-39oi). resolveAutoLiquidationConfig clears these
+// before re-injecting the live values, so a stale persisted copy can never shadow the
+// current config.yaml (sp-ts82). Keep in lockstep with injectAutoLiquidationConfig and
+// buildContractFleetCoordinatorCommand's reads.
+var autoLiquidationConfigKeys = []string{
+	"auto_liquidation_disabled",
+	"liquidation_min_jettison_value",
+}
+
+// resolveAutoLiquidationConfig makes config.yaml the single LIVE source of truth for the
+// contract coordinator's auto-liquidation knobs (sp-39oi, mirroring resolveIdleArbConfig).
+// It clears any stale auto_liquidation keys and re-injects the daemon's boot-loaded values,
+// so a config edit + restart retunes even a recovered coordinator.
+func (s *DaemonServer) resolveAutoLiquidationConfig(config map[string]interface{}) {
+	for _, key := range autoLiquidationConfigKeys {
+		delete(config, key)
+	}
+	s.injectAutoLiquidationConfig(config)
+}
+
+// injectAutoLiquidationConfig writes the [auto_liquidation] knobs from config.yaml
+// (s.contractConfig.AutoLiquidation) into a coordinator container's launch config. Disabled
+// is inverted to auto_liquidation_disabled, written ONLY when the coordinator is off: an
+// absent key therefore reads as enabled, so the default-ON intent survives both a fresh
+// start and a recovery from an old config that predates the key. min_jettison_value is
+// written only when the captain set a positive floor, so an unset knob defers to the
+// documented default (0 = jettison OFF, RULINGS #5).
+func (s *DaemonServer) injectAutoLiquidationConfig(config map[string]interface{}) {
+	al := s.contractConfig.AutoLiquidation
+	if al.Disabled {
+		config["auto_liquidation_disabled"] = true
+	}
+	if al.MinJettisonValue != 0 {
+		config["liquidation_min_jettison_value"] = al.MinJettisonValue
+	}
+}

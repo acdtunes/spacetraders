@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	liquidationCmd "github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -97,6 +98,12 @@ func (c *DaemonClientLocal) PersistContainer(
 			return daemon.ErrInvalidCommandType
 		}
 		return c.server.PersistWorkerFerryWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID)
+	case daemon.ContainerKindCargoLiquidation:
+		cmd, ok := command.(*liquidationCmd.LiquidateCargoCommand)
+		if !ok {
+			return daemon.ErrInvalidCommandType
+		}
+		return c.server.PersistCargoLiquidationWorker(ctx, containerID, cmd.ShipSymbol, cmd.MinJettisonValue, int(playerID), cmd.CoordinatorID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }
@@ -121,6 +128,8 @@ func (c *DaemonClientLocal) StartContainer(
 		return c.server.StartScoutReposition(ctx, containerID)
 	case daemon.ContainerKindWorkerFerry:
 		return c.server.StartWorkerFerry(ctx, containerID)
+	case daemon.ContainerKindCargoLiquidation:
+		return c.server.StartCargoLiquidation(ctx, containerID)
 	}
 	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }

@@ -156,6 +156,20 @@ type RunFleetCoordinatorCommand struct {
 	// package's documented default (80, the light-hauler standard); era-2's
 	// upgraded frigate (115 cargo) clears it.
 	CommandCargoBaseline int
+
+	// Auto-liquidation (sp-39oi): a hull FilterUnrelatedCargo parks for holding cargo
+	// unrelated to the active contract self-clears via a one-shot cargo_liquidation
+	// worker instead of sitting filtered out of candidacy forever — the fleet-scale
+	// jam this closes (every dual-duty contract hull stranded 6-77u of leftovers and
+	// the pool fell to zero fulfillments). AutoLiquidationDisabled is the escape hatch:
+	// liquidation-by-SALE is ON by default (it only converts a stranded hold to
+	// treasury), so an absent/false key keeps it on.
+	AutoLiquidationDisabled bool
+	// LiquidationMinJettisonValue is the value floor (bid * units) below which a leftover
+	// lot may be jettisoned as a LAST resort. 0 (the default) disables jettison entirely —
+	// nothing is destroyed without an explicit captain-set threshold; a lot with a bid is
+	// always sold (value recovered, never dumped — RULINGS #5).
+	LiquidationMinJettisonValue int
 }
 
 // RunFleetCoordinatorResponse contains fleet coordination results.

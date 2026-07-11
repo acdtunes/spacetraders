@@ -9,6 +9,7 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -252,6 +253,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// only — a coordinator recreate/restart clears it deliberately, since the
 	// hull may have been fixed (reclassified, repaired, unpinned) meanwhile.
 	gov := newSpawnGovernor(h.clock)
+
+	// liquidationCooldown (sp-39oi) is the per-hull auto-liquidation re-dispatch guard,
+	// in-memory for this run only (like gov): after a parked-with-cargo hull is handed a
+	// cargo_liquidation worker, it stays off the re-dispatch list for
+	// liquidationDispatchCooldown so an unsellable hold cannot storm. A restart clears it
+	// deliberately — a re-dispatch after restart is safe (the worker reconciles the hull
+	// and no-ops an already-cleared hold).
+	liquidationCooldown := make(map[string]time.Time)
 
 	// Step 4: Main coordinator loop (infinite)
 	// Execute one contract at a time (game constraint: one active contract per player)
@@ -554,6 +563,17 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
+
+		// AUTO-LIQUIDATION (sp-39oi): the hulls just parked for holding cargo unrelated
+		// to this contract are the strand class that jams the pool. Instead of leaving
+		// them filtered out of candidacy every pass (the fleet-scale zero-fulfillment
+		// jam), hand each a one-shot cargo_liquidation worker that sells the leftover at
+		// the best in-system bid so the hull re-enters candidacy. It runs even when
+		// spawnable hulls remain, clearing strands as they appear rather than only once
+		// the whole pool has jammed, and never blocks the contract work below —
+		// claimableShips (which excludes parkedShips) proceeds regardless.
+		h.dispatchLiquidationForParked(ctx, cmd, parkedShips, liquidationCooldown)
+
 		// Spawn-governor exclusion (sp-lybx): drop hulls in post-instant-death
 		// backoff or quarantined for repeated instant worker deaths (ANY cause,
 		// the generic net beyond Fix A's 0-cargo exclusion), so the coordinator
@@ -967,6 +987,115 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 		_ = h.shipRepo.Save(ctx, ship)
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("Failed to start worker container: %v", err)
+	}
+
+	return workerContainerID, nil
+}
+
+// liquidationDispatchCooldown is how long a hull stays off the auto-liquidation
+// re-dispatch list after one attempt (sp-39oi). It bounds a spawn-storm on a genuinely
+// stuck hull — no in-system market bids its cargo and jettison is off, so each pass
+// would otherwise re-park then re-dispatch it. A sellable hull clears on the first
+// attempt and never comes back to the parked list, so the cooldown only governs the
+// unsellable-hold tail; the hull is retried after it, since a market may appear
+// (scouts scan) — a deferral, never a permanent skip (RULINGS #1).
+const liquidationDispatchCooldown = 5 * time.Minute
+
+// dispatchLiquidationForParked self-clears the hulls FilterUnrelatedCargo parked for
+// holding cargo unrelated to the active contract (sp-39oi): each gets a one-shot
+// cargo_liquidation worker that sells the strand at the best in-system bid (jettison
+// only as a last resort below the configured floor), so the hull re-enters candidacy
+// on a later pass instead of sitting filtered out of the pool forever — the fleet-scale
+// jam this closes. It is a STANDING mechanism (runs every discovery pass), gated by the
+// AutoLiquidationDisabled escape hatch and a per-hull cooldown so an unsellable hold
+// never storms. Best-effort: a spawn failure is logged and the hull is put on cooldown
+// so a persistent failure cannot spin; contract work on the spawnable hulls is never
+// blocked by it.
+func (h *RunFleetCoordinatorHandler) dispatchLiquidationForParked(
+	ctx context.Context,
+	cmd *RunFleetCoordinatorCommand,
+	parkedShips []string,
+	cooldown map[string]time.Time,
+) {
+	if cmd.AutoLiquidationDisabled || len(parkedShips) == 0 {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+	now := h.clock.Now()
+	for _, shipSymbol := range parkedShips {
+		if until, ok := cooldown[shipSymbol]; ok && now.Before(until) {
+			continue // recently dispatched — don't re-storm a stuck hull
+		}
+		cooldown[shipSymbol] = now.Add(liquidationDispatchCooldown)
+		workerID, err := h.spawnLiquidationWorker(ctx, cmd, shipSymbol)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Auto-liquidation dispatch for parked hull %s failed: %v - will retry after cooldown", shipSymbol, err), map[string]interface{}{
+				"action":      "liquidation_dispatch_failed",
+				"ship_symbol": shipSymbol,
+			})
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Auto-liquidation dispatched for parked hull %s (worker %s) - self-clearing stranded cargo so it re-enters candidacy", shipSymbol, workerID), map[string]interface{}{
+			"action":       "liquidation_dispatched",
+			"ship_symbol":  shipSymbol,
+			"worker_id":    workerID,
+			"min_jettison": cmd.LiquidationMinJettisonValue,
+		})
+	}
+}
+
+// spawnLiquidationWorker persists, claims, and starts a one-shot cargo_liquidation
+// worker on a parked hull (sp-39oi), mirroring spawnContractWorker's atomic-claim +
+// rollback lifecycle. The claim goes through ClaimShip under the contract fleet
+// identity (operation "contract"), so an unpinned or contract-pinned hull claims
+// cleanly while a hull pinned to another fleet is rejected at the DB rather than
+// poached — the liquidation only ever clears hulls the contract coordinator legitimately
+// draws from. On a start failure the assignment is released so the hull returns to the
+// pool.
+func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
+	ctx context.Context,
+	cmd *RunFleetCoordinatorCommand,
+	shipSymbol string,
+) (string, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	workerContainerID := utils.GenerateContainerID("cargo-liquidation", shipSymbol)
+	workerCmd := &liquidation.LiquidateCargoCommand{
+		PlayerID:         cmd.PlayerID,
+		ShipSymbol:       shipSymbol,
+		MinJettisonValue: cmd.LiquidationMinJettisonValue,
+		CoordinatorID:    cmd.ContainerID,
+	}
+
+	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindCargoLiquidation, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
+		return "", fmt.Errorf("failed to persist liquidation worker: %w", err)
+	}
+
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+	if err != nil {
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+	}
+
+	// Atomic operation-checked claim (sp-lprs), same identity as spawnContractWorker:
+	// a foreign-pinned hull is rejected at the DB, not clobbered.
+	if err := h.shipRepo.ClaimShip(ctx, shipSymbol, workerContainerID, cmd.PlayerID, dedicatedFleetContract); err != nil {
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to claim ship %s: %w", shipSymbol, err)
+	}
+
+	// Mirror the committed claim into the in-memory entity so the start-failure rollback
+	// below sees the assignment; a sync failure is a WARN, not an unclaim (the DB claim
+	// stands).
+	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Ship %s claimed in DB but in-memory assign failed (claim stands): %v", shipSymbol, err), nil)
+	}
+
+	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindCargoLiquidation, workerContainerID); err != nil {
+		ship.ForceRelease("liquidation_start_failed", h.clock)
+		_ = h.shipRepo.Save(ctx, ship)
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to start liquidation worker: %w", err)
 	}
 
 	return workerContainerID, nil

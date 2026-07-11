@@ -59,6 +59,10 @@ const (
 	// ContainerTypeWorkerFerry is the one-shot cross-system ferry worker the
 	// worker_rebalancer_coordinator spawns (sp-f5pr), twin of ContainerTypeScoutReposition.
 	ContainerTypeWorkerFerry ContainerType = "WORKER_FERRY"
+	// ContainerTypeCargoLiquidation is the one-shot cargo-liquidation worker the contract
+	// fleet coordinator spawns on a parked-with-cargo hull (sp-39oi), twin of
+	// ContainerTypeWorkerFerry: coordinator-managed, one iteration, self-clears the strand.
+	ContainerTypeCargoLiquidation         ContainerType = "CARGO_LIQUIDATION"
 	ContainerTypeFrontierExpansion        ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"

@@ -9,6 +9,7 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
+	liquidationCmd "github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
@@ -359,6 +360,11 @@ func containerSpecList() []ContainerSpec {
 		// container wraps exactly ONE iteration (CoordinatorOwnsIterations).
 		{CommandType: "worker_rebalancer_coordinator", build: buildWorkerRebalancerCoordinatorCommand},
 		{CommandType: "worker_ferry", build: buildWorkerFerryCommand, CoordinatorOwnsIterations: true},
+		// cargo_liquidation (sp-39oi): the contract fleet coordinator's one-shot
+		// self-clearing worker for a parked-with-cargo hull (twin of worker_ferry). The
+		// coordinator owns re-dispatch, so the container wraps exactly ONE iteration
+		// (CoordinatorOwnsIterations).
+		{CommandType: "cargo_liquidation", build: buildCargoLiquidationCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
@@ -410,6 +416,10 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// coordinator recreate is ever needed for these knobs.
 	if commandType == "contract_fleet_coordinator" {
 		s.resolveIdleArbConfig(config)
+		// sp-39oi: same live-config discipline for the parked-hull auto-liquidation knobs
+		// (enable/disable + min-jettison floor). Cleared and re-injected from config.yaml
+		// on every build so a retune reaches a recovered coordinator.
+		s.resolveAutoLiquidationConfig(config)
 	}
 	// sp-1278: same live-config discipline for the trade-fleet coordinator. Its
 	// [trade_fleet] knobs (enabled/cooldown/max-concurrent/per-tour caps) are cleared
@@ -563,6 +573,23 @@ func buildWorkerFerryCommand(cfg *configReader, playerID int, containerID string
 	}
 }
 
+// buildCargoLiquidationCommand rebuilds a one-shot cargo-liquidation worker from its
+// persisted launch config so restart recovery re-adopts it (sp-39oi, twin of
+// buildWorkerFerryCommand). A coordinator-spawned worker (coordinator_id present) is
+// skipped by recovery and reclaimed by the contract fleet coordinator, but the command is
+// still rebuilt here so the coordinator's start path can reconstruct it. Re-running after a
+// restart is safe: the worker reconciles the hull against the server, so an already-cleared
+// hold is an idempotent no-op. min_jettison_value defaults to 0 (jettison OFF — never
+// destroy value without an explicit floor, RULINGS #5).
+func buildCargoLiquidationCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &liquidationCmd.LiquidateCargoCommand{
+		PlayerID:         shared.MustNewPlayerID(playerID),
+		ShipSymbol:       cfg.RequiredString("ship_symbol"),
+		MinJettisonValue: cfg.OptionalInt("min_jettison_value", 0),
+		CoordinatorID:    cfg.OptionalString("coordinator_id"),
+	}
+}
+
 // buildFrontierExpansionCoordinatorCommand rebuilds the standing frontier expansion
 // coordinator from its persisted launch config so restart recovery re-adopts it
 // byte-identically (RULINGS #2, sp-8w89). It is a reconcile-loop coordinator (NOT a
@@ -696,6 +723,12 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		// contract package's documented default (80, the light-hauler
 		// standard - see CommandCargoBaselineDefault).
 		CommandCargoBaseline: cfg.OptionalInt("command_cargo_baseline", 0),
+		// Auto-liquidation knobs (sp-39oi): absent keys → default false/0 → feature ON
+		// with jettison OFF. These are resolved LIVE from config.yaml by
+		// resolveAutoLiquidationConfig on every build (sp-ts82), so the persisted copies
+		// are dead and a config edit + restart retunes a recovered coordinator.
+		AutoLiquidationDisabled:     cfg.OptionalBool("auto_liquidation_disabled"),
+		LiquidationMinJettisonValue: cfg.OptionalInt("liquidation_min_jettison_value", 0),
 		// Idle-gap arb knobs (sp-1z2h): absent keys → 0 → the contract
 		// package's documented defaults (IdleArbConfig.WithDefaults). These
 		// keys are resolved LIVE from config.yaml by resolveIdleArbConfig on

@@ -197,6 +197,30 @@ contract:
     # blocklist:
     #   - FUEL
 
+  # Parked-hull auto-liquidation (sp-39oi): a hull the spawn filter parks for holding
+  # cargo unrelated to the active contract (a leftover strand from a mid-crisis
+  # floor/margin/max-spend abort) self-clears via a one-shot cargo_liquidation worker —
+  # it sells the strand at the best in-system bid so the hull re-enters candidacy,
+  # instead of sitting filtered out of the pool forever. This closes the fleet-scale jam
+  # where every dual-duty contract hull stranded 6-77u of leftovers and fulfillments fell
+  # to zero. No captain hands.
+  #
+  # THIS SECTION IS LIVE (sp-ts82): the daemon resolves these knobs from THIS file on
+  # every coordinator build — creation AND restart recovery. Retune path: edit a value,
+  # restart the daemon.
+  auto_liquidation:
+    # disabled: true turns auto-liquidation OFF (default: ON). Liquidation-by-sale only
+    # converts a stranded hold to treasury, so it is on by default.
+    # disabled: false
+    # min_jettison_value: the value floor (bid * units, credits) below which a leftover
+    # lot may be JETTISONED as a last resort — only when no in-system market bids it, or
+    # the recoverable value is below this floor. 0/absent => jettison OFF: nothing is ever
+    # destroyed without an explicit floor, and any lot with a bid is always SOLD (value
+    # recovered, never dumped). Set a positive value to let the worker clear genuinely
+    # stuck low-value junk off a hull. The captain's 3 valuable ~150k holds clear the
+    # floor at any sane value and are always sold.
+    # min_jettison_value: 0
+
 # Trade-fleet coordinator (sp-1278): the standing coordinator that keeps continuous
 # tours alive on every 'trade'-dedicated hull. When a tour makes an honest exit
 # (margins died in both systems, or a sold-out completion) the hull parks; this

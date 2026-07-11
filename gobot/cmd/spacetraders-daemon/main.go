@@ -24,6 +24,7 @@ import (
 	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
 	ledgerCmd "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
@@ -715,6 +716,16 @@ func run(cfg *config.Config) error {
 	workerFerryHandler := tradeRouteCmd.NewWorkerFerryHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.WorkerFerryCommand](med, workerFerryHandler); err != nil {
 		return fmt.Errorf("failed to register WorkerFerry handler: %w", err)
+	}
+
+	// Cargo-liquidation worker (sp-39oi): the contract fleet coordinator's one-shot
+	// self-clearing leg for a parked-with-cargo hull. It reuses the existing
+	// navigate/dock/sell/jettison commands (via med) plus the ship and market repos —
+	// no new ship I/O — to sell a strand at the best in-system bid, jettison only as a
+	// last resort below a configured floor, and hold otherwise.
+	cargoLiquidationHandler := liquidation.NewLiquidateCargoHandler(shipRepo, marketRepo, med)
+	if err := mediator.RegisterHandler[*liquidation.LiquidateCargoCommand](med, cargoLiquidationHandler); err != nil {
+		return fmt.Errorf("failed to register CargoLiquidation handler: %w", err)
 	}
 
 	// Frontier expansion coordinator (sp-8w89): the standing coordinator that closes the

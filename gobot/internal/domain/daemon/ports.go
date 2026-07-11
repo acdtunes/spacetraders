@@ -41,6 +41,14 @@ const (
 	// to the vacancy system, then exits; the destination factory's own idle-hauler
 	// discovery claims the now-idle hull in-system.
 	ContainerKindWorkerFerry ContainerKind = "worker_ferry"
+	// ContainerKindCargoLiquidation is a one-shot worker the contract fleet coordinator
+	// spawns on a parked-with-cargo hull to self-clear its stranded leftover cargo
+	// (sp-39oi): sell at the best in-system bid, jettison only as a last resort below a
+	// configured value floor, hold otherwise. Like worker_ferry it is a
+	// coordinator-managed worker (coordinator_id → restart recovery skips it, preserving
+	// the claim; the coordinator re-evaluates the now-cleared hull on its next pass). It
+	// reuses the existing navigate/dock/sell/jettison commands — no new ship I/O.
+	ContainerKindCargoLiquidation ContainerKind = "cargo_liquidation"
 )
 
 // ContainerInfo represents container metadata for daemon client communication.

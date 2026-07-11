@@ -101,6 +101,36 @@ func TestFleetCoordinator_ReclaimsShipHeldByInterruptedWorker(t *testing.T) {
 	}
 }
 
+// Recovery-safety for the contract coordinator's OWN liquidation workers (sp-39oi): a
+// daemon restart marks an interrupted cargo_liquidation worker FAILED with its ship claim
+// preserved. If the reclaim skipped it (as it skips genuinely-foreign containers), the
+// liquidation hull would deadlock — claimed to a dead container, invisible to discovery.
+// The reclaim must free it so it re-enters candidacy (re-parked + re-dispatched if still
+// laden). This pairs the operation-"contract" claim with a matching reclaim.
+func TestFleetCoordinator_ReclaimsShipHeldByInterruptedLiquidationWorker(t *testing.T) {
+	ship := newNegotiateTestShip(t, navigation.NavStatusInOrbit)
+	if err := ship.AssignToContainer("cargo-liquidation-TORWIND-7-dead", shared.NewRealClock()); err != nil {
+		t.Fatalf("AssignToContainer: %v", err)
+	}
+	repo := &reclaimFakeShipRepo{ship: ship}
+	containerRepo := &reclaimFakeContainerRepo{byStatus: map[string][]persistence.ContainerSummary{
+		"FAILED": {{ID: "cargo-liquidation-TORWIND-7-dead", ContainerType: "CARGO_LIQUIDATION", Status: "FAILED"}},
+	}}
+	mgr := contractServices.NewWorkerLifecycleManager(&spawnContractFakeDaemonClient{}, containerRepo, repo)
+
+	reclaimed, err := mgr.ReclaimShipsFromInterruptedWorkers(context.Background(), 1, shared.NewRealClock())
+	if err != nil {
+		t.Fatalf("ReclaimShipsFromInterruptedWorkers: %v", err)
+	}
+
+	if reclaimed != 1 {
+		t.Fatalf("expected the interrupted liquidation hull reclaimed, got reclaimed=%d", reclaimed)
+	}
+	if !ship.IsIdle() {
+		t.Fatalf("expected the liquidation hull returned to the idle pool so it re-enters candidacy")
+	}
+}
+
 func TestFleetCoordinator_DoesNotReclaimShipsFromForeignFailedContainers(t *testing.T) {
 	ship := newNegotiateTestShip(t, navigation.NavStatusInOrbit)
 	if err := ship.AssignToContainer("mfg-work-dead", shared.NewRealClock()); err != nil {

@@ -7,8 +7,25 @@ package config
 // including the money-guard blacklist — by editing config.yaml and restarting
 // the daemon (recovery-safe, RULINGS #2), with NO code redeploy.
 type ContractConfig struct {
-	IdleArb        IdleArbSettings        `mapstructure:"idle_arb"`
-	PrePositioning PrePositioningSettings `mapstructure:"pre_positioning"`
+	IdleArb         IdleArbSettings         `mapstructure:"idle_arb"`
+	PrePositioning  PrePositioningSettings  `mapstructure:"pre_positioning"`
+	AutoLiquidation AutoLiquidationSettings `mapstructure:"auto_liquidation"`
+}
+
+// AutoLiquidationSettings are the yaml-tunable knobs for the contract coordinator's
+// parked-hull auto-liquidation (sp-39oi): a hull the spawn filter parks for holding cargo
+// unrelated to the active contract self-clears via a one-shot cargo_liquidation worker,
+// so the pool never jams to zero fulfillments on a crop of strands. Like the idle-arb
+// knobs these are resolved LIVE from config.yaml on every coordinator build (sp-ts82).
+type AutoLiquidationSettings struct {
+	// Disabled turns auto-liquidation OFF (default: ON). Liquidation-by-sale only converts
+	// a stranded hold to treasury, so it is on by default; an absent key reads as enabled,
+	// so the default-ON intent survives a recovery from a config predating the key.
+	Disabled bool `mapstructure:"disabled"`
+	// MinJettisonValue is the value floor (bid * units) below which a leftover lot may be
+	// jettisoned as a LAST resort. 0 (the default) disables jettison entirely — nothing is
+	// destroyed without an explicit floor; a lot with a bid is always sold, never dumped.
+	MinJettisonValue int `mapstructure:"min_jettison_value"`
 }
 
 // PrePositioningSettings are the yaml-tunable knobs for haul-to-storage
