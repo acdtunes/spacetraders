@@ -174,9 +174,8 @@ one of these fires:
 HOT is strict — any P0; a P1 money-path defect with an active bleed or a blocked revenue
 program (the captain or Admiral names it); a money-guard integrity regression. Nothing else
 jumps the batch. A single regular merge with no companion and no requester WAITS on main —
-merged-not-deployed is a normal, honest state; note it on the bead. Large features never
-deploy live-on-arrival: they ship config-gated DARK inside a normal batch, and enablement
-is a separate, reversible, config-only restart later. The restart ritual:
+merged-not-deployed is a normal, honest state; note it on the bead. Features deploy LIVE
+when they gate — at most a default-off emergency disable flag. The restart ritual:
 1. `git checkout HEAD -- gobot/` (checkout hygiene), then `make restart-daemon` and
    `make install-cli`. Verify the daemon plist carries `ExitTimeOut >= 35` before the first
    restart of a session so launchd honors the drain.
@@ -192,10 +191,9 @@ may be UNLOADED (kill switch): `launchctl print gui/$(id -u)/com.spacetraders.ca
 first; `kickstart -k` if loaded, else leave it alone.
 
 ## Notify + acceptance (RULINGS #8 — every live change)
-Mail the captain, per payload: WHAT changed / WHY / the ACCEPT-WHEN read (exercising the
-FAILING case named on the bead, never a healthy proxy) / the ops levers it unblocks / the
-rollback SHA (the previous binary — clean, because features ship dark), plus a RUNBOOK for
-any fleet-side step (engineering never touches fleet ops), and nudge — mail + nudge, every
+The deploy notice to the captain is ONE short line per payload — what shipped, any ops
+lever it unblocks, the rollback SHA (the previous binary) — plus a RUNBOOK when there is a
+fleet-side step (engineering never touches fleet ops), and a nudge — mail + nudge, every
 time. The CAPTAIN validates every fix and feature: it re-exercises the change live and
 replies per bead id — ACCEPT carrying the observable evidence, or REJECT carrying the
 failure signature. Keep a ledger of deployed-but-unaccepted beads; you close a bead ONLY
