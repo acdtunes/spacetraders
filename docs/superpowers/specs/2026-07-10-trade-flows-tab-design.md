@@ -88,7 +88,7 @@ Third entry in the top `Navigation` → route `/trade-flows`, page `TradeFlowsVi
 |---|---|---|
 | `GET /api/flows/live` | proxies daemon `GET /api/flows`, joins ship nav (position truth) | 5s |
 | `GET /api/flows/lanes?window=1h\|6h\|24h` | PG aggregation: `tour_leg_telemetry` + `transactions` + `arbitrage_execution_logs` → per-lane realized units/profit | 30s |
-| `GET /api/flows/topology` | PG: systems coordinates + `gate_edges` | on load, cached |
+| `GET /api/flows/topology` | PG: `gate_edges` + server-derived deterministic galaxy layout (erratum: PG stores no galaxy-level system coordinates — see plan Task 2) | on load, cached |
 
 The browser never talks to the daemon directly — single origin, one client.
 
