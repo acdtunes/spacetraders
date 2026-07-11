@@ -179,10 +179,14 @@ contract:
     enabled: false             # true turns deposit legs on (default OFF)
     top_n: 5                   # max stock-eligible goods offered as deposit candidates (default 5)
     min_recurrence: 2          # a good must be demanded by >= this many contracts (default 2; RULINGS #6)
-    # Pre-positioning capital ceiling — % of LIVE treasury tied up in warehouse
-    # inventory. Fail CLOSED: an unreadable balance => ceiling 0 => no candidates.
-    # Junior to the non-tunable 50k reserve and the sp-w3he cross-container cap.
-    capital_ceiling_pct: 10    # default 10% of live treasury
+    # Pre-positioning capital ceiling — % of LIVE treasury the opportunistic tour
+    # deposit legs may tie up in warehouse inventory. This is the ENABLEMENT knob
+    # (sp-13tl): 0/absent => PARKED (dormant, fail closed, no deposits — money
+    # movement is a captain/analyst decision, RULINGS #5). Set a positive value to
+    # authorize it. Junior to trade_fleet.working_capital_reserve and the sp-w3he
+    # cross-container cap; an unreadable balance => ceiling 0 => no candidates
+    # (fail closed, RULINGS #4).
+    # capital_ceiling_pct: 10    # e.g. 10% of live treasury (absent => parked)
     min_savings_per_unit: 1    # home_ask - foreign_ask must clear this per unit (default 1)
     # allowlist: restrict deposits to exactly these goods (after eligibility).
     # Absent => every stock-eligible good qualifies. Example:

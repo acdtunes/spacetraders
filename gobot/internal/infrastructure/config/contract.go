@@ -36,9 +36,14 @@ type PrePositioningSettings struct {
 	// #6). <1 => the miner's own default.
 	MinRecurrence int `mapstructure:"min_recurrence"`
 	// CapitalCeilingPct is the pre-positioning capital ceiling as a percent of LIVE
-	// treasury (<=0 => default 10). Junior to the 50k working-capital reserve and
-	// the sp-w3he cross-container cap; when the live balance is unreadable the
-	// ceiling is ZERO and no candidates are offered (fail closed, RULINGS #4).
+	// treasury AND the enablement knob for opportunistic tour deposits (sp-13tl):
+	// 0/absent => PARKED (dormant, fail closed, no deposits — money movement is a
+	// captain/analyst decision, RULINGS #5), NOT an auto-10% default. A positive value
+	// authorizes deposits up to that % of live treasury, held JUNIOR to the
+	// working-capital reserve and the sp-w3he cross-container cap; when the live balance
+	// is unreadable the ceiling is ZERO and no candidates are offered (fail closed,
+	// RULINGS #4). (The dedicated stocker hull keeps its own default; see
+	// defaultDepositCeilingPct.)
 	CapitalCeilingPct int `mapstructure:"capital_ceiling_pct"`
 	// MinSavingsPerUnit is the static per-unit savings floor a candidate must clear
 	// to be worth stocking (home_ask - foreign_ask >= this). <=0 => default 1.
