@@ -158,10 +158,25 @@ Every spending automation ships with its own solvency floor, negative-margin abo
 absorption cap, each guard DRILLED against its trigger before the automation scales up
 (RULINGS #4). Guards fail closed; no fix relaxes a guard as a side effect.
 
-## Deploy — batched restart boundaries (merged is not live)
+## Deploy — content-triggered releases (merged is not live)
 A merged commit is source, not a running binary; the daemon and watchkeeper are long-lived
-launchd services (RULINGS #2: operational state survives every restart). Daemon lanes
-accumulate on main until the batch drains, then ONE ritual:
+launchd services (RULINGS #2: operational state survives every restart). Deploys batch by
+CONTENT, never by wall-clock: a daemon restart churns the fleet's containers, so a restart
+happens only when its payload earns it — no timetables, no periodic cadence. Only the
+daemon needs batching discipline at all; zero-fleet-impact surfaces (dashboards, metrics
+config, visualizer, watchkeeper) deploy the moment they gate. A release departs when ANY
+one of these fires:
+(a) a HOT payload gates — deploy immediately, solo plus whatever is already merged-waiting;
+(b) two or more regular merged payloads are waiting — one restart ships them all;
+(c) the captain requests a specific merged payload because an ops program needs it live;
+(d) a final sweep before a declared deploy-freeze window (freezes are event-pinned; the
+    captain co-signs any post-freeze emergency deploy).
+HOT is strict — any P0; a P1 money-path defect with an active bleed or a blocked revenue
+program (the captain or Admiral names it); a money-guard integrity regression. Nothing else
+jumps the batch. A single regular merge with no companion and no requester WAITS on main —
+merged-not-deployed is a normal, honest state; note it on the bead. Large features never
+deploy live-on-arrival: they ship config-gated DARK inside a normal batch, and enablement
+is a separate, reversible, config-only restart later. The restart ritual:
 1. `git checkout HEAD -- gobot/` (checkout hygiene), then `make restart-daemon` and
    `make install-cli`. Verify the daemon plist carries `ExitTimeOut >= 35` before the first
    restart of a session so launchd honors the drain.
@@ -177,8 +192,10 @@ may be UNLOADED (kill switch): `launchctl print gui/$(id -u)/com.spacetraders.ca
 first; `kickstart -k` if loaded, else leave it alone.
 
 ## Notify + acceptance (RULINGS #8 — every live change)
-Mail the captain WHAT changed / WHY / the watch-lines to eyeball, plus a RUNBOOK for any
-fleet-side step (engineering never touches fleet ops), and nudge — mail + nudge, every
+Mail the captain, per payload: WHAT changed / WHY / the ACCEPT-WHEN read (exercising the
+FAILING case named on the bead, never a healthy proxy) / the ops levers it unblocks / the
+rollback SHA (the previous binary — clean, because features ship dark), plus a RUNBOOK for
+any fleet-side step (engineering never touches fleet ops), and nudge — mail + nudge, every
 time. The CAPTAIN validates every fix and feature: it re-exercises the change live and
 replies per bead id — ACCEPT carrying the observable evidence, or REJECT carrying the
 failure signature. Keep a ledger of deployed-but-unaccepted beads; you close a bead ONLY
