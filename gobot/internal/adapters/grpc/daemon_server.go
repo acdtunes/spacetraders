@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -86,6 +87,11 @@ type DaemonServer struct {
 	absorptionMetricsCollector    *metrics.AbsorptionMetricsCollector
 	tourMetricsCollector          *metrics.TourMetricsCollector
 	scoutMetricsCollector         *metrics.ScoutMetricsCollector
+
+	// Read-only active-flow feed (flows): in-memory registry served at
+	// GET /api/flows on the metrics mux. RULINGS #4 — exposure only, no
+	// decision code reads it.
+	flowRegistry *flowfeed.Registry
 
 	// contractConfig carries the idle-arb harvest knobs (sp-1z2h / sp-uohe)
 	// from config.yaml. ContractFleetCoordinator injects them into the
@@ -265,6 +271,14 @@ func NewDaemonServer(
 	}, DutyCycleSampleInterval)
 	metrics.SetGlobalDutyCycleSampler(dutyCycleSampler)
 	server.dutyCycleSampler = dutyCycleSampler
+
+	// Read-only active-flow feed: constructed unconditionally so trading
+	// executors always have a publish target (the HTTP route is only served
+	// when metrics are enabled). RULINGS #4: exposure only — no decision code
+	// reads this, and a missed publish can never touch the trade path.
+	flowRegistry := flowfeed.New()
+	flowfeed.SetGlobal(flowRegistry)
+	server.flowRegistry = flowRegistry
 
 	// Initialize metrics collector if enabled
 	if metricsConfig != nil && metricsConfig.Enabled {
@@ -547,6 +561,12 @@ func (s *DaemonServer) Start() error {
 }
 
 // startMetricsServer starts the HTTP server for Prometheus metrics
+// registerFlowsRoute mounts the read-only GET /api/flows handler on the metrics
+// mux, beside /metrics (same localhost trust boundary; no auth change).
+func registerFlowsRoute(mux *http.ServeMux, reg *flowfeed.Registry) {
+	mux.Handle("/api/flows", flowfeed.NewFlowsHandler(reg))
+}
+
 func (s *DaemonServer) startMetricsServer() error {
 	if s.metricsConfig == nil || !s.metricsConfig.Enabled {
 		return nil
@@ -560,6 +580,7 @@ func (s *DaemonServer) startMetricsServer() error {
 			EnableOpenMetrics: true,
 		},
 	))
+	registerFlowsRoute(mux, s.flowRegistry)
 
 	// Create listener FIRST to verify port is available before returning success
 	addr := fmt.Sprintf("%s:%d", s.metricsConfig.Host, s.metricsConfig.Port)

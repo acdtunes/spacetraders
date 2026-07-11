@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
@@ -796,6 +797,9 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	if !feasible {
 		return false, reason, nil
 	}
+	// Publish the adopted tour plan to the read-only flow feed (fire-and-forget; a
+	// missed publish never touches the trade path — RULINGS #4).
+	flowfeed.Publish(buildTourFlow(cmd, plan, -1, time.Time{}, shipCargoItems(ship), time.Now().UTC()))
 	response.LegsPlanned += len(plan.Legs)
 	// Honest projection split (sp-bc27 + sp-dchv Lane C): projected profit is the
 	// TOTAL that ranked this tour; fresh cash profit, held-cargo liquidation revenue,
@@ -916,6 +920,14 @@ func (h *RunTourCoordinatorHandler) executePlan(
 			}
 			return false, fmt.Errorf("travel to leg %d (%s) failed: %w", legIdx, leg.Waypoint, err)
 		}
+		// Publish the in-progress leg to the read-only flow feed (RULINGS #4). The
+		// hull is now in transit toward leg.Waypoint; arrivesAt is best-effort from
+		// nav (the visualizer nav join owns authoritative position).
+		arrivesAt := time.Time{}
+		if at := ship.ArrivalTime(); at != nil {
+			arrivesAt = *at
+		}
+		flowfeed.Publish(buildTourFlow(cmd, plan, legIdx, arrivesAt, shipCargoItems(ship), time.Now().UTC()))
 		if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
 			return false, fmt.Errorf("dock at leg %d (%s) failed: %w", legIdx, leg.Waypoint, err)
 		}

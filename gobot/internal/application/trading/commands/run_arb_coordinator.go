@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -293,6 +295,9 @@ func (h *RunArbCoordinatorHandler) execute(
 	if err != nil {
 		return err
 	}
+	// Expose this run's intent on the read-only flow feed (fire-and-forget; a missed
+	// publish never touches the trade path — RULINGS #4).
+	flowfeed.Publish(buildArbFlow(cmd, shipCargoItems(ship), time.Now().UTC()))
 
 	// sp-5nqx retry safety — resume from the failed step, NEVER re-buy. The daemon
 	// container runner retries a failed run by RE-RUNNING THE WHOLE iteration

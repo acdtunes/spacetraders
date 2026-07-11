@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -609,6 +610,10 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		response.SourceWaypoint = lane.SourceWaypoint
 		response.DestWaypoint = lane.DestWaypoint
 		response.Circuits++
+
+		// Publish the committed circuit lane to the read-only flow feed (fire-and-forget;
+		// a missed publish never touches the trade path — RULINGS #4).
+		flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
 
 		// sp-q1ca: this line used to print no structured payload — the captain could
 		// not tell which lane a daemon picked, or whether cross-system lanes were even

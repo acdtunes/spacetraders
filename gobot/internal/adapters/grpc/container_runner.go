@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -1096,7 +1097,18 @@ func (r *ContainerRunner) sleepOrCancel(d time.Duration) error {
 }
 
 // releaseShipAssignments releases all ship assignments for this container
+// flowRemovalWanted reports whether a container exit for the given reason is
+// terminal and should drop the container's flow from the read-only feed. Only the
+// resumable "canceled" reason (ctx-cancel before re-adoption) preserves the entry,
+// so the re-adopted container keeps its flow until it re-publishes (sp-7yej inv-4).
+func flowRemovalWanted(reason string) bool {
+	return reason != "canceled"
+}
+
 func (r *ContainerRunner) releaseShipAssignments(reason string) {
+	if flowRemovalWanted(reason) {
+		flowfeed.Remove(r.containerEntity.ID())
+	}
 	if r.shipRepo == nil {
 		return
 	}
