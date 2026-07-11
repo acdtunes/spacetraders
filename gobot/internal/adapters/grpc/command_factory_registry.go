@@ -100,6 +100,30 @@ func (r *configReader) OptionalInt(key string, fallback int) int {
 	return value
 }
 
+// PresentOrFailInt reads a numeric knob that, WHEN THE KEY IS PRESENT, MUST parse — a
+// present-but-unparseable value is a hard build failure (RULINGS #4 fail-closed) rather
+// than a silent fallback to the caller's default. Absent → fallback (a genuinely omitted
+// knob still defers to the coordinator's own default).
+//
+// It exists because OptionalInt collapses "key absent" and "key present but wrong type"
+// to the SAME fallback — exactly how sp-ggk2 hid: a working_capital_reserve that was
+// PRESENT and non-zero was indistinguishable from absent once its type failed to parse,
+// so a corrupt reserve resolved to the 50k floor invisibly. For a money guard, a failed
+// build (no tour, no buy — the hull is released cleanly) is the correct fail-closed; a
+// tour must never spend beneath a floor it could not determine.
+func (r *configReader) PresentOrFailInt(key string, fallback int) int {
+	raw, present := r.values[key]
+	if !present {
+		return fallback
+	}
+	value, ok := intValue(raw)
+	if !ok {
+		r.fail(key)
+		return fallback
+	}
+	return value
+}
+
 // OptionalFloat reads a float config value (e.g. sp-lbbm's sell_floor_fraction),
 // returning fallback when the key is absent or non-numeric. JSON numbers
 // round-trip through float64, and an int is accepted too.
@@ -146,10 +170,24 @@ func (r *configReader) OptionalStringSlice(key string, aliases ...string) []stri
 	return nil
 }
 
+// intValue coerces a config value to int. It MUST handle every numeric type a launch
+// config can carry on EITHER build path: float64 (the JSON-recovery path — persisted
+// numbers round-trip through float64) AND the native int/int64 the daemon stores on the
+// fresh-start/coordinator-launch path (buildCommandForType is called directly on the
+// in-memory map before any JSON round-trip). Omitting int64 was the sp-ggk2 money bug: a
+// native int64 working_capital_reserve fell through to (0,false), OptionalInt returned its
+// fallback 0, and the 1M reserve silently became the 50k floor on a live-launched tour —
+// while the SAME config read back correctly after a restart (JSON→float64), which is why
+// it was invisible. int is 64-bit on the daemon's target so the int64→int narrowing never
+// overflows a credit value.
 func intValue(raw interface{}) (int, bool) {
 	switch v := raw.(type) {
 	case int:
 		return v, true
+	case int64:
+		return int(v), true
+	case int32:
+		return int(v), true
 	case float64:
 		return int(v), true
 	}
@@ -816,7 +854,11 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		MaxSpend:              int64(cfg.OptionalInt("max_spend", 0)),
 		MinMargin:             cfg.OptionalInt("min_margin", 0),
 		ReplanLimit:           cfg.OptionalInt("replan_limit", 0),
-		WorkingCapitalReserve: int64(cfg.OptionalInt("working_capital_reserve", 0)),
+		// sp-ggk2 RULINGS #4: the reserve is a money guard — a PRESENT-but-unparseable
+		// value fails the build (fail closed), never a silent 0 → 50k floor. An absent key
+		// still defers to the coordinator's own default (0 → defaultWorkingCapitalReserve),
+		// so a captain CLI tour with no --reserve is unchanged.
+		WorkingCapitalReserve: int64(cfg.PresentOrFailInt("working_capital_reserve", 0)),
 		Iterations:            cfg.OptionalInt("iterations", 0),
 		// Reposition-on-margins-death knobs (sp-zhii). reposition_disabled defaults to
 		// false → the feature is ON for continuous runs (the captain filed sp-zhii to end

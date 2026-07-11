@@ -147,10 +147,10 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	if tf.MaxHops != 0 {
 		config["trade_fleet_max_hops"] = tf.MaxHops
 	}
-	// The two int64 caps are stored as int: the config reader's intValue accepts int
-	// (the native creation path) and float64 (the JSON-recovery path) but NOT int64, so
-	// storing an int64 here would silently read back as 0 on creation. int is 64-bit on
-	// the daemon's target, so a credit cap never overflows.
+	// The two int64 caps are stored as int for directness: intValue now coerces int64
+	// too (sp-ggk2 fixed the omission that silently read a native int64 back as 0 on the
+	// creation path), but int keeps the on-disk form identical across the native and JSON
+	// paths. int is 64-bit on the daemon's target, so a credit cap never overflows.
 	if tf.MaxSpend != 0 {
 		config["trade_fleet_max_spend"] = int(tf.MaxSpend)
 	}

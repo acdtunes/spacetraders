@@ -510,6 +510,20 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	reserve := cmd.WorkingCapitalReserve
 	if reserve == 0 {
 		reserve = int64(defaultWorkingCapitalReserve)
+		// sp-ggk2 RULINGS #4: never resolve the reserve to a default SILENTLY. Tonight's
+		// regression — a coordinator-launched tour buying under the 50k floor while its
+		// launch config carried a 1M reserve — was invisible precisely because this
+		// fallback logged nothing. A built command reaching here with reserve==0 means the
+		// launch config carried no reserve (a captain CLI tour with no --reserve, or a
+		// fleet whose [trade_fleet] reserve is unset); surfacing it makes a fleet
+		// accidentally running on the floor visible in the log, not only in the P&L. The
+		// present-but-unparseable case can no longer reach here — it fails the build closed
+		// (PresentOrFailInt in buildTourCoordinatorCommand).
+		logger.Log("WARNING", fmt.Sprintf(
+			"Tour %s: working-capital reserve resolved to the %d default (launch config carried no reserve) - every buy is floored at %d, not a fleet reserve",
+			cmd.ShipSymbol, defaultWorkingCapitalReserve, defaultWorkingCapitalReserve), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "resolved_reserve": defaultWorkingCapitalReserve,
+		})
 	}
 	maxHops := cmd.MaxHops
 	if maxHops <= 0 || maxHops > maxTourHops {

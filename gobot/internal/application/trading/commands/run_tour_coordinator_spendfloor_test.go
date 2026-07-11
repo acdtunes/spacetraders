@@ -133,6 +133,41 @@ func TestTour_BuyFloor_SkipsWhenEvenOneUnitPierces(t *testing.T) {
 	}
 }
 
+// Negative allowance (the sp-ggk2 field condition): live balance 658,834 sits BELOW the
+// 1,000,000 reserve, so headroom is NEGATIVE (-341,166). The shrink math is
+// floorMaxUnits = headroom / ask; with a negative numerator and Go's truncate-toward-zero
+// integer division this is <= 0, so the tranche is SKIPPED — it must never round a negative
+// allowance up to a minimum buy. This is exactly what the field incident proved was NOT
+// happening (the tour bought 6 units at 658k because its reserve had silently collapsed to
+// 50k); with the reserve honored at 1M, a sub-reserve balance buys nothing.
+func TestTour_BuyFloor_SkipsWhenBalanceBelowReserve_NegativeAllowance(t *testing.T) {
+	fx := floorRoundTripFixture()
+	api := &tourSeqAPIClient{balances: []int{658_834}} // below the 1M reserve → negative headroom
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{
+		floorRoundTripPlan(100),
+		{Feasible: false, InfeasibleReason: "no_profitable_tour"},
+	}}
+	h := newTourHandlerWithAPI(t, fx, planner, &tourFakeTelemetry{}, api)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOUR-UNDERWATER")
+	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-UNDERWATER", PlayerID: 1, ContainerID: "ctr-underwater",
+		MaxSpend: 10_000_000, WorkingCapitalReserve: 1_000_000,
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("a floor-skipped buy under a negative allowance must not error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if fx.buys != 0 {
+		t.Fatalf("balance below reserve = negative headroom must dispatch ZERO buys (never a min-buy), got %d", fx.buys)
+	}
+	if r.TotalSpent != 0 {
+		t.Fatalf("a negative-allowance skip spends nothing, got %d", r.TotalSpent)
+	}
+}
+
 // Unreadable balance at buy time fails CLOSED: no spend, no error, the loop continues
 // (the container is never killed by a transient treasury blip — RULINGS #4).
 func TestTour_BuyFloor_UnreadableBalanceFailsClosedNoSpendNoDeath(t *testing.T) {

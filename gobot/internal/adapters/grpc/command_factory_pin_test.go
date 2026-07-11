@@ -634,6 +634,81 @@ func TestRecoveryFactoryRejectsMissingOrWrongTypedFields(t *testing.T) {
 	}
 }
 
+// TestFreshStartTourReserveSurvivesNativeInt64Config replays the sp-ggk2 field incident
+// (container tour-run-TORWIND-19-43dd9e2e): a coordinator-launched tour whose PERSISTED
+// config confirmed working_capital_reserve=1000000 nonetheless bought 6 LAB_INSTRUMENTS at
+// a 658k balance — i.e. under the 50k default floor, not the 1M reserve. The pinned
+// mechanism: StartTourRun (container_ops_tour.go) builds the launch config with NATIVE
+// int64 values for max_spend and working_capital_reserve and calls buildCommandForType
+// DIRECTLY — no JSON round-trip — on both the fresh-start and the coordinator-launch paths.
+// intValue only type-switched on int/float64, so a native int64 fell through to (0,false),
+// OptionalInt returned its fallback 0, and the coordinator applied the 50k default. The
+// recovery path (config persisted → JSON → read back as float64) parsed it correctly, which
+// is why the persisted config looked right AND why the sibling pin test never caught it: that
+// test jsonRoundTrips every case (see line ~585), exercising ONLY the recovery/float64 path.
+//
+// This case deliberately does NOT round-trip — it is the in-memory int64 map the live launch
+// hands the builder. It reproduces both the fresh-start captain path and the coordinator relaunch.
+func TestFreshStartTourReserveSurvivesNativeInt64Config(t *testing.T) {
+	s := newFactoryTestServer()
+	playerID := 7
+
+	// The EXACT shape StartTourRun assembles (container_ops_tour.go): max_spend and
+	// working_capital_reserve are int64; the remaining knobs are int/string. No JSON.
+	config := map[string]interface{}{
+		"ship_symbol":             "TORWIND-19",
+		"container_id":            "tour-run-TORWIND-19-43dd9e2e",
+		"agent_symbol":            "",
+		"max_hops":                0,
+		"max_spend":               int64(0),
+		"min_margin":              0,
+		"replan_limit":            0,
+		"working_capital_reserve": int64(1000000),
+		"iterations":              -1,
+		"operation":               operationTrade,
+	}
+
+	got, err := s.buildCommandForType("tour_run", config, playerID, "tour-run-TORWIND-19-43dd9e2e")
+	require.NoError(t, err)
+	cmd, ok := got.(*tradingCmd.RunTourCoordinatorCommand)
+	require.True(t, ok)
+	require.Equal(t, int64(1000000), cmd.WorkingCapitalReserve,
+		"native int64 reserve from the fresh-start/coordinator-launch config must survive to the command, not collapse to 0 (→50k floor)")
+	require.Equal(t, -1, cmd.Iterations, "continuous flag must survive")
+}
+
+// TestTourReserveFailsClosedWhenPresentButUnparseable pins the sp-ggk2 RULINGS #4 hardening:
+// a working_capital_reserve that is PRESENT in the launch config but cannot be parsed as a
+// number FAILS the build (fail closed — no tour, no buy, the hull released cleanly), rather
+// than silently falling back to 0 → the 50k floor. This is the anti-silence gate: the exact
+// failure mode that hid tonight's regression (a present, non-zero reserve resolving to a
+// default indistinguishable from absent) is now a loud build error. An ABSENT reserve is NOT
+// a failure — it legitimately defers to the coordinator's own default (a captain CLI tour
+// with no --reserve), so the two cases must diverge.
+func TestTourReserveFailsClosedWhenPresentButUnparseable(t *testing.T) {
+	s := newFactoryTestServer()
+
+	// PRESENT but unparseable (a string where a number belongs) → fail closed.
+	_, err := s.buildCommandForType("tour_run", map[string]interface{}{
+		"ship_symbol":             "SHIP-A",
+		"container_id":            "tour-bad",
+		"working_capital_reserve": "one-million", // corrupt: not a number
+	}, 7, "tour-bad")
+	require.Error(t, err, "a present-but-unparseable reserve must fail the build (fail closed), not resolve to a silent default")
+	require.Contains(t, err.Error(), "working_capital_reserve")
+
+	// ABSENT reserve → builds fine, defers to the coordinator's own default (unchanged
+	// captain-CLI-without-flag behavior).
+	got, err := s.buildCommandForType("tour_run", map[string]interface{}{
+		"ship_symbol":  "SHIP-A",
+		"container_id": "tour-ok",
+	}, 7, "tour-ok")
+	require.NoError(t, err, "an absent reserve must still build (defers to the default), never fail closed")
+	cmd, ok := got.(*tradingCmd.RunTourCoordinatorCommand)
+	require.True(t, ok)
+	require.Equal(t, int64(0), cmd.WorkingCapitalReserve, "absent reserve stays 0 → the coordinator applies its own default downstream")
+}
+
 func TestGasRecoveryFactoryFallsBackToLegacyTransportShipsKey(t *testing.T) {
 	s := newFactoryTestServer()
 
