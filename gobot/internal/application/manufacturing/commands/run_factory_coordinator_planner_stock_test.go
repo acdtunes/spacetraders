@@ -43,10 +43,13 @@ func (f *fakeFactoryDepositor) DepositOutput(_ context.Context, playerID int, sh
 	return f.deposited, f.err
 }
 
-// Enabled + depositor accepts: the root output deposits at basis, NOT sold.
-func TestFactoryCoordinator_PlannerStock_DepositsRootOutputInsteadOfSelling(t *testing.T) {
+// LIVE BY DEFAULT (Admiral: no dark-shipping): with NO config flag set (the
+// escape hatch absent → PlannerStockDisabled false), the root output deposits at
+// basis and is NOT sold. This pins the default-ON contract — the feature runs on
+// deploy without any enablement flip.
+func TestFactoryCoordinator_PlannerStock_LiveByDefault_DepositsRootOutput(t *testing.T) {
 	f := newFactoryFixture(t)
-	f.cmd.PlannerStockEnabled = true
+	// No f.cmd.PlannerStockDisabled — absent config leaves it false (ACTIVE).
 	dep := &fakeFactoryDepositor{deposited: true}
 	f.handler.SetPlannerStockDepositor(dep)
 
@@ -58,7 +61,7 @@ func TestFactoryCoordinator_PlannerStock_DepositsRootOutputInsteadOfSelling(t *t
 		t.Fatalf("root output must be deposited, not sold at market — got %d units of %s sold", units, testOutputGood)
 	}
 	if len(dep.calls) == 0 {
-		t.Fatal("expected DepositOutput to be called for the harvested root output")
+		t.Fatal("expected DepositOutput to be called by default (LIVE) for the harvested root output")
 	}
 	call := dep.calls[0]
 	if call.good != testOutputGood {
@@ -69,14 +72,13 @@ func TestFactoryCoordinator_PlannerStock_DepositsRootOutputInsteadOfSelling(t *t
 	}
 }
 
-// Enabled but the depositor declines (no warehouse / over ceiling): the deposit
-// is ATTEMPTED, then the code falls through to the existing sell path — the run
-// completes cleanly. (This harness's only FAB_PLATE buyer is the factory's own
+// Default-active but the depositor declines (no warehouse / over ceiling): the
+// deposit is ATTEMPTED, then the code falls through to the existing sell path — the
+// run completes cleanly. (This harness's only FAB_PLATE buyer is the factory's own
 // waypoint, which sp-rqwm forbids dumping into, so the fall-through sell holds the
 // output rather than dumping — the observable here is the deposit attempt.)
 func TestFactoryCoordinator_PlannerStock_DeclineAttemptsThenFallsThrough(t *testing.T) {
 	f := newFactoryFixture(t)
-	f.cmd.PlannerStockEnabled = true
 	dep := &fakeFactoryDepositor{deposited: false}
 	f.handler.SetPlannerStockDepositor(dep)
 
@@ -92,11 +94,11 @@ func TestFactoryCoordinator_PlannerStock_DeclineAttemptsThenFallsThrough(t *test
 	}
 }
 
-// Disabled (default): the depositor is never consulted — the config gate is
-// respected and the output takes the unchanged sell path.
-func TestFactoryCoordinator_PlannerStockDisabled_SkipsDepositor(t *testing.T) {
+// Escape hatch: planner_stock_disabled=true forces the pre-C1 sell path — the
+// depositor is never consulted.
+func TestFactoryCoordinator_PlannerStock_EscapeHatch_SkipsDepositor(t *testing.T) {
 	f := newFactoryFixture(t)
-	// PlannerStockEnabled defaults false.
+	f.cmd.PlannerStockDisabled = true
 	dep := &fakeFactoryDepositor{deposited: true} // would deposit IF consulted
 	f.handler.SetPlannerStockDepositor(dep)
 
@@ -105,6 +107,6 @@ func TestFactoryCoordinator_PlannerStockDisabled_SkipsDepositor(t *testing.T) {
 	}
 
 	if len(dep.calls) != 0 {
-		t.Fatalf("depositor must not be consulted when planner_stock is disabled, got %d call(s)", len(dep.calls))
+		t.Fatalf("depositor must not be consulted when the escape hatch is set, got %d call(s)", len(dep.calls))
 	}
 }

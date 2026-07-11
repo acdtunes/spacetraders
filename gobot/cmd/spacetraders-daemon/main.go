@@ -895,12 +895,12 @@ func run(cfg *config.Config) error {
 	// storage operation repo persists per-good basis out-of-band and reloads it on
 	// recovery (RULINGS #2); nil-safe if omitted.
 	storageCoordinator.SetCostBasisStore(storageOperationRepo)
-	// C1 (sp-64je): wire the factory planner-visible-stock deposit path. Harvested
-	// root output deposits into a co-located warehouse at cost basis instead of
-	// selling at market when [manufacturing] planner_stock_enabled is set; the
-	// capital ceiling reuses contract.pre_positioning.capital_ceiling_pct. The
-	// factory handler was constructed earlier (before the storage coordinator
-	// existed), so it is wired here.
+	// C1 (sp-64je): wire the factory planner-visible-stock deposit path — LIVE BY
+	// DEFAULT (Admiral: no dark-shipping). Wired UNCONDITIONALLY; harvested root output
+	// deposits into a co-located warehouse at cost basis instead of selling at market
+	// unless the [manufacturing] planner_stock_disabled escape hatch is set. The capital
+	// ceiling reuses contract.pre_positioning.capital_ceiling_pct. The factory handler
+	// was constructed earlier (before the storage coordinator existed), so it is wired here.
 	factoryCoordinatorHandler.SetPlannerStockDepositor(
 		goodsServices.NewPlannerStockDepositor(
 			storageCoordinator, storageOperationRepo, med, apiClient,

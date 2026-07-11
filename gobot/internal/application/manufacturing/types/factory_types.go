@@ -94,10 +94,11 @@ type RunFactoryCoordinatorCommand struct {
 	// true skips it entirely, for a captain who must keep a chain running through an accounting
 	// gap. Absent/false keeps the kill-switch on at its defaults. Fed from chain_pnl_kill_disabled.
 	ChainPnLKillDisabled bool
-	// PlannerStockEnabled turns on planner-visible stock (C1, sp-64je): harvested root
-	// output deposits into a co-located warehouse at cost basis instead of selling at
-	// market. Default false (OFF). Fed from planner_stock_enabled.
-	PlannerStockEnabled bool
+	// PlannerStockDisabled is the emergency escape hatch for planner-visible stock (C1,
+	// sp-64je): harvested root output deposits into a co-located warehouse at cost basis
+	// instead of selling at market. LIVE BY DEFAULT — false keeps it ACTIVE; true forces
+	// the pre-C1 sell-at-market path. Fed from planner_stock_disabled.
+	PlannerStockDisabled bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

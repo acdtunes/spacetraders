@@ -101,10 +101,11 @@ type RunFactoryCoordinatorHandler struct {
 	chainPnLKillMu    sync.Mutex
 	chainPnLKillState map[string]bool
 
-	// plannerStock optionally deposits harvested root output into a co-located
-	// warehouse at cost basis instead of selling it at market (C1, sp-64je),
-	// when the run's planner_stock_enabled flag is set. nil (the default) keeps
-	// the existing sell-at-sink behavior; the daemon wires it after construction.
+	// plannerStock deposits harvested root output into a co-located warehouse at
+	// cost basis instead of selling it at market (C1, sp-64je). LIVE BY DEFAULT:
+	// the daemon wires it unconditionally and it runs unless the run's
+	// planner_stock_disabled escape hatch is set. nil only in tests / a build that
+	// omits the wiring, in which case output sells as before.
 	plannerStock plannerStockDepositor
 }
 
@@ -181,9 +182,9 @@ func (h *RunFactoryCoordinatorHandler) SetSpendLedger(ledger mfgServices.SpendRe
 
 // SetPlannerStockDepositor wires the planner-visible-stock deposit path (C1,
 // sp-64je): harvested root output deposits into a co-located warehouse at cost
-// basis instead of selling at market, when a run's planner_stock_enabled flag is
-// set. The daemon calls this after construction; left unset the feature is off
-// and output sells at the resale sink as before.
+// basis instead of selling at market. The feature is LIVE BY DEFAULT — the daemon
+// calls this unconditionally and it runs unless a run's planner_stock_disabled
+// escape hatch is set. Left unset (tests) the output sells at the resale sink.
 func (h *RunFactoryCoordinatorHandler) SetPlannerStockDepositor(dep plannerStockDepositor) {
 	h.plannerStock = dep
 }
@@ -1144,7 +1145,7 @@ func (h *RunFactoryCoordinatorHandler) runNodeWorker(
 	if hasNeededCargo && deliveryDest != "" {
 		return h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, exec.cmd.PlayerID)
 	}
-	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly, exec.isRootLevel, exec.cmd.PlannerStockEnabled)
+	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly, exec.isRootLevel, exec.cmd.PlannerStockDisabled)
 }
 
 func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n *goods.SupplyChainNode, ship *navigation.Ship) bool {
@@ -1270,7 +1271,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	opContext *shared.OperationContext, // Operation context for transaction linking
 	inputsOnly bool, // when true (root level only), the fabricated output is left in factory stock
 	isRootLevel bool, // when true, the terminal product's output is sold at the guard's resale sink (sp-rqwm)
-	plannerStockEnabled bool, // when true, root output deposits into a co-located warehouse at basis instead of selling (C1, sp-64je)
+	plannerStockDisabled bool, // C1 (sp-64je) escape hatch: when true, force the pre-C1 sell-at-market path; LIVE (deposit) by default
 ) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1381,12 +1382,13 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	// inputs-only leaves output in factory stock, so both skip this leg. A sink below
 	// the floor (or none) HOLDS the output onboard rather than dumping it.
 	if isRootLevel && !inputsOnly {
-		// C1 (sp-64je): planner-visible stock. When enabled AND wired, deposit the
-		// harvested output into a co-located warehouse at cost basis (exportMarket.Price,
-		// the factory ask we paid to harvest) so the tour solver withdraws it at basis
-		// instead of buying our own output at laddered asks. Fails SAFE — any decline or
-		// error falls through to the resale sell below (unchanged behavior).
-		if plannerStockEnabled && h.plannerStock != nil {
+		// C1 (sp-64je): planner-visible stock, LIVE BY DEFAULT. Unless the escape hatch
+		// is set (and when wired), deposit the harvested output into a co-located
+		// warehouse at cost basis (exportMarket.Price, the factory ask we paid to harvest)
+		// so the tour solver withdraws it at basis instead of buying our own output at
+		// laddered asks. Fails SAFE — any decline or error falls through to the resale
+		// sell below (unchanged behavior).
+		if !plannerStockDisabled && h.plannerStock != nil {
 			deposited, depErr := h.plannerStock.DepositOutput(
 				ctx, playerID, updatedShip.ShipSymbol(), exportMarket.WaypointSymbol, node.Good, quantity, exportMarket.Price,
 			)

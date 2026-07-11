@@ -112,6 +112,33 @@ def test_unreachable_stock_system_dropped():
     assert out["stock_value"] == 0
 
 
+# LIVE ACCEPTANCE CASE (captain, 13:39Z): CLOTHING@GQ92 sold ZERO units for 5.5h
+# because tours pass chain markets only ~4% of the time — the passive-market-supply
+# failure C1 kills. This pins the post-C1 read: GQ92's CLOTHING output is stocked at a
+# warehouse at basis, the solver SEES it as a zero-ask source, and a tour DRAWS it and
+# sells it in a neighbouring system WITHOUT ever needing a CLOTHING buy-market — the
+# good has no source market in the snapshot at all, yet the allocation happens.
+def test_gq92_clothing_drawn_from_stock_without_passing_chain_market():
+    # No CLOTHING source market anywhere — only a foreign SINK that buys it. Pre-C1 this
+    # good is unreachable (nothing to buy, nowhere the tour passes it); post-C1 the stock
+    # source at the GQ92 warehouse makes it flow.
+    snapshot = [snap("SINK", "GQ93", "CLOTHING", ask=0, bid=2600, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="GQ92-WH", current_system="GQ92",
+                hold_capacity=40, fuel_current=2000, fuel_capacity=2000,
+                engine_speed=30, cargo=[])
+    stock = [dict(good_symbol="CLOTHING", units_available=40, unit_ask=900,
+                  storage_waypoint="GQ92-WH", storage_system="GQ92")]
+
+    out = solve_tour(snapshot, ship, cons(allowed=("GQ92", "GQ93")), MODEL, stock_sources=stock)
+    assert out["feasible"], out
+
+    stock_units = sum(t["units"] for t in _buys(out) if t["is_stock"])
+    market_units = sum(t["units"] for t in _buys(out) if not t["is_stock"])
+    assert stock_units == 40, out["legs"]        # the whole chain output drawn from stock at basis
+    assert market_units == 0, out["legs"]        # never bought at a market — no chain-market pass needed
+    assert out["stock_value"] == 40 * 900
+
+
 # The pre-C1 shape (no stock_sources) plans byte-identically — no is_stock trades.
 def test_no_stock_sources_is_inert():
     snapshot = [

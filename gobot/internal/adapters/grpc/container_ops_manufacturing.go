@@ -318,7 +318,7 @@ var manufacturingConfigKeys = []string{
 	"chain_pnl_kill_threshold_per_hour",
 	"chain_pnl_window_hours",
 	"chain_pnl_kill_disabled",
-	"planner_stock_enabled",
+	"planner_stock_disabled",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -402,7 +402,7 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	if s.manufacturingConfig.ChainPnLKillDisabled {
 		config["chain_pnl_kill_disabled"] = true
 	}
-	if s.manufacturingConfig.PlannerStockEnabled {
-		config["planner_stock_enabled"] = true
+	if s.manufacturingConfig.PlannerStockDisabled {
+		config["planner_stock_disabled"] = true
 	}
 }
