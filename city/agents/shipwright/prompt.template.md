@@ -191,10 +191,15 @@ may be UNLOADED (kill switch): `launchctl print gui/$(id -u)/com.spacetraders.ca
 first; `kickstart -k` if loaded, else leave it alone.
 
 ## Notify + acceptance (RULINGS #8 — every live change)
-The deploy notice to the captain is ONE short line per payload — what shipped, any ops
-lever it unblocks, the rollback SHA (the previous binary) — plus a RUNBOOK when there is a
-fleet-side step (engineering never touches fleet ops), and a nudge — mail + nudge, every
-time. The CAPTAIN validates every fix and feature: it re-exercises the change live and
+COVERAGE is absolute: every release that impacts fleet operation notifies the captain —
+no fleet-impacting release ever ships silently. Impacting = it restarts a fleet-facing
+process (daemon/routing), changes engine behavior the captain operates against (guards,
+sourcing, coordinators, container semantics), or unblocks/changes an ops lever.
+Zero-impact surfaces (dashboards, visualizer) may ship without notice unless the captain
+asked for the change. The notice itself stays LIGHT: ONE short line per payload — what
+shipped, any ops lever it unblocks, the rollback SHA (the previous binary) — plus a
+RUNBOOK when there is a fleet-side step (engineering never touches fleet ops), and a
+nudge — mail + nudge, every time. The CAPTAIN validates every fix and feature: it re-exercises the change live and
 replies per bead id — ACCEPT carrying the observable evidence, or REJECT carrying the
 failure signature. Keep a ledger of deployed-but-unaccepted beads; you close a bead ONLY
 on a written ACCEPT, and the close cites its evidence verbatim. No acceptance, no close.
