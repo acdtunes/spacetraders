@@ -231,14 +231,39 @@ func (h *RunWorkerRebalancerCoordinatorHandler) Handle(ctx context.Context, requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	tick := time.Duration(cmd.TickIntervalSecs) * time.Second
-	if tick <= 0 {
-		tick = defaultRebalancerTickSeconds * time.Second
+	tickSecs, tickSane := cmd.tickSeconds()
+	vacancyMinutes, vacancySane := cmd.vacancyMinMinutes()
+	cooldownSeconds, cooldownSane := cmd.cooldownSecs()
+	tick := time.Duration(tickSecs) * time.Second
+
+	// A configured value that needed clamping is a real misconfiguration (e.g. the
+	// nanoseconds-as-minutes incident, sp-nivi) — warn loudly per-knob rather than pave
+	// over it silently. Checked against the RAW configured int, not the clamped result.
+	for _, knob := range []struct {
+		name       string
+		configured int
+		sane       bool
+		clamped    int
+	}{
+		{"tick_seconds", cmd.TickIntervalSecs, tickSane, tickSecs},
+		{"vacancy_min_minutes", cmd.VacancyMinMinutes, vacancySane, vacancyMinutes},
+		{"ferry_cooldown_seconds", cmd.FerryCooldownSecs, cooldownSane, cooldownSeconds},
+	} {
+		if knob.sane {
+			continue
+		}
+		logger.Log("WARN", fmt.Sprintf("Worker rebalancer knob %s=%d is absurd (exceeds the 24h-equivalent ceiling) — clamped to %d", knob.name, knob.configured, knob.clamped), map[string]interface{}{
+			"action":       "worker_rebalancer_absurd_knob_clamped",
+			"container_id": cmd.ContainerID,
+			"knob":         knob.name,
+			"configured":   knob.configured,
+			"clamped":      knob.clamped,
+		})
 	}
 
 	result := &RunWorkerRebalancerCoordinatorResponse{Errors: []string{}}
 	logger.Log("INFO", fmt.Sprintf("Worker rebalancer coordinator starting (tick %s, vacancy_min %dm, source_min_idle %d, cooldown %ds, max_concurrent %d, max_lights %d, enabled %t, dry_run %t)",
-		tick, cmd.vacancyMin(), cmd.sourceMinIdle(), int(cmd.cooldown().Seconds()), cmd.maxConcurrentFerries(), cmd.MaxLightsPerSystem, cmd.Enabled, cmd.DryRun), map[string]interface{}{
+		tick, vacancyMinutes, cmd.sourceMinIdle(), cooldownSeconds, cmd.maxConcurrentFerries(), cmd.MaxLightsPerSystem, cmd.Enabled, cmd.DryRun), map[string]interface{}{
 		"action":       "worker_rebalancer_coordinator_start",
 		"container_id": cmd.ContainerID,
 		"enabled":      cmd.Enabled,
@@ -847,11 +872,38 @@ func dryRunSuffix(dryRun bool) string {
 
 // ---- knob resolution (RULINGS #5: 0/unset ⇒ documented default) ------------
 
-func (c *RunWorkerRebalancerCoordinatorCommand) vacancyMin() time.Duration {
+// maxSaneVacancyMinMinutes, maxSaneFerryCooldownSecs and maxSaneTickSeconds cap the three
+// wr time knobs at a 24h-equivalent ceiling (sp-nivi). A miswired unit (the incident: a
+// nanoseconds value — 900000000000 — landing in the vacancy_min MINUTES field) must never
+// parse silently: at minutes granularity that number is ~1.7M years, and multiplying it
+// straight into a time.Duration (nanoseconds internally) overflows int64 and wraps to a
+// garbage, possibly negative, duration BEFORE any post-hoc Duration check could catch it.
+// Clamping the raw int here, before Duration conversion, makes that overflow impossible.
+const (
+	maxSaneVacancyMinMinutes = 24 * 60      // 1440 minutes
+	maxSaneFerryCooldownSecs = 24 * 60 * 60 // 86400 seconds
+	maxSaneTickSeconds       = 24 * 60 * 60 // 86400 seconds
+)
+
+// vacancyMinMinutes resolves the vacancy_min knob to whole minutes (0/unset ⇒ default),
+// clamping an absurd configured value to maxSaneVacancyMinMinutes. sane is false when the
+// configured value needed clamping, so Handle can log a loud WARN naming the offending
+// knob instead of silently paving over it.
+func (c *RunWorkerRebalancerCoordinatorCommand) vacancyMinMinutes() (minutes int, sane bool) {
 	m := c.VacancyMinMinutes
 	if m <= 0 {
-		m = defaultVacancyMinMinutes
+		return defaultVacancyMinMinutes, true
 	}
+	if m > maxSaneVacancyMinMinutes {
+		return maxSaneVacancyMinMinutes, false
+	}
+	return m, true
+}
+
+// vacancyMin is the Duration-typed convenience wrapper used by detectVacancies. Built from
+// the already-clamped minutes, so it can never overflow into a wrapped/negative Duration.
+func (c *RunWorkerRebalancerCoordinatorCommand) vacancyMin() time.Duration {
+	m, _ := c.vacancyMinMinutes()
 	return time.Duration(m) * time.Minute
 }
 
@@ -862,12 +914,36 @@ func (c *RunWorkerRebalancerCoordinatorCommand) sourceMinIdle() int {
 	return c.SourceMinIdle
 }
 
-func (c *RunWorkerRebalancerCoordinatorCommand) cooldown() time.Duration {
+// cooldownSecs resolves the ferry_cooldown_seconds knob (0/unset ⇒ default), clamping an
+// absurd configured value to maxSaneFerryCooldownSecs. sane is false when clamped.
+func (c *RunWorkerRebalancerCoordinatorCommand) cooldownSecs() (seconds int, sane bool) {
 	s := c.FerryCooldownSecs
 	if s <= 0 {
-		s = defaultFerryCooldownSeconds
+		return defaultFerryCooldownSeconds, true
 	}
+	if s > maxSaneFerryCooldownSecs {
+		return maxSaneFerryCooldownSecs, false
+	}
+	return s, true
+}
+
+// cooldown is the Duration-typed convenience wrapper used by reconcileOnce/dispatchFerries.
+func (c *RunWorkerRebalancerCoordinatorCommand) cooldown() time.Duration {
+	s, _ := c.cooldownSecs()
 	return time.Duration(s) * time.Second
+}
+
+// tickSeconds resolves the tick_seconds knob (0/unset ⇒ default), clamping an absurd
+// configured value to maxSaneTickSeconds. sane is false when clamped.
+func (c *RunWorkerRebalancerCoordinatorCommand) tickSeconds() (seconds int, sane bool) {
+	s := c.TickIntervalSecs
+	if s <= 0 {
+		return defaultRebalancerTickSeconds, true
+	}
+	if s > maxSaneTickSeconds {
+		return maxSaneTickSeconds, false
+	}
+	return s, true
 }
 
 func (c *RunWorkerRebalancerCoordinatorCommand) maxConcurrentFerries() int {

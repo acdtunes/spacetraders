@@ -863,3 +863,86 @@ func TestRebalancer_NoDestination_ParksFailClosed(t *testing.T) {
 	require.Empty(t, shipRepo.claims)
 	require.True(t, logger.loggedContaining("X1-DP51", "no known marketplace"))
 }
+
+// ---- tests: Handle() startup log + absurd-knob sanity guard (sp-nivi) ------
+//
+// The bug: Handle's one-time startup log passed cmd.vacancyMin() — a time.Duration — to a
+// %d verb meant for whole minutes. Go's fmt happily prints ANY integer-kinded value
+// (Duration's underlying type is int64) through %d, so go vet's printf checker never flags
+// it — it's valid Go, just the wrong value. A configured 15-minute vacancy_min logged as
+// "vacancy_min 900000000000m" (raw nanoseconds) instead of "vacancy_min 15m".
+//
+// These tests exercise Handle() directly (every test above this point calls reconcileOnce)
+// because the buggy line lives in Handle's one-time startup log, before the reconcile loop.
+// A pre-cancelled context lets Handle log its startup line and then return promptly via the
+// ctx.Done() branch, mirroring the trade-fleet coordinator's
+// TestTradeHandle_ContextCancelledReturns.
+
+// startedAndCancelledRebalancerHandle runs Handle to completion (immediately, via a
+// pre-cancelled context) and returns the captured log. reconcileOnce is never reached, so
+// the fakes need no data wired.
+func startedAndCancelledRebalancerHandle(t *testing.T, cmd *RunWorkerRebalancerCoordinatorCommand) *tradeCaptureLogger {
+	t.Helper()
+	handler := newTestRebalancerHandler(&fakeRebalancerShipRepo{}, &fakeRebalancerDaemonClient{}, &fakeRebalancerContainerQuery{}, ferryDefaultMarket(), &fakeHopGraph{}, clockAt(0))
+	logger := &tradeCaptureLogger{}
+	ctx, cancel := context.WithCancel(common.WithLogger(context.Background(), logger))
+	cancel() // already cancelled: Handle logs its startup line, then returns on ctx.Done()
+
+	_, err := handler.Handle(ctx, cmd)
+	require.ErrorIs(t, err, context.Canceled)
+	return logger
+}
+
+// The round-trip a captain actually sees: vacancy_min_minutes: 15 in config.yaml must log
+// as "15m", never as the underlying Duration's raw nanoseconds — and a sane value must
+// never trip the absurd-knob guard.
+func TestRebalancerHandle_StartupLog_VacancyMinLogsWholeMinutes(t *testing.T) {
+	cmd := rebalancerTestCmd()
+	cmd.VacancyMinMinutes = 15
+
+	logger := startedAndCancelledRebalancerHandle(t, cmd)
+
+	require.True(t, logger.loggedContaining("vacancy_min 15m"), "vacancy_min must log as whole minutes, not a raw Duration")
+	require.False(t, logger.loggedContaining("900000000000"), "no raw-nanoseconds value should ever reach the log")
+	require.False(t, logger.loggedContaining("clamped"), "a sane configured value must never trip the absurd-knob guard")
+}
+
+// The incident value itself: 900,000,000,000 is exactly 15 minutes in nanoseconds — the
+// number a ns-as-minutes miswire produces. Configured directly as VacancyMinMinutes, it
+// must never reach a Duration conversion un-clamped: multiplying it straight into a
+// time.Duration would overflow int64 nanoseconds (900_000_000_000 * 60e9 ≈ 5.4e22, far past
+// int64's ~9.22e18 ns ceiling) and silently wrap to a garbage/negative duration BEFORE any
+// post-hoc Duration check could catch it. The resolver clamps the RAW int first, so this
+// can never happen, and the startup log shows the clamped ceiling plus a loud WARN.
+func TestRebalancerHandle_StartupLog_ClampsAbsurdVacancyMin(t *testing.T) {
+	cmd := rebalancerTestCmd()
+	cmd.VacancyMinMinutes = 900_000_000_000
+
+	logger := startedAndCancelledRebalancerHandle(t, cmd)
+
+	require.True(t, logger.loggedContaining(fmt.Sprintf("vacancy_min %dm", maxSaneVacancyMinMinutes)), "an absurd vacancy_min must log as the clamped ceiling, not the raw value")
+	require.False(t, logger.loggedContaining("900000000000m"), "the raw absurd value must never reach the startup log")
+	require.True(t, logger.loggedContaining("vacancy_min_minutes", "900000000000", "clamped"), "a loud WARN must name the offending knob and its configured value")
+}
+
+// Same guard, the cooldown knob (FerryCooldownSecs).
+func TestRebalancerHandle_StartupLog_ClampsAbsurdCooldown(t *testing.T) {
+	cmd := rebalancerTestCmd()
+	cmd.FerryCooldownSecs = 900_000_000_000
+
+	logger := startedAndCancelledRebalancerHandle(t, cmd)
+
+	require.True(t, logger.loggedContaining(fmt.Sprintf("cooldown %ds", maxSaneFerryCooldownSecs)), "an absurd cooldown must log as the clamped ceiling, not the raw value")
+	require.True(t, logger.loggedContaining("ferry_cooldown_seconds", "900000000000", "clamped"), "a loud WARN must name the offending knob and its configured value")
+}
+
+// Same guard, the tick knob (TickIntervalSecs).
+func TestRebalancerHandle_StartupLog_ClampsAbsurdTick(t *testing.T) {
+	cmd := rebalancerTestCmd()
+	cmd.TickIntervalSecs = 900_000_000_000
+
+	logger := startedAndCancelledRebalancerHandle(t, cmd)
+
+	require.True(t, logger.loggedContaining("tick 24h0m0s"), "an absurd tick must log as the clamped 24h ceiling, not the raw value")
+	require.True(t, logger.loggedContaining("tick_seconds", "900000000000", "clamped"), "a loud WARN must name the offending knob and its configured value")
+}
