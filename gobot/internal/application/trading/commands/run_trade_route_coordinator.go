@@ -356,8 +356,11 @@ type GateGraph interface {
 	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
 	// RepositionPath resolves a route over the PERSISTED stored adjacency (no fetch-
 	// through) bounded to maxJumps, routing PAST an unreadable frontier gate rather than
-	// dead-ending on it — the expendable probe/scout reposition class only (sp-8k9m).
-	// Heavies/trade/arb keep Path; this seam is consumed solely by
+	// dead-ending on it — the REPOSITION class (movement of a hull, not a commitment of
+	// money): scout reposition (sp-8k9m) AND tour reposition (sp-kl16, a heavy rotating to
+	// a fresh trading ground). Every money-commitment path (arb pre-buy Routable, trade-route
+	// lane delivery, cargo delivery) keeps the strict Path — the guard line is hull-movement vs
+	// money-commitment, not probe vs heavy. This seam is consumed solely by
 	// RepositionToWaypointWithinJumps.
 	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)

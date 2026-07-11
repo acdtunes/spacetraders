@@ -72,6 +72,20 @@ type TradeFleetConfig struct {
 	// Threaded through the tour container config so a captain retunes it by editing config.yaml
 	// + restarting the daemon (RULINGS #5, no code redeploy).
 	StrandedConsecutiveThreshold int `mapstructure:"stranded_consecutive_threshold"`
+
+	// RepositionJumpBound is the sp-kl16 jump bound a tour reposition resolves its cross-system
+	// leg over the PERSISTED stored adjacency (RepositionPath) with, routing PAST an unreadable
+	// frontier gate rather than fail-closing on it via the strict fetch-through Path. A tour
+	// reposition is a MOVEMENT of the hull to a fresh trading ground — not a commitment of money —
+	// so it shares the scout reposition's stored-adjacency relaxation (sp-8k9m): a heavy whose
+	// ORIGIN gate sits in the sp-ikx1 unreadable-backoff set (the C1-blocking TORWIND-37/2C ->
+	// GQ92 incident, unroutable within the strict MaxJumpPath=5 even for a 2-hop route) can still
+	// reposition. 0/absent → the tour coordinator's own default (12, matching the scout frontier
+	// depth); the default lives in the consumer, not this config layer. Threaded through the tour
+	// container config so a captain retunes it by editing config.yaml + restarting the daemon
+	// (RULINGS #5, no code redeploy). The buy-side (arb pre-buy, trade-route lane commits, cargo
+	// delivery) keeps the strict Path — money-commitment vs hull-movement is the guard line.
+	RepositionJumpBound int `mapstructure:"reposition_jump_bound"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

@@ -279,6 +279,18 @@ trade_fleet:
   # alert), so the watch is paged for a captain-authority jump/ferry extraction. 0/absent => 3.
   # stranded_consecutive_threshold: 3
 
+  # reposition_jump_bound (sp-kl16): the jump bound a tour reposition resolves its cross-system
+  # leg over the PERSISTED stored adjacency (RepositionPath) with, routing PAST an unreadable
+  # frontier gate rather than fail-closing on it via the strict fetch-through Path. A tour
+  # reposition MOVES the hull to a fresh trading ground (it does not commit money), so — like a
+  # scout reposition (scouting.max_reposition_jumps) — it may hop the known topology past a gate
+  # in the sp-ikx1 unreadable-backoff set: a heavy whose ORIGIN gate is unreadable (the C1-blocking
+  # TORWIND-37/2C -> GQ92 incident, unroutable within the strict 5-jump Path even for a 2-hop
+  # route) can still reposition. The buy-side (arb pre-buy, trade-route lane commits, cargo
+  # delivery) keeps the strict Path — money-commitment vs hull-movement is the guard line.
+  # 0/absent => 12 (matching the scout frontier depth).
+  # reposition_jump_bound: 12
+
 # Worker-rebalancer coordinator (sp-f5pr): the STANDING coordinator that ferries idle
 # undedicated light-haulers cross-system to worker-starved factory systems, so a factory
 # posting "No in-system worker" self-heals without captain hand-holding. A system is a

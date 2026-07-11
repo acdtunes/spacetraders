@@ -172,6 +172,17 @@ type RunTourCoordinatorCommand struct {
 	// systems get a real planner call per margins-death episode. 0 →
 	// repositionMaxCandidatesDefault.
 	RepositionMaxCandidates int
+	// RepositionJumpBound is the jump bound the reposition flight resolves its cross-system
+	// leg over the PERSISTED stored adjacency (RepositionPath) with (sp-kl16), routing PAST an
+	// unreadable frontier gate rather than fail-closing on it via the strict Path — a tour
+	// reposition is a MOVEMENT of the hull, not a money commitment, so it shares the scout
+	// reposition's relaxation (sp-8k9m). 0/absent → repositionJumpBoundDefault (12, the scout
+	// frontier depth); a positive value is the captain's [trade_fleet].reposition_jump_bound
+	// override. Always resolves > 0, so the reposition never degrades to the strict resolver
+	// that could not route a heavy off an unreadable-gate origin (the TORWIND-37/2C -> GQ92
+	// incident). The buy-side (arb pre-buy, trade-route lane commits, cargo delivery) keeps
+	// strict Path — money-commitment vs hull-movement is the guard line.
+	RepositionJumpBound int
 	// RepositionInProgress / RepositionTargetSystem / RepositionTargetWaypoint are the
 	// restart-resume state (RULINGS #2): persisted into the container config the instant
 	// a reposition jump is committed and cleared once it lands, so a daemon restart
@@ -395,12 +406,12 @@ func NewRunTourCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 	return &RunTourCoordinatorHandler{
-		legs:          NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, marketRefresher, clock, apiClient),
-		marketRepo:    marketRepo,
-		waypointRepo:  waypointRepo,
-		telemetry:     telemetry,
-		planner:       planner,
-		clock:         clock,
+		legs:           NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, marketRefresher, clock, apiClient),
+		marketRepo:     marketRepo,
+		waypointRepo:   waypointRepo,
+		telemetry:      telemetry,
+		planner:        planner,
+		clock:          clock,
 		apiClient:      apiClient,
 		mediator:       mediator,
 		depositParked:  make(map[string]string),
@@ -640,7 +651,10 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		logger.Log("INFO", fmt.Sprintf("Reposition resume: re-adopted mid-jump toward %s (%s) after a restart - completing the jump before re-planning (RULINGS #2)", cmd.RepositionTargetSystem, cmd.RepositionTargetWaypoint), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "target_system": cmd.RepositionTargetSystem, "target_waypoint": cmd.RepositionTargetWaypoint,
 		})
-		if rerr := h.legs.RepositionToWaypoint(ctx, cmd.ShipSymbol, cmd.RepositionTargetWaypoint, cmd.PlayerID); rerr != nil {
+		// sp-kl16: the resume rides the SAME stored-adjacency bounded resolver as the fresh jump
+		// (resolveRepositionJumpBound), so a restart mid-jump toward an unreadable-gate ground
+		// completes over the persisted topology instead of re-hitting the strict Path fail-close.
+		if rerr := h.legs.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.RepositionTargetWaypoint, cmd.PlayerID, resolveRepositionJumpBound(cmd.RepositionJumpBound)); rerr != nil {
 			return rerr // resumable — the persisted in-progress flag stays set so a re-restart retries the resume
 		}
 		h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})

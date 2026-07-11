@@ -4,7 +4,10 @@ package commands
 // rank jump-reachable systems by expected tour margin, jump to the best one, and re-plan
 // there instead of stranding the hull on its own freshly-sold-out ground. Bounded to ONE
 // reposition per margins-death episode. The jump rides the SHARED cooldown-riding travel
-// machinery (sp-wc5h via legs.RepositionToWaypoint), never new plumbing.
+// machinery (sp-wc5h) via legs.RepositionToWaypointWithinJumps — the bounded stored-adjacency
+// resolver (sp-kl16): a reposition is a MOVEMENT of the hull, so it routes PAST an unreadable
+// origin gate over the persisted topology (the scout relaxation, sp-8k9m) instead of
+// fail-closing on the strict fetch-through Path, which the money-commitment paths keep.
 
 import (
 	"context"
@@ -52,7 +55,36 @@ const (
 	// candidate is ranked on is fresh profit over EVERYTHING between "decide to jump"
 	// and "profit booked".
 	repositionReplanAllowanceSeconds = 60.0
+
+	// repositionJumpBoundDefault is the jump bound the tour reposition resolves its
+	// cross-system flight over the PERSISTED stored adjacency (RepositionPath) with, when the
+	// captain leaves [trade_fleet].reposition_jump_bound at 0 (sp-kl16). A tour reposition is a
+	// MOVEMENT of the hull to a fresh trading ground — not a commitment of money — so, like a
+	// scout reposition (sp-8k9m), it routes PAST an unreadable frontier gate over the stored
+	// topology instead of fail-closing on it via the strict fetch-through Path: a heavy whose
+	// ORIGIN gate sits in the sp-ikx1 unreadable-backoff set (the live TORWIND-37/2C -> GQ92
+	// incident) is otherwise unroutable within the strict MaxJumpPath=5 even where a 2-hop
+	// stored route exists. 12 matches the scout frontier depth ([scouting].max_reposition_jumps
+	// default) — the expanded frontier's grounds sit 6-12 gate-jumps from a hull's home. A named
+	// config knob, not a magic constant (RULINGS #5); retune as the frontier depth shifts.
+	// The buy-side (arb pre-buy, trade-route lane commits, cargo-delivery travel) is a commitment
+	// of money and keeps the strict Path — the guard distinction is money-commitment vs
+	// hull-movement, not probe vs heavy.
+	repositionJumpBoundDefault = 12
 )
+
+// resolveRepositionJumpBound applies the 0/absent → default rule to the configured
+// [trade_fleet].reposition_jump_bound (sp-kl16), so the default lives in ONE place (RULINGS #5)
+// and both tour reposition call sites (the fresh margins-death jump and the restart-resume jump)
+// route over the SAME bound. A positive value is the captain's override. It is always > 0, so the
+// reposition never degrades to the strict fetch-through Path — which is precisely the fail-closed
+// resolver that could not route a heavy off an unreadable-gate origin.
+func resolveRepositionJumpBound(configured int) int {
+	if configured <= 0 {
+		return repositionJumpBoundDefault
+	}
+	return configured
+}
 
 // repositionEpisode is the in-memory state of the current margins-death episode (sp-zhii):
 // whether this run has already spent its ONE reposition since the last productive tour,
@@ -204,22 +236,36 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	if best.hasRate {
 		rateNote = fmt.Sprintf(" (projected %.0f fresh/hr)", best.rate)
 	}
-	logger.Log("INFO", fmt.Sprintf("Reposition: margins died at %s - jumping to %s (%s), planned fresh profit %d >= floor %d%s, then re-planning there", currentSystem, best.system, best.waypoint, best.freshProfit, floor, rateNote), map[string]interface{}{
+	// sp-kl16: the reposition flies over the stored-adjacency RepositionPath bounded to
+	// jumpBound (routing PAST an unreadable origin gate), so the per-route log names the bound
+	// — the greppable operator signal that this leg used the movement resolver, not strict Path.
+	jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
+	logger.Log("INFO", fmt.Sprintf("Reposition: margins died at %s - jumping to %s (%s) within %d stored-adjacency jumps, planned fresh profit %d >= floor %d%s, then re-planning there", currentSystem, best.system, best.waypoint, jumpBound, best.freshProfit, floor, rateNote), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "from_system": currentSystem, "to_system": best.system,
 		"to_waypoint": best.waypoint, "planned_fresh_profit": best.freshProfit, "floor": floor,
-		"planned_fresh_rate_per_hour": best.rate,
+		"planned_fresh_rate_per_hour": best.rate, "reposition_jump_bound": jumpBound,
 	})
 
-	// sp-ed4i look-back loading: the reposition jump was a structural deadhead (RepositionToWaypoint
-	// is a pure empty move). Before jumping, buy the best floor-clearing manifest of THIS system's
-	// exports that the destination imports, so the crossing carries value. It is booked into
-	// netBought/response, rides the jump, and the post-jump re-plan liquidates it as launch cargo
-	// (sp-m5kv). No floor-clearing lane → nothing bought → an empty jump, exactly as pre-sp-ed4i.
-	// Persisted-in-progress is set FIRST (above), so a restart mid-load resumes the jump carrying
-	// whatever was already bought (RULINGS #2). Best-effort: it never blocks the reposition rescue.
+	// sp-ed4i look-back loading: the reposition jump was a structural deadhead (the reposition
+	// is a pure empty move — no buy-commitment routing). Before jumping, buy the best
+	// floor-clearing manifest of THIS system's exports that the destination imports, so the
+	// crossing carries value. It is booked into netBought/response, rides the jump, and the
+	// post-jump re-plan liquidates it as launch cargo (sp-m5kv). No floor-clearing lane →
+	// nothing bought → an empty jump, exactly as pre-sp-ed4i. Persisted-in-progress is set
+	// FIRST (above), so a restart mid-load resumes the jump carrying whatever was already
+	// bought (RULINGS #2). Best-effort: it never blocks the reposition rescue.
 	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, best.system, maxSpend, reserve)
 
-	if terr := h.legs.RepositionToWaypoint(ctx, cmd.ShipSymbol, best.waypoint, cmd.PlayerID); terr != nil {
+	// sp-kl16: resolve the cross-system leg over the PERSISTED stored adjacency (RepositionPath),
+	// bounded to jumpBound, so a heavy whose ORIGIN gate is in the sp-ikx1 unreadable-backoff set
+	// can still reposition — the strict fetch-through Path fail-closes on that gate and returned
+	// ErrUnroutable "within 5 jumps" even for a 2-hop route (the C1-blocking TORWIND-37/2C -> GQ92
+	// incident). A tour reposition is a MOVEMENT of the hull to a fresh trading ground, not a
+	// commitment of money, so it shares the scout reposition's stored-adjacency relaxation
+	// (sp-8k9m) — while every money-commitment path (arb pre-buy, trade-route lane delivery)
+	// keeps RepositionToWaypoint (strict). jumpBound is always > 0, so this never degrades to
+	// the strict resolver.
+	if terr := h.legs.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, best.waypoint, cmd.PlayerID, jumpBound); terr != nil {
 		// Leave the persisted in-progress state set: a restart resumes toward the same
 		// destination (carrying any look-back cargo already bought). Surface the error
 		// resumable (the runner re-adopts and retries).

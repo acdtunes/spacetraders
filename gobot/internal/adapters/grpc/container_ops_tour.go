@@ -97,7 +97,15 @@ func (s *DaemonServer) StartTourRun(
 		// (0 too, so an absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand
 		// passes it to the coordinator, which resolves 0/absent → its default 3.
 		"stranded_consecutive_threshold": s.tradeFleetConfig.StrandedConsecutiveThreshold,
-		"iterations":                     iterations,
+		// sp-kl16: the tour-reposition jump bound, sourced from the daemon's live [trade_fleet]
+		// config (a daemon-global tuning, same for every tour). Persisted as-is (0 too, so an
+		// absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand passes
+		// it to the coordinator, which resolves 0/absent → its default 12. This is the o34q WRITE
+		// side — the scout bug (sp-o34q) was a persist path that DROPPED the bound; writing it into
+		// the launch config here, where PersistRepositionState's read-modify-write preserves it and
+		// buildTourCoordinatorCommand reads it back, is what makes the bound survive the round-trip.
+		"reposition_jump_bound": s.tradeFleetConfig.RepositionJumpBound,
+		"iterations":            iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

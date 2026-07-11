@@ -650,6 +650,34 @@ func TestTravel_MultiJump_Unroutable_AbortsBeforeAnyJump(t *testing.T) {
 	}
 }
 
+// sp-kl16 THE MONEY-COMMITMENT STRICT PIN (the other half of the PD21 fix). travel() — the
+// bound-0 path every MONEY-COMMITMENT flight rides (arb pre-buy delivery, trade-route lane
+// commits, cargo delivery) — must STAY strict: it resolves via the fetch-through Path and
+// fail-closes on an unreadable-gate origin EVEN WHEN a stored-adjacency RepositionPath would
+// route past it. Only the hull-MOVEMENT reposition legs (travelWithJumpBound with a positive
+// bound, sp-8k9m/sp-kl16) may relax to RepositionPath. The fake offers a VALID repositionPath;
+// travel() must ignore it and abort on pathErr — proving the guard line is money-commitment vs
+// hull-movement, so a heavy never carries a bought manifest past an unverified frontier gate.
+func TestTravel_MoneyCommitment_StaysStrict_IgnoringAvailableRepositionPath(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-KA42-GATE")
+	mediator := &travelMediator{jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60}}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{}, nil, nil, clock, nil)
+	// Strict Path fail-closes on the unreadable gate (pathErr), but a valid stored route EXISTS.
+	handler.SetGateGraph(&fakeGateGraph{
+		pathErr:        errors.New("no jump-gate route from X1-KA42 to X1-ZZZ within 5 jumps"),
+		repositionPath: []string{"X1-KA42", "X1-MID", "X1-ZZZ"},
+	})
+
+	_, err := handler.travel(context.Background(), ship, "X1-ZZZ-MARKET", 1)
+	if err == nil {
+		t.Fatal("a money-commitment travel() must refuse an unreadable-gate origin (strict Path), never silently route the buy/delivery over the stored adjacency")
+	}
+	if len(mediator.jumps) != 0 {
+		t.Fatalf("the strict refusal must abort BEFORE any jump, got %d", len(mediator.jumps))
+	}
+}
+
 // sp-5nqx: if the source jump gate cannot be resolved, travel() must surface a wrapped
 // error and NEVER dispatch the jump - a driveless hull that is not at a gate and cannot
 // find one has no legal way to cross, and must fail loudly rather than fire a jump the

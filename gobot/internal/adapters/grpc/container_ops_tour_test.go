@@ -2,11 +2,13 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -71,6 +73,38 @@ func TestStartTourRun_StampsTradeOperationInLaunchConfig(t *testing.T) {
 	// The fleet identity MUST ride the launch config as 'trade' (== the DB
 	// dedication value) so a 'trade'-dedicated tour heavy is permitted, not rejected.
 	require.Contains(t, model.Config, `"operation":"trade"`)
+}
+
+// sp-kl16 THE O34Q WRITE-SIDE PIN. The tour-reposition jump bound is daemon-global tuning
+// ([trade_fleet].reposition_jump_bound), so StartTourRun must STAMP it into the launch config —
+// the write half of the persist boundary the scout relay's bug (sp-o34q) dropped. Without this
+// write, buildTourCoordinatorCommand would read 0 on every rebuild and the reposition would
+// silently degrade to the strict resolver, exactly the C1-blocking failure sp-kl16 fixes. Paired
+// with TestTourRepositionJumpBound_RoundTripsThroughRebuildAcrossPersist (the read+merge half).
+func TestStartTourRun_StampsRepositionJumpBoundFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.RepositionJumpBound = 9 // the captain's [trade_fleet] override
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"reposition_jump_bound":9`, "StartTourRun must stamp the [trade_fleet] reposition jump bound so the recovery rebuild reads it back (the o34q write side)")
+
+	// And the whole boundary round-trips: the rebuild reloads the stamped bound.
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	require.Equal(t, 9, rebuilt.(*tradingCmd.RunTourCoordinatorCommand).RepositionJumpBound)
 }
 
 // sp-sg35 — the permit half: a tour_run-shaped container (operation "trade", the

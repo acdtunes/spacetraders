@@ -1037,9 +1037,15 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// reposition{MinMargin,MaxCandidates}Default. reposition_in_progress / _target_*
 		// are RUNTIME state the coordinator persists mid-jump (RULINGS #2), reloaded here
 		// so a restart resumes the jump instead of re-planning at an intermediate hop.
-		RepositionDisabled:       cfg.OptionalBool("reposition_disabled"),
-		RepositionMinMargin:      cfg.OptionalInt("reposition_min_margin", 0),
-		RepositionMaxCandidates:  cfg.OptionalInt("reposition_max_candidates", 0),
+		RepositionDisabled:      cfg.OptionalBool("reposition_disabled"),
+		RepositionMinMargin:     cfg.OptionalInt("reposition_min_margin", 0),
+		RepositionMaxCandidates: cfg.OptionalInt("reposition_max_candidates", 0),
+		// sp-kl16: the stored-adjacency reposition jump bound (0/absent → the coordinator's own
+		// default 12). This is the o34q READ side — the scout bug (sp-o34q) was buildScoutRepositionCommand
+		// never reading the persisted bound back, degrading the live relay to the strict 5-jump
+		// resolver; reading it here (paired with the container_ops_tour.go write) is what makes the
+		// bound survive the launch-config → rebuild round-trip a recovery restart runs.
+		RepositionJumpBound:      cfg.OptionalInt("reposition_jump_bound", 0),
 		RepositionInProgress:     cfg.OptionalBool("reposition_in_progress"),
 		RepositionTargetSystem:   cfg.OptionalString("reposition_target_system"),
 		RepositionTargetWaypoint: cfg.OptionalString("reposition_target_waypoint"),
