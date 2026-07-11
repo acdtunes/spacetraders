@@ -2,6 +2,18 @@
 
 Remove a scout post and release its hull
 
+### Synopsis
+
+Remove the scout post for a system and release the satellite(s) manning it
+back to the idle pool for reassignment. Takes the system symbol (as shown in
+the SYSTEM column of "scout posts list") as its sole argument.
+
+Player is resolved from --player-id, --agent, or the persisted default. Reads
+and mutates live daemon state, so the daemon must be running.
+
+Examples:
+  spacetraders scout posts remove X1-GZ7 --agent ENDURANCE
+
 ```
 spacetraders scout posts remove <SYSTEM> [flags]
 ```

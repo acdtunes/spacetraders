@@ -2,6 +2,20 @@
 
 List and acknowledge captain events
 
+### Synopsis
+
+Inspect and drain the strategic-event queue the autonomous captain reads
+during its wake ritual. "events list" shows the unprocessed events queued for
+a player; "events ack" marks them processed — by explicit IDs, or in bulk with
+--all/--before — so they do not resurface on the next wake.
+
+Player is resolved from --player-id, --agent, or the persisted default (in
+that order), the same fallback chain the rest of the CLI uses.
+
+Examples:
+  spacetraders captain events list --agent TORWIND
+  spacetraders captain events ack --agent TORWIND --all
+
 ### Options
 
 ```

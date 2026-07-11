@@ -2,6 +2,20 @@
 
 List active scout posts
 
+### Synopsis
+
+List the scout posts declared for a player, one row per post: system symbol,
+kind (standing or sweep-once), target scan freshness, configured probe/hull
+budget, and how many of those hull slots the coordinator currently has manned
+("(unmanned)" when none). Prints "No scout posts configured." when the player
+has none.
+
+Player is resolved from --player-id, --agent, or the persisted default. Reads
+live daemon state, so the daemon must be running.
+
+Examples:
+  spacetraders scout posts list --agent ENDURANCE
+
 ```
 spacetraders scout posts list [flags]
 ```

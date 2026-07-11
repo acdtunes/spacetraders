@@ -2,6 +2,23 @@
 
 Manage desired-state scout posts
 
+### Synopsis
+
+Manage the desired-state scout posts the standing scout coordinator
+reconciles (spec: sp-cxpq). A post is a per-system "keep these markets scanned"
+assignment; the coordinator mans each post with an idle satellite, respawns
+tours that die, and retires sweep-once posts after one pass.
+
+"posts add" declares or updates a post (freshness target, standing vs
+sweep-once, probe budget); "posts list" shows every post and how many of its
+hull slots are currently manned; "posts remove" deletes a post and releases
+its hull. Posts and their assignments survive daemon restarts.
+
+Examples:
+  spacetraders scout posts add X1-GZ7 --agent ENDURANCE
+  spacetraders scout posts list --agent ENDURANCE
+  spacetraders scout posts remove X1-GZ7 --agent ENDURANCE
+
 ### Options
 
 ```

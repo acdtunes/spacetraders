@@ -2,6 +2,17 @@
 
 Print the CLI build stamp (version, commit, build time)
 
+### Synopsis
+
+Print the build stamp compiled into this spacetraders CLI binary: version,
+git commit, build time, and the Go version and os/arch it was built for.
+Answers "which spacetraders binary am I actually running?" — the CLI
+counterpart to the daemon and watchkeeper startup banners (sp-898q).
+
+Build info is baked into the binary at link time, so this makes no daemon or
+network call and works even when the daemon is down. The root command also
+accepts a --version flag that prints the same version string.
+
 ```
 spacetraders version [flags]
 ```

@@ -2,6 +2,21 @@
 
 Multi-hop trade-tour tooling (sp-1ek0)
 
+### Synopsis
+
+Tooling for the multi-hop trade-tour program (spec: sp-1ek0) — the graduation
+path from single-lane trading to chained A→B→C tours that keep a hull's cargo
+hold working across several legs.
+
+Currently exposes the "report" subcommand, which computes the A→B graduation
+gate — completed-tour count and guard violations, tour realized $/hr versus the
+trailing single-lane rate, and median plan-vs-realized unit-price error — over
+a trailing window.
+
+Examples:
+  spacetraders tour report --agent TORWIND
+  spacetraders tour report --since 72h
+
 ### Options
 
 ```

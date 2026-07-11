@@ -115,7 +115,14 @@ func newContainerGetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <container-id>",
 		Short: "Get detailed container information",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show the full detail record for a single background container: its type,
+status, owning player, current and max iteration counts, restart count,
+creation and last-update timestamps, and any stored metadata.
+
+Where "container list" prints one row per container, this drills into one
+container by ID (the value shown in the list's CONTAINER ID column). Reads
+live daemon state, so the daemon must be running.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
 
@@ -161,7 +168,12 @@ func newContainerStopCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop <container-id>",
 		Short: "Stop a running container",
-		Args:  cobra.ExactArgs(1),
+		Long: `Ask the daemon to stop a running background container by ID, printing the
+resulting status (e.g. STOPPING or STOPPED) and a short message. Take the ID
+from the CONTAINER ID column of "container list".
+
+Reads and mutates live daemon state, so the daemon must be running.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
 

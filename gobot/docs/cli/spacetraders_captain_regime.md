@@ -2,6 +2,24 @@
 
 Inspect or declare the captain's price-regime tripwires
 
+### Synopsis
+
+Manage the captain's price-regime tripwires (spec: sp-zlfv price-regime
+detector). A tripwire is a standing "watch this good's sell price" rule: the
+watchkeeper emits a deferred market.regime_shift event once a matching good
+crosses the declared threshold, mechanizing the per-wake price sweep the
+captain used to hand-roll.
+
+Tripwires are additive: "regime set" adds one without disturbing the others,
+"regime list" prints every declared tripwire, and "regime clear" removes them
+all (with none declared, the detector does not scan at all). The declared set
+lives in the supervisor state file and survives restarts.
+
+Examples:
+  spacetraders captain regime set --good ORE --bid-above 200
+  spacetraders captain regime list
+  spacetraders captain regime clear
+
 ### Options
 
 ```

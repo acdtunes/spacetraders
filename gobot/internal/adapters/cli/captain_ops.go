@@ -312,6 +312,22 @@ func newCaptainWakeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wake",
 		Short: "Inspect or declare the captain's wake policy",
+		Long: `Inspect or declare when the supervisor wakes the captain outside its default
+heartbeat cadence (spec: sp-sk68 wake model).
+
+"wake set" declares the standing policy — the next scheduled wake, credit
+thresholds that force a wake, and which event types interrupt immediately —
+with each call fully replacing the prior policy. "wake show" prints the
+currently declared policy (or the defaults if none). "wake watch" arms
+one-shot wake watches on a specific ship arrival or container terminal state,
+which fire once and auto-disarm independently of the standing policy.
+
+A declaration takes effect on the very next supervisor poll — no restart
+required.
+
+Examples:
+  spacetraders captain wake set --next-wake-at +3h
+  spacetraders captain wake show`,
 	}
 
 	cmd.AddCommand(newCaptainWakeSetCommand())
@@ -423,6 +439,17 @@ func newCaptainEventsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "events",
 		Short: "List and acknowledge captain events",
+		Long: `Inspect and drain the strategic-event queue the autonomous captain reads
+during its wake ritual. "events list" shows the unprocessed events queued for
+a player; "events ack" marks them processed — by explicit IDs, or in bulk with
+--all/--before — so they do not resurface on the next wake.
+
+Player is resolved from --player-id, --agent, or the persisted default (in
+that order), the same fallback chain the rest of the CLI uses.
+
+Examples:
+  spacetraders captain events list --agent TORWIND
+  spacetraders captain events ack --agent TORWIND --all`,
 	}
 
 	cmd.AddCommand(newCaptainEventsListCommand())

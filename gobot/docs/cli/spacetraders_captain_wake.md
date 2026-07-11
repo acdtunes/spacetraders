@@ -2,6 +2,25 @@
 
 Inspect or declare the captain's wake policy
 
+### Synopsis
+
+Inspect or declare when the supervisor wakes the captain outside its default
+heartbeat cadence (spec: sp-sk68 wake model).
+
+"wake set" declares the standing policy — the next scheduled wake, credit
+thresholds that force a wake, and which event types interrupt immediately —
+with each call fully replacing the prior policy. "wake show" prints the
+currently declared policy (or the defaults if none). "wake watch" arms
+one-shot wake watches on a specific ship arrival or container terminal state,
+which fire once and auto-disarm independently of the standing policy.
+
+A declaration takes effect on the very next supervisor poll — no restart
+required.
+
+Examples:
+  spacetraders captain wake set --next-wake-at +3h
+  spacetraders captain wake show
+
 ### Options
 
 ```

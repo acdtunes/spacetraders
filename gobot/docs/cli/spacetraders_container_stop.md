@@ -2,6 +2,14 @@
 
 Stop a running container
 
+### Synopsis
+
+Ask the daemon to stop a running background container by ID, printing the
+resulting status (e.g. STOPPING or STOPPED) and a short message. Take the ID
+from the CONTAINER ID column of "container list".
+
+Reads and mutates live daemon state, so the daemon must be running.
+
 ```
 spacetraders container stop <container-id> [flags]
 ```

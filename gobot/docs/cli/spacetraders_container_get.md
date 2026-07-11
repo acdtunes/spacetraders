@@ -2,6 +2,16 @@
 
 Get detailed container information
 
+### Synopsis
+
+Show the full detail record for a single background container: its type,
+status, owning player, current and max iteration counts, restart count,
+creation and last-update timestamps, and any stored metadata.
+
+Where "container list" prints one row per container, this drills into one
+container by ID (the value shown in the list's CONTAINER ID column). Reads
+live daemon state, so the daemon must be running.
+
 ```
 spacetraders container get <container-id> [flags]
 ```
