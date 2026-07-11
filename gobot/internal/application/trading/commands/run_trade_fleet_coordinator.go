@@ -62,6 +62,21 @@ const (
 	// short real trade leg from duration alone. A missed escalation just costs one more
 	// base-cooldown cycle before the next fast-fail exit catches it.
 	minProductiveTourDuration = 90 * time.Second
+
+	// defaultMassParkWindowSeconds and defaultMassParkMinHulls define the restart-induced
+	// mass-park signature the sp-1pli backoff must NOT read as thin market depth (sp-nkci).
+	// A daemon blip/restart force-parks the whole trade fleet in one narrow window; every
+	// one of those short synchronized exits looks like an unproductive fast-fail, so the
+	// backoff would double every hull's cooldown at once and idle the fleet in lockstep
+	// (~12min observed). Organic thin-depth is the opposite shape — it parks ONE hull at a
+	// time, when ITS own market dies (the lxwn rich->tapped->rich cycle), spread over
+	// minutes. So a park is treated as a restart signature (and exempted from the backoff)
+	// only when at least defaultMassParkMinHulls idle hulls released within
+	// defaultMassParkWindowSeconds of each other. 120s comfortably spans a restart's
+	// force-release sweep; 4 hulls is well above any organic 1-2-hull coincidence yet far
+	// below the ~10-heavy fleet a blip parks at once. Both are config knobs (RULINGS #5).
+	defaultMassParkWindowSeconds = 120
+	defaultMassParkMinHulls      = 4
 )
 
 // RunTradeFleetCoordinatorCommand launches the standing trade-fleet coordinator for
@@ -113,6 +128,20 @@ type RunTradeFleetCoordinatorCommand struct {
 	// <=0 uses defaultRelaunchBackoffMaxSeconds. See relaunchBackoffMaxDuration and the
 	// handler's hullBackoff/cooldownFor for the escalation mechanism itself.
 	RelaunchBackoffMaxSecs int
+
+	// sp-nkci mass-park exemption knobs (RULINGS #5, live-by-default). A daemon
+	// blip/restart force-parks the whole trade fleet in one window; sp-1pli must not
+	// misread that synchronized park as fleet-wide thin depth and ramp every hull's
+	// cooldown in lockstep. See detectMassPark / cooldownFor.
+	//
+	// MassParkExemptDisabled is the kill switch — false (default) leaves the exemption ON.
+	MassParkExemptDisabled bool
+	// MassParkWindowSecs is the co-park window that marks a synchronized restart park;
+	// <=0 uses defaultMassParkWindowSeconds.
+	MassParkWindowSecs int
+	// MassParkMinHulls is how many idle hulls must have released within the window to call
+	// it a mass-park; <=0 uses defaultMassParkMinHulls.
+	MassParkMinHulls int
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -323,6 +352,15 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	now := h.clock.Now()
 	launched := 0
 
+	// sp-nkci: a daemon blip parks the whole fleet in one window; those synchronized parks
+	// are a restart signature, not thin depth, so exempt them from the sp-1pli backoff
+	// (below) rather than ramp every hull in lockstep. Live by default (RULINGS #5); the
+	// captain can disable it or retune the window/threshold via config.
+	var massParkExempt map[string]bool
+	if !cmd.MassParkExemptDisabled {
+		massParkExempt = detectMassPark(idle, cmd.massParkWindow(), cmd.massParkMinHulls())
+	}
+
 	for _, ship := range idle {
 		if maxConcurrent > 0 && runningTours >= maxConcurrent {
 			logger.Log("INFO", fmt.Sprintf(
@@ -336,8 +374,10 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		}
 
 		// cooldown is BASE unless sp-1pli's adaptive backoff has escalated this
-		// specific hull past a run of unproductive exits — see cooldownFor.
-		cooldown := h.cooldownFor(ship, baseCooldown, backoffMax, logger)
+		// specific hull past a run of unproductive exits — see cooldownFor. A hull whose
+		// park is part of a restart-induced mass-park (sp-nkci) is exempt from that
+		// escalation, so the whole fleet does not ramp in lockstep after a daemon blip.
+		cooldown := h.cooldownFor(ship, baseCooldown, backoffMax, massParkExempt[ship.ShipSymbol()], logger)
 
 		if remaining := cooldownRemaining(ship, now, cooldown); remaining > 0 {
 			logger.Log("INFO", fmt.Sprintf(
@@ -466,6 +506,62 @@ func cooldownRemaining(ship *navigation.Ship, now time.Time, cooldown time.Durat
 	return cooldown - elapsed
 }
 
+// detectMassPark returns the set of idle hull symbols whose park is part of a
+// restart-induced mass-park (sp-nkci): at least minHulls idle hulls released within
+// `window` of each other. A daemon blip/restart force-parks the whole trade fleet in one
+// narrow window, and that synchronized park must NOT be fed to the sp-1pli thin-depth
+// backoff — organic thin-depth parks a hull at a time (when ITS market dies), so a
+// tight cluster of many simultaneous parks is a restart signature, not a depth signal.
+// An empty set (no cluster, or fewer than minHulls idle hulls) means nothing is exempt,
+// so the backoff behaves exactly as before for the spread-out single-hull case.
+func detectMassPark(idle []*navigation.Ship, window time.Duration, minHulls int) map[string]bool {
+	exempt := make(map[string]bool)
+	if minHulls <= 0 || len(idle) < minHulls {
+		return exempt
+	}
+
+	// Only hulls with a real release anchor can be part of a park cluster (a never-toured
+	// hull has no releasedAt and is not adaptive anyway — cooldownFor short-circuits it).
+	type park struct {
+		symbol string
+		at     time.Time
+	}
+	parks := make([]park, 0, len(idle))
+	for _, ship := range idle {
+		assignment := ship.Assignment()
+		if assignment == nil || assignment.ReleasedAt() == nil {
+			continue
+		}
+		parks = append(parks, park{symbol: ship.ShipSymbol(), at: *assignment.ReleasedAt()})
+	}
+	if len(parks) < minHulls {
+		return exempt
+	}
+
+	// A hull is in a mass-park when at least minHulls parks (including itself) fall within
+	// `window` of its own release. O(n^2) over the fleet's idle hulls (tens) — trivial.
+	for i := range parks {
+		coincident := 0
+		for j := range parks {
+			if absDuration(parks[i].at.Sub(parks[j].at)) <= window {
+				coincident++
+			}
+		}
+		if coincident >= minHulls {
+			exempt[parks[i].symbol] = true
+		}
+	}
+	return exempt
+}
+
+// absDuration returns the absolute value of a duration.
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
 // hullBackoff is the adaptive per-hull relaunch-cooldown state sp-1pli tracks in
 // memory (RunTradeFleetCoordinatorHandler.backoff). cooldown starts at the base and
 // only ever changes through cooldownFor: doubled (clamped to the configured max) on a
@@ -493,7 +589,7 @@ type hullBackoff struct {
 // escalation (never a reset) logs one INFO line — the bead's explicit ask, and the
 // only log this method emits, so an idle hull merely waiting out an already-scored
 // cooldown across many ticks stays silent.
-func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, base, max time.Duration, logger common.ContainerLogger) time.Duration {
+func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, base, max time.Duration, massParkExempt bool, logger common.ContainerLogger) time.Duration {
 	assignment := ship.Assignment()
 	if assignment == nil || assignment.ReleasedAt() == nil {
 		return base // never toured — nothing to score
@@ -510,6 +606,24 @@ func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, bas
 		return bo.cooldown // this exit was already scored on a prior tick
 	}
 	bo.scoredRelease = releasedAt
+
+	// sp-nkci: a restart-induced mass-park (many hulls force-parked in one window) is not
+	// a thin-depth signal — do NOT feed it to the adaptive backoff. Mark the release
+	// scored (so the same park is never re-scored as unproductive on a later tick, once
+	// some hulls relaunch and the cluster dissipates), but leave the hull's cooldown and
+	// streak untouched: the synchronized park says nothing about market depth, so it
+	// neither escalates nor resets. One INFO line (guarded by scoredRelease, so once per
+	// park) records why the fleet did not ramp after a restart.
+	if massParkExempt {
+		logger.Log("INFO", fmt.Sprintf(
+			"Trade hull %s parked in a fleet-wide mass-park window — exempt from sp-1pli adaptive backoff (sp-nkci), cooldown held at %s",
+			ship.ShipSymbol(), bo.cooldown.Truncate(time.Second)), map[string]interface{}{
+			"action":        "trade_fleet_masspark_exempt",
+			"ship_symbol":   ship.ShipSymbol(),
+			"cooldown_secs": int(bo.cooldown.Seconds()),
+		})
+		return bo.cooldown
+	}
 
 	if releasedAt.Sub(assignment.AssignedAt()) >= minProductiveTourDuration {
 		bo.consecutiveUnproductive = 0
@@ -570,6 +684,25 @@ func (c *RunTradeFleetCoordinatorCommand) relaunchBackoffMaxDuration() time.Dura
 		secs = defaultRelaunchBackoffMaxSeconds
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// massParkWindow resolves the mass-park co-park window (sp-nkci), applying the default
+// when unset.
+func (c *RunTradeFleetCoordinatorCommand) massParkWindow() time.Duration {
+	secs := c.MassParkWindowSecs
+	if secs <= 0 {
+		secs = defaultMassParkWindowSeconds
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// massParkMinHulls resolves the mass-park hull threshold (sp-nkci), applying the default
+// when unset.
+func (c *RunTradeFleetCoordinatorCommand) massParkMinHulls() int {
+	if c.MassParkMinHulls <= 0 {
+		return defaultMassParkMinHulls
+	}
+	return c.MassParkMinHulls
 }
 
 // maxConcurrentLabel renders the concurrency cap for the start log — "unlimited" for

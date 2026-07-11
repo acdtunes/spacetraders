@@ -62,6 +62,27 @@ type TradeFleetConfig struct {
 	// self-healing trade-off (see the handler's hullBackoff doc).
 	RelaunchBackoffMaxMinutes int `mapstructure:"relaunch_backoff_max_minutes"`
 
+	// MassParkExemptDisabled turns OFF the sp-nkci restart-mass-park exemption. When a daemon
+	// blip/restart force-parks the whole trade fleet in one window, the sp-1pli adaptive backoff
+	// would misread that synchronized park as fleet-wide thin depth and ramp every hull's cooldown
+	// to ~12min in lockstep (~fleet-wide idle for 15-40min after every restart). The exemption
+	// treats a synchronized mass-park as non-signal so it does NOT feed the backoff. Live by
+	// default (a bare bool: absent/false = exemption ON) — set true only to restore the old ramp.
+	MassParkExemptDisabled bool `mapstructure:"masspark_exempt_disabled"`
+
+	// MassParkWindowSeconds is how close together (sp-nkci) idle hull releases must be to count as
+	// one synchronized mass-park. 0/absent → the coordinator default (120s), which comfortably
+	// spans a restart's force-release sweep. Widen it if a slow restart parks the fleet over a
+	// longer window. Config, not a constant (RULINGS #5) — retuned by editing config.yaml +
+	// restarting the daemon, no redeploy.
+	MassParkWindowSeconds int `mapstructure:"masspark_window_seconds"`
+
+	// MassParkMinHulls is how many idle hulls must have released within MassParkWindowSeconds of
+	// each other before the park is treated as a restart mass-park (sp-nkci) rather than organic
+	// thin-depth. 0/absent → the coordinator default (4): well above any organic 1-2-hull
+	// coincidence, well below the ~10-heavy fleet a blip parks at once. Config (RULINGS #5).
+	MassParkMinHulls int `mapstructure:"masspark_min_hulls"`
+
 	// StrandedConsecutiveThreshold is the sp-686e stranded-hull detector threshold: how many
 	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
 	// inaccessible — the TORWIND-2C shape, where both discovery paths return empty so the hull

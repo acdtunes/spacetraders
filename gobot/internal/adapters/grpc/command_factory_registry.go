@@ -561,6 +561,12 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// sp-1pli: minutes on config, seconds on the command (matches CooldownSecs) — converted
 		// here, the one crossing point, so every downstream read is uniformly in seconds.
 		RelaunchBackoffMaxSecs: cfg.OptionalInt("trade_fleet_relaunch_backoff_max_minutes", 0) * 60,
+		// sp-nkci: the restart-mass-park exemption is live by default — an absent disable key
+		// reads as false (exemption ON), like Enabled. Window/threshold defer to the
+		// coordinator's own defaults (120s / 4 hulls) when unset.
+		MassParkExemptDisabled: cfg.OptionalBool("trade_fleet_masspark_exempt_disabled"),
+		MassParkWindowSecs:     cfg.OptionalInt("trade_fleet_masspark_window_seconds", 0),
+		MassParkMinHulls:       cfg.OptionalInt("trade_fleet_masspark_min_hulls", 0),
 	}
 }
 

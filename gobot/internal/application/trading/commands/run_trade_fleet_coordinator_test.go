@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -564,4 +565,86 @@ func TestTradeFleetBackoff_MaxClamp_HonorsConfiguredCeiling(t *testing.T) {
 	require.Equal(t, 1, launched2, "500s clears the clamped 400s ceiling but would not clear an unclamped 720s")
 	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 6m40s after 2 consecutive"),
 		"6m40s = 400s, the configured ceiling — not 12m0s (720s), what an unclamped doubling would produce")
+}
+
+// ---- sp-nkci: restart-induced mass-park is non-signal -----------------------
+//
+// A daemon blip/restart force-parks the whole trade fleet in one narrow window. The
+// sp-1pli adaptive backoff, reading each of those short synchronized exits as an
+// unproductive fast-fail, would DOUBLE every hull's cooldown at once → the whole fleet
+// idles in lockstep (~12min observed). A synchronized mass-park says nothing about
+// market depth (organic thin-depth parks a hull at a time, when ITS market dies) — it
+// is a restart signature, so it must be exempt from the backoff. These tests pin that a
+// mass-park does NOT ramp the fleet, that the exemption has a config kill switch (which
+// restores the old ramp so the sp-1pli backoff itself is proven intact), and that a
+// SMALL simultaneous park (below the mass-park threshold) still rides the normal
+// per-hull backoff — the spread-out single-hull fast-fail sp-1pli exists for is
+// untouched.
+
+// massParkFleet builds n trade hulls that each ran a SHORT (20s, unproductive) tour and
+// were all released at the SAME instant (releaseSecs) — the daemon-blip mass-park shape.
+func massParkFleet(t *testing.T, n, releaseSecs int) []*navigation.Ship {
+	t.Helper()
+	ships := make([]*navigation.Ship, 0, n)
+	for i := 0; i < n; i++ {
+		symbol := fmt.Sprintf("TORWIND-%02d", i)
+		ships = append(ships, parkedTradeHullGap(t, symbol, releaseSecs-20, releaseSecs, "margins_died_both_systems"))
+	}
+	return ships
+}
+
+// Five hulls force-parked in the same window (each a 20s unproductive exit) are exempt
+// from the adaptive backoff: their cooldown stays at BASE, so at 200s elapsed (>= 180s
+// base, < 360s the escalation would produce) all five relaunch instead of idling in
+// lockstep. No escalation is logged; the mass-park exemption is.
+func TestTradeFleetBackoff_MassPark_ExemptFromLockstepRamp(t *testing.T) {
+	repo := &fakeTradeShipRepo{ships: massParkFleet(t, 5, 20)}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	h := newTradeHandler(repo, launcher, clockAt(220)) // 220-20 = 200s since the synchronized park
+
+	launched, err := h.reconcileOnce(tradeCtx(logger), tradeCmd())
+	require.NoError(t, err)
+	require.Equal(t, 5, launched, "a synchronized mass-park must NOT ramp the fleet — all relaunch at base cooldown")
+	require.False(t, logger.loggedContaining("cooldown escalating"),
+		"a restart mass-park is non-signal: it must not feed the thin-depth backoff")
+	require.True(t, logger.loggedContaining("mass-park", "exempt"),
+		"the exemption is logged so the captain can see why cooldowns did not ramp after a restart")
+}
+
+// The exemption is a live-by-default knob with a kill switch (RULINGS #5). Disabling it
+// restores the pre-fix behavior — the same mass-park ramps every hull to 360s, so at
+// 200s elapsed all five are held in lockstep. This both documents the defect and proves
+// the underlying sp-1pli backoff still fires when the exemption is off.
+func TestTradeFleetBackoff_MassPark_ExemptDisabled_RampsInLockstep(t *testing.T) {
+	repo := &fakeTradeShipRepo{ships: massParkFleet(t, 5, 20)}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	cmd := tradeCmd()
+	cmd.MassParkExemptDisabled = true
+	h := newTradeHandler(repo, launcher, clockAt(220))
+
+	launched, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 0, launched, "with the exemption off the whole fleet ramps to 360s and idles in lockstep at 200s elapsed")
+	require.True(t, logger.loggedContaining("cooldown escalating"),
+		"the sp-1pli backoff still fires for every hull when the mass-park exemption is disabled")
+}
+
+// A park below the mass-park threshold (two hulls) is NOT a restart signature — it still
+// rides the normal per-hull sp-1pli backoff. This guards against over-exemption: the
+// spread-out single/low-count fast-fail the backoff exists for must be untouched. Both
+// hulls ramp to 360s and are held at 200s elapsed.
+func TestTradeFleetBackoff_SmallSimultaneousPark_NotExempt_StillRamps(t *testing.T) {
+	repo := &fakeTradeShipRepo{ships: massParkFleet(t, 2, 20)}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	h := newTradeHandler(repo, launcher, clockAt(220))
+
+	launched, err := h.reconcileOnce(tradeCtx(logger), tradeCmd())
+	require.NoError(t, err)
+	require.Equal(t, 0, launched, "a below-threshold park is organic thin-depth, not a mass-park — the backoff still ramps it")
+	require.True(t, logger.loggedContaining("cooldown escalating"),
+		"the per-hull sp-1pli backoff must remain intact for spread-out / low-count fast-fails")
+	require.False(t, logger.loggedContaining("mass-park", "exempt"))
 }

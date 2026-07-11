@@ -109,6 +109,9 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_reserve",
 	"trade_fleet_reserve_treasury_pct",
 	"trade_fleet_relaunch_backoff_max_minutes",
+	"trade_fleet_masspark_exempt_disabled",
+	"trade_fleet_masspark_window_seconds",
+	"trade_fleet_masspark_min_hulls",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -175,5 +178,16 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	// sp-1pli: unset defers to the coordinator's own default ceiling (30 min).
 	if tf.RelaunchBackoffMaxMinutes != 0 {
 		config["trade_fleet_relaunch_backoff_max_minutes"] = tf.RelaunchBackoffMaxMinutes
+	}
+	// sp-nkci: the restart-mass-park exemption is live by default — only write the disable
+	// flag when the captain actually set it, so an absent key reads as ON (like Enabled).
+	if tf.MassParkExemptDisabled {
+		config["trade_fleet_masspark_exempt_disabled"] = true
+	}
+	if tf.MassParkWindowSeconds != 0 {
+		config["trade_fleet_masspark_window_seconds"] = tf.MassParkWindowSeconds
+	}
+	if tf.MassParkMinHulls != 0 {
+		config["trade_fleet_masspark_min_hulls"] = tf.MassParkMinHulls
 	}
 }
