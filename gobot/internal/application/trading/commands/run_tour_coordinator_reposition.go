@@ -239,25 +239,62 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	return true, nil
 }
 
-// buildRepositionCandidates assembles the reposition candidate set: every system one
-// jump-gate hop away from currentSystem (jump-reachable via the SAME neighbor-scan the
-// tour graph uses) that has cached market data, EXCLUDING the current (dead) system. Each
-// candidate carries a representative market waypoint (the source of its best cached lane,
-// or its first cached market) and a cheap pre-rank score (that lane's capped spread), and
-// the set is returned ordered best-score-first so the caller can bound the real planner
-// calls to the top-K. Fail-open throughout: an unreadable neighbor simply contributes no
-// candidate, never an aborted reposition.
+// repositionNeighborEdge is one directly-gated neighbor of the origin system in the reposition
+// candidate scan, carrying the gate's build state so an under-construction neighbor is rejected
+// with a named reason (sp-1ki5 #3) rather than pre-flighted into a hop-time crash.
+type repositionNeighborEdge struct {
+	system            string
+	underConstruction bool
+}
+
+// neighborRejection is one directly-gated neighbor the reposition scan considered but did NOT
+// turn into a candidate, with the reason (unbuilt / no-cached-market / stale-data / …). It is the
+// per-neighbor detail the empty-discovery log names so a "no candidates" verdict is
+// self-diagnosing and never again costs a canary flight to explain (sp-1ki5 #3).
+type neighborRejection struct {
+	system string
+	reason string
+}
+
+// buildRepositionCandidates assembles the reposition candidate set: every system one jump-gate
+// hop away from currentSystem that has fresh cached market data, EXCLUDING the current (dead)
+// system. Each candidate carries a representative market waypoint (the source of its best cached
+// lane, or its first cached market) and a cheap pre-rank score (that lane's capped spread), and
+// the set is returned ordered best-score-first so the caller can bound the real planner calls to
+// the top-K.
+//
+// Neighbor resolution is DURABLE-FIRST (sp-1ki5): it reads the persisted era-scoped gate_edges
+// adjacency (h.legs.repositionNeighbors), which answers regardless of the origin's charting/ship
+// state, instead of depending solely on the live GetJumpGate scan the tour graph uses — that live
+// call refuses an uncharted origin gate with 4001 and fails open to nil, which is exactly how
+// discovery returned ZERO candidates from X1-DP51 while its direct neighbor X1-GQ92 sat
+// 1-min-fresh. Fail-open throughout: an unreadable neighbor simply contributes no candidate, never
+// an aborted reposition. An EMPTY result logs WHY per rejected neighbor (requirement #3).
 func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string) []repositionCandidate {
 	now := h.clock.Now()
+	neighbors, originReason := h.legs.repositionNeighbors(ctx, currentSystem, cmd.PlayerID)
 	seen := map[string]bool{currentSystem: true} // exclude the current (dead) ground
 	var candidates []repositionCandidate
-	for _, sys := range h.legs.neighborSystems(ctx, currentSystem, cmd.PlayerID) {
+	var rejections []neighborRejection
+	for _, nb := range neighbors {
+		sys := nb.system
 		if sys == "" || seen[sys] {
 			continue
 		}
 		seen[sys] = true
+		// sp-8qhu/sp-1ki5: a neighbor whose gate is still building cannot be a candidate — the jump
+		// would fail at hop time. Name it "unbuilt" in the empty-discovery log, never a silent drop.
+		if nb.underConstruction {
+			rejections = append(rejections, neighborRejection{system: sys, reason: "unbuilt"})
+			continue
+		}
 		listings, err := h.legs.collectSystemListings(ctx, sys, cmd.PlayerID)
-		if err != nil || len(listings) == 0 {
+		if err != nil {
+			rejections = append(rejections, neighborRejection{system: sys, reason: "market-read-error"})
+			continue
+		}
+		if len(listings) == 0 {
+			rejections = append(rejections, neighborRejection{system: sys, reason: "no-cached-market"})
 			continue // no cached market data → not a candidate (requirement: cached-data systems only)
 		}
 		// sp-lxwn: pre-rank only on FRESH listings — the same maxListingAge cap the solver's
@@ -277,10 +314,12 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 			metrics.RecordTourLanesStaleExcluded(cmd.PlayerID, sys, dropped)
 		}
 		if len(fresh) == 0 {
+			rejections = append(rejections, neighborRejection{system: sys, reason: "stale-data"})
 			continue // every cached row is stale → the solver would see no fresh data here either
 		}
 		waypoint, score := bestInSystemLane(fresh)
 		if waypoint == "" {
+			rejections = append(rejections, neighborRejection{system: sys, reason: "no-waypoint"})
 			continue
 		}
 		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score})
@@ -293,7 +332,41 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 		}
 		return candidates[i].system < candidates[j].system
 	})
+	// sp-1ki5 #3: an empty discovery must name WHY — the origin-level reason when no gated
+	// neighbor resolved at all (the X1-DP51 shape), or the per-neighbor rejection reasons when
+	// neighbors were found but each fell out. Emitted ONLY on empty; a populated scan logs its
+	// ranking table downstream (logRepositionRanking).
+	if len(candidates) == 0 {
+		logRepositionDiscoveryEmpty(common.LoggerFromContext(ctx), cmd.ShipSymbol, currentSystem, neighbors, rejections, originReason)
+	}
 	return candidates
+}
+
+// logRepositionDiscoveryEmpty explains WHY the reposition candidate scan came up empty, so a "no
+// candidates" verdict is self-diagnosing (sp-1ki5 #3 — the pre-fix empty cost a canary flight to
+// diagnose). It names either the origin-level reason (no gated neighbor reachable from the origin —
+// the X1-DP51 shape, where the live jump-gate API refused the uncharted origin gate and no durable
+// edge answered) or, when neighbors WERE resolved but each fell out, the per-neighbor rejection
+// reason (unbuilt / no-cached-market / stale-data). Put in the MESSAGE TEXT, which `container logs`
+// keeps even though it drops the structured metadata map (the sp-149h/sp-iqyq renderer defect).
+func logRepositionDiscoveryEmpty(logger common.ContainerLogger, shipSymbol, originSystem string, neighbors []repositionNeighborEdge, rejections []neighborRejection, originReason string) {
+	if len(neighbors) == 0 {
+		reason := originReason
+		if reason == "" {
+			reason = "no-neighbors"
+		}
+		logger.Log("INFO", fmt.Sprintf("Reposition discovery empty from %s - no directly-gated neighbor resolved (%s); durable gate_edges adjacency is origin-independent, so this is a genuine no-adjacency, not an uncharted-origin-gate live-API refusal", originSystem, reason), map[string]interface{}{
+			"ship_symbol": shipSymbol, "origin_system": originSystem, "origin_reason": reason,
+		})
+		return
+	}
+	parts := make([]string, 0, len(rejections))
+	for _, r := range rejections {
+		parts = append(parts, fmt.Sprintf("%s(%s)", r.system, r.reason))
+	}
+	logger.Log("INFO", fmt.Sprintf("Reposition discovery empty from %s - %d directly-gated neighbor(s) resolved but none became a candidate: %s", originSystem, len(neighbors), strings.Join(parts, ", ")), map[string]interface{}{
+		"ship_symbol": shipSymbol, "origin_system": originSystem, "neighbors_resolved": len(neighbors), "rejected": len(rejections),
+	})
 }
 
 // bestInSystemLane ranks a candidate system's cached in-system arbitrage lanes and returns

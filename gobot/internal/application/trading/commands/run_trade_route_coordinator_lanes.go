@@ -183,6 +183,57 @@ func (h *RunTradeRouteCoordinatorHandler) neighborSystems(ctx context.Context, s
 	return conn.ConnectedSystems
 }
 
+// repositionNeighbors resolves originSystem's directly-gated neighbors for the sp-zhii
+// reposition candidate scan, DURABLE-FIRST (sp-1ki5). The persisted era-scoped gate_edges
+// adjacency (via the wired gate graph) is origin-INDEPENDENT: it answers even when the origin's
+// own jump gate is uncharted or has no ship present — the case where the live GetJumpGate API
+// refuses with 4001 and neighborSystems fails open to nil, which is exactly how discovery
+// returned ZERO candidates from X1-DP51 while its direct neighbor X1-GQ92 sat 1-min-fresh (canary
+// st-wisp-3i8ls). The live jump-gate scan is a fallback only: used when no durable graph is wired
+// (most tests) or the durable read itself errors. Each returned edge carries its build state so
+// an under-construction gate is rejected with a named reason, never silently pre-flighted into a
+// hop-time crash. reason is a non-empty origin-level diagnostic ONLY when the result is empty
+// (no-durable-adjacency / gate-inaccessible / no-neighbors), so an empty discovery names WHY.
+func (h *RunTradeRouteCoordinatorHandler) repositionNeighbors(ctx context.Context, originSystem string, playerID int) ([]repositionNeighborEdge, string) {
+	if h.gateGraph != nil {
+		edges, err := h.gateGraph.Connections(ctx, originSystem, playerID)
+		if err == nil {
+			if len(edges) == 0 {
+				return nil, "no-durable-adjacency" // origin has no gated neighbor in the open era
+			}
+			out := make([]repositionNeighborEdge, 0, len(edges))
+			for _, e := range edges {
+				out = append(out, repositionNeighborEdge{system: e.ConnectedSystem, underConstruction: e.UnderConstruction})
+			}
+			return out, ""
+		}
+		// The durable read failed (a genuine cache miss+stale that fell through to the live gate
+		// fetch, itself refused for an uncharted origin gate). Fall back to the live scan — it
+		// usually hits the same refusal, but keeps one code path for a charted origin whose cache
+		// merely expired, and unifies the nil-graph test harness below.
+		if live := h.neighborSystems(ctx, originSystem, playerID); len(live) > 0 {
+			return liveNeighborEdges(live), ""
+		}
+		return nil, "gate-inaccessible: " + sanitizeReasonToken(err.Error())
+	}
+	if live := h.neighborSystems(ctx, originSystem, playerID); len(live) > 0 {
+		return liveNeighborEdges(live), ""
+	}
+	return nil, "no-neighbors"
+}
+
+// liveNeighborEdges adapts the live jump-gate scan's bare system list into neighbor edges. The
+// live connections carry no build state, so each is treated as built here; the pre-buy gate
+// graph's own under-construction guard still protects the actual jump, and any unbuilt neighbor
+// that reaches the pre-flight is caught downstream, not silently flown into.
+func liveNeighborEdges(systems []string) []repositionNeighborEdge {
+	out := make([]repositionNeighborEdge, 0, len(systems))
+	for _, s := range systems {
+		out = append(out, repositionNeighborEdge{system: s})
+	}
+	return out
+}
+
 // observeGood re-reads a single good's live cached row at a waypoint so the loop
 // can watch the destination bid decay as the importer fills.
 func (h *RunTradeRouteCoordinatorHandler) observeGood(

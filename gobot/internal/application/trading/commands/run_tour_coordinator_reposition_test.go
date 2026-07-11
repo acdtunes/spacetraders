@@ -6,8 +6,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // repositionFixture is a two-system world for the sp-zhii margins-death reposition: the
@@ -143,6 +145,99 @@ func TestTour_MarginsDeath_RanksAndRepositionsToFreshGround(t *testing.T) {
 	}
 	if shared.ExtractSystemSymbol(fx.location) != "X1-S2" {
 		t.Fatalf("the hull must end at the fresh ground X1-S2, got %q", fx.location)
+	}
+}
+
+// sp-1ki5 REPLAY (the X1-DP51 shape). Reposition discovery must find a fresh, direct-gate, BUILT
+// neighbor even when the ORIGIN's own jump gate is uncharted or has no ship present — the live
+// GetJumpGate API refuses that origin with 4001 "waypoint not accessible", returning ZERO
+// neighbors, while the durable era-scoped gate_edges adjacency answers regardless of origin.
+// Field (canary st-wisp-3i8ls): a hull 3-struck at X1-DP51, then discovery found NO candidates
+// while its direct neighbor X1-GQ92 sat 1-min-fresh; DP51's uncharted origin gate had returned an
+// empty live scan. Here fx.neighbors is EMPTY for the home system (the exact 4001 shape) yet the
+// wired durable graph reports home->fresh-ground built, so the reposition still fires. The
+// working-origin case (live scan answers) stays covered by
+// TestTour_MarginsDeath_RanksAndRepositionsToFreshGround, which wires NO gate graph and remains
+// green — proving the durable-first path does not disturb charted origins.
+func TestTour_MarginsDeath_DiscoversDurableNeighbor_WhenLiveGateApiRefusesOrigin(t *testing.T) {
+	fx := repositionFixture()
+	// The DP51 discriminator: the LIVE jump-gate scan returns nothing from the origin (uncharted
+	// gate / no ship present -> API 4001). Pre-sp-1ki5 this alone zeroed the candidate set.
+	fx.neighbors = map[string][]string{}
+
+	homeCalls, s2Calls := 0, 0
+	planner := &tourFakeRoutingClient{planFn: func(ship routing.TourShipState) *routing.TourPlan {
+		switch ship.CurrentSystem {
+		case "X1-S1":
+			homeCalls++
+			if homeCalls == 1 {
+				return roundTripS1() // one productive tour, then margins die (3-strike)
+			}
+			return infeasibleTour()
+		case "X1-S2":
+			s2Calls++
+			if s2Calls <= 2 {
+				return roundTripS2() // pre-flight (clears floor) + first re-plan (productive)
+			}
+			return infeasibleTour()
+		}
+		return infeasibleTour()
+	}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	// The durable era-scoped gate_edges adjacency (origin-independent): home X1-S1 -> fresh X1-S2,
+	// gate built. This is the DP51->GQ92 (era 2, under_construction=f) row the live API could not
+	// surface from DP51's uncharted origin gate. `edges` drives discovery (Connections); `path`
+	// is the same direct edge resolved for the physical reposition hop (jumpPath -> Path), which
+	// in production also reads the durable cache, never DP51's refused live gate.
+	h.SetGateGraph(&fakeGateGraph{
+		edges: map[string][]system.GateEdge{
+			"X1-S1": {{ConnectedSystem: "X1-S2", GateWaypoint: "X1-S2-GATE", UnderConstruction: false}},
+		},
+		path: []string{"X1-S1", "X1-S2"},
+	})
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-DP51", PlayerID: 1, ContainerID: "ctr-dp51", Iterations: -1,
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("durable-neighbor reposition run returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if r.Repositions != 1 {
+		t.Fatalf("the durable gate_edges neighbor must be discovered and repositioned to DESPITE the empty live gate scan, got %d repositions (%+v)", r.Repositions, r)
+	}
+	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
+		t.Fatalf("expected exactly one jump to the durable fresh ground X1-S2, got %v", fx.jumps)
+	}
+	if shared.ExtractSystemSymbol(fx.location) != "X1-S2" {
+		t.Fatalf("the hull must end at the durable fresh ground X1-S2, got %q", fx.location)
+	}
+}
+
+// sp-1ki5 #3: an EMPTY reposition discovery must name WHY per rejected neighbor, so a "no
+// candidates" verdict is self-diagnosing and never again costs a canary flight. Here the durable
+// graph reports one real neighbor whose gate is still UNDER CONSTRUCTION — it cannot be a
+// candidate (a jump would crash at hop time) — and the scan LOGS it as "unbuilt" instead of the
+// pre-fix silent empty.
+func TestReposition_EmptyDiscovery_LogsPerNeighborReason(t *testing.T) {
+	fx := repositionFixture()
+	fx.neighbors = map[string][]string{} // live scan empty (uncharted-origin shape)
+	h := newTourHandler(t, fx, &tourFakeRoutingClient{}, &tourFakeTelemetry{})
+	h.SetGateGraph(&fakeGateGraph{edges: map[string][]system.GateEdge{
+		"X1-S1": {{ConnectedSystem: "X1-S2", GateWaypoint: "X1-S2-GATE", UnderConstruction: true}},
+	}})
+
+	logger := &tradeCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cands := h.buildRepositionCandidates(ctx, &RunTourCoordinatorCommand{ShipSymbol: "TOUR-LOG", PlayerID: 1}, "X1-S1")
+
+	if len(cands) != 0 {
+		t.Fatalf("an under-construction neighbor must not become a candidate, got %d", len(cands))
+	}
+	if !logger.loggedContaining("X1-S2", "unbuilt") {
+		t.Fatalf("empty discovery must log the per-neighbor rejection reason 'unbuilt' for X1-S2, got:\n%s", strings.Join(logger.messages, "\n"))
 	}
 }
 

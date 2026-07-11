@@ -13,6 +13,7 @@ import (
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -497,6 +498,11 @@ func TestTravel_CrossSystem_AlreadyAtGate_SkipsDepartureHop(t *testing.T) {
 type fakeGateGraph struct {
 	path    []string
 	pathErr error
+	// edges is the canned durable adjacency for Connections (sp-1ki5): originSystem ->
+	// its neighbor edges. connErr, when set, makes Connections fail (the uncharted-origin
+	// live-gate refusal the durable read normally survives). Absent origin -> nil edges.
+	edges   map[string][]system.GateEdge
+	connErr error
 }
 
 func (f *fakeGateGraph) Path(ctx context.Context, from, to string, playerID int) ([]string, error) {
@@ -508,6 +514,13 @@ func (f *fakeGateGraph) Routable(ctx context.Context, from, to string, playerID 
 		return false, f.pathErr
 	}
 	return len(f.path) > 0, nil
+}
+
+func (f *fakeGateGraph) Connections(ctx context.Context, from string, playerID int) ([]system.GateEdge, error) {
+	if f.connErr != nil {
+		return nil, f.connErr
+	}
+	return f.edges[from], nil
 }
 
 // A THREE-jump destination (the incident: JP61 is KA42→PA3→UQ16→JP61, not one

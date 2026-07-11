@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -353,6 +354,14 @@ type RunTradeRouteCoordinatorHandler struct {
 type GateGraph interface {
 	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
+	// Connections returns fromSystem's directly-gated neighbor edges from the
+	// persisted era-scoped adjacency (fetch-through on a cache miss/stale). Unlike
+	// the live GetJumpGate scan, this durable read is origin-INDEPENDENT: it answers
+	// even when the origin's own gate is uncharted or has no ship present (the live
+	// API 4001 that returned zero reposition candidates from X1-DP51, sp-1ki5). Each
+	// edge carries its build state so an under-construction neighbor is rejected, not
+	// silently pre-flighted into a hop-time crash.
+	Connections(ctx context.Context, fromSystem string, playerID int) ([]system.GateEdge, error)
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. It does not own a

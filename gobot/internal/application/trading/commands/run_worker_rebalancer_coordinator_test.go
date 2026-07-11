@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // ---- fakes (rebalancer-scoped; the package's shared tradeCaptureLogger / clockAt /
@@ -147,6 +148,12 @@ func (g *fakeHopGraph) Path(_ context.Context, from, to string, _ int) ([]string
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil
+}
+
+// Connections is inert here (the rebalancer exercises multi-hop Path/Routable, not the
+// reposition neighbor scan) — it exists only to satisfy the GateGraph interface (sp-1ki5).
+func (g *fakeHopGraph) Connections(_ context.Context, _ string, _ int) ([]system.GateEdge, error) {
+	return nil, nil
 }
 
 // fakeRebalancerDaemonClient records the ferry worker lifecycle calls.
