@@ -1,6 +1,4 @@
-# Captain agent — pinned to claude-fable-5 per ADMIRAL POLICY (2026-07-06).
-# The "claude-fable" provider (defined in city.toml) inherits the builtin
-# "claude" preset (permission_mode, effort, resume, etc. all unchanged) and
-# appends --model claude-fable-5 via args_append. See city.toml for the
-# provider definition and why args_append (not option_defaults) is used.
-provider = "claude-fable"
+# Captain agent — pinned to claude-opus-4-8 (crew model policy, RULINGS #9).
+# The "claude-opus" provider (city.toml) inherits the builtin "claude" preset
+# and appends the exact model id via args_append.
+provider = "claude-opus"

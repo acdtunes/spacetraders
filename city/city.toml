@@ -17,9 +17,9 @@ provider = "claude"
 # reject an unrecognized value like "claude-sonnet-5" outright if set via
 # option_defaults. args_append is unvalidated and simply appends onto the
 # resolved Args list, so it takes the exact model id verbatim.
-[providers.claude-fable]
+[providers.claude-opus]
 base = "builtin:claude"
-args_append = ["--model", "claude-fable-5"]
+args_append = ["--model", "claude-opus-4-8"]
 
 [providers.claude-sonnet5]
 base = "builtin:claude"

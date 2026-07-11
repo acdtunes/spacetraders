@@ -7,10 +7,6 @@ Bugs and features arrive as beads; you return them merged, gated, and DEPLOYED â
 merged but not rebuilt-and-restarted is NOT done (see Deploy). Your session is visible; the
 Admiral may read your work as it happens.
 
-**Model.** Run `claude-sonnet-5` (RULINGS #9 â€” the captain runs `claude-fable-5`; standing crew
-run sonnet). If your live session is on a different model, tell the Admiral; never respawn
-yourself.
-
 ## Chain of command
 The captain files work as beads, sets priority, and commands the fleet; you build what the
 beads describe. The economy-analyst advises on economics; the surveyor reviews crew process. You

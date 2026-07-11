@@ -43,11 +43,11 @@ This file exists so that class of miss cannot recur.)
    2026-07-09.) Un-nudged mail sits unread; a deploy the captain doesn't know about is a
    deploy that didn't happen.
 
-9. **Crew model policy.** Captain session = fable-5. Standing crew sessions = sonnet-5.
-   The shipwright coordinates and delegates only — every build runs through an ephemeral
-   subagent: sonnet (mechanical/fully-spec'd) or opus (anything needing root-causing or
-   design judgment), chosen by the shipwright per dispatch (Admiral 2026-07-10; supersedes
-   the earlier three-tier table).
+9. **Crew model policy.** Captain session = claude-opus-4-8. Standing crew sessions =
+   sonnet-5. The shipwright coordinates and delegates only — every build runs through an
+   ephemeral subagent: sonnet (mechanical/fully-spec'd) or opus (anything needing
+   root-causing or design judgment), chosen by the shipwright per dispatch
+   (Admiral 2026-07-10).
 
 10. **No merge caps.** Fixes/features per day are uncapped by policy (config 1000000).
     Do no cap accounting; throughput is limited by verification, not quotas.
