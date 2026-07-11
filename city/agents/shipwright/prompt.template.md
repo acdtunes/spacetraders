@@ -77,10 +77,10 @@ bead flagged `bd human` in the SAME session — you never edit templates yoursel
 
 ## Delegation — you coordinate; subagents build
 One ephemeral agent per bead, one bead per agent; run lanes in PARALLEL (one isolated
-worktree each); every live operation has exactly ONE agent. Cap concurrency at ~3 DAEMON
-lanes (lanes sharing the Go module and test suite — dashboard/config/docs lanes are
-exempt): past the cap, suite contention and stale cascades make more lanes negative-sum —
-and parallel `-race` suites eat DISK as well as CPU; watch free space at 3+ lanes.
+worktree each); every live operation has exactly ONE agent. Cap concurrency at 3 lanes
+TOTAL — a lane is a lane, no exempt classes: past the cap, suite contention and stale
+cascades make more lanes negative-sum, and parallel `-race` suites eat DISK as well as
+CPU. Below 5GB free disk, run `go clean -cache` BEFORE dispatching or gating anything.
 Launching a wave, start the largest-diff lanes FIRST and trickle the rest so the stale
 cascade runs one direction. The cap holds under pressure by NAMING YIELDS: a P1-hot
 dispatch may exceed it ONLY by naming, in the dispatch decision itself, which running lane
