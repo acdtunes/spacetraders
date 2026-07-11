@@ -623,6 +623,33 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
 	}
 
+	// Register the standing factory-SITING coordinator (sp-vdld): the standing "brain" that
+	// automates factory discovery, placement, and capacity planning. Each slow tick it SCANs
+	// candidate (good,system) sites (export-site hard gate + in-system input eligibility +
+	// freshness), SCOREs them by branchPL × tour-alignment − competition − staleness, MAINTAINs
+	// the top-K portfolio (K = floor(haulers / workers_per_chain), C3), ACTs by launching missing
+	// chains THROUGH the guard stack (StartGoodsFactory iterations=-1, so the child runs 2dv4 +
+	// a5j7 + C2 + r5a6 on its own passes) and retiring fallen ones with hysteresis, then EMITs
+	// scout-demand for stale-but-promising sites on the captain proposal channel. It reuses the
+	// SAME resolver/locator/guard the goods-factory coordinator holds, so it prices chains exactly
+	// as the launch path does. LIVE BY DEFAULT (Admiral: no dark-shipping); every weight/cap
+	// resolves live from config.yaml [manufacturing.siting]. Standing coordinators are CLI/gRPC
+	// first-launched then recovery-adopted — registering the handler makes a launched or recovered
+	// container runnable, but nothing auto-starts on daemon boot.
+	// The concrete port adapters (scanner data source, chain projector via the ChainMarginGuard,
+	// portfolio controller over StartGoodsFactory/StopGoodsFactory, HAULER worker counter, and
+	// scout-demand emitter) are assembled inside grpc.NewSitingCoordinatorHandler from the SAME
+	// resolver/locator/repos the goods-factory path uses. The tour-alignment provider is left
+	// unset there for now (the C1 stock-draw signal has no persisted read path yet and no
+	// tour_leg_telemetry throughput reader exists), so scoring ranks on branchPL alone — the
+	// documented monotonic proxy — until that seam lands (sp-vdld).
+	sitingCoordinatorHandler := grpc.NewSitingCoordinatorHandler(
+		daemonServer, goodsResolver, goodsMarketLocator, marketRepo, marketRepoAdapter, shipRepo, captainEventRepo,
+	)
+	if err := mediator.RegisterHandler[*goodsCmd.RunSitingCoordinatorCommand](med, sitingCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register SitingCoordinator handler: %w", err)
+	}
+
 	// Trade-route coordinator (sp-zewt): a single-hull pure-arbitrage circuit that runs
 	// as a recovery-safe daemon container. Registered in the daemon mediator so its
 	// NavigateRouteCommand legs resolve to the RouteExecutor-backed handler (orbit →

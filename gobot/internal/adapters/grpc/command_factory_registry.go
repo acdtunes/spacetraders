@@ -368,6 +368,10 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
+		// siting_coordinator (sp-vdld): the standing factory-siting brain. Like
+		// trade_fleet/frontier it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		{CommandType: "siting_coordinator", build: buildSitingCoordinatorCommand},
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "warehouse", build: buildWarehouseCommand},
@@ -446,6 +450,14 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// coordinator with no redeploy.
 	if commandType == "goods_factory_coordinator" || commandType == "manufacturing_coordinator" {
 		s.resolveManufacturingConfig(config)
+	}
+	// sp-vdld: same live-config discipline for the siting coordinator. Its
+	// [manufacturing.siting] knobs are cleared and re-injected from the boot-loaded
+	// config.yaml on every build — creation and recovery alike — so a config edit +
+	// restart retunes a recovered coordinator and no persisted copy can shadow the live
+	// value.
+	if commandType == "siting_coordinator" {
+		s.resolveSitingConfig(config)
 	}
 	// sp-x8i5: same live-config discipline for the scouting subsystem's tour-start
 	// phase jitter ceiling. The [scouting] knob is cleared and re-injected from the
@@ -829,6 +841,36 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// The disable flag is the RULINGS #5 emergency off-switch.
 		InputRecoveryReattemptMinutes: cfg.OptionalInt("input_recovery_reattempt_minutes", 0),
 		AntiCycleDisabled:             cfg.OptionalBool("anti_cycle_disabled"),
+	}
+}
+
+// buildSitingCoordinatorCommand rebuilds the standing siting coordinator command (sp-vdld)
+// from a persisted launch config so a daemon restart re-adopts it. The [manufacturing.siting]
+// knobs are resolved LIVE from config.yaml just before this runs (resolveSitingConfig in
+// buildCommandForType), so the persisted siting_* keys are transient — the reads below see the
+// current config.yaml. Disabled is reconstructed as siting_disabled directly (absent = false =
+// ACTIVE), so an absent key boots the coordinator LIVE, preserving the default-ON intent across
+// a recovery from an old config that predates the key (Admiral: no dark-shipping).
+func buildSitingCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &goodsCmd.RunSitingCoordinatorCommand{
+		PlayerID:                playerID,
+		ContainerID:             cfg.RequiredNonEmptyString("container_id"),
+		AgentSymbol:             cfg.OptionalString("agent_symbol"),
+		Disabled:                cfg.OptionalBool("siting_disabled"),
+		DryRun:                  cfg.OptionalBool("siting_dry_run"),
+		TickIntervalSecs:        cfg.OptionalInt("siting_tick_secs", 0),
+		TopK:                    cfg.OptionalInt("siting_top_k", 0),
+		WorkersPerChain:         cfg.OptionalFloat("siting_workers_per_chain", 0),
+		FreshnessMaxSecs:        cfg.OptionalInt("siting_freshness_max_secs", 0),
+		EmitStalenessSecs:       cfg.OptionalInt("siting_emit_staleness_secs", 0),
+		WeightTourAlignment:     cfg.OptionalFloat("siting_weight_tour_alignment", 0),
+		WeightInputCompetition:  cfg.OptionalFloat("siting_weight_input_competition", 0),
+		WeightStaleness:         cfg.OptionalFloat("siting_weight_staleness", 0),
+		MaxChainsPerSystem:      cfg.OptionalInt("siting_max_chains_per_system", 0),
+		MaxChainsPerInputMarket: cfg.OptionalInt("siting_max_chains_per_input_market", 0),
+		RetireHysteresisTicks:   cfg.OptionalInt("siting_retire_hysteresis_ticks", 0),
+		EffectSelfcheckTicks:    cfg.OptionalInt("siting_effect_selfcheck_ticks", 0),
+		ScoutDemandCooldownSecs: cfg.OptionalInt("siting_scout_demand_cooldown_secs", 0),
 	}
 }
 

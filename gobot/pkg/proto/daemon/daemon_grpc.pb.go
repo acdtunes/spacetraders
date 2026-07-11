@@ -34,6 +34,7 @@ const (
 	DaemonService_AssignScoutingFleet_FullMethodName                   = "/daemon.DaemonService/AssignScoutingFleet"
 	DaemonService_ScoutPostCoordinator_FullMethodName                  = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName                 = "/daemon.DaemonService/TradeFleetCoordinator"
+	DaemonService_SitingCoordinator_FullMethodName                     = "/daemon.DaemonService/SitingCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName          = "/daemon.DaemonService/FrontierExpansionCoordinator"
 	DaemonService_WorkerRebalancerCoordinator_FullMethodName           = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                          = "/daemon.DaemonService/AddScoutPost"
@@ -121,6 +122,11 @@ type DaemonServiceClient interface {
 	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
 	// exit after a cooldown. Retires the captain hand-relaunch loop.
 	TradeFleetCoordinator(ctx context.Context, in *TradeFleetCoordinatorRequest, opts ...grpc.CallOption) (*TradeFleetCoordinatorResponse, error)
+	// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the
+	// "brain" that automates factory discovery/placement/capacity — each slow tick it
+	// scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
+	// launches/retires goods_factory chains through the guard stack, and emits scout-demand.
+	SitingCoordinator(ctx context.Context, in *SitingCoordinatorRequest, opts ...grpc.CallOption) (*SitingCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -371,6 +377,16 @@ func (c *daemonServiceClient) TradeFleetCoordinator(ctx context.Context, in *Tra
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TradeFleetCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_TradeFleetCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SitingCoordinator(ctx context.Context, in *SitingCoordinatorRequest, opts ...grpc.CallOption) (*SitingCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SitingCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SitingCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -822,6 +838,11 @@ type DaemonServiceServer interface {
 	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
 	// exit after a cooldown. Retires the captain hand-relaunch loop.
 	TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error)
+	// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the
+	// "brain" that automates factory discovery/placement/capacity — each slow tick it
+	// scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
+	// launches/retires goods_factory chains through the guard stack, and emits scout-demand.
+	SitingCoordinator(context.Context, *SitingCoordinatorRequest) (*SitingCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -972,6 +993,9 @@ func (UnimplementedDaemonServiceServer) ScoutPostCoordinator(context.Context, *S
 }
 func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TradeFleetCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) SitingCoordinator(context.Context, *SitingCoordinatorRequest) (*SitingCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SitingCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
@@ -1380,6 +1404,24 @@ func _DaemonService_TradeFleetCoordinator_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).TradeFleetCoordinator(ctx, req.(*TradeFleetCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SitingCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SitingCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SitingCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SitingCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SitingCoordinator(ctx, req.(*SitingCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2170,6 +2212,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TradeFleetCoordinator",
 			Handler:    _DaemonService_TradeFleetCoordinator_Handler,
+		},
+		{
+			MethodName: "SitingCoordinator",
+			Handler:    _DaemonService_SitingCoordinator_Handler,
 		},
 		{
 			MethodName: "FrontierExpansionCoordinator",

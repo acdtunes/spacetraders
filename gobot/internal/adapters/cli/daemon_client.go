@@ -1177,6 +1177,23 @@ func (c *DaemonClient) TradeFleetCoordinator(ctx context.Context, playerID int, 
 	return resp.ContainerId, nil
 }
 
+// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the standing
+// "brain" that automates factory discovery, placement, and capacity planning. Identity-only
+// launch — all [manufacturing.siting] tuning resolves live from config.yaml.
+func (c *DaemonClient) SitingCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+	req := &pb.SitingCoordinatorRequest{
+		PlayerId: int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.SitingCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr).
 // dryRun decides + logs the ferry it would dispatch but ferries nothing.
 func (c *DaemonClient) WorkerRebalancerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {

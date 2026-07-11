@@ -104,4 +104,10 @@ type ManufacturingConfig struct {
 	// true skips detection/pause entirely, reverting to the a5j7 selector's park-and-retry.
 	// Absent/false keeps the anti-cycle on at its default half-life.
 	AntiCycleDisabled bool `mapstructure:"anti_cycle_disabled"`
+
+	// Siting nests the factory SITING coordinator's knobs (sp-vdld) under
+	// [manufacturing.siting] — the standing brain that scans/scores/sizes/launches
+	// factory chains. Injected into the siting_coordinator container's launch config
+	// via resolveSitingConfig. LIVE BY DEFAULT; siting_disabled is the escape hatch.
+	Siting SitingConfig `mapstructure:"siting"`
 }

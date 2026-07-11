@@ -493,6 +493,28 @@ func (s *daemonServiceImpl) TradeFleetCoordinator(ctx context.Context, req *pb.T
 	return &pb.TradeFleetCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): identity-only
+// launch (all [manufacturing.siting] tuning resolves live from config.yaml inside the build
+// path). Mirrors TradeFleetCoordinator's thin shape.
+func (s *daemonServiceImpl) SitingCoordinator(ctx context.Context, req *pb.SitingCoordinatorRequest) (*pb.SitingCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.SitingCoordinator(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start siting coordinator: %w", err)
+	}
+
+	return &pb.SitingCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

@@ -66,6 +66,12 @@ const (
 	ContainerTypeFrontierExpansion        ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"
+	// ContainerTypeSitingCoordinator is the standing factory-siting brain (sp-vdld): a
+	// per-player coordinator that loops forever inside one Handle() scanning/scoring/sizing
+	// the factory-chain portfolio and launching/retiring goods_factory chains through the
+	// existing guard stack. Like the trade-fleet/frontier coordinators it is NOT a
+	// CoordinatorOwnsIterations type.
+	ContainerTypeSitingCoordinator ContainerType = "SITING_COORDINATOR"
 	ContainerTypeParallelManufacturing    ContainerType = "PARALLEL_MANUFACTURING"
 	ContainerTypeManufacturingTaskWorker  ContainerType = "MANUFACTURING_TASK_WORKER"
 	ContainerTypeGasCoordinator           ContainerType = "GAS_COORDINATOR"

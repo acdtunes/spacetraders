@@ -60,6 +60,12 @@ service DaemonService {
   // exit after a cooldown. Retires the captain hand-relaunch loop.
   rpc TradeFleetCoordinator(TradeFleetCoordinatorRequest) returns (TradeFleetCoordinatorResponse);
 
+  // SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the
+  // "brain" that automates factory discovery/placement/capacity — each slow tick it
+  // scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
+  // launches/retires goods_factory chains through the guard stack, and emits scout-demand.
+  rpc SitingCoordinator(SitingCoordinatorRequest) returns (SitingCoordinatorResponse);
+
   // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
   rpc FrontierExpansionCoordinator(FrontierExpansionCoordinatorRequest) returns (FrontierExpansionCoordinatorResponse);
 
@@ -511,6 +517,19 @@ message TradeFleetCoordinatorRequest {
 }
 
 message TradeFleetCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// SitingCoordinatorRequest starts the standing factory-siting coordinator (sp-vdld).
+// All tuning lives in config.yaml's [manufacturing.siting] section (resolved live on every
+// build); this request only names the player/agent.
+message SitingCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message SitingCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

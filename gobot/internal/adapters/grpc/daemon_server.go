@@ -468,6 +468,17 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register chain input-pause metrics collector: %w", err)
 		}
 		metrics.SetGlobalChainInputPauseCollector(chainInputPauseCollector)
+
+		// Create factory-siting collector (sp-vdld): the siting coordinator's ACT and EMIT
+		// steps emit the launch/retire/scout-demand decision counters through the global set
+		// here — the observability for the standing "brain" that automates factory placement.
+		// Event-driven (no polling goroutine), mirroring the chain-P&L collector above.
+		sitingCollector := metrics.NewSitingMetricsCollector()
+		if err := sitingCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register factory-siting metrics collector: %w", err)
+		}
+		metrics.SetGlobalSitingCollector(sitingCollector)
 	}
 
 	// Register container specs for launch and recovery
