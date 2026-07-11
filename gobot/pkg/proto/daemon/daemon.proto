@@ -10,6 +10,11 @@ service DaemonService {
   // NavigateShip initiates a ship navigation operation as a background container
   rpc NavigateShip(NavigateShipRequest) returns (NavigateShipResponse);
 
+  // RouteShip initiates a cross-system point-to-point travel operation as a
+  // background container (sp-6hjw). Unlike NavigateShip (in-system only), it reuses
+  // the multi-jump travel machinery so a hull can reach a waypoint in any system.
+  rpc RouteShip(RouteShipRequest) returns (RouteShipResponse);
+
   // DockShip docks a ship at its current location
   rpc DockShip(DockShipRequest) returns (DockShipResponse);
 
@@ -236,6 +241,36 @@ message NavigateShipResponse {
 
   // Estimated total travel time in seconds
   int32 estimated_time_seconds = 5;
+}
+
+// RouteShipRequest initiates cross-system point-to-point travel (sp-6hjw)
+message RouteShipRequest {
+  // Ship symbol to route (e.g., "ENDURANCE-7")
+  string ship_symbol = 1;
+
+  // Destination waypoint in any reachable system (e.g., "X1-JP61-B1")
+  string destination = 2;
+
+  // Player ID for authentication
+  int32 player_id = 3;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 4;
+}
+
+// RouteShipResponse returns container ID for tracking
+message RouteShipResponse {
+  // Container ID for tracking the route operation
+  string container_id = 1;
+
+  // Ship symbol
+  string ship_symbol = 2;
+
+  // Destination waypoint
+  string destination = 3;
+
+  // Initial status
+  string status = 4;
 }
 
 // DockShipRequest initiates ship docking

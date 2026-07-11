@@ -30,6 +30,13 @@ type NavigateResponse struct {
 	EstimatedTime int32
 }
 
+type RouteResponse struct {
+	ContainerID string
+	ShipSymbol  string
+	Destination string
+	Status      string
+}
+
 type DockResponse struct {
 	ContainerID string
 	ShipSymbol  string
@@ -212,6 +219,38 @@ func (c *DaemonClient) NavigateShip(
 		Destination:   resp.Destination,
 		Status:        resp.Status,
 		EstimatedTime: resp.EstimatedTimeSeconds,
+	}, nil
+}
+
+// RouteShip initiates cross-system point-to-point travel (sp-6hjw)
+func (c *DaemonClient) RouteShip(
+	ctx context.Context,
+	shipSymbol, destination string,
+	playerID int,
+	agentSymbol string,
+) (*RouteResponse, error) {
+	// Build request
+	req := &pb.RouteShipRequest{
+		ShipSymbol:  shipSymbol,
+		Destination: destination,
+		PlayerId:    int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	// Call gRPC service
+	resp, err := c.client.RouteShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	// Convert to client response type
+	return &RouteResponse{
+		ContainerID: resp.ContainerId,
+		ShipSymbol:  resp.ShipSymbol,
+		Destination: resp.Destination,
+		Status:      resp.Status,
 	}, nil
 }
 

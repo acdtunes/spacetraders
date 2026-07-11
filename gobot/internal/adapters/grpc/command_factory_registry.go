@@ -400,6 +400,7 @@ func containerSpecList() []ContainerSpec {
 		// dock/orbit/refuel no-op when already done, and a re-run jettison of
 		// already-jettisoned cargo fails honestly rather than silently.
 		{CommandType: "navigate_ship", build: buildNavigateShipCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "route_ship", build: buildRouteShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "dock_ship", build: buildDockShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "orbit_ship", build: buildOrbitShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "refuel_ship", build: buildRefuelShipCommand, CoordinatorOwnsIterations: true},
@@ -687,6 +688,19 @@ func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID st
 // ShipStateScheduler.ScheduleAllPending re-arms the arrival timer).
 func buildNavigateShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &shipNavCmd.NavigateRouteCommand{
+		ShipSymbol:  cfg.RequiredString("ship_symbol"),
+		Destination: cfg.RequiredString("destination"),
+		PlayerID:    shared.MustNewPlayerID(playerID),
+	}
+}
+
+// buildRouteShipCommand rebuilds a one-shot cross-system route from its persisted
+// launch config so restart recovery re-adopts a RUNNING route instead of orphaning it
+// (sp-6hjw, same invariant as buildNavigateShipCommand / sp-7yej invariant 4). Re-running
+// is safe: travel() waits out any in-transit leg and re-plans the gate path from the
+// hull's CURRENT position, so a mid-route restart resumes rather than strands.
+func buildRouteShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipNavCmd.RouteShipCommand{
 		ShipSymbol:  cfg.RequiredString("ship_symbol"),
 		Destination: cfg.RequiredString("destination"),
 		PlayerID:    shared.MustNewPlayerID(playerID),

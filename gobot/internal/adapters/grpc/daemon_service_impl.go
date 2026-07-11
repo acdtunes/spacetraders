@@ -94,6 +94,31 @@ func (s *daemonServiceImpl) NavigateShip(ctx context.Context, req *pb.NavigateSh
 	return response, nil
 }
 
+// RouteShip initiates cross-system point-to-point travel (sp-6hjw)
+func (s *daemonServiceImpl) RouteShip(ctx context.Context, req *pb.RouteShipRequest) (*pb.RouteShipResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Call daemon's RouteShip method
+	containerID, err := s.daemon.RouteShip(ctx, req.ShipSymbol, req.Destination, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to route ship: %w", err)
+	}
+
+	// Build response
+	response := &pb.RouteShipResponse{
+		ContainerId: containerID,
+		ShipSymbol:  req.ShipSymbol,
+		Destination: req.Destination,
+		Status:      "PENDING",
+	}
+
+	return response, nil
+}
+
 // DockShip docks a ship
 func (s *daemonServiceImpl) DockShip(ctx context.Context, req *pb.DockShipRequest) (*pb.DockShipResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)

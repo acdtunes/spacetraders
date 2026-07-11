@@ -86,6 +86,11 @@ const (
 	ContainerTypeWarehouse                ContainerType = "WAREHOUSE"
 	ContainerTypeJump                     ContainerType = "JUMP"
 	ContainerTypeOutfitting               ContainerType = "OUTFITTING"
+	// ContainerTypeRoute is the one-shot cross-system point-to-point move behind the
+	// `ship route` verb (sp-6hjw). Unlike ContainerTypeNavigate (in-system only) it
+	// reuses the trade-route coordinator's multi-jump travel() to cross gates. Like the
+	// other one-shot ship ops it is a single-iteration, CoordinatorOwnsIterations type.
+	ContainerTypeRoute ContainerType = "ROUTE"
 )
 
 const (

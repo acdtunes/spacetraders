@@ -61,6 +61,59 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	return containerID, nil
 }
 
+// RouteShip handles cross-system point-to-point travel requests (sp-6hjw). It is the
+// daemon side of the `ship route` verb: unlike NavigateShip (which dispatches the
+// in-system-only NavigateRouteCommand and fails cross-system with "waypoint not found
+// in cache for system X"), it dispatches a RouteShipCommand whose handler reuses the
+// trade-route coordinator's multi-jump travel() — orbit, source gate hop, per-hop
+// jumps with cooldown waits, arrival hop — so a plain hull reaches a waypoint in ANY
+// reachable system. The container claims the hull (metadata "ship_symbol") so travel()'s
+// SkipClaim jumps trust that claim, and carries the captain manual-op authority flag so
+// this deliberate CLI move may operate a fleet-dedicated hull (audited override).
+func (s *DaemonServer) RouteShip(ctx context.Context, shipSymbol, destination string, playerID int) (string, error) {
+	containerID := utils.GenerateContainerID("route", shipSymbol)
+
+	cmd := &shipNav.RouteShipCommand{
+		ShipSymbol:  shipSymbol,
+		Destination: destination,
+		PlayerID:    shared.MustNewPlayerID(playerID),
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeRoute,
+		playerID,
+		1,   // Single iteration for route
+		nil, // No parent container
+		map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"destination": destination,
+			// sp-sg35 BRIDGE: captain manual-op authority — this deliberate CLI op
+			// may operate a fleet-dedicated hull (audited override; see the const).
+			captainManualAuthorityKey: true,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "route_ship"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}
+
 // DockShip handles ship docking requests
 func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	containerID := utils.GenerateContainerID("dock", shipSymbol)

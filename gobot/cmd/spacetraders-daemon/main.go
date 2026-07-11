@@ -737,6 +737,18 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)
 	}
 
+	// sp-6hjw: wire the `ship route` verb — a thin operator-facing cross-system
+	// point-to-point move. Its handler REUSES the trade-route coordinator's exported
+	// multi-jump travel() (RepositionToWaypoint, strict fetch-through resolver) exactly
+	// as the scout_reposition worker does — no new jump logic. This closes the tooling
+	// gap where a manual cross-gate hull move had to be hand-rolled from navigate-to-gate
+	// + jump + navigate. Registered here because it needs the already-constructed
+	// tradeRouteCoordinatorHandler as its movement port.
+	routeShipHandler := shipNav.NewRouteShipHandler(tradeRouteCoordinatorHandler)
+	if err := mediator.RegisterHandler[*shipNav.RouteShipCommand](med, routeShipHandler); err != nil {
+		return fmt.Errorf("failed to register RouteShip handler: %w", err)
+	}
+
 	// Worker-rebalancer coordinator (sp-f5pr): the standing coordinator that ferries idle
 	// undedicated light-haulers cross-system to worker-starved factory systems so a factory
 	// posting "No in-system worker" self-heals without captain hand-holding. It derives ALL

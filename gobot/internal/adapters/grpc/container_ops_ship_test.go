@@ -171,6 +171,9 @@ func TestCaptainManualCLIOpsStampAuthorityFlag(t *testing.T) {
 		{"navigate", func(s *DaemonServer, ship string, pid int) (string, error) {
 			return s.NavigateShip(context.Background(), ship, "X1-TR-A1", pid)
 		}},
+		{"route", func(s *DaemonServer, ship string, pid int) (string, error) {
+			return s.RouteShip(context.Background(), ship, "X1-TR-A1", pid)
+		}},
 		{"dock", func(s *DaemonServer, ship string, pid int) (string, error) {
 			return s.DockShip(context.Background(), ship, pid)
 		}},

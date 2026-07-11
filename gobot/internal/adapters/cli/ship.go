@@ -54,6 +54,7 @@ Examples:
 	cmd.AddCommand(newShipUnreserveCargoCommand())
 	cmd.AddCommand(newShipReservedCargoCommand())
 	cmd.AddCommand(newShipNavigateCommand())
+	cmd.AddCommand(newShipRouteCommand())
 	cmd.AddCommand(newShipDockCommand())
 	cmd.AddCommand(newShipOrbitCommand())
 	cmd.AddCommand(newShipRefuelCommand())
@@ -934,6 +935,84 @@ Examples:
 	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to navigate (required)")
 	cmd.Flags().StringVar(&destination, "destination", "", "Destination waypoint symbol (required)")
+
+	return cmd
+}
+
+// newShipRouteCommand creates the ship route subcommand (sp-6hjw)
+func newShipRouteCommand() *cobra.Command {
+	var (
+		shipSymbol  string
+		destination string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "route",
+		Short: "Route a ship point-to-point to a waypoint in ANY reachable system",
+		Long: `Route a ship to a destination waypoint in any reachable system, crossing
+jump gates as needed.
+
+Unlike 'ship navigate' (which is in-system only and fails cross-system with
+"waypoint not found in cache for system X") and 'ship jump' (a single gate hop
+that requires the ship already at the gate), 'ship route' reuses the same
+multi-jump travel machinery the trade/tour/warehouse workflows use internally.
+
+The daemon will automatically:
+- Orbit the ship if docked
+- Fly to the source jump gate if not already there
+- Resolve and fly the multi-hop gate path (with per-hop cooldown waits)
+- Fly the final gate-to-waypoint hop at the destination
+- Return a container ID for tracking progress
+
+Examples:
+  spacetraders ship route --ship ENDURANCE-7 --destination X1-JP61-B1 --player-id 1
+  spacetraders ship route --ship SPARE-2 --destination X1-FAR-A1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if destination == "" {
+				return fmt.Errorf("--destination flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			// Execute route command
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			result, err := client.RouteShip(ctx, shipSymbol, destination, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("route failed: %w", err)
+			}
+
+			// Display result
+			fmt.Println("✓ Route started successfully")
+			fmt.Printf("  Container ID:     %s\n", result.ContainerID)
+			fmt.Printf("  Ship:             %s\n", result.ShipSymbol)
+			fmt.Printf("  Destination:      %s\n", result.Destination)
+			fmt.Printf("  Status:           %s\n", result.Status)
+			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to route (required)")
+	cmd.Flags().StringVar(&destination, "destination", "", "Destination waypoint symbol in any reachable system (required)")
 
 	return cmd
 }
