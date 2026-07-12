@@ -19,6 +19,10 @@ const env = (configPath: string) => ({
   // batch-contract, construction-start, executor-bounce, repurpose, launch-*) here so the twin's
   // /_twin/state mutationLog + flags reflect them. Unset in prod => the coordinator's report is a no-op.
   TWIN_REPORT_URL: `${ADMIN_URL}/report`,
+  // st-drm.8: shrink the daemon's arrival/cooldown clock-drift clamp from its 1s prod default so
+  // compressed twin travel isn't dominated by the clamp. INVARIANT: keep this <= the twin's
+  // TWIN_MIN_TRAVEL_MS floor (twin default 1000; fast stacks set 50/50), else arrivals can be missed.
+  ST_CLOCK_DRIFT_BUFFER_MS: '50',
 });
 
 export interface DaemonHandle {
