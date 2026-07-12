@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +33,16 @@ const (
 	// tracker (sp-51ti, internal/adapters/grpc composition root) can compute
 	// utilization-vs-ceiling against the same number the limiter actually
 	// uses, instead of a second hardcoded copy that could drift.
+	//
+	// This is the PRODUCTION DEFAULT the ST_API_RATE_LIMIT_PER_SEC seam falls
+	// back to (see resolveRateLimit): production sets no env, so the limiter is
+	// byte-identical to the pre-seam rate.NewLimiter(rate.Limit(2.0), 30).
 	RateLimitPerSecond = 2.0
+
+	// RateLimitBurst is the token-bucket burst this client allows (SpaceTraders
+	// permits a 30 req/60s burst). Production default the ST_API_RATE_LIMIT_BURST
+	// seam falls back to, paired with RateLimitPerSecond.
+	RateLimitBurst = 30
 
 	errCodeAgentHasContract = 4511
 	errCodeShipMustBeDocked = 4214
@@ -75,6 +85,32 @@ func NewSpaceTradersClient() *SpaceTradersClient {
 	)
 }
 
+// resolveRateLimit reads the ST_API_RATE_LIMIT_PER_SEC / ST_API_RATE_LIMIT_BURST
+// seams exactly like resolveClockDriftBuffer reads ST_CLOCK_DRIFT_BUFFER_MS
+// (ship_state_scheduler.go): each var is applied only when set to a positive,
+// parseable value; unset/empty/unparseable/non-positive falls back to that var's
+// production default (RateLimitPerSecond / RateLimitBurst). Production sets
+// NEITHER, so the resolved limiter is byte-identical to the pre-seam
+// rate.NewLimiter(rate.Limit(2.0), 30) — the real game still runs at 2 req/sec.
+// Digital-twin test stacks set a high value (e.g. 100/200) so the ~11
+// rate-limited twin HTTP calls a synchronous buy fires no longer serialise
+// behind the 2/sec ceiling (~5.5s/hauler of rateLimiter.Wait).
+func resolveRateLimit() (rate.Limit, int) {
+	perSec := rate.Limit(RateLimitPerSecond)
+	if raw := os.Getenv("ST_API_RATE_LIMIT_PER_SEC"); raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
+			perSec = rate.Limit(v)
+		}
+	}
+	burst := RateLimitBurst
+	if raw := os.Getenv("ST_API_RATE_LIMIT_BURST"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			burst = v
+		}
+	}
+	return perSec, burst
+}
+
 // NewSpaceTradersClientWithConfig creates a new SpaceTraders API client with custom configuration
 // If clock is nil, uses RealClock for production
 // Automatically uses the global API metrics collector if one is set
@@ -88,11 +124,16 @@ func NewSpaceTradersClientWithConfig(
 		clock = shared.NewRealClock()
 	}
 
+	// Resolve the rate-limit seam once at construction (mirroring how the client
+	// reads ST_API_BASE_URL / the scheduler reads ST_CLOCK_DRIFT_BUFFER_MS). Prod
+	// (env unset) => rate.Limit(2.0), burst 30 — byte-identical to before.
+	rateLimitPerSec, rateLimitBurst := resolveRateLimit()
+
 	client := &SpaceTradersClient{
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter:      rate.NewLimiter(rate.Limit(RateLimitPerSecond), 30), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
+		rateLimiter:      rate.NewLimiter(rateLimitPerSec, rateLimitBurst), // prod: 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst); test stacks raise it via ST_API_RATE_LIMIT_*
 		baseURL:          baseURL,
 		maxRetries:       maxRetries,
 		backoffBase:      backoffBase,

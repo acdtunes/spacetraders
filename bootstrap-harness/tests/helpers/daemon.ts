@@ -23,6 +23,11 @@ const env = (configPath: string) => ({
   // compressed twin travel isn't dominated by the clamp. INVARIANT: keep this <= the twin's
   // TWIN_MIN_TRAVEL_MS floor (twin default 1000; fast stacks set 50/50), else arrivals can be missed.
   ST_CLOCK_DRIFT_BUFFER_MS: '50',
+  // Raise the daemon's API client rate limiter from its 2 req/sec prod ceiling so a synchronous buy's
+  // ~11 twin HTTP calls stop serialising behind rateLimiter.Wait (~5.5s/hauler). The twin is local and
+  // has no real 429 budget, so a high ceiling is safe here. Unset in prod => byte-identical 2/sec, burst 30.
+  ST_API_RATE_LIMIT_PER_SEC: '100',
+  ST_API_RATE_LIMIT_BURST: '200',
 });
 
 export interface DaemonHandle {
