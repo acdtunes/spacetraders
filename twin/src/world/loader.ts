@@ -4,9 +4,32 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Agent, Market, Ship, Shipyard, System, TransitState, Waypoint, World } from './types.js';
+import type { Agent, ControlPlaneState, Market, Ship, Shipyard, System, TransitState, Waypoint, World } from './types.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** Fresh cold-start control-plane state: empty log/collections, all flags false, counters 0,
+ *  construction blank. Every call returns NEW Maps/arrays (never shared mutable state) so two
+ *  worlds never alias a collection. mode-specific seeding (income/gate-entry) is layered on
+ *  top by the reset endpoint; this is the DATA/cold baseline. */
+export function newControlPlaneState(): ControlPlaneState {
+  return {
+    mutationLog: [],
+    coverage: 0,
+    marketScouting: new Map(),
+    haulers: [],
+    frigateContractTagged: false,
+    batchContractRunning: false,
+    creditsPerHour: 0,
+    hubs: [],
+    construction: { site: '', percent: 0, started: false, adopted: false },
+    gateWorkers: [],
+    executorRunning: false,
+    autosizerRunning: false,
+    standingCoordinators: { siting: false, workerRebalancer: false },
+    done: false,
+  };
+}
 
 /** Absolute path to the checked-in captured home-system fixture directory. */
 export const FIXTURES_DIR = path.resolve(MODULE_DIR, '../../fixtures/era2-X1-PZ28');
@@ -52,6 +75,7 @@ export function loadColdStartWorld(dir: string = FIXTURES_DIR): World {
   for (const sy of shipyards) shipyardMap.set(sy.symbol, sy);
 
   return {
+    ...newControlPlaneState(),
     serverStatus,
     agent: null,
     agentToken: null,

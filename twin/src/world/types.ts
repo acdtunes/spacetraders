@@ -116,7 +116,83 @@ export interface TransitState {
   arrival: Rfc3339;
 }
 
-export interface World {
+// ─── TWIN-OWNED control-plane state (backs GET /_twin/state + POST /_twin/report) ───
+// Reshaped /_twin/state is a BASE object; the INCOME and GATE phase views read supersets
+// of it. Cold defaults are produced by newControlPlaneState() (loader.ts); mode-specific
+// seeding (income-entry / gate-entry) is layered on top by the reset endpoint.
+
+/** One append-only mutation-log record. `seq` is monotonic (1-indexed, +1 over the prior
+ *  entry); `at` is the WORLD-clock now (getNow) at append time — NOT wall time. `detail`
+ *  is omitted from the entry entirely when the mutation carries none. */
+export interface MutationLogEntry {
+  seq: number;
+  call: string;
+  detail?: Record<string, unknown>;
+  at: Rfc3339;
+}
+
+/** Per-waypoint market scouting flags. Held OFF the /v2 Market DTO (which the game API
+ *  serializes verbatim) so fidelity stays clean; only the /_twin/state markets[] view reads
+ *  these. Keyed by waypoint symbol in ControlPlaneState.marketScouting. */
+export interface MarketScouting {
+  scouted: boolean;
+  fresh: boolean;
+}
+
+/** INCOME-view hauler projection. `parkedHub` is the hub waypoint a hauler has been parked
+ *  at (null until a navigate parks it there). */
+export interface HaulerState {
+  symbol: string;
+  role: string;
+  parkedHub: string | null;
+}
+
+/** GATE-view worker projection. `source` distinguishes a repurposed existing hull (logs
+ *  nothing, no PurchaseShip) from a freshly bought one (bought == PurchaseShip count). */
+export interface GateWorkerState {
+  symbol: string;
+  source: 'repurposed' | 'bought';
+}
+
+/** GATE-view construction progress. `percent` NEVER auto-advances (only POST /_twin/construction
+ *  moves it, incl. ->100); `started`/`adopted` are exactly-once report flips. */
+export interface ConstructionState {
+  site: string;
+  percent: number;
+  started: boolean;
+  adopted: boolean;
+}
+
+/** GATE-view standing coordinators, each launched exactly-once via the /_twin/report seam. */
+export interface StandingCoordinators {
+  siting: boolean;
+  workerRebalancer: boolean;
+}
+
+/** The TWIN-OWNED control-plane state mixed into World. Backs the GET /_twin/state superset
+ *  (BASE + INCOME + GATE) and the POST /_twin/report ingest (applyReport flips the paired
+ *  flags exactly-once). Cold defaults via newControlPlaneState(). */
+export interface ControlPlaneState {
+  // BASE
+  mutationLog: MutationLogEntry[];
+  coverage: number;
+  marketScouting: Map<string, MarketScouting>;   // keyed by waypoint symbol
+  // INCOME view (+)
+  haulers: HaulerState[];
+  frigateContractTagged: boolean;
+  batchContractRunning: boolean;
+  creditsPerHour: number;                         // == gate incomePerHour (the SAME $/hr var)
+  hubs: string[];
+  // GATE view (+)
+  construction: ConstructionState;
+  gateWorkers: GateWorkerState[];
+  executorRunning: boolean;
+  autosizerRunning: boolean;
+  standingCoordinators: StandingCoordinators;
+  done: boolean;
+}
+
+export interface World extends ControlPlaneState {
   serverStatus: { resetDate: string; serverResets: { next: Rfc3339; frequency: string } };
   agent: Agent | null;
   agentToken: string | null;

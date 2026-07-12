@@ -7,6 +7,10 @@ vi.mock('../../src/world/loader', () => ({
     serverStatus: { resetDate: '2026-07-05', serverResets: { next: '2026-08-05T00:00:00.000Z', frequency: 'monthly' } },
     agent: null, agentToken: null, ships: new Map(), systems: new Map(),
     markets: new Map(), shipyards: new Map(), transits: new Map(), shipCounter: 0,
+    mutationLog: [], coverage: 0, marketScouting: new Map(),
+    haulers: [], frigateContractTagged: false, batchContractRunning: false, creditsPerHour: 0, hubs: [],
+    construction: { site: '', percent: 0, started: false, adopted: false }, gateWorkers: [],
+    executorRunning: false, autosizerRunning: false, standingCoordinators: { siting: false, workerRebalancer: false }, done: false,
   }),
   registerAgent: (world: World, args: { symbol: string; faction: string; token: string }) => {
     const agent = { accountId: `twin-account-${args.symbol}`, symbol: args.symbol, headquarters: 'X1-PZ28-A1', credits: 175000, startingFaction: args.faction };
@@ -25,6 +29,10 @@ function coldWorld(): World {
     serverStatus: { resetDate: '2026-07-05', serverResets: { next: '2026-08-05T00:00:00.000Z', frequency: 'monthly' } },
     agent: null, agentToken: null, ships: new Map(), systems: new Map(),
     markets: new Map(), shipyards: new Map(), transits: new Map(), shipCounter: 0,
+    mutationLog: [], coverage: 0, marketScouting: new Map(),
+    haulers: [], frigateContractTagged: false, batchContractRunning: false, creditsPerHour: 0, hubs: [],
+    construction: { site: '', percent: 0, started: false, adopted: false }, gateWorkers: [],
+    executorRunning: false, autosizerRunning: false, standingCoordinators: { siting: false, workerRebalancer: false }, done: false,
   };
 }
 afterEach(() => vi.clearAllMocks());
