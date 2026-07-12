@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { twinIncome } from '../helpers/twin-admin-income';
 import { incomeEntry } from '../helpers/fixtures-income';
 import { resetDaemonDb, startTestDaemon } from '../helpers/daemon';
-import { launchBootstrap, pollUntil } from '../helpers/drive';
+import { launchBootstrap, pollUntil, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap INCOME — restart idempotency', () => {
@@ -37,6 +37,9 @@ describe('bootstrap INCOME — restart idempotency', () => {
       expect(countCall(done.mutationLog, 'fleet-unassign')).toBeLessThanOrEqual(Math.max(1, retiresBefore));
       expect(countCall(done.mutationLog, 'batch-contract')).toBeLessThanOrEqual(Math.max(1, batchBefore, 1));
       expect(done.frigateContractTagged).toBe(false);
+      // (a) phase re-detection after the reboot lands on INCOME again (income/golden-path asserts the
+      // same gauge for a placed fleet) — the rebooted daemon re-derives INCOME, it does not regress to DATA.
+      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(1);
     } finally {
       await daemon.stop();
     }
