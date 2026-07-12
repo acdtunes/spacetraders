@@ -47,7 +47,32 @@ const (
 	// event.
 	DefaultArrivalMarginFactor = 1.25
 	DefaultArrivalMinMargin    = 2 * time.Minute
+
+	// DefaultFirstArrivalPoll is the delay of the FIRST safety poll only — the
+	// fast check for an ARRIVED event that was lost/raced BEFORE this
+	// subscription existed (ShipEventBus.PublishArrived is a non-blocking,
+	// non-replaying send). The happy path still returns the instant the event
+	// lands, but a genuinely lost FIRST event otherwise stalls a whole
+	// DefaultArrivalGracePeriod (30s) before the first resync recovers it — an
+	// increasingly likely stall as real travel shrinks under twin compression,
+	// where a ship can arrive in tens of ms yet a dropped event pins the waiter
+	// for 30s. Kept independent of, and never longer than, the caller's
+	// gracePeriod (see firstArrivalPoll) so the steady-state ETA-aligned cadence
+	// is unchanged and tests injecting a tiny grace still poll fast.
+	DefaultFirstArrivalPoll = 1 * time.Second
 )
+
+// firstArrivalPoll is the delay before the FIRST safety poll: DefaultFirstArrivalPoll,
+// but never longer than the caller's gracePeriod. In production (grace=30s) this
+// shrinks the first poll from 30s to 1s, so a lost first ARRIVED event recovers in
+// ~1s instead of ~30s; when a test injects a sub-second grace the min keeps the
+// first poll at that tiny grace, leaving the existing fast-resync tests unchanged.
+func firstArrivalPoll(gracePeriod time.Duration) time.Duration {
+	if gracePeriod < DefaultFirstArrivalPoll {
+		return gracePeriod
+	}
+	return DefaultFirstArrivalPoll
+}
 
 // ErrArrivalWaitExhausted is returned when a ship-arrival wait gives up: the
 // ARRIVED event never arrived AND repeated resyncs against the ship
@@ -160,13 +185,14 @@ func waitForShipArrivalCore(
 	// ArrivalTime after each safety poll. It drives two things (sp-7yej
 	// invariant 5 — the event path is the norm, the poll the exception):
 	//
-	//   - the poll SCHEDULE: the first poll fires after one gracePeriod (the
-	//     fast check for an event lost BEFORE this subscription existed), then
-	//     each subsequent poll sleeps all the way to expectedArrival plus one
-	//     gracePeriod of slack in a single tick instead of waking every 30s of
-	//     a minutes-long transit. A healthy 23-minute leg now costs ~2 resyncs
-	//     instead of ~46 — and the event, which the select still watches
-	//     throughout, interrupts any of these sleeps the instant it lands.
+	//   - the poll SCHEDULE: the first poll fires after firstArrivalPoll (a short
+	//     ~1s check for an event lost BEFORE this subscription existed, NOT a
+	//     full gracePeriod — see DefaultFirstArrivalPoll), then each subsequent
+	//     poll sleeps all the way to expectedArrival plus one gracePeriod of
+	//     slack in a single tick instead of waking every 30s of a minutes-long
+	//     transit. A healthy 23-minute leg now costs ~2 resyncs instead of ~46 —
+	//     and the event, which the select still watches throughout, interrupts
+	//     any of these sleeps the instant it lands.
 	//   - the poll SEVERITY: a poll while the arrival is not yet due is routine
 	//     (INFO); only a poll past the expected arrival means the event is
 	//     genuinely overdue and worth a WARNING. The old code logged every
@@ -174,7 +200,7 @@ func waitForShipArrivalCore(
 	//     received", drowning the real lost-event signal in ~46 false alarms
 	//     per leg.
 	expectedArrival := time.Now().Add(time.Duration(waitTimeSeconds) * time.Second)
-	nextTick := gracePeriod
+	nextTick := firstArrivalPoll(gracePeriod)
 
 	attempt := 0
 	for {

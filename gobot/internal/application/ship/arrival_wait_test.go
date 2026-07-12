@@ -370,7 +370,7 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 // repo.calls==1); on fixed code the stale poll is ignored and confirmation lands
 // on the destination poll (repo.calls==2).
 func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfirmUntilAtDestination(t *testing.T) {
-	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit) // heading to X1-TEST-A
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)             // heading to X1-TEST-A
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost / not yet published
 
 	repo := &fakeShipQueryRepo{}
@@ -405,7 +405,7 @@ func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfir
 // the hull actually landed, so the fix must not reject real early arrivals just
 // because the ETA has not elapsed.
 func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPosition(t *testing.T) {
-	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit) // heading to X1-TEST-A
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)             // heading to X1-TEST-A
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
 	repo := &fakeShipQueryRepo{findBySymbolFunc: func() (*domainNavigation.Ship, error) {
 		// Live data: the hull genuinely arrived early, sitting AT THE DESTINATION.
@@ -451,6 +451,46 @@ func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t
 	}
 	if repo.calls != 1 {
 		t.Fatalf("expected the past-ETA arrival to confirm on the first resync, got %d resyncs", repo.calls)
+	}
+}
+
+// --- firstArrivalPoll (first-poll grace shrink) ------------------------------
+
+// TestFirstArrivalPoll pins the reconcile-latency cut: the FIRST safety poll is
+// shrunk to ~1s (DefaultFirstArrivalPoll), NOT the full 30s
+// DefaultArrivalGracePeriod, so a lost first ARRIVED event recovers in ~1s
+// instead of stalling 30s (increasingly likely as travel shrinks under twin
+// compression). The steady-state cadence keeps using the full gracePeriod, and a
+// test injecting a sub-second grace still polls at that tiny grace so the
+// existing fast-resync tests are unchanged.
+func TestFirstArrivalPoll(t *testing.T) {
+	tests := []struct {
+		name        string
+		gracePeriod time.Duration
+		want        time.Duration
+	}{
+		{
+			name:        "production 30s grace shrinks the first poll to 1s",
+			gracePeriod: DefaultArrivalGracePeriod,
+			want:        DefaultFirstArrivalPoll,
+		},
+		{
+			name:        "exactly 1s grace stays 1s",
+			gracePeriod: 1 * time.Second,
+			want:        1 * time.Second,
+		},
+		{
+			name:        "a tiny injected grace is left untouched (tests stay fast)",
+			gracePeriod: 5 * time.Millisecond,
+			want:        5 * time.Millisecond,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firstArrivalPoll(tc.gracePeriod); got != tc.want {
+				t.Fatalf("firstArrivalPoll(%v) = %v, want %v", tc.gracePeriod, got, tc.want)
+			}
+		})
 	}
 }
 

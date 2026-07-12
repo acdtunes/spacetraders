@@ -233,7 +233,7 @@ func (h *BatchPurchaseShipsHandler) executePurchaseLoop(
 	totalSpent := 0
 
 	for i := 0; i < purchasableCount; i++ {
-		purchaseResp, err := h.purchaseShip(ctx, cmd, shipyardWaypoint)
+		purchaseResp, err := h.purchaseShip(ctx, cmd, shipyardWaypoint, shipPrice)
 		if err != nil {
 			if len(purchasedShips) > 0 {
 				return purchasedShips, totalSpent, nil
@@ -271,18 +271,26 @@ func (h *BatchPurchaseShipsHandler) executePurchaseLoop(
 	return purchasedShips, totalSpent, nil
 }
 
-// purchaseShip purchases a single ship via the PurchaseShipCommand
+// purchaseShip purchases a single ship via the PurchaseShipCommand.
+// knownPrice is the shipyard price the batch budget pass already read for a
+// pinned yard with a live listing; it is threaded through so the per-ship
+// PurchaseShip handler skips its duplicate GetShipyard price read AND GetAgent
+// credit pre-check. knownPrice == 0 (auto-discovery, or a pinned yard whose
+// listing was still empty and deferred) => the handler reads price + credits
+// itself, exactly as before.
 // Returns: purchase response, error
 func (h *BatchPurchaseShipsHandler) purchaseShip(
 	ctx context.Context,
 	cmd *BatchPurchaseShipsCommand,
 	shipyardWaypoint string,
+	knownPrice int,
 ) (*PurchaseShipResponse, error) {
 	purchaseCmd := &PurchaseShipCommand{
 		PurchasingShipSymbol: cmd.PurchasingShipSymbol,
 		ShipType:             cmd.ShipType,
 		PlayerID:             cmd.PlayerID,
 		ShipyardWaypoint:     shipyardWaypoint,
+		KnownPurchasePrice:   knownPrice,
 	}
 
 	resp, err := h.mediator.Send(ctx, purchaseCmd)
