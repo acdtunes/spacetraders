@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Market, Ship, Shipyard, System, TransitState, Waypoint, World } from './types.js';
+import type { Agent, Market, Ship, Shipyard, System, TransitState, Waypoint, World } from './types.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -77,4 +77,37 @@ export function mintToken(symbol: string): string {
   const payload = b64url(JSON.stringify({ identifier: symbol, version: 'twin' }));
   const signature = b64url(`twin-signature.${symbol}`);
   return `${header}.${payload}.${signature}`;
+}
+
+/** Materialize the cold-start agent + starting ships from register.json into `world`
+ *  using the PROVIDED token, and return the /register response data. Clears transits
+ *  (cold start ⇒ all ships DOCKED) and sets shipCounter = ships.length + 1. Also used
+ *  by POST /_twin/reset with the preserved token. */
+export function registerAgent(
+  world: World,
+  args: { symbol: string; faction: string; token: string },
+  template: RegisterTemplate = loadRegisterTemplate(),
+): { agent: Agent; ships: Ship[] } {
+  const { symbol, token } = args;
+  const faction = args.faction || template.startingFaction;
+
+  const agent: Agent = {
+    accountId: `twin-account-${symbol}`,
+    symbol,
+    headquarters: template.headquarters,
+    credits: template.startingCredits,
+    startingFaction: faction,
+  };
+
+  // Deep-replace the "{AGENT}" placeholder (JSON round-trip also deep-clones the
+  // shared template so it is never mutated).
+  const ships = JSON.parse(JSON.stringify(template.ships).split('{AGENT}').join(symbol)) as Ship[];
+
+  world.agent = agent;
+  world.agentToken = token;
+  world.ships = new Map(ships.map((s) => [s.symbol, s]));
+  world.transits = new Map();
+  world.shipCounter = ships.length + 1;
+
+  return { agent, ships };
 }
