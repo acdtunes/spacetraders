@@ -20,7 +20,7 @@ import { listFleet, pollShip, refreshShip, resetCold } from '../helpers/readback
 // suffices — we NEVER sleep for uncompressed travel.
 //
 // HAS-TEETH: each scenario captures a BEFORE observation and asserts the AFTER differs by the
-// expected transition (status flip, location change off the origin, fuel drained→full, roster +1).
+// expected transition (status flip, location change off the origin, tank restored + top-up paid, roster +1).
 // A no-op endpoint — orbit that never leaves the dock, navigate that teleports nowhere, refuel that
 // adds no fuel, purchase that adds no hull — makes an assertion FAIL. We do not lean on exitCode===0
 // to prove behaviour (dispatch exit 0 is asserted only as a "the container actually started" sanity).
@@ -153,44 +153,71 @@ describe('A ship navigates to another waypoint and arrives (CLI → daemon read-
   }, 90_000);
 });
 
-// ── Scenario 4: refuel a drained tank ────────────────────────────────────────────────────────────
-describe('A pilot refuels a ship whose tank was drained by travel (CLI → daemon read-back)', () => {
+// ── Scenario 4: a voyage drains the tank and the coordinator restores it (and pays) ──────────────
+describe('A voyage drains the tank and the coordinator restores it (CLI → daemon read-back)', () => {
   beforeAll(resetCold);
 
-  it('refuels TWINAGENT-1 after a voyage — the tank is restored to full and credits are spent', async () => {
-    // ── Given: drain the tank by navigating A1 → F55 (whose market sells FUEL), then dock there ──
-    expect(runCli(['ship', 'navigate', '--ship', FRIGATE, '--destination', NEAR, '--player-id', '1']).exitCode, 'arrange navigate dispatch').toBe(0);
-    await pollShip(FRIGATE, (v) => v.location === NEAR && v.status === IN_ORBIT, { tries: 40, delayMs: 750 });
-    expect(runCli(['ship', 'dock', '--ship', FRIGATE, '--player-id', '1']).exitCode, 'arrange dock dispatch').toBe(0);
-    // Poll dock on STATUS only: the ship is physically at F55 (the twin executed the voyage), and
-    // location read-back is scenario 3's concern — keeping it out here isolates this scenario's RED
-    // to the fuel/refuel gap rather than the navigation re-sync gap.
-    const docked = await pollShip(FRIGATE, (v) => v.status === DOCKED, { tries: 30, delayMs: 500 });
-    expect(docked.status, 'ship must be DOCKED at the fuel market to refuel').toBe(DOCKED);
-
-    // capture the DRAINED tank before refuelling — this delta is what gives the refuel assertion teeth
-    const fuelBefore = docked.fuelCurrent;
-    const capacity = docked.fuelCapacity;
-    expect(fuelBefore, 'fuel level must be observable').not.toBeNull();
-    expect(capacity, 'fuel capacity must be observable').not.toBeNull();
-    expect(fuelBefore as number, 'the voyage must have burned fuel — tank observed below capacity').toBeLessThan(capacity as number);
+  // The pilot no longer refuels manually here — the COORDINATOR does. A voyage burns fuel at
+  // departure and the daemon AUTO-REFUELS ON ARRIVAL, so the tank is restored to full at the
+  // destination and the top-up is paid for. The transient DRAINED tank is unobservable by design:
+  // the auto-refuel races any daemon read-back (true on the real API too), so a `fuelBefore < capacity`
+  // precheck through `ship refresh` is unreachable — the coordinator's own fuel management defeats a
+  // manual drained-tank arrange every time. The departure BURN itself is proven in-process,
+  // frozen-clock, in tests/unit/navigate-fuel-persistence.test.ts (re-GET after arrival-settle still
+  // reads 350/400); THIS scenario proves the coordinator's RESTORE + PAYMENT, then that a manual
+  // top-up on the now-full tank is a genuine 0-unit no-op — locking the twin's 0-units-costs-0
+  // invariant end-to-end (the same invariant that test's "full tank is free" case unit-locks).
+  it('a voyage drains TWINAGENT-1 and the coordinator auto-refuels on arrival — the tank reads full at F55, the top-up is paid, and a manual refuel on the full tank costs nothing', async () => {
+    // ── Given: the cold-start frigate is observed DOCKED at A1 with a FULL tank, and its credits are
+    //         read BEFORE the voyage — the pre-voyage baseline the paid top-up must drop below ──
+    const baseline = refreshShip(FRIGATE);
+    expect(baseline.exitCode, `baseline refresh failed: ${baseline.stderr}`).toBe(0);
+    expect(baseline.status, 'cold-start frigate is DOCKED at home').toBe(DOCKED);
+    expect(baseline.location, 'cold-start frigate is at A1').toBe(HOME);
+    expect(baseline.fuelCurrent, 'fuel level must be observable').not.toBeNull();
+    expect(baseline.fuelCapacity, 'fuel capacity must be observable').not.toBeNull();
+    expect(baseline.fuelCurrent, 'the frigate departs on a full tank').toBe(baseline.fuelCapacity);
     const creditsBefore = readCredits();
 
-    // ── When: the pilot refuels at the docked market ──
-    const cmd = runCli(['ship', 'refuel', '--ship', FRIGATE, '--player-id', '1']);
-    expect(cmd.exitCode, `ship refuel dispatch failed: ${cmd.stderr}`).toBe(0);
+    // ── When: the pilot sets course A1 → F55 (whose market sells FUEL) ──
+    expect(runCli(['ship', 'navigate', '--ship', FRIGATE, '--destination', NEAR, '--player-id', '1']).exitCode, 'navigate dispatch').toBe(0);
 
-    // ── Then: the tank fills to capacity, strictly above the drained level ... ──
-    const filled = await pollShip(
+    // ── Then: bounded-poll the daemon until the ship is observed AT the destination (location only
+    //         flips to F55 on arrival — resolveNav keeps it at the origin while IN_TRANSIT) ... ──
+    const arrived = await pollShip(FRIGATE, (v) => v.location === NEAR, { tries: 40, delayMs: 750 });
+    expect(arrived.location, 'the voyage must land the ship at the fuel-market destination').toBe(NEAR);
+    expect(arrived.location, 'teeth: the ship is no longer at its origin A1').not.toBe(HOME);
+
+    // ── ... and the coordinator's auto-refuel has RESTORED the tank to full at F55. (The drain is
+    //    real — a CRUISE A1→F55 hop burns 50 — but auto-refuel races the read-back, so we assert the
+    //    restored FULL tank, the coordinator's observable effect, not the transient drained level.) ──
+    const restored = await pollShip(
       FRIGATE,
-      (v) => v.fuelCurrent !== null && v.fuelCapacity !== null && v.fuelCurrent === v.fuelCapacity,
+      (v) => v.location === NEAR && v.fuelCurrent !== null && v.fuelCapacity !== null && v.fuelCurrent === v.fuelCapacity,
       { tries: 30, delayMs: 500 },
     );
-    expect(filled.fuelCurrent, 'refuel must fill the tank to capacity').toBe(filled.fuelCapacity);
-    expect(filled.fuelCurrent as number, 'teeth: fuel strictly increased vs the drained level').toBeGreaterThan(fuelBefore as number);
+    expect(restored.fuelCurrent, 'the coordinator auto-refuels on arrival — the tank is full again at F55').toBe(restored.fuelCapacity);
 
-    // ── ... and (secondary — credits are observable via `player info`) the fuel was paid for ──
-    expect(readCredits(), 'refuelling is not free — the agent spent credits').toBeLessThan(creditsBefore);
+    // ── ... and the top-up was PAID FOR: credits are strictly below the pre-voyage baseline (the
+    //    refuel-costs-credits observable, now via the coordinator's real path, not a manual command).
+    //    The twin's refuel is atomic (fuel + debit together), so once the tank reads full the debit
+    //    has already landed — this read cannot race ahead of it. ──
+    const creditsAfterVoyage = readCredits();
+    expect(creditsAfterVoyage, 'the coordinator paid for the top-up — credits dropped below the pre-voyage baseline').toBeLessThan(creditsBefore);
+
+    // ── And: a MANUAL refuel on the now-full tank is a genuine 0-unit no-op. The twin requires the
+    //    ship DOCKED to refuel (400 ERR_SHIP_NOT_DOCKED otherwise), so dock first — that makes the
+    //    top-up genuinely EXECUTE against a full tank (0 units → 0 cost) rather than fail for being in
+    //    orbit. Re-reading credits UNCHANGED locks the twin's "0 units cost 0" invariant end-to-end. ──
+    expect(runCli(['ship', 'dock', '--ship', FRIGATE, '--player-id', '1']).exitCode, 'dock dispatch (refuel requires DOCKED)').toBe(0);
+    const dockedAtFuel = await pollShip(FRIGATE, (v) => v.status === DOCKED, { tries: 30, delayMs: 500 });
+    expect(dockedAtFuel.status, 'ship must be DOCKED at the fuel market before a manual refuel').toBe(DOCKED);
+
+    const refuelCmd = runCli(['ship', 'refuel', '--ship', FRIGATE, '--player-id', '1']);
+    expect(refuelCmd.exitCode, `ship refuel dispatch failed: ${refuelCmd.stderr}`).toBe(0);
+    // A 0-unit top-up costs 0: whether or not the async refuel container has run yet, the balance is
+    // identical to the post-voyage balance — a full-tank refuel can only ever add 0 credits of cost.
+    expect(readCredits(), 'refuelling an already-full tank buys 0 units and costs 0 credits').toBe(creditsAfterVoyage);
   }, 150_000);
 });
 
@@ -199,9 +226,18 @@ describe('A captain expands the fleet by purchasing a new hull (CLI → daemon r
   beforeAll(resetCold);
 
   it('purchases a SHIP_PROBE at the shipyard — the fleet roster grows by exactly one new hull', async () => {
-    // ── Given: the cold-start roster (two hulls). Baseline captured as a delta, not a magic number. ──
+    // ── Given: the cold-start roster (two hulls). PRIME the daemon's local roster first — on a fresh
+    //    test DB the daemon cache is EMPTY until it has re-synced each hull, so `ship refresh` BOTH
+    //    starting hulls to make listFleet() report the real 2-hull starting fleet. Without this the
+    //    BUYER's own first sync-row would count as "new" and the credit read would race ahead of the
+    //    twin-side debit. Baseline captured as a delta (before.length + 1), not a magic number. ──
+    refreshShip(FRIGATE);
+    refreshShip(PROBE_BUYER);
     const before = listFleet();
     const beforeSymbols = before.map((r) => String(r.symbol));
+    expect(beforeSymbols, 'arrange: the primed roster holds both cold-start hulls').toEqual(
+      expect.arrayContaining([FRIGATE, PROBE_BUYER]),
+    );
     const creditsBefore = readCredits(); // the purchase must be a real ECONOMIC transaction, not just a roster row
 
     // ── When: buy a probe at adjacent shipyard A2 (sells SHIP_PROBE @ 24,680; agent holds 175,000).
@@ -209,14 +245,18 @@ describe('A captain expands the fleet by purchasing a new hull (CLI → daemon r
     const cmd = runCli(['shipyard', 'purchase', '--ship', PROBE_BUYER, '--type', PROBE_TYPE, '--waypoint', YARD, '--player-id', '1']);
     expect(cmd.exitCode, `shipyard purchase dispatch failed: ${cmd.stderr}`).toBe(0);
 
-    // ── Then: bounded-poll the roster until a hull NOT present before appears. Firing on
-    //    rows.length > before.length races a daemon sync-artifact row (the BUYER upserting its own row
-    //    into the daemon DB at ~+200ms) that satisfies a bare length check LONG before the twin-side
-    //    PurchaseShip at ~+2s — so credits would read pre-debit. Keying on a genuinely NEW symbol
-    //    (not in beforeSymbols) waits for the actual purchased hull. Teeth: count grows by exactly one. ──
-    const after = await pollFleet((rows) => rows.some((r) => !beforeSymbols.includes(String(r.symbol))), { tries: 40, delayMs: 1000 });
+    // ── Then: bounded-poll the roster until a genuinely NEW hull appears. A candidate is "new" only
+    //    when it is NOT in the primed baseline AND NOT one of the two starting hulls (defence in depth:
+    //    the explicit STARTERS guard holds even if a starter were somehow missing from beforeSymbols).
+    //    With the primed baseline the first new symbol can only be the purchased hull, which exists
+    //    ONLY after the twin-side PurchaseShip debit (~+2s) — never the BUYER's own earlier sync-row
+    //    (~+100ms) that a bare length check would fire on before credits are charged. Teeth: the roster
+    //    count grows by exactly one. ──
+    const STARTERS = [FRIGATE, PROBE_BUYER];
+    const isNewHull = (sym: string): boolean => !beforeSymbols.includes(sym) && !STARTERS.includes(sym);
+    const after = await pollFleet((rows) => rows.some((r) => isNewHull(String(r.symbol))), { tries: 40, delayMs: 1000 });
     expect(after.length, 'the purchased hull must appear in the daemon fleet roster').toBe(before.length + 1);
-    const newHulls = after.map((r) => String(r.symbol)).filter((s) => !beforeSymbols.includes(s));
+    const newHulls = after.map((r) => String(r.symbol)).filter(isNewHull);
     expect(newHulls.length, 'exactly one brand-new hull was added to the fleet').toBe(1);
 
     // ── Teeth (F1): prove it was a real ECONOMIC transaction, not just a roster row — the agent
@@ -251,12 +291,16 @@ describe('Flight-mode (CRUISE/BURN/DRIFT/STEALTH) — no low-level CLI to exerci
 //      new Location (and IN_ORBIT arrival) for the roster to observe it. This is the brief's named
 //      risk ("a nav mutation the daemon doesn't re-sync"): RED if refresh keeps reporting A1 /
 //      IN_TRANSIT, so pollShip never sees location===F55 && IN_ORBIT.
-//   4. REFUEL — teeth on FUEL: (a) the pre-refuel read must show the tank BELOW capacity (proving the
-//      voyage's burn is observable through refresh) and (b) the post-refuel read must show it FULL and
-//      strictly higher. RED if the daemon does not re-sync fuelCurrent (pre-check reads a stale full
-//      tank, or the fill never surfaces). The credits check is secondary and shares the `player info`
-//      balance read-back that the cargo-trade suite already flags as a candidate stale read.
+//   4. REFUEL — teeth on the COORDINATOR's fuel path: after A1→F55 the daemon auto-refuels on arrival,
+//      so (a) the tank reads FULL at F55 (the restore is observable through refresh) and (b) credits
+//      are strictly BELOW the pre-voyage baseline (the top-up was paid). The transient DRAINED tank is
+//      unobservable by design — auto-refuel races any read-back — so the departure burn itself is
+//      proven in-process (navigate-fuel-persistence.test.ts), while a manual refuel on the now-full
+//      DOCKED tank re-reads credits UNCHANGED (the twin's 0-units-costs-0 invariant, end-to-end). RED
+//      if the daemon does not re-sync fuelCurrent (the fill never surfaces) or the top-up is not paid.
 //   5. PURCHASE — the new hull must appear in the daemon's `ship list` roster. This is the brief's
 //      named risk ("purchase not reflected"): RED if the daemon never adds the purchased hull to its
-//      fleet cache, so pollFleet exhausts its budget with the roster length unchanged.
+//      fleet cache, so pollFleet exhausts its budget with the roster length unchanged. The baseline is
+//      PRIMED (both starting hulls re-synced) so the BUYER's own sync-row is never mistaken for the
+//      purchase and the credit read lands AFTER the twin-side debit, not before it.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
