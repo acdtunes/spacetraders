@@ -327,6 +327,10 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
     settleArrival(world, ship, symbol);
     if (ship.nav.status !== 'DOCKED') return sendError(reply, 400, ERR_SHIP_NOT_DOCKED, `Ship ${symbol} must be docked to refuel.`);
+    // A full tank (missing 0) buys 0 market units => totalPrice 0: a 0-unit top-up is ALWAYS free
+    // (never a phantom 1-credit charge). A real burn rounds UP to whole market units — the 50 fuel a
+    // A1->F55 CRUISE hop burns costs ONE unit (100 ship-fuel). That single unit is the live daemon's
+    // observed post-arrival auto-refuel (−1 credit), NOT a lost burn: the departure burn persisted.
     const missing = Math.max(0, ship.fuel.capacity - ship.fuel.current);
     const marketUnits = Math.ceil(missing / 100);
     const pricePerUnit = fuelUnitPrice(world, ship.nav.waypointSymbol);
