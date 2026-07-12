@@ -201,6 +201,16 @@ export interface ConstructionState {
   adopted: boolean;
 }
 
+/** One line of the gate's construction manifest — the spec Construction.materials shape
+ *  (gobot/api/openapi.json ConstructionMaterial). `fulfilled` climbs (capped at `required`) as a
+ *  hauler supplies the good to the site; the site is complete once every line is met. Held as a
+ *  SEPARATE world field (constructionMaterials) so the frozen ConstructionState stays untouched. */
+export interface ConstructionMaterial {
+  tradeSymbol: string;
+  required: number;
+  fulfilled: number;
+}
+
 /** GATE-view standing coordinators, each launched exactly-once via the /_twin/report seam. */
 export interface StandingCoordinators {
   siting: boolean;
@@ -253,4 +263,9 @@ export interface World extends ControlPlaneState {
   // World. Deliberately NOT read by GET /_twin/state — the frozen contract's construction
   // view is exactly {site, percent, started, adopted} (3 existing tests assert it via toEqual).
   constructionIsComplete?: boolean;
+  // The stateful materials manifest for the gate construction site (constructionState.site),
+  // seeded in gate-entry mode. GET /v2 …/construction reads it; POST …/construction/supply
+  // mutates `fulfilled` in place. Off the /_twin/state superset (that view stays frozen), so
+  // adding it is invisible to the existing state toEqual assertions.
+  constructionMaterials?: ConstructionMaterial[];
 }

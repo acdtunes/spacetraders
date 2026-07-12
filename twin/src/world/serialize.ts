@@ -9,12 +9,12 @@
 // spec-required field with a faithful value (never mutating stored world state, so /_twin/state and the
 // internal clock/logic keep their reduced shapes). This is the twin analogue of the daemon's
 // openapi_contract_test.go: it makes twin RESPONSES provably conform to the same vendored spec.
-import type { Agent, Market, Ship, ShipNav, Shipyard, TradeGood, World } from './types.js';
+import type { Agent, ConstructionMaterial, Market, Ship, ShipNav, Shipyard, TradeGood, World } from './types.js';
 import { getNow, resolveNav } from '../clock.js';
 
 /** "FRAME_PROBE" -> "Frame Probe"; used to synthesize the spec-required human `name`/`description`
  *  fields the reduced fixtures omit. */
-function humanize(symbol: string): string {
+export function humanize(symbol: string): string {
   return symbol
     .split('_')
     .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w))
@@ -200,6 +200,17 @@ export function serializeCargo(ship: Ship): Record<string, unknown> {
       description: (i as { description?: string }).description ?? humanize(i.symbol),
       units: i.units,
     })),
+  };
+}
+
+/** Serialize the gate's materials manifest to the FULL spec Construction ({ symbol, materials, isComplete }
+ *  — gobot/api/openapi.json). `symbol` is the site waypoint; `isComplete` is DERIVED (every material met),
+ *  never a stored flag. Non-mutating: maps the stored ConstructionMaterial lines onto the wire shape. */
+export function serializeConstruction(materials: ConstructionMaterial[], symbol: string): Record<string, unknown> {
+  return {
+    symbol,
+    materials: materials.map((m) => ({ tradeSymbol: m.tradeSymbol, required: m.required, fulfilled: m.fulfilled })),
+    isComplete: materials.length > 0 && materials.every((m) => m.fulfilled >= m.required),
   };
 }
 

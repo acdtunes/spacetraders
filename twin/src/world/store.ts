@@ -1,4 +1,4 @@
-import type { GateWorkerState, HaulerState, Ship, World } from './types.js';
+import type { ConstructionMaterial, GateWorkerState, HaulerState, Ship, World } from './types.js';
 import { loadColdStartWorld, registerAgent } from './loader.js';
 
 /** The single in-memory world every route reads/mutates. Lazily built on first access. */
@@ -50,6 +50,13 @@ export type ResetOptions = ColdResetOptions | IncomeResetOptions | GateResetOpti
 
 const DEFAULT_HUBS = ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3', 'X1-PZ28-H4', 'X1-PZ28-H5'];
 const FALLBACK_JUMP_GATE = 'X1-PZ28-I67';
+
+// The gate construction manifest — the two goods the real SpaceTraders JUMP_GATE requires.
+// `required` counts are realistic (thousands); `fulfilled` is layered on at 0 by seedGateEntry.
+const GATE_MANIFEST: ReadonlyArray<{ tradeSymbol: string; required: number }> = [
+  { tradeSymbol: 'FAB_MATS', required: 4000 },
+  { tradeSymbol: 'ADVANCED_CIRCUITRY', required: 1200 },
+];
 
 /** POST /_twin/reset: rebuild the world from fixtures, PRESERVING the registered agent's
  *  symbol/faction/token, then layer the mode-specific seed on top. Replaces the singleton —
@@ -115,6 +122,9 @@ function seedGateEntry(world: World, opts: GateResetOptions): void {
     started: false,
     adopted: false,
   };
+  // The gate's stateful materials manifest (the real JUMP_GATE requires FAB_MATS +
+  // ADVANCED_CIRCUITRY). GET reads it; supply mutates `fulfilled`. fulfilled starts at 0.
+  world.constructionMaterials = GATE_MANIFEST.map((m): ConstructionMaterial => ({ ...m, fulfilled: 0 }));
   world.gateWorkers = [] as GateWorkerState[];
   world.executorRunning = opts.executorRunning ?? true;
   world.autosizerRunning = false;
