@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import { DAEMON_BIN, GOBOT_DIR, TEST_CONFIG, TEST_DATABASE_URL, TWIN_BASE_URL } from './run-cli.js';
 
@@ -30,9 +30,13 @@ async function waitReady(timeoutMs = 30_000): Promise<void> {
   throw new Error(`test daemon not ready within ${timeoutMs}ms (pidfile ${TEST_PID_FILE} / socket ${TEST_SOCKET})`);
 }
 
-/** Spawn the isolated test daemon on the -test slot. `extraEnv` overlays LAST. */
+/** Spawn the isolated test daemon on the -test slot. `extraEnv` overlays LAST.
+ *  Uses --force so a fresh boot evicts any prior test daemon and reclaims a stale
+ *  -test pidfile/socket left by a previous run/restart (a lingering unix-socket file
+ *  otherwise blocks the new daemon's bind → its startup fleet-sync never runs).
+ *  --force targets ONLY the -test pidfile from test-config.yaml, never production. */
 export async function startTestDaemon(extraEnv: Record<string, string> = {}): Promise<void> {
-  daemon = spawn(DAEMON_BIN, [], {
+  daemon = spawn(DAEMON_BIN, ['--force'], {
     cwd: GOBOT_DIR,
     stdio: 'ignore',
     env: {
@@ -60,6 +64,10 @@ export async function stopTestDaemon(): Promise<void> {
   if (daemon && !daemon.killed) daemon.kill('SIGTERM');
   daemon = undefined;
   await waitPidfileGone();
+  // Remove any lingering -test pidfile/socket so the next boot's socket bind + startup
+  // fleet-sync are not blocked by a stale file (the daemon does not always unlink on SIGTERM).
+  try { rmSync(TEST_PID_FILE, { force: true }); } catch { /* ignore */ }
+  try { rmSync(TEST_SOCKET, { force: true }); } catch { /* ignore */ }
 }
 
 export async function restartTestDaemon(extraEnv: Record<string, string> = {}): Promise<void> {
