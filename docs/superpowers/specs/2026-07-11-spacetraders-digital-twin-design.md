@@ -87,13 +87,21 @@ Exactly what the DATA phase hits: read treasury → price-check + buy probes →
 
 In-memory, seeded deterministically:
 
-- **Agent** — `symbol`, `token`, `headquarters`, `credits`, `startingFaction`. Cold-start fixture mirrors the real `/register` default (≈175,000 credits) for contract fidelity; the reconciler only cares that treasury sits in the cold-start band the bootstrap spec calls "~150k", which this satisfies. HQ in the home system.
-- **Ships** — keyed by symbol, shaped per `shipDTO`. Fixture: 1 `COMMAND` frigate + 1 `SATELLITE`/`PROBE`, both at HQ, docked, full fuel.
-- **Systems → Waypoints** — a home system with a handful of waypoints (`symbol`, `type`, `x`, `y`, `traits[]`, `orbitals[]`). At least one waypoint has a **shipyard**, several have **markets**, so scouting has real targets.
-- **Markets** — per market waypoint: `exports/imports/exchange` + `tradeGoods[]` (`symbol`, `supply`, `activity`, `sellPrice`, `purchasePrice`, `tradeVolume`), static seeded values.
-- **Shipyards** — per shipyard waypoint: ship listings including `SHIP_PROBE` priced ≈40k so the probe price-check + staged buy behave as the spec expects.
+- **Agent** — `symbol`, `token`, `headquarters`, `credits`, `startingFaction`. Cold-start fixture mirrors the real `/register` default (≈175,000 credits) for contract fidelity; the reconciler only cares that treasury sits in the cold-start band the bootstrap spec calls "~150k", which this satisfies. HQ is a waypoint in X1-PZ28 (below).
+- **Ships** — keyed by symbol, shaped per `shipDTO`. Fixture: 1 `COMMAND` frigate + 1 `SATELLITE`/`PROBE`, both at the HQ waypoint, docked, full fuel.
+- **Systems → Waypoints** — the **real era-2 home system, `X1-PZ28`** (see capture below), not a synthetic one: all 90 waypoints with their real `type`, `x`, `y`, `traits[]`, `orbitals[]`, `has_fuel`. The `MARKETPLACE`/`SHIPYARD`-trait subset gives scouting real targets; the system also contains the real `JUMP_GATE` waypoint (useful when GATE lands).
+- **Markets** — per marketplace waypoint: `exports/imports/exchange` + `tradeGoods[]` (`symbol`, `supply`, `activity`, `sellPrice`, `purchasePrice`, `tradeVolume`), from the capture.
+- **Shipyards** — per shipyard waypoint: real ship listings incl. `SHIP_PROBE` at its real price so the probe price-check + staged buy behave exactly as against the live game.
 
-**Cold-start fixture** is produced by `POST /register` (and rebuildable via `POST /_twin/reset`), so it exactly matches what the bootstrap reconciler expects to observe on tick 1.
+### Home-system capture (X1-PZ28)
+
+The seed data is **captured, not invented**, and the same snapshot serves as the golden contract fixtures:
+
+- **Topology** — the 90 waypoints (type/x/y/traits/orbitals/has_fuel) come read-only from the production `waypoints` table filtered to the current `era_id` (`select … where system_symbol='X1-PZ28'`). No live-API load, and it's the full scouted picture.
+- **Market/shipyard trade data** — captured via the hardened CLI against the live game for the marketplace/shipyard subset (`scout` / `market` / `shipyard`), or from a market table in the prod DB if one exists. Presence-gated market detail is already visible because the era-2 agent's probes have scouted the system.
+- Snapshot lands in `twin/fixtures/era2-X1-PZ28/` as JSON, loaded verbatim at twin boot. Capturing it is the first task of Slice 1.
+
+**Cold-start fixture** is produced by `POST /register` (and rebuildable via `POST /_twin/reset`) on top of the captured X1-PZ28 world, so it exactly matches what the bootstrap reconciler expects to observe on tick 1.
 
 ## Compressed clock (the crux)
 
@@ -124,12 +132,31 @@ A `twin/docker-compose.test.yml` stands up a **parallel** Prometheus + Grafana (
 
 ---
 
-## Testing strategy
+## Testing strategy — acceptance-test-first, driven through the CLI
 
-Vitest (`rtk vitest run`), two tiers:
+**Every endpoint gets an acceptance test written *before* its implementation** (outside-in TDD, red→green — the superpowers `test-driven-development` skill governs the loop). Each test drives the endpoint through a **real, already-hardened `spacetraders` CLI command** — never a raw HTTP call — and asserts **both**:
 
-1. **Contract tests (twin-only).** Assert each endpoint's JSON shape/casing against **golden fixtures captured once from the real API** (one real `/my/agent`, market, shipyard, ship, waypoint list). This is what proves "replicate exactly the API contracts." Golden fixtures are checked in under `twin/fixtures/golden/`.
-2. **Integration (twin + bot).** Boot the twin, `player register` against it, run the daemon/CLI, and assert the **Slice-1 DATA acceptance**: reaches 3 probes assigned to scout-all-markets; **idempotent across a daemon restart mid-purchase** (restart the daemon, re-observe, no double-buy). `GET /_twin/state` backs the assertions.
+- **Contract** — the CLI consumes the twin's response with no client-side parse/error (proving the JSON shape/casing matches what the Go decode targets expect), and the parsed fields it prints match the captured golden values.
+- **Behavior** — the world changes per game rules. Examples: after `ship buy`, `GET /_twin/state` shows the new probe *and* `player`/`agent` shows credits reduced by the price; after `navigate`, the ship reports `IN_TRANSIT` then flips to `IN_ORBIT` at the destination once the compressed `arrival` passes; after `refuel`, fuel is full and credits are charged; `market`/`shipyard` reads return the captured X1-PZ28 goods/listings.
+
+**Endpoint → driving CLI command** (each the subject of one acceptance test):
+
+| Endpoint | CLI command that exercises it |
+|---|---|
+| `POST /register` | `spacetraders player register` |
+| `GET /my/agent` | `spacetraders player` / `agent` |
+| `GET /my/ships` · `/{s}` | `spacetraders ship list` · `ship show <s>` |
+| `POST /my/ships` (buy) | `spacetraders shipyard purchase` / `ship buy` |
+| `navigate`·`orbit`·`dock`·`refuel` | `spacetraders ship navigate`·`orbit`·`dock`·`refuel` |
+| `GET /systems/{s}/waypoints[/{w}]` | `spacetraders system` / `universe` |
+| `GET …/market` · `/shipyard` | `spacetraders market` / `scout` · `shipyard` |
+| `GET /` | `spacetraders universe status` (also called by `player register` on startup) |
+
+Most of these are **direct-client** CLI commands (they build their own client and hit the twin directly — no daemon needed), keeping per-endpoint tests light; workflow-level assertions (`scout-all-markets`) go through the test daemon.
+
+**Harness.** Vitest (`rtk vitest run`) global-setup boots the twin once and seeds the test player via `spacetraders player register` (writes the `players` row + JWT into the test Postgres). Each test resets the world with `POST /_twin/reset`, runs its CLI command via `child_process`, and asserts against stdout + `GET /_twin/state`. The test daemon (isolated per the section above) is booted for the workflow-level tests.
+
+**Top-level Slice-4 acceptance (the whole point).** With every endpoint green, one end-to-end test boots twin + daemon, runs `workflow bootstrap`, and asserts the **Slice-1 DATA acceptance**: reaches 3 probes assigned to scout-all-markets; **idempotent across a daemon restart mid-purchase** (restart the daemon, re-observe, no double-buy).
 
 ---
 
@@ -140,24 +167,28 @@ spacetraders/twin/
   package.json  tsconfig.json  vitest.config.ts
   src/
     server.ts            # Fastify app, /v2 + /_twin route registration
-    world/               # in-memory model + seeded cold-start fixture
+    world/               # in-memory model + cold-start fixture on top of the capture
     clock.ts             # compressed-time helper (arrival/cooldown math)
     routes/              # one module per endpoint group (agent, ships, systems, market, shipyard, register)
     errors.ts            # SpaceTraders error envelope + code constants
-  fixtures/golden/       # responses captured from the real API
+  fixtures/era2-X1-PZ28/ # captured home-system snapshot: seed data AND golden contract values
+  tests/                 # per-endpoint CLI acceptance tests + the Slice-4 end-to-end
   test-config.yaml       # daemon config for the test stack
   docker-compose.test.yml
-  scripts/               # launch test stack, seed via player register
+  scripts/               # capture X1-PZ28, launch test stack, seed via player register
 ```
 
 ## Delivery slices (the twin itself)
 
-1. **Twin skeleton + read endpoints + cold-start fixture.** Fastify server, world model, `POST /register` + `POST /_twin/reset`, `GET /` `/my/agent` `/my/ships[/{s}]` `/systems/{s}/waypoints[/{w}]` `/market` `/shipyard`. Golden contract tests for each. The bot-side env-var seam.
-2. **Mutations + compressed clock.** `POST /my/ships` (buy probe), `navigate`/`orbit`/`dock`/`refuel`, the compressed-clock arrival logic + on-read `nav.status` flip. Contract tests for mutation responses.
-3. **Test-daemon integration + observability.** `test-config.yaml`, launch/seed scripts, `docker-compose.test.yml`, and the end-to-end DATA-phase acceptance test (3 probes scouting, restart-idempotent).
+Harness first (it's the prerequisite for any CLI-driven acceptance test), then endpoints in groups — **each endpoint red→green: capture its golden fixture, write the CLI acceptance test, watch it fail, implement until green.**
+
+1. **Harness + identity endpoints.** The bot-side env-var seam; the X1-PZ28 capture into `twin/fixtures/`; Fastify skeleton + in-memory world loader; `POST /_twin/reset` + `GET /_twin/state`; `test-config.yaml` + launch/seed script (`player register` against the twin into the test Postgres); Vitest global-setup. Endpoints (each test-first): `POST /register`, `GET /`, `GET /my/agent`, `GET /my/ships[/{s}]`.
+2. **Scouting read endpoints.** Test-first: `GET /systems/{s}/waypoints[/{w}]`, `GET …/market`, `GET …/shipyard` — asserted through `system`/`universe`/`market`/`shipyard`/`scout`.
+3. **Mutations + compressed clock.** Test-first: `POST /my/ships` (buy probe), `navigate`/`orbit`/`dock`/`refuel`; the compressed-clock arrival math + on-read `nav.status`/location flip.
+4. **DATA end-to-end + observability.** The top-level `workflow bootstrap` acceptance (3 probes scouting, restart-idempotent) through the test daemon; `docker-compose.test.yml` (Prometheus `9093` / Grafana `3001` / Postgres `5433`) sequenced last.
 
 ## Open questions (deferred to the phase that needs them)
 
 - **INCOME:** contract lifecycle endpoints + crude market price/supply response to trades; how deterministic contract generation should be.
 - **GATE:** construction site + supply endpoints; whether construction progress needs a background tick or can stay lazy.
-- **Golden fixtures:** whether we can capture from the live agent now, or need a throwaway registration to snapshot pristine `/register` output.
+- **`/register` response shape:** topology capture is resolved (prod `waypoints` table + CLI for market/shipyard); the one remaining unknown is the exact pristine `/register` payload (starting ships/credits/faction) — snapshot it from a throwaway live registration, or mirror the documented defaults.
