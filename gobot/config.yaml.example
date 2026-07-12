@@ -494,3 +494,35 @@ fleet_autosizer:
   # warehouse_capacity_target_hours: 2
   # max_module_spend_per_hull: 0
   # warehouse_frame_class_ceiling: light
+
+# Captain bootstrap coordinator (sp-3nbe): the standing reconciler that drives a COLD agent through
+# the cold-start arc to the jump gate — launched once via 'workflow bootstrap', it OBSERVES the live
+# world each tick, DERIVES the phase from that observation (never a stored cursor), and ACTS on the
+# delta behind guards, so a restart re-observes and resumes at real state. LIVE BY DEFAULT once
+# launched (LAUNCH-GATED: nothing runs until you invoke 'workflow bootstrap'). Slice 1 runs the DATA
+# phase only (probes -> target, scout every market); INCOME/GATE are later slices.
+bootstrap:
+  # Escapes. bootstrap_disabled stands the WHOLE coordinator down (absent/false = ACTIVE, no
+  # dark-shipping); the container stays resident so a flip + restart re-arms it. dry_run evaluates +
+  # logs every decision LOUDLY (probe buys, scout assignments) but acts on nothing (also available as
+  # the CLI --dry-run launch flag).
+  # bootstrap_disabled: false
+  # dry_run: false
+
+  # DATA phase. probe_target is the probe count the coordinator ramps to, STAGED and capital-gated —
+  # at most one buy per tick (0 => 3). coverage_bar is the DATA->exit threshold: the fraction (0..1)
+  # of home-system marketplaces that must have fresh market data before the arc leaves DATA (0 => 0.9;
+  # the later phases are not implemented in Slice 1, so it then holds at DATA-complete).
+  # probe_target: 3
+  # coverage_bar: 0.9
+
+  # Money-guard + pacer. reserve_margin is the <=-fraction-of-treasury-per-decision guardrail: a buy
+  # may spend at most this fraction of live treasury (leaving the rest as the working buffer), which
+  # also PACES the acquisition ramp (0 => 0.5 = the <=50% rule). Fails CLOSED on an unreadable price.
+  # reserve_margin: 0.5
+
+  # Cadence + the asset. tick_seconds is the reconcile cadence (0 => 300 = 5min; cold-start is a slow,
+  # deliberate ramp). probe_ship_type is the shipyard ship-type symbol bought for a probe (even the
+  # asset is a knob; 0/absent => SHIP_PROBE).
+  # tick_seconds: 300
+  # probe_ship_type: SHIP_PROBE

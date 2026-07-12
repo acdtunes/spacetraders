@@ -37,6 +37,7 @@ const (
 	DaemonService_TradeFleetCoordinator_FullMethodName        = "/daemon.DaemonService/TradeFleetCoordinator"
 	DaemonService_SitingCoordinator_FullMethodName            = "/daemon.DaemonService/SitingCoordinator"
 	DaemonService_FleetAutosizerCoordinator_FullMethodName    = "/daemon.DaemonService/FleetAutosizerCoordinator"
+	DaemonService_BootstrapCoordinator_FullMethodName         = "/daemon.DaemonService/BootstrapCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName = "/daemon.DaemonService/FrontierExpansionCoordinator"
 	DaemonService_WorkerRebalancerCoordinator_FullMethodName  = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                 = "/daemon.DaemonService/AddScoutPost"
@@ -136,6 +137,10 @@ type DaemonServiceClient interface {
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
 	FleetAutosizerCoordinator(ctx context.Context, in *FleetAutosizerCoordinatorRequest, opts ...grpc.CallOption) (*FleetAutosizerCoordinatorResponse, error)
+	// BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a
+	// reconciler that drives a cold agent through the cold-start arc to the jump gate. Slice 1
+	// ships the DATA phase (probes → 3, scout every market). LIVE BY DEFAULT once launched.
+	BootstrapCoordinator(ctx context.Context, in *BootstrapCoordinatorRequest, opts ...grpc.CallOption) (*BootstrapCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -414,6 +419,16 @@ func (c *daemonServiceClient) FleetAutosizerCoordinator(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FleetAutosizerCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_FleetAutosizerCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) BootstrapCoordinator(ctx context.Context, in *BootstrapCoordinatorRequest, opts ...grpc.CallOption) (*BootstrapCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BootstrapCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_BootstrapCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -868,6 +883,10 @@ type DaemonServiceServer interface {
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
 	FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error)
+	// BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a
+	// reconciler that drives a cold agent through the cold-start arc to the jump gate. Slice 1
+	// ships the DATA phase (probes → 3, scout every market). LIVE BY DEFAULT once launched.
+	BootstrapCoordinator(context.Context, *BootstrapCoordinatorRequest) (*BootstrapCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -1025,6 +1044,9 @@ func (UnimplementedDaemonServiceServer) SitingCoordinator(context.Context, *Siti
 }
 func (UnimplementedDaemonServiceServer) FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FleetAutosizerCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) BootstrapCoordinator(context.Context, *BootstrapCoordinatorRequest) (*BootstrapCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BootstrapCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
@@ -1484,6 +1506,24 @@ func _DaemonService_FleetAutosizerCoordinator_Handler(srv interface{}, ctx conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).FleetAutosizerCoordinator(ctx, req.(*FleetAutosizerCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_BootstrapCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BootstrapCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).BootstrapCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_BootstrapCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).BootstrapCoordinator(ctx, req.(*BootstrapCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2268,6 +2308,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FleetAutosizerCoordinator",
 			Handler:    _DaemonService_FleetAutosizerCoordinator_Handler,
+		},
+		{
+			MethodName: "BootstrapCoordinator",
+			Handler:    _DaemonService_BootstrapCoordinator_Handler,
 		},
 		{
 			MethodName: "FrontierExpansionCoordinator",

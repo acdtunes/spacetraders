@@ -42,6 +42,10 @@ type Config struct {
 	// into the fleet_autosizer coordinator container on every build (creation + recovery),
 	// so a captain retunes the sizing/buying behaviour by editing config.yaml and restarting.
 	FleetAutosizer FleetAutosizerConfig `mapstructure:"fleet_autosizer"`
+	// Bootstrap holds the captain bootstrap coordinator's knobs (sp-3nbe), injected live into
+	// the bootstrap coordinator container on every build (creation + recovery), so a captain
+	// retunes the cold-start behaviour by editing config.yaml and restarting.
+	Bootstrap BootstrapConfig `mapstructure:"bootstrap"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

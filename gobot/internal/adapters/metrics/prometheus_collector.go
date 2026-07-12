@@ -93,6 +93,11 @@ var (
 	// its purchase/blocked/demand/zero-effect series through the package Record funcs below.
 	globalFleetAutosizerCollector *FleetAutosizerMetricsCollector
 
+	// globalBootstrapCollector is the singleton captain-bootstrap collector (sp-3nbe). Set by
+	// SetGlobalBootstrapCollector() when metrics are enabled; the bootstrap reconciler emits its
+	// derived-phase gauge + probe-purchase counter through it.
+	globalBootstrapCollector *BootstrapMetricsCollector
+
 	// globalSitingCollector is the singleton factory-siting collector (sp-vdld). Set by
 	// SetGlobalSitingCollector() when metrics are enabled; the siting coordinator's ACT and
 	// EMIT steps increment the launch/retire/scout-demand counters through it.
@@ -669,6 +674,17 @@ func SetGlobalFleetAutosizerCollector(collector *FleetAutosizerMetricsCollector)
 // GetGlobalFleetAutosizerCollector returns the global fleet-autosizer collector.
 func GetGlobalFleetAutosizerCollector() *FleetAutosizerMetricsCollector {
 	return globalFleetAutosizerCollector
+}
+
+// SetGlobalBootstrapCollector sets the global captain-bootstrap collector (sp-3nbe). Pass nil to
+// clear it (e.g. in test cleanup).
+func SetGlobalBootstrapCollector(collector *BootstrapMetricsCollector) {
+	globalBootstrapCollector = collector
+}
+
+// GetGlobalBootstrapCollector returns the global captain-bootstrap collector.
+func GetGlobalBootstrapCollector() *BootstrapMetricsCollector {
+	return globalBootstrapCollector
 }
 
 // RecordAutosizerPurchase increments the autosizer purchase counter for a class globally

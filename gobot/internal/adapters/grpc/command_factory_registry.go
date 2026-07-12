@@ -385,6 +385,10 @@ func containerSpecList() []ContainerSpec {
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		{CommandType: "fleet_autosizer", build: buildFleetAutosizerCommand},
+		// bootstrap (sp-3nbe): the standing captain bootstrap coordinator. Like
+		// fleet_autosizer/siting it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		{CommandType: "bootstrap", build: buildBootstrapCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "warehouse", build: buildWarehouseCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
@@ -476,6 +480,13 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// coordinator and no persisted copy can shadow the live value (the sp-ts82 pattern).
 	if commandType == "fleet_autosizer" {
 		s.resolveFleetAutosizerConfig(config)
+	}
+	// sp-3nbe: same live-config discipline for the captain bootstrap coordinator. Its [bootstrap]
+	// knobs are cleared and re-injected from the boot-loaded config.yaml on every build — creation
+	// and recovery alike — so a config edit + restart retunes a recovered coordinator and no
+	// persisted copy can shadow the live value (the sp-ts82 pattern).
+	if commandType == "bootstrap" {
+		s.resolveBootstrapConfig(config)
 	}
 	// sp-x8i5: same live-config discipline for the scouting subsystem's tour-start
 	// phase jitter ceiling. The [scouting] knob is cleared and re-injected from the

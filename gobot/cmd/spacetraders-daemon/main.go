@@ -17,6 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
@@ -519,7 +520,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -674,6 +675,20 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
+	}
+
+	// Captain bootstrap coordinator (sp-3nbe): the reconciler that drives a cold agent through the
+	// cold-start arc to the jump gate. Slice 1 runs the DATA phase (probes → target, scout every
+	// market). LIVE BY DEFAULT once first-launched (CLI/gRPC 'workflow bootstrap'), recovery-adopted
+	// on restart. Its concrete ports — the phantom-cache ship refresh, the fleet/coverage/treasury
+	// observation, the shipyard price-check + buy, and the scout-all-markets assignment — are
+	// assembled inside grpc.NewBootstrapCoordinatorHandler over the daemon's live collaborators.
+	// LAUNCH-GATED: registering the handler changes nothing until 'workflow bootstrap' is invoked.
+	bootstrapHandler := grpc.NewBootstrapCoordinatorHandler(
+		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepoAdapter,
+	)
+	if err := mediator.RegisterHandler[*bootstrapCmd.RunBootstrapCoordinatorCommand](med, bootstrapHandler); err != nil {
+		return fmt.Errorf("failed to register BootstrapCoordinator handler: %w", err)
 	}
 
 	// Trade-route coordinator (sp-zewt): a single-hull pure-arbitrage circuit that runs

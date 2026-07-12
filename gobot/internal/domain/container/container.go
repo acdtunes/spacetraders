@@ -78,6 +78,11 @@ const (
 	// the full money-guard stack. Like the trade-fleet/siting coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeFleetAutosizer ContainerType = "FLEET_AUTOSIZER_COORDINATOR"
+	// ContainerTypeBootstrapCoordinator is the standing captain bootstrap coordinator (sp-3nbe):
+	// a per-player reconciler that loops forever inside one Handle() driving a cold agent through
+	// the cold-start arc to the jump gate (DATA→INCOME→GATE). Like the siting/autosizer
+	// coordinators it is NOT a CoordinatorOwnsIterations type.
+	ContainerTypeBootstrapCoordinator ContainerType = "BOOTSTRAP_COORDINATOR"
 	ContainerTypeParallelManufacturing    ContainerType = "PARALLEL_MANUFACTURING"
 	ContainerTypeManufacturingTaskWorker  ContainerType = "MANUFACTURING_TASK_WORKER"
 	ContainerTypeGasCoordinator           ContainerType = "GAS_COORDINATOR"

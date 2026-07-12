@@ -139,6 +139,12 @@ type DaemonServer struct {
 	// redeploy.
 	fleetAutosizerConfig config.FleetAutosizerConfig
 
+	// bootstrapConfig carries the captain bootstrap coordinator's knobs (sp-3nbe) from
+	// config.yaml. The bootstrap coordinator resolves it into its container's launch config on
+	// every build (creation + restart recovery via resolveBootstrapConfig), so a captain retunes
+	// the cold-start behaviour by editing config and restarting, no code redeploy.
+	bootstrapConfig config.BootstrapConfig
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -180,6 +186,7 @@ func NewDaemonServer(
 	manufacturingConfig config.ManufacturingConfig,
 	scoutingConfig config.ScoutingConfig,
 	fleetAutosizerConfig config.FleetAutosizerConfig,
+	bootstrapConfig config.BootstrapConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -242,6 +249,7 @@ func NewDaemonServer(
 		manufacturingConfig:    manufacturingConfig,
 		scoutingConfig:         scoutingConfig,
 		fleetAutosizerConfig:   fleetAutosizerConfig,
+		bootstrapConfig:        bootstrapConfig,
 		shutdownChan:           make(chan os.Signal, 1),
 		done:                   make(chan struct{}),
 	}
@@ -517,6 +525,16 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register fleet-autosizer metrics collector: %w", err)
 		}
 		metrics.SetGlobalFleetAutosizerCollector(fleetAutosizerCollector)
+
+		// Create captain-bootstrap collector (sp-3nbe): the bootstrap reconciler emits its
+		// derived-phase gauge + probe-purchase counter through the global set here — the
+		// observability for the standing coordinator that drives a cold agent to the jump gate.
+		bootstrapCollector := metrics.NewBootstrapMetricsCollector()
+		if err := bootstrapCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register bootstrap metrics collector: %w", err)
+		}
+		metrics.SetGlobalBootstrapCollector(bootstrapCollector)
 	}
 
 	// Register container specs for launch and recovery

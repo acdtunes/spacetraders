@@ -1250,6 +1250,25 @@ func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID i
 	return resp.ContainerId, nil
 }
 
+// BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a reconciler
+// that drives a cold agent through the cold-start arc to the jump gate. Identity-only launch — all
+// [bootstrap] tuning resolves live from config.yaml. dryRun (the CLI --dry-run) launches it in watch
+// mode: it evaluates + logs every decision but acts on nothing.
+func (c *DaemonClient) BootstrapCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
+	req := &pb.BootstrapCoordinatorRequest{
+		PlayerId: int32(playerID),
+		DryRun:   dryRun,
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.BootstrapCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr).
 // dryRun decides + logs the ferry it would dispatch but ferries nothing.
 func (c *DaemonClient) WorkerRebalancerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {

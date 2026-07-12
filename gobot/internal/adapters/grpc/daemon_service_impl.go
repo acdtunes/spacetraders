@@ -560,6 +560,26 @@ func (s *daemonServiceImpl) FleetAutosizerCoordinator(ctx context.Context, req *
 	return &pb.FleetAutosizerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe).
+func (s *daemonServiceImpl) BootstrapCoordinator(ctx context.Context, req *pb.BootstrapCoordinatorRequest) (*pb.BootstrapCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.BootstrapCoordinator(ctx, playerID, agentSymbol, req.DryRun)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start bootstrap coordinator: %w", err)
+	}
+
+	return &pb.BootstrapCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
