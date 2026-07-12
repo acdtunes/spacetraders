@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { getWorld } from '../world/store.js';
-import { getNow, makeTransit, resolveNav } from '../clock.js';
+import { fuelCostFor, getNow, makeTransit, resolveNav } from '../clock.js';
 import { appendMutation } from '../world/mutation-log.js';
 import { serializeAgent, serializeShip, serializeShipNav } from '../world/serialize.js';
 import { badRequest, notFound, unauthorized, sendError, ERR_SHIP_MUST_BE_DOCKED, ERR_SHIP_NOT_DOCKED } from '../errors.js';
@@ -205,6 +205,15 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     const originWp = findWaypoint(world, ship.nav.waypointSymbol);
     const destWp = findWaypoint(world, dest);
     if (originWp && destWp) {
+      // Real-API fidelity: a voyage burns fuel at departure (CRUISE/STEALTH round(dist),
+      // BURN 2*round(dist), DRIFT a flat 1), clamped to the tank so it never goes negative —
+      // a 0-distance co-located hop is free, and a capacity-0 probe (tank 0) burns 0. Draining
+      // here is what gives refuel something to restore; it surfaces on GET /my/ships + below.
+      const consumed = Math.min(
+        ship.fuel.current,
+        fuelCostFor({ origin: originWp, destination: destWp, mode: ship.nav.flightMode }),
+      );
+      ship.fuel = { ...ship.fuel, current: ship.fuel.current - consumed };
       world.transits.set(symbol, makeTransit({
         shipSymbol: symbol, origin: originWp, destination: destWp,
         engineSpeed: ship.engine.speed, mode: ship.nav.flightMode, now,

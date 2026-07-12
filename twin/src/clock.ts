@@ -136,6 +136,23 @@ export function fuelRequired(dist: number, mode: FlightMode, fuelCapacity: numbe
   return fuelCost(dist, mode);
 }
 
+/** Fuel a NAVIGATE actually consumes at departure — derived straight from the two waypoints'
+ *  coordinates (reuses `distance`, so callers never re-derive the euclidean math). CRUISE/STEALTH
+ *  round(dist), BURN 2*round(dist), DRIFT a flat 1. Unlike `fuelCost` there is NO min-of-1: a
+ *  0-distance hop between co-located waypoints (an orbital and its planet, e.g. A2 from A1) is a
+ *  FREE move (0). The caller clamps the result to the fuel on board, so a capacity-0 probe (tank 0)
+ *  burns 0. */
+export function fuelCostFor(args: {
+  origin: { x: number; y: number };
+  destination: { x: number; y: number };
+  mode: FlightMode;
+}): number {
+  const roundedDistance = Math.round(distance(args.origin, args.destination));
+  if (args.mode === 'DRIFT') return 1;
+  if (args.mode === 'BURN') return 2 * roundedDistance;
+  return roundedDistance; // CRUISE / STEALTH — no min-of-1; a 0-distance move is free
+}
+
 /** Mint a transit whose arrival is a REAL-wall-clock future instant: wall-now + the
  *  COMPRESSED real ETA (see ARRIVAL_COMPRESSION). Real-clock — NOT the frozen world clock —
  *  because the daemon waits for arrival on real wall time. `now` (a wall Date) is accepted for
