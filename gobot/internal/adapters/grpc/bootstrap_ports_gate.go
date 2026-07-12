@@ -23,6 +23,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -97,6 +98,12 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		return snap
 	}
 	constructionRepo := api.NewConstructionSiteRepository(s.getAPIClient(), s.playerRepo)
+
+	// Scan the home-system jump gates into (symbol, complete) observations, capturing each site's
+	// progress. Stop at the FIRST under-construction gate — it is the active drive target regardless of
+	// what follows (prefer-incomplete), so the read profile matches the pre-refactor early-return.
+	var scans []gateSiteScan
+	progressBySymbol := map[string]float64{}
 	for _, wp := range wps {
 		if wp == nil || wp.Type != jumpGateWaypointType {
 			continue
@@ -105,47 +112,108 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		if serr != nil || site == nil {
 			continue
 		}
-		// The gate site is the jump gate that still needs materials. A finished gate is skipped so a
-		// prior era's built gate never reads as the current target.
-		if site.IsComplete() {
-			continue
+		complete := site.IsComplete()
+		scans = append(scans, gateSiteScan{Symbol: wp.Symbol, Complete: complete})
+		progressBySymbol[wp.Symbol] = site.Progress()
+		if !complete {
+			break
 		}
-		snap.Site = wp.Symbol
-		snap.Complete = false
-		snap.Percent = site.Progress()
+	}
 
-		// Pipeline shape: whether `construction start` has created a pipeline for this site, its progress,
-		// and how many producing material chains it reveals (the worker-sizing target).
-		if status, gerr := s.GetConstructionStatus(ctx, wp.Symbol, playerID); gerr == nil && status != nil {
-			if status.PipelineID != nil && *status.PipelineID != "" {
-				snap.Started = true
-				// Adopted ⇒ the executor has picked the pipeline up (a non-empty, non-terminal pipeline
-				// status). Bootstrap bounces the executor only while a started pipeline is NOT adopted.
-				snap.Adopted = pipelineStatusAdopted(status.PipelineStatus)
-			}
-			snap.MaterialChain = len(status.Materials)
-			if status.PipelineProgress != nil {
-				snap.Percent = *status.PipelineProgress
-			}
-			snap.Complete = status.IsComplete
-		}
+	target, complete, found := selectGateTarget(scans)
+	if !found {
 		return snap
+	}
+	snap.Site = target
+
+	// A built gate is not an active drive target, but it MUST still be observed as complete so
+	// obs.ConstructionComplete stays true and derivePhase returns COMPLETE instead of regressing out of
+	// GATE (st-drm.19 BUG B: the old `continue` dropped a finished gate, emptying the snapshot).
+	if complete {
+		snap.Started = true
+		snap.Complete = true
+		snap.Percent = 100
+		return snap
+	}
+
+	// The active under-construction gate: read its live progress + pipeline shape.
+	snap.Percent = progressBySymbol[target]
+
+	// Pipeline shape: whether `construction start` has created a pipeline for this site, its progress,
+	// and how many producing material chains it reveals (the worker-sizing target).
+	if status, gerr := s.GetConstructionStatus(ctx, target, playerID); gerr == nil && status != nil {
+		if status.PipelineID != nil && *status.PipelineID != "" {
+			snap.Started = true
+			// Adopted ⇒ the executor has picked the pipeline up. Bootstrap bounces the executor only
+			// while a started pipeline is NOT adopted.
+			snap.Adopted = pipelineStatusAdopted(status.PipelineStatus)
+		}
+		snap.MaterialChain = len(status.Materials)
+		if status.PipelineProgress != nil {
+			snap.Percent = *status.PipelineProgress
+		}
+		snap.Complete = status.IsComplete
 	}
 	return snap
 }
 
-// pipelineStatusAdopted reports whether a construction pipeline's status means the executor has adopted
-// it (is working its tasks). An empty/absent status means not-yet-adopted (freshly created, inert).
+// gateSiteScan is one home-system JUMP_GATE waypoint's completion state, read from its construction site.
+// readBootstrapGateSnapshot builds one per scanned gate and selectGateTarget picks the drive target.
+type gateSiteScan struct {
+	Symbol   string
+	Complete bool
+}
+
+// selectGateTarget picks the GATE-phase observation target from the scanned home-system jump gates, in
+// priority order: the FIRST still-under-construction gate is the active drive target (complete=false); if
+// every scanned gate is already built, the FIRST complete gate is returned (complete=true) so the phase
+// still observes COMPLETE. This is the st-drm.19 BUG B fix: a prior era's built gate never masks a live
+// under-construction one, but a truly finished gate is never dropped (which would empty the snapshot and
+// regress derivePhase out of GATE). found=false only when there is no gate site at all, which holds GATE
+// fail-safe (no_gate_site). Pure (no infra), so it is unit-testable in isolation.
+func selectGateTarget(scans []gateSiteScan) (symbol string, complete bool, found bool) {
+	completeSymbol := ""
+	completeFound := false
+	for _, scan := range scans {
+		if scan.Symbol == "" {
+			continue
+		}
+		if !scan.Complete {
+			return scan.Symbol, false, true
+		}
+		if !completeFound {
+			completeFound = true
+			completeSymbol = scan.Symbol
+		}
+	}
+	if completeFound {
+		return completeSymbol, true, true
+	}
+	return "", false, false
+}
+
+// pipelineStatusAdopted reports whether a construction pipeline's status means the executor has ADOPTED
+// it (has taken ownership of its tasks). It is matched to the REAL manufacturing pipeline enum
+// (domain/manufacturing/pipeline.go), whose lifecycle is PLANNING -> EXECUTING -> {COMPLETED, FAILED,
+// CANCELLED}: a freshly-created pipeline is PLANNING (tasks are still being created, the executor has
+// NOT yet picked it up), so it is NOT adopted and the coordinator must bounce the executor to force a
+// re-scan + adoption (captain L57). EXECUTING (actively worked) and the terminal COMPLETED/FAILED/
+// CANCELLED (the executor already engaged it) are adopted, so a healthy or finished pipeline is never
+// needlessly bounced. An empty/absent OR unrecognized status is treated as NOT adopted — the fail-safe
+// direction, since skipping a needed bounce stalls the gate while a spurious bounce self-corrects.
 func pipelineStatusAdopted(status *string) bool {
 	if status == nil || *status == "" {
 		return false
 	}
-	switch *status {
-	case "PENDING", "CREATED", "NEW":
-		return false
-	default:
-		// ACTIVE / IN_PROGRESS / RUNNING / COMPLETED — the executor has adopted and is working it.
+	switch manufacturing.PipelineStatus(*status) {
+	case manufacturing.PipelineStatusExecuting,
+		manufacturing.PipelineStatusCompleted,
+		manufacturing.PipelineStatusFailed,
+		manufacturing.PipelineStatusCancelled:
 		return true
+	default:
+		// PLANNING (fresh, not yet adopted) or any unrecognized status -> bounce to force adoption.
+		return false
 	}
 }
 
