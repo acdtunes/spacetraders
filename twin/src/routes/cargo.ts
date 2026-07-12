@@ -8,7 +8,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getWorld } from '../world/store.js';
 import { getNow } from '../clock.js';
-import { serializeAgent, serializeCargo } from '../world/serialize.js';
+import { humanize, serializeAgent, serializeCargo } from '../world/serialize.js';
 import { badRequest, notFound, sendError, ERR_SHIP_NOT_DOCKED } from '../errors.js';
 import { authFailed } from './auth.js';
 import { settleArrival } from './ships.js';
@@ -31,7 +31,9 @@ function heldUnits(ship: Ship, symbol: string): number {
 function addCargo(ship: Ship, symbol: string, units: number): void {
   const item = ship.cargo.inventory.find((i) => i.symbol === symbol);
   if (item) item.units += units;
-  else ship.cargo.inventory.push({ symbol, units });
+  // CargoItem requires name/description; synthesize them from the symbol (the same value
+  // serializeCargo would fall back to), so the wire response is unchanged.
+  else ship.cargo.inventory.push({ symbol, name: humanize(symbol), description: humanize(symbol), units });
   ship.cargo.units += units;
 }
 function removeCargo(ship: Ship, symbol: string, units: number): void {
