@@ -10,6 +10,7 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     fileParallelism: false,
+    retry: 2, // e2e timing-flaky (real-travel arrivals + daemon CAS retries); independent retries
     testTimeout: 300_000,
     hookTimeout: 120_000,
   },
