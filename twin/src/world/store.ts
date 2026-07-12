@@ -31,7 +31,8 @@ export interface IncomeResetOptions {
   mode: 'income-entry';
   credits?: number;              // default 600_000
   haulerPrice?: number;          // default 300_000 — LIGHT_HAULER purchase lever
-  hubs?: string[];               // default H1..H5 — hauler parking targets
+  hubs?: string[];               // default = every real MARKETPLACE waypoint in the loaded topology
+                                 // (the candidate hub population the coordinator ranks + places haulers on)
   frigateContractTagged?: boolean; // default true — flips false on fleet-unassign report
   creditsPerHour?: number;       // default 0 — the ONE $/hr var
 }
@@ -48,7 +49,6 @@ export interface GateResetOptions {
 }
 export type ResetOptions = ColdResetOptions | IncomeResetOptions | GateResetOptions;
 
-const DEFAULT_HUBS = ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3', 'X1-PZ28-H4', 'X1-PZ28-H5'];
 const FALLBACK_JUMP_GATE = 'X1-PZ28-I67';
 
 // The gate construction manifest — the two goods the real SpaceTraders JUMP_GATE requires.
@@ -100,10 +100,14 @@ function seedColdEntry(world: World, opts: ColdResetOptions): void {
 }
 
 /** income-entry: seed the INCOME view. haulers[] starts EMPTY — the daemon BUYS them (each
- *  PurchaseShip appends a hauler); pre-seeding would defeat the capital-gate / buy-count asserts. */
+ *  PurchaseShip appends a hauler); pre-seeding would defeat the capital-gate / buy-count asserts.
+ *  hubs default to the REAL marketplace waypoints from the loaded topology: the coordinator ranks
+ *  its own contract hubs off the (seeded) market data and navigates haulers to those REAL waypoints
+ *  (there are no logical H1..H5 on the real API), so world.hubs must be that same real population for
+ *  a placed hauler's destination to match and set parkedHub (navigate parks at a hub ∈ world.hubs). */
 function seedIncomeEntry(world: World, opts: IncomeResetOptions): void {
   if (world.agent) world.agent.credits = opts.credits ?? 600_000;
-  world.hubs = opts.hubs ?? [...DEFAULT_HUBS];
+  world.hubs = opts.hubs ?? marketplaceWaypoints(world);
   world.frigateContractTagged = opts.frigateContractTagged ?? true;
   world.creditsPerHour = opts.creditsPerHour ?? 0;
   world.batchContractRunning = false;
@@ -169,6 +173,20 @@ function setShipyardPrice(world: World, shipType: string, price: number): void {
       if (listing.type === shipType) listing.purchasePrice = price;
     }
   }
+}
+
+/** Every real MARKETPLACE waypoint in the loaded topology, in topology order. This is the candidate
+ *  contract-hub population: the daemon's selectContractHubs ranks these same real waypoints (off the
+ *  seeded market data) and navigates haulers to the top ones, so seeding world.hubs from here keeps
+ *  the twin's hub set aligned with wherever the coordinator actually places a hauler. */
+function marketplaceWaypoints(world: World): string[] {
+  const out: string[] = [];
+  for (const sys of world.systems.values()) {
+    for (const wp of sys.waypoints.values()) {
+      if (wp.traits?.some((t) => t.symbol === 'MARKETPLACE')) out.push(wp.symbol);
+    }
+  }
+  return out;
 }
 
 /** The real JUMP_GATE waypoint symbol from the loaded topology (fixtures have exactly one). */

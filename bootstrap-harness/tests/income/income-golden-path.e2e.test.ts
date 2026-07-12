@@ -4,9 +4,10 @@ import { incomeEntry } from '../helpers/fixtures-income';
 
 describe('bootstrap INCOME — golden path', () => {
   it('retires frigate → hub haulers → batch-contract → holds at INCOME-complete past income_bar', async () => {
-    // 4 hubs, treasury ample so all clear the capital gate.
+    // Treasury ample so every staged hauler clears the capital gate; the twin derives its hubs from
+    // the real marketplace topology (the coordinator ranks + places on those same real waypoints).
     await withIncomeScenario(
-      incomeEntry({ hubs: ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3', 'X1-PZ28-H4'], credits: 3_000_000, haulerPrice: 300000 }),
+      incomeEntry({ credits: 3_000_000, haulerPrice: 300000 }),
       async (ctx) => {
         ctx.launchBootstrap();
         const s = await ctx.pollUntil(

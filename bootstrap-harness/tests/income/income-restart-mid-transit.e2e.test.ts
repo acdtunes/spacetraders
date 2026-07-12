@@ -27,13 +27,15 @@ import { countCall } from '../helpers/mutation-log';
 //   so either convergence STALLS (pollUntil throws) or the hull is re-dispatched (route.arrival moves)
 //   or re-bought (PurchaseShip > 3). See st-drm-14 report, gap #1 (coordinator arrival-timer re-arm).
 //
-// NOTE (topology caveat): the ADOPT-not-redispatch sub-assertion only bites when the hub leg runs
-//   between two real captured waypoints (a real transit carrying nav.route). If the seeded hubs are
-//   logical symbols the hull teleports (no route) and that one sub-assertion is skipped — the hard
-//   teeth (identity survival, no re-buy, convergence) still hold. See report gap #4.
+// NOTE (topology): the hub set is now the REAL marketplace waypoints the twin derives from its loaded
+//   topology (no logical H1..H5), so a placed hauler's hub leg runs between real captured waypoints — a
+//   real transit carrying nav.route. The ADOPT-not-redispatch sub-assertion therefore RELIABLY bites
+//   (arrivalBefore is present), which is exactly what exposes whether the rebooted coordinator re-arms
+//   the arrival timer for a hull it did not dispatch. The hard teeth (identity survival, no re-buy,
+//   convergence) hold regardless. See report gap #4.
 describe('bootstrap INCOME — restart mid-TRANSIT (in-flight hull re-adoption)', () => {
   it('re-adopts a hauler that was in flight at the kill: arrival acted on, parked, never re-bought', async () => {
-    await twinIncome.seedIncome(incomeEntry({ hubs: ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3'], credits: 3_000_000 }));
+    await twinIncome.seedIncome(incomeEntry({ credits: 3_000_000 }));
     await resetDaemonDb();
     await seedDaemonMarketCoverage(); // DATA-complete coverage in the daemon's local DB (persists across
     // the reboot below — resetDaemonDb is NOT re-run) so both lifetimes derive INCOME, not DATA.
@@ -68,12 +70,12 @@ describe('bootstrap INCOME — restart mid-TRANSIT (in-flight hull re-adoption)'
       launchBootstrap();
       const done = await pollUntil(
         () => twinIncome.incomeState(),
-        (s) => s.haulers.filter((h) => h.parkedHub).length >= 3 && s.batchContractRunning,
+        (s) => s.haulers.filter((h) => h.parkedHub).length >= 4 && s.batchContractRunning,
         { steps: 80, advanceMs: 1000 },
       );
 
-      // (b) exactly 3 buys across BOTH lifetimes — the in-flight hull was NOT re-bought.
-      expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(3);
+      // (b) exactly hauler_target (4) buys across BOTH lifetimes — the in-flight hull was NOT re-bought.
+      expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(4);
       // (c) the SAME hull (by identity, not a count) survived the reboot and completed its assignment.
       expect(done.ships.filter((x) => x.symbol === symbol).length).toBe(1); // not duplicated
       const survived = done.haulers.find((h) => h.symbol === symbol);
@@ -94,7 +96,7 @@ describe('bootstrap INCOME — restart mid-TRANSIT (in-flight hull re-adoption)'
         { steps: 30, advanceMs: 1000 },
       );
       expect(phaseGauge, 'rebooted daemon re-derives INCOME within its first reconcile ticks').toBe(1);
-      expect(new Set(done.haulers.filter((h) => h.parkedHub).map((h) => h.parkedHub)).size).toBe(3);
+      expect(new Set(done.haulers.filter((h) => h.parkedHub).map((h) => h.parkedHub)).size).toBe(4);
     } finally {
       await daemon.stop();
       await twinIncome.setCompression(200); // never leak the slow clock to a later spec (compression is sticky)

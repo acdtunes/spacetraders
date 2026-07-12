@@ -30,7 +30,7 @@ import { countCall } from '../helpers/mutation-log';
 //   unitsFulfilled) or contract mutationLog entries. That is a twin change, out of this task's scope.
 describe('bootstrap INCOME — restart after batch-contract launch', () => {
   it('does not relaunch the contract fleet or double-charge the treasury across the reboot', async () => {
-    await twinIncome.seedIncome(incomeEntry({ hubs: ['X1-PZ28-H1'], credits: 3_000_000 }));
+    await twinIncome.seedIncome(incomeEntry({ credits: 3_000_000 }));
     await resetDaemonDb();
     await seedDaemonMarketCoverage(); // DATA-complete coverage in the daemon's local DB (persists across
     // the reboot below — resetDaemonDb is NOT re-run) so both lifetimes derive INCOME, not DATA.

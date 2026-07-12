@@ -8,7 +8,7 @@ import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap INCOME — restart idempotency', () => {
   it('no double-buy / no re-retire / no double batch-contract across a mid-purchase restart', async () => {
-    await twinIncome.seedIncome(incomeEntry({ hubs: ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3'], credits: 3_000_000 }));
+    await twinIncome.seedIncome(incomeEntry({ credits: 3_000_000 }));
     await resetDaemonDb();
     await seedDaemonMarketCoverage(); // DATA-complete coverage in the daemon's local DB (persists across
     // the reboot below — resetDaemonDb is NOT re-run) so both lifetimes derive INCOME, not DATA.
@@ -37,11 +37,11 @@ describe('bootstrap INCOME — restart idempotency', () => {
       launchBootstrap();
       const done = await pollUntil(
         () => twinIncome.incomeState(),
-        (s) => s.haulers.filter((h) => h.parkedHub).length >= 3,
-        { steps: 60, advanceMs: 1000 },
+        (s) => s.haulers.filter((h) => h.parkedHub).length >= 4,
+        { steps: 80, advanceMs: 1000 },
       );
-      // Exactly 3 hauler buys across BOTH lifetimes — the mid-flight hauler is not re-bought.
-      expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(3);
+      // Exactly hauler_target (4) hauler buys across BOTH lifetimes — the mid-flight hauler is not re-bought.
+      expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(4);
       // Frigate retired at most once total; batch-contract launched at most once total.
       expect(countCall(done.mutationLog, 'fleet-unassign')).toBeLessThanOrEqual(Math.max(1, retiresBefore));
       expect(countCall(done.mutationLog, 'batch-contract')).toBeLessThanOrEqual(Math.max(1, batchBefore, 1));
