@@ -1,0 +1,65 @@
+// twin/src/world/loader.ts — the single world module for the digital twin.
+// Materializes the captured X1-PZ28 snapshot into the foundation world types, and
+// (mintToken/registerAgent, added in Tasks 9/10) mints the cold-start agent on top.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { Market, Ship, Shipyard, System, TransitState, Waypoint, World } from './types.js';
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** Absolute path to the checked-in captured home-system fixture directory. */
+export const FIXTURES_DIR = path.resolve(MODULE_DIR, '../../fixtures/era2-X1-PZ28');
+
+/** The pristine POST /register payload template (fixtures/era2-X1-PZ28/register.json).
+ *  Ship symbols carry the "{AGENT}" placeholder registerAgent substitutes. */
+export interface RegisterTemplate {
+  startingCredits: number;
+  headquarters: string;
+  startingFaction: string;
+  ships: Ship[];
+}
+
+function readJson<T>(dir: string, file: string): T {
+  return JSON.parse(readFileSync(path.join(dir, file), 'utf8')) as T;
+}
+
+export function loadRegisterTemplate(dir: string = FIXTURES_DIR): RegisterTemplate {
+  return readJson<RegisterTemplate>(dir, 'register.json');
+}
+
+/** Load the PRE-register captured world: serverStatus/systems/markets/shipyards from the
+ *  capture; agent/agentToken null; ships/transits empty; shipCounter 0. */
+export function loadColdStartWorld(dir: string = FIXTURES_DIR): World {
+  const serverStatus = readJson<World['serverStatus']>(dir, 'server-status.json');
+  const waypoints = readJson<Waypoint[]>(dir, 'waypoints.json');
+  const markets = readJson<Market[]>(dir, 'markets.json');
+  const shipyards = readJson<Shipyard[]>(dir, 'shipyards.json');
+
+  const systems = new Map<string, System>();
+  for (const wp of waypoints) {
+    let system = systems.get(wp.systemSymbol);
+    if (!system) {
+      system = { symbol: wp.systemSymbol, waypoints: new Map<string, Waypoint>() };
+      systems.set(wp.systemSymbol, system);
+    }
+    system.waypoints.set(wp.symbol, wp);
+  }
+
+  const marketMap = new Map<string, Market>();
+  for (const m of markets) marketMap.set(m.symbol, m);
+  const shipyardMap = new Map<string, Shipyard>();
+  for (const sy of shipyards) shipyardMap.set(sy.symbol, sy);
+
+  return {
+    serverStatus,
+    agent: null,
+    agentToken: null,
+    ships: new Map<string, Ship>(),
+    systems,
+    markets: marketMap,
+    shipyards: shipyardMap,
+    transits: new Map<string, TransitState>(),
+    shipCounter: 0,
+  };
+}
