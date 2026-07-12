@@ -4,16 +4,18 @@ import net from 'node:net';
 import { DAEMON_BIN, GOBOT_DIR, TEST_CONFIG, TEST_DATABASE_URL, TWIN_BASE_URL } from './run-cli.js';
 
 const TEST_PID_FILE = '/tmp/spacetraders-daemon-test.pid';
-const GRPC_HOST = 'localhost';
-const GRPC_PORT = 50062;
+// The daemon's gRPC server binds a UNIX SOCKET (net.Listen("unix", socket_path)) and the CLI dials
+// unix:<socket_path>. The `daemon.address` config field is NOT the gRPC listener, so readiness is
+// the socket file existing AND accepting a connection. Must match daemon.socket_path in test-config.yaml.
+const TEST_SOCKET = '/tmp/spacetraders-daemon-test.sock';
 
 let daemon: ChildProcess | undefined;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-function tcpOpen(host: string, port: number): Promise<boolean> {
+function unixOpen(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const sock = net.connect({ host, port }, () => { sock.destroy(); resolve(true); });
+    const sock = net.connect({ path: socketPath }, () => { sock.destroy(); resolve(true); });
     sock.on('error', () => { sock.destroy(); resolve(false); });
     sock.setTimeout(500, () => { sock.destroy(); resolve(false); });
   });
@@ -22,10 +24,10 @@ function tcpOpen(host: string, port: number): Promise<boolean> {
 async function waitReady(timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(TEST_PID_FILE) && (await tcpOpen(GRPC_HOST, GRPC_PORT))) return;
+    if (existsSync(TEST_PID_FILE) && existsSync(TEST_SOCKET) && (await unixOpen(TEST_SOCKET))) return;
     await sleep(300);
   }
-  throw new Error(`test daemon not ready within ${timeoutMs}ms (pidfile ${TEST_PID_FILE} / gRPC ${GRPC_HOST}:${GRPC_PORT})`);
+  throw new Error(`test daemon not ready within ${timeoutMs}ms (pidfile ${TEST_PID_FILE} / socket ${TEST_SOCKET})`);
 }
 
 /** Spawn the isolated test daemon on the -test slot. `extraEnv` overlays LAST. */
