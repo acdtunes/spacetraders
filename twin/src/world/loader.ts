@@ -63,3 +63,18 @@ export function loadColdStartWorld(dir: string = FIXTURES_DIR): World {
     shipCounter: 0,
   };
 }
+
+/** base64url (RFC 4648 §5) with padding stripped. */
+function b64url(s: string): string {
+  return Buffer.from(s, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Mint the twin's opaque, JWT-shaped agent token. DETERMINISTIC per symbol: the Go
+ *  client never decodes it (only ever a Bearer string), and determinism lets reset
+ *  reissue the identical token and tests reproduce players.token from the symbol. */
+export function mintToken(symbol: string): string {
+  const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = b64url(JSON.stringify({ identifier: symbol, version: 'twin' }));
+  const signature = b64url(`twin-signature.${symbol}`);
+  return `${header}.${payload}.${signature}`;
+}
