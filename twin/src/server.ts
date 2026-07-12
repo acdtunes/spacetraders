@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { World } from './world/types.js';
 import { setWorld } from './world/store.js';
 import { serverStatusRoutes } from './routes/server-status.js';
+import { adminRoutes } from './routes/admin.js';
 
 export interface BuildServerOptions { world?: World }
 
@@ -30,8 +31,8 @@ export function buildServer(opts: BuildServerOptions = {}): FastifyInstance {
   );
 
   // /_twin admin namespace (Task 15 adds adminRoutes; Task 28 adds testAdminRoutes).
-  // app.register(adminRoutes, { prefix: '/_twin' });
-  // app.register(testAdminRoutes, { prefix: '/_twin' });
+  app.register(adminRoutes, { prefix: '/_twin' });
+  // app.register(testAdminRoutes, { prefix: '/_twin' }); // Task 28
 
   return app;
 }
