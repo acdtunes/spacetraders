@@ -5,6 +5,7 @@ import {
   GOBOT_DIR,
   TEST_CONFIG,
   API_BASE_URL,
+  ADMIN_URL,
   TEST_DATABASE_URL,
   TEST_DAEMON_SOCKET,
 } from './config';
@@ -14,6 +15,10 @@ const env = (configPath: string) => ({
   SPACETRADERS_CONFIG: configPath,
   ST_API_BASE_URL: API_BASE_URL,
   DATABASE_URL: TEST_DATABASE_URL,
+  // Test-only: the bootstrap coordinator POSTs daemon-internal ops (scout-assign, fleet-unassign,
+  // batch-contract, construction-start, executor-bounce, repurpose, launch-*) here so the twin's
+  // /_twin/state mutationLog + flags reflect them. Unset in prod => the coordinator's report is a no-op.
+  TWIN_REPORT_URL: `${ADMIN_URL}/report`,
 });
 
 export interface DaemonHandle {
