@@ -9,7 +9,10 @@ import { fileURLToPath } from 'node:url';
 const HELPERS_DIR = path.dirname(fileURLToPath(import.meta.url)); // bootstrap-harness/tests/helpers
 export const HARNESS_ROOT = path.resolve(HELPERS_DIR, '..', '..'); // bootstrap-harness/
 export const REPO_ROOT = path.resolve(HELPERS_DIR, '..', '..', '..'); // spacetraders/
-export const GOBOT_DIR = path.join(REPO_ROOT, 'gobot');
+// Env-overridable so the harness can run against a gobot build that carries the ST_API_BASE_URL
+// seam (e.g. a feature-branch worktree) without the seam having to land on the main branch yet.
+// Defaults to the repo's own gobot; a runtime pointer only — no coupling to twin source.
+export const GOBOT_DIR = process.env.HARNESS_GOBOT_DIR ?? path.join(REPO_ROOT, 'gobot');
 export const CLI_BIN = path.join(GOBOT_DIR, 'bin', 'spacetraders');
 export const DAEMON_BIN = path.join(GOBOT_DIR, 'bin', 'spacetraders-daemon');
 
@@ -38,7 +41,14 @@ export function runCli(
   args: string[],
   opts: { env?: Record<string, string>; timeoutMs?: number } = {},
 ): RunCliResult {
-  const res = spawnSync(CLI_BIN, args, {
+  // Daemon-mediated commands (workflow bootstrap, ship list/refresh, container ...) dial the daemon
+  // over its Unix socket; the CLI's `--socket` flag DEFAULTS to the PRODUCTION socket
+  // (/tmp/spacetraders-daemon.sock). Without this injection, every such command hits the running
+  // production daemon instead of the isolated harness daemon — e.g. `workflow bootstrap` launches a
+  // spurious BOOTSTRAP_COORDINATOR on prod. Force the test daemon's socket (harmless global flag on
+  // direct-client commands like `player register`).
+  const finalArgs = args.includes('--socket') ? args : [...args, '--socket', TEST_DAEMON_SOCKET];
+  const res = spawnSync(CLI_BIN, finalArgs, {
     cwd: GOBOT_DIR,
     encoding: 'utf8',
     timeout: opts.timeoutMs ?? 30_000,
