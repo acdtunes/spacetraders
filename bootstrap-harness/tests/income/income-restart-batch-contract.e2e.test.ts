@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { twinIncome } from '../helpers/twin-admin-income';
 import { incomeEntry } from '../helpers/fixtures-income';
 import { resetDaemonDb, startTestDaemon } from '../helpers/daemon';
+import { seedDaemonMarketCoverage } from '../helpers/daemon-seed';
 import { launchBootstrap, pollUntil, advanceTicks, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
@@ -31,6 +32,8 @@ describe('bootstrap INCOME — restart after batch-contract launch', () => {
   it('does not relaunch the contract fleet or double-charge the treasury across the reboot', async () => {
     await twinIncome.seedIncome(incomeEntry({ hubs: ['X1-PZ28-H1'], credits: 3_000_000 }));
     await resetDaemonDb();
+    await seedDaemonMarketCoverage(); // DATA-complete coverage in the daemon's local DB (persists across
+    // the reboot below — resetDaemonDb is NOT re-run) so both lifetimes derive INCOME, not DATA.
 
     let daemon = await startTestDaemon();
     try {

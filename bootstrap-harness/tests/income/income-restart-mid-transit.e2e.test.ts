@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { twinIncome } from '../helpers/twin-admin-income';
 import { incomeEntry } from '../helpers/fixtures-income';
 import { resetDaemonDb, startTestDaemon } from '../helpers/daemon';
+import { seedDaemonMarketCoverage } from '../helpers/daemon-seed';
 import { launchBootstrap, pollUntil, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
@@ -34,6 +35,8 @@ describe('bootstrap INCOME — restart mid-TRANSIT (in-flight hull re-adoption)'
   it('re-adopts a hauler that was in flight at the kill: arrival acted on, parked, never re-bought', async () => {
     await twinIncome.seedIncome(incomeEntry({ hubs: ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3'], credits: 3_000_000 }));
     await resetDaemonDb();
+    await seedDaemonMarketCoverage(); // DATA-complete coverage in the daemon's local DB (persists across
+    // the reboot below — resetDaemonDb is NOT re-run) so both lifetimes derive INCOME, not DATA.
     // Widen the IN_TRANSIT window: at the orchestrator's 200x a >=15s real leg resolves in ~50-300ms
     // (uncatchable). 6x stretches a real hub leg to ~2.5-7s so the kill lands while the hull is in
     // flight. STICKY across reset → restored to the fast default in finally.
