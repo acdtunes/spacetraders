@@ -5,6 +5,7 @@ import { serverStatusRoutes } from './routes/server-status.js';
 import { registerRoutes } from './routes/register.js';
 import { agentRoutes } from './routes/agent.js';
 import { shipRoutes } from './routes/ships.js';
+import { waypointRoutes } from './routes/waypoints.js';
 import { adminRoutes } from './routes/admin.js';
 
 export interface BuildServerOptions { world?: World }
@@ -23,7 +24,7 @@ export function buildServer(opts: BuildServerOptions = {}): FastifyInstance {
       await registerRoutes(v2);          // Task 17  POST /register
       await agentRoutes(v2);             // Task 18  GET /my/agent
       await shipRoutes(v2);              // Task 20  GET /my/ships[/:s]
-      // await waypointRoutes(v2);       // Task 21  GET /systems/:s/waypoints[/:w]
+      await waypointRoutes(v2);          // Task 21  GET /systems/:s/waypoints[/:w]
       // await marketRoutes(v2);         // Task 22  GET …/market
       // await shipyardRoutes(v2);       // Task 23  GET …/shipyard
       // await shipNavigateRoutes(v2);   // Task 24  POST …/navigate
