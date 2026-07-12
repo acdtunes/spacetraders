@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -22,6 +23,18 @@ import (
 // DEFAULT once launched. dryRun (the CLI --dry-run) launches it in watch mode: it evaluates + logs
 // every decision but acts on nothing.
 func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
+	// Singleton admission (st-drm.14): reject a fresh launch when a bootstrap coordinator for this
+	// player is already ACTIVE (running / starting / pending-recovery). Two coordinators on one
+	// treasury each buy their own probes/haulers → a double-spend after any daemon restart (the live
+	// incident: a RECOVERED coordinator + this fresh launch bought 6 satellites for a target of 3 and
+	// drained the treasury to 0). Recovery re-adopts a persisted container through recoverContainer, a
+	// path that does NOT funnel through here, so this guard never blocks a legitimate restart recovery.
+	if existingID, err := activeBootstrapContainerID(ctx, s.containerRepo, playerID); err != nil {
+		return "", fmt.Errorf("failed to check for an existing bootstrap coordinator: %w", err)
+	} else if existingID != "" {
+		return "", fmt.Errorf("bootstrap already running: %s", existingID)
+	}
+
 	containerID := utils.GenerateContainerID("bootstrap", fmt.Sprintf("player-%d", playerID))
 
 	// Identity only — the [bootstrap] knobs are injected by resolveBootstrapConfig inside
@@ -66,6 +79,39 @@ func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, a
 	}()
 
 	return containerID, nil
+}
+
+// containerStatusLister is the narrow slice of the container repo the admission guard needs: a scan of
+// containers by lifecycle status for a player. *persistence.ContainerRepositoryGORM satisfies it, and a
+// fake satisfies it in the unit test — no DB required to pin the guard.
+type containerStatusLister interface {
+	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
+}
+
+// activeBootstrapContainerID returns the id of a bootstrap-coordinator container already ACTIVE for the
+// player — RUNNING, PENDING (starting), or INTERRUPTED (running-when-daemon-stopped, pending recovery) —
+// or "" when none is. Scanning all three statuses closes the restart-recovery race: a fresh
+// `workflow bootstrap` that arrives before OR after the daemon re-adopts the persisted coordinator sees
+// it and is rejected, so a player never runs two coordinators against one treasury (st-drm.14). Mirrors
+// the firstContainerIDOfType status-scan idiom; the container's Type() is persisted as ContainerType, so
+// the match is on the domain type string.
+func activeBootstrapContainerID(ctx context.Context, lister containerStatusLister, playerID int) (string, error) {
+	for _, st := range []container.ContainerStatus{
+		container.ContainerStatusRunning,
+		container.ContainerStatusPending,
+		container.ContainerStatusInterrupted,
+	} {
+		summaries, err := lister.ListByStatusSimple(ctx, string(st), &playerID)
+		if err != nil {
+			return "", err
+		}
+		for _, summary := range summaries {
+			if summary.ContainerType == string(container.ContainerTypeBootstrapCoordinator) {
+				return summary.ID, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // bootstrapConfigKeys enumerates the LIVE [bootstrap] launch-config keys. resolveBootstrapConfig

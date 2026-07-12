@@ -254,6 +254,14 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 func (h *RunBootstrapCoordinatorHandler) maybeBuyProbe(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
+	// In-flight guard (st-drm.6): a probe buy this coordinator already dispatched may still be
+	// navigating its buyer to the yard, its hull not yet in the observation. Re-dispatching now would
+	// double-buy against the same unmet count — so if one is in flight, this tick does nothing (the
+	// tick after it lands re-derives need). Checked FIRST so it is the reported blocker.
+	if h.acquisitionInFlight(ctx, cmd, res, cfg.ProbeShipType, "bootstrap_buy_blocked") {
+		return
+	}
+
 	// Readiness gate, second half: unblocked? The batch-purchase path needs an idle hull to fly to
 	// the yard. No idle hull ⇒ BLOCKED (not failed) — a later tick with a free hull retries.
 	if !obs.HasIdlePurchaser {
@@ -335,6 +343,38 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyProbe(ctx context.Context, cmd 
 		"ship":         bought.ShipSymbol,
 		"price":        bought.Price,
 	})
+}
+
+// acquisitionInFlight reports whether a same-type acquisition this coordinator already dispatched is
+// still in flight for the player, and — when it is — records the blocker + a heartbeat-visible line so a
+// skipped tick is never a silent stall (captain L61). A nil tracker means no tracking (returns false,
+// the legacy count-only staging). A tracker READ ERROR fails CLOSED (treated as in-flight): a repo
+// hiccup must never green-light a double-buy. Called at the top of every staged buy so a tick observing
+// need>0 while an acquisition is on its way dispatches NOTHING (st-drm.6).
+func (h *RunBootstrapCoordinatorHandler) acquisitionInFlight(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, res *reconcileResult, shipType, blockAction string) bool {
+	if h.acquisition == nil {
+		return false
+	}
+	logger := common.LoggerFromContext(ctx)
+	inFlight, err := h.acquisition.InFlight(ctx, cmd.PlayerID, shipType)
+	if err != nil {
+		res.Blocker = "acquisition_in_flight"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap %s acquisition-tracker read failed — failing closed (no dispatch this tick): %v", shipType, err), map[string]interface{}{
+			"action":       blockAction,
+			"container_id": cmd.ContainerID,
+			"blocker":      "acquisition_in_flight",
+		})
+		return true
+	}
+	if inFlight {
+		res.Blocker = "acquisition_in_flight"
+		logger.Log("INFO", fmt.Sprintf("Bootstrap %s acquisition already in flight — dispatching nothing this tick (at most one in-flight acquisition per ship type; the next tick after it lands re-derives need)", shipType), map[string]interface{}{
+			"action":       blockAction,
+			"container_id": cmd.ContainerID,
+			"blocker":      "acquisition_in_flight",
+		})
+	}
+	return inFlight
 }
 
 // buyBlockNote annotates the decision line with what would have blocked, so the one line carries
