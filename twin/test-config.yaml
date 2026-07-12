@@ -8,8 +8,8 @@
 
 database:
   type: postgres
-  # Test Postgres on 5433 — NEVER 5432 (prod, READ-ONLY for the twin project).
-  url: postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable
+  # Test Postgres on 5434 — NEVER 5432 (prod, READ-ONLY for the twin project). (5433 taken by another project.)
+  url: postgresql://spacetraders:dev_password@localhost:5434/spacetraders_test?sslmode=disable
 
 api:
   # Display/default only — the real redirect is the ST_API_BASE_URL env seam.

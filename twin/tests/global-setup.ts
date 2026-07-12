@@ -1,8 +1,12 @@
 import net from 'node:net';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../src/server.js';
-import { runCli, TWIN_BASE_URL } from './helpers/run-cli.js';
+import { runCli, TWIN_BASE_URL, TEST_DATABASE_URL } from './helpers/run-cli.js';
 import { startTestDaemon, stopTestDaemon } from './helpers/daemon.js';
+
+// Derive the test Postgres port from the (env-overridable) DSN so the reachability
+// check and its hint stay in lock-step with run-cli's TEST_DATABASE_URL.
+const TEST_DB_PORT = Number(new URL(TEST_DATABASE_URL).port) || 5434;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -26,10 +30,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     }
   }
 
-  // 2. Ensure the test Postgres is reachable on :5433 (fail fast with a hint).
-  if (!(await tcpOpen('localhost', 5433))) {
+  // 2. Ensure the test Postgres is reachable on :5434 (fail fast with a hint).
+  if (!(await tcpOpen('localhost', TEST_DB_PORT))) {
     await app.close();
-    throw new Error('test Postgres not reachable on localhost:5433 — start it first: docker compose -f twin/docker-compose.test.yml up -d postgres-test');
+    throw new Error(`test Postgres not reachable on localhost:${TEST_DB_PORT} — start it first: docker compose -f twin/docker-compose.test.yml up -d postgres-test`);
   }
 
   // 3. Boot the isolated test daemon (AutoMigrate on first boot).

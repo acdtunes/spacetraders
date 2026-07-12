@@ -11,7 +11,8 @@ export const TWIN_BASE_URL = 'http://127.0.0.1:8080/v2';
 export const TWIN_ADMIN    = 'http://127.0.0.1:8080/_twin';
 export const TEST_CONFIG   = path.join(REPO_ROOT, 'twin', 'test-config.yaml');
 export const TEST_DATABASE_URL =
-  'postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable';
+  process.env.TWIN_TEST_DATABASE_URL ??
+  'postgresql://spacetraders:dev_password@localhost:5434/spacetraders_test?sslmode=disable';
 
 export interface RunCliResult { stdout: string; stderr: string; exitCode: number }
 
