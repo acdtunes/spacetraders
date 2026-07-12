@@ -15,9 +15,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
+	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
-	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
@@ -685,7 +685,7 @@ func run(cfg *config.Config) error {
 	// assembled inside grpc.NewBootstrapCoordinatorHandler over the daemon's live collaborators.
 	// LAUNCH-GATED: registering the handler changes nothing until 'workflow bootstrap' is invoked.
 	bootstrapHandler := grpc.NewBootstrapCoordinatorHandler(
-		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepoAdapter,
+		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepoAdapter, contractRepo,
 	)
 	if err := mediator.RegisterHandler[*bootstrapCmd.RunBootstrapCoordinatorCommand](med, bootstrapHandler); err != nil {
 		return fmt.Errorf("failed to register BootstrapCoordinator handler: %w", err)

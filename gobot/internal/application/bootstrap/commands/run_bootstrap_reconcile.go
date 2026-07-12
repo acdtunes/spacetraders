@@ -19,6 +19,12 @@ type bootstrapRunConfig struct {
 	CoverageBar   float64
 	ReserveMargin float64
 	ProbeShipType string
+
+	// INCOME-phase knobs (Slice 2), each resolved to its documented default when unset.
+	HaulerTarget       int
+	IncomeBar          float64
+	MinContractEarners int
+	HaulerShipType     string
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunConfig {
@@ -30,6 +36,11 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 		CoverageBar:   cmd.CoverageBar,
 		ReserveMargin: cmd.ReserveMargin,
 		ProbeShipType: cmd.ProbeShipType,
+
+		HaulerTarget:       cmd.HaulerTarget,
+		IncomeBar:          cmd.IncomeBar,
+		MinContractEarners: cmd.MinContractEarners,
+		HaulerShipType:     cmd.HaulerShipType,
 	}
 	if c.Tick <= 0 {
 		c.Tick = defaultBootstrapTickSeconds * time.Second
@@ -46,16 +57,34 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 	if c.ProbeShipType == "" {
 		c.ProbeShipType = defaultProbeShipType
 	}
+	if c.HaulerTarget <= 0 {
+		c.HaulerTarget = defaultHaulerTarget
+	}
+	if c.IncomeBar <= 0 {
+		c.IncomeBar = defaultIncomeBar
+	}
+	if c.MinContractEarners <= 0 {
+		c.MinContractEarners = defaultMinContractEarners
+	}
+	if c.HaulerShipType == "" {
+		c.HaulerShipType = defaultHaulerShipType
+	}
 	return c
 }
 
 // reconcileResult tallies one tick's effect for the heartbeat and the tests.
 type reconcileResult struct {
 	Phase     Phase
-	Purchased int    // probes actually bought this tick
-	WouldBuy  int    // probes a dry-run WOULD have bought
-	Scouted   bool   // scout-all-markets assignment ran this tick
+	Purchased int    // probes actually bought this tick (DATA)
+	WouldBuy  int    // ships a dry-run WOULD have bought this tick (DATA probe or INCOME hauler)
+	Scouted   bool   // scout-all-markets assignment ran this tick (DATA)
 	Blocker   string // the one guard that blocked the highest-priority action (for the heartbeat)
+
+	// INCOME tallies (Slice 2).
+	HaulersBought  int  // contract haulers actually bought this tick (staged: at most 1)
+	FrigateRetired bool // the command frigate was retired from contract work this tick
+	ContractRun    bool // batch-contract was launched this tick
+	ViableHubs     int  // viable contract hubs the selector found (for the heartbeat)
 }
 
 // reconcileOnce runs one full pass: phantom-cache refresh → observe → derive phase → act on the
@@ -135,10 +164,13 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	switch phase {
 	case PhaseData:
 		h.actData(ctx, cmd, cfg, obs, &res)
+	case PhaseIncome:
+		h.actIncome(ctx, cmd, cfg, obs, &res)
 	default:
-		// Slice-1 terminal: the DATA exit is met but the later phases are not implemented yet. This
-		// is a clean hold, not an error (spec §Slices: "add a phase" is the whole of Slice 2/3).
-		logger.Log("INFO", fmt.Sprintf("Bootstrap phase %s not yet implemented — holding at DATA-complete (coverage %d/%d = %.0f%% ≥ bar %.0f%%)", phase, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100), map[string]interface{}{
+		// Slice-2 terminal: the INCOME exit ($/hr ≥ income_bar) is met but GATE (Slice 3) is not
+		// implemented yet. A clean hold, not an error (spec §Slices: "add a phase" is the whole of
+		// Slice 3) — mirroring how Slice 1 left the INCOME stub at DATA-complete.
+		logger.Log("INFO", fmt.Sprintf("Bootstrap phase %s not yet implemented — holding at INCOME-complete (realized $/hr %.0f ≥ bar %.0f)", phase, obs.IncomePerHour, cfg.IncomeBar), map[string]interface{}{
 			"action":       "bootstrap_phase_not_implemented",
 			"container_id": cmd.ContainerID,
 			"phase":        string(phase),
@@ -149,15 +181,21 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	return res, nil
 }
 
-// derivePhase reads the current phase from the observation alone. DATA is the cold-start default;
-// once market coverage clears the bar the arc has passed DATA (→ INCOME, the next phase). The
-// MarketsTotal>0 guard keeps a cold agent (nothing scouted yet) in DATA rather than reading an
-// empty world as "100% covered".
+// derivePhase reads the current phase from the observation alone (NEVER a persisted enum — spec
+// §Architecture). DATA is the cold-start default; once market coverage clears the bar the arc has
+// passed DATA. Past DATA it is INCOME until the contract fleet's realized $/hr clears income_bar, then
+// GATE. The MarketsTotal>0 guard keeps a cold agent (nothing scouted yet) in DATA rather than reading
+// an empty world as "100% covered"; income_bar is positive by default, so a fresh INCOME entry (0
+// $/hr) never skips straight to GATE. The arc is monotone: coverage and realized income only rise, so
+// the phase only advances.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
-	if obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar {
-		return PhaseIncome
+	if !(obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar) {
+		return PhaseData
 	}
-	return PhaseData
+	if obs.IncomePerHour >= cfg.IncomeBar {
+		return PhaseGate
+	}
+	return PhaseIncome
 }
 
 // actData runs the DATA phase: (1) buy one probe if the fleet is short AND the buy clears both the
@@ -332,7 +370,7 @@ func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d scouted=%v", res.Purchased, res.Scouted)
+	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun)
 	if cfg.DryRun {
 		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
 	}
@@ -342,8 +380,8 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		blockers = "none"
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%/%.0f%% bar) treasury=%d · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100, obs.Treasury, delta, next, blockers), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%/%.0f%% bar) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d · %s · next=%q · blockers=%s",
+		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, delta, next, blockers), map[string]interface{}{
 		"action":          "bootstrap_heartbeat",
 		"container_id":    cmd.ContainerID,
 		"phase":           string(phase),
@@ -352,8 +390,16 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"probes_scouting": obs.ProbesScouting,
 		"markets_covered": obs.MarketsCovered,
 		"markets_total":   obs.MarketsTotal,
+		"haulers":         len(obs.Haulers),
+		"hauler_target":   cfg.HaulerTarget,
+		"viable_hubs":     res.ViableHubs,
+		"income_per_hour": obs.IncomePerHour,
+		"income_bar":      cfg.IncomeBar,
 		"treasury":        obs.Treasury,
 		"purchased":       res.Purchased,
+		"haulers_bought":  res.HaulersBought,
+		"frigate_retired": res.FrigateRetired,
+		"batch_contract":  res.ContractRun,
 		"scouted":         res.Scouted,
 		"blocker":         blockers,
 	})
@@ -361,14 +407,31 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 
 // nextAction names the single next thing the reconciler intends, for the heartbeat.
 func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phase Phase, obs Observation) string {
-	if phase != PhaseData {
-		return fmt.Sprintf("phase %s not yet implemented — holding at DATA-complete", phase)
+	switch phase {
+	case PhaseData:
+		if obs.ProbeCount < cfg.ProbeTarget {
+			return fmt.Sprintf("buy probe %d/%d (staged, capital-gated)", obs.ProbeCount+1, cfg.ProbeTarget)
+		}
+		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
+			return "assign probes to scout-all-markets"
+		}
+		return fmt.Sprintf("await coverage ≥ bar (%.0f%%/%.0f%%)", obs.CoverageFraction()*100, cfg.CoverageBar*100)
+	case PhaseIncome:
+		if obs.CommandFrigateOnContract {
+			return "retire the command frigate from contract work"
+		}
+		if !obs.BatchContractRunning {
+			return "launch batch-contract on the contract fleet"
+		}
+		desired := len(selectContractHubs(obs.Markets, obs.ContractGoods))
+		if desired > cfg.HaulerTarget {
+			desired = cfg.HaulerTarget
+		}
+		if len(obs.Haulers) < desired {
+			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, hub-placed)", len(obs.Haulers)+1, desired)
+		}
+		return fmt.Sprintf("await realized $/hr ≥ bar (%.0f/%.0f)", obs.IncomePerHour, cfg.IncomeBar)
+	default:
+		return fmt.Sprintf("phase %s not yet implemented — holding at INCOME-complete", phase)
 	}
-	if obs.ProbeCount < cfg.ProbeTarget {
-		return fmt.Sprintf("buy probe %d/%d (staged, capital-gated)", obs.ProbeCount+1, cfg.ProbeTarget)
-	}
-	if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
-		return "assign probes to scout-all-markets"
-	}
-	return fmt.Sprintf("await coverage ≥ bar (%.0f%%/%.0f%%)", obs.CoverageFraction()*100, cfg.CoverageBar*100)
 }

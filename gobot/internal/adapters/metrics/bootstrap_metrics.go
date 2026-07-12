@@ -14,12 +14,15 @@ var bootstrapKnownPhases = []string{"DATA", "INCOME", "GATE", "COMPLETE"}
 //     so a dashboard shows which cold-start phase the reconciler is in (derived, never stored).
 //   - bootstrap_probes_total: a COUNTER incremented once per probe the coordinator actually buys in
 //     the DATA phase — real spend, real progress.
+//   - bootstrap_haulers_total: a COUNTER incremented once per contract hauler the coordinator buys in
+//     the INCOME phase (Slice 2) — the contract-fleet ramp made visible.
 //
 // Pure OBSERVATION (RULINGS #4): a recording miss must never touch a decision, so every method is
 // nil-safe and best-effort. The reconciler's guard/act paths run independently of this collector.
 type BootstrapMetricsCollector struct {
-	phase       *prometheus.GaugeVec
-	probesTotal prometheus.Counter
+	phase        *prometheus.GaugeVec
+	probesTotal  prometheus.Counter
+	haulersTotal prometheus.Counter
 }
 
 // NewBootstrapMetricsCollector creates a new bootstrap metrics collector (sp-3nbe).
@@ -42,6 +45,14 @@ func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 				Help:      "Probes the bootstrap coordinator bought in the DATA phase, counted once per purchase (sp-3nbe)",
 			},
 		),
+		haulersTotal: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "bootstrap_haulers_total",
+				Help:      "Contract haulers the bootstrap coordinator bought in the INCOME phase, counted once per purchase (sp-ysgb.1)",
+			},
+		),
 	}
 }
 
@@ -54,7 +65,10 @@ func (c *BootstrapMetricsCollector) Register() error {
 	if err := Registry.Register(c.phase); err != nil {
 		return err
 	}
-	return Registry.Register(c.probesTotal)
+	if err := Registry.Register(c.probesTotal); err != nil {
+		return err
+	}
+	return Registry.Register(c.haulersTotal)
 }
 
 // RecordPhase sets the derived-phase gauge: the given phase to 1 and every other known phase to 0,
@@ -72,10 +86,18 @@ func (c *BootstrapMetricsCollector) RecordPhase(phase string) {
 	}
 }
 
-// RecordProbePurchased increments the probe-purchase counter (called once per executed buy).
+// RecordProbePurchased increments the probe-purchase counter (called once per executed DATA buy).
 func (c *BootstrapMetricsCollector) RecordProbePurchased() {
 	if c == nil || c.probesTotal == nil {
 		return
 	}
 	c.probesTotal.Inc()
+}
+
+// RecordHaulerPurchased increments the hauler-purchase counter (called once per executed INCOME buy).
+func (c *BootstrapMetricsCollector) RecordHaulerPurchased() {
+	if c == nil || c.haulersTotal == nil {
+		return
+	}
+	c.haulersTotal.Inc()
 }

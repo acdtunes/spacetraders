@@ -499,8 +499,9 @@ fleet_autosizer:
 # the cold-start arc to the jump gate — launched once via 'workflow bootstrap', it OBSERVES the live
 # world each tick, DERIVES the phase from that observation (never a stored cursor), and ACTS on the
 # delta behind guards, so a restart re-observes and resumes at real state. LIVE BY DEFAULT once
-# launched (LAUNCH-GATED: nothing runs until you invoke 'workflow bootstrap'). Slice 1 runs the DATA
-# phase only (probes -> target, scout every market); INCOME/GATE are later slices.
+# launched (LAUNCH-GATED: nothing runs until you invoke 'workflow bootstrap'). DATA (probes -> target,
+# scout every market) and INCOME (retire the frigate, hub-placed hauler ramp, batch-contract, $/hr
+# exit) are live; GATE (construction) is a later slice.
 bootstrap:
   # Escapes. bootstrap_disabled stands the WHOLE coordinator down (absent/false = ACTIVE, no
   # dark-shipping); the container stays resident so a flip + restart re-arms it. dry_run evaluates +
@@ -510,9 +511,9 @@ bootstrap:
   # dry_run: false
 
   # DATA phase. probe_target is the probe count the coordinator ramps to, STAGED and capital-gated —
-  # at most one buy per tick (0 => 3). coverage_bar is the DATA->exit threshold: the fraction (0..1)
-  # of home-system marketplaces that must have fresh market data before the arc leaves DATA (0 => 0.9;
-  # the later phases are not implemented in Slice 1, so it then holds at DATA-complete).
+  # at most one buy per tick (0 => 3). coverage_bar is the DATA->INCOME exit threshold: the fraction
+  # (0..1) of home-system marketplaces that must have fresh market data before the arc leaves DATA
+  # (0 => 0.9). Contracts are blocked until data exists — the contract hubs are chosen FROM that data.
   # probe_target: 3
   # coverage_bar: 0.9
 
@@ -526,3 +527,20 @@ bootstrap:
   # asset is a knob; 0/absent => SHIP_PROBE).
   # tick_seconds: 300
   # probe_ship_type: SHIP_PROBE
+
+  # INCOME phase (Slice 2). Past the coverage bar the coordinator retires the command frigate from
+  # contract work (a poor contract worker: low fuel/cargo), selects contract hubs from the scouted
+  # market data (central, market-dense waypoints where contract goods are cheaply sourceable), buys one
+  # light hauler per viable hub (STAGED + capital-gated, placed on its hub), and runs batch-contract.
+  # hauler_target caps the hull count (actual = one per viable hub, up to this; 0 => 4). hauler_ship_type
+  # is the asset bought (0/absent => SHIP_LIGHT_HAULER).
+  # hauler_target: 4
+  # hauler_ship_type: SHIP_LIGHT_HAULER
+
+  # income_bar is the INCOME->GATE exit: realized NET credits/hour the contract fleet must clear before
+  # the arc drives gate construction (0 => 10000). Deliberately CONSERVATIVE — the Phase-1 objective is
+  # building the gate, so a too-HIGH bar (the arc never reaching GATE) is the worse failure; this is the
+  # primary field-calibration knob. min_contract_earners is how many haulers stay on contracts through
+  # GATE to keep funding material acquisition (consumed in the GATE phase, Slice 3; 0 => 1).
+  # income_bar: 10000
+  # min_contract_earners: 1

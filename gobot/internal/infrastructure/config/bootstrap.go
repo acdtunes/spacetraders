@@ -10,9 +10,9 @@ package config
 // documented default (resolved once in the handler's resolveBootstrapConfig). The Analyst/Admiral
 // own these numbers — they are all config, never call-site constants (RULINGS #5).
 //
-// Slice 1 knobs only. The INCOME/GATE knobs (hauler_target, income_bar, gate_worker_target,
-// min_contract_earners) are deliberately deferred to the slice that first reads them, to keep this
-// section free of dead config.
+// Slice 1 + Slice 2 knobs. The INCOME knobs (hauler_target, income_bar, min_contract_earners,
+// hauler_ship_type) landed with Slice 2. The GATE knob (gate_worker_target) is still deferred to the
+// slice that first reads it (Slice 3), to keep this section free of dead config.
 type BootstrapConfig struct {
 	// BootstrapDisabled stands the WHOLE coordinator down. Absent/false = ACTIVE, so an
 	// absent-config boots LIVE (pinned by test — Admiral: no dark-shipping). Set true only in an
@@ -37,4 +37,21 @@ type BootstrapConfig struct {
 	// ProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even the asset
 	// is a knob). 0/absent → SHIP_PROBE.
 	ProbeShipType string `mapstructure:"probe_ship_type"`
+
+	// --- INCOME-phase knobs (Slice 2, sp-ysgb.1). ---
+
+	// HaulerTarget is the INCOME hull cap: the coordinator buys one light hauler per viable contract
+	// hub, up to this many (staged, capital-gated). 0/absent → 4 (spec range 4–5).
+	HaulerTarget int `mapstructure:"hauler_target"`
+	// IncomeBar is the INCOME→GATE exit: the realized NET credits/hour the contract fleet must clear
+	// before the arc drives gate construction. Deliberately conservative — the Phase-1 objective is
+	// building the gate, so a too-HIGH bar (arc never reaches GATE) is the worse failure. This is the
+	// primary field-calibration knob. 0/absent → 10000.
+	IncomeBar float64 `mapstructure:"income_bar"`
+	// MinContractEarners is how many haulers stay on contracts through GATE to keep funding material
+	// acquisition (consumed by the GATE phase in Slice 3; plumbed here with the INCOME ramp). 0/absent → 1.
+	MinContractEarners int `mapstructure:"min_contract_earners"`
+	// HaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the asset is a
+	// knob). 0/absent → SHIP_LIGHT_HAULER.
+	HaulerShipType string `mapstructure:"hauler_ship_type"`
 }

@@ -91,10 +91,12 @@ func (f *fakeScouter) AssignAllMarkets(ctx context.Context, playerID int, system
 type fakeMetrics struct {
 	phases   []string
 	purchase int
+	haulers  int
 }
 
 func (m *fakeMetrics) RecordPhase(phase string) { m.phases = append(m.phases, phase) }
 func (m *fakeMetrics) RecordProbePurchased()    { m.purchase++ }
+func (m *fakeMetrics) RecordHaulerPurchased()   { m.haulers++ }
 
 // scriptedWorld is a tiny stateful model so a multi-tick acceptance test can observe the effect of
 // buys and scout assignments (the DATA arc reaching 3 probes scouting).
@@ -262,8 +264,10 @@ func TestBootstrap_DerivePhase_BeyondDataAtCoverageBar(t *testing.T) {
 	}
 }
 
-// At/over the coverage bar the DATA act must NOT run (no buy, no scout) — Slice-1 terminal hold.
-func TestBootstrap_CoverageMet_HoldsAtDataComplete_NoAction(t *testing.T) {
+// At/over the coverage bar the arc enters INCOME (Slice 2): the DATA act (probe buy, scout assign)
+// must NOT run — only INCOME acts from here. (Pre-Slice-2 this held at DATA-complete; INCOME is now
+// live, so the assertion is the phase crossover + DATA-act silence, not a "not implemented" hold.)
+func TestBootstrap_CoverageMet_EntersIncome_NoDataAct(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 10, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	scout := &fakeScouter{}
@@ -284,8 +288,10 @@ func TestBootstrap_CoverageMet_HoldsAtDataComplete_NoAction(t *testing.T) {
 	if acq.buys != 0 || scout.calls != 0 {
 		t.Fatalf("coverage met: DATA act must not run; buys=%d scouts=%d", acq.buys, scout.calls)
 	}
-	if !log.has("bootstrap_phase_not_implemented") {
-		t.Fatalf("expected a 'phase not yet implemented' hold line")
+	// INCOME is implemented now — no "phase not yet implemented" hold at INCOME (that line is reserved
+	// for GATE, past the income bar).
+	if log.has("bootstrap_phase_not_implemented") {
+		t.Fatalf("INCOME is live: must not log a 'phase not yet implemented' hold")
 	}
 }
 

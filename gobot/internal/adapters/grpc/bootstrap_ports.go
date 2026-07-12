@@ -3,14 +3,20 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
+	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -33,6 +39,12 @@ const (
 	// during bootstrap, so coverage measures BREADTH (how many marketplaces have data), not
 	// staleness. A tighter freshness window is a later refinement.
 	bootstrapMarketFreshnessMin = 24 * 60
+	// contractFleetTag is the dedicated-fleet tag the contract coordinator's dedicated pool selects on
+	// (matches the contract package's dedicatedFleetContract). A hauler carrying it is adopted as a
+	// contract worker (and puts the pool in exclusive mode, dropping the untagged frigate); the frigate
+	// retire clears it. The INCOME window (1h) is the trailing span the realized-$/hr read averages.
+	contractFleetTag      = "contract"
+	bootstrapIncomeWindow = time.Hour
 )
 
 // NewBootstrapCoordinatorHandler assembles the bootstrap reconciler (sp-3nbe M4), wiring every
@@ -47,12 +59,22 @@ func NewBootstrapCoordinatorHandler(
 	med common.Mediator,
 	waypointRepo *persistence.GormWaypointRepository,
 	marketRepo *persistence.MarketRepositoryAdapter,
+	contractRepo contract.ContractRepository,
 ) *bootstrapCmd.RunBootstrapCoordinatorHandler {
 	h := bootstrapCmd.NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&bootstrapRefresher{shipRepo: shipRepo})
-	h.SetWorldObserver(&bootstrapObserver{api: apiClient, shipRepo: shipRepo, waypointRepo: waypointRepo, marketRepo: marketRepo})
-	h.SetProbeAcquirer(&bootstrapAcquirer{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
+	h.SetWorldObserver(&bootstrapObserver{
+		api: apiClient, shipRepo: shipRepo, waypointRepo: waypointRepo, marketRepo: marketRepo,
+		med: med, contractRepo: contractRepo, containerRepo: server.containerRepo,
+	})
+	// One acquirer instance drives both the DATA probe buy and (embedded) the INCOME hauler price-check
+	// + buy — the yard price-scan + batch-purchase plumbing is asset-agnostic (parameterised by shipType).
+	acq := &bootstrapAcquirer{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo}
+	h.SetProbeAcquirer(acq)
+	h.SetHaulerAcquirer(&bootstrapHaulerAcquirer{bootstrapAcquirer: acq})
 	h.SetScoutAssigner(&bootstrapScouter{server: server})
+	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
+	h.SetContractRunner(&bootstrapContractRunner{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
 	return h
 }
@@ -77,6 +99,11 @@ type bootstrapObserver struct {
 	shipRepo     navigation.ShipRepository
 	waypointRepo *persistence.GormWaypointRepository
 	marketRepo   *persistence.MarketRepositoryAdapter
+	// INCOME-phase reads (Slice 2). med runs the realized-$/hr ledger query; contractRepo lists the
+	// active contracts' demanded goods (hub bias); containerRepo answers "is batch-contract running?".
+	med           common.Mediator
+	contractRepo  contract.ContractRepository
+	containerRepo *persistence.ContainerRepositoryGORM
 }
 
 func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstrapCmd.Observation, error) {
@@ -102,7 +129,9 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if s.IsIdle() {
 			obs.HasIdlePurchaser = true
 		}
+		wp := ""
 		if loc := s.CurrentLocation(); loc != nil {
+			wp = loc.Symbol
 			sys := shared.ExtractSystemSymbol(loc.Symbol)
 			if anyHome == "" {
 				anyHome = sys
@@ -110,6 +139,15 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 			if s.Role() == commandRole {
 				commandHome = sys
 			}
+		}
+		// INCOME fleet signals (Slice 2): the command frigate (retire target) and the contract-dedicated
+		// haulers (the staged-buy count + placement guard). A hull tagged "contract" that is the command
+		// frigate is NOT a hauler — it is the retire target, tracked separately.
+		if s.Role() == commandRole {
+			obs.CommandFrigateID = s.ShipSymbol()
+			obs.CommandFrigateOnContract = s.DedicatedFleet() == contractFleetTag
+		} else if s.DedicatedFleet() == contractFleetTag {
+			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
 		}
 	}
 	obs.HomeSystem = commandHome
@@ -132,17 +170,132 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 
 	// Coverage — home-system marketplaces total vs those with (fresh) market data. A read miss on
 	// either leaves that count 0, which reads as uncovered (stay in DATA) rather than falsely exiting.
+	// The single ListMarketsInSystem read serves BOTH the DATA coverage count AND the INCOME hub
+	// selector's market snapshots (sourceable goods + prices).
 	if obs.HomeSystem != "" {
 		if wps, werr := o.waypointRepo.ListBySystemWithTrait(ctx, obs.HomeSystem, marketplaceTrait); werr == nil {
 			obs.MarketsTotal = len(wps)
 		}
 		if mkts, merr := o.marketRepo.ListMarketsInSystem(ctx, uint(playerID), obs.HomeSystem, bootstrapMarketFreshnessMin); merr == nil {
 			obs.MarketsCovered = len(mkts)
+			obs.Markets = toMarketSnapshots(mkts)
+		}
+	}
+
+	// INCOME-phase reads (Slice 2). Each is BEST-EFFORT: a miss leaves the field at its zero value,
+	// which the reconciler reads fail-safe — 0 $/hr keeps the arc in INCOME (never premature GATE),
+	// empty Markets means no hubs (no hauler buys), empty ContractGoods falls back to density+cheapness.
+	obs.IncomePerHour = o.readIncomePerHour(ctx, playerID)
+	if o.contractRepo != nil {
+		if contracts, cerr := o.contractRepo.FindActiveContracts(ctx, playerID); cerr == nil {
+			obs.ContractGoods = contractDemandGoods(contracts)
+		}
+	}
+	if o.containerRepo != nil {
+		if running, rerr := contractFleetCoordinatorRunning(ctx, o.containerRepo, playerID); rerr == nil {
+			obs.BatchContractRunning = running
 		}
 	}
 
 	obs.Readable = true
 	return obs, nil
+}
+
+// readIncomePerHour reads the player's realized NET credits over the trailing income window (reusing
+// the ledger GetProfitLoss query) — the INCOME→GATE exit input. Realized (booked ledger rows), not
+// projected. A read miss returns 0, which keeps the arc in INCOME (never a premature GATE).
+func (o *bootstrapObserver) readIncomePerHour(ctx context.Context, playerID int) float64 {
+	if o.med == nil {
+		return 0
+	}
+	now := time.Now()
+	resp, err := o.med.Send(ctx, &ledgerQuery.GetProfitLossQuery{
+		PlayerID:  playerID,
+		StartDate: now.Add(-bootstrapIncomeWindow),
+		EndDate:   now,
+	})
+	if err != nil {
+		return 0
+	}
+	pl, ok := resp.(*ledgerQuery.GetProfitLossResponse)
+	if !ok || pl == nil {
+		return 0
+	}
+	// The window is exactly bootstrapIncomeWindow (1h), so NetProfit over it IS the net $/hr.
+	return float64(pl.NetProfit)
+}
+
+// toMarketSnapshots projects the persisted markets into the hub selector's input: per waypoint, the
+// goods a hauler can SOURCE (buy). Only EXPORT/EXCHANGE goods are sourceable (an IMPORT-only good is
+// one the market CONSUMES). The price is SellPrice() — the market ASK, i.e. what a ship PAYS to buy —
+// because this codebase's TradeGood swaps the API's purchase/sell prices (market_scanner.go). A
+// non-positive ask is dropped (fail-closed). Markets with no sourceable good are omitted.
+func toMarketSnapshots(mkts []market.Market) []bootstrapCmd.MarketSnapshot {
+	out := make([]bootstrapCmd.MarketSnapshot, 0, len(mkts))
+	for i := range mkts {
+		m := mkts[i]
+		snap := bootstrapCmd.MarketSnapshot{
+			Waypoint: m.WaypointSymbol(),
+			System:   shared.ExtractSystemSymbol(m.WaypointSymbol()),
+		}
+		for _, g := range m.TradeGoods() {
+			if tt := g.TradeType(); tt != market.TradeTypeExport && tt != market.TradeTypeExchange {
+				continue // IMPORT-only: the market consumes it — a hauler cannot source it here
+			}
+			ask := g.SellPrice() // domain-swapped: SellPrice() is what a ship PAYS to buy (the ask)
+			if ask <= 0 {
+				continue
+			}
+			snap.Goods = append(snap.Goods, bootstrapCmd.MarketGood{Symbol: g.Symbol(), PurchasePrice: int64(ask)})
+		}
+		if len(snap.Goods) > 0 {
+			out = append(out, snap)
+		}
+	}
+	return out
+}
+
+// contractDemandGoods collects the distinct trade symbols the player's active contracts require
+// delivered — the hub selector's contract-good bias. Empty when no accepted contract exists yet (the
+// selector then falls back to market density + cheapness), which is the normal state at INCOME start.
+func contractDemandGoods(contracts []*contract.Contract) []string {
+	seen := map[string]struct{}{}
+	var goods []string
+	for _, c := range contracts {
+		if c == nil {
+			continue
+		}
+		for _, d := range c.Terms().Deliveries {
+			if d.TradeSymbol == "" {
+				continue
+			}
+			if _, ok := seen[d.TradeSymbol]; ok {
+				continue
+			}
+			seen[d.TradeSymbol] = struct{}{}
+			goods = append(goods, d.TradeSymbol)
+		}
+	}
+	return goods
+}
+
+// contractFleetCoordinatorRunning reports whether a contract fleet coordinator container is already
+// PENDING or RUNNING for the player — the batch-contract idempotency read, used by the observer
+// (BatchContractRunning) and the runner (defense-in-depth launch guard). Mirrors the autosizer's
+// container-list guard (fleet_autosizer_ports.go).
+func contractFleetCoordinatorRunning(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int) (bool, error) {
+	for _, st := range []container.ContainerStatus{container.ContainerStatusRunning, container.ContainerStatusPending} {
+		models, err := repo.ListByStatus(ctx, st, &playerID)
+		if err != nil {
+			return false, err
+		}
+		for _, m := range models {
+			if m.ContainerType == string(container.ContainerTypeContractFleetCoordinator) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // --- probe acquirer (shipyard list price-check + BatchPurchaseShips) ---
@@ -254,6 +407,77 @@ func (a *bootstrapAcquirer) Buy(ctx context.Context, playerID int, shipType, yar
 	return bootstrapCmd.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost)}, nil
 }
 
+// --- hauler acquirer (INCOME: reuse the probe price-check + buy, then dedicate + place on the hub) ---
+
+// bootstrapHaulerAcquirer embeds the DATA-phase acquirer to reuse its cheapest-yard PriceCheck and the
+// money-integrity BatchPurchaseShips buy (both asset-agnostic, parameterised by shipType); it only adds
+// the contract-fleet dedication + hub placement that distinguish a positioned contract hauler from a
+// free scout. Building nothing new (spec §Reuse).
+type bootstrapHaulerAcquirer struct {
+	*bootstrapAcquirer
+}
+
+// BuyAndPlace buys ONE hauler at yard (reused batch path), dedicates it to the contract fleet so the
+// contract coordinator's dedicated pool adopts it (and, being the first tagged hull, seals the pool in
+// exclusive mode — dropping the untagged frigate), then navigates it to its hub. The dedication uses
+// the single fleet-assign write path (shipRepo.AssignFleet); placement reuses the high-level
+// NavigateRouteCommand (route/refuel/flight-mode handled, idempotent if already there).
+func (a *bootstrapHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint string) (bootstrapCmd.BuyResult, error) {
+	bought, err := a.Buy(ctx, playerID, shipType, yard)
+	if err != nil {
+		return bootstrapCmd.BuyResult{}, err
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return bought, err
+	}
+	// Dedicate to the contract fleet — the tag is what makes batch-contract's dedicated pool adopt it.
+	if derr := a.shipRepo.AssignFleet(ctx, bought.ShipSymbol, contractFleetTag, pid); derr != nil {
+		return bought, fmt.Errorf("dedicate hauler %s to contract fleet: %w", bought.ShipSymbol, derr)
+	}
+	// Place it on its hub. A nav miss is surfaced (the hull is bought + dedicated; a later tick's
+	// batch-contract still adopts it wherever it is — placement is an optimisation, not a correctness bar).
+	if _, nerr := a.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: bought.ShipSymbol, Destination: hubWaypoint, PlayerID: pid}); nerr != nil {
+		return bought, fmt.Errorf("navigate hauler %s to hub %s: %w", bought.ShipSymbol, hubWaypoint, nerr)
+	}
+	return bought, nil
+}
+
+// --- frigate retirer (INCOME: clear the command frigate's contract dedication — fleet unassign) ---
+
+type bootstrapFrigateRetirer struct{ shipRepo navigation.ShipRepository }
+
+// RetireFromContract clears the frigate's dedicated-fleet tag (fleet unassign = AssignFleet with ""),
+// removing it from the contract coordinator's dedicated pool. Idempotent at the repo (a clear on an
+// untagged hull is a no-op); the reconciler already guards on the observation.
+func (r *bootstrapFrigateRetirer) RetireFromContract(ctx context.Context, playerID int, shipSymbol string) error {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
+	return r.shipRepo.AssignFleet(ctx, shipSymbol, "", pid)
+}
+
+// --- contract runner (INCOME: launch the contract fleet coordinator — workflow batch-contract) ---
+
+type bootstrapContractRunner struct{ server *DaemonServer }
+
+// StartBatchContract launches the contract fleet coordinator (dynamic ship discovery — empty slices).
+// It re-checks the container repo first (defense in depth beyond the observation's BatchContractRunning
+// guard) because ContractFleetCoordinator is not itself idempotent — so a stale observation can never
+// spawn a duplicate coordinator.
+func (r *bootstrapContractRunner) StartBatchContract(ctx context.Context, playerID int) error {
+	running, err := contractFleetCoordinatorRunning(ctx, r.server.containerRepo, playerID)
+	if err != nil {
+		return err
+	}
+	if running {
+		return nil
+	}
+	_, err = r.server.ContractFleetCoordinator(ctx, nil, playerID, nil, nil)
+	return err
+}
+
 // --- scout assigner (reuse the VRP scout-all-markets fleet assignment) ---
 
 type bootstrapScouter struct{ server *DaemonServer }
@@ -276,5 +500,11 @@ func (m *bootstrapMetricsSink) RecordPhase(phase string) {
 func (m *bootstrapMetricsSink) RecordProbePurchased() {
 	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
 		c.RecordProbePurchased()
+	}
+}
+
+func (m *bootstrapMetricsSink) RecordHaulerPurchased() {
+	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
+		c.RecordHaulerPurchased()
 	}
 }

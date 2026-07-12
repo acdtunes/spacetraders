@@ -20,6 +20,21 @@ const (
 	// defaultProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even
 	// the asset is a knob).
 	defaultProbeShipType = "SHIP_PROBE"
+
+	// INCOME-phase defaults (Slice 2).
+	defaultHaulerTarget = 4 // INCOME hull cap: one hauler per viable contract hub, up to 4 (spec 4–5)
+	// defaultIncomeBar is the INCOME→GATE exit: realized NET credits/hour the contract fleet must
+	// clear before the arc drives gate construction. Deliberately CONSERVATIVE (a clearly-earning but
+	// not-huge bar): the Phase-1 objective is building the gate, so the worse failure is a bar set so
+	// HIGH the arc never reaches GATE — a lower bar only risks starting GATE with a still-warming
+	// fleet. This is the primary field-calibration knob (spec Slice-2 open question).
+	defaultIncomeBar = 10000.0
+	// defaultMinContractEarners is how many haulers stay on contracts through GATE to keep funding
+	// material acquisition (consumed by the GATE phase in Slice 3; plumbed here with the INCOME ramp).
+	defaultMinContractEarners = 1
+	// defaultHaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the
+	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
+	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -58,8 +73,37 @@ type ScoutAssigner interface {
 type MetricsSink interface {
 	// RecordPhase sets the derived-phase gauge (spacetraders_bootstrap_phase{phase}).
 	RecordPhase(phase string)
-	// RecordProbePurchased increments the probes-bought counter (once per executed buy).
+	// RecordProbePurchased increments the probes-bought counter (once per executed DATA buy).
 	RecordProbePurchased()
+	// RecordHaulerPurchased increments the haulers-bought counter (once per executed INCOME buy).
+	RecordHaulerPurchased()
+}
+
+// FrigateRetirer clears the command frigate's contract-fleet dedication (reuses fleet unassign —
+// AssignShipFleetCommand with Fleet=""). It is the "retire the frigate from contract work" action: a
+// frigate is a poor contract worker (low fuel/cargo), so it must not sit in the contract coordinator's
+// dedicated pool. Idempotent at the adapter (a clear on an untagged hull is a no-op); the reconciler
+// still guards on the observation so a stale tag is cleared exactly once.
+type FrigateRetirer interface {
+	RetireFromContract(ctx context.Context, playerID int, shipSymbol string) error
+}
+
+// HaulerAcquirer price-checks and buys ONE light hauler, then dedicates it to the contract fleet and
+// places it on its hub (reuses shipyard list/purchase + fleet assign + navigate). Mirrors
+// ProbeAcquirer but folds the dedicate+placement into the buy, because a contract hauler is a
+// dedicated, positioned hull — not a free scout. PriceCheck reads the cheapest reachable yard's ask
+// for shipType (readable=false ⇒ the capital gate fails closed).
+type HaulerAcquirer interface {
+	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
+	BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint string) (BuyResult, error)
+}
+
+// ContractRunner launches the contract fleet coordinator (workflow batch-contract) for a player
+// (reuses the existing ContractFleetCoordinator launch). The reconciler calls Start only when the
+// observation reports it is not already running, so the launch is idempotent; Start is best-effort and
+// its error is logged, not fatal.
+type ContractRunner interface {
+	StartBatchContract(ctx context.Context, playerID int) error
 }
 
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player (sp-3nbe).
@@ -84,6 +128,12 @@ type RunBootstrapCoordinatorCommand struct {
 	CoverageBar      float64
 	ReserveMargin    float64
 	ProbeShipType    string
+
+	// INCOME-phase knobs (Slice 2, RULINGS #5; the zero value defers to the documented default).
+	HaulerTarget       int     // INCOME hull cap — actual = one per viable contract hub, up to this.
+	IncomeBar          float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
+	MinContractEarners int     // haulers kept on contracts through GATE (consumed in Slice 3).
+	HaulerShipType     string  // the shipyard ship-type bought for a contract hauler.
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress. Because the loop is infinite it is
@@ -106,6 +156,12 @@ type RunBootstrapCoordinatorHandler struct {
 	acquirer  ProbeAcquirer
 	scouter   ScoutAssigner
 	metrics   MetricsSink
+
+	// INCOME-phase collaborators (Slice 2). Each is nil-safe: a nil collaborator degrades the INCOME
+	// action it drives to a logged skip (surfaced as a blocker), never a panic.
+	retirer      FrigateRetirer
+	haulAcquirer HaulerAcquirer
+	contractRun  ContractRunner
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when
@@ -136,6 +192,18 @@ func (h *RunBootstrapCoordinatorHandler) SetScoutAssigner(s ScoutAssigner) { h.s
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunBootstrapCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }
 
+// SetFrigateRetirer wires the "retire the frigate from contract work" action (reuses fleet unassign).
+// Unset → the retire is a logged skip.
+func (h *RunBootstrapCoordinatorHandler) SetFrigateRetirer(r FrigateRetirer) { h.retirer = r }
+
+// SetHaulerAcquirer wires the price-check + buy-and-place-on-hub path (reuses shipyard purchase +
+// fleet assign + navigate). Unset → INCOME evaluates and logs but never buys a hauler.
+func (h *RunBootstrapCoordinatorHandler) SetHaulerAcquirer(a HaulerAcquirer) { h.haulAcquirer = a }
+
+// SetContractRunner wires the batch-contract launch (reuses the contract fleet coordinator). Unset →
+// haulers are placed but batch-contract is not driven (surfaced loudly).
+func (h *RunBootstrapCoordinatorHandler) SetContractRunner(c ContractRunner) { h.contractRun = c }
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -146,7 +214,7 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	}
 
 	cfg := resolveBootstrapConfig(cmd)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, reserve_margin=%.2f)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.ReserveMargin), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, reserve_margin=%.2f, hauler_target=%d, income_bar=%.0f, min_contract_earners=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.ReserveMargin, cfg.HaulerTarget, cfg.IncomeBar, cfg.MinContractEarners), map[string]interface{}{
 		"action":       "bootstrap_start",
 		"container_id": cmd.ContainerID,
 		"dry_run":      cfg.DryRun,

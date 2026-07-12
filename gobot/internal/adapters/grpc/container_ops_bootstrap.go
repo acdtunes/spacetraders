@@ -82,6 +82,10 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_reserve_margin",
 	"bootstrap_tick_secs",
 	"bootstrap_probe_ship_type",
+	"bootstrap_hauler_target",
+	"bootstrap_income_bar",
+	"bootstrap_min_contract_earners",
+	"bootstrap_hauler_ship_type",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -125,6 +129,18 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.ProbeShipType != "" {
 		config["bootstrap_probe_ship_type"] = b.ProbeShipType
 	}
+	if b.HaulerTarget != 0 {
+		config["bootstrap_hauler_target"] = b.HaulerTarget
+	}
+	if b.IncomeBar != 0 {
+		config["bootstrap_income_bar"] = b.IncomeBar
+	}
+	if b.MinContractEarners != 0 {
+		config["bootstrap_min_contract_earners"] = b.MinContractEarners
+	}
+	if b.HaulerShipType != "" {
+		config["bootstrap_hauler_ship_type"] = b.HaulerShipType
+	}
 }
 
 // buildBootstrapCommand rebuilds the standing bootstrap command (sp-3nbe) from a persisted launch
@@ -148,5 +164,10 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		CoverageBar:      cfg.OptionalFloat("bootstrap_coverage_bar", 0),
 		ReserveMargin:    cfg.OptionalFloat("bootstrap_reserve_margin", 0),
 		ProbeShipType:    cfg.OptionalString("bootstrap_probe_ship_type"),
+
+		HaulerTarget:       cfg.OptionalInt("bootstrap_hauler_target", 0),
+		IncomeBar:          cfg.OptionalFloat("bootstrap_income_bar", 0),
+		MinContractEarners: cfg.OptionalInt("bootstrap_min_contract_earners", 0),
+		HaulerShipType:     cfg.OptionalString("bootstrap_hauler_ship_type"),
 	}
 }
