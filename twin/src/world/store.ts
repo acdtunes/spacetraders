@@ -101,7 +101,7 @@ function seedIncomeEntry(world: World, opts: IncomeResetOptions): void {
   world.creditsPerHour = opts.creditsPerHour ?? 0;
   world.batchContractRunning = false;
   world.haulers = [];
-  world.shipPrices = { ...(world.shipPrices ?? {}), LIGHT_HAULER: opts.haulerPrice ?? 300_000 };
+  world.shipPrices = { ...(world.shipPrices ?? {}), SHIP_LIGHT_HAULER: opts.haulerPrice ?? 300_000 };
 }
 
 /** gate-entry: seed the GATE view. gateWorkers[] starts EMPTY (repurpose/buy fill it during the
@@ -121,7 +121,7 @@ function seedGateEntry(world: World, opts: GateResetOptions): void {
   world.standingCoordinators = { siting: false, workerRebalancer: false };
   world.done = false;
   world.gateMaterialChains = opts.gateMaterialChains ?? 3;
-  world.shipPrices = { ...(world.shipPrices ?? {}), LIGHT_HAULER: opts.workerPrice ?? 300_000 };
+  world.shipPrices = { ...(world.shipPrices ?? {}), SHIP_LIGHT_HAULER: opts.workerPrice ?? 300_000 };
   // The idle income fleet carried into GATE — the pool the coordinator repurposes into workers.
   const n = opts.haulers ?? 4;
   const agentSym = world.agent?.symbol ?? 'TWIN';

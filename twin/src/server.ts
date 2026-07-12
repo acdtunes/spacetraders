@@ -10,6 +10,8 @@ import { shipRoutes } from './routes/ships.js';
 import { waypointRoutes } from './routes/waypoints.js';
 import { marketRoutes } from './routes/market.js';
 import { shipyardRoutes } from './routes/shipyard.js';
+import { contractRoutes } from './routes/contracts.js';
+import { cargoRoutes } from './routes/cargo.js';
 import { adminRoutes } from './routes/admin.js';
 
 export interface BuildServerOptions { world?: World }
@@ -47,6 +49,8 @@ export function buildServer(opts: BuildServerOptions = {}): FastifyInstance {
       await waypointRoutes(v2);          // Task 21  GET /systems/:s/waypoints[/:w]
       await marketRoutes(v2);            // Task 22  GET …/market
       await shipyardRoutes(v2);          // Task 23  GET …/shipyard
+      await contractRoutes(v2);          // INCOME   POST …/negotiate/contract; …/contracts/:id[/accept|deliver|fulfill]
+      await cargoRoutes(v2);             // INCOME   POST /my/ships/:s/purchase|sell
       // await shipNavigateRoutes(v2);   // Task 24  POST …/navigate
       // await shipActionRoutes(v2);     // Task 25  POST …/orbit|dock|refuel
       // await myShipsPurchaseRoutes(v2);// Task 27  POST /my/ships

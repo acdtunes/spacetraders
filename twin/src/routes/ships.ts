@@ -23,7 +23,14 @@ function intParam(raw: unknown, def: number, min: number, max: number): number {
 
 // ─── purchase / navigate helpers (mutation-log-observable /v2 mutations) ─────────────
 const ROLE_BY_SHIP_TYPE: Record<string, string> = {
+  // Real-API ship-type symbols (what the coordinator sends — e.g. defaultHaulerShipType
+  // "SHIP_LIGHT_HAULER"). The un-prefixed keys are kept for legacy/hermetic-test callers.
   SHIP_PROBE: 'SATELLITE',
+  SHIP_COMMAND_FRIGATE: 'COMMAND',
+  SHIP_LIGHT_HAULER: 'HAULER',
+  SHIP_HEAVY_FREIGHTER: 'HAULER',
+  SHIP_LIGHT_SHUTTLE: 'HAULER',
+  SHIP_MINING_DRONE: 'EXCAVATOR',
   COMMAND_FRIGATE: 'COMMAND',
   LIGHT_HAULER: 'HAULER',
   HEAVY_FREIGHTER: 'HAULER',
@@ -285,8 +292,9 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
 
 /** Commit a completed transit into the ship's stored nav (arrival is otherwise resolved only
  *  on-read by resolveNav, which never persists). After settling, orbit/dock/refuel act on the
- *  real arrived location. No-op while still in transit or when there is no transit. */
-function settleArrival(world: World, ship: Ship, symbol: string): void {
+ *  real arrived location. No-op while still in transit or when there is no transit. Exported so the
+ *  contract/cargo routes can settle a ship's arrival before their docked-at-location checks. */
+export function settleArrival(world: World, ship: Ship, symbol: string): void {
   const transit = world.transits.get(symbol);
   if (!transit) return;
   if (Date.now() >= Date.parse(transit.arrival)) {
