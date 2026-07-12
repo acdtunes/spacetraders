@@ -20,20 +20,14 @@ import { resetClock, setClockMode, setNow } from '../../src/clock';
 // `fulfilled` and on the ship's cargo, and the isComplete transition) — read back through
 // the endpoint itself — not response shape alone.
 //
-// ⛔ WHY EVERY SCENARIO IS RED RIGHT NOW (expected — the crafter drives them to green):
-//   • server.ts registers NO construction routes (no `constructionRoutes(v2)` line), so both
-//     GET and POST resolve to Fastify's generic 404 "Route not found". Each scenario asserts
-//     its endpoint contract first (GET 200 / supply 2xx / a twin error envelope with a numeric
-//     `error.code`), so it fails cleanly against that generic 404.
-//   • No construction MATERIALS manifest exists in the world model yet. `ConstructionState`
-//     is frozen at { site, percent, started, adopted } (3 tests assert it via toEqual), so the
-//     crafter must introduce a STATEFUL materials manifest for the gate (seeded in gate-entry
-//     mode) that GET reads and supply mutates. These specs define that behaviour; they do NOT
-//     reach into internals — every material is discovered and every effect observed through the
-//     /v2 surface (the driving port).
-//   • The intended contract is already pinned in twin/src/errors.ts: 4800 (material not
-//     required), 4801 (material already fulfilled), 4802 (not docked at the site). Negative
-//     scenarios assert those exact business codes.
+// STATUS: GREEN against the implemented construction surface. server.ts wires `constructionRoutes(v2)`
+// and the gate-entry reset seeds a STATEFUL materials manifest that GET reads and supply mutates. Every
+// scenario asserts OBSERVABLE EFFECTS through the /v2 driving port only — before/after `fulfilled`
+// deltas, the ship's cargo drain, the isComplete transition — never internals. Business error codes are
+// pinned to the twin's real contract (asserting the EXACT code, not merely "a numeric error"):
+//   • 4800 material-not-required, 4801 material-already-fulfilled, 4802 not-docked (twin/src/errors.ts)
+//   • 4218 insufficient-cargo — supplying more than the ship carries — shared with the cargo route's
+//     over-sell guard (twin/src/routes/construction.ts:21 & cargo.ts:19).
 // ─────────────────────────────────────────────────────────────────────────────────────
 
 const FROZEN_NOW = '2026-07-11T00:00:00.000Z';
@@ -48,6 +42,10 @@ const OTHER_WAYPOINT = 'X1-PZ28-A1'; // a normal, NOT-under-construction waypoin
 const ERR_MATERIAL_NOT_REQUIRED = 4800;
 const ERR_MATERIAL_FULFILLED = 4801;
 const ERR_INVALID_LOC = 4802;
+// Insufficient-cargo: supplying more units than the ship is carrying. The construction supply route
+// reuses the cargo route's over-sell code — twin/src/routes/construction.ts:21 & cargo.ts:19 both
+// pin ERR_CARGO_INSUFFICIENT = 4218.
+const ERR_CARGO_INSUFFICIENT = 4218;
 
 type Material = { tradeSymbol: string; required: number; fulfilled: number };
 
@@ -238,7 +236,7 @@ describe('GATE construction — rejected deliveries change nothing', () => {
     expect(after.fulfilled).toBe(target.required);
   });
 
-  it('supplying more units than the ship is carrying is rejected and credits nothing', async () => {
+  it('supplying more units than the ship is carrying is rejected as insufficient cargo (4218) and credits nothing', async () => {
     // Given a hauler holding only 3 units of a required good.
     const target = (await siteNow()).materials[0];
     dockAtGateHolding(target.tradeSymbol, 3);
@@ -246,9 +244,11 @@ describe('GATE construction — rejected deliveries change nothing', () => {
     // When it claims to supply 10.
     const res = await supply({ shipSymbol: SHIP, tradeSymbol: target.tradeSymbol, units: 10 });
 
-    // Then the delivery is rejected (a business error, not a partial credit) and progress is unchanged.
+    // Then the delivery is rejected with the EXACT insufficient-cargo business code (not merely "some
+    // numeric error" — that shape-only check passed even if the route returned an unrelated code), a
+    // business error rather than a partial credit, and the site's progress is unchanged.
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
-    expect(typeof res.json().error.code).toBe('number');
+    expect(res.json().error.code).toBe(ERR_CARGO_INSUFFICIENT);
     const after = (await siteNow()).materials.find((m) => m.tradeSymbol === target.tradeSymbol)!;
     expect(after.fulfilled).toBe(target.fulfilled);
   });

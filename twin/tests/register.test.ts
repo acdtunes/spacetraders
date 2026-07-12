@@ -51,4 +51,35 @@ describe('POST /v2/register via `spacetraders player register --new`', () => {
     expect(state.ships.map((s) => s.symbol).sort()).toEqual(['TWINAGENT-1', 'TWINAGENT-2']);
     expect(state.ships.map((s) => s.registration.role).sort()).toEqual(['COMMAND', 'SATELLITE']);
   });
+
+  // Error path for the same twin-reaching command: the cold-start era guard. Depends on the
+  // preceding `it` having opened TWINAGENT's era (this describe uses a once-only beforeAll TRUNCATE
+  // and carries state across its tests by design). player_register_new.go rejects a new cold-start
+  // while ANY era is open — `an OPEN era (<name>) already exists; close it first` — short-circuiting
+  // before it touches the twin.
+  it('refuses to open a SECOND cold-start era while one is already open (era guard) — no second player/era, twin untouched', async () => {
+    // Given the preceding registration left TWINAGENT's era OPEN (observed, not assumed).
+    const openEra = psql('SELECT name FROM eras WHERE closed_at IS NULL;');
+    expect(openEra, 'precondition: TWINAGENT era is open from the first registration').toBe(ERA_NAME);
+    const playersBefore = psql('SELECT count(*) FROM players;');
+    const erasBefore = psql('SELECT count(*) FROM eras;');
+
+    // When the operator tries to cold-start ANOTHER agent while that era is still open.
+    const r = runCli(['player', 'register', '--new', '--agent', 'TWINAGENT2', '--faction', 'COSMIC']);
+
+    // Then the register is refused by the era guard, naming the open era it will not clobber…
+    expect(r.exitCode, 'a second cold-start must be refused while an era is open').not.toBe(0);
+    expect(`${r.stdout}\n${r.stderr}`, 'the refusal names the open-era guard').toMatch(/OPEN era .*already exists|close it first/i);
+
+    // …and NOTHING was created — still exactly one player and one era (teeth: a guard that errored yet
+    // still wrote a row would bump these counts)…
+    expect(psql('SELECT count(*) FROM players;'), 'no second player row was written').toBe(playersBefore);
+    expect(psql('SELECT count(*) FROM eras;'), 'no second era row was written').toBe(erasBefore);
+
+    // …and the twin still holds the ORIGINAL cold-start agent and fleet — the guard short-circuits
+    // before any twin call, so the refused cold-start never reset the world out from under TWINAGENT.
+    const state = await twinState();
+    expect(state.agent?.symbol, 'twin agent is still the original cold-start agent').toBe('TWINAGENT');
+    expect(state.ships.map((s) => s.symbol).sort()).toEqual(['TWINAGENT-1', 'TWINAGENT-2']);
+  });
 });

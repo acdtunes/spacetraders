@@ -141,8 +141,16 @@ describe('Cargo trade guard — overselling is refused and the books stay intact
     // ── When: the trader tries to SELL 999 units — far more than the 5 on board ──
     const oversell = runCli(['ship', 'sell', '--ship', SHIP, '--good', GOOD, '--units', '999', '--player-id', '1']);
 
-    // ── Then: the trade is REFUSED ... ──
+    // ── Then: the trade is REFUSED, and the CLI names WHY — insufficient cargo ──
+    // The twin's over-sell guard returns business code 4218, but the CLI never reaches it: the sell
+    // command's SellStrategy.ValidatePreconditions (gobot .../strategies/cargo_transaction_strategy.go)
+    // short-circuits LOCALLY with `fmt.Errorf("insufficient cargo: need %d, have %d", ...)` BEFORE any
+    // API call, so the numeric 4218 is not observable at this CLI boundary. We therefore pin the
+    // deterministic insufficient-cargo message cobra prints to stderr (same pattern as
+    // tests/endpoints/shipyard.errors) — it proves the refusal is for the RIGHT reason, not merely a
+    // non-zero exit for any reason.
     expect(oversell.exitCode, 'overselling must be refused (non-zero exit)').not.toBe(0);
+    expect(oversell.stderr, 'the refusal names its cause: insufficient cargo').toMatch(/insufficient cargo/i);
 
     // ── ... and NOTHING moved: the 5 units are still on board and credits are unchanged ──
     // (Teeth: a guard that errored yet partially sold would empty the hold AND raise credits — both
