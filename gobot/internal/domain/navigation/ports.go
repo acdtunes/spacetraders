@@ -6,6 +6,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// ShipMutation re-applies an intended change onto a freshly-loaded ship for the
+// CAS-retry save path (SaveWithRetry, sp-01wc). Because it runs again on the
+// fresh row after every concurrent-writer conflict, it must fold in its own
+// applicability guard and be idempotent: it reports changed=false when the ship
+// is already in the desired state (e.g. another writer already transitioned it),
+// so the caller skips the write with no spurious version bump. A returned error
+// aborts the whole operation.
+type ShipMutation func(ship *Ship) (changed bool, err error)
+
 // ShipQueryRepository handles ship data queries.
 //
 // This interface follows the Interface Segregation Principle (ISP) by focusing
@@ -78,6 +87,21 @@ type ShipRepository interface {
 	// Persistence methods (save ship aggregate including full state)
 	Save(ctx context.Context, ship *Ship) error
 	SaveAll(ctx context.Context, ships []*Ship) error
+
+	// SaveWithRetry loads the ship fresh, applies mutate, and persists it under
+	// the ships.version CAS guard (sp-60ff). On a concurrent-writer conflict it
+	// RE-loads the fresh row, RE-applies mutate on top of that fresh state, and
+	// retries the CAS save — bounded by the repository's max-CAS-retries knob —
+	// so both the concurrent writer's mutation AND this one survive instead of
+	// the loser being last-write-wins clobbered (sp-01wc). On retry exhaustion,
+	// or when the knob disables retry, it falls back to the legacy
+	// last-write-wins upsert, so behavior never regresses below sp-60ff.
+	//
+	// Returns the persisted ship (for post-save side effects such as event
+	// publication) and whether a write actually occurred — false when mutate
+	// reports the ship is already in the desired state (a concurrent writer got
+	// there first), in which case no write and no spurious version bump happen.
+	SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate ShipMutation) (*Ship, bool, error)
 
 	// ReleaseAllActive releases all active ship assignments for the given player
 	// (used for daemon startup cleanup). Scoped to playerID so that multiple

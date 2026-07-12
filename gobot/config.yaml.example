@@ -74,6 +74,11 @@ daemon:
   max_containers: 100                   # Maximum concurrent containers
   health_check_interval: 30s            # Health check interval
   shutdown_timeout: 30s                 # Graceful shutdown timeout
+  # ships.version conflict resolution (sp-01wc). On a concurrent-writer conflict
+  # a scheduler mutation is re-applied on the fresh row instead of last-write-
+  # wins clobbering the other writer. Live by default; tune or disable below.
+  # max_cas_retries: 3                  # 0/unset → built-in default (3)
+  # cas_retry_disabled: false           # true → legacy last-write-wins (sp-60ff)
 
   # Container restart policy
   restart_policy:

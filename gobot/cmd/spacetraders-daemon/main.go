@@ -200,7 +200,12 @@ func run(cfg *config.Config) error {
 
 	// Now initialize ship repository with graph service (implements IWaypointProvider)
 	// Pass db connection for hybrid API+DB operation (ship data from API, assignment from DB)
-	shipRepo = api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db, nil) // nil = use RealClock
+	shipRepoImpl := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db, nil) // nil = use RealClock
+	// sp-01wc: wire the CAS-retry knob (live by default; cas_retry_disabled reverts
+	// ship saves to sp-60ff last-write-wins). Setter injection keeps the 4
+	// NewShipRepository call sites untouched.
+	shipRepoImpl.SetCASRetryPolicy(cfg.Daemon.MaxCASRetries, cfg.Daemon.CASRetryDisabled)
+	shipRepo = shipRepoImpl
 	fmt.Println("Ship repository initialized")
 
 	// 7. Initialize mediator (CQRS dispatcher)

@@ -60,7 +60,20 @@ type ShipRepository struct {
 
 	// Optional arrival scheduler - notified after navigation to schedule state transition
 	arrivalScheduler navigation.ArrivalScheduler
+
+	// CAS-retry knob (sp-01wc). maxCASRetries<=0 means "use defaultMaxCASRetries";
+	// casRetryDisabled forces the legacy last-write-wins-on-conflict path (sp-60ff).
+	// Both default to their zero value so retry is LIVE by default across every
+	// construction path (RULINGS #5); the daemon overrides them from DaemonConfig
+	// via SetCASRetryPolicy.
+	maxCASRetries    int
+	casRetryDisabled bool
 }
+
+// defaultMaxCASRetries is the number of re-find + re-apply attempts SaveWithRetry
+// makes on a ships.version conflict before falling back to last-write-wins, when
+// the daemon has not configured max_cas_retries.
+const defaultMaxCASRetries = 3
 
 // NewShipRepository creates a new hybrid API+DB ship repository
 func NewShipRepository(
@@ -89,6 +102,30 @@ func NewShipRepository(
 // circular dependencies during construction.
 func (r *ShipRepository) SetArrivalScheduler(scheduler navigation.ArrivalScheduler) {
 	r.arrivalScheduler = scheduler
+}
+
+// SetCASRetryPolicy configures the optimistic-concurrency retry knob for
+// SaveWithRetry (sp-01wc). maxRetries<=0 selects the built-in default
+// (defaultMaxCASRetries); disabled=true forces the legacy last-write-wins path
+// (sp-60ff behavior), disabling re-apply retry entirely. Wired from DaemonConfig
+// at boot; setter injection mirrors SetArrivalScheduler so the 4 constructor call
+// sites stay untouched.
+func (r *ShipRepository) SetCASRetryPolicy(maxRetries int, disabled bool) {
+	r.maxCASRetries = maxRetries
+	r.casRetryDisabled = disabled
+}
+
+// resolvedCASRetries reports the effective retry bound: 0 when disabled (straight
+// to last-write-wins on the first conflict, i.e. today's behavior), otherwise the
+// configured value or defaultMaxCASRetries when unset.
+func (r *ShipRepository) resolvedCASRetries() int {
+	if r.casRetryDisabled {
+		return 0
+	}
+	if r.maxCASRetries <= 0 {
+		return defaultMaxCASRetries
+	}
+	return r.maxCASRetries
 }
 
 // FindBySymbol retrieves a ship by symbol and player ID from database.
@@ -844,33 +881,63 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 		return fmt.Errorf("database not configured")
 	}
 
-	model := r.shipToModel(ship)
-
 	if loaded := ship.PersistedVersion(); loaded > 0 {
-		res := r.db.WithContext(ctx).
-			Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
-				Where: clause.Where{Exprs: []clause.Expression{
-					clause.Eq{Column: clause.Column{Table: "ships", Name: "version"}, Value: loaded},
-				}},
-				UpdateAll: true,
-			}).
-			Create(&model)
-		if res.Error != nil {
-			return res.Error
+		committed, err := r.trySaveCAS(ctx, ship)
+		if err != nil {
+			return err
 		}
-		if res.RowsAffected > 0 {
-			ship.SetPersistedVersion(loaded + 1)
-			r.shipListCache.Delete(ship.PlayerID().Value())
+		if committed {
 			return nil
 		}
-		// Conflict: the row moved past our loaded version.
-		shipVersionConflicts.Add(1)
-		metrics.RecordShipVersionConflict()
+		// Conflict: the row moved past our loaded version. Preserve today's
+		// last-write-wins behavior (sp-60ff); SaveWithRetry is the opt-in path
+		// that re-applies on fresh state instead (sp-01wc).
 		log.Printf("ERROR: ship %s save conflict — row version moved past %d (concurrent writer; sp-60ff probe); applying last-write-wins fallback",
 			ship.ShipSymbol(), loaded)
 	}
 
+	return r.saveLastWriteWins(ctx, ship)
+}
+
+// trySaveCAS attempts the version-guarded upsert for an entity that carries a
+// loaded row version (caller guarantees PersistedVersion() > 0). It returns
+// committed=true when the guarded write landed — the entity's version is
+// advanced and the list cache invalidated. It returns committed=false when the
+// row moved past the loaded version (RowsAffected == 0): a concurrent-writer
+// conflict, counted + mirrored to prometheus so the caller can decide between
+// retry (SaveWithRetry) and last-write-wins (Save). The conflict counter is
+// incremented per attempt, so retries keep the sp-60ff telemetry intact.
+func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) (committed bool, err error) {
+	loaded := ship.PersistedVersion()
+	model := r.shipToModel(ship)
+	res := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+			Where: clause.Where{Exprs: []clause.Expression{
+				clause.Eq{Column: clause.Column{Table: "ships", Name: "version"}, Value: loaded},
+			}},
+			UpdateAll: true,
+		}).
+		Create(&model)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected > 0 {
+		ship.SetPersistedVersion(loaded + 1)
+		r.shipListCache.Delete(ship.PlayerID().Value())
+		return true, nil
+	}
+	shipVersionConflicts.Add(1)
+	metrics.RecordShipVersionConflict()
+	return false, nil
+}
+
+// saveLastWriteWins performs the legacy unconditional upsert. It clobbers any
+// concurrent writer's mutation and is the fallback both for entities with no
+// loaded version (API-born inserts / first sync) and for CAS-retry exhaustion
+// (sp-01wc) — so behavior never regresses below sp-60ff's tripwire.
+func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation.Ship) error {
+	model := r.shipToModel(ship)
 	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
@@ -887,6 +954,69 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 	}
 
 	return err
+}
+
+// SaveWithRetry implements navigation.ShipRepository. See that interface for the
+// contract. It re-finds the fresh row and re-applies mutate on every
+// ships.version conflict (sp-01wc), bounded by resolvedCASRetries(), then falls
+// back to last-write-wins on exhaustion so behavior never regresses below
+// sp-60ff. When the knob disables retry (resolvedCASRetries()==0) the very first
+// conflict falls straight through to last-write-wins — exactly today's Save.
+func (r *ShipRepository) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	if r.db == nil {
+		return nil, false, fmt.Errorf("database not configured")
+	}
+	maxRetries := r.resolvedCASRetries()
+
+	var ship *navigation.Ship
+	for attempt := 0; ; attempt++ {
+		var err error
+		ship, err = r.FindBySymbol(ctx, symbol, playerID)
+		if err != nil {
+			return nil, false, err
+		}
+
+		changed, err := mutate(ship)
+		if err != nil {
+			return ship, false, err
+		}
+		if !changed {
+			// Already in the desired state (a concurrent writer got there
+			// first) — no write, no spurious version bump.
+			return ship, false, nil
+		}
+
+		// No loaded version (API-born / fresh row) → nothing to guard against;
+		// the unconditional upsert is the only correct path.
+		if ship.PersistedVersion() <= 0 {
+			if err := r.saveLastWriteWins(ctx, ship); err != nil {
+				return ship, false, err
+			}
+			return ship, true, nil
+		}
+
+		committed, err := r.trySaveCAS(ctx, ship)
+		if err != nil {
+			return ship, false, err
+		}
+		if committed {
+			return ship, true, nil
+		}
+
+		// Conflict. Retry on fresh state unless retries are disabled/exhausted.
+		if attempt >= maxRetries {
+			// maxRetries==0 (disabled) lands here on the first conflict →
+			// exactly sp-60ff's last-write-wins. maxRetries>0 exhausted →
+			// last-write-wins on the freshest re-applied state (never regress).
+			log.Printf("ERROR: ship %s save conflict — %d CAS attempt(s) exhausted (concurrent writer; sp-01wc); applying last-write-wins fallback",
+				symbol, attempt+1)
+			if err := r.saveLastWriteWins(ctx, ship); err != nil {
+				return ship, false, err
+			}
+			return ship, true, nil
+		}
+		// else loop: re-find fresh, re-apply mutate, retry the CAS save.
+	}
 }
 
 // SaveAll batch persists multiple ship aggregates

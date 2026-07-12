@@ -87,28 +87,24 @@ func (s *ShipStateScheduler) handleArrival(symbol string, playerID shared.Player
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Re-fetch ship to get latest state
-	freshShip, err := s.shipRepo.FindBySymbol(ctx, symbol, playerID)
+	// Re-find + arrive + save under CAS-retry (sp-01wc): on a concurrent-writer
+	// version conflict the arrival is re-applied on the fresh row instead of
+	// last-write-wins clobbering the other writer. The in-transit guard lives
+	// inside the mutation so it is re-checked on every re-find — if another
+	// writer already transitioned the hull, changed=false and we skip the write.
+	freshShip, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
+		if !sh.IsInTransit() {
+			return false, nil
+		}
+		if err := sh.Arrive(); err != nil {
+			return false, err
+		}
+		sh.ClearArrivalTime()
+		return true, nil
+	})
 	if err != nil {
-		fmt.Printf("Warning: Failed to fetch ship %s for arrival: %v\n", symbol, err)
-		return
-	}
-
-	// Only transition if still in transit
-	if !freshShip.IsInTransit() {
-		return
-	}
-
-	if err := freshShip.Arrive(); err != nil {
 		fmt.Printf("Warning: Failed to transition ship %s to orbit: %v\n", symbol, err)
-		return
-	}
-
-	freshShip.ClearArrivalTime()
-
-	if err := s.shipRepo.Save(ctx, freshShip); err != nil {
-		fmt.Printf("Warning: Failed to save ship %s after arrival: %v\n", symbol, err)
-	} else {
+	} else if saved {
 		fmt.Printf("Ship %s arrived at %s\n", symbol, freshShip.CurrentLocation().Symbol)
 
 		// Publish ARRIVED event to notify waiting containers
@@ -165,22 +161,20 @@ func (s *ShipStateScheduler) handleCooldownClear(symbol string, playerID shared.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	freshShip, err := s.shipRepo.FindBySymbol(ctx, symbol, playerID)
+	// Re-find + clear-cooldown + save under CAS-retry (sp-01wc): a concurrent
+	// writer's mutation is re-applied on fresh state instead of clobbered. The
+	// still-set guard lives inside the mutation so it is re-checked on every
+	// re-find (another operation may have cleared it first → changed=false).
+	_, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
+		if sh.CooldownExpiration() == nil {
+			return false, nil
+		}
+		sh.ClearCooldown()
+		return true, nil
+	})
 	if err != nil {
-		fmt.Printf("Warning: Failed to fetch ship %s for cooldown clear: %v\n", symbol, err)
-		return
-	}
-
-	// Only clear if cooldown is still set (might have been cleared by another operation)
-	if freshShip.CooldownExpiration() == nil {
-		return
-	}
-
-	freshShip.ClearCooldown()
-
-	if err := s.shipRepo.Save(ctx, freshShip); err != nil {
 		fmt.Printf("Warning: Failed to save ship %s after cooldown clear: %v\n", symbol, err)
-	} else {
+	} else if saved {
 		fmt.Printf("Cooldown cleared for ship %s\n", symbol)
 	}
 
@@ -298,25 +292,34 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 	fmt.Printf("Sweeper: Found %d stuck ship(s), transitioning...\n", len(stuckShips))
 
 	for _, ship := range stuckShips {
-		if err := ship.Arrive(); err != nil {
-			fmt.Printf("Sweeper: Failed to transition %s: %v\n", ship.ShipSymbol(), err)
+		symbol := ship.ShipSymbol()
+		playerID := ship.PlayerID()
+		// Re-find + arrive + save under CAS-retry (sp-01wc), same as the
+		// event-driven handler: the batch row may be stale by the time we write.
+		freshShip, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsInTransit() {
+				return false, nil
+			}
+			if err := sh.Arrive(); err != nil {
+				return false, err
+			}
+			sh.ClearArrivalTime()
+			return true, nil
+		})
+		if err != nil {
+			fmt.Printf("Sweeper: Failed to transition %s: %v\n", symbol, err)
 			continue
 		}
-
-		ship.ClearArrivalTime()
-
-		if err := s.shipRepo.Save(ctx, ship); err != nil {
-			fmt.Printf("Sweeper: Failed to save %s: %v\n", ship.ShipSymbol(), err)
-		} else {
-			fmt.Printf("Sweeper: Unstuck %s → IN_ORBIT at %s\n", ship.ShipSymbol(), ship.CurrentLocation().Symbol)
+		if saved {
+			fmt.Printf("Sweeper: Unstuck %s → IN_ORBIT at %s\n", symbol, freshShip.CurrentLocation().Symbol)
 
 			// Publish ARRIVED event for unstuck ships too
 			if s.eventPublisher != nil {
 				s.eventPublisher.PublishArrived(
-					ship.ShipSymbol(),
-					ship.PlayerID(),
-					ship.CurrentLocation().Symbol,
-					ship.NavStatus(),
+					symbol,
+					playerID,
+					freshShip.CurrentLocation().Symbol,
+					freshShip.NavStatus(),
 				)
 			}
 		}
@@ -330,11 +333,19 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 	}
 
 	for _, ship := range stuckCooldowns {
-		ship.ClearCooldown()
-		if err := s.shipRepo.Save(ctx, ship); err != nil {
-			fmt.Printf("Sweeper: Failed to clear cooldown for %s: %v\n", ship.ShipSymbol(), err)
-		} else {
-			fmt.Printf("Sweeper: Cleared stuck cooldown for %s\n", ship.ShipSymbol())
+		symbol := ship.ShipSymbol()
+		playerID := ship.PlayerID()
+		_, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
+			if sh.CooldownExpiration() == nil {
+				return false, nil
+			}
+			sh.ClearCooldown()
+			return true, nil
+		})
+		if err != nil {
+			fmt.Printf("Sweeper: Failed to clear cooldown for %s: %v\n", symbol, err)
+		} else if saved {
+			fmt.Printf("Sweeper: Cleared stuck cooldown for %s\n", symbol)
 		}
 	}
 }
