@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -254,10 +255,12 @@ type sitingCoordinatorState struct {
 	// outOfTopK counts consecutive ticks each running chain (by Key) has been outside the
 	// desired top-K, for the retire hysteresis.
 	outOfTopK map[string]int
-	// noEffectStreak counts consecutive ticks with candidates-but-zero-actions; paged marks
-	// the one WARN already emitted this episode (reset when an action fires).
-	noEffectStreak int
-	noEffectPaged  bool
+	// effect is the shared inert-loop detector (sp-57g9's health.EffectTracker) that runs the
+	// candidates-but-zero-effect self-check: it holds the no-effect streak and the one-shot
+	// WARN dedup, re-arming on any productive/steady tick. Lazily built on first self-check
+	// (the threshold comes from the resolved tick config); one per container so the streak is
+	// per-coordinator, matching the singleton handler's per-container bookkeeping.
+	effect *health.EffectTracker
 	// unsizedWarned edge-triggers the "cannot size portfolio" WARN so a persistent worker-count
 	// failure logs once, not every tick (reset when sizing recovers).
 	unsizedWarned bool

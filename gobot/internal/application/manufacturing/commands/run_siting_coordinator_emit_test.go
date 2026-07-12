@@ -194,6 +194,38 @@ func TestSelfCheck_HealthySatisfiedNeverWarns(t *testing.T) {
 	}
 }
 
+// A no-effect episode that has already WARNed re-arms after a recovering tick: a fresh
+// sustained veto streak later WARNs AGAIN (never silent-forever after the first). This pins
+// the retrofit onto the shared health.EffectTracker (sp-ph87) carries its two-sided reset —
+// productive/steady tick clears the streak AND re-arms the one-shot — exactly as the prior
+// inline check did (noEffectPaged reset on any effect).
+func TestSelfCheck_ReArmsAfterRecovery(t *testing.T) {
+	cands := []SitingCandidate{{Good: "ELEC", System: "S1", InputMarkets: []string{"M1"}}}
+	proj := vetoProjector(cands)
+	h := NewRunSitingCoordinatorHandler(&fakeSitingScanner{candidates: cands}, proj, &fakeChainController{}, nil)
+	h.SetWorkerCounter(&fakeWorkerCounter{count: 100})
+	cmd := &RunSitingCoordinatorCommand{PlayerID: 1, ContainerID: "c1"} // EffectSelfcheckTicks default 4
+	log := &captureLogger{}
+	ctx := ctxWithLog(log)
+
+	// Episode 1: 4 vetoed ticks reach the threshold → one WARN, then a productive tick
+	// closes the episode and re-arms.
+	for i := 0; i < 4; i++ {
+		h.reconcileOnce(ctx, cmd)
+	}
+	proj.byKey = map[string]ChainProjection{"ELEC@S1": {ProjectedPL: 1000, Proceed: true}} // recover
+	h.reconcileOnce(ctx, cmd)
+
+	// Episode 2: another 4 vetoed ticks must WARN AGAIN off the re-armed one-shot.
+	proj.byKey = map[string]ChainProjection{"ELEC@S1": {Proceed: false}} // vetoed again
+	for i := 0; i < 4; i++ {
+		h.reconcileOnce(ctx, cmd)
+	}
+	if n := countContains(log.warns, "produced no effect"); n != 2 {
+		t.Errorf("two sustained no-effect episodes separated by a recovery must WARN twice (re-arm), got %d: %v", n, log.warns)
+	}
+}
+
 func countContains(ss []string, sub string) int {
 	n := 0
 	for _, s := range ss {

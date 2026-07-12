@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 )
 
 // emit posts scout-demand for stale-but-promising sites (EMIT step, sp-vdld M6). A site the
@@ -56,37 +57,39 @@ func (h *RunSitingCoordinatorHandler) emit(ctx context.Context, cmd *RunSitingCo
 	return emitted
 }
 
-// runSelfCheck is the effect self-check (sp-vdld M6, the reposition sp-686e edge-triggered
-// idiom): it watches for the coordinator scanning real candidates yet producing NO effect,
-// sustained over EffectSelfcheckTicks ticks, and then emits ONE WARN naming the cause. It fires
-// on the two genuine no-effect pathologies — never on a healthy satisfied portfolio (which has
-// scored candidates and running chains it simply doesn't need to change):
+// runSelfCheck is the effect self-check (sp-vdld M6), retrofitted onto the shared
+// health.EffectTracker (sp-57g9) so the inert-loop state machine — the no-effect streak
+// and the one-shot-per-episode WARN dedup — lives in one primitive with the worker
+// rebalancer, not duplicated inline. It watches for the coordinator scanning real
+// candidates yet producing NO effect, sustained over EffectSelfcheckTicks ticks, then emits
+// ONE WARN naming the cause. It fires on the two genuine no-effect pathologies — never on a
+// healthy satisfied portfolio (which has scored candidates and running chains it simply
+// doesn't need to change):
 //
 //	(a) every candidate is vetoed/unpriceable (Scored == 0) — the "17 attempts, 0 survivors"
 //	    pattern: margins negative or inputs ineligible across the board.
 //	(b) dry-run is suppressing a real desired portfolio (Desired > 0, zero actions) — the
 //	    operator likely forgot the watch flag is on.
 //
-// Any productive/steady tick resets the streak and re-arms the one-shot WARN.
+// The two pathologies map onto the tracker's (desired, effected) contract: effected is the
+// tick's effect count (Actions), and wantAction is 1 exactly when a pathology holds — so the
+// tracker's desired>0 && effected==0 condition is precisely this coordinator's no-effect
+// condition, while a satisfied portfolio reports wantAction==0 and never counts. Any
+// productive/steady tick resets the streak and re-arms the one-shot WARN.
 func (h *RunSitingCoordinatorHandler) runSelfCheck(ctx context.Context, cmd *RunSitingCoordinatorCommand, cfg sitingRunConfig, res reconcileResult) {
 	allVetoed := res.Candidates > 0 && res.Scored == 0
 	dryRunSuppressing := cfg.DryRun && res.Desired > 0 && res.Actions() == 0
-	noEffect := res.Actions() == 0 && (allVetoed || dryRunSuppressing)
+	wantAction := 0
+	if allVetoed || dryRunSuppressing {
+		wantAction = 1
+	}
 
 	st := h.coordinatorState(cmd.ContainerID)
 	h.mu.Lock()
-	if !noEffect {
-		st.noEffectStreak = 0
-		st.noEffectPaged = false
-		h.mu.Unlock()
-		return
+	if st.effect == nil {
+		st.effect = health.NewEffectTracker(cfg.EffectSelfcheckTicks)
 	}
-	st.noEffectStreak++
-	streak := st.noEffectStreak
-	fire := streak >= cfg.EffectSelfcheckTicks && !st.noEffectPaged
-	if fire {
-		st.noEffectPaged = true
-	}
+	streak, fire := st.effect.Observe(wantAction, res.Actions())
 	h.mu.Unlock()
 	if !fire {
 		return
