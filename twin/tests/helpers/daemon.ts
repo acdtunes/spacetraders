@@ -44,6 +44,11 @@ export async function startTestDaemon(extraEnv: Record<string, string> = {}): Pr
       SPACETRADERS_CONFIG: TEST_CONFIG,
       ST_API_BASE_URL: TWIN_BASE_URL,
       DATABASE_URL: TEST_DATABASE_URL,
+      // Shrink the daemon's arrival/cooldown clock-drift clamp from its 1s prod default to 50ms
+      // so compressed twin arrivals resolve fast. INVARIANT (st-drm.8): this MUST stay <= the
+      // twin's TWIN_MIN_TRAVEL_MS floor (default 1000ms here), else the daemon could miss an
+      // arrival inside its own tolerance. Overridable via extraEnv.
+      ST_CLOCK_DRIFT_BUFFER_MS: '50',
       ...extraEnv,
     },
   });

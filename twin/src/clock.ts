@@ -63,11 +63,23 @@ export function resetClock(): void {
   wallAnchorMs = baseNowMs;
 }
 
-// ─── legacy time-compression knob (DECOUPLED from the world clock above) ──────────
-// Retained only so the foundation /_twin admin route (compression reporting +
-// POST /_twin/time-compression) stays green. The world clock does NOT consult it;
-// travel is real-time now. New control-plane pieces should use the world clock.
-const DEFAULT_COMPRESSION = 100;
+// ─── The ONE time-compression knob (drives ship travel + cooldowns INVERSELY) ───────
+// CRITICAL: the daemon detects ship arrival on the REAL wall clock (ship_state_scheduler
+// arms time.AfterFunc(time.Until(arrival))). It does NOT consult the twin's frozen world
+// clock. So arrivals + cooldowns MUST be real-future instants, or the daemon waits the full
+// (uncompressed) real duration and the harness's clock-stepping window expires first.
+//
+// This single factor compresses the REAL v2.3.0 ETA INVERSELY: arrivalMs = realMs / factor.
+//   • 1    → TRUE real-API timing (fidelity mode; a ~16-40s hop takes ~16-40s).
+//   • 20   → the DEFAULT fast-run (a ~16-40s hop resolves in ~1-2s). The twin e2e specs and
+//            the DATA harness pollUntil budgets are tuned to this — do NOT change the default.
+//   • 100+ → very fast (bootstrap-harness fast runs).
+// Seeded at boot from env TWIN_TIME_COMPRESSION (legacy alias: TWIN_ARRIVAL_COMPRESSION) and
+// retunable LIVE via POST /_twin/time-compression (routes/admin.ts) — makeTransit /
+// makeCooldownExpiration read getCompression() on EVERY call, so the lever takes effect with
+// no restart. The frozen world clock (getNow/advanceClock) still governs mutation `at` stamps
+// + the scalar levers — those stay decoupled from ship motion.
+const DEFAULT_COMPRESSION = 20;
 
 export function parseCompression(raw: string | undefined): number {
   if (raw === undefined || raw === '') return DEFAULT_COMPRESSION;
@@ -75,7 +87,10 @@ export function parseCompression(raw: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_COMPRESSION;
 }
 
-let compression = parseCompression(process.env.TWIN_TIME_COMPRESSION);
+// TWIN_TIME_COMPRESSION is canonical (matches the admin route + the lever concept);
+// TWIN_ARRIVAL_COMPRESSION is accepted as a legacy alias so an older harness that still
+// exports the old name keeps working. Both default to 20 when unset.
+let compression = parseCompression(process.env.TWIN_TIME_COMPRESSION ?? process.env.TWIN_ARRIVAL_COMPRESSION);
 
 export function getCompression(): number { return compression; }
 export function setCompression(factor: number): void {
@@ -83,21 +98,33 @@ export function setCompression(factor: number): void {
   compression = factor;
 }
 
-// ─── Ship-arrival / cooldown clock: REAL wall-clock, lightly compressed ─────────────
-// CRITICAL: the daemon detects ship arrival on the REAL wall clock (ship_state_scheduler
-// arms time.AfterFunc(time.Until(arrival))). It does NOT consult the twin's frozen world
-// clock. So arrivals + cooldowns MUST be real-future instants, or the daemon waits the full
-// (uncompressed) real duration and the harness's clock-stepping window expires first.
-// We therefore compress the real ETA by TWIN_ARRIVAL_COMPRESSION (default 20 → a ~16-40s
-// in-system hop resolves in ~1-2s real), floored at 1s so it never fires below the daemon's
-// 1s ClockDriftBuffer. The frozen world clock (getNow/advanceClock) still governs mutation
-// `at` stamps + the scalar levers — those are decoupled from ship motion.
-const ARRIVAL_COMPRESSION = (() => {
-  const n = Number(process.env.TWIN_ARRIVAL_COMPRESSION);
-  return Number.isFinite(n) && n > 0 ? n : 20;
-})();
+// ─── The travel-time floor (configurable; default unchanged at 1000ms) ──────────────
+// A compressed ETA never resolves below this many real milliseconds. env TWIN_MIN_TRAVEL_MS
+// (default 1000) makes it tunable for very-fast stacks; unset preserves the historical 1s floor.
+//
+// INVARIANT (st-drm.8): in ANY twin+daemon stack, TWIN_MIN_TRAVEL_MS MUST be >= the daemon's
+// ST_CLOCK_DRIFT_BUFFER_MS clamp (gobot ship_state_scheduler.go). The twin mints arrivals at
+// least this floor in the (real) future; the daemon then waits arrival + its drift buffer. If
+// the floor were SMALLER than the buffer, the daemon could still be inside its own tolerance
+// when the harness's clock-step budget expires → a MISSED arrival. Default stack: floor 1000 >=
+// clamp 1000 (OK). Twin test stack: floor 1000 >= clamp 50 (OK).
+const DEFAULT_MIN_TRAVEL_MS = 1000;
+
+export function parseMinTravelMs(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return DEFAULT_MIN_TRAVEL_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_MIN_TRAVEL_MS;
+}
+
+const MIN_TRAVEL_MS = parseMinTravelMs(process.env.TWIN_MIN_TRAVEL_MS);
+export function getMinTravelMs(): number { return MIN_TRAVEL_MS; }
+
+/** Compress a REAL ETA (seconds) into real milliseconds: realMs / compression, floored at
+ *  MIN_TRAVEL_MS. Reads getCompression() live so the admin lever retunes travel without a
+ *  restart. At compression 1 this is exact real-API timing (the floor only bites sub-floor
+ *  durations, and the smallest real ETA — the flat +15s term — sits far above the 1s floor). */
 function compressedMs(realSeconds: number): number {
-  return Math.max(1000, Math.round((realSeconds * 1000) / ARRIVAL_COMPRESSION));
+  return Math.max(MIN_TRAVEL_MS, Math.round((realSeconds * 1000) / getCompression()));
 }
 
 // ─── Real-API travel + fuel model ─────────────────────────────────────────────────
@@ -154,7 +181,7 @@ export function fuelCostFor(args: {
 }
 
 /** Mint a transit whose arrival is a REAL-wall-clock future instant: wall-now + the
- *  COMPRESSED real ETA (see ARRIVAL_COMPRESSION). Real-clock — NOT the frozen world clock —
+ *  COMPRESSED real ETA (see compressedMs / getCompression). Real-clock — NOT the frozen world clock —
  *  because the daemon waits for arrival on real wall time. `now` (a wall Date) is accepted for
  *  test determinism; it defaults to actual wall time. departureTime/arrival are both real. */
 export function makeTransit(args: {
