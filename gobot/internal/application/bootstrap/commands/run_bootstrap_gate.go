@@ -332,6 +332,12 @@ func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cm
 func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, plan gateWorkerPlan, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
+	// In-flight guard (st-drm.6): gate workers reuse the hauler asset; don't dispatch another buy while
+	// one this coordinator already launched is still on its way (its hull not yet counted as a worker).
+	if h.acquisitionInFlight(ctx, cmd, res, cfg.HaulerShipType, "bootstrap_gate_blocked") {
+		return
+	}
+
 	// Readiness gate: an idle hull must exist to fly to the yard and execute the buy. No idle hull ⇒
 	// BLOCKED (not failed) — a later tick with a free hull retries.
 	if !obs.HasIdlePurchaser {

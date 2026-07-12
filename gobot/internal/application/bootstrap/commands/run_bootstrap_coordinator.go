@@ -157,6 +157,19 @@ type GateWorkerAcquirer interface {
 	BuyForConstruction(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
 }
 
+// AcquisitionTracker reports whether an acquisition the coordinator ALREADY dispatched for a
+// (player, shipType) is still IN FLIGHT — a batch-purchase still navigating its buyer to the yard and
+// buying, whose new hull has not yet surfaced in the observation. The reconciler consults it before
+// every staged buy (probe / hauler / gate worker), so a read-after-write lag — or a compressed tick
+// firing before the prior buy's hull appears in the fleet read — never re-dispatches a purchase that is
+// already on its way. The invariant (st-drm.6): at most ONE in-flight acquisition per (player, shipType);
+// a tick that observes need>0 while one is active dispatches NOTHING, and the first tick after it lands
+// re-derives need from the world and proceeds. nil-safe: unset ⇒ no tracking (the legacy count-only
+// staging), so a coordinator wired without it behaves exactly as before.
+type AcquisitionTracker interface {
+	InFlight(ctx context.Context, playerID int, shipType string) (bool, error)
+}
+
 // HandoffLauncher performs the COMPLETE hand-off: it launches the standing fleet-autosizer (OFF the whole
 // bootstrap run so the two never issue conflicting purchases against one treasury) and the other standing
 // coordinators, turning the fleet over to the mature demand-driven economy. Guarded on obs.AutosizerRunning
@@ -220,6 +233,10 @@ type RunBootstrapCoordinatorHandler struct {
 	scouter   ScoutAssigner
 	metrics   MetricsSink
 
+	// acquisition guards every staged buy against re-dispatching while a same-type acquisition it
+	// already launched is still in flight (st-drm.6). nil-safe: unset ⇒ the legacy count-only staging.
+	acquisition AcquisitionTracker
+
 	// INCOME-phase collaborators (Slice 2). Each is nil-safe: a nil collaborator degrades the INCOME
 	// action it drives to a logged skip (surfaced as a blocker), never a panic.
 	retirer      FrigateRetirer
@@ -258,6 +275,11 @@ func (h *RunBootstrapCoordinatorHandler) SetProbeAcquirer(a ProbeAcquirer) { h.a
 // SetScoutAssigner wires the scout-all-markets assignment (reuses the VRP fleet assignment). Unset
 // → probes are bought but not assigned (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetScoutAssigner(s ScoutAssigner) { h.scouter = s }
+
+// SetAcquisitionTracker wires the in-flight-acquisition guard (st-drm.6): a same-type buy is not
+// re-dispatched while a prior one is still on its way to landing in the observation. Unset ⇒ no
+// tracking (the legacy count-only staging), so existing wiring/tests are unaffected.
+func (h *RunBootstrapCoordinatorHandler) SetAcquisitionTracker(t AcquisitionTracker) { h.acquisition = t }
 
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunBootstrapCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }

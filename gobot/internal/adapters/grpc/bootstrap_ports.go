@@ -72,6 +72,9 @@ func NewBootstrapCoordinatorHandler(
 	acq := &bootstrapAcquirer{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo}
 	h.SetProbeAcquirer(acq)
 	h.SetHaulerAcquirer(&bootstrapHaulerAcquirer{bootstrapAcquirer: acq})
+	// In-flight-acquisition guard (st-drm.6): gate every staged buy on there being no batch-purchase
+	// container already active for the player, so a lagging observation never re-dispatches a buy.
+	h.SetAcquisitionTracker(&bootstrapAcquisitionTracker{containerRepo: server.containerRepo})
 	h.SetScoutAssigner(&bootstrapScouter{server: server})
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
@@ -333,6 +336,47 @@ func contractFleetCoordinatorRunning(ctx context.Context, repo *persistence.Cont
 		}
 	}
 	return false, nil
+}
+
+// --- acquisition tracker (in-flight guard: an active batch-purchase container blocks a re-dispatch) ---
+
+// batchPurchaseCommandType is the command_type persisted for a batch-purchase container — the async
+// ship-acquisition unit (container_ops_purchase.go). The in-flight guard scans for an active one so the
+// coordinator never re-dispatches an acquisition already on its way (st-drm.6).
+const batchPurchaseCommandType = "batch_purchase_ships"
+
+// batchPurchaseInFlight reports whether a batch-purchase acquisition container is RUNNING or PENDING for
+// the player — the durable, restart-surviving in-flight marker the reconciler gates every staged buy on.
+// Mirrors contractFleetCoordinatorRunning's status-scan idiom; it matches on command_type because a
+// batch-purchase container shares the PURCHASE domain type with a single-ship buy.
+func batchPurchaseInFlight(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int) (bool, error) {
+	for _, st := range []container.ContainerStatus{container.ContainerStatusRunning, container.ContainerStatusPending} {
+		models, err := repo.ListByStatus(ctx, st, &playerID)
+		if err != nil {
+			return false, err
+		}
+		for _, m := range models {
+			if m.CommandType == batchPurchaseCommandType {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// bootstrapAcquisitionTracker answers the coordinator's pending-acquisition port from the container repo:
+// while a batch-purchase acquisition container is active for the player, a new staged buy is not
+// dispatched. The batch-purchase container is the acquisition unit regardless of asset, so any active one
+// blocks this tick; shipType is accepted for the port contract (and future per-type refinement).
+type bootstrapAcquisitionTracker struct {
+	containerRepo *persistence.ContainerRepositoryGORM
+}
+
+func (t *bootstrapAcquisitionTracker) InFlight(ctx context.Context, playerID int, shipType string) (bool, error) {
+	if t.containerRepo == nil {
+		return false, nil
+	}
+	return batchPurchaseInFlight(ctx, t.containerRepo, playerID)
 }
 
 // --- probe acquirer (shipyard list price-check + BatchPurchaseShips) ---

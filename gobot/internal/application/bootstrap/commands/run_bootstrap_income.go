@@ -133,6 +133,12 @@ func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context
 func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, hubs []Hub, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
+	// In-flight guard (st-drm.6): don't dispatch another hauler buy while one this coordinator already
+	// launched is still on its way (its hull not yet dedicated + counted in the observation).
+	if h.acquisitionInFlight(ctx, cmd, res, cfg.HaulerShipType, "bootstrap_income_blocked") {
+		return
+	}
+
 	// Placement: the top-ranked viable hub (within the cap) that no hauler already serves. Empty means
 	// every capped hub is served — shouldn't happen given the caller's count guard, but fail-closed.
 	hub := firstUnservedHub(hubs, obs.Haulers, cfg.HaulerTarget)
