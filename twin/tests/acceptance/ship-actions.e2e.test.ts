@@ -209,8 +209,12 @@ describe('A captain expands the fleet by purchasing a new hull (CLI → daemon r
     const cmd = runCli(['shipyard', 'purchase', '--ship', PROBE_BUYER, '--type', PROBE_TYPE, '--waypoint', YARD, '--player-id', '1']);
     expect(cmd.exitCode, `shipyard purchase dispatch failed: ${cmd.stderr}`).toBe(0);
 
-    // ── Then: bounded-poll the roster until a NEW hull appears. Teeth: count grows by exactly one. ──
-    const after = await pollFleet((rows) => rows.length > before.length, { tries: 40, delayMs: 1000 });
+    // ── Then: bounded-poll the roster until a hull NOT present before appears. Firing on
+    //    rows.length > before.length races a daemon sync-artifact row (the BUYER upserting its own row
+    //    into the daemon DB at ~+200ms) that satisfies a bare length check LONG before the twin-side
+    //    PurchaseShip at ~+2s — so credits would read pre-debit. Keying on a genuinely NEW symbol
+    //    (not in beforeSymbols) waits for the actual purchased hull. Teeth: count grows by exactly one. ──
+    const after = await pollFleet((rows) => rows.some((r) => !beforeSymbols.includes(String(r.symbol))), { tries: 40, delayMs: 1000 });
     expect(after.length, 'the purchased hull must appear in the daemon fleet roster').toBe(before.length + 1);
     const newHulls = after.map((r) => String(r.symbol)).filter((s) => !beforeSymbols.includes(s));
     expect(newHulls.length, 'exactly one brand-new hull was added to the fleet').toBe(1);
