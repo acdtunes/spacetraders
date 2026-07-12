@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Agent, Market, Shipyard, Ship, TransitState } from '../world/types.js';
 import { getWorld, resetWorld } from '../world/store.js';
-import { getCompression, setCompression, resolveNav } from '../clock.js';
+import { getCompression, setCompression, resolveNav, getNow } from '../clock.js';
 import { badRequest } from '../errors.js';
 
 export interface TwinStateSummary { agent: Agent | null; shipCount: number; compression: number }
@@ -30,7 +30,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/state', async () => {
     const w = getWorld();
-    const now = new Date();
+    const now = getNow();
     const ships = [...w.ships.values()].map((ship) => resolveNav(ship, w.transits.get(ship.symbol), now));
     const transits = [...w.transits.values()].filter((t) => new Date(t.arrival) > now);
     let waypointCount = 0;

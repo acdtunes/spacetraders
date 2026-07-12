@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { getWorld } from '../world/store.js';
-import { resolveNav } from '../clock.js';
+import { getNow, resolveNav } from '../clock.js';
 import { notFound, unauthorized } from '../errors.js';
 import type { Ship } from '../world/types.js';
 
@@ -25,7 +25,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
   app.get('/my/ships', async (request, reply) => {
     if (authFailed(request, reply)) return reply;
     const world = getWorld();
-    const now = new Date();
+    const now = getNow();
     const q = request.query as Record<string, unknown>;
     const page = intParam(q.page, 1, 1, Number.MAX_SAFE_INTEGER);
     const limit = intParam(q.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
@@ -41,7 +41,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
   app.get('/my/ships/:symbol', async (request, reply) => {
     if (authFailed(request, reply)) return reply;
     const world = getWorld();
-    const now = new Date();
+    const now = getNow();
     const { symbol } = request.params as { symbol: string };
     const ship = world.ships.get(symbol);
     if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
