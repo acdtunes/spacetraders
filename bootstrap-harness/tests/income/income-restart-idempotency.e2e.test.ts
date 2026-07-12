@@ -12,17 +12,23 @@ describe('bootstrap INCOME — restart idempotency', () => {
 
     // Lifetime 1: run until the FIRST hauler purchase is recorded, then stop before the next observe.
     let daemon = await startTestDaemon();
-    launchBootstrap();
-    const afterFirst = await pollUntil(
-      () => twinIncome.incomeState(),
-      (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
-      { steps: 60, advanceMs: 1000 },
-    );
-    expect(countCall(afterFirst.mutationLog, 'PurchaseShip')).toBe(1);
-    const retiresBefore = countCall(afterFirst.mutationLog, 'fleet-unassign');
-    const batchBefore = countCall(afterFirst.mutationLog, 'batch-contract');
-
-    await daemon.stop();
+    let retiresBefore = 0;
+    let batchBefore = 0;
+    try {
+      launchBootstrap();
+      const afterFirst = await pollUntil(
+        () => twinIncome.incomeState(),
+        (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
+        { steps: 60, advanceMs: 1000 },
+      );
+      expect(countCall(afterFirst.mutationLog, 'PurchaseShip')).toBe(1);
+      retiresBefore = countCall(afterFirst.mutationLog, 'fleet-unassign');
+      batchBefore = countCall(afterFirst.mutationLog, 'batch-contract');
+    } finally {
+      // In a finally: a failed arrange must never LEAK a live daemon (leaked lifetime-1 daemons keep
+      // reconciling against the shared twin and poison every later attempt/spec).
+      await daemon.stop();
+    }
     daemon = await startTestDaemon(); // reboot; same test DB + twin world (1 hauler persists)
     try {
       launchBootstrap();

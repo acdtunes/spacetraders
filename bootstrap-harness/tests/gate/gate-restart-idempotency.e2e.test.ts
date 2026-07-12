@@ -12,17 +12,21 @@ describe('bootstrap GATE — restart idempotency', () => {
 
     // Lifetime 1: run until construction started + at least one worker sized, then stop.
     let daemon = await startTestDaemon();
-    launchBootstrap();
-    const mid = await pollUntil(
-      () => twinGate.gateState(),
-      (s) => s.construction.started && s.gateWorkers.length >= 1,
-      { steps: 60, advanceMs: 1000 },
-    );
-    const startsBefore = countCall(mid.mutationLog, 'construction-start');
-    const bouncesBefore = countCall(mid.mutationLog, 'executor-bounce');
-    expect(startsBefore).toBe(1);
-
-    await daemon.stop();
+    let bouncesBefore = 0;
+    try {
+      launchBootstrap();
+      const mid = await pollUntil(
+        () => twinGate.gateState(),
+        (s) => s.construction.started && s.gateWorkers.length >= 1,
+        { steps: 60, advanceMs: 1000 },
+      );
+      bouncesBefore = countCall(mid.mutationLog, 'executor-bounce');
+      expect(countCall(mid.mutationLog, 'construction-start')).toBe(1);
+    } finally {
+      // In a finally: a failed arrange must never LEAK a live daemon (leaked lifetime-1 daemons keep
+      // reconciling against the shared twin and poison every later attempt/spec).
+      await daemon.stop();
+    }
     daemon = await startTestDaemon(); // reboot; same DB + twin (construction + workers persist)
     try {
       launchBootstrap();

@@ -12,18 +12,22 @@ describe('bootstrap DATA — restart idempotency', () => {
 
     // Lifetime 1: run until exactly the FIRST probe purchase is recorded, then freeze progress.
     let daemon = await startTestDaemon();
-    launchBootstrap();
-    const afterFirst = await pollUntil(
-      () => twin.state(),
-      (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
-      { steps: 40, advanceMs: 1000 },
-    );
-    expect(countCall(afterFirst.mutationLog, 'PurchaseShip')).toBe(1); // one buy so far
-    expect(afterFirst.ships.filter((x) => x.role === 'SATELLITE').length).toBe(2); // probe really exists
-
-    // Kill the daemon BEFORE it re-observes — the twin world (2 probes) persists; the daemon keeps
-    // no in-memory progress cursor, so a reboot must re-derive "need 1 more", not "need 2".
-    await daemon.stop();
+    try {
+      launchBootstrap();
+      const afterFirst = await pollUntil(
+        () => twin.state(),
+        (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
+        { steps: 40, advanceMs: 1000 },
+      );
+      expect(countCall(afterFirst.mutationLog, 'PurchaseShip')).toBe(1); // one buy so far
+      expect(afterFirst.ships.filter((x) => x.role === 'SATELLITE').length).toBe(2); // probe really exists
+    } finally {
+      // Kill the daemon BEFORE it re-observes — the twin world (2 probes) persists; the daemon keeps
+      // no in-memory progress cursor, so a reboot must re-derive "need 1 more", not "need 2".
+      // In a finally: a failed arrange must never LEAK a live daemon — leaked lifetime-1 daemons from
+      // retried runs keep reconciling against the shared twin and poison every later attempt.
+      await daemon.stop();
+    }
     daemon = await startTestDaemon(); // reboot; SAME test DB (operation record persists), SAME twin
     try {
       launchBootstrap();
