@@ -78,5 +78,43 @@ func TestCaptainDetectorDefaults(t *testing.T) {
 
 	require.Equal(t, 2, cfg.Captain.IncomeStallHours)
 	require.Equal(t, 30, cfg.Captain.StreamDownMinutes)
+	require.Equal(t, 5, cfg.Captain.PinnedHullContainerlessMinutes, "sp-h88r: promoted watchdog threshold preserves the historical 5m default")
 	require.Empty(t, cfg.Captain.ExpectedStreams)
+}
+
+// TestCaptainPinnedHullContainerlessTunable proves the sp-v63s watchdog threshold
+// is now a live CaptainConfig knob (sp-h88r): a set value is honored and tunes the
+// window without a rebuild, while an explicit zero resolves back to the 5m default
+// exactly as an unset value does — the detector must never be silently disabled by
+// a zero that a partial config left behind.
+func TestCaptainPinnedHullContainerlessTunable(t *testing.T) {
+	t.Run("set value is honored", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("captain:\n  pinned_hull_containerless_minutes: 12\n"), 0o644))
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		require.Equal(t, 12, cfg.Captain.PinnedHullContainerlessMinutes)
+	})
+
+	t.Run("explicit zero preserves the 5m default", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("captain:\n  pinned_hull_containerless_minutes: 0\n"), 0o644))
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		require.Equal(t, 5, cfg.Captain.PinnedHullContainerlessMinutes)
+	})
+
+	t.Run("unset preserves the 5m default", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("captain:\n  enabled: false\n"), 0o644))
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		require.Equal(t, 5, cfg.Captain.PinnedHullContainerlessMinutes)
+	})
 }

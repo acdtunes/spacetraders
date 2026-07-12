@@ -20,6 +20,14 @@ type CaptainConfig struct {
 	StreamDownMinutes int      `mapstructure:"stream_down_minutes" validate:"omitempty,min=1"`
 	ExpectedStreams   []string `mapstructure:"expected_streams"`
 
+	// PinnedHullContainerlessMinutes is the sp-v63s watchdog threshold (sp-h88r,
+	// promoted from a package const): how long a fleet-pinned hull may sit
+	// containerless before the watchdog fires an interrupt naming it. A normal
+	// daemon redeploy re-adopts the hull's container within seconds, so the 5m
+	// default is well past churn and squarely an anomaly. Zero/unset resolves to
+	// 5 in SetDefaults so the watchdog stays live-by-default.
+	PinnedHullContainerlessMinutes int `mapstructure:"pinned_hull_containerless_minutes" validate:"omitempty,min=1"`
+
 	// Self-improvement pipeline (plan 2 of 2)
 	AutoMerge                bool   `mapstructure:"auto_merge"`
 	MaxFixesPerDay           int    `mapstructure:"max_fixes_per_day" validate:"omitempty,min=1"`

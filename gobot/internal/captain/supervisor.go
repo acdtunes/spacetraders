@@ -246,7 +246,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		CrashLoopWindow:           defaultCrashLoopWindow,
 		CrashLoopThreshold:        defaultCrashLoopThreshold,
 		RegimeTripwires:           regimePolicy.Tripwires,
-		PinnedHullContainerless:   defaultPinnedHullContainerless,
+		PinnedHullContainerless:   time.Duration(s.cfg.PinnedHullContainerlessMinutes) * time.Minute,
 		StandingCoordinatorFleets: defaultStandingCoordinatorFleets,
 		IdleEpisodes:              s.idleEpisodes,
 		ContainerlessEpisodes:     s.containerlessEpisodes,

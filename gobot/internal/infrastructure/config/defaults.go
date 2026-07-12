@@ -168,6 +168,9 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.StreamDownMinutes == 0 {
 		cfg.Captain.StreamDownMinutes = 30
 	}
+	if cfg.Captain.PinnedHullContainerlessMinutes == 0 {
+		cfg.Captain.PinnedHullContainerlessMinutes = 5 // sp-h88r: preserve the historical sp-v63s watchdog default
+	}
 	if cfg.Captain.ClaudeBin == "" {
 		cfg.Captain.ClaudeBin = "claude"
 	}

@@ -142,13 +142,6 @@ const (
 	defaultCrashLoopThreshold = 3
 )
 
-// defaultPinnedHullContainerless is the sp-v63s watchdog threshold, wired by the
-// supervisor until CaptainConfig grows a tunable field (follow-up bead, mirrors the
-// crash-loop defaults above). Conservative: a normal daemon redeploy re-adopts a
-// dedicated hull's container within seconds, so five containerless minutes is well
-// past churn and squarely an anomaly worth an interrupt.
-const defaultPinnedHullContainerless = 5 * time.Minute
-
 // defaultStandingCoordinatorFleets is the sp-jetm exemption list, wired by the
 // supervisor until CaptainConfig grows a tunable field (follow-up bead, mirrors
 // the crash-loop/pinned-hull defaults above). "contract" is the one fleet with a
