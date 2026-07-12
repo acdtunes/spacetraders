@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCli, TWIN_BASE_URL, TEST_DATABASE_URL } from './helpers/run-cli.js';
@@ -56,7 +56,22 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   // 3. Boot the isolated test daemon (AutoMigrate on first boot).
   await startTestDaemon();
 
-  // 4. Seed TWINAGENT through the hardened CLI (idempotent: skip if an OPEN era exists).
+  // 3b. Clean-slate the daemon's player/era rows. resetDaemonDb/AutoMigrate PERSIST the
+  //     players row across runs, but the twin is a FRESH in-memory process each run
+  //     (world.agentToken=null until a POST /register actually executes). If we let
+  //     `player register --new` skip on an existing OPEN era, the daemon keeps its persisted
+  //     token while the fresh twin has none → every daemon-mediated GET /my/ships 401s
+  //     ("Invalid or missing agent token"). Truncating forces register to run fully and
+  //     re-seed BOTH the daemon row and the twin's world.agentToken with the same token.
+  {
+    const wipe = spawnSync('psql', [TEST_DATABASE_URL, '-v', 'ON_ERROR_STOP=1', '-c', 'TRUNCATE players, eras RESTART IDENTITY CASCADE;'], { encoding: 'utf8', timeout: 10_000 });
+    if (wipe.status !== 0) {
+      await stopTestDaemon(); await stopTwin();
+      throw new Error(`globalSetup player/era truncate failed (exit ${wipe.status}): ${wipe.stderr}`);
+    }
+  }
+
+  // 4. Seed TWINAGENT through the hardened CLI (now always runs fresh against the clean slate).
   const reg = runCli(['player', 'register', '--new', '--agent', 'TWINAGENT', '--faction', 'COSMIC']);
   if (reg.exitCode !== 0 && !/an OPEN era/.test(`${reg.stdout}\n${reg.stderr}`)) {
     await stopTestDaemon(); await stopTwin();
