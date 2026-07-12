@@ -34,7 +34,8 @@ const FIXTURE = {
   unitsRequired: 60,
   onAccepted: 20_000,
   onFulfilled: 80_000,
-  deadlineMs: 7 * 24 * 60 * 60 * 1000, // 7 days after negotiate (world clock)
+  deadlineMs: 7 * 24 * 60 * 60 * 1000, // terms.deadline: 7 days after negotiate (fulfill-deadline)
+  expirationMs: 2 * 24 * 60 * 60 * 1000, // expiration/deadlineToAccept: 2 days (accept-deadline)
 } as const;
 
 /** Return the CANONICAL contract object — the exact shape parseContractData decodes. Deep-copied so
@@ -47,6 +48,10 @@ export function serializeContract(c: Contract): Contract {
     type: c.type,
     accepted: c.accepted,
     fulfilled: c.fulfilled,
+    // Spec-REQUIRED accept-deadline (deprecated `expiration` + its non-deprecated `deadlineToAccept`
+    // alias). Distinct from terms.deadline (the fulfill-deadline the Go client reads).
+    expiration: c.expiration,
+    deadlineToAccept: c.deadlineToAccept ?? c.expiration,
     terms: {
       deadline: c.terms.deadline,
       payment: { onAccepted: c.terms.payment.onAccepted, onFulfilled: c.terms.payment.onFulfilled },
@@ -56,6 +61,29 @@ export function serializeContract(c: Contract): Contract {
         unitsRequired: d.unitsRequired,
         unitsFulfilled: d.unitsFulfilled,
       })),
+    },
+  };
+}
+
+/** Build (WITHOUT storing) the deterministic starting contract for the /register response. The real
+ *  register endpoint hands the new agent a starting procurement contract; this mints an equivalent
+ *  spec-conformant Contract object without touching world.activeContractId (so it has no bearing on
+ *  the negotiate one-active guard). */
+export function buildStartingContract(world: World): Contract {
+  const now = getNow().getTime();
+  const expiration = new Date(now + FIXTURE.expirationMs).toISOString();
+  return {
+    id: `contract-${world.contracts.size + 1}`,
+    factionSymbol: FIXTURE.factionSymbol,
+    type: FIXTURE.type,
+    accepted: false,
+    fulfilled: false,
+    expiration,
+    deadlineToAccept: expiration,
+    terms: {
+      deadline: new Date(now + FIXTURE.deadlineMs).toISOString(),
+      payment: { onAccepted: FIXTURE.onAccepted, onFulfilled: FIXTURE.onFulfilled },
+      deliver: [{ tradeSymbol: FIXTURE.tradeSymbol, destinationSymbol: FIXTURE.destinationSymbol, unitsRequired: FIXTURE.unitsRequired, unitsFulfilled: 0 }],
     },
   };
 }
@@ -77,13 +105,17 @@ export function negotiateContract(world: World, _opts: { shipSymbol: string }): 
   }
 
   const id = `contract-${world.contracts.size + 1}`;
-  const deadline = new Date(getNow().getTime() + FIXTURE.deadlineMs).toISOString();
+  const now = getNow().getTime();
+  const deadline = new Date(now + FIXTURE.deadlineMs).toISOString();
+  const expiration = new Date(now + FIXTURE.expirationMs).toISOString();
   const contract: Contract = {
     id,
     factionSymbol: FIXTURE.factionSymbol,
     type: FIXTURE.type,
     accepted: false,
     fulfilled: false,
+    expiration,
+    deadlineToAccept: expiration,
     terms: {
       deadline,
       payment: { onAccepted: FIXTURE.onAccepted, onFulfilled: FIXTURE.onFulfilled },

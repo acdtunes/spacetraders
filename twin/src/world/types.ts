@@ -146,6 +146,11 @@ export interface Contract {
   type: string;        // PROCUREMENT | TRANSPORT | SHUTTLE
   accepted: boolean;
   fulfilled: boolean;
+  // The spec REQUIRES a top-level `expiration` (the accept-deadline — the deprecated field name);
+  // `deadlineToAccept` is the non-deprecated alias (spec-optional). Both are the accept-deadline
+  // and are DISTINCT from terms.deadline (the fulfill/delivery deadline the Go client reads).
+  expiration: Rfc3339;
+  deadlineToAccept?: Rfc3339;
   terms: ContractTerms;
 }
 

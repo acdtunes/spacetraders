@@ -14,7 +14,8 @@ import {
 // -> 4511; fulfill only when every deliverable is met; accept/fulfill move credits by the payment.
 
 const FROZEN_NOW = '2026-07-11T00:00:00.000Z';
-const DEADLINE_7D = '2026-07-18T00:00:00.000Z'; // FROZEN_NOW + 7 days (the fixture deadline)
+const DEADLINE_7D = '2026-07-18T00:00:00.000Z'; // FROZEN_NOW + 7 days (terms.deadline / fulfill-deadline)
+const EXPIRATION_2D = '2026-07-13T00:00:00.000Z'; // FROZEN_NOW + 2 days (expiration / accept-deadline)
 const START_CREDITS = 175_000;                   // register.json startingCredits
 const CMD = 'TWINAGENT-1';                       // COMMAND hull from register.json
 
@@ -78,7 +79,7 @@ describe('negotiateContract — fixture template + serializer', () => {
     const c = negotiateContract(w, { shipSymbol: CMD });
     const wire = serializeContract(c) as Contract & { terms: { deliveries?: unknown } };
 
-    expect(Object.keys(wire).sort()).toEqual(['accepted', 'factionSymbol', 'fulfilled', 'id', 'terms', 'type']);
+    expect(Object.keys(wire).sort()).toEqual(['accepted', 'deadlineToAccept', 'expiration', 'factionSymbol', 'fulfilled', 'id', 'terms', 'type']);
     expect(Object.keys(wire.terms).sort()).toEqual(['deadline', 'deliver', 'payment']);
     expect(wire.terms.deliveries).toBeUndefined();
     expect(wire).toEqual({
@@ -87,6 +88,9 @@ describe('negotiateContract — fixture template + serializer', () => {
       type: 'PROCUREMENT',
       accepted: false,
       fulfilled: false,
+      // spec-required accept-deadline (deprecated `expiration` + non-deprecated `deadlineToAccept` alias)
+      expiration: EXPIRATION_2D,
+      deadlineToAccept: EXPIRATION_2D,
       terms: {
         deadline: DEADLINE_7D,
         payment: { onAccepted: 20_000, onFulfilled: 80_000 },
