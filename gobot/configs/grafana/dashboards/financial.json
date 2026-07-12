@@ -281,7 +281,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", $__interval), AVG(balance_after) AS \"treasury\" FROM transactions WHERE $__timeFilter(\"timestamp\") AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", $__interval), AVG(balance_after) AS \"treasury\" FROM transactions WHERE $__timeFilter(\"timestamp\") GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -736,7 +736,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(operation_type, '(untagged)') AS metric, SUM(amount) * 4 AS \"net_per_hr\" FROM transactions WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(operation_type, '(untagged)') AS metric, SUM(amount) * 4 AS \"net_per_hr\" FROM transactions WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -810,7 +810,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) * 4 AS \"revenue\", COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) * 4 AS \"costs\" FROM transactions WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) * 4 AS \"revenue\", COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) * 4 AS \"costs\" FROM transactions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -868,7 +868,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"contract profit/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='contract' AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"contract profit/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='contract' AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -1077,7 +1077,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"tour net/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='tour' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"tour net/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='tour' GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -1344,7 +1344,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), COALESCE(SUM(amount) FILTER (WHERE category != 'SHIP_INVESTMENTS'), 0) AS \"operating (ex-capex)\", COALESCE(SUM(amount), 0) AS \"net (all-in)\" FROM transactions WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), COALESCE(SUM(amount) FILTER (WHERE category != 'SHIP_INVESTMENTS'), 0) AS \"operating (ex-capex)\", COALESCE(SUM(amount), 0) AS \"net (all-in)\" FROM transactions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -1402,7 +1402,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH buckets AS (SELECT date_bin('15 minutes', created_at, TIMESTAMPTZ '2001-01-01') AS b, SUM(amount) * 4 AS rate FROM transactions WHERE created_at > $__timeFrom()::timestamptz - INTERVAL '6 hours' AND created_at < $__timeTo()::timestamptz AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') AND category != 'SHIP_INVESTMENTS' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1), smoothed AS (SELECT b, AVG(rate) OVER (ORDER BY b ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS \"operating 3h avg\", AVG(rate) OVER (ORDER BY b ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS \"operating 6h avg\" FROM buckets) SELECT b AS \"time\", \"operating 3h avg\", \"operating 6h avg\" FROM smoothed WHERE b >= date_bin('15 minutes', $__timeFrom()::timestamptz, TIMESTAMPTZ '2001-01-01') ORDER BY b",
+          "rawSql": "WITH buckets AS (SELECT date_bin('15 minutes', created_at, TIMESTAMPTZ '2001-01-01') AS b, SUM(amount) * 4 AS rate FROM transactions WHERE created_at > $__timeFrom()::timestamptz - INTERVAL '6 hours' AND created_at < $__timeTo()::timestamptz AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') AND category != 'SHIP_INVESTMENTS' GROUP BY 1), smoothed AS (SELECT b, AVG(rate) OVER (ORDER BY b ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS \"operating 3h avg\", AVG(rate) OVER (ORDER BY b ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS \"operating 6h avg\" FROM buckets) SELECT b AS \"time\", \"operating 3h avg\", \"operating 6h avg\" FROM smoothed WHERE b >= date_bin('15 minutes', $__timeFrom()::timestamptz, TIMESTAMPTZ '2001-01-01') ORDER BY b",
           "refId": "A"
         }
       ],
