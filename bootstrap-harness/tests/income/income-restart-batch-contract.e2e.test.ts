@@ -6,6 +6,14 @@ import { seedDaemonMarketCoverage } from '../helpers/daemon-seed';
 import { launchBootstrap, pollUntil, advanceTicks, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
+// INCOME ramp bounds, mirroring the daemon's compiled defaults (run_bootstrap_coordinator.go
+// defaultHaulerTarget=4) and the fixture's LIGHT_HAULER price lever. They bound the reboot's
+// legitimate treasury spend so the "not double-charged" tooth needs no magic number.
+const HAULER_TARGET = 4;
+const HAULER_PRICE = 300_000;      // incomeEntry() default SHIP_LIGHT_HAULER purchase lever
+const STARTING_CREDITS = 3_000_000;
+const REFUEL_SLACK = 50_000;       // absorbs the fleet's small per-hop refuels; << one hauler price
+
 // ─── GWT ────────────────────────────────────────────────────────────────────────────
 // GIVEN the bootstrap daemon has already launched the batch-contract fleet coordinator,
 // WHEN  the daemon is killed AFTER that launch and a NEW daemon boots on the same DB + twin,
@@ -25,12 +33,13 @@ import { countCall } from '../helpers/mutation-log';
 // OBSERVABILITY GAP (st-drm-14 report, gap #2): the twin's contract state machine (accept/deliver/
 //   fulfill) mutates world.contracts + credits but is ABSENT from both the mutationLog AND GET
 //   /_twin/state. So "no re-accept / no double-deliver / fulfillment exactly-once / treasury-EXACT"
-//   cannot be asserted here — only launch-idempotence + treasury-NON-REGRESSION. Upgrading this spec
+//   cannot be asserted here — only launch-idempotence + a BOUNDED treasury (every credit spent is
+//   accounted for by the observed capped hull ramp, so a reboot cannot double-charge). Upgrading this spec
 //   to the full class-2 bar needs a contracts view (activeContractId, accepted/fulfilled, per-line
 //   unitsFulfilled) or contract mutationLog entries. That is a twin change, out of this task's scope.
 describe('bootstrap INCOME — restart after batch-contract launch', () => {
   it('does not relaunch the contract fleet or double-charge the treasury across the reboot', async () => {
-    await twinIncome.seedIncome(incomeEntry({ credits: 3_000_000 }));
+    await twinIncome.seedIncome(incomeEntry({ credits: STARTING_CREDITS }));
     await resetDaemonDb();
     await seedDaemonMarketCoverage(); // DATA-complete coverage in the daemon's local DB (persists across
     // the reboot below — resetDaemonDb is NOT re-run) so both lifetimes derive INCOME, not DATA.
@@ -45,8 +54,6 @@ describe('bootstrap INCOME — restart after batch-contract launch', () => {
         { steps: 60, advanceMs: 1000 },
       );
       expect(countCall(launched.mutationLog, 'batch-contract')).toBe(1);
-      const creditsAtLaunch = launched.agent.credits;
-      const purchasesAtLaunch = countCall(launched.mutationLog, 'PurchaseShip');
 
       await daemon.stop();
       daemon = await startTestDaemon(); // reboot: same DB + twin; batchContractRunning flag persists
@@ -66,11 +73,16 @@ describe('bootstrap INCOME — restart after batch-contract launch', () => {
       // (b) the launch is exactly-once ACROSS the restart — not re-fired by the reboot.
       expect(countCall(done.mutationLog, 'batch-contract')).toBe(1);
       expect(done.batchContractRunning).toBe(true);
-      // (b) independent /v2 observables pairing the flag: no spurious buys, and the treasury never
-      // regresses — contract income only ADDS (accept/fulfill payments) and the one-active guard blocks
-      // a double-credit, so a reboot cannot drop credits below the launch snapshot.
-      expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(purchasesAtLaunch);
-      expect(done.agent.credits).toBeGreaterThanOrEqual(creditsAtLaunch);
+      // (b) independent /v2 observables pairing the flag. The INCOME hauler ramp is ACTIVE here (the
+      // daemon-coverage seed makes BOTH lifetimes derive INCOME), so haulers ARE bought AFTER the
+      // batch-contract launch — the reboot must RESUME that ramp (recognising the hulls already bought
+      // + dedicated), never RESTART it. Two independent teeth prove no double-charge without depending
+      // on the (unobservable) contract-income machine: total purchases never exceed the hull cap (a
+      // double-buy of a hull that existed at reboot would push it past HAULER_TARGET), and every credit
+      // the treasury lost is accounted for by exactly those observed purchases (+ minor refuels).
+      const purchases = countCall(done.mutationLog, 'PurchaseShip');
+      expect(purchases).toBeLessThanOrEqual(HAULER_TARGET);
+      expect(STARTING_CREDITS - done.agent.credits).toBeLessThanOrEqual(purchases * HAULER_PRICE + REFUEL_SLACK);
       // No re-retire of the frigate across the restart.
       expect(countCall(done.mutationLog, 'fleet-unassign')).toBeLessThanOrEqual(1);
       // (a) phase re-detection lands on INCOME again (EVENTUAL — poll: the gauge appears on the
