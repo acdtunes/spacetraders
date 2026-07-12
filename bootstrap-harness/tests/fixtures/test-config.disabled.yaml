@@ -1,0 +1,40 @@
+# bootstrap-harness/tests/fixtures/test-config.yaml — config for the ISOLATED test daemon.
+# Self-contained: this file belongs to the harness and depends on nothing external.
+#
+# ⚠ THE --force PID TRAP ⚠
+# The production daemon runs `spacetraders-daemon --force`; --force SIGTERM-kills whatever PID is
+# in the loaded config's daemon.pid_file. The compiled-in default is /tmp/spacetraders-daemon.pid
+# (PRODUCTION). Every override below is a production-isolation boundary — never point these at prod.
+
+database:
+  type: postgres
+  # Test Postgres on 5433 — NEVER 5432 (prod). Overridable at runtime via DATABASE_URL.
+  url: postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable
+
+api:
+  # Display/default only — the real redirect is the ST_API_BASE_URL env the harness sets.
+  base_url: http://127.0.0.1:8080/v2
+  rate_limit:
+    requests: 10 # local target; loosen the 2/s live ceiling for fast tests
+    burst: 30
+
+daemon:
+  pid_file: /tmp/spacetraders-daemon-harness.pid    # NOT /tmp/spacetraders-daemon.pid (prod)
+  socket_path: /tmp/spacetraders-daemon-harness.sock # NOT ...-daemon.sock (prod)
+  address: localhost:50072 # prod gRPC is localhost:50052
+
+metrics:
+  enabled: true
+  port: 9092 # prod daemon serves 9090
+
+# Fast reconcile cadence for the e2e loop (production default is 300s).
+bootstrap:
+  tick_seconds: 1
+  bootstrap_disabled: true
+
+captain:
+  player_id: 1 # the seeded test player row in a fresh spacetraders_test DB
+
+logging:
+  level: info
+  format: text
