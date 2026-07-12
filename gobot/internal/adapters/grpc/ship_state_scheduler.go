@@ -3,6 +3,8 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,9 +13,34 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 )
 
-// ClockDriftBuffer accounts for slight time differences between API server and local clock.
-// Ensures we never act before the API considers the ship arrived.
+// ClockDriftBuffer is the DEFAULT buffer added to every scheduled arrival/cooldown delay to
+// absorb slight time differences between the API server and this local clock. Ensures we never
+// act before the API considers the ship arrived. Production runs with exactly this value —
+// byte-identical to the pre-seam behaviour, since ST_CLOCK_DRIFT_BUFFER_MS is unset in prod.
+//
+// INVARIANT (st-drm.8): in any digital-twin stack, the twin's TWIN_MIN_TRAVEL_MS travel floor
+// MUST be >= the resolved buffer. The twin mints arrivals at least that floor in the (real)
+// future; the daemon then waits arrival + buffer. If the buffer exceeded the floor, the daemon
+// could arm a delay past the twin's own arrival window and the harness's clock-step budget would
+// expire before the IN_TRANSIT->IN_ORBIT flip — a missed arrival.
 const ClockDriftBuffer = 1 * time.Second
+
+// resolveClockDriftBuffer reads the ST_CLOCK_DRIFT_BUFFER_MS seam exactly like client.go reads
+// ST_API_BASE_URL: unset/empty/unparseable/non-positive => the ClockDriftBuffer default (the
+// production path is untouched); a positive integer => that many milliseconds (sane floor 1ms).
+// Test stacks set ~50 so compressed twin arrivals resolve fast without changing any other
+// daemon behaviour.
+func resolveClockDriftBuffer() time.Duration {
+	raw := os.Getenv("ST_CLOCK_DRIFT_BUFFER_MS")
+	if raw == "" {
+		return ClockDriftBuffer
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 1 {
+		return ClockDriftBuffer
+	}
+	return time.Duration(ms) * time.Millisecond
+}
 
 // SweeperInterval is how often the background sweeper checks for stuck ships.
 // This catches ships that slip through due to failed saves, timeouts, or clock drift.
@@ -32,6 +59,7 @@ type ShipStateScheduler struct {
 	timers         map[string]*time.Timer // key: shipSymbol or shipSymbol:cooldown
 	mu             sync.Mutex
 	stopCh         chan struct{} // signals sweeper goroutine to stop
+	driftBuffer    time.Duration // resolved ST_CLOCK_DRIFT_BUFFER_MS seam (default ClockDriftBuffer)
 }
 
 // NewShipStateScheduler creates a new scheduler for ship state transitions.
@@ -46,6 +74,7 @@ func NewShipStateScheduler(shipRepo navigation.ShipRepository, clock shared.Cloc
 		eventPublisher: eventPublisher,
 		timers:         make(map[string]*time.Timer),
 		stopCh:         make(chan struct{}),
+		driftBuffer:    resolveClockDriftBuffer(), // read the seam once at boot, like ST_API_BASE_URL
 	}
 }
 
@@ -59,7 +88,7 @@ func (s *ShipStateScheduler) ScheduleArrival(ship *navigation.Ship) {
 	if delay < 0 {
 		delay = 0 // Already past, execute immediately
 	}
-	delay += ClockDriftBuffer // Buffer for clock drift between API server and local
+	delay += s.driftBuffer // Buffer for clock drift between API server and local (ST_CLOCK_DRIFT_BUFFER_MS)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,7 +163,7 @@ func (s *ShipStateScheduler) ScheduleCooldownClear(ship *navigation.Ship) {
 	if delay < 0 {
 		delay = 0
 	}
-	delay += ClockDriftBuffer // Buffer for clock drift
+	delay += s.driftBuffer // Buffer for clock drift (ST_CLOCK_DRIFT_BUFFER_MS)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
