@@ -258,10 +258,11 @@ func TestPlanSourcing_NilReachability_NoInSystemMarket_ErrorsRatherThanReturnFor
 	}
 }
 
-// The defer projection must re-project on the ask the worker can actually pay —
-// the in-system ask — not the excluded (cheaper) foreign one. Composing
-// PlanSourcing(nil) → EvaluateSourcingDefer proves the projection basis.
-func TestPlanSourcing_NilReachability_DeferReprojectsOnInSystemAsk(t *testing.T) {
+// The negative projection must re-project on the ask the worker can actually pay
+// — the in-system ask — not the excluded (cheaper) foreign one. Composing
+// PlanSourcing(nil) → EvaluateSourcingDefer proves the projection basis, and the
+// run SOURCES on it (never parks — sp-x8ck).
+func TestPlanSourcing_NilReachability_NegativeReprojectsOnInSystemAsk(t *testing.T) {
 	repo := &fakeCrossSystemRepo{
 		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{
 			"X1-HOME": homeAsk(6000),
@@ -283,10 +284,13 @@ func TestPlanSourcing_NilReachability_DeferReprojectsOnInSystemAsk(t *testing.T)
 	}
 	d := EvaluateSourcingDefer(plan, c, now)
 	if d.ProjectedNet != 120_000-6000*804 {
-		t.Fatalf("defer must re-project on the in-system ask, got net %d", d.ProjectedNet)
+		t.Fatalf("must re-project on the in-system ask, got net %d", d.ProjectedNet)
 	}
-	if !d.Defer {
-		t.Fatalf("deep-negative in-system projection with runway must defer, got %+v", d)
+	if d.Defer {
+		t.Fatalf("negative in-system projection must SOURCE, never park (RULINGS #1): %+v", d)
+	}
+	if !d.Overridden {
+		t.Fatalf("negative in-system projection must be flagged Overridden (source at a loss): %+v", d)
 	}
 }
 
@@ -351,17 +355,59 @@ func TestEvaluateSourcingDefer_ExactlyAtThreshold_Proceeds(t *testing.T) {
 	}
 }
 
-func TestEvaluateSourcingDefer_NegativeWithRunway_Defers(t *testing.T) {
-	// The −891k shape: payout 120k, sourcing 6000×804 ≈ 4.8M.
+func TestEvaluateSourcingDefer_NegativeWithRunway_SourcesNeverParks(t *testing.T) {
+	// The −891k shape: payout 120k, sourcing 6000×804 ≈ 4.8M, a full 7 days of
+	// runway. Before sp-x8ck this DEFERRED (parked) until asks reverted; the
+	// Admiral override makes never-skip govern the contract path, so it now
+	// SOURCES at the loss (Overridden) and never parks — runway no longer gates
+	// the decision.
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)
 	now := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC) // 7 days of runway
 
 	d := EvaluateSourcingDefer(deferPlan(6000*804), c, now)
-	if !d.Defer || d.Overridden {
-		t.Fatalf("deep-negative projection with runway must defer, got %+v", d)
+	if d.Defer {
+		t.Fatalf("deep-negative projection must SOURCE, never park (RULINGS #1 never-skip): %+v", d)
+	}
+	if !d.Overridden {
+		t.Fatalf("deep-negative projection must be flagged Overridden (source at a loss): %+v", d)
 	}
 	if d.ProjectedNet != 120_000-6000*804 {
 		t.Fatalf("projected net wrong: %d", d.ProjectedNet)
+	}
+}
+
+// TestSourcing_UnsourceableAtProfit_StillSources is the sp-x8ck regression: the
+// live deadlock. A contract whose ONLY in-system source is priced above payout
+// (6 ANTIMATTER, sole market an IMPORT @ 14912 → 89472 effective vs payout
+// 70140; net −19332, worse than the −20%-of-payout line −14028) with a full
+// ~7-day runway used to DEFER/park FOREVER, deadlocking the serial one-active-
+// contract pipeline for the whole deadline window (zero contract income).
+// RULINGS #1 never-skip GOVERNS the contract sourcing path over the profit guard
+// (Admiral override, sp-x8ck): the run must SOURCE at the negative margin
+// (Overridden = source-and-log-the-loss), NEVER park (Defer). No defer/parking
+// decision may be produced.
+func TestSourcing_UnsourceableAtProfit_StillSources(t *testing.T) {
+	c := testContract(t, 70_140, "2026-07-19T00:00:00Z", 6) // ~7 days runway, well outside any window
+	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	plan := &SourcingPlan{
+		Good:           "ANTIMATTER",
+		Market:         "X1-VB74-A1",
+		UnitAsk:        14912,
+		UnitsRemaining: 6,
+		GoodsCost:      6 * 14912,
+		EffectiveCost:  6 * 14912, // 89472 > payout 70140 → deep negative
+	}
+
+	d := EvaluateSourcingDefer(plan, c, now)
+
+	if d.Defer {
+		t.Fatalf("unsourceable-at-profit contract must SOURCE, never park (RULINGS #1 never-skip): %+v", d)
+	}
+	if !d.Overridden {
+		t.Fatalf("negative-margin sourcing must be flagged Overridden so the loss logs loudly and the run proceeds: %+v", d)
+	}
+	if d.ProjectedNet != 70_140-6*14912 {
+		t.Fatalf("projection basis wrong: got net %d, want %d", d.ProjectedNet, 70_140-6*14912)
 	}
 }
 

@@ -28,11 +28,17 @@ import (
 //      can never be selected for a contract — an unreachable source is
 //      UNSELECTABLE, not dispatched then crashed ('waypoint not found in cache').
 //      Weighting is documented on CrossGateSourcingPenalty below.
-//   2. DEFER-while-negative: a sourcing run whose projected net is worse than
-//      −SourcingDeferThresholdPct of the payout is parked (not skipped —
-//      RULINGS #1) until asks revert, re-checked every coordinator pass,
-//      unless the contract deadline is inside SourcingDeferSafetyWindow, in
-//      which case it sources anyway and logs the override.
+//   2. Negative-margin sourcing (formerly DEFER-while-negative): when a
+//      sourcing run's projected net is worse than −SourcingDeferThresholdPct of
+//      the payout, the contract path now SOURCES ANYWAY and logs the loss (the
+//      Overridden decision) — it NEVER parks. RULINGS #1 never-skip governs the
+//      contract path over the profit guard (explicit Admiral override, sp-x8ck);
+//      the old park-until-asks-revert behavior deadlocked the serial one-active-
+//      contract pipeline for the whole deadline window whenever a contract good
+//      had no in-system source at a profit (live: 6 ANTIMATTER, sole in-system
+//      market an IMPORT priced above payout). The SourcingDeferSafetyWindow /
+//      SourcingDeferRecheckInterval / DeferMessage machinery below is retained
+//      but inert on the contract path (the sole caller); safe to prune later.
 const (
 	// CrossGateSourcingPenalty is the flat credit penalty charged to a sourcing
 	// candidate in a DIFFERENT system than the delivery destination. It prices
@@ -320,12 +326,18 @@ func candidateOrNil(m *market.CheapestMarketResult, units int, deliverySystem st
 }
 
 // SourcingDeferDecision is the outcome of projecting a sourcing run against the
-// bead's −20%-of-payout line. Exactly one of three shapes:
-//   - proceed:            Defer=false, Overridden=false (projection clears the line)
-//   - defer (park):       Defer=true                    (negative projection, runway remains)
-//   - override (source):  Defer=false, Overridden=true  (negative projection, deadline too close)
+// −SourcingDeferThresholdPct-of-payout line. On the contract sourcing path it is
+// one of just two shapes — it NEVER parks (sp-x8ck Admiral override; RULINGS #1
+// never-skip governs the contract path over the profit guard):
+//   - proceed:                     Defer=false, Overridden=false (projection clears the line)
+//   - override (source-at-a-loss): Defer=false, Overridden=true  (negative projection — source anyway, loudly)
+//
+// Defer (park) is the historical third shape. EvaluateSourcingDefer never raises
+// it for a contract; the field is retained so the never-park invariant stays
+// directly assertable (TestSourcing_UnsourceableAtProfit_StillSources) and so the
+// coordinator's legacy Defer branch is provably inert.
 type SourcingDeferDecision struct {
-	Defer      bool
+	Defer      bool // never raised on the contract path (sp-x8ck) — see type doc
 	Overridden bool
 
 	ProjectedNet int       // payout − plan.EffectiveCost
@@ -335,11 +347,15 @@ type SourcingDeferDecision struct {
 	Runway       time.Duration
 }
 
-// EvaluateSourcingDefer projects the sourcing run's net and decides
-// proceed/defer/override. Pure — callers supply now — so the decision table is
-// directly testable. An unparseable deadline never defers (fail toward
-// fulfilling: with no deadline to sequence inside, parking would risk the
-// contract for margin, inverting RULINGS #1).
+// EvaluateSourcingDefer projects the sourcing run's net against the
+// −SourcingDeferThresholdPct-of-payout line and decides proceed vs
+// source-at-a-loss. Pure — callers supply now — so the decision is directly
+// testable. It NEVER parks a contract: after the sp-x8ck Admiral override,
+// RULINGS #1 (never-skip) governs the contract sourcing path over the profit
+// guard, so a negative projection is flagged Overridden (source anyway, log the
+// loss) and Defer is never raised. The old defer/park branch deadlocked the
+// serial one-active-contract pipeline for the whole deadline window whenever a
+// contract good had no in-system source at a profit.
 func EvaluateSourcingDefer(plan *SourcingPlan, contract *domainContract.Contract, now time.Time) SourcingDeferDecision {
 	payout := contract.Terms().Payment.OnAccepted + contract.Terms().Payment.OnFulfilled
 	d := SourcingDeferDecision{
@@ -352,19 +368,20 @@ func EvaluateSourcingDefer(plan *SourcingPlan, contract *domainContract.Contract
 		return d // projection clears the line — proceed normally
 	}
 
-	deadline, err := time.Parse(time.RFC3339, contract.Terms().Deadline)
-	if err != nil {
-		d.Overridden = true // no parseable runway → source anyway, loudly
-		return d
+	// Negative projection. RULINGS #1 never-skip GOVERNS the contract sourcing
+	// path over this profit guard (explicit Admiral override for the contract
+	// path only, sp-x8ck): an accepted contract is ALWAYS sourced+delivered+
+	// fulfilled, even at a projected loss. The historical DEFER/park branch here
+	// deadlocked the serial pipeline FOREVER whenever a contract good had no
+	// in-system source at a profit (live: 6 ANTIMATTER whose only in-system
+	// market was an IMPORT priced above payout), which is the exact never-skip
+	// violation this override removes. So we never park — flag the run Overridden
+	// (source at the loss, log it loudly) and proceed. The deadline is parsed
+	// only to enrich the log.
+	if deadline, err := time.Parse(time.RFC3339, contract.Terms().Deadline); err == nil {
+		d.Deadline = deadline
+		d.Runway = deadline.Sub(now)
 	}
-	d.Deadline = deadline
-	d.Runway = deadline.Sub(now)
-
-	if d.Runway > SourcingDeferSafetyWindow {
-		d.Defer = true
-		return d
-	}
-
 	d.Overridden = true
 	return d
 }
@@ -381,19 +398,19 @@ func (d SourcingDeferDecision) DeferMessage(plan *SourcingPlan) string {
 	)
 }
 
-// OverrideMessage renders the deadline-override line with the same numbers in
-// the text: the run is knowingly sourcing at a projected loss because the
-// deadline is inside the safety window (or unparseable) and never-skip outranks
-// margin.
+// OverrideMessage renders the negative-margin sourcing line with the same
+// numbers in the text: the run is knowingly sourcing at a projected loss because
+// never-skip (RULINGS #1) governs the contract path over the profit guard — a
+// contract always sources+delivers+fulfills regardless of margin (sp-x8ck). The
+// deadline is shown for context only; it is not the reason the run proceeds.
 func (d SourcingDeferDecision) OverrideMessage(plan *SourcingPlan) string {
 	deadline := "unparseable"
 	if !d.Deadline.IsZero() {
 		deadline = fmt.Sprintf("%s, runway %s", d.Deadline.Format(time.RFC3339), d.Runway.Round(time.Minute))
 	}
 	return fmt.Sprintf(
-		"Sourcing override: projected net %d worse than %d (-%d%% of payout %d) but deadline inside the %s safety window (%s) - sourcing %d units of %s @ ask %d at %s anyway (never-skip, RULINGS #1)",
+		"Sourcing at negative margin: projected net %d worse than %d (-%d%% of payout %d) - sourcing %d units of %s @ ask %d at %s anyway (never-skip, RULINGS #1: contracts always source+deliver+fulfill even at a projected loss) (deadline %s)",
 		d.ProjectedNet, d.Threshold, SourcingDeferThresholdPct, d.Payout,
-		SourcingDeferSafetyWindow, deadline,
-		plan.UnitsRemaining, plan.Good, plan.UnitAsk, plan.Market,
+		plan.UnitsRemaining, plan.Good, plan.UnitAsk, plan.Market, deadline,
 	)
 }
