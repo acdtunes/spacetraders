@@ -28,7 +28,11 @@ export const meta = {
 
 const ISO = [
   'ISOLATION: you run in YOUR OWN fresh git worktree branched from the Wave-1-merged feat/twin-digital-twin',
-  '(twin/ + gobot/ + bootstrap-harness/ present and current). Work ONLY in your cwd via RELATIVE paths.',
+  '(twin/ + gobot/ + bootstrap-harness/ present and current). KNOWN TRAP: the workflow may create your',
+  'worktree STALE at origin/main (twin/src absent). FIRST ACTION, before anything else:',
+  '  git merge --ff-only feat/twin-digital-twin && ls twin/src',
+  '(twin/src MUST exist afterwards; if the ff fails or twin/src is missing, STOP and report instead of',
+  'improvising). Work ONLY in your cwd via RELATIVE paths.',
   'NEVER cd into other checkouts and NEVER touch beads (bd). No node_modules: "npm ci" in twin/ first',
   '(one Bash call, timeout 120000; retry once on timeout).',
 ].join('\n')
@@ -55,9 +59,9 @@ const TRIAGE = [
   '', STALL,
   '(You are read + run-in-process only; "npm ci" in twin/ if node_modules is absent.)',
   '',
-  'INPUTS: read the four Wave-1 agent reports (their final messages are in the run journal / passed to you',
-  'by the orchestrator) for: time-mock knobs (st-drm.8), new/838fixed CLI specs (st-drm.11), any twin fix',
-  'already made for construction shape (st-drm.9), and harness-audit wave-2 items (st-drm.10). Then:',
+  'INPUTS: read .claude/workflows/st-drm-wave1-results.md (the orchestrator-collected Wave-1 reports) for:',
+  'time-mock knobs (st-drm.8), new/fixed CLI specs (st-drm.11), construction shape outcome (st-drm.9),',
+  'harness-audit wave-2 items (st-drm.10), and the KNOWN LIVE-STACK REDS section. Then:',
   '1. Run the IN-PROCESS low-level suite: cd twin && ./node_modules/.bin/vitest run --config',
   '   vitest.unit.config.ts (207+ plus the Wave-1 additions). List every RED with file + assertion.',
   '2. Enumerate the LIVE-STACK reds you CANNOT run here but know from reports/inventory: at minimum',
