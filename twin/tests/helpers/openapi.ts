@@ -12,20 +12,26 @@ import addFormats from 'ajv-formats';
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // twin/tests/helpers
 const SPEC_PATH = path.resolve(HERE, '..', '..', '..', 'gobot', 'api', 'openapi.json');
 const spec = JSON.parse(readFileSync(SPEC_PATH, 'utf8')) as {
+  components: { schemas: Record<string, unknown> };
   paths: Record<string, Record<string, { responses: Record<string, { content?: Record<string, { schema?: unknown }> }> }>>;
 };
 
 // strict:false — OpenAPI 3.0 carries keywords ajv's strict mode rejects (nullable, example, xml).
-// validateFormats stays ON (ajv-formats) so date-time drift is caught. The whole spec is registered
-// under the "openapi" id so response schemas resolve their #/components/schemas/* $refs.
+// validateFormats stays ON (ajv-formats) so date-time drift is caught.
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
-ajv.addSchema(spec, 'openapi');
 
 const cache = new Map<string, ValidateFunction>();
 
 /** Compile (and cache) the validator for one operation's response body schema. `templatePath` is the
- *  OpenAPI path template (e.g. "/my/ships/{shipSymbol}/purchase"), NOT the concrete request path. */
+ *  OpenAPI path template (e.g. "/my/ships/{shipSymbol}/purchase"), NOT the concrete request path.
+ *
+ *  Robust $ref resolution: an operation's JSON response schema is an INLINE object (the `{data:{…}}`
+ *  wrapper), not a named component, so it can't be referenced by id. We extract that inline schema and
+ *  compile it as a SELF-CONTAINED document with the spec's whole `components` block embedded at the
+ *  root, so every internal `#/components/schemas/X` $ref (and the transitive refs those schemas carry)
+ *  resolves as a plain JSON-Pointer walk into this document's root. `components` is an unknown keyword
+ *  to ajv (ignored under strict:false) but remains pointer-addressable. */
 function validatorFor(method: string, templatePath: string, status: string): ValidateFunction {
   const key = `${method} ${templatePath} ${status}`;
   const hit = cache.get(key);
@@ -34,16 +40,10 @@ function validatorFor(method: string, templatePath: string, status: string): Val
   if (!op) throw new Error(`openapi: no operation ${method} ${templatePath}`);
   const schema = op.responses?.[status]?.content?.['application/json']?.schema;
   if (!schema) throw new Error(`openapi: no ${status} JSON response schema for ${method} ${templatePath}`);
-  // Re-anchor $refs: the schema fragment lives inside the "openapi" doc, so wrap it so relative
-  // #/components refs resolve against the registered spec.
-  const fn = ajv.compile({ $id: `resp:${key}`, $ref: 'openapi#/paths/' + encodeRef(templatePath) + `/${method.toLowerCase()}/responses/${status}/content/${encodeRef('application/json')}/schema` });
+  const doc = { ...(schema as Record<string, unknown>), components: spec.components };
+  const fn = ajv.compile(doc);
   cache.set(key, fn);
   return fn;
-}
-
-/** JSON-Pointer-encode a path segment (~ -> ~0, / -> ~1) so it can sit inside a $ref pointer. */
-function encodeRef(seg: string): string {
-  return seg.replace(/~/g, '~0').replace(/\//g, '~1');
 }
 
 export interface ShapeResult { valid: boolean; errors: string[] }
