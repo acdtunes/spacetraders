@@ -53,9 +53,8 @@ export function buildServer(opts: BuildServerOptions = {}): FastifyInstance {
       await contractRoutes(v2);          // INCOME   POST …/negotiate/contract; …/contracts/:id[/accept|deliver|fulfill]
       await cargoRoutes(v2);             // INCOME   POST /my/ships/:s/purchase|sell
       await constructionRoutes(v2);      // GATE     GET …/construction; POST …/construction/supply
-      // await shipNavigateRoutes(v2);   // Task 24  POST …/navigate
-      // await shipActionRoutes(v2);     // Task 25  POST …/orbit|dock|refuel
-      // await myShipsPurchaseRoutes(v2);// Task 27  POST /my/ships
+      // navigate / orbit / dock / refuel / PATCH nav / POST /my/ships (purchase) live inside
+      // shipRoutes (routes/ships.ts) — registered above; there are no separate route modules.
     },
     { prefix: '/v2' },
   );
