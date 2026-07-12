@@ -71,6 +71,20 @@ export function applyReport(world: World, report: ReportInput): MutationLogEntry
       if (world.standingCoordinators.workerRebalancer) return null;
       world.standingCoordinators.workerRebalancer = true;
       break;
+    case 'scout-assign':
+      // The coordinator assigned every probe to scout-all-markets (daemon-internal
+      // AssignScoutingFleet — no /v2 call). Flag it so /state shows SATELLITEs as scouting.
+      if (world.scoutAssigned) return null;
+      world.scoutAssigned = true;
+      break;
+    case 'repurpose': {
+      // An idle hauler was repurposed into a gate worker (daemon-internal AssignFleet — no /v2
+      // call, no PurchaseShip). Records a gateWorkers entry source:'repurposed', guarded by symbol.
+      const sym = typeof report.detail?.ship === 'string' ? report.detail.ship : '';
+      if (sym === '' || world.gateWorkers.some((w) => w.symbol === sym)) return null;
+      world.gateWorkers.push({ symbol: sym, source: 'repurposed' });
+      break;
+    }
     default:
       return null; // not one of the six exactly-once report ops — ignore
   }

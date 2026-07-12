@@ -147,8 +147,8 @@ describe('resetClock', () => {
   });
 });
 
-describe('makeTransit (arrival = now + realTravelSeconds; a real future instant)', () => {
-  it('mints departure=now and arrival=now+realETA seconds (no compression)', () => {
+describe('makeTransit (arrival = now + COMPRESSED realTravelSeconds; a real future instant)', () => {
+  it('mints departure=now and arrival=now+COMPRESSED realETA (ARRIVAL_COMPRESSION=20)', () => {
     const t = makeTransit({
       shipSymbol: 'TWINAGENT-1', origin: wp('X1-PZ28-A1', 0, 0), destination: wp('X1-PZ28-B1', 0, 300),
       engineSpeed: 30, mode: 'CRUISE', now: new Date('2026-07-11T00:00:00.000Z'),
@@ -156,17 +156,29 @@ describe('makeTransit (arrival = now + realTravelSeconds; a real future instant)
     expect(t.originWaypoint).toBe('X1-PZ28-A1');
     expect(t.destinationWaypoint).toBe('X1-PZ28-B1');
     expect(t.departureTime).toBe('2026-07-11T00:00:00.000Z');
-    // realTravelSeconds(300,30,CRUISE)=265 -> +265s
-    expect(t.arrival).toBe('2026-07-11T00:04:25.000Z');
+    // realTravelSeconds(300,30,CRUISE)=265 -> compressed: round(265*1000/20)=13250ms
+    expect(t.arrival).toBe('2026-07-11T00:00:13.250Z');
   });
-  it('defaults departure to the world clock (getNow)', () => {
-    setNow('2026-07-11T00:00:00.000Z');
+  it('the compressed ETA floors at 1000ms (a short hop never fires below the daemon ClockDriftBuffer)', () => {
+    // realTravelSeconds(0,30,CRUISE)=15 -> naive compression round(15*1000/20)=750ms, floored to 1000ms
+    const t = makeTransit({
+      shipSymbol: 'TWINAGENT-1', origin: wp('X1-PZ28-A1', 0, 0), destination: wp('X1-PZ28-A1', 0, 0),
+      engineSpeed: 30, mode: 'CRUISE', now: new Date('2026-07-11T00:00:00.000Z'),
+    });
+    expect(t.arrival).toBe('2026-07-11T00:00:01.000Z');
+  });
+  it('defaults departure to REAL wall-clock — decoupled from the frozen world clock', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-11T00:00:00.000Z'));  // REAL wall clock, controlled
+    setNow('2000-01-01T00:00:00.000Z');                        // world clock parked at a DIFFERENT instant
     setClockMode('frozen');
     const t = makeTransit({
       shipSymbol: 'TWINAGENT-1', origin: wp('X1-PZ28-A1', 0, 0), destination: wp('X1-PZ28-B1', 0, 60), engineSpeed: 30,
     });
+    // departure tracks REAL wall time, NOT the frozen world-clock value (2000-01-01).
     expect(t.departureTime).toBe('2026-07-11T00:00:00.000Z');
-    expect(t.arrival).toBe('2026-07-11T00:01:05.000Z'); // +65s
+    // realTravelSeconds(60,30,CRUISE)=65 -> compressed: round(65*1000/20)=3250ms
+    expect(t.arrival).toBe('2026-07-11T00:00:03.250Z');
   });
   it('a probe (fuel capacity 0) still travels — a valid future arrival, and nav is fuel-free', () => {
     setNow('2026-07-11T00:00:00.000Z');
@@ -202,30 +214,49 @@ describe('resolveNav (reads THIS clock; single IN_TRANSIT->IN_ORBIT flip at arri
     const b = resolveNav(ship, t, new Date('2026-07-11T00:00:30.000Z'));
     expect(ship.nav.status).toBe('IN_ORBIT'); expect(a.nav).toEqual(b.nav);
   });
-  it('defaults to the world clock: a navigated ship flips EXACTLY at arrival under advanceClock', () => {
-    setNow('2026-07-11T00:00:00.000Z');
+  it('defaults to REAL wall-clock, decoupled from the world clock — advanceClock does NOT drive the flip', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-11T00:00:00.000Z'));  // REAL wall clock, controlled
+    setNow('2099-01-01T00:00:00.000Z');                        // world clock parked at a far DIFFERENT instant
     setClockMode('frozen');
     const origin = wp('X1-PZ28-A1', 0, 0), dest = wp('X1-PZ28-B1', 0, 60);
     const t = makeTransit({ shipSymbol: 'TWINAGENT-1', origin, destination: dest, engineSpeed: 30, mode: 'CRUISE' });
-    expect(t.arrival).toBe('2026-07-11T00:01:05.000Z'); // +65s
-    // at T0 -> in transit at origin (resolveNav with no now arg reads getNow())
+    expect(t.departureTime).toBe('2026-07-11T00:00:00.000Z');       // real wall clock, NOT the 2099 world-now
+    // realTravelSeconds(60,30,CRUISE)=65 -> compressed: round(65*1000/20)=3250ms
+    expect(t.arrival).toBe('2026-07-11T00:00:03.250Z');
+
+    // at real-T0 -> in transit at origin (resolveNav with no now arg reads Date.now(), NOT getNow())
     expect(resolveNav(baseShip(), t).nav.status).toBe('IN_TRANSIT');
-    advanceClock(64_999);                                            // 1ms before arrival
+
+    // Advancing the WORLD clock (however far) has NO effect on ship motion — decoupled.
+    advanceClock(999_999);
     expect(resolveNav(baseShip(), t).nav.status).toBe('IN_TRANSIT');
-    advanceClock(1);                                                 // exactly arrival
+
+    // Only REAL wall time crossing arrival flips it.
+    vi.setSystemTime(new Date('2026-07-11T00:00:03.249Z'));         // 1ms before arrival
+    expect(resolveNav(baseShip(), t).nav.status).toBe('IN_TRANSIT');
+    vi.setSystemTime(new Date('2026-07-11T00:00:03.250Z'));         // exactly arrival
     const flipped = resolveNav(baseShip(), t);
     expect(flipped.nav.status).toBe('IN_ORBIT');
     expect(flipped.nav.waypointSymbol).toBe('X1-PZ28-B1');
   });
 });
 
-describe('makeCooldownExpiration (real seconds — no compression)', () => {
-  it('is now + realSeconds', () => {
-    expect(makeCooldownExpiration(500, new Date('2026-07-11T00:00:00.000Z'))).toBe('2026-07-11T00:08:20.000Z');
+describe('makeCooldownExpiration (REAL wall-clock expiry, COMPRESSED — same rationale as arrivals)', () => {
+  it('is now + COMPRESSED realSeconds (ARRIVAL_COMPRESSION=20)', () => {
+    // compressedMs(500) = round(500*1000/20) = 25000ms = 25s
+    expect(makeCooldownExpiration(500, new Date('2026-07-11T00:00:00.000Z'))).toBe('2026-07-11T00:00:25.000Z');
   });
-  it('defaults now to the world clock', () => {
-    setNow('2026-07-11T00:00:00.000Z');
+  it('the compressed expiry floors at 1000ms for a short cooldown', () => {
+    // compressedMs(10) = round(10*1000/20) = 500ms, floored to 1000ms
+    expect(makeCooldownExpiration(10, new Date('2026-07-11T00:00:00.000Z'))).toBe('2026-07-11T00:00:01.000Z');
+  });
+  it('defaults now to REAL wall-clock — decoupled from the frozen world clock', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-11T00:00:00.000Z'));  // REAL wall clock
+    setNow('2099-01-01T00:00:00.000Z');                        // world clock parked far away
     setClockMode('frozen');
-    expect(makeCooldownExpiration(10)).toBe('2026-07-11T00:00:10.000Z');
+    // compressedMs(10) floors at 1000ms: round(10*1000/20)=500 -> floored to 1000
+    expect(makeCooldownExpiration(10)).toBe('2026-07-11T00:00:01.000Z');
   });
 });

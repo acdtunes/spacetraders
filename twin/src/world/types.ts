@@ -177,6 +177,7 @@ export interface ControlPlaneState {
   mutationLog: MutationLogEntry[];
   coverage: number;
   marketScouting: Map<string, MarketScouting>;   // keyed by waypoint symbol
+  scoutAssigned: boolean;                         // scout-all-markets assigned (report seam) -> probes' scoutAssignment
   // INCOME view (+)
   haulers: HaulerState[];
   frigateContractTagged: boolean;

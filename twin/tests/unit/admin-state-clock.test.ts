@@ -129,37 +129,51 @@ describe('GET /_twin/state — FROZEN superset (BASE + INCOME + GATE, one object
 });
 
 describe('POST /_twin/clock — the T1 world-clock control', () => {
-  it('advanceMs moves now AND flips an in-transit ship to IN_ORBIT at its destination', async () => {
+  it('ship arrival reads REAL wall-time — decoupled from advanceMs; advanceMs still moves clock.now', async () => {
     const w = seededWorld();
-    // Put the COMMAND hull in transit A1 -> B6, arriving at FROZEN_NOW + 100s.
+    const realNow = Date.now();
+    // TWINAGENT-1: arrival already in the REAL past -> resolves IN_ORBIT immediately, regardless
+    // of the FROZEN world clock (pinned at FROZEN_NOW — a wholly different, much older instant).
     w.transits.set('TWINAGENT-1', {
       shipSymbol: 'TWINAGENT-1',
       originWaypoint: 'X1-PZ28-A1',
       destinationWaypoint: 'X1-PZ28-B6',
-      departureTime: FROZEN_NOW,
-      arrival: '2026-07-11T00:01:40.000Z', // +100s
+      departureTime: new Date(realNow - 5_000).toISOString(),
+      arrival: new Date(realNow - 1_000).toISOString(),
+    });
+    // TWINAGENT-2: arrival far in the REAL future -> stays IN_TRANSIT no matter how far advanceMs
+    // steps the (unrelated) world clock.
+    w.transits.set('TWINAGENT-2', {
+      shipSymbol: 'TWINAGENT-2',
+      originWaypoint: 'X1-PZ28-A1',
+      destinationWaypoint: 'X1-PZ28-B6',
+      departureTime: new Date(realNow).toISOString(),
+      arrival: new Date(realNow + 60_000).toISOString(),
     });
     app = buildServer({ world: w });
 
-    // Before advancing: IN_TRANSIT at the ORIGIN.
+    // Before advancing: TWINAGENT-1 already arrived (real past); TWINAGENT-2 still en route.
     const before = await getState();
-    const shipBefore = before.ships.find((x: any) => x.symbol === 'TWINAGENT-1');
-    expect(shipBefore.nav.status).toBe('IN_TRANSIT');
-    expect(shipBefore.nav.waypoint).toBe('X1-PZ28-A1');
+    expect(before.ships.find((x: any) => x.symbol === 'TWINAGENT-1').nav.status).toBe('IN_ORBIT');
+    expect(before.ships.find((x: any) => x.symbol === 'TWINAGENT-2').nav.status).toBe('IN_TRANSIT');
     expect(before.clock.now).toBe(FROZEN_NOW);
 
-    // Advance exactly onto the arrival instant.
+    // advanceMs steps the FROZEN world clock (mutation-log `at` + the scalar levers) — it has NO
+    // bearing on ship motion, which lives entirely on the real wall clock now.
     const res = await app.inject({ method: 'POST', url: '/_twin/clock', payload: { advanceMs: 100_000 } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ now: '2026-07-11T00:01:40.000Z' });
 
-    // After advancing: now moved + ship flipped to IN_ORBIT at the DESTINATION.
+    // After advancing: clock.now moved, but BOTH ships' nav status are exactly as before.
     const after = await getState();
     expect(after.clock.now).toBe('2026-07-11T00:01:40.000Z');
-    const shipAfter = after.ships.find((x: any) => x.symbol === 'TWINAGENT-1');
-    expect(shipAfter.nav.status).toBe('IN_ORBIT');
-    expect(shipAfter.nav.waypoint).toBe('X1-PZ28-B6');
-    expect(shipAfter.nav.waypointSymbol).toBe('X1-PZ28-B6');
+    const shipAfter1 = after.ships.find((x: any) => x.symbol === 'TWINAGENT-1');
+    expect(shipAfter1.nav.status).toBe('IN_ORBIT');
+    expect(shipAfter1.nav.waypoint).toBe('X1-PZ28-B6');
+    expect(shipAfter1.nav.waypointSymbol).toBe('X1-PZ28-B6');
+    const shipAfter2 = after.ships.find((x: any) => x.symbol === 'TWINAGENT-2');
+    expect(shipAfter2.nav.status).toBe('IN_TRANSIT');
+    expect(shipAfter2.nav.waypoint).toBe('X1-PZ28-A1');
   });
 
   it('the harness call {advanceMs:1000} returns the advanced now (rfc3339)', async () => {
@@ -195,5 +209,23 @@ describe('POST /_twin/clock — the T1 world-clock control', () => {
     app = buildServer({ world: seededWorld() });
     const res = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 250 } });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('POST /_twin/report scout-assign -> GET /_twin/state ships[].scoutAssignment', () => {
+  it('SATELLITE ships read scoutAssignment "scout-all-markets" only AFTER a scout-assign report; null before, and COMMAND never scouts', async () => {
+    const w = seededWorld();
+    app = buildServer({ world: w });
+
+    const before = await getState();
+    expect(before.ships.find((x: any) => x.role === 'SATELLITE').scoutAssignment).toBeNull();
+    expect(before.ships.find((x: any) => x.role === 'COMMAND').scoutAssignment).toBeNull();
+
+    const res = await app.inject({ method: 'POST', url: '/_twin/report', payload: { call: 'scout-assign' } });
+    expect(res.statusCode).toBe(204);
+
+    const after = await getState();
+    expect(after.ships.find((x: any) => x.role === 'SATELLITE').scoutAssignment).toBe('scout-all-markets');
+    expect(after.ships.find((x: any) => x.role === 'COMMAND').scoutAssignment).toBeNull(); // role-gated, never scouts
   });
 });

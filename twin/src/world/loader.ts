@@ -17,6 +17,7 @@ export function newControlPlaneState(): ControlPlaneState {
     mutationLog: [],
     coverage: 0,
     marketScouting: new Map(),
+    scoutAssigned: false,
     haulers: [],
     frigateContractTagged: false,
     batchContractRunning: false,

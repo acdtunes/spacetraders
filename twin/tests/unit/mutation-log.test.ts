@@ -100,7 +100,7 @@ describe('applyReport (each paired flag flips exactly once; repeat call is a no-
     expect(w.mutationLog).toHaveLength(1); // no duplicate entry
   });
 
-  // The six false->true report flips, each guarded by its OWN target flag.
+  // The seven false->true report flips, each guarded by its OWN target flag.
   const trueFlips: Array<{ call: string; read: (w: World) => boolean }> = [
     { call: 'batch-contract', read: (w) => w.batchContractRunning },
     { call: 'construction-start', read: (w) => w.construction.started },
@@ -108,6 +108,7 @@ describe('applyReport (each paired flag flips exactly once; repeat call is a no-
     { call: 'launch-autosizer', read: (w) => w.autosizerRunning },
     { call: 'launch-siting', read: (w) => w.standingCoordinators.siting },
     { call: 'launch-worker-rebalancer', read: (w) => w.standingCoordinators.workerRebalancer },
+    { call: 'scout-assign', read: (w) => w.scoutAssigned },
   ];
   for (const { call, read } of trueFlips) {
     it(`${call} flips its flag false->true exactly once`, () => {
@@ -177,5 +178,54 @@ describe('applyReport (each paired flag flips exactly once; repeat call is a no-
     expect(w.construction.adopted).toBe(true);
     expect(w.autosizerRunning).toBe(true);
     expect(w.standingCoordinators).toEqual({ siting: true, workerRebalancer: true });
+  });
+});
+
+describe('applyReport — repurpose (idle hauler -> gate worker; per-symbol idempotent, STATE-ONLY)', () => {
+  it('pushes a gateWorkers entry {symbol, source:"repurposed"} and appends the mutation', () => {
+    const w = loadColdStartWorld();
+    const e = applyReport(w, { call: 'repurpose', detail: { ship: 'TWINAGENT-3' } });
+    expect(e).not.toBeNull();
+    expect(e!.call).toBe('repurpose');
+    expect(e!.detail).toEqual({ ship: 'TWINAGENT-3' });
+    expect(w.gateWorkers).toEqual([{ symbol: 'TWINAGENT-3', source: 'repurposed' }]);
+    expect(w.mutationLog).toHaveLength(1);
+  });
+
+  it('is idempotent per symbol — a repeat report for the same ship is a no-op', () => {
+    const w = loadColdStartWorld();
+    const first = applyReport(w, { call: 'repurpose', detail: { ship: 'TWINAGENT-3' } });
+    expect(first).not.toBeNull();
+    const second = applyReport(w, { call: 'repurpose', detail: { ship: 'TWINAGENT-3' } });
+    expect(second).toBeNull();
+    expect(w.gateWorkers).toEqual([{ symbol: 'TWINAGENT-3', source: 'repurposed' }]); // still exactly one
+    expect(w.mutationLog).toHaveLength(1);
+  });
+
+  it('two DIFFERENT ships each get their own gateWorkers entry', () => {
+    const w = loadColdStartWorld();
+    expect(applyReport(w, { call: 'repurpose', detail: { ship: 'TWINAGENT-3' } })).not.toBeNull();
+    expect(applyReport(w, { call: 'repurpose', detail: { ship: 'TWINAGENT-4' } })).not.toBeNull();
+    expect(w.gateWorkers).toEqual([
+      { symbol: 'TWINAGENT-3', source: 'repurposed' },
+      { symbol: 'TWINAGENT-4', source: 'repurposed' },
+    ]);
+    expect(w.mutationLog).toHaveLength(2);
+  });
+
+  it('emits NO PurchaseShip mutation — repurpose is state-only', () => {
+    const w = loadColdStartWorld();
+    applyReport(w, { call: 'repurpose', detail: { ship: 'TWINAGENT-3' } });
+    expect(w.mutationLog.some((m) => m.call === 'PurchaseShip')).toBe(false);
+    expect(w.mutationLog.map((m) => m.call)).toEqual(['repurpose']);
+  });
+
+  it('a missing/non-string ship detail is a no-op — no flip, no entry', () => {
+    const w = loadColdStartWorld();
+    expect(applyReport(w, { call: 'repurpose' })).toBeNull();
+    expect(applyReport(w, { call: 'repurpose', detail: {} })).toBeNull();
+    expect(applyReport(w, { call: 'repurpose', detail: { ship: 42 } })).toBeNull();
+    expect(w.gateWorkers).toEqual([]);
+    expect(w.mutationLog).toHaveLength(0);
   });
 });

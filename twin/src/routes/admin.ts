@@ -61,12 +61,15 @@ export type TwinState = TwinStateBase & TwinStateIncomeView & TwinStateGateView;
 
 /** Project one stored Ship into the /state ship view: resolveNav (single IN_TRANSIT->IN_ORBIT
  *  flip at arrival, read against the world clock `now`) + the base-view augmentations. */
-function toStateShip(ship: Ship, transit: Parameters<typeof resolveNav>[1], now: Date): TwinStateShip {
+function toStateShip(ship: Ship, transit: Parameters<typeof resolveNav>[1], now: Date, scoutAssigned: boolean): TwinStateShip {
   const resolved = resolveNav(ship, transit, now);
+  // scout-all-markets is a daemon-internal fleet assignment (no /v2 call). Once the coordinator
+  // reports scout-assign, every probe (SATELLITE) reads as scouting until the next reset.
+  const scoutAssignment = scoutAssigned && resolved.registration.role === 'SATELLITE' ? 'scout-all-markets' : null;
   return {
     ...resolved,
     role: resolved.registration.role,
-    scoutAssignment: null,
+    scoutAssignment,
     nav: { ...resolved.nav, waypoint: resolved.nav.waypointSymbol },
   };
 }
@@ -86,7 +89,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.get('/state', async (): Promise<TwinState> => {
     const w = getWorld();
     const now = new Date(); // ship arrival is on the REAL clock; the frozen world clock feeds `clock` below
-    const ships = [...w.ships.values()].map((ship) => toStateShip(ship, w.transits.get(ship.symbol), now));
+    const ships = [...w.ships.values()].map((ship) => toStateShip(ship, w.transits.get(ship.symbol), now, w.scoutAssigned));
     const markets: TwinMarketView[] = [...w.marketScouting.entries()].map(
       ([waypoint, s]) => ({ waypoint, scouted: s.scouted, fresh: s.fresh }),
     );
