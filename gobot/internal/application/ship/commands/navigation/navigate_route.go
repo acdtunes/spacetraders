@@ -204,7 +204,51 @@ func (h *NavigateRouteHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *
 		return nil, "", fmt.Errorf("failed to enrich waypoints: %w", err)
 	}
 
+	// sp-g1g5: On a genuine in-system cache miss (origin absent, or an in-system
+	// destination absent) the cache-first load is stale. Force-refresh the graph
+	// from the API exactly once and re-enrich so navigation self-heals instead of
+	// loud-failing at validateWaypointCache. Cross-system destinations are excluded
+	// on purpose — a foreign-system waypoint never appears in this system's graph,
+	// so a refresh would be a wasted API call. When all waypoints are present this
+	// branch is skipped, keeping normal navigation byte-identical.
+	if shouldForceRefreshWaypoints(waypointObjects, ship.CurrentLocation().Symbol, cmd.Destination, systemSymbol) {
+		logger.Log("INFO", "Waypoint cache miss - force-refreshing system graph", map[string]interface{}{
+			"ship_symbol":   cmd.ShipSymbol,
+			"action":        "auto_sync_waypoints",
+			"system_symbol": systemSymbol,
+			"origin":        ship.CurrentLocation().Symbol,
+			"destination":   cmd.Destination,
+		})
+
+		graphResult, err = h.graphProvider.GetGraph(ctx, systemSymbol, true, cmd.PlayerID.Value())
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to force-refresh system graph: %w", err)
+		}
+
+		waypointObjects, err = h.waypointEnricher.EnrichGraphWaypoints(ctx, graphResult.Graph, systemSymbol)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to re-enrich waypoints after force-refresh: %w", err)
+		}
+	}
+
 	return waypointObjects, systemSymbol, nil
+}
+
+// shouldForceRefreshWaypoints reports whether the cache-first waypoint load is
+// missing data that a force-refresh could recover: the ship's origin waypoint,
+// or an IN-SYSTEM destination. A missing cross-system destination is expected
+// (it lives in another system's graph) and must NOT trigger a refresh. The
+// trigger is deliberately narrow so it fires only on a genuine in-system cache
+// miss — the same condition that would otherwise fail loudly at
+// validateWaypointCache. See sp-g1g5.
+func shouldForceRefreshWaypoints(waypoints map[string]*shared.Waypoint, origin, destination, systemSymbol string) bool {
+	if _, ok := waypoints[origin]; !ok {
+		return true
+	}
+	if _, ok := waypoints[destination]; !ok {
+		return shared.ExtractSystemSymbol(destination) == systemSymbol
+	}
+	return false
 }
 
 func (h *NavigateRouteHandler) planAndExecuteRoute(ctx context.Context, cmd *NavigateRouteCommand, ship *domainNavigation.Ship, waypointObjects map[string]*shared.Waypoint, systemSymbol string, logger common.ContainerLogger) (*domainNavigation.Route, error) {
