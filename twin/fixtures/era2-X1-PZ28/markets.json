@@ -1,0 +1,1011 @@
+[
+  {
+    "symbol": "X1-PZ28-A1",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-A2",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-A3",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-A4",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-B6",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-B7",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-C42",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-C43",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-D44",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-D45",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-D46",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-E47",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-E48",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-E54",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-F55",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-F56",
+    "exports": [
+      {
+        "symbol": "MICROPROCESSORS"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "SILICON_CRYSTALS"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "MICROPROCESSORS",
+        "supply": "LIMITED",
+        "activity": "GROWING",
+        "sellPrice": 800,
+        "purchasePrice": 860,
+        "tradeVolume": 20
+      },
+      {
+        "symbol": "SILICON_CRYSTALS",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 90,
+        "purchasePrice": 100,
+        "tradeVolume": 50
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-F58",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-F59",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-F60",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-FF5F",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-G62",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-H63",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-H64",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-H65",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-H66",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-I67",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-I68",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-J69",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-J70",
+    "exports": [],
+    "imports": [],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      }
+    ]
+  },
+  {
+    "symbol": "X1-PZ28-K90",
+    "exports": [
+      {
+        "symbol": "IRON"
+      },
+      {
+        "symbol": "MACHINERY"
+      }
+    ],
+    "imports": [
+      {
+        "symbol": "IRON_ORE"
+      }
+    ],
+    "exchange": [
+      {
+        "symbol": "FUEL"
+      }
+    ],
+    "tradeGoods": [
+      {
+        "symbol": "FUEL",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 66,
+        "purchasePrice": 72,
+        "tradeVolume": 100
+      },
+      {
+        "symbol": "IRON",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 120,
+        "purchasePrice": 130,
+        "tradeVolume": 60
+      },
+      {
+        "symbol": "MACHINERY",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 240,
+        "purchasePrice": 260,
+        "tradeVolume": 40
+      },
+      {
+        "symbol": "IRON_ORE",
+        "supply": "MODERATE",
+        "activity": "WEAK",
+        "sellPrice": 40,
+        "purchasePrice": 46,
+        "tradeVolume": 60
+      }
+    ]
+  }
+]

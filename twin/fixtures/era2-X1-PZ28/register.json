@@ -1,0 +1,147 @@
+{
+  "startingCredits": 175000,
+  "headquarters": "X1-PZ28-A1",
+  "startingFaction": "COSMIC",
+  "ships": [
+    {
+      "symbol": "{AGENT}-1",
+      "registration": {
+        "role": "COMMAND"
+      },
+      "nav": {
+        "systemSymbol": "X1-PZ28",
+        "waypointSymbol": "X1-PZ28-A1",
+        "status": "DOCKED",
+        "flightMode": "CRUISE",
+        "route": null
+      },
+      "fuel": {
+        "current": 400,
+        "capacity": 400
+      },
+      "cargo": {
+        "capacity": 40,
+        "units": 0,
+        "inventory": []
+      },
+      "cooldown": null,
+      "engine": {
+        "speed": 30
+      },
+      "frame": {
+        "symbol": "FRAME_FRIGATE",
+        "moduleSlots": 8,
+        "mountingPoints": 5
+      },
+      "reactor": {
+        "symbol": "REACTOR_FISSION_I",
+        "name": "Fission Reactor I",
+        "powerOutput": 31,
+        "requirements": {
+          "power": 0,
+          "crew": 8,
+          "slots": 1
+        }
+      },
+      "crew": {
+        "current": 57,
+        "required": 57,
+        "capacity": 80
+      },
+      "modules": [
+        {
+          "symbol": "MODULE_CARGO_HOLD_II",
+          "capacity": 40,
+          "range": 0,
+          "requirements": {
+            "power": 2,
+            "crew": 2,
+            "slots": 2
+          }
+        },
+        {
+          "symbol": "MODULE_CREW_QUARTERS_I",
+          "capacity": 40,
+          "range": 0,
+          "requirements": {
+            "power": 1,
+            "crew": 2,
+            "slots": 1
+          }
+        }
+      ],
+      "mounts": [
+        {
+          "symbol": "MOUNT_SENSOR_ARRAY_II",
+          "name": "Sensor Array II",
+          "strength": 4,
+          "deposits": [],
+          "requirements": {
+            "power": 2,
+            "crew": 2,
+            "slots": 1
+          }
+        },
+        {
+          "symbol": "MOUNT_MINING_LASER_I",
+          "name": "Mining Laser I",
+          "strength": 10,
+          "deposits": [],
+          "requirements": {
+            "power": 1,
+            "crew": 1,
+            "slots": 1
+          }
+        }
+      ]
+    },
+    {
+      "symbol": "{AGENT}-2",
+      "registration": {
+        "role": "SATELLITE"
+      },
+      "nav": {
+        "systemSymbol": "X1-PZ28",
+        "waypointSymbol": "X1-PZ28-A1",
+        "status": "DOCKED",
+        "flightMode": "CRUISE",
+        "route": null
+      },
+      "fuel": {
+        "current": 0,
+        "capacity": 0
+      },
+      "cargo": {
+        "capacity": 0,
+        "units": 0,
+        "inventory": []
+      },
+      "cooldown": null,
+      "engine": {
+        "speed": 3
+      },
+      "frame": {
+        "symbol": "FRAME_PROBE",
+        "moduleSlots": 0,
+        "mountingPoints": 0
+      },
+      "reactor": {
+        "symbol": "REACTOR_SOLAR_I",
+        "name": "Solar Reactor I",
+        "powerOutput": 3,
+        "requirements": {
+          "power": 0,
+          "crew": 0,
+          "slots": 0
+        }
+      },
+      "crew": {
+        "current": 0,
+        "required": 0,
+        "capacity": 0
+      },
+      "modules": [],
+      "mounts": []
+    }
+  ]
+}

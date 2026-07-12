@@ -1,0 +1,287 @@
+[
+  {
+    "symbol": "X1-PZ28-A2",
+    "shipTypes": [
+      {
+        "type": "SHIP_PROBE"
+      },
+      {
+        "type": "SHIP_COMMAND_FRIGATE"
+      }
+    ],
+    "ships": [
+      {
+        "type": "SHIP_PROBE",
+        "name": "Probe",
+        "description": "A small, unmanned exploration craft.",
+        "purchasePrice": 24680,
+        "frame": {
+          "symbol": "FRAME_PROBE",
+          "name": "Frame Probe",
+          "moduleSlots": 0,
+          "mountingPoints": 0,
+          "fuelCapacity": 0,
+          "requirements": {
+            "power": 0,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "reactor": {
+          "symbol": "REACTOR_SOLAR_I",
+          "name": "Solar Reactor I",
+          "powerOutput": 3,
+          "requirements": {
+            "power": 0,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "engine": {
+          "symbol": "ENGINE_IMPULSE_DRIVE",
+          "name": "Impulse Drive",
+          "speed": 3,
+          "requirements": {
+            "power": 1,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "modules": [],
+        "mounts": []
+      },
+      {
+        "type": "SHIP_COMMAND_FRIGATE",
+        "name": "Command Frigate",
+        "description": "A versatile starting frigate.",
+        "purchasePrice": 150000,
+        "frame": {
+          "symbol": "FRAME_FRIGATE",
+          "name": "Frigate",
+          "moduleSlots": 8,
+          "mountingPoints": 5,
+          "fuelCapacity": 400,
+          "requirements": {
+            "power": 8,
+            "crew": 25,
+            "slots": 0
+          }
+        },
+        "reactor": {
+          "symbol": "REACTOR_FISSION_I",
+          "name": "Fission Reactor I",
+          "powerOutput": 31,
+          "requirements": {
+            "power": 0,
+            "crew": 8,
+            "slots": 1
+          }
+        },
+        "engine": {
+          "symbol": "ENGINE_ION_DRIVE_I",
+          "name": "Ion Drive I",
+          "speed": 30,
+          "requirements": {
+            "power": 6,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "modules": [],
+        "mounts": []
+      }
+    ],
+    "transactions": [],
+    "modificationsFee": 5000
+  },
+  {
+    "symbol": "X1-PZ28-C42",
+    "shipTypes": [
+      {
+        "type": "SHIP_PROBE"
+      },
+      {
+        "type": "SHIP_COMMAND_FRIGATE"
+      }
+    ],
+    "ships": [
+      {
+        "type": "SHIP_PROBE",
+        "name": "Probe",
+        "description": "A small, unmanned exploration craft.",
+        "purchasePrice": 24680,
+        "frame": {
+          "symbol": "FRAME_PROBE",
+          "name": "Frame Probe",
+          "moduleSlots": 0,
+          "mountingPoints": 0,
+          "fuelCapacity": 0,
+          "requirements": {
+            "power": 0,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "reactor": {
+          "symbol": "REACTOR_SOLAR_I",
+          "name": "Solar Reactor I",
+          "powerOutput": 3,
+          "requirements": {
+            "power": 0,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "engine": {
+          "symbol": "ENGINE_IMPULSE_DRIVE",
+          "name": "Impulse Drive",
+          "speed": 3,
+          "requirements": {
+            "power": 1,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "modules": [],
+        "mounts": []
+      },
+      {
+        "type": "SHIP_COMMAND_FRIGATE",
+        "name": "Command Frigate",
+        "description": "A versatile starting frigate.",
+        "purchasePrice": 150000,
+        "frame": {
+          "symbol": "FRAME_FRIGATE",
+          "name": "Frigate",
+          "moduleSlots": 8,
+          "mountingPoints": 5,
+          "fuelCapacity": 400,
+          "requirements": {
+            "power": 8,
+            "crew": 25,
+            "slots": 0
+          }
+        },
+        "reactor": {
+          "symbol": "REACTOR_FISSION_I",
+          "name": "Fission Reactor I",
+          "powerOutput": 31,
+          "requirements": {
+            "power": 0,
+            "crew": 8,
+            "slots": 1
+          }
+        },
+        "engine": {
+          "symbol": "ENGINE_ION_DRIVE_I",
+          "name": "Ion Drive I",
+          "speed": 30,
+          "requirements": {
+            "power": 6,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "modules": [],
+        "mounts": []
+      }
+    ],
+    "transactions": [],
+    "modificationsFee": 5000
+  },
+  {
+    "symbol": "X1-PZ28-H64",
+    "shipTypes": [
+      {
+        "type": "SHIP_PROBE"
+      },
+      {
+        "type": "SHIP_COMMAND_FRIGATE"
+      }
+    ],
+    "ships": [
+      {
+        "type": "SHIP_PROBE",
+        "name": "Probe",
+        "description": "A small, unmanned exploration craft.",
+        "purchasePrice": 24680,
+        "frame": {
+          "symbol": "FRAME_PROBE",
+          "name": "Frame Probe",
+          "moduleSlots": 0,
+          "mountingPoints": 0,
+          "fuelCapacity": 0,
+          "requirements": {
+            "power": 0,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "reactor": {
+          "symbol": "REACTOR_SOLAR_I",
+          "name": "Solar Reactor I",
+          "powerOutput": 3,
+          "requirements": {
+            "power": 0,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "engine": {
+          "symbol": "ENGINE_IMPULSE_DRIVE",
+          "name": "Impulse Drive",
+          "speed": 3,
+          "requirements": {
+            "power": 1,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "modules": [],
+        "mounts": []
+      },
+      {
+        "type": "SHIP_COMMAND_FRIGATE",
+        "name": "Command Frigate",
+        "description": "A versatile starting frigate.",
+        "purchasePrice": 150000,
+        "frame": {
+          "symbol": "FRAME_FRIGATE",
+          "name": "Frigate",
+          "moduleSlots": 8,
+          "mountingPoints": 5,
+          "fuelCapacity": 400,
+          "requirements": {
+            "power": 8,
+            "crew": 25,
+            "slots": 0
+          }
+        },
+        "reactor": {
+          "symbol": "REACTOR_FISSION_I",
+          "name": "Fission Reactor I",
+          "powerOutput": 31,
+          "requirements": {
+            "power": 0,
+            "crew": 8,
+            "slots": 1
+          }
+        },
+        "engine": {
+          "symbol": "ENGINE_ION_DRIVE_I",
+          "name": "Ion Drive I",
+          "speed": 30,
+          "requirements": {
+            "power": 6,
+            "crew": 0,
+            "slots": 0
+          }
+        },
+        "modules": [],
+        "mounts": []
+      }
+    ],
+    "transactions": [],
+    "modificationsFee": 5000
+  }
+]

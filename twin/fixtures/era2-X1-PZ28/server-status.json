@@ -1,0 +1,7 @@
+{
+  "resetDate": "2026-07-05",
+  "serverResets": {
+    "next": "2026-08-05T00:00:00.000Z",
+    "frequency": "monthly"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "system": "X1-PZ28",
+  "eraId": 1,
+  "capturedAt": "2026-07-12T04:16:29.000Z",
+  "sources": {
+    "topology": "prod waypoints table (read-only, localhost:5432/spacetraders); era_id holding the full X1-PZ28 topology",
+    "markets": "synthesized from real SpaceTraders reference catalog keyed to captured MARKETPLACE topology (prod market_data empty for X1-PZ28)",
+    "shipyards": "synthesized from real SHIP_PROBE + SHIP_COMMAND_FRIGATE reference listings keyed to captured SHIPYARD topology",
+    "register": "documented /register cold-start defaults (175000 cr, COSMIC, frigate + probe docked at HQ)",
+    "serverStatus": "OPEN era universe_reset_date from prod eras table"
+  },
+  "notes": "Fixture dir named era2-* (OPEN era-2 home system); topology rows scanned under an earlier era in prod (the only X1-PZ28 topology present). Markets/shipyards synthesized, shape-faithful to the Go decode targets.",
+  "counts": {
+    "waypoints": 90,
+    "markets": 30,
+    "shipyards": 3
+  }
+}
