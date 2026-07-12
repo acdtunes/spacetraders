@@ -10,6 +10,7 @@ import {
   setClockMode, setCompression, setNow,
 } from '../clock.js';
 import { applyReport } from '../world/mutation-log.js';
+import { serializeAgent } from '../world/serialize.js';
 import { armFault, resetFaults } from '../world/faults.js';
 import { badRequest } from '../errors.js';
 
@@ -29,10 +30,14 @@ export type TwinStateShip = Omit<Ship, 'nav'> & {
 /** Per-waypoint market scouting flags as the base view serves them (array, not a map). */
 export interface TwinMarketView { waypoint: string; scouted: boolean; fresh: boolean }
 
-/** BASE view — always present. `agent` is the FULL Agent (superset of the harness's {credits};
- *  DATA acceptance asserts GET /my/agent .data toEqual(state.agent)). */
+/** The spec Agent as /_twin/state serves it — the full stored Agent PLUS the required shipCount,
+ *  identical to GET /my/agent (serializeAgent). tests/agent.test.ts asserts the two deep-equal. */
+export type AgentView = Agent & { shipCount: number };
+
+/** BASE view — always present. `agent` is the FULL spec Agent incl. shipCount (superset of the
+ *  harness's {credits}; DATA acceptance asserts GET /my/agent .data toEqual(state.agent)). */
 export interface TwinStateBase {
-  agent: Agent | null;
+  agent: AgentView | null;
   ships: TwinStateShip[];
   coverage: number;
   markets: TwinMarketView[];
@@ -97,8 +102,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       ([waypoint, s]) => ({ waypoint, scouted: s.scouted, fresh: s.fresh }),
     );
     return {
-      // BASE
-      agent: w.agent,
+      // BASE — the full serializeAgent shape (incl. shipCount) so it deep-equals GET /my/agent .data
+      agent: w.agent ? (serializeAgent(w) as unknown as AgentView) : null,
       ships,
       coverage: w.coverage,
       markets,
