@@ -54,6 +54,14 @@ const (
 	// plus in-flight inbound ferries already meet the cap.
 	defaultMaxLightsPerSystem = 0
 
+	// defaultRebalancerEffectSelfcheck is the effect self-check horizon (sp-57g9): after
+	// this many consecutive ticks that WOULD ferry a real, jump-routable candidate yet
+	// dispatch nothing, the coordinator WARNs once. ~10 ticks at the 60s default cadence is
+	// ~10min of provable inertia — long enough to rule out a transient all-cooling-down
+	// lull, short enough that a dry_run left armed (or a wedged spawn path) surfaces the
+	// same session rather than a day later (the "dry-run survived a day" incident).
+	defaultRebalancerEffectSelfcheck = 10
+
 	// sourceKeepMin is the hard floor of idle lights a source must retain: ferrying is
 	// only ever taken from a source that keeps at least one idle hull behind, regardless
 	// of how low source_min_idle is tuned (defends the never-strip-below-1 invariant).
@@ -163,6 +171,14 @@ type RunWorkerRebalancerCoordinatorCommand struct {
 	FerryCooldownSecs    int
 	MaxConcurrentFerries int
 	MaxLightsPerSystem   int
+
+	// EffectSelfcheckTicks is the effect self-check horizon (sp-57g9): the number of
+	// consecutive ticks that would-ferry a real candidate yet dispatch nothing before the
+	// coordinator WARNs once (the "dry-run survived a day" signal the error-streak monitor
+	// misses, because the loop never errors). 0 defers to defaultRebalancerEffectSelfcheck;
+	// a NEGATIVE value is the RULINGS #5 disable escape — the self-check goes silent while
+	// the ferry loop itself stays live. Resolved live from config.yaml on every build.
+	EffectSelfcheckTicks int
 }
 
 // RunWorkerRebalancerCoordinatorResponse reports reconcile progress. Because the loop is
@@ -294,6 +310,13 @@ func (h *RunWorkerRebalancerCoordinatorHandler) Handle(ctx context.Context, requ
 	// unit — unchanged.
 	errMon := health.NewMonitor(health.DefaultStreakThreshold)
 
+	// effMon is errMon's inert-loop sibling (sp-57g9): a pass that keeps finding real,
+	// jump-routable vacancies (would-ferry > 0) yet dispatches nothing — the "dry-run
+	// survived a day" class the error-streak monitor cannot see because the loop never
+	// errors — crosses the self-check horizon and WARNs once per episode. One per Handle
+	// invocation so the streak persists across ticks.
+	effMon := health.NewEffectTracker(cmd.effectSelfcheckTicks())
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -301,7 +324,7 @@ func (h *RunWorkerRebalancerCoordinatorHandler) Handle(ctx context.Context, requ
 		default:
 		}
 
-		ferried, err := h.reconcileOnce(ctx, cmd)
+		ferried, desired, err := h.reconcileOnce(ctx, cmd)
 		result.Ferried += ferried
 		result.Ticks++
 		if err != nil {
@@ -309,6 +332,7 @@ func (h *RunWorkerRebalancerCoordinatorHandler) Handle(ctx context.Context, requ
 			logger.Log("ERROR", fmt.Sprintf("Worker rebalancer reconcile failed: %v", err), nil)
 		}
 		h.noteReconcile(ctx, cmd, errMon, err)
+		h.noteEffect(ctx, cmd, effMon, desired, ferried)
 
 		select {
 		case <-time.After(tick):
@@ -336,6 +360,43 @@ func (h *RunWorkerRebalancerCoordinatorHandler) noteReconcile(ctx context.Contex
 	}
 }
 
+// noteEffect runs the effect self-check (sp-57g9) at the Handle level, mirroring
+// noteReconcile: it feeds the pass's would-ferry count (desired) and actual dispatch
+// count (ferried) to the episode-deduped EffectTracker. A sustained run of desired>0 &&
+// ferried==0 — the coordinator RUNNING and error-free but never at its EFFECT — crosses
+// the horizon and logs ONE WARNING naming the mode flag that most likely explains the
+// inertia (dry_run, else a wedged spawn path). Placed here, not inside reconcileOnce, so
+// that unit's signature stays test-stable; the count is threaded up as reconcileOnce's
+// second return. A ferried or idle pass resets the streak and re-arms the one-shot.
+func (h *RunWorkerRebalancerCoordinatorHandler) noteEffect(ctx context.Context, cmd *RunWorkerRebalancerCoordinatorCommand, effMon *health.EffectTracker, desired, ferried int) {
+	streak, warn := effMon.Observe(desired, ferried)
+	if !warn {
+		return
+	}
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Worker rebalancer would-ferry %d vacancy(ies) but dispatched nothing for %d consecutive ticks: %s (sp-57g9)",
+		desired, streak, rebalancerNoEffectCause(cmd)), map[string]interface{}{
+		"action":       "worker_rebalancer_no_effect",
+		"container_id": cmd.ContainerID,
+		"desired":      desired,
+		"streak":       streak,
+		"dry_run":      cmd.DryRun,
+	})
+}
+
+// rebalancerNoEffectCause names the mode flag most likely to explain a would-ferry
+// coordinator dispatching nothing (sp-57g9). dry_run is the dominant cause — it logs the
+// ferry it WOULD send and dispatches nothing (the literal "dry-run survived a day"
+// incident). Absent it, a would-ferry pass reaching zero means the dispatch/spawn path is
+// wedged (routable candidates, yet every spawnFerry fails), which the per-hull WARNINGs
+// record but nothing escalates — still a real running-but-inert bug worth the operator's eye.
+func rebalancerNoEffectCause(cmd *RunWorkerRebalancerCoordinatorCommand) string {
+	if cmd.DryRun {
+		return "dry_run is on — the coordinator logs the ferry it WOULD dispatch and sends nothing; clear the worker_rebalancer dry_run flag to arm"
+	}
+	return "no mode flag explains it — the dispatch/spawn path is likely wedged (routable candidates, zero ferries started); check the recent ferry-spawn WARNINGs"
+}
+
 // reconcileOnce is one reconcile pass. It is the unit the tests drive directly (the
 // Handle loop just calls it on a timer).
 //
@@ -351,29 +412,29 @@ func (h *RunWorkerRebalancerCoordinatorHandler) noteReconcile(ctx context.Contex
 //  4. For each vacancy, honoring the concurrency cap / per-vacancy cooldown /
 //     max_lights_per_system caps, ferry ONE nearest-by-hops idle light from a source with
 //     >= source_min_idle idle lights (never stripping it below one).
-func (h *RunWorkerRebalancerCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunWorkerRebalancerCoordinatorCommand) (int, error) {
+func (h *RunWorkerRebalancerCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunWorkerRebalancerCoordinatorCommand) (ferried int, desired int, err error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Config off-switch (RULINGS #5): inert when disabled, so the container can stay
 	// resident and be re-armed by a config flip + restart with no manual relaunch.
 	if !cmd.Enabled {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	// (1) DB-derived inputs. Any read failure fails the whole tick closed.
 	allShips, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list ships for worker rebalancer reconcile: %w", err)
+		return 0, 0, fmt.Errorf("failed to list ships for worker rebalancer reconcile: %w", err)
 	}
 	factories, err := h.containerQuery.ActiveFactoryContainers(ctx, cmd.PlayerID.Value())
 	if err != nil {
-		return 0, fmt.Errorf("failed to list active factory containers: %w", err)
+		return 0, 0, fmt.Errorf("failed to list active factory containers: %w", err)
 	}
 	now := h.clock.Now()
 	cooldown := cmd.cooldown()
 	ferries, err := h.containerQuery.RecentFerries(ctx, cmd.PlayerID.Value(), now.Add(-cooldown))
 	if err != nil {
-		return 0, fmt.Errorf("failed to list recent worker_ferry containers: %w", err)
+		return 0, 0, fmt.Errorf("failed to list recent worker_ferry containers: %w", err)
 	}
 
 	runningFerryIDs := make(map[string]bool)
@@ -395,7 +456,7 @@ func (h *RunWorkerRebalancerCoordinatorHandler) reconcileOnce(ctx context.Contex
 
 	// (4) Ferry pass.
 	concurrent := len(runningFerryIDs)
-	ferried := h.dispatchFerries(ctx, cmd, allShips, vacancies, ferries, runningFerryIDs, now, concurrent)
+	ferried, desired = h.dispatchFerries(ctx, cmd, allShips, vacancies, ferries, runningFerryIDs, now, concurrent)
 
 	logger.Log("INFO", fmt.Sprintf("Worker rebalancer tick: vacancies=%v, running_ferries=%d, ferried=%d%s",
 		vacancies, concurrent, ferried, dryRunSuffix(cmd.DryRun)), map[string]interface{}{
@@ -406,7 +467,7 @@ func (h *RunWorkerRebalancerCoordinatorHandler) reconcileOnce(ctx context.Contex
 		"dry_run":         cmd.DryRun,
 	})
 
-	return ferried, nil
+	return ferried, desired, nil
 }
 
 // reclaimEndedFerries releases any hull still claimed to a worker_ferry container that is
@@ -534,10 +595,10 @@ func (h *RunWorkerRebalancerCoordinatorHandler) dispatchFerries(
 	runningFerryIDs map[string]bool,
 	now time.Time,
 	concurrent int,
-) int {
+) (ferried int, desired int) {
 	logger := common.LoggerFromContext(ctx)
 	if len(vacancies) == 0 {
-		return 0
+		return 0, 0
 	}
 
 	// Source pool: idle undedicated unreserved lights, grouped by current system.
@@ -546,7 +607,6 @@ func (h *RunWorkerRebalancerCoordinatorHandler) dispatchFerries(
 	maxConcurrent := cmd.maxConcurrentFerries()
 	cooldown := cmd.cooldown()
 	maxLights := cmd.MaxLightsPerSystem
-	ferried := 0
 
 	for _, system := range vacancies {
 		// Concurrency cap (DB-derived; a fresh handler counts identically).
@@ -600,6 +660,13 @@ func (h *RunWorkerRebalancerCoordinatorHandler) dispatchFerries(
 			continue
 		}
 
+		// A vacancy that reaches here passed every guard (routable source, destination,
+		// under caps, off cooldown): the coordinator WOULD ferry it. Count it as desired
+		// regardless of dry_run or spawn outcome — that is the effect self-check's
+		// candidate-vs-effect signal (sp-57g9). A vacancy skipped above (cooling / capped /
+		// no source) is a legitimate hold, not desired, so it never trips the check.
+		desired++
+
 		if cmd.DryRun {
 			logger.Log("INFO", fmt.Sprintf("[dry-run] Would ferry %s from %s → %s (%d hop(s), dest %s)", hull, srcSystem, system, hops, destWaypoint), map[string]interface{}{
 				"action":        "worker_rebalancer_ferry_dryrun",
@@ -633,7 +700,7 @@ func (h *RunWorkerRebalancerCoordinatorHandler) dispatchFerries(
 		})
 	}
 
-	return ferried
+	return ferried, desired
 }
 
 // idleSourcesBySystem returns the idle, undedicated, UNRESERVED light-haulers grouped by
@@ -994,4 +1061,19 @@ func (c *RunWorkerRebalancerCoordinatorCommand) maxConcurrentFerries() int {
 		return defaultMaxConcurrentFerries
 	}
 	return c.MaxConcurrentFerries
+}
+
+// effectSelfcheckTicks resolves the effect self-check horizon (sp-57g9): a positive config
+// value wins, 0 defers to defaultRebalancerEffectSelfcheck (live-by-default), and a negative
+// value is the RULINGS #5 disable escape — it returns 0, which NewEffectTracker treats as
+// off, silencing the self-check while the ferry loop itself keeps running.
+func (c *RunWorkerRebalancerCoordinatorCommand) effectSelfcheckTicks() int {
+	switch {
+	case c.EffectSelfcheckTicks < 0:
+		return 0
+	case c.EffectSelfcheckTicks == 0:
+		return defaultRebalancerEffectSelfcheck
+	default:
+		return c.EffectSelfcheckTicks
+	}
 }

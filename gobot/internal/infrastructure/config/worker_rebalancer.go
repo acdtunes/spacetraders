@@ -42,6 +42,14 @@ type WorkerRebalancerConfig struct {
 	// MaxLightsPerSystem caps the light-haulers (in-system + in-flight inbound) a system
 	// may accumulate (0 => uncapped, the coordinator default).
 	MaxLightsPerSystem int `mapstructure:"max_lights_per_system"`
+
+	// EffectSelfcheckTicks is the effect self-check horizon (sp-57g9): consecutive ticks
+	// that would-ferry a real, jump-routable vacancy yet dispatch nothing before the
+	// coordinator WARNs once — the "dry-run survived a day" signal the error-streak monitor
+	// misses (the loop never errors). 0 => the coordinator default (10 ticks); a NEGATIVE
+	// value is the RULINGS #5 disable escape: the self-check goes silent while the ferry
+	// loop itself stays live.
+	EffectSelfcheckTicks int `mapstructure:"effect_selfcheck_ticks"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

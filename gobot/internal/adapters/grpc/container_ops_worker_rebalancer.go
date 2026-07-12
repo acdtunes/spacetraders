@@ -81,6 +81,7 @@ var workerRebalancerConfigKeys = []string{
 	"worker_rebalancer_ferry_cooldown_secs",
 	"worker_rebalancer_max_concurrent_ferries",
 	"worker_rebalancer_max_lights_per_system",
+	"worker_rebalancer_effect_selfcheck_ticks",
 }
 
 // resolveWorkerRebalancerConfig makes config.yaml the single LIVE source of truth for the
@@ -124,6 +125,11 @@ func (s *DaemonServer) injectWorkerRebalancerConfig(config map[string]interface{
 	}
 	if wr.MaxLightsPerSystem != 0 {
 		config["worker_rebalancer_max_lights_per_system"] = wr.MaxLightsPerSystem
+	}
+	// A negative value is meaningful here (the sp-57g9 disable escape), so inject on any
+	// non-zero; 0 defers to the coordinator default horizon.
+	if wr.EffectSelfcheckTicks != 0 {
+		config["worker_rebalancer_effect_selfcheck_ticks"] = wr.EffectSelfcheckTicks
 	}
 }
 

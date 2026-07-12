@@ -273,7 +273,7 @@ func TestRebalancer_Vacancy_AllConditionsMet_Ferries(t *testing.T) {
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	ferried, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried, "exactly one ferry is dispatched for the single vacancy")
@@ -304,7 +304,7 @@ func TestRebalancer_Vacancy_FactoryTooYoung_NotYet(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "a factory younger than vacancy_min is not yet a vacancy")
@@ -327,7 +327,7 @@ func TestRebalancer_Vacancy_IdleInSystemLight_SelfHeals(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "a system with an idle in-system light is not a vacancy")
@@ -357,7 +357,7 @@ func TestRebalancer_Vacancy_WellSupplied_NotVacancy(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-KA42": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "a system supplied with lights >= its factory count is not a vacancy (anti-hub guard)")
@@ -384,7 +384,7 @@ func TestRebalancer_Vacancy_UndersuppliedMultiChain_IsVacancy(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-GQ92": 2}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried, "an under-supplied multi-chain system (1 light < 3 factories, none idle) is a vacancy")
@@ -403,7 +403,7 @@ func TestRebalancer_Vacancy_NoActiveFactory_NoVacancy(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried)
@@ -428,7 +428,7 @@ func TestRebalancer_Source_BelowMinIdle_ParksFailClosed(t *testing.T) {
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	ferried, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "a source with only 1 idle light is below source_min_idle and never stripped")
@@ -457,7 +457,7 @@ func TestRebalancer_Source_ExcludesDedicatedAndReserved(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried)
@@ -482,7 +482,7 @@ func TestRebalancer_Source_NeverStripsBelowOne(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1, "X1-SRC->X1-EQ77": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried, "only one ferry — the lone 2-idle source is not stripped below one for the second vacancy")
@@ -512,7 +512,7 @@ func TestRebalancer_Source_NearestByHops(t *testing.T) {
 	}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried)
@@ -536,7 +536,7 @@ func TestRebalancer_Source_UnroutableSkipped(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-OK->X1-DP51": 4}} // ISO absent → unroutable
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried)
@@ -556,7 +556,7 @@ func TestRebalancer_NoGateGraph_ParksFailClosed(t *testing.T) {
 	daemonClient := &fakeRebalancerDaemonClient{}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), nil, clock) // no gate graph
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "no gate graph ⇒ no ferry (fail-closed)")
@@ -586,7 +586,7 @@ func TestRebalancer_ConcurrencyCap_AtCap_NoFerry(t *testing.T) {
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	ferried, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "at the concurrency cap, no new ferry is dispatched")
@@ -618,7 +618,7 @@ func TestRebalancer_Cooldown_SuppressesRecentTarget_RestartSafe(t *testing.T) {
 
 	// Handler A.
 	shipRepoA, _, loggerA, ctxA, handlerA := newCtx()
-	ferriedA, errA := handlerA.reconcileOnce(ctxA, rebalancerTestCmd())
+	ferriedA, _, errA := handlerA.reconcileOnce(ctxA, rebalancerTestCmd())
 	require.NoError(t, errA)
 	require.Zero(t, ferriedA, "a recent ferry to DP51 suppresses a new one (cooldown)")
 	require.Empty(t, shipRepoA.claims)
@@ -626,7 +626,7 @@ func TestRebalancer_Cooldown_SuppressesRecentTarget_RestartSafe(t *testing.T) {
 
 	// Handler B — a brand-new struct (post-restart), same container rows → same decision.
 	shipRepoB, _, _, ctxB, handlerB := newCtx()
-	ferriedB, errB := handlerB.reconcileOnce(ctxB, rebalancerTestCmd())
+	ferriedB, _, errB := handlerB.reconcileOnce(ctxB, rebalancerTestCmd())
 	require.NoError(t, errB)
 	require.Zero(t, ferriedB, "a fresh handler derives the SAME cooldown suppression from the DB rows (restart-safe)")
 	require.Empty(t, shipRepoB.claims)
@@ -648,7 +648,7 @@ func TestRebalancer_Cooldown_ExpiredAllowsFerry(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ferried, "a ferry older than the cooldown window no longer suppresses")
@@ -678,7 +678,7 @@ func TestRebalancer_SpawnFerry_StartFailure_ReleasesHullAndStopsContainer(t *tes
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	ferried, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err, "a per-ferry StartContainer failure is logged-and-skipped, not a tick error")
 	require.Zero(t, ferried, "the ferry that failed to start is not counted as dispatched")
@@ -717,7 +717,7 @@ func TestRebalancer_Reclaim_Arrival_ReleasesIdle(t *testing.T) {
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	_, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	_, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Contains(t, shipRepo.releases, "LIGHT-9", "the arrived ferry hull is released idle in-system for the factory to man")
@@ -742,7 +742,7 @@ func TestRebalancer_Restart_InterruptedFerry_ReclaimedAndReEvaluated(t *testing.
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	_, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	_, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Contains(t, shipRepo.releases, "LIGHT-3", "an interrupted ferry's hull is reclaimed from ship state alone (restart-safe)")
@@ -762,7 +762,7 @@ func TestRebalancer_Reclaim_RunningFerry_LeftUntouched(t *testing.T) {
 	daemonClient := &fakeRebalancerDaemonClient{}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), &fakeHopGraph{hops: map[string]int{}}, clock)
 
-	_, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	_, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Empty(t, shipRepo.releases, "a RUNNING ferry's hull is never reclaimed mid-flight")
@@ -789,7 +789,7 @@ func TestRebalancer_DryRun_DecidesButFerriesNothing(t *testing.T) {
 
 	cmd := rebalancerTestCmd()
 	cmd.DryRun = true
-	ferried, err := handler.reconcileOnce(ctx, cmd)
+	ferried, _, err := handler.reconcileOnce(ctx, cmd)
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "dry-run ferries nothing")
@@ -821,7 +821,7 @@ func TestRebalancer_MaxLights_AtCap_NotFerried(t *testing.T) {
 
 	cmd := rebalancerTestCmd()
 	cmd.MaxLightsPerSystem = 1
-	ferried, err := handler.reconcileOnce(ctx, cmd)
+	ferried, _, err := handler.reconcileOnce(ctx, cmd)
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "a vacancy already at max_lights (0 in-system + 1 in-flight >= 1) is not ferried to")
@@ -845,7 +845,7 @@ func TestRebalancer_Disabled_Inert(t *testing.T) {
 
 	cmd := rebalancerTestCmd()
 	cmd.Enabled = false
-	ferried, err := handler.reconcileOnce(context.Background(), cmd)
+	ferried, _, err := handler.reconcileOnce(context.Background(), cmd)
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "a disabled coordinator is inert")
@@ -870,7 +870,7 @@ func TestRebalancer_FailClosed_ShipReadError(t *testing.T) {
 		gateGraph:      graph,
 	}
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.Error(t, err, "an unreadable ship list fails the tick closed")
 	require.Zero(t, ferried)
@@ -889,7 +889,7 @@ func TestRebalancer_FailClosed_FactoryReadError(t *testing.T) {
 	graph := &fakeHopGraph{hops: map[string]int{"X1-SRC->X1-DP51": 1}}
 	handler := newTestRebalancerHandler(shipRepo, daemonClient, cq, ferryDefaultMarket(), graph, clock)
 
-	ferried, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(context.Background(), rebalancerTestCmd())
 
 	require.Error(t, err, "an unreadable factory-container list fails the tick closed")
 	require.Zero(t, ferried)
@@ -914,7 +914,7 @@ func TestRebalancer_NoDestination_ParksFailClosed(t *testing.T) {
 	logger := &tradeCaptureLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	ferried, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
+	ferried, _, err := handler.reconcileOnce(ctx, rebalancerTestCmd())
 
 	require.NoError(t, err)
 	require.Zero(t, ferried, "no known marketplace ⇒ no ferry destination ⇒ fail-closed park")

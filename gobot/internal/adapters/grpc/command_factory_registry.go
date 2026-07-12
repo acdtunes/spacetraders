@@ -593,6 +593,7 @@ func buildWorkerRebalancerCoordinatorCommand(cfg *configReader, playerID int, co
 		FerryCooldownSecs:    cfg.OptionalInt("worker_rebalancer_ferry_cooldown_secs", 0),
 		MaxConcurrentFerries: cfg.OptionalInt("worker_rebalancer_max_concurrent_ferries", 0),
 		MaxLightsPerSystem:   cfg.OptionalInt("worker_rebalancer_max_lights_per_system", 0),
+		EffectSelfcheckTicks: cfg.OptionalInt("worker_rebalancer_effect_selfcheck_ticks", 0),
 	}
 }
 

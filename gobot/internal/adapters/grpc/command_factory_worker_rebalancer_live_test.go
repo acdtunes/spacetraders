@@ -127,6 +127,7 @@ func TestWorkerRebalancerCoordinatorResolvesAllSiblingsFromLiveConfig(t *testing
 		FerryCooldownSeconds: 300,
 		MaxConcurrentFerries: 4,
 		MaxLightsPerSystem:   6,
+		EffectSelfcheckTicks: 8,
 	}
 	// Stale persisted launch config from a PRIOR boot: every sibling holds an
 	// outdated value the recovery rebuild must discard in favor of `live`.
@@ -137,6 +138,7 @@ func TestWorkerRebalancerCoordinatorResolvesAllSiblingsFromLiveConfig(t *testing
 		"worker_rebalancer_ferry_cooldown_secs":    600,
 		"worker_rebalancer_max_concurrent_ferries": 2,
 		"worker_rebalancer_max_lights_per_system":  2,
+		"worker_rebalancer_effect_selfcheck_ticks": 3,
 	})
 
 	s := newWorkerRebalancerFactoryTestServer(live)
@@ -148,6 +150,7 @@ func TestWorkerRebalancerCoordinatorResolvesAllSiblingsFromLiveConfig(t *testing
 	require.Equal(t, 300, cmd.FerryCooldownSecs)
 	require.Equal(t, 4, cmd.MaxConcurrentFerries)
 	require.Equal(t, 6, cmd.MaxLightsPerSystem)
+	require.Equal(t, 8, cmd.EffectSelfcheckTicks, "the sp-57g9 self-check horizon resolves live and discards the stale persisted copy")
 }
 
 // TestWorkerRebalancerCoordinatorResolvesDisabledToggleFromLiveConfig: the on/off
