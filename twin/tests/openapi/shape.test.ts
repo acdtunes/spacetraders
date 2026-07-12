@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { World } from '../../src/world/types';
 import { buildServer } from '../../src/server';
 import { loadColdStartWorld, registerAgent } from '../../src/world/loader';
+import { getWorld, resetWorld, setWorld } from '../../src/world/store';
 import { resetClock, setClockMode, setNow } from '../../src/clock';
 import { validateResponse } from '../helpers/openapi';
 
@@ -25,6 +26,8 @@ const SYS = 'X1-PZ28';
 const HQ = 'X1-PZ28-A1'; // sells FUEL/ELECTRONICS/SILICON_CRYSTALS; contract delivery destination
 const ORE_MARKET = 'X1-PZ28-C42'; // sells IRON_ORE; also a shipyard
 const SHIPYARD_WP = 'X1-PZ28-A2';
+const GATE = 'X1-PZ28-I67'; // the real JUMP_GATE waypoint — gate-entry construction site (construction.test.ts)
+const GATE_MATERIAL = 'FAB_MATS'; // seeded by gate-entry: FAB_MATS 4000 + ADVANCED_CIRCUITRY 1200 (store.ts GATE_MANIFEST)
 
 function baseWorld(): World {
   const w = loadColdStartWorld();
@@ -67,6 +70,23 @@ function placeShip(ship = SHIP, waypoint = HQ, status: 'DOCKED' | 'IN_ORBIT' = '
   s.cargo = { ...s.cargo, capacity: Math.max(s.cargo.capacity, 100), units: cargo.reduce((a, c) => a + c.units, 0), inventory: cargo.map((c) => ({ ...c })) };
 }
 
+/** Build a GATE-seeded world+app for the construction endpoints: registerAgent FIRST (so
+ *  resetWorld's token-preserving reset keeps a valid bearer token for the registered agent),
+ *  then resetWorld({mode:'gate-entry'}) to seed constructionMaterials (FAB_MATS 4000 +
+ *  ADVANCED_CIRCUITRY 1200, store.ts GATE_MANIFEST) at the real JUMP_GATE site (mirrors
+ *  construction.test.ts's beforeEach). The shared file-level `world`/`app` (from the outer
+ *  beforeEach below) is cold — construction.site === '' — so construction cases need this
+ *  separate LOCAL world+app instead, the same "fresh world when the shared one doesn't fit"
+ *  idiom the register sweep below uses. Callers must close the returned app. */
+function buildGateApp(): { world: World; app: FastifyInstance } {
+  const registered = loadColdStartWorld();
+  registerAgent(registered, { symbol: 'TWINAGENT', faction: 'COSMIC', token: TOKEN });
+  setWorld(registered);
+  resetWorld({ mode: 'gate-entry', gateSite: GATE });
+  const gateWorld = getWorld();
+  return { world: gateWorld, app: buildServer({ world: gateWorld }) };
+}
+
 // ──────────────────────────────────────────────────────────────────────────────────────
 // HAS TEETH — negative controls. A real, valid response is mutated (a required field dropped)
 // and MUST fail validation. If these ever pass, the validator is toothless and the sweep is a lie.
@@ -93,6 +113,23 @@ describe('openapi helper — HAS TEETH (negative controls on REAL responses)', (
     const broken = validateResponse('get', '/my/contracts/{contractId}', '200', body);
     expect(broken.valid, 'dropping Contract.expiration must invalidate').toBe(false);
     expect(broken.errors.join(' ')).toMatch(/expiration/);
+  });
+
+  it('a real Construction response with data.isComplete deleted FAILS validation', async () => {
+    const { app: gateApp } = buildGateApp();
+    try {
+      const res = await gateApp.inject({ method: 'GET', url: `/v2/systems/${SYS}/waypoints/${GATE}/construction`, headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { data: Record<string, unknown> };
+      // sanity: the pristine response is well-formed enough to have a data object
+      expect(body.data).toBeTruthy();
+      delete body.data.isComplete; // drop a spec-REQUIRED Construction field
+      const broken = validateResponse('get', '/systems/{systemSymbol}/waypoints/{waypointSymbol}/construction', '200', body);
+      expect(broken.valid, 'dropping Construction.isComplete must invalidate').toBe(false);
+      expect(broken.errors.join(' ')).toMatch(/isComplete/);
+    } finally {
+      await gateApp.close();
+    }
   });
 
   it('a valid hand-built minimal Agent response PASSES (positive control)', () => {
@@ -216,6 +253,40 @@ describe('openapi shape sweep — systems / market / shipyard', () => {
 
   it('GET shipyard -> 200 {data:Shipyard}', async () => {
     expectConforms('get', '/systems/{systemSymbol}/waypoints/{waypointSymbol}/shipyard', 200, await app.inject({ method: 'GET', url: `/v2/systems/${SYS}/waypoints/${SHIPYARD_WP}/shipyard`, headers: AUTH }));
+  });
+});
+
+describe('openapi shape sweep — construction (GATE)', () => {
+  it('GET construction -> 200 {data:Construction}', async () => {
+    const { app: gateApp } = buildGateApp();
+    try {
+      const res = await gateApp.inject({ method: 'GET', url: `/v2/systems/${SYS}/waypoints/${GATE}/construction`, headers: AUTH });
+      expectConforms('get', '/systems/{systemSymbol}/waypoints/{waypointSymbol}/construction', 200, res);
+    } finally {
+      await gateApp.close();
+    }
+  });
+
+  it('POST construction/supply -> 201 {data:{construction,cargo}}', async () => {
+    const { world: gateWorld, app: gateApp } = buildGateApp();
+    try {
+      // Dock the hauler at the gate holding some of a required material (mirrors
+      // construction.test.ts's dockAtGateHolding).
+      const ship = gateWorld.ships.get(SHIP)!;
+      ship.nav = { ...ship.nav, waypointSymbol: GATE, status: 'DOCKED', route: null };
+      gateWorld.transits.delete(SHIP);
+      ship.cargo = { ...ship.cargo, capacity: Math.max(ship.cargo.capacity, 10), units: 10, inventory: [{ symbol: GATE_MATERIAL, units: 10 }] };
+
+      const res = await gateApp.inject({
+        method: 'POST',
+        url: `/v2/systems/${SYS}/waypoints/${GATE}/construction/supply`,
+        headers: AUTH,
+        payload: { shipSymbol: SHIP, tradeSymbol: GATE_MATERIAL, units: 10 },
+      });
+      expectConforms('post', '/systems/{systemSymbol}/waypoints/{waypointSymbol}/construction/supply', 201, res);
+    } finally {
+      await gateApp.close();
+    }
   });
 });
 
