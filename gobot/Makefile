@@ -100,8 +100,18 @@ install-launchd: launchd
 	for f in $(LAUNCHD_OUT)/*.plist; do \
 		label=$$(basename "$$f" .plist); \
 		cp "$$f" "$(AGENTS_DIR)/$$label.plist"; \
-		launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
-		launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
+		ok=0; \
+		for attempt in 1 2 3; do \
+			launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
+			sleep 1; \
+			if launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist" 2>/dev/null; then ok=1; break; fi; \
+			echo "install-launchd $$label: bootstrap attempt $$attempt hit the launchd I/O race — re-bootout + retry..." >&2; \
+			sleep 2; \
+		done; \
+		if [ $$ok -ne 1 ]; then \
+			echo "install-launchd $$label FAILED after 3 bootstrap attempts (launchd I/O race did not clear)." >&2; \
+			exit 1; \
+		fi; \
 		echo "installed + reloaded $$label"; \
 	done
 
@@ -142,6 +152,29 @@ assert-stamp:
 	fi; \
 	echo "OK: $(LOG) reports commit $(STAMP_COMMIT)"
 
+# Reload ONE launchd unit: copy its plist, bootout, bootstrap, kickstart — with a
+# retry on the flaky "Bootstrap failed: 5: Input/output error" race. launchctl's
+# bootstrap intermittently fails that way right after a bootout; a re-bootout + retry
+# clears it (took the daemon down mid-deploy twice otherwise). usage:
+#   $(MAKE) reload-unit LABEL=com.spacetraders.daemon
+reload-unit:
+	@uid=$$(id -u); \
+	cp "$(LAUNCHD_OUT)/$(LABEL).plist" "$(AGENTS_DIR)/$(LABEL).plist"; \
+	ok=0; \
+	for attempt in 1 2 3; do \
+		launchctl bootout gui/$$uid/$(LABEL) 2>/dev/null || true; \
+		sleep 1; \
+		if launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$(LABEL).plist" 2>/dev/null; then ok=1; break; fi; \
+		echo "reload $(LABEL): bootstrap attempt $$attempt hit the launchd I/O race — re-bootout + retry..." >&2; \
+		sleep 2; \
+	done; \
+	if [ $$ok -ne 1 ]; then \
+		echo "reload $(LABEL) FAILED after 3 bootstrap attempts (launchd I/O race did not clear)." >&2; \
+		exit 1; \
+	fi; \
+	launchctl kickstart -k gui/$$uid/$(LABEL) 2>/dev/null || true; \
+	echo "deployed + restarted $(LABEL)"
+
 # --- Deploy targets. Build the stamped binary, install/reload its plist, restart,
 # assert the live stamp. The watchkeeper (captain) is an autonomous LLM session: it
 # is bounced ONLY by an explicit deploy-captain / deploy-all, never as a side effect
@@ -155,43 +188,24 @@ assert-stamp:
 deploy: deploy-daemon
 
 deploy-daemon: build-cli build-daemon launchd
-	@uid=$$(id -u); label=com.spacetraders.daemon; \
-	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
-	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
-	echo "deployed + restarted $$label"
+	@$(MAKE) reload-unit LABEL=com.spacetraders.daemon
 	@$(MAKE) assert-stamp LOG=daemon.log
 
 deploy-captain: build-watchkeeper launchd
-	@uid=$$(id -u); label=com.spacetraders.captain; \
-	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
-	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
-	echo "deployed + restarted $$label"
+	@$(MAKE) reload-unit LABEL=com.spacetraders.captain
 	@$(MAKE) assert-stamp LOG=captain-supervisor.log
 
 deploy-routing: build-routing-service launchd
-	@uid=$$(id -u); label=com.spacetraders.routing; \
-	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
-	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
-	echo "deployed + restarted $$label"
+	@$(MAKE) reload-unit LABEL=com.spacetraders.routing
 
 deploy-dashboard: launchd
-	@uid=$$(id -u); label=com.spacetraders.dashboard; \
-	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
-	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
-	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
-	echo "deployed + restarted $$label"
+	@$(MAKE) reload-unit LABEL=com.spacetraders.dashboard
 
-deploy-all: build install-launchd
-	@uid=$$(id -u); \
-	launchctl kickstart -k gui/$$uid/com.spacetraders.daemon 2>/dev/null || true; \
-	launchctl kickstart -k gui/$$uid/com.spacetraders.captain 2>/dev/null || true
+deploy-all: build launchd
+	@$(MAKE) reload-unit LABEL=com.spacetraders.daemon
+	@$(MAKE) reload-unit LABEL=com.spacetraders.captain
+	@$(MAKE) reload-unit LABEL=com.spacetraders.routing
+	@$(MAKE) reload-unit LABEL=com.spacetraders.dashboard
 	@$(MAKE) assert-live-stamp
 
 # Regenerate the captain CLI reference from the spacetraders binary help tree
