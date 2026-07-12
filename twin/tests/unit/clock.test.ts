@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Ship, TransitState, Waypoint } from '../../src/world/types';
 import {
-  advanceClock, distance, fuelCost, fuelRequired, getClockState, getCompression, getNow,
-  makeCooldownExpiration, makeTransit, parseCompression, realTravelSeconds, resetClock,
-  resolveNav, setClockMode, setCompression, setNow,
+  advanceClock, distance, fuelCost, fuelRequired, getClockState, getCompression, getMinTravelMs,
+  getNow, makeCooldownExpiration, makeTransit, parseCompression, parseMinTravelMs,
+  realTravelSeconds, resetClock, resolveNav, setClockMode, setCompression, setNow,
 } from '../../src/clock';
 
 function wp(symbol: string, x: number, y: number): Waypoint {
@@ -22,7 +22,7 @@ function baseShip(): Ship {
 
 // Reset the world-clock singleton to a clean FROZEN state (with REAL timers) before every
 // test so mode/now never bleed between cases.
-beforeEach(() => { vi.useRealTimers(); resetClock(); setCompression(100); });
+beforeEach(() => { vi.useRealTimers(); resetClock(); setCompression(20); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('distance', () => {
@@ -79,17 +79,74 @@ describe('fuelRequired (capacity-aware — probes travel free)', () => {
   });
 });
 
-describe('legacy time-compression knob (decoupled from the world clock)', () => {
-  it('parseCompression: default 100 for unset/empty/invalid, honors positives', () => {
-    expect(parseCompression(undefined)).toBe(100); expect(parseCompression('')).toBe(100);
-    expect(parseCompression('abc')).toBe(100); expect(parseCompression('0')).toBe(100);
-    expect(parseCompression('-5')).toBe(100); expect(parseCompression('50')).toBe(50); expect(parseCompression('2.5')).toBe(2.5);
+describe('the unified time-compression knob (parse / get / set)', () => {
+  it('parseCompression: default 20 for unset/empty/invalid, honors positives', () => {
+    expect(parseCompression(undefined)).toBe(20); expect(parseCompression('')).toBe(20);
+    expect(parseCompression('abc')).toBe(20); expect(parseCompression('0')).toBe(20);
+    expect(parseCompression('-5')).toBe(20); expect(parseCompression('50')).toBe(50); expect(parseCompression('2.5')).toBe(2.5);
   });
   it('get/set round-trips', () => { setCompression(5); expect(getCompression()).toBe(5); });
   it('setCompression rejects non-positive / non-finite', () => {
     expect(() => setCompression(0)).toThrow(RangeError);
     expect(() => setCompression(-1)).toThrow(RangeError);
     expect(() => setCompression(Number.NaN)).toThrow(RangeError);
+  });
+});
+
+describe('the configurable travel-time floor (TWIN_MIN_TRAVEL_MS)', () => {
+  it('parseMinTravelMs: default 1000 for unset/empty/invalid/sub-1, honors integers >= 1', () => {
+    expect(parseMinTravelMs(undefined)).toBe(1000); expect(parseMinTravelMs('')).toBe(1000);
+    expect(parseMinTravelMs('abc')).toBe(1000); expect(parseMinTravelMs('0')).toBe(1000);
+    expect(parseMinTravelMs('-5')).toBe(1000); expect(parseMinTravelMs('0.4')).toBe(1000);
+    expect(parseMinTravelMs('50')).toBe(50); expect(parseMinTravelMs('1')).toBe(1); expect(parseMinTravelMs('250.9')).toBe(250);
+  });
+  it('the active floor defaults to 1000ms when the env is unset', () => {
+    expect(getMinTravelMs()).toBe(1000);
+  });
+});
+
+// The knob compresses the REAL v2.3.0 ETA INVERSELY (arrivalMs = realMs / factor), floored at
+// getMinTravelMs(). makeCooldownExpiration(realSeconds, now) = now + compressedMs(realSeconds),
+// so it is the cleanest probe of the compression math (no distance/engine indirection).
+describe('time-compression drives travel INVERSELY (1x/10x/100x; floor; fidelity; live)', () => {
+  const t0 = new Date('2026-07-11T00:00:00.000Z');
+  const offset = (iso: string): number => Date.parse(iso) - t0.getTime();
+
+  it('1x = TRUE real-API timing (fidelity): offset == realSeconds * 1000, un-compressed', () => {
+    setCompression(1);
+    expect(offset(makeCooldownExpiration(265, t0))).toBe(265_000); // exact real ETA, floor never bites
+    expect(offset(makeCooldownExpiration(2515, t0))).toBe(2_515_000);
+  });
+
+  it('inverse proportionality across 1x/10x/100x — offset * factor is invariant', () => {
+    setCompression(1);   const c1 = offset(makeCooldownExpiration(200, t0));   // 200000
+    setCompression(10);  const c10 = offset(makeCooldownExpiration(200, t0));  // 20000
+    setCompression(100); const c100 = offset(makeCooldownExpiration(200, t0)); // 2000
+    expect(c1).toBe(200_000); expect(c10).toBe(20_000); expect(c100).toBe(2_000);
+    expect(c1).toBe(c10 * 10); expect(c1).toBe(c100 * 100); // realMs constant regardless of factor
+  });
+
+  it('floor honored: a heavily-compressed short ETA never drops below getMinTravelMs() (1000)', () => {
+    setCompression(1000);
+    // realSeconds=15 (the flat +15s minimum) -> round(15000/1000)=15ms -> floored to 1000ms
+    expect(offset(makeCooldownExpiration(15, t0))).toBe(1000);
+    expect(offset(makeCooldownExpiration(15, t0))).toBeGreaterThanOrEqual(getMinTravelMs());
+  });
+
+  it('arrival is ALWAYS a real-future instant, even at extreme compression', () => {
+    setCompression(1_000_000);
+    const t = makeTransit({
+      shipSymbol: 'S', origin: wp('X1-PZ28-A1', 0, 0), destination: wp('X1-PZ28-B1', 0, 3),
+      engineSpeed: 30, mode: 'CRUISE', now: t0,
+    });
+    expect(Date.parse(t.arrival)).toBeGreaterThan(Date.parse(t.departureTime));
+    expect(Date.parse(t.arrival) - Date.parse(t.departureTime)).toBeGreaterThanOrEqual(1000); // >= floor
+  });
+
+  it('setCompression takes effect LIVE for subsequent transits (the admin-lever seam)', () => {
+    setCompression(20);  const slow = offset(makeCooldownExpiration(400, t0)); // 400000/20 = 20000
+    setCompression(200); const fast = offset(makeCooldownExpiration(400, t0)); // 400000/200 = 2000
+    expect(slow).toBe(20_000); expect(fast).toBe(2_000); expect(slow).toBe(fast * 10);
   });
 });
 
@@ -148,7 +205,7 @@ describe('resetClock', () => {
 });
 
 describe('makeTransit (arrival = now + COMPRESSED realTravelSeconds; a real future instant)', () => {
-  it('mints departure=now and arrival=now+COMPRESSED realETA (ARRIVAL_COMPRESSION=20)', () => {
+  it('mints departure=now and arrival=now+COMPRESSED realETA (compression=20)', () => {
     const t = makeTransit({
       shipSymbol: 'TWINAGENT-1', origin: wp('X1-PZ28-A1', 0, 0), destination: wp('X1-PZ28-B1', 0, 300),
       engineSpeed: 30, mode: 'CRUISE', now: new Date('2026-07-11T00:00:00.000Z'),
@@ -243,7 +300,7 @@ describe('resolveNav (reads THIS clock; single IN_TRANSIT->IN_ORBIT flip at arri
 });
 
 describe('makeCooldownExpiration (REAL wall-clock expiry, COMPRESSED — same rationale as arrivals)', () => {
-  it('is now + COMPRESSED realSeconds (ARRIVAL_COMPRESSION=20)', () => {
+  it('is now + COMPRESSED realSeconds (compression=20)', () => {
     // compressedMs(500) = round(500*1000/20) = 25000ms = 25s
     expect(makeCooldownExpiration(500, new Date('2026-07-11T00:00:00.000Z'))).toBe('2026-07-11T00:00:25.000Z');
   });

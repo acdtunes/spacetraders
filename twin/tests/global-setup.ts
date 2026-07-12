@@ -31,7 +31,11 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   //    deadlock. A child process has its own loop and responds normally.
   const twin: ChildProcess = spawn(TSX_BIN, [TWIN_ENTRY], {
     cwd: TWIN_DIR,
-    env: { ...process.env },
+    // Pin the twin's time-compression stack deterministically (independent of ambient env):
+    // compression 20 — the fast-run the e2e specs + DATA pollUntil budgets are tuned to — and the
+    // 1000ms travel floor. INVARIANT (st-drm.8): this floor MUST stay >= the daemon's
+    // ST_CLOCK_DRIFT_BUFFER_MS clamp, which startTestDaemon injects as 50ms (1000 >= 50 holds).
+    env: { ...process.env, TWIN_TIME_COMPRESSION: '20', TWIN_MIN_TRAVEL_MS: '1000' },
     stdio: 'ignore',
   });
   const stopTwin = async (): Promise<void> => {
@@ -53,7 +57,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     throw new Error(`test Postgres not reachable on localhost:${TEST_DB_PORT} — start it first: docker compose -f twin/docker-compose.test.yml up -d postgres-test`);
   }
 
-  // 3. Boot the isolated test daemon (AutoMigrate on first boot).
+  // 3. Boot the isolated test daemon (AutoMigrate on first boot). startTestDaemon injects
+  //    ST_CLOCK_DRIFT_BUFFER_MS=50 (the daemon-side arrival clamp) — see helpers/daemon.ts.
   await startTestDaemon();
 
   // 3b. Clean-slate the daemon's player/era rows. resetDaemonDb/AutoMigrate PERSIST the

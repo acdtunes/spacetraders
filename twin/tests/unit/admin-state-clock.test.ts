@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { World } from '../../src/world/types';
 import { buildServer } from '../../src/server';
 import { loadColdStartWorld, registerAgent } from '../../src/world/loader';
-import { resetClock, setClockMode, setNow } from '../../src/clock';
+import { getCompression, resetClock, setClockMode, setCompression, setNow } from '../../src/clock';
 
 // Hermetic Fastify-inject proof of the reshaped GET /_twin/state (FROZEN superset) and the
 // new POST /_twin/clock. Runs under vitest.unit.config (no live stack). The world-clock is a
@@ -205,10 +205,25 @@ describe('POST /_twin/clock — the T1 world-clock control', () => {
     expect(noop.json()).toEqual({ now: FROZEN_NOW });
   });
 
-  it('the retired POST /_twin/time-compression is gone (404)', async () => {
+  it('POST /_twin/time-compression sets the compression factor LIVE and echoes it; rejects non-positive', async () => {
     app = buildServer({ world: seededWorld() });
-    const res = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 250 } });
-    expect(res.statusCode).toBe(404);
+    const before = getCompression();
+    try {
+      const ok = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 250 } });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toEqual({ compression: 250 });
+      expect(getCompression()).toBe(250);                 // took effect live on the shared knob
+
+      const fidelity = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 1 } });
+      expect(fidelity.statusCode).toBe(200);
+      expect(getCompression()).toBe(1);                    // 1x = real-API fidelity mode
+
+      const bad = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 0 } });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json().error.code).toBe(400);
+    } finally {
+      setCompression(before);                              // restore the module singleton for sibling tests
+    }
   });
 });
 

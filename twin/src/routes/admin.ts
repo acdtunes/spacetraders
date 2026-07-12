@@ -5,7 +5,10 @@ import type {
 } from '../world/types.js';
 import { getWorld, resetWorld, type ResetOptions } from '../world/store.js';
 import type { ClockMode } from '../clock.js';
-import { advanceClock, getClockState, resetClock, resolveNav, setClockMode, setNow } from '../clock.js';
+import {
+  advanceClock, getClockState, getCompression, resetClock, resolveNav,
+  setClockMode, setCompression, setNow,
+} from '../clock.js';
 import { applyReport } from '../world/mutation-log.js';
 import { armFault, resetFaults } from '../world/faults.js';
 import { badRequest } from '../errors.js';
@@ -155,6 +158,23 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return { now: getClockState().now };
     },
   );
+
+  // ─── POST /_twin/time-compression — the ONE live travel-compression lever ─────────
+  // Retunes the single time-compression knob (clock.ts) at runtime: travel + cooldown ETAs
+  // are compressed INVERSELY by this factor. 1 = true real-API timing (fidelity), 20 = the
+  // default fast-run, 100+ = very fast. env TWIN_TIME_COMPRESSION seeds it at boot; this route
+  // changes it LIVE (no twin restart) so a scenario can dial fidelity up/down mid-run. The new
+  // value applies to the NEXT navigate/cooldown (makeTransit reads getCompression() per call).
+  // Echoes the resulting factor. Supersedes the previously-retired route of the same path.
+  app.post<{ Body?: { compression?: unknown } }>('/time-compression', async (req, reply) => {
+    const body = req.body ?? {};
+    const compression = typeof body.compression === 'number' ? body.compression : Number(body.compression);
+    if (!Number.isFinite(compression) || !(compression > 0)) {
+      return badRequest(reply, `time-compression requires a positive number 'compression', got ${JSON.stringify(body.compression)}`);
+    }
+    setCompression(compression);
+    return { compression: getCompression() };
+  });
 
   // ─── POST /_twin/agent — overwrite the treasury (credits) directly ────────────────
   app.post<{ Body?: { credits?: unknown } }>('/agent', async (req, reply) => {
