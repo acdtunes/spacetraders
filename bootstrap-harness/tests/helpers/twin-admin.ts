@@ -1,0 +1,54 @@
+import { ADMIN_URL } from './config';
+import type { ResetFixture } from './fixtures';
+import type { MutationLogEntry } from './mutation-log';
+
+// Client for the API server's admin namespace (/_twin at runtime). This is HTTP only — it depends
+// on no other package's source; ADMIN_URL is a runtime string from ./config.
+
+export interface TwinShip {
+  symbol: string;
+  role: string;
+  nav: { status: string; waypoint: string };
+  scoutAssignment: string | null;
+}
+export interface TwinState {
+  agent: { credits: number };
+  ships: TwinShip[];
+  coverage: number;
+  markets: { waypoint: string; scouted: boolean; fresh: boolean }[];
+  clock: { now: string; mode: string };
+  mutationLog: MutationLogEntry[];
+}
+
+async function post<T = unknown>(pathUnder: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${ADMIN_URL}${pathUnder}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`POST ${pathUnder} → ${res.status} ${await res.text()}`);
+  return (res.headers.get('content-type')?.includes('json') ? res.json() : undefined) as T;
+}
+
+export const twin = {
+  async reset(fixture: ResetFixture = {}): Promise<void> {
+    await post('/reset', fixture);
+  },
+  async state(): Promise<TwinState> {
+    const res = await fetch(`${ADMIN_URL}/state`);
+    if (!res.ok) throw new Error(`GET /state → ${res.status}`);
+    return res.json() as Promise<TwinState>;
+  },
+  clock(opts: { mode?: 'frozen' | 'running'; advanceMs?: number; setNow?: string }) {
+    return post<{ now: string }>('/clock', opts);
+  },
+  async setCredits(credits: number): Promise<void> {
+    await post('/agent', { credits });
+  },
+  forceCoverage(opts: { fraction?: number; scoutWaypoints?: string[] }) {
+    return post<{ coverage: number }>('/markets/coverage', opts);
+  },
+  async injectFault(opts: { endpoint: string; code: number; count: number }): Promise<void> {
+    await post('/fault', opts);
+  },
+};

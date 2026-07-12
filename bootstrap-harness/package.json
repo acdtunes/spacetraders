@@ -1,0 +1,18 @@
+{
+  "name": "spacetraders-bootstrap-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "description": "Self-contained e2e test harness for the captain-bootstrap coordinator (DATA/INCOME/GATE). Drives the real spacetraders daemon+CLI against an API base URL. Depends on NO other package's source — the API target is a runtime URL only.",
+  "scripts": {
+    "test": "vitest run",
+    "test:unit": "vitest run -c vitest.unit.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}
