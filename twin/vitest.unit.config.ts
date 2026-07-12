@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 // so they run even before the register route / daemon exist.
 export default defineConfig({
   test: {
-    include: ['tests/unit/**/*.test.ts', 'tests/world/**/*.test.ts', 'tests/skeleton/**/*.test.ts'],
+    include: ['tests/unit/**/*.test.ts', 'tests/world/**/*.test.ts', 'tests/skeleton/**/*.test.ts', 'tests/harness/**/*.test.ts'],
     environment: 'node',
     globals: false,
     testTimeout: 15_000,
