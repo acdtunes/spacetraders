@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/twinreport"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
@@ -188,6 +189,7 @@ func (h *RunBootstrapCoordinatorHandler) startConstruction(ctx context.Context, 
 		"container_id": cmd.ContainerID,
 		"site":         obs.GateSite,
 	})
+	twinreport.Report("construction-start", nil) // test-gated: no /v2 call for the twin to observe
 }
 
 // ensureExecutorAdopted makes the construction executor (the manufacturing coordinator) both RUNNING and
@@ -261,6 +263,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 		"action":       "bootstrap_manufacturing_bounced",
 		"container_id": cmd.ContainerID,
 	})
+	twinreport.Report("executor-bounce", nil) // test-gated: no /v2 call for the twin to observe
 }
 
 // sizeGateWorkers executes the deterministic worker plan: release surplus contract haulers to the
@@ -319,6 +322,7 @@ func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cm
 		"container_id": cmd.ContainerID,
 		"ship":         ship,
 	})
+	twinreport.Report("repurpose", map[string]any{"ship": ship}) // test-gated: one per repurposed hauler; no /v2 call
 }
 
 // maybeBuyGateWorker evaluates and (unless dry-run) executes ONE staged gate-worker buy behind the
@@ -482,4 +486,8 @@ func (h *RunBootstrapCoordinatorHandler) launchHandoff(ctx context.Context, cmd 
 		"action":       "bootstrap_handoff_launched",
 		"container_id": cmd.ContainerID,
 	})
+	// test-gated: the hand-off launches three standing coordinators in one op, none with a /v2 call.
+	twinreport.Report("launch-autosizer", nil)
+	twinreport.Report("launch-siting", nil)
+	twinreport.Report("launch-worker-rebalancer", nil)
 }

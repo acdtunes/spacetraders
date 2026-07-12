@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/twinreport"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
@@ -393,6 +394,7 @@ func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd
 		"probes":       obs.ProbeCount,
 		"system":       obs.HomeSystem,
 	})
+	twinreport.Report("scout-assign", nil) // test-gated: no /v2 call for the twin to observe
 }
 
 // emitHeartbeat writes the per-tick progress line (phase · delta done · next action · blockers) so

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/twinreport"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
@@ -84,6 +85,7 @@ func (h *RunBootstrapCoordinatorHandler) retireFrigate(ctx context.Context, cmd 
 		"container_id": cmd.ContainerID,
 		"ship":         obs.CommandFrigateID,
 	})
+	twinreport.Report("fleet-unassign", nil) // test-gated: no /v2 call for the twin to observe
 }
 
 // ensureBatchContract launches the contract fleet coordinator (workflow batch-contract) so the fleet
@@ -121,6 +123,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context
 		"action":       "bootstrap_ran_batch_contract",
 		"container_id": cmd.ContainerID,
 	})
+	twinreport.Report("batch-contract", nil) // test-gated: no /v2 call for the twin to observe
 }
 
 // maybeBuyHauler evaluates and (unless dry-run) executes ONE staged hauler buy behind the readiness
