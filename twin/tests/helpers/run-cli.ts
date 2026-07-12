@@ -13,11 +13,20 @@ export const TEST_CONFIG   = path.join(REPO_ROOT, 'twin', 'test-config.yaml');
 export const TEST_DATABASE_URL =
   process.env.TWIN_TEST_DATABASE_URL ??
   'postgresql://spacetraders:dev_password@localhost:5434/spacetraders_test?sslmode=disable';
+// The daemon-mediated CLI commands (ship list/show/refresh/navigate, shipyard, scout) dial the
+// daemon over its Unix socket; the `--socket` global flag DEFAULTS to the PRODUCTION socket
+// (/tmp/spacetraders-daemon.sock). Without overriding it, those commands hit the prod daemon
+// (which has no TWINAGENT) instead of the isolated test daemon. Must match daemon.socket_path in
+// test-config.yaml. Direct-client commands (player register, universe status) accept the global
+// flag and harmlessly ignore it.
+export const TEST_SOCKET =
+  process.env.TWIN_TEST_SOCKET ?? '/tmp/spacetraders-daemon-test.sock';
 
 export interface RunCliResult { stdout: string; stderr: string; exitCode: number }
 
 export function runCli(args: string[], opts: { env?: Record<string, string>; timeoutMs?: number } = {}): RunCliResult {
-  const res = spawnSync(CLI_BIN, args, {
+  const finalArgs = args.includes('--socket') ? args : [...args, '--socket', TEST_SOCKET];
+  const res = spawnSync(CLI_BIN, finalArgs, {
     cwd: GOBOT_DIR,
     encoding: 'utf8',
     timeout: opts.timeoutMs ?? 30_000,
