@@ -1034,13 +1034,15 @@ const captainManualAuthorityKey = "captain_manual_authority"
 // a no-op. That legacy path ALSO enforces the same fleet-dedication guard now
 // (sp-sg35): a hull pinned to a foreign fleet is rejected there too, so the
 // absence of an "operation" key is no longer a side door around ownership. The
-// SOLE exception is a captainAuthority claim (the captainManualAuthorityKey flag,
+// exceptions are both captainAuthority claims (the captainManualAuthorityKey flag,
 // set only by the CLI manual-op path): a deliberate captain override may operate a
-// dedicated hull, audited on every use — automated paths never set the flag. Both
+// foreign-fleet-DEDICATED hull, and may operate its OWN captain-RESERVED hull
+// (sp-sfoe) — the latter skips the claim entirely so the reservation survives the
+// op — both audited on every use, and automated paths never set the flag. Both
 // paths surface a transient *shared.ShipAlreadyAssignedError when the hull is
 // momentarily still held by a just-finished container; a permanent rejection
-// (foreign-fleet dedication, captain reservation) is returned unchanged for
-// createShipAssignments to classify.
+// (foreign-fleet dedication, or a captain reservation on a non-captain claim) is
+// returned unchanged for createShipAssignments to classify.
 func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captainAuthority bool, playerID shared.PlayerID) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 	defer cancel()
@@ -1100,6 +1102,36 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 				"dedicated_fleet": ship.DedicatedFleet(),
 				"container_id":    r.containerEntity.ID(),
 			})
+	}
+
+	// CAPTAIN-CONTEXT RESERVATION PASS-THROUGH (sp-sfoe): a captain reservation
+	// (sp-i1ku) is modeled as an active assignment owned by the captain, so the
+	// AssignToContainer below would reject it — correct for a coordinator, but wrong
+	// for the very captain who reserved the hull. A deliberate captain CLI manual op
+	// (navigate/dock/orbit/refuel/jettison — the only setters of captainAuthority)
+	// must be able to operate its OWN reserved hull without dropping to a raw curl,
+	// which was sp-i1ku's whole purpose. Skip the claim entirely rather than
+	// converting the reservation into a container assignment: the hull stays
+	// assignment_owner=captain / container_id="" for the whole op, so every
+	// coordinator claim path — the atomic ClaimShip's captain-reservation guard, the
+	// FindIdle* discovery filter, and AssignToContainer here for any non-captain
+	// container — stays locked out before, during, AND after; and
+	// releaseShipAssignments (FindByContainer, keyed on container_id) finds nothing to
+	// release, so the reservation survives untouched. This mirrors exactly how the
+	// direct-API workaround behaved under reservation. Automated coordinators never
+	// set captainAuthority, so a coordinator can never reach this branch. Audited on
+	// every use; deprecate alongside the dedication override (sp-lxwn/sp-zhii).
+	if captainAuthority && ship.IsReservedByCaptain() {
+		r.log("WARNING", fmt.Sprintf(
+			"Captain-context override: manual op %s operates captain-reserved hull %s without dropping the reservation (sp-sfoe)",
+			r.containerEntity.Type(), shipSymbol),
+			map[string]interface{}{
+				"action":       "captain_context_reservation_passthrough",
+				"ship_symbol":  shipSymbol,
+				"op":           string(r.containerEntity.Type()),
+				"container_id": r.containerEntity.ID(),
+			})
+		return nil
 	}
 
 	if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {

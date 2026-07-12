@@ -209,3 +209,88 @@ func TestCaptainManualCLIOpsStampAuthorityFlag(t *testing.T) {
 		})
 	}
 }
+
+// sp-sfoe — the captain-context reservation pass-through (the permit half). A
+// captain reservation (sp-i1ku) locks coordinators out of a hull the captain is
+// operating by hand, but a deliberate captain CLI manual op (navigate/dock/orbit/
+// refuel/jettison — the only setters of captainManualAuthorityKey) must be able to
+// operate that reserved hull WITHOUT dropping the reservation. The claim is SKIPPED
+// rather than converting the reservation into a container assignment: the hull stays
+// assignment_owner=captain / container_id="" for the whole op, so every coordinator
+// claim path stays locked out before, during, AND after, and the release path
+// (FindByContainer, keyed on container_id) finds nothing to release. The pass-through
+// is PERMITTED and AUDITED — one WARNING line naming ship and op. This is the exact
+// bug the bead filed: a captain navigate on a reserved hull died on "reserved by the
+// captain", forcing raw curls; sp-i1ku's whole purpose was captain manual ops without
+// them.
+func TestCaptainContextOpPermittedOnCaptainReservedHull(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	require.NoError(t, hull.ReserveByCaptain("captain manual survey", shared.NewRealClock()))
+	shipRepo := &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+	logs := &capturingLogRepo{}
+
+	// A navigate container carries the captain-authority flag and NO operation key
+	// (legacy path) — exactly what container_ops_ship.go stamps for a captain CLI op.
+	const containerID = "navigate-TORWIND-19"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "TORWIND-19", captainManualAuthorityKey: true}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, logs, s.containerRepo, shipRepo, s.clock)
+	defer runner.cancelFunc()
+
+	err := runner.Start()
+
+	require.NoError(t, err, "a captain manual op must be permitted to operate a captain-reserved hull")
+	requireContainerState(t, db, containerID, "RUNNING", "")
+	// The reservation must SURVIVE untouched: the hull was NOT converted into a
+	// container claim (container_id stays empty), so coordinators remain locked out
+	// after the op just as before it.
+	require.True(t, hull.IsReservedByCaptain(), "the captain reservation must be preserved, not consumed by the op")
+	require.Empty(t, hull.ContainerID(), "a captain-context op must not convert the reservation into a container claim")
+
+	// Every pass-through MUST be audited: one WARNING line naming ship and op. The
+	// audit line persists on Log's detached goroutine, so wait for it instead of
+	// reading the sink once (sp-yon7).
+	line := logs.waitForLog(t, "WARNING", "Captain-context override", 2*time.Second)
+	require.Equal(t, "TORWIND-19", line.metadata["ship_symbol"])
+	require.Equal(t, "NAVIGATE", line.metadata["op"])
+}
+
+// sp-sfoe — the pass-through must NOT leak. An automated claim on the legacy path
+// (here a coordinator-type container with neither the captain-authority flag nor an
+// operation key) is STILL rejected on a captain-reserved hull, emits no pass-through
+// audit line, and leaves the reservation intact. This is the guarantee that the
+// permit is load-bearing and scoped strictly to the captain CLI path — the whole
+// point of reserve is to lock coordinators out.
+func TestWithoutCaptainAuthorityCaptainReservationStillRejected(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	require.NoError(t, hull.ReserveByCaptain("captain manual survey", shared.NewRealClock()))
+	shipRepo := &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+	logs := &capturingLogRepo{}
+
+	// A coordinator-type container WITHOUT the captain flag (models any automated
+	// legacy claim). The permit must not reach it.
+	const containerID = "automated-TORWIND-19"
+	entity := container.NewContainer(containerID, container.ContainerTypeTrading, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "TORWIND-19"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "some_coordinator"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, logs, s.containerRepo, shipRepo, s.clock)
+
+	err := runner.Start()
+
+	require.Error(t, err, "without the captain-authority flag a captain-reserved hull must still be rejected")
+	var resErr *shared.ShipReservedByCaptainError
+	require.ErrorAs(t, err, &resErr, "must be the standing captain-reservation rejection")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	require.True(t, hull.IsReservedByCaptain(), "the captain reservation must be untouched by a rejected coordinator claim")
+	require.Empty(t, hull.ContainerID())
+	if _, passed := logs.find("WARNING", "Captain-context override"); passed {
+		t.Fatalf("no pass-through may be logged without the captain-authority flag: %+v", logs.snapshot())
+	}
+}
