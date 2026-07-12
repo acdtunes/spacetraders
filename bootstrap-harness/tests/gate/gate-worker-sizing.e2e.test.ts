@@ -16,8 +16,12 @@ describe('bootstrap GATE — worker sizing', () => {
       const repurposed = s.gateWorkers.filter((w) => w.source === 'repurposed').length;
       const bought = s.gateWorkers.filter((w) => w.source === 'bought').length;
       expect(repurposed).toBe(2);                 // both idle haulers repurposed first
-      expect(bought).toBe(s.gateWorkers.length - repurposed); // only the delta bought
-      expect(countCall(s.mutationLog, 'PurchaseShip')).toBe(bought);
+      // Only the delta is bought: 4 material chains ⇒ target 4 workers, minus 2 repurposed ⇒ 2 bought.
+      // (The prior `bought === length - repurposed` was a tautology — length ≡ repurposed + bought by
+      // construction — so it passed even if the sizer ignored the idle haulers and over-bought.)
+      expect(bought).toBe(2);
+      expect(s.gateWorkers.length).toBe(4);       // target-sized exactly: no over/under-provisioning
+      expect(countCall(s.mutationLog, 'PurchaseShip')).toBe(bought); // /v2 truth: real buys == 'bought' count
     });
   }, 240_000);
 });

@@ -33,6 +33,11 @@ describe('bootstrap GATE — restart idempotency', () => {
       expect(countCall(done.mutationLog, 'construction-start')).toBe(1);         // not re-started
       expect(countCall(done.mutationLog, 'executor-bounce')).toBeLessThanOrEqual(Math.max(1, bouncesBefore)); // not re-bounced once adopted
       expect(countCall(done.mutationLog, 'launch-autosizer')).toBe(1);           // launched once total
+      // "no double-worker-buy" — the title's core claim, previously UNASSERTED. Independent /v2
+      // observable (not the report-seam gateWorkers flag): a clean run buys exactly the 2-worker
+      // delta (see gate-worker-sizing, same fixture); re-buying the mid-flight worker after the
+      // restart would push this to 3+.
+      expect(countCall(done.mutationLog, 'PurchaseShip')).toBeLessThanOrEqual(2);
       expect(done.done).toBe(true);
     } finally {
       await daemon.stop();
