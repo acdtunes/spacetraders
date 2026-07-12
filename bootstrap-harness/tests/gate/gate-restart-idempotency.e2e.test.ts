@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { twinGate } from '../helpers/twin-admin-gate';
 import { gateEntry } from '../helpers/fixtures-gate';
 import { resetDaemonDb, startTestDaemon } from '../helpers/daemon';
-import { launchBootstrap, pollUntil } from '../helpers/drive';
+import { launchBootstrap, pollUntil, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap GATE — restart idempotency', () => {
@@ -26,6 +26,14 @@ describe('bootstrap GATE — restart idempotency', () => {
     daemon = await startTestDaemon(); // reboot; same DB + twin (construction + workers persist)
     try {
       launchBootstrap();
+      // (a) STICKY phase re-detection ACROSS the restart — the crux of "GATE sticky once construction
+      // started". construction.started persisted (twin) → the rebooted daemon must re-derive GATE from
+      // it BEFORE we force completion, never thrashing back to INCOME when the haulers were repurposed.
+      // gate-sticky proves this WITHOUT a restart; this is the first assertion of it SURVIVING a reboot.
+      const reGate = await pollUntil(() => twinGate.gateState(), (s) => s.construction.started, { steps: 30, advanceMs: 1000 });
+      expect(reGate.construction.started).toBe(true);
+      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'GATE' })).toBe(1);
+      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(0);
       // Drive to COMPLETE.
       await twinGate.setConstruction(100);
       const done = await pollUntil(() => twinGate.gateState(), (s) => s.done, { steps: 60, advanceMs: 1000 });

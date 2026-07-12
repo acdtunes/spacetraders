@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { twin } from '../helpers/twin-admin';
 import { coldStart } from '../helpers/fixtures';
 import { resetDaemonDb, startTestDaemon } from '../helpers/daemon';
-import { launchBootstrap, pollUntil } from '../helpers/drive';
+import { launchBootstrap, pollUntil, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap DATA — restart idempotency', () => {
@@ -36,6 +36,13 @@ describe('bootstrap DATA — restart idempotency', () => {
       // of the probe that existed at restart.
       expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(2);
       expect(done.ships.filter((x) => x.role === 'SATELLITE').length).toBe(3);
+      // (a) phase re-detection after the reboot lands on DATA again — the rebooted daemon re-derives
+      // its phase from DB+twin, it does not thrash to a different phase.
+      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'DATA' })).toBe(1);
+      // (b) treasury debited EXACTLY twice (probePrice 40000) across BOTH daemon lifetimes — identical
+      // to a single uninterrupted run (data/golden-path asserts the same 175000-2*40000). An independent
+      // /v2 observable (agent.credits) pairing the PurchaseShip count: a re-buy would show 55000, not 95000.
+      expect(done.agent.credits).toBe(175000 - 2 * 40000);
     } finally {
       await daemon.stop();
     }
