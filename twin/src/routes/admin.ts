@@ -5,7 +5,7 @@ import type {
 } from '../world/types.js';
 import { getWorld, resetWorld, type ResetOptions } from '../world/store.js';
 import type { ClockMode } from '../clock.js';
-import { advanceClock, getClockState, getNow, resetClock, resolveNav, setClockMode, setNow } from '../clock.js';
+import { advanceClock, getClockState, resetClock, resolveNav, setClockMode, setNow } from '../clock.js';
 import { applyReport } from '../world/mutation-log.js';
 import { armFault, resetFaults } from '../world/faults.js';
 import { badRequest } from '../errors.js';
@@ -85,7 +85,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/state', async (): Promise<TwinState> => {
     const w = getWorld();
-    const now = getNow();
+    const now = new Date(); // ship arrival is on the REAL clock; the frozen world clock feeds `clock` below
     const ships = [...w.ships.values()].map((ship) => toStateShip(ship, w.transits.get(ship.symbol), now));
     const markets: TwinMarketView[] = [...w.marketScouting.entries()].map(
       ([waypoint, s]) => ({ waypoint, scouted: s.scouted, fresh: s.fresh }),

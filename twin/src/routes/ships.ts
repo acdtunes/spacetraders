@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { getWorld } from '../world/store.js';
 import { getNow, makeTransit, resolveNav } from '../clock.js';
 import { appendMutation } from '../world/mutation-log.js';
-import { badRequest, notFound, unauthorized } from '../errors.js';
+import { badRequest, notFound, unauthorized, sendError, ERR_SHIP_MUST_BE_DOCKED, ERR_SHIP_NOT_DOCKED } from '../errors.js';
 import type { Ship, Waypoint, World } from '../world/types.js';
 
 const DEFAULT_LIMIT = 20;
@@ -121,7 +121,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
   app.get('/my/ships', async (request, reply) => {
     if (authFailed(request, reply)) return reply;
     const world = getWorld();
-    const now = getNow();
+    const now = new Date(); // ship status/arrival is on the REAL clock (see clock.ts resolveNav)
     const q = request.query as Record<string, unknown>;
     const page = intParam(q.page, 1, 1, Number.MAX_SAFE_INTEGER);
     const limit = intParam(q.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
@@ -137,7 +137,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
   app.get('/my/ships/:symbol', async (request, reply) => {
     if (authFailed(request, reply)) return reply;
     const world = getWorld();
-    const now = getNow();
+    const now = new Date(); // ship status/arrival is on the REAL clock (see clock.ts resolveNav)
     const { symbol } = request.params as { symbol: string };
     const ship = world.ships.get(symbol);
     if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
@@ -194,7 +194,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     const dest = typeof body.waypointSymbol === 'string' ? body.waypointSymbol.trim() : '';
     if (dest === '') return badRequest(reply, 'waypointSymbol is required.');
 
-    const now = getNow();
+    const now = new Date(); // ship status/arrival is on the REAL clock (see clock.ts resolveNav)
     world.transits.delete(symbol); // supersede any prior leg
     const originWp = findWaypoint(world, ship.nav.waypointSymbol);
     const destWp = findWaypoint(world, dest);
@@ -216,4 +216,94 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     const resolved = resolveNav(ship, world.transits.get(symbol), now);
     return reply.code(200).send({ data: { nav: resolved.nav, fuel: resolved.fuel } });
   });
+
+  // PATCH /my/ships/:symbol/nav — set the flight mode (CRUISE/BURN/DRIFT/STEALTH). The route
+  // executor sets the mode before navigating (it governs travel time + fuel per the clock formula).
+  app.patch('/my/ships/:symbol/nav', async (request, reply) => {
+    if (authFailed(request, reply)) return reply;
+    const world = getWorld();
+    const { symbol } = request.params as { symbol: string };
+    const ship = world.ships.get(symbol);
+    if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
+    const body = (request.body ?? {}) as { flightMode?: unknown };
+    const mode = typeof body.flightMode === 'string' ? body.flightMode.trim() : '';
+    const allowed = ['CRUISE', 'BURN', 'DRIFT', 'STEALTH'];
+    if (!allowed.includes(mode)) return badRequest(reply, `flightMode must be one of ${allowed.join(', ')}.`);
+    ship.nav = { ...ship.nav, flightMode: mode as Ship['nav']['flightMode'] };
+    const resolved = resolveNav(ship, world.transits.get(symbol), new Date());
+    return reply.code(200).send({ data: { nav: resolved.nav, fuel: resolved.fuel } });
+  });
+
+  // POST /my/ships/:symbol/orbit — DOCKED/arrived -> IN_ORBIT. Idempotent. The coordinator orbits
+  // the purchaser before navigating it to the shipyard.
+  app.post('/my/ships/:symbol/orbit', async (request, reply) => {
+    if (authFailed(request, reply)) return reply;
+    const world = getWorld();
+    const { symbol } = request.params as { symbol: string };
+    const ship = world.ships.get(symbol);
+    if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
+    settleArrival(world, ship, symbol);
+    if (world.transits.has(symbol)) return sendError(reply, 400, ERR_SHIP_MUST_BE_DOCKED, `Ship ${symbol} is in transit.`);
+    ship.nav = { ...ship.nav, status: 'IN_ORBIT' };
+    return reply.code(200).send({ data: { nav: ship.nav } });
+  });
+
+  // POST /my/ships/:symbol/dock — IN_ORBIT/arrived -> DOCKED. Idempotent. The coordinator docks at
+  // the shipyard (after arrival) before POST /my/ships (purchase).
+  app.post('/my/ships/:symbol/dock', async (request, reply) => {
+    if (authFailed(request, reply)) return reply;
+    const world = getWorld();
+    const { symbol } = request.params as { symbol: string };
+    const ship = world.ships.get(symbol);
+    if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
+    settleArrival(world, ship, symbol);
+    if (world.transits.has(symbol)) return sendError(reply, 400, ERR_SHIP_MUST_BE_DOCKED, `Ship ${symbol} is in transit.`);
+    ship.nav = { ...ship.nav, status: 'DOCKED' };
+    return reply.code(200).send({ data: { nav: ship.nav } });
+  });
+
+  // POST /my/ships/:symbol/refuel — fill to capacity, charge the agent. Must be docked (4244).
+  // Probes (capacity 0) are a free no-op. 1 market unit = 100 ship-fuel (real-API convention).
+  app.post('/my/ships/:symbol/refuel', async (request, reply) => {
+    if (authFailed(request, reply)) return reply;
+    const world = getWorld();
+    const { symbol } = request.params as { symbol: string };
+    const ship = world.ships.get(symbol);
+    if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
+    settleArrival(world, ship, symbol);
+    if (ship.nav.status !== 'DOCKED') return sendError(reply, 400, ERR_SHIP_NOT_DOCKED, `Ship ${symbol} must be docked to refuel.`);
+    const missing = Math.max(0, ship.fuel.capacity - ship.fuel.current);
+    const marketUnits = Math.ceil(missing / 100);
+    const totalPrice = marketUnits * fuelUnitPrice(world, ship.nav.waypointSymbol);
+    ship.fuel = { ...ship.fuel, current: ship.fuel.capacity };
+    if (world.agent) world.agent.credits = Math.max(0, world.agent.credits - totalPrice);
+    return reply.code(200).send({
+      data: { agent: { credits: world.agent?.credits ?? 0 }, fuel: ship.fuel, transaction: { units: missing, totalPrice } },
+    });
+  });
+}
+
+/** Commit a completed transit into the ship's stored nav (arrival is otherwise resolved only
+ *  on-read by resolveNav, which never persists). After settling, orbit/dock/refuel act on the
+ *  real arrived location. No-op while still in transit or when there is no transit. */
+function settleArrival(world: World, ship: Ship, symbol: string): void {
+  const transit = world.transits.get(symbol);
+  if (!transit) return;
+  if (Date.now() >= Date.parse(transit.arrival)) {
+    ship.nav = {
+      ...ship.nav,
+      status: 'IN_ORBIT',
+      waypointSymbol: transit.destinationWaypoint,
+      route: { departureTime: transit.departureTime, arrival: transit.arrival },
+    };
+    world.transits.delete(symbol);
+  }
+}
+
+/** Per-ship-fuel-unit price = the waypoint market's FUEL purchasePrice / 100 (1 market unit =
+ *  100 ship fuel), rounded up; falls back to a plausible default when the market lacks FUEL. */
+function fuelUnitPrice(world: World, waypointSymbol: string): number {
+  const market = world.markets.get(waypointSymbol);
+  const fuel = market?.tradeGoods.find((g) => g.symbol === 'FUEL');
+  return fuel ? Math.max(1, Math.ceil(fuel.purchasePrice / 100)) : 1;
 }

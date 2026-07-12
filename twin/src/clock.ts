@@ -83,6 +83,23 @@ export function setCompression(factor: number): void {
   compression = factor;
 }
 
+// ─── Ship-arrival / cooldown clock: REAL wall-clock, lightly compressed ─────────────
+// CRITICAL: the daemon detects ship arrival on the REAL wall clock (ship_state_scheduler
+// arms time.AfterFunc(time.Until(arrival))). It does NOT consult the twin's frozen world
+// clock. So arrivals + cooldowns MUST be real-future instants, or the daemon waits the full
+// (uncompressed) real duration and the harness's clock-stepping window expires first.
+// We therefore compress the real ETA by TWIN_ARRIVAL_COMPRESSION (default 20 → a ~16-40s
+// in-system hop resolves in ~1-2s real), floored at 1s so it never fires below the daemon's
+// 1s ClockDriftBuffer. The frozen world clock (getNow/advanceClock) still governs mutation
+// `at` stamps + the scalar levers — those are decoupled from ship motion.
+const ARRIVAL_COMPRESSION = (() => {
+  const n = Number(process.env.TWIN_ARRIVAL_COMPRESSION);
+  return Number.isFinite(n) && n > 0 ? n : 20;
+})();
+function compressedMs(realSeconds: number): number {
+  return Math.max(1000, Math.round((realSeconds * 1000) / ARRIVAL_COMPRESSION));
+}
+
 // ─── Real-API travel + fuel model ─────────────────────────────────────────────────
 const TRAVEL_MULTIPLIER: Record<FlightMode, number> = { CRUISE: 25, BURN: 12.5, DRIFT: 250, STEALTH: 30 };
 
@@ -119,17 +136,18 @@ export function fuelRequired(dist: number, mode: FlightMode, fuelCapacity: numbe
   return fuelCost(dist, mode);
 }
 
-/** Mint a transit whose arrival is a REAL future world-instant: now + realTravelSeconds.
- *  Departure defaults to the world clock (getNow); pass `now` to compute against a fixed instant. */
+/** Mint a transit whose arrival is a REAL-wall-clock future instant: wall-now + the
+ *  COMPRESSED real ETA (see ARRIVAL_COMPRESSION). Real-clock — NOT the frozen world clock —
+ *  because the daemon waits for arrival on real wall time. `now` (a wall Date) is accepted for
+ *  test determinism; it defaults to actual wall time. departureTime/arrival are both real. */
 export function makeTransit(args: {
   shipSymbol: string; origin: Waypoint; destination: Waypoint; engineSpeed: number; mode?: FlightMode; now?: Date;
 }): TransitState {
   const mode = args.mode ?? 'CRUISE';
-  const departure = args.now ?? getNow();
   const dist = distance(args.origin, args.destination);
   const realSecs = realTravelSeconds(dist, args.engineSpeed, mode);
-  const departureMs = departure.getTime();
-  const arrivalMs = departureMs + realSecs * 1000;
+  const departureMs = (args.now ?? new Date()).getTime();
+  const arrivalMs = departureMs + compressedMs(realSecs);
   return {
     shipSymbol: args.shipSymbol,
     originWaypoint: args.origin.symbol,
@@ -141,9 +159,10 @@ export function makeTransit(args: {
 
 /** The ONLY place nav status/location is computed. Pure — returns a new Ship.
  *  no transit → unchanged; now < arrival → IN_TRANSIT at origin; now >= arrival →
- *  IN_ORBIT at destination (single atomic flip). Reads the world clock by default so
- *  the flip is driven by advanceClock(), not wall time. route stays populated in flight. */
-export function resolveNav(ship: Ship, transit: TransitState | undefined, now: Date = getNow()): Ship {
+ *  IN_ORBIT at destination (single atomic flip). Reads REAL wall time by default (arrivals
+ *  live on the real clock so the twin's status agrees with the daemon's real-time detection).
+ *  route stays populated in flight. */
+export function resolveNav(ship: Ship, transit: TransitState | undefined, now: Date = new Date()): Ship {
   if (transit === undefined) return ship;
   const arrived = now.getTime() >= Date.parse(transit.arrival);
   return {
@@ -157,7 +176,8 @@ export function resolveNav(ship: Ship, transit: TransitState | undefined, now: D
   };
 }
 
-/** Cooldown expiry = now + realSeconds (real time; cooldowns aren't compressed). */
-export function makeCooldownExpiration(realSeconds: number, now: Date = getNow()): Rfc3339 {
-  return new Date(now.getTime() + realSeconds * 1000).toISOString();
+/** Cooldown expiry = wall-now + the COMPRESSED real cooldown (same real-clock rationale as
+ *  arrivals — the daemon clears cooldowns on real time). */
+export function makeCooldownExpiration(realSeconds: number, now: Date = new Date()): Rfc3339 {
+  return new Date(now.getTime() + compressedMs(realSeconds)).toISOString();
 }
