@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
 // NewFleetCommand creates the fleet command group (sp-l7h2).
@@ -19,6 +21,15 @@ import (
 // distinct from a container claim ("who holds it right now") — assigning a
 // busy ship never evicts the current holder; the new fleet takes over when
 // the claim is released.
+//
+// `fleet add`/`fleet remove` (sp-4s9m) are the operation-oriented surface over
+// this same tag: a hull can be added to or removed from a RUNNING coordinator's
+// dedicated fleet with NO container restart and no interruption to other hulls'
+// in-progress work. The coordinator reads its fleet membership live from the DB
+// every discovery pass (ship_pool_manager.go FindIdleShipsByFleet), so a freshly
+// tagged hull is dispatched on the next tick and a freshly cleared one is dropped
+// on the next tick — the daemon is the sole writer of the tag either way
+// (RULINGS #3). `assign`/`unassign` remain as the raw fleet-name aliases.
 func NewFleetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fleet",
@@ -32,15 +43,216 @@ dispatches it. Dedication is persisted and survives daemon restarts.
 Assigning a busy ship succeeds immediately but never interrupts its current
 job — the new fleet takes over when the current claim is released.
 
+'fleet add'/'fleet remove' mutate a RUNNING coordinator's fleet live, with no
+container restart: the coordinator re-reads its membership from the DB every
+discovery pass, so an added hull is dispatched next tick and a removed one
+finishes its current contract leg and then leaves — no stranded contract.
+
 Examples:
+  spacetraders fleet add --operation contract --ship TORWIND-5
+  spacetraders fleet remove --operation contract --ship TORWIND-1
   spacetraders fleet assign --ship TORWIND-19 --fleet bulk_circuit
   spacetraders fleet unassign --ship TORWIND-19
   spacetraders fleet list`,
 	}
 
+	cmd.AddCommand(newFleetAddCommand())
+	cmd.AddCommand(newFleetRemoveCommand())
 	cmd.AddCommand(newFleetAssignCommand())
 	cmd.AddCommand(newFleetUnassignCommand())
 	cmd.AddCommand(newFleetListCommand())
+
+	return cmd
+}
+
+// fleetMutator is the subset of daemon operations the `fleet add`/`fleet remove`
+// verbs need, narrowed to an interface so the operation-scoping logic is
+// unit-testable without a live daemon. *DaemonClient satisfies it. The daemon
+// remains the SOLE writer of the DedicatedFleet tag (RULINGS #3) — these methods
+// are the CLI→daemon RPCs, and the ListFleets read below is only an advisory
+// membership guard, never a write.
+type fleetMutator interface {
+	AssignShipFleet(ctx context.Context, shipSymbol, fleet string, playerID *int32, agentSymbol *string) (*pb.AssignShipFleetResponse, error)
+	UnassignShipFleet(ctx context.Context, shipSymbol string, playerID *int32, agentSymbol *string) (*pb.UnassignShipFleetResponse, error)
+	ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error)
+}
+
+// runFleetAdd dedicates shipSymbol to operation's fleet, live. operation IS the
+// fleet tag ("contract", "trade", "warehouse", "stocker", ...) — the same string
+// the coordinator claims under (container_runner.go) — so adding a hull is a
+// single AssignShipFleet write through the daemon (the single tag-write path,
+// sp-l7h2). The coordinator's next discovery pass reads the new tag from the DB
+// (FindIdleShipsByFleet) and dispatches the hull; NO container restart occurs and
+// no other hull's in-progress work is touched. Returns the user-facing message.
+func runFleetAdd(ctx context.Context, client fleetMutator, operation, shipSymbol string, playerID *int32, agentSymbol *string) (string, error) {
+	resp, err := client.AssignShipFleet(ctx, shipSymbol, operation, playerID, agentSymbol)
+	if err != nil {
+		return "", fmt.Errorf("failed to add %s to the %q fleet: %w", shipSymbol, operation, err)
+	}
+	return fmt.Sprintf("✓ %s added to the %q fleet — its coordinator discovers it live and dispatches it next tick; no container restart.\n", resp.ShipSymbol, resp.Fleet), nil
+}
+
+// runFleetRemove clears shipSymbol's dedication, live, but ONLY when the hull is
+// actually a member of operation's fleet. This is the operation-scoped no-poach
+// guard (RULINGS #7 at the operator surface): `fleet remove --operation contract`
+// must REFUSE a hull dedicated to `stocker`, so a mistyped operation can never
+// yank a hull out of a different coordinator's fleet. Membership is read via
+// ListFleets — an advisory pre-check; the authoritative tag write is still the
+// daemon's UnassignShipFleet (RULINGS #3).
+//
+// Removal is a clean hand-off, never a stranding: clearing the tag does not evict
+// the hull's current container claim, so a hull removed mid-contract finishes its
+// in-progress leg and only then returns to the general pool; the coordinator
+// simply stops re-selecting it on the next discovery pass (its additive-only
+// startup reconcile never re-adds it). NO container restart occurs.
+func runFleetRemove(ctx context.Context, client fleetMutator, operation, shipSymbol string, playerID *int32, agentSymbol *string) (string, error) {
+	resp, err := client.ListFleets(ctx, playerID, agentSymbol)
+	if err != nil {
+		return "", fmt.Errorf("failed to check %s's current fleet before removal: %w", shipSymbol, err)
+	}
+
+	currentFleet := ""
+	for _, fleet := range resp.Fleets {
+		for _, member := range fleet.Ships {
+			if member.ShipSymbol == shipSymbol {
+				currentFleet = fleet.Name
+			}
+		}
+	}
+
+	switch {
+	case currentFleet == "":
+		return "", fmt.Errorf("%s is not in the %q fleet — it carries no dedication, so there is nothing to remove", shipSymbol, operation)
+	case currentFleet != operation:
+		return "", fmt.Errorf("%s is dedicated to the %q fleet, not %q — refusing to remove it from an operation it is not in (use --operation %s, or `fleet unassign --ship %s` to force-clear whatever fleet it is in)", shipSymbol, currentFleet, operation, currentFleet, shipSymbol)
+	}
+
+	if _, err := client.UnassignShipFleet(ctx, shipSymbol, playerID, agentSymbol); err != nil {
+		return "", fmt.Errorf("failed to remove %s from the %q fleet: %w", shipSymbol, operation, err)
+	}
+	return fmt.Sprintf("✓ %s removed from the %q fleet — it finishes any in-progress contract leg, then returns to the general pool; no container restart.\n", shipSymbol, operation), nil
+}
+
+// newFleetAddCommand creates the `fleet add` subcommand (sp-4s9m) — the
+// operation-oriented, live add over the shared DedicatedFleet tag path.
+func newFleetAddCommand() *cobra.Command {
+	var (
+		operation  string
+		shipSymbol string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add a ship to a running operation's dedicated fleet, live (no restart)",
+		Long: `Add a ship to a RUNNING operation's dedicated fleet without restarting its
+coordinator. The operation name IS the fleet tag (contract, trade, warehouse,
+stocker, manufacturing, ...).
+
+The coordinator re-reads its fleet membership from the database on every
+discovery pass, so the added hull is dispatched from the next tick onward. No
+container is restarted and no other hull's in-progress contract is interrupted.
+
+Examples:
+  spacetraders fleet add --operation contract --ship TORWIND-5
+  spacetraders fleet add --operation trade --ship TORWIND-9 --agent TORWIND`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if operation == "" {
+				return fmt.Errorf("--operation flag is required (the fleet/operation to add the ship to, e.g. 'contract')")
+			}
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+
+			msg, err := runFleetAdd(ctx, client, operation, shipSymbol, playerID, agentSymbol)
+			if err != nil {
+				return err
+			}
+			fmt.Print(msg)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&operation, "operation", "", "Operation/fleet to add the ship to (required, e.g. 'contract')")
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+
+	return cmd
+}
+
+// newFleetRemoveCommand creates the `fleet remove` subcommand (sp-4s9m) — the
+// operation-scoped, live removal with a clean mid-contract hand-off.
+func newFleetRemoveCommand() *cobra.Command {
+	var (
+		operation  string
+		shipSymbol string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove a ship from a running operation's dedicated fleet, live (no restart)",
+		Long: `Remove a ship from a RUNNING operation's dedicated fleet without restarting its
+coordinator. The removal is operation-scoped: it refuses to remove a hull that is
+dedicated to a DIFFERENT operation, so a mistyped operation can never pull a hull
+out of another coordinator's fleet.
+
+A hull removed mid-contract finishes its current delivery leg and then returns to
+the general pool — the dedication tag is cleared but the in-flight container claim
+is never evicted, so no contract is stranded. The coordinator stops re-selecting
+the hull on its next discovery pass. No container is restarted.
+
+Examples:
+  spacetraders fleet remove --operation contract --ship TORWIND-1
+  spacetraders fleet remove --operation trade --ship TORWIND-9 --agent TORWIND`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if operation == "" {
+				return fmt.Errorf("--operation flag is required (the fleet/operation to remove the ship from, e.g. 'contract')")
+			}
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+
+			msg, err := runFleetRemove(ctx, client, operation, shipSymbol, playerID, agentSymbol)
+			if err != nil {
+				return err
+			}
+			fmt.Print(msg)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&operation, "operation", "", "Operation/fleet to remove the ship from (required, e.g. 'contract')")
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
 
 	return cmd
 }
