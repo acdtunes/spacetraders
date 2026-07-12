@@ -35,6 +35,18 @@ const (
 	// defaultHaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the
 	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
 	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
+
+	// GATE-phase defaults (Slice 3).
+	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
+	// chain + a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of
+	// producing chains + delivery) without letting a wide pipeline drain the treasury; the Analyst tunes
+	// it. The worker pool is mostly REPURPOSED idle contract haulers, so this rarely drives a buy.
+	defaultGateWorkerTarget = 6
+	// gateDeliveryHaulers is the small fixed delivery allowance added to the per-chain worker target
+	// (spec §Fleet scaling: "~one worker per active gate-material chain + 1–2 delivery haulers"). Kept a
+	// call-site constant (not a knob) — it is a shape detail of the sizing formula, bounded by
+	// gate_worker_target which IS the operator-reachable cap.
+	gateDeliveryHaulers = 1
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -77,6 +89,8 @@ type MetricsSink interface {
 	RecordProbePurchased()
 	// RecordHaulerPurchased increments the haulers-bought counter (once per executed INCOME buy).
 	RecordHaulerPurchased()
+	// RecordConstructionPct sets the gate construction-progress gauge [0,100] (GATE phase).
+	RecordConstructionPct(pct float64)
 }
 
 // FrigateRetirer clears the command frigate's contract-fleet dedication (reuses fleet unassign —
@@ -104,6 +118,52 @@ type HaulerAcquirer interface {
 // its error is logged, not fatal.
 type ContractRunner interface {
 	StartBatchContract(ctx context.Context, playerID int) error
+}
+
+// --- GATE-phase collaborators (Slice 3). Each is nil-safe (a nil collaborator degrades the GATE
+// action it drives to a logged skip surfaced as a blocker, never a panic). ---
+
+// ConstructionManager starts the jump-gate construction pipeline (reuses `construction start`). Start
+// is idempotent at the adapter (it RESUMES when a pipeline already exists), and the reconciler also
+// guards on obs.ConstructionStarted, so the pipeline is created exactly once even across a restart.
+type ConstructionManager interface {
+	Start(ctx context.Context, playerID int, site string) error
+}
+
+// ManufacturingController manages the construction EXECUTOR — the manufacturing coordinator that claims
+// worker hulls and runs produce/deliver for the pipeline's tasks. EnsureRunning launches it if down (a
+// fresh start ADOPTS existing pipelines). BounceForAdoption restarts a running-but-unadopted executor so
+// it adopts a freshly-created pipeline (captain L57: a new pipeline is INERT until the executor adopts it
+// at startup). Both are idempotent at the adapter and guarded on the observation, so neither double-acts.
+type ManufacturingController interface {
+	EnsureRunning(ctx context.Context, playerID int) error
+	BounceForAdoption(ctx context.Context, playerID int) error
+}
+
+// WorkerRepurposer releases a contract-dedicated income hauler back to the idle pool (reuses fleet
+// unassign — the same tag-clear as retiring the frigate) so the manufacturing coordinator claims it as
+// a gate-construction worker. This is the "repurpose idle INCOME haulers FIRST" seed (spec §Fleet
+// scaling): the income fleet becomes the seed construction workforce before any hull is bought.
+type WorkerRepurposer interface {
+	RepurposeToConstruction(ctx context.Context, playerID int, shipSymbol string) error
+}
+
+// GateWorkerAcquirer price-checks and buys ONE gate-construction worker hull and dedicates it to
+// construction (reuses shipyard purchase + fleet assign). The staged top-up when repurposed haulers
+// don't cover the pipeline's shape. Mirrors HaulerAcquirer but does not place on a hub (the executor
+// claims the worker); PriceCheck readable=false ⇒ the capital gate fails closed (no buy).
+type GateWorkerAcquirer interface {
+	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
+	BuyForConstruction(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
+}
+
+// HandoffLauncher performs the COMPLETE hand-off: it launches the standing fleet-autosizer (OFF the whole
+// bootstrap run so the two never issue conflicting purchases against one treasury) and the other standing
+// coordinators, turning the fleet over to the mature demand-driven economy. Guarded on obs.AutosizerRunning
+// so a restart post-COMPLETE re-observes the autosizer running and never re-launches.
+type HandoffLauncher interface {
+	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
+	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 }
 
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player (sp-3nbe).
@@ -134,6 +194,9 @@ type RunBootstrapCoordinatorCommand struct {
 	IncomeBar          float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
 	MinContractEarners int     // haulers kept on contracts through GATE (consumed in Slice 3).
 	HaulerShipType     string  // the shipyard ship-type bought for a contract hauler.
+
+	// GATE-phase knob (Slice 3, RULINGS #5; the zero value defers to the documented default).
+	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress. Because the loop is infinite it is
@@ -162,6 +225,13 @@ type RunBootstrapCoordinatorHandler struct {
 	retirer      FrigateRetirer
 	haulAcquirer HaulerAcquirer
 	contractRun  ContractRunner
+
+	// GATE-phase collaborators (Slice 3). Same nil-safe contract.
+	construction  ConstructionManager
+	manufacturing ManufacturingController
+	repurposer    WorkerRepurposer
+	gateAcquirer  GateWorkerAcquirer
+	handoff       HandoffLauncher
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when
@@ -204,6 +274,32 @@ func (h *RunBootstrapCoordinatorHandler) SetHaulerAcquirer(a HaulerAcquirer) { h
 // haulers are placed but batch-contract is not driven (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetContractRunner(c ContractRunner) { h.contractRun = c }
 
+// SetConstructionManager wires `construction start` (reuses the construction pipeline planner). Unset →
+// GATE evaluates and logs but never starts the pipeline (surfaced loudly).
+func (h *RunBootstrapCoordinatorHandler) SetConstructionManager(c ConstructionManager) {
+	h.construction = c
+}
+
+// SetManufacturingController wires the construction-executor ensure/bounce (the manufacturing
+// coordinator). Unset → GATE cannot ensure the executor or perform the L57 adoption bounce (surfaced loudly).
+func (h *RunBootstrapCoordinatorHandler) SetManufacturingController(m ManufacturingController) {
+	h.manufacturing = m
+}
+
+// SetWorkerRepurposer wires the "release an income hauler to construction" action (reuses fleet
+// unassign). Unset → GATE cannot repurpose haulers and top-up buys carry the whole worker load (surfaced loudly).
+func (h *RunBootstrapCoordinatorHandler) SetWorkerRepurposer(r WorkerRepurposer) { h.repurposer = r }
+
+// SetGateWorkerAcquirer wires the price-check + buy-for-construction path (reuses shipyard purchase +
+// fleet assign). Unset → GATE repurposes but never buys the top-up delta (surfaced loudly).
+func (h *RunBootstrapCoordinatorHandler) SetGateWorkerAcquirer(a GateWorkerAcquirer) {
+	h.gateAcquirer = a
+}
+
+// SetHandoffLauncher wires the COMPLETE hand-off (launch the autosizer + standing coordinators). Unset →
+// the gate completes but the hand-off is a logged skip, so the mature economy is not launched (surfaced loudly).
+func (h *RunBootstrapCoordinatorHandler) SetHandoffLauncher(l HandoffLauncher) { h.handoff = l }
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -230,11 +326,23 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 		default:
 		}
 
-		if _, err := h.reconcileOnce(ctx, cmd); err != nil {
+		res, err := h.reconcileOnce(ctx, cmd)
+		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Bootstrap reconcile failed: %v", err), nil)
 		}
 		result.Ticks++
+
+		// Terminal COMPLETE: the gate is built and the standing economy is handed off, so the coordinator
+		// has finished its job and exits cleanly (spec §Architecture: "then exits COMPLETE"). A restart
+		// post-COMPLETE re-derives COMPLETE, re-observes the hand-off done, and exits again — idempotent.
+		if res.Done {
+			logger.Log("INFO", "Bootstrap coordinator exiting: COMPLETE reached and handed off", map[string]interface{}{
+				"action":       "bootstrap_exit_complete",
+				"container_id": cmd.ContainerID,
+			})
+			return result, nil
+		}
 
 		select {
 		case <-time.After(cfg.Tick):

@@ -86,6 +86,7 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_income_bar",
 	"bootstrap_min_contract_earners",
 	"bootstrap_hauler_ship_type",
+	"bootstrap_gate_worker_target",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -141,6 +142,9 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.HaulerShipType != "" {
 		config["bootstrap_hauler_ship_type"] = b.HaulerShipType
 	}
+	if b.GateWorkerTarget != 0 {
+		config["bootstrap_gate_worker_target"] = b.GateWorkerTarget
+	}
 }
 
 // buildBootstrapCommand rebuilds the standing bootstrap command (sp-3nbe) from a persisted launch
@@ -169,5 +173,7 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		IncomeBar:          cfg.OptionalFloat("bootstrap_income_bar", 0),
 		MinContractEarners: cfg.OptionalInt("bootstrap_min_contract_earners", 0),
 		HaulerShipType:     cfg.OptionalString("bootstrap_hauler_ship_type"),
+
+		GateWorkerTarget: cfg.OptionalInt("bootstrap_gate_worker_target", 0),
 	}
 }

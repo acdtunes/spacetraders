@@ -10,9 +10,9 @@ package config
 // documented default (resolved once in the handler's resolveBootstrapConfig). The Analyst/Admiral
 // own these numbers — they are all config, never call-site constants (RULINGS #5).
 //
-// Slice 1 + Slice 2 knobs. The INCOME knobs (hauler_target, income_bar, min_contract_earners,
-// hauler_ship_type) landed with Slice 2. The GATE knob (gate_worker_target) is still deferred to the
-// slice that first reads it (Slice 3), to keep this section free of dead config.
+// Slice 1 + Slice 2 + Slice 3 knobs. The INCOME knobs (hauler_target, income_bar, min_contract_earners,
+// hauler_ship_type) landed with Slice 2; the GATE knob (gate_worker_target) landed with Slice 3, the
+// last deferred field, now that the GATE phase reads it.
 type BootstrapConfig struct {
 	// BootstrapDisabled stands the WHOLE coordinator down. Absent/false = ACTIVE, so an
 	// absent-config boots LIVE (pinned by test — Admiral: no dark-shipping). Set true only in an
@@ -54,4 +54,13 @@ type BootstrapConfig struct {
 	// HaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the asset is a
 	// knob). 0/absent → SHIP_LIGHT_HAULER.
 	HaulerShipType string `mapstructure:"hauler_ship_type"`
+
+	// --- GATE-phase knob (Slice 3, sp-ysgb.2). ---
+
+	// GateWorkerTarget is the GATE-phase worker cap: the coordinator sizes gate-construction workers to
+	// ~one per active gate-material chain + a delivery hauler, up to this many — repurposing idle contract
+	// haulers first (the seed workforce) and buying the delta (staged, capital-gated) only if the pool is
+	// short. It caps the top-up so a wide pipeline never runs the treasury dry (min_contract_earners still
+	// stays on contracts to fund material acquisition). 0/absent → 6. Gate workers reuse hauler_ship_type.
+	GateWorkerTarget int `mapstructure:"gate_worker_target"`
 }

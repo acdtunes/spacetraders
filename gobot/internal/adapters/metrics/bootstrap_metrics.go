@@ -20,9 +20,10 @@ var bootstrapKnownPhases = []string{"DATA", "INCOME", "GATE", "COMPLETE"}
 // Pure OBSERVATION (RULINGS #4): a recording miss must never touch a decision, so every method is
 // nil-safe and best-effort. The reconciler's guard/act paths run independently of this collector.
 type BootstrapMetricsCollector struct {
-	phase        *prometheus.GaugeVec
-	probesTotal  prometheus.Counter
-	haulersTotal prometheus.Counter
+	phase           *prometheus.GaugeVec
+	probesTotal     prometheus.Counter
+	haulersTotal    prometheus.Counter
+	constructionPct prometheus.Gauge
 }
 
 // NewBootstrapMetricsCollector creates a new bootstrap metrics collector (sp-3nbe).
@@ -53,6 +54,14 @@ func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 				Help:      "Contract haulers the bootstrap coordinator bought in the INCOME phase, counted once per purchase (sp-ysgb.1)",
 			},
 		),
+		constructionPct: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "bootstrap_construction_pct",
+				Help:      "The gate construction site's delivery progress [0,100] in the GATE phase, set each tick (sp-ysgb.2)",
+			},
+		),
 	}
 }
 
@@ -68,7 +77,10 @@ func (c *BootstrapMetricsCollector) Register() error {
 	if err := Registry.Register(c.probesTotal); err != nil {
 		return err
 	}
-	return Registry.Register(c.haulersTotal)
+	if err := Registry.Register(c.haulersTotal); err != nil {
+		return err
+	}
+	return Registry.Register(c.constructionPct)
 }
 
 // RecordPhase sets the derived-phase gauge: the given phase to 1 and every other known phase to 0,
@@ -100,4 +112,12 @@ func (c *BootstrapMetricsCollector) RecordHaulerPurchased() {
 		return
 	}
 	c.haulersTotal.Inc()
+}
+
+// RecordConstructionPct sets the gate construction-progress gauge [0,100] (called each GATE tick).
+func (c *BootstrapMetricsCollector) RecordConstructionPct(pct float64) {
+	if c == nil || c.constructionPct == nil {
+		return
+	}
+	c.constructionPct.Set(pct)
 }

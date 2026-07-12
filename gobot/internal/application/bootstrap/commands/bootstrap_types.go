@@ -99,6 +99,44 @@ type Observation struct {
 	// works even before the first contract is accepted.
 	ContractGoods []string
 
+	// --- GATE-phase signals (Slice 3). Zero values are the pre-GATE default (no gate site known, no
+	// construction pipeline, the executor down, no gate workers), so an INCOME-phase observation that
+	// leaves them unset reads as "GATE not started" and the earlier phases' guards are unaffected. ---
+
+	// GateSite is the home-system jump-gate construction site waypoint (an under-construction JUMP_GATE).
+	// "" when it could not be resolved yet (no waypoint data) or the system has no gate to build — a
+	// blocker, not an error (a later tick with data retries).
+	GateSite string
+	// ConstructionStarted reports whether a construction pipeline ALREADY exists for GateSite. It is
+	// BOTH the idempotency guard for `construction start` (never create a second pipeline) AND the
+	// STICKY-GATE signal: once a pipeline exists the arc stays in GATE even as contract income falls with
+	// repurposed haulers, so derivePhase never regresses GATE→INCOME (which would re-buy haulers and
+	// thrash). A restart mid-GATE re-observes this true → resumes in GATE.
+	ConstructionStarted bool
+	// ConstructionComplete reports whether the gate construction site is 100% delivered — the GATE→COMPLETE
+	// exit. Terminal and monotone (a built gate stays built), so a restart post-completion re-derives COMPLETE.
+	ConstructionComplete bool
+	// ConstructionPercent is the site's delivery progress in [0,100] — heartbeat + metrics only (never a guard).
+	ConstructionPercent float64
+	// GateMaterialChains is how many active gate-material producing chains the started pipeline reveals —
+	// the worker-sizing top-up target (~one worker per chain). 0 before the pipeline reveals its shape (so
+	// the top-up BUY holds until the shape is known; repurposing idle haulers as the seed does not wait on it).
+	GateMaterialChains int
+	// ManufacturingRunning reports whether the manufacturing coordinator — the construction EXECUTOR that
+	// claims worker hulls and runs produce/deliver — is running for this player. false ⇒ ensure it running.
+	ManufacturingRunning bool
+	// ManufacturingAdopted reports whether the running manufacturing coordinator has ADOPTED the gate
+	// construction pipeline (claimed/started its tasks). A freshly-created pipeline is INERT until the
+	// executor adopts it at startup (captain L57), so running-but-!adopted ⇒ BOUNCE it. true ⇒ already
+	// adopted (the idempotency guard, so a restart mid-GATE never re-bounces a healthy executor).
+	ManufacturingAdopted bool
+	// GateWorkers is how many hulls are NOW dedicated to gate construction (claimed by the executor) — the
+	// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
+	GateWorkers int
+	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the COMPLETE
+	// launch-once hand-off guard (a restart post-COMPLETE re-observes it running ⇒ no re-launch, no exit loop).
+	AutosizerRunning bool
+
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
 	// this tick), with Reason naming what could not be read.
 	Readable bool

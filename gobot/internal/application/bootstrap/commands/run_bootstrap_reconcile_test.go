@@ -89,14 +89,20 @@ func (f *fakeScouter) AssignAllMarkets(ctx context.Context, playerID int, system
 }
 
 type fakeMetrics struct {
-	phases   []string
-	purchase int
-	haulers  int
+	phases          []string
+	purchase        int
+	haulers         int
+	constructionPct float64
+	pctRecorded     bool
 }
 
 func (m *fakeMetrics) RecordPhase(phase string) { m.phases = append(m.phases, phase) }
 func (m *fakeMetrics) RecordProbePurchased()    { m.purchase++ }
 func (m *fakeMetrics) RecordHaulerPurchased()   { m.haulers++ }
+func (m *fakeMetrics) RecordConstructionPct(pct float64) {
+	m.constructionPct = pct
+	m.pctRecorded = true
+}
 
 // scriptedWorld is a tiny stateful model so a multi-tick acceptance test can observe the effect of
 // buys and scout assignments (the DATA arc reaching 3 probes scouting).

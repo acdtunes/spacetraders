@@ -549,3 +549,14 @@ bootstrap:
   # GATE to keep funding material acquisition (consumed in the GATE phase, Slice 3; 0 => 1).
   # income_bar: 10000
   # min_contract_earners: 1
+
+  # GATE phase (Slice 3). Past the income bar the coordinator discovers the home-system jump-gate
+  # construction site, drives `construction start` (the manufacturing coordinator — the executor — then
+  # produces/acquires/delivers the materials), bounces that executor so it ADOPTS the fresh pipeline
+  # (captain L57), sizes gate-construction workers deterministically (REPURPOSING idle contract haulers
+  # beyond min_contract_earners to the manufacturing fleet FIRST, then buying the delta only if short),
+  # and monitors construction to 100% -> COMPLETE (where it launches the fleet-autosizer + standing
+  # coordinators as the hand-off, then exits). gate_worker_target caps the workers (actual = ~one per
+  # active gate-material chain + a delivery hauler, up to this; 0 => 6). Gate workers reuse
+  # hauler_ship_type. The autosizer stays OFF the whole bootstrap run and is launched only at COMPLETE.
+  # gate_worker_target: 6

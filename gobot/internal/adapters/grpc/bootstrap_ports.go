@@ -65,7 +65,7 @@ func NewBootstrapCoordinatorHandler(
 	h.SetShipRefresher(&bootstrapRefresher{shipRepo: shipRepo})
 	h.SetWorldObserver(&bootstrapObserver{
 		api: apiClient, shipRepo: shipRepo, waypointRepo: waypointRepo, marketRepo: marketRepo,
-		med: med, contractRepo: contractRepo, containerRepo: server.containerRepo,
+		med: med, contractRepo: contractRepo, containerRepo: server.containerRepo, server: server,
 	})
 	// One acquirer instance drives both the DATA probe buy and (embedded) the INCOME hauler price-check
 	// + buy — the yard price-scan + batch-purchase plumbing is asset-agnostic (parameterised by shipType).
@@ -76,6 +76,15 @@ func NewBootstrapCoordinatorHandler(
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
+
+	// GATE-phase collaborators (Slice 3): construction start, the manufacturing-executor ensure/bounce,
+	// the repurpose-to-manufacturing re-tag, the gate-worker buy, and the COMPLETE hand-off — each a thin
+	// wrapper over an existing daemon capability (build nothing new).
+	h.SetConstructionManager(&bootstrapConstructionManager{server: server})
+	h.SetManufacturingController(&bootstrapManufacturingController{server: server})
+	h.SetWorkerRepurposer(&bootstrapWorkerRepurposer{shipRepo: shipRepo})
+	h.SetGateWorkerAcquirer(&bootstrapGateWorkerAcquirer{bootstrapAcquirer: acq, shipRepo: shipRepo})
+	h.SetHandoffLauncher(&bootstrapHandoffLauncher{server: server})
 	return h
 }
 
@@ -104,6 +113,9 @@ type bootstrapObserver struct {
 	med           common.Mediator
 	contractRepo  contract.ContractRepository
 	containerRepo *persistence.ContainerRepositoryGORM
+	// GATE-phase reads (Slice 3). server runs the construction-site discovery + status snapshot and the
+	// executor/autosizer container-running checks. All best-effort (a miss leaves the field zero-valued).
+	server *DaemonServer
 }
 
 func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstrapCmd.Observation, error) {
@@ -148,6 +160,10 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 			obs.CommandFrigateOnContract = s.DedicatedFleet() == contractFleetTag
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
+		} else if s.DedicatedFleet() == manufacturingFleetTag {
+			// A hull dedicated to the manufacturing fleet is a gate-construction worker (Slice 3) — the
+			// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
+			obs.GateWorkers++
 		}
 	}
 	obs.HomeSystem = commandHome
@@ -194,6 +210,27 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 	if o.containerRepo != nil {
 		if running, rerr := contractFleetCoordinatorRunning(ctx, o.containerRepo, playerID); rerr == nil {
 			obs.BatchContractRunning = running
+		}
+	}
+
+	// GATE-phase reads (Slice 3). All best-effort: a miss leaves the field zero-valued, which the
+	// reconciler reads fail-safe — an unknown gate site holds GATE (no_gate_site), 0% never completes,
+	// and an executor/autosizer read miss defers to the guarded action.
+	if o.server != nil {
+		snap := o.server.readBootstrapGateSnapshot(ctx, obs.HomeSystem, playerID)
+		obs.GateSite = snap.Site
+		obs.ConstructionStarted = snap.Started
+		obs.ConstructionComplete = snap.Complete
+		obs.ConstructionPercent = snap.Percent
+		obs.GateMaterialChains = snap.MaterialChain
+		obs.ManufacturingAdopted = snap.Adopted
+	}
+	if o.containerRepo != nil {
+		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, executorContainerTypes...); rerr == nil {
+			obs.ManufacturingRunning = running
+		}
+		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeFleetAutosizer); rerr == nil {
+			obs.AutosizerRunning = running
 		}
 	}
 
@@ -506,5 +543,11 @@ func (m *bootstrapMetricsSink) RecordProbePurchased() {
 func (m *bootstrapMetricsSink) RecordHaulerPurchased() {
 	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
 		c.RecordHaulerPurchased()
+	}
+}
+
+func (m *bootstrapMetricsSink) RecordConstructionPct(pct float64) {
+	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
+		c.RecordConstructionPct(pct)
 	}
 }

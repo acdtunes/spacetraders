@@ -25,6 +25,9 @@ type bootstrapRunConfig struct {
 	IncomeBar          float64
 	MinContractEarners int
 	HaulerShipType     string
+
+	// GATE-phase knob (Slice 3), resolved to its documented default when unset.
+	GateWorkerTarget int
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunConfig {
@@ -41,6 +44,8 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 		IncomeBar:          cmd.IncomeBar,
 		MinContractEarners: cmd.MinContractEarners,
 		HaulerShipType:     cmd.HaulerShipType,
+
+		GateWorkerTarget: cmd.GateWorkerTarget,
 	}
 	if c.Tick <= 0 {
 		c.Tick = defaultBootstrapTickSeconds * time.Second
@@ -69,6 +74,9 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 	if c.HaulerShipType == "" {
 		c.HaulerShipType = defaultHaulerShipType
 	}
+	if c.GateWorkerTarget <= 0 {
+		c.GateWorkerTarget = defaultGateWorkerTarget
+	}
 	return c
 }
 
@@ -85,6 +93,18 @@ type reconcileResult struct {
 	FrigateRetired bool // the command frigate was retired from contract work this tick
 	ContractRun    bool // batch-contract was launched this tick
 	ViableHubs     int  // viable contract hubs the selector found (for the heartbeat)
+
+	// GATE tallies (Slice 3).
+	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
+	MfgEnsured           bool // the manufacturing coordinator (executor) was ensured-running this tick
+	MfgBounced           bool // the executor was bounced for pipeline adoption this tick (captain L57)
+	WorkersReleased      int  // contract haulers released to construction this tick (repurpose-first)
+	GateWorkersBought    int  // gate-worker hulls actually bought this tick (staged: at most 1)
+	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
+
+	// COMPLETE tallies (Slice 3).
+	HandoffLaunched bool // the autosizer + standing coordinators were launched this tick (the hand-off)
+	Done            bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 }
 
 // reconcileOnce runs one full pass: phantom-cache refresh → observe → derive phase → act on the
@@ -159,6 +179,9 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	res.Phase = phase
 	if h.metrics != nil {
 		h.metrics.RecordPhase(string(phase))
+		// Construction progress is 0 pre-GATE and rises through GATE to 100 at COMPLETE — set each tick
+		// so the gauge always reflects the live world (pure observation, nil-safe).
+		h.metrics.RecordConstructionPct(obs.ConstructionPercent)
 	}
 
 	switch phase {
@@ -166,15 +189,10 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actData(ctx, cmd, cfg, obs, &res)
 	case PhaseIncome:
 		h.actIncome(ctx, cmd, cfg, obs, &res)
-	default:
-		// Slice-2 terminal: the INCOME exit ($/hr ≥ income_bar) is met but GATE (Slice 3) is not
-		// implemented yet. A clean hold, not an error (spec §Slices: "add a phase" is the whole of
-		// Slice 3) — mirroring how Slice 1 left the INCOME stub at DATA-complete.
-		logger.Log("INFO", fmt.Sprintf("Bootstrap phase %s not yet implemented — holding at INCOME-complete (realized $/hr %.0f ≥ bar %.0f)", phase, obs.IncomePerHour, cfg.IncomeBar), map[string]interface{}{
-			"action":       "bootstrap_phase_not_implemented",
-			"container_id": cmd.ContainerID,
-			"phase":        string(phase),
-		})
+	case PhaseGate:
+		h.actGate(ctx, cmd, cfg, obs, &res)
+	case PhaseComplete:
+		h.actComplete(ctx, cmd, cfg, obs, &res)
 	}
 
 	h.emitHeartbeat(ctx, cmd, cfg, phase, obs, res)
@@ -184,13 +202,25 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // derivePhase reads the current phase from the observation alone (NEVER a persisted enum — spec
 // §Architecture). DATA is the cold-start default; once market coverage clears the bar the arc has
 // passed DATA. Past DATA it is INCOME until the contract fleet's realized $/hr clears income_bar, then
-// GATE. The MarketsTotal>0 guard keeps a cold agent (nothing scouted yet) in DATA rather than reading
-// an empty world as "100% covered"; income_bar is positive by default, so a fresh INCOME entry (0
-// $/hr) never skips straight to GATE. The arc is monotone: coverage and realized income only rise, so
-// the phase only advances.
+// GATE, then COMPLETE once the gate is built. The MarketsTotal>0 guard keeps a cold agent (nothing
+// scouted yet) in DATA rather than reading an empty world as "100% covered"; income_bar is positive by
+// default, so a fresh INCOME entry (0 $/hr) never skips straight to GATE.
+//
+// The arc must be MONOTONE, but realized income is NOT monotone across the INCOME→GATE boundary: GATE
+// repurposes contract haulers to construction, which DROPS realized $/hr back under income_bar. So GATE
+// is made STICKY on obs.ConstructionStarted — once a construction pipeline exists the arc stays in GATE
+// regardless of income, never regressing to INCOME (which would re-buy the just-repurposed haulers and
+// thrash). COMPLETE is terminal and monotone (a built gate stays built). A restart at any point
+// re-derives the true phase from these live signals — no persisted cursor, no double-advance.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 	if !(obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar) {
 		return PhaseData
+	}
+	if obs.ConstructionComplete {
+		return PhaseComplete
+	}
+	if obs.ConstructionStarted {
+		return PhaseGate // sticky: stay in GATE even as repurposed haulers pull income under the bar
 	}
 	if obs.IncomePerHour >= cfg.IncomeBar {
 		return PhaseGate
@@ -370,7 +400,7 @@ func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun)
+	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
 	if cfg.DryRun {
 		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
 	}
@@ -380,28 +410,34 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		blockers = "none"
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%/%.0f%% bar) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, delta, next, blockers), map[string]interface{}{
-		"action":          "bootstrap_heartbeat",
-		"container_id":    cmd.ContainerID,
-		"phase":           string(phase),
-		"probes":          obs.ProbeCount,
-		"probe_target":    cfg.ProbeTarget,
-		"probes_scouting": obs.ProbesScouting,
-		"markets_covered": obs.MarketsCovered,
-		"markets_total":   obs.MarketsTotal,
-		"haulers":         len(obs.Haulers),
-		"hauler_target":   cfg.HaulerTarget,
-		"viable_hubs":     res.ViableHubs,
-		"income_per_hour": obs.IncomePerHour,
-		"income_bar":      cfg.IncomeBar,
-		"treasury":        obs.Treasury,
-		"purchased":       res.Purchased,
-		"haulers_bought":  res.HaulersBought,
-		"frigate_retired": res.FrigateRetired,
-		"batch_contract":  res.ContractRun,
-		"scouted":         res.Scouted,
-		"blocker":         blockers,
+	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%/%.0f%% bar) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
+		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
+		"action":           "bootstrap_heartbeat",
+		"container_id":     cmd.ContainerID,
+		"phase":            string(phase),
+		"probes":           obs.ProbeCount,
+		"probe_target":     cfg.ProbeTarget,
+		"probes_scouting":  obs.ProbesScouting,
+		"markets_covered":  obs.MarketsCovered,
+		"markets_total":    obs.MarketsTotal,
+		"haulers":          len(obs.Haulers),
+		"hauler_target":    cfg.HaulerTarget,
+		"viable_hubs":      res.ViableHubs,
+		"income_per_hour":  obs.IncomePerHour,
+		"income_bar":       cfg.IncomeBar,
+		"treasury":         obs.Treasury,
+		"purchased":        res.Purchased,
+		"haulers_bought":   res.HaulersBought,
+		"frigate_retired":  res.FrigateRetired,
+		"batch_contract":   res.ContractRun,
+		"scouted":          res.Scouted,
+		"gate_site":        obs.GateSite,
+		"construction_pct": obs.ConstructionPercent,
+		"gate_workers":     obs.GateWorkers,
+		"desired_workers":  res.DesiredWorkers,
+		"workers_released": res.WorkersReleased,
+		"handoff":          res.HandoffLaunched,
+		"blocker":          blockers,
 	})
 }
 
@@ -431,7 +467,33 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, hub-placed)", len(obs.Haulers)+1, desired)
 		}
 		return fmt.Sprintf("await realized $/hr ≥ bar (%.0f/%.0f)", obs.IncomePerHour, cfg.IncomeBar)
+	case PhaseGate:
+		if obs.GateSite == "" {
+			return "discover the jump-gate construction site"
+		}
+		if !obs.ConstructionStarted {
+			return fmt.Sprintf("start construction pipeline on %s", obs.GateSite)
+		}
+		if !obs.ManufacturingRunning {
+			return "ensure the manufacturing coordinator (executor) is running"
+		}
+		if !obs.ManufacturingAdopted {
+			return "bounce the manufacturing coordinator so it adopts the pipeline (L57)"
+		}
+		plan := planGateWorkers(obs, cfg)
+		if len(plan.ReleaseShips) > 0 {
+			return fmt.Sprintf("repurpose %d surplus hauler(s) to gate construction", len(plan.ReleaseShips))
+		}
+		if plan.Buy > 0 {
+			return fmt.Sprintf("buy 1 gate worker (staged, capital-gated; %d have/%d desired)", obs.GateWorkers, plan.DesiredWorkers)
+		}
+		return fmt.Sprintf("monitor construction to 100%% (%.0f%%)", obs.ConstructionPercent)
+	case PhaseComplete:
+		if !obs.AutosizerRunning {
+			return "launch the fleet-autosizer + standing coordinators (hand-off)"
+		}
+		return "COMPLETE — gate built, economy handed off, exiting"
 	default:
-		return fmt.Sprintf("phase %s not yet implemented — holding at INCOME-complete", phase)
+		return fmt.Sprintf("phase %s unhandled", phase)
 	}
 }

@@ -431,27 +431,32 @@ func TestBootstrap_Income_DryRunTakesNoAction(t *testing.T) {
 	}
 }
 
-// --- GATE stub: income ≥ bar → holds at INCOME-complete, INCOME act does NOT run ---
+// --- INCOME→GATE crossover (Slice 3): income ≥ bar derives GATE, and the INCOME acts stop running.
+// From the INCOME fixture (no gate site discovered, no GATE collaborators wired) GATE blocks on the
+// undiscovered site rather than doing any INCOME work — the phase crossover is clean. ---
 
-func TestBootstrap_GateStub_HoldsAtIncomeComplete(t *testing.T) {
+func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 	obs := incomeObs()
 	obs.IncomePerHour = 50000 // ≥ 10k bar → GATE
 	obs.BatchContractRunning = false
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	run := &fakeContractRunner{}
-	h := newIncomeHandler(obs, ret, acq, run)
+	h := newIncomeHandler(obs, ret, acq, run) // no GATE collaborators wired
 	log := &capturingLogger{}
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	if res.Phase != PhaseGate {
 		t.Fatalf("expected derived phase GATE, got %s", res.Phase)
 	}
 	if ret.calls != 0 || run.calls != 0 || acq.buys != 0 {
-		t.Fatalf("GATE stub: INCOME act must not run; retire=%d launch=%d buy=%d", ret.calls, run.calls, acq.buys)
+		t.Fatalf("in GATE the INCOME act must not run; retire=%d launch=%d buy=%d", ret.calls, run.calls, acq.buys)
 	}
-	hold, ok := log.find("bootstrap_phase_not_implemented")
-	if !ok || !strings.Contains(hold.msg, "INCOME-complete") {
-		t.Fatalf("expected a 'holding at INCOME-complete' hold line, got ok=%v msg=%q", ok, hold.msg)
+	// The INCOME fixture has no gate site, so GATE fails closed on discovery — never a "not implemented" hold.
+	if res.Blocker != "no_gate_site" {
+		t.Fatalf("expected GATE to block on the undiscovered site, got blocker %q", res.Blocker)
+	}
+	if _, ok := log.find("bootstrap_phase_not_implemented"); ok {
+		t.Fatalf("the GATE 'not implemented' stub must be gone now that GATE is live")
 	}
 }
 
