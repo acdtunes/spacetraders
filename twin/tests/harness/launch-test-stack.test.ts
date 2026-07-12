@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 const TWIN_DIR = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(TWIN_DIR, 'scripts', 'launch-test-stack.sh');
 const REAL_CONFIG = path.join(TWIN_DIR, 'test-config.yaml');
-const TEST_DSN = 'postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable';
+const TEST_DSN = 'postgresql://spacetraders:dev_password@localhost:5434/spacetraders_test?sslmode=disable';
 
 function runDry(env: Record<string, string> = {}) {
   const res = spawnSync('bash', [SCRIPT, '--dry-run'], {

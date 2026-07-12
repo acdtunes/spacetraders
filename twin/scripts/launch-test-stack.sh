@@ -15,7 +15,10 @@ DAEMON_BIN="$GOBOT_DIR/bin/spacetraders-daemon"
 
 TWIN_TEST_CONFIG="${TWIN_TEST_CONFIG:-$TWIN_DIR/test-config.yaml}"
 TWIN_BASE_URL="${TWIN_BASE_URL:-http://127.0.0.1:8080/v2}"
-TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable}"
+TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://spacetraders:dev_password@localhost:5434/spacetraders_test?sslmode=disable}"
+# Isolation signal is the DB NAME (spacetraders_test), not the port. Derive the port from the DSN
+# so the reachability check tracks it (default :5434; :5433 was taken by another project).
+TEST_DB_PORT="$(printf '%s' "$TEST_DATABASE_URL" | sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#')"; [ -n "$TEST_DB_PORT" ] || TEST_DB_PORT=5434
 
 TEST_PID_FILE="/tmp/spacetraders-daemon-test.pid"
 TEST_GRPC_HOST="localhost"; TEST_GRPC_PORT="50062"
@@ -34,7 +37,7 @@ require_line '^[[:space:]]*pid_file:[[:space:]]*/tmp/spacetraders-daemon-test\.p
 require_line '^[[:space:]]*socket_path:[[:space:]]*/tmp/spacetraders-daemon-test\.sock[[:space:]]*(#.*)?$' "daemon.socket_path is not the -test socket" "socket_path: /tmp/spacetraders-daemon-test.sock"
 require_line '^[[:space:]]*address:[[:space:]]*localhost:50062[[:space:]]*(#.*)?$' "daemon.address is not the test gRPC port" "address: localhost:50062"
 require_line '^[[:space:]]*port:[[:space:]]*9092[[:space:]]*(#.*)?$' "metrics.port is not 9092 (prod serves 9090)" "port: 9092"
-grep -Fq '5433/spacetraders_test' "$TWIN_TEST_CONFIG" || fail "database.url does not point at spacetraders_test on 5433 — prod (5432/spacetraders) is READ-ONLY."
+grep -Fq '/spacetraders_test' "$TWIN_TEST_CONFIG" || fail "database.url does not point at the spacetraders_test DB — prod (spacetraders on 5432) is READ-ONLY."
 
 echo "twin config:   $TWIN_TEST_CONFIG"
 echo "daemon bin:    $DAEMON_BIN"
@@ -44,8 +47,8 @@ echo "env:           DATABASE_URL=$TEST_DATABASE_URL"
 if [ "$DRY_RUN" = "1" ]; then echo "dry-run: guards passed; nothing launched."; exit 0; fi
 
 if [ ! -x "$CLI_BIN" ] || [ ! -x "$DAEMON_BIN" ]; then echo "building CLI + daemon..."; make -C "$GOBOT_DIR" build-cli build-daemon; fi
-if ! (echo > "/dev/tcp/localhost/5433") 2>/dev/null; then
-  fail "test Postgres not reachable on localhost:5433. Start it first (docker compose -f twin/docker-compose.test.yml up -d postgres-test). Prod 5432 is READ-ONLY."
+if ! (echo > "/dev/tcp/localhost/$TEST_DB_PORT") 2>/dev/null; then
+  fail "test Postgres not reachable on localhost:$TEST_DB_PORT. Start it first (docker compose -f twin/docker-compose.test.yml up -d postgres-test). Prod 5432 is READ-ONLY."
 fi
 
 if curl -sf "$TWIN_BASE_URL/" >/dev/null 2>&1; then echo "twin already serving $TWIN_BASE_URL — reusing it."; else
