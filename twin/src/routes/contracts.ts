@@ -18,6 +18,7 @@ import {
   deliverToContract,
   fulfillContract,
 } from '../world/contracts.js';
+import { serializeAgent, serializeCargo } from '../world/serialize.js';
 import { authFailed } from './auth.js';
 import { settleArrival } from './ships.js';
 
@@ -55,7 +56,7 @@ export async function contractRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     try {
       const contract = acceptContract(world, id);
-      return reply.send({ data: { agent: world.agent, contract: serializeContract(contract) } });
+      return reply.send({ data: { agent: serializeAgent(world), contract: serializeContract(contract) } });
     } catch (err) {
       if (err instanceof ContractError) return sendContractError(reply, err);
       throw err;
@@ -94,7 +95,7 @@ export async function contractRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const updated = deliverToContract(world, { id, shipSymbol, tradeSymbol, units });
-      return reply.send({ data: { contract: serializeContract(updated), cargo: ship.cargo } });
+      return reply.send({ data: { contract: serializeContract(updated), cargo: serializeCargo(ship) } });
     } catch (err) {
       if (err instanceof ContractError) return sendContractError(reply, err);
       throw err;
@@ -109,7 +110,7 @@ export async function contractRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     try {
       const contract = fulfillContract(world, id);
-      return reply.send({ data: { agent: world.agent, contract: serializeContract(contract) } });
+      return reply.send({ data: { agent: serializeAgent(world), contract: serializeContract(contract) } });
     } catch (err) {
       if (err instanceof ContractError) return sendContractError(reply, err);
       throw err;

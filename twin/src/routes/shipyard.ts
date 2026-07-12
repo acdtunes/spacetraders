@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { getWorld } from '../world/store.js';
+import { serializeShipyard } from '../world/serialize.js';
 import { notFound } from '../errors.js';
 
 /** GET /v2/systems/:s/waypoints/:w/shipyard — { data: Shipyard } (captured verbatim);
@@ -11,7 +12,7 @@ export async function shipyardRoutes(app: FastifyInstance): Promise<void> {
       const { waypointSymbol } = req.params;
       const shipyard = getWorld().shipyards.get(waypointSymbol);
       if (!shipyard) return notFound(reply, `Shipyard not found at waypoint ${waypointSymbol}.`);
-      return reply.send({ data: shipyard });
+      return reply.send({ data: serializeShipyard(shipyard) });
     },
   );
 }

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { getWorld } from '../world/store.js';
 import { getNow, makeTransit, resolveNav } from '../clock.js';
 import { appendMutation } from '../world/mutation-log.js';
+import { serializeAgent, serializeShip, serializeShipNav } from '../world/serialize.js';
 import { badRequest, notFound, unauthorized, sendError, ERR_SHIP_MUST_BE_DOCKED, ERR_SHIP_NOT_DOCKED } from '../errors.js';
 import type { Ship, Waypoint, World } from '../world/types.js';
 
@@ -132,11 +133,9 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     const q = request.query as Record<string, unknown>;
     const page = intParam(q.page, 1, 1, Number.MAX_SAFE_INTEGER);
     const limit = intParam(q.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
-    const all: Ship[] = [...world.ships.values()]
-      .sort((a, b) => a.symbol.localeCompare(b.symbol))
-      .map((s) => resolveNav(s, world.transits.get(s.symbol), now));
+    const all: Ship[] = [...world.ships.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
     const start = (page - 1) * limit;
-    const data = all.slice(start, start + limit);
+    const data = all.slice(start, start + limit).map((s) => serializeShip(world, s, now));
     return reply.send({ data, meta: { total: all.length, page, limit } });
   });
 
@@ -148,7 +147,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     const { symbol } = request.params as { symbol: string };
     const ship = world.ships.get(symbol);
     if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
-    return reply.send({ data: resolveNav(ship, world.transits.get(symbol), now) });
+    return reply.send({ data: serializeShip(world, ship, now) });
   });
 
   // POST /my/ships — buy a hull. This is the TWIN-OBSERVABLE `PurchaseShip` mutation: the twin logs
@@ -185,7 +184,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
       waypointSymbol: waypoint, shipSymbol: symbol, shipType,
       price: purchasePriceFor(world, shipType), agentSymbol: world.agent.symbol, timestamp: getNow().toISOString(),
     };
-    return reply.code(201).send({ data: { agent: world.agent, ship, transaction } });
+    return reply.code(201).send({ data: { agent: serializeAgent(world), ship: serializeShip(world, ship), transaction } });
   });
 
   // POST /my/ships/:symbol/navigate — move a hull. TWIN-OBSERVABLE `navigate` mutation (no detail):
@@ -221,7 +220,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     appendMutation(world, 'navigate');
 
     const resolved = resolveNav(ship, world.transits.get(symbol), now);
-    return reply.code(200).send({ data: { nav: resolved.nav, fuel: resolved.fuel } });
+    return reply.code(200).send({ data: { nav: serializeShipNav(world, resolved.nav, symbol), fuel: resolved.fuel, events: [] } });
   });
 
   // PATCH /my/ships/:symbol/nav — set the flight mode (CRUISE/BURN/DRIFT/STEALTH). The route
@@ -238,7 +237,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     if (!allowed.includes(mode)) return badRequest(reply, `flightMode must be one of ${allowed.join(', ')}.`);
     ship.nav = { ...ship.nav, flightMode: mode as Ship['nav']['flightMode'] };
     const resolved = resolveNav(ship, world.transits.get(symbol), new Date());
-    return reply.code(200).send({ data: { nav: resolved.nav, fuel: resolved.fuel } });
+    return reply.code(200).send({ data: { nav: serializeShipNav(world, resolved.nav, symbol), fuel: resolved.fuel, events: [] } });
   });
 
   // POST /my/ships/:symbol/orbit — DOCKED/arrived -> IN_ORBIT. Idempotent. The coordinator orbits
@@ -252,7 +251,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     settleArrival(world, ship, symbol);
     if (world.transits.has(symbol)) return sendError(reply, 400, ERR_SHIP_MUST_BE_DOCKED, `Ship ${symbol} is in transit.`);
     ship.nav = { ...ship.nav, status: 'IN_ORBIT' };
-    return reply.code(200).send({ data: { nav: ship.nav } });
+    return reply.code(200).send({ data: { nav: serializeShipNav(world, ship.nav, symbol) } });
   });
 
   // POST /my/ships/:symbol/dock — IN_ORBIT/arrived -> DOCKED. Idempotent. The coordinator docks at
@@ -266,7 +265,7 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     settleArrival(world, ship, symbol);
     if (world.transits.has(symbol)) return sendError(reply, 400, ERR_SHIP_MUST_BE_DOCKED, `Ship ${symbol} is in transit.`);
     ship.nav = { ...ship.nav, status: 'DOCKED' };
-    return reply.code(200).send({ data: { nav: ship.nav } });
+    return reply.code(200).send({ data: { nav: serializeShipNav(world, ship.nav, symbol) } });
   });
 
   // POST /my/ships/:symbol/refuel — fill to capacity, charge the agent. Must be docked (4244).
@@ -281,11 +280,19 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     if (ship.nav.status !== 'DOCKED') return sendError(reply, 400, ERR_SHIP_NOT_DOCKED, `Ship ${symbol} must be docked to refuel.`);
     const missing = Math.max(0, ship.fuel.capacity - ship.fuel.current);
     const marketUnits = Math.ceil(missing / 100);
-    const totalPrice = marketUnits * fuelUnitPrice(world, ship.nav.waypointSymbol);
+    const pricePerUnit = fuelUnitPrice(world, ship.nav.waypointSymbol);
+    const totalPrice = marketUnits * pricePerUnit;
     ship.fuel = { ...ship.fuel, current: ship.fuel.capacity };
     if (world.agent) world.agent.credits = Math.max(0, world.agent.credits - totalPrice);
     return reply.code(200).send({
-      data: { agent: { credits: world.agent?.credits ?? 0 }, fuel: ship.fuel, transaction: { units: missing, totalPrice } },
+      data: {
+        agent: serializeAgent(world),
+        fuel: ship.fuel,
+        transaction: {
+          waypointSymbol: ship.nav.waypointSymbol, shipSymbol: symbol, tradeSymbol: 'FUEL', type: 'PURCHASE',
+          units: marketUnits, pricePerUnit, totalPrice, timestamp: getNow().toISOString(),
+        },
+      },
     });
   });
 }

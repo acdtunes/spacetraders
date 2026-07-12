@@ -44,7 +44,7 @@ describe('cargo route — purchase', () => {
   it('buys units at the docked market, adds cargo and debits credits at purchasePrice', async () => {
     placeShip(MARKET, 'DOCKED');
     const res = await purchase({ symbol: 'IRON_ORE', units: 10 });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(201); // spec: purchaseCargo -> 201 Created
     const d = res.json().data;
     expect(d.cargo.units).toBe(10);
     expect(d.agent.credits).toBe(1_000_000 - 10 * 46);
@@ -68,7 +68,7 @@ describe('cargo route — sell', () => {
   it('sells held cargo into the docked market, removes cargo and credits at sellPrice', async () => {
     placeShip(MARKET, 'DOCKED', [{ symbol: 'IRON_ORE', units: 10 }]);
     const res = await sell({ symbol: 'IRON_ORE', units: 10 });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(201); // spec: sellCargo -> 201 Created
     const d = res.json().data;
     expect(d.cargo.units).toBe(0);
     expect(d.agent.credits).toBe(1_000_000 + 10 * 40);

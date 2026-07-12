@@ -48,7 +48,10 @@ describe('GET /v2/systems/{s}/waypoints/{w}/shipyard (buildServer wiring)', () =
     expect(listing.purchasePrice).toBe(probe.purchasePrice);
     expect(typeof listing.engine.speed).toBe('number');
     expect(listing.engine.speed).toBe(probe.engine.speed);
-    expect(body.data).toEqual(shipyard);
+    // Every captured field is preserved; the response ADDS the spec-required ShipyardShip fields
+    // (symbol/supply/crew) and the deep condition/integrity/quality/description on frame/reactor/engine,
+    // so this is toMatchObject (superset), not a verbatim toEqual.
+    expect(body.data).toMatchObject(shipyard);
   });
 
   it('404s a waypoint with no shipyard, naming the waypoint in the error envelope', async () => {

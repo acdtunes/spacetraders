@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { getWorld } from '../world/store.js';
+import { serializeAgent } from '../world/serialize.js';
 import { unauthorized } from '../errors.js';
 
 function bearerToken(request: FastifyRequest): string | null {
@@ -17,6 +18,6 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     if (world.agentToken === null || token !== world.agentToken) {
       return unauthorized(reply, 'Missing or invalid agent token.');
     }
-    return reply.status(200).send({ data: world.agent });
+    return reply.status(200).send({ data: serializeAgent(world) });
   });
 }

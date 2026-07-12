@@ -41,7 +41,7 @@
           }
         },
         "engine": {
-          "symbol": "ENGINE_IMPULSE_DRIVE",
+          "symbol": "ENGINE_IMPULSE_DRIVE_I",
           "name": "Impulse Drive",
           "speed": 3,
           "requirements": {
@@ -179,7 +179,7 @@
           }
         },
         "engine": {
-          "symbol": "ENGINE_IMPULSE_DRIVE",
+          "symbol": "ENGINE_IMPULSE_DRIVE_I",
           "name": "Impulse Drive",
           "speed": 3,
           "requirements": {
@@ -317,7 +317,7 @@
           }
         },
         "engine": {
-          "symbol": "ENGINE_IMPULSE_DRIVE",
+          "symbol": "ENGINE_IMPULSE_DRIVE_I",
           "name": "Impulse Drive",
           "speed": 3,
           "requirements": {

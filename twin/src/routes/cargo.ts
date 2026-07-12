@@ -7,6 +7,8 @@
 //   POST /my/ships/:s/sell     -> { data: { agent, cargo, transaction } }   (req { symbol, units })
 import type { FastifyInstance } from 'fastify';
 import { getWorld } from '../world/store.js';
+import { getNow } from '../clock.js';
+import { serializeAgent, serializeCargo } from '../world/serialize.js';
 import { badRequest, notFound, sendError, ERR_SHIP_NOT_DOCKED } from '../errors.js';
 import { authFailed } from './auth.js';
 import { settleArrival } from './ships.js';
@@ -74,11 +76,12 @@ export async function cargoRoutes(app: FastifyInstance): Promise<void> {
     addCargo(ship, parsed.symbol, parsed.units);
     if (world.agent) world.agent.credits = Math.max(0, world.agent.credits - totalPrice);
 
-    return reply.send({
+    // Spec: purchaseCargo returns 201 Created.
+    return reply.code(201).send({
       data: {
-        agent: { credits: world.agent?.credits ?? 0 },
-        cargo: ship.cargo,
-        transaction: { waypointSymbol: ship.nav.waypointSymbol, shipSymbol, tradeSymbol: parsed.symbol, type: 'PURCHASE', units: parsed.units, pricePerUnit, totalPrice },
+        agent: serializeAgent(world),
+        cargo: serializeCargo(ship),
+        transaction: { waypointSymbol: ship.nav.waypointSymbol, shipSymbol, tradeSymbol: parsed.symbol, type: 'PURCHASE', units: parsed.units, pricePerUnit, totalPrice, timestamp: getNow().toISOString() },
       },
     });
   });
@@ -105,11 +108,12 @@ export async function cargoRoutes(app: FastifyInstance): Promise<void> {
     removeCargo(ship, parsed.symbol, parsed.units);
     if (world.agent) world.agent.credits += totalPrice;
 
-    return reply.send({
+    // Spec: sellCargo returns 201 Created.
+    return reply.code(201).send({
       data: {
-        agent: { credits: world.agent?.credits ?? 0 },
-        cargo: ship.cargo,
-        transaction: { waypointSymbol: ship.nav.waypointSymbol, shipSymbol, tradeSymbol: parsed.symbol, type: 'SELL', units: parsed.units, pricePerUnit, totalPrice },
+        agent: serializeAgent(world),
+        cargo: serializeCargo(ship),
+        transaction: { waypointSymbol: ship.nav.waypointSymbol, shipSymbol, tradeSymbol: parsed.symbol, type: 'SELL', units: parsed.units, pricePerUnit, totalPrice, timestamp: getNow().toISOString() },
       },
     });
   });

@@ -42,7 +42,10 @@ describe('GET /v2/systems/{s}/waypoints/{w}/market (buildServer wiring)', () => 
     expect(res.statusCode).toBe(200);
     const body = res.json() as { data: FixtureMarket };
     expect(body.data.symbol).toBe(gold.symbol);
-    expect(body.data).toEqual(gold); // exports/imports/exchange + tradeGoods pass through unchanged
+    // Every captured field is preserved (goods keep their exports/imports/exchange placement and each
+    // tradeGood keeps its prices/supply); the response ADDS the spec-required TradeGood name/description
+    // and the MarketTradeGood `type`, so this is toMatchObject (superset), not a verbatim toEqual.
+    expect(body.data).toMatchObject(gold);
     const ex = new Set(body.data.exports.map((g) => g.symbol));
     const im = new Set(body.data.imports.map((g) => g.symbol));
     const xc = new Set(body.data.exchange.map((g) => g.symbol));

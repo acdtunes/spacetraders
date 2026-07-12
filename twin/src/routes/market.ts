@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { getWorld } from '../world/store.js';
+import { serializeMarket } from '../world/serialize.js';
 import { notFound } from '../errors.js';
 
 /** GET /v2/systems/:s/waypoints/:w/market — { data: Market }. The world's Market
@@ -12,7 +13,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
       const { waypointSymbol } = request.params;
       const market = getWorld().markets.get(waypointSymbol);
       if (!market) return notFound(reply, `Market not found at waypoint ${waypointSymbol}.`);
-      return reply.send({ data: market });
+      return reply.send({ data: serializeMarket(market) });
     },
   );
 }
