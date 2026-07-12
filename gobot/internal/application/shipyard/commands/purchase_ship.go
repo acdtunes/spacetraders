@@ -30,6 +30,15 @@ type PurchaseShipCommand struct {
 	ShipType             string
 	PlayerID             shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
+	// KnownPurchasePrice, when > 0, is the shipyard price for ShipType at
+	// ShipyardWaypoint that the CALLER already read (the batch budget pass reads
+	// the live shipyard listing AND agent credits before dispatching each per-ship
+	// buy). Supplying it lets this handler SKIP the duplicate GetShipyard price
+	// read (validateAndGetShipPrice) and the duplicate GetAgent credit pre-check
+	// (guardSufficientCredits) — the reconcile-tick latency cut. The zero value
+	// (the CLI single-buy default and the batch auto-discovery / empty-listing
+	// deferral) => the handler reads price + credits itself, exactly as before.
+	KnownPurchasePrice int
 }
 
 // PurchaseShipResponse contains the newly purchased ship
@@ -107,13 +116,12 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, err
 	}
 
-	purchasePrice, systemSymbol, err := h.validateAndGetShipPrice(ctx, cmd, shipyardWaypoint)
+	purchasePrice, systemSymbol, err := h.resolveShipPrice(ctx, cmd, shipyardWaypoint)
 	if err != nil {
 		return nil, err
 	}
 
-	balanceBefore, err := h.ensureSufficientCredits(ctx, token, purchasePrice)
-	if err != nil {
+	if err := h.guardSufficientCredits(ctx, cmd, token, purchasePrice); err != nil {
 		return nil, err
 	}
 
@@ -121,6 +129,14 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase ship: %w", err)
 	}
+
+	// Pre-purchase balance for the ledger row, reconstructed from the
+	// AUTHORITATIVE purchase response (post-purchase credits + the exact price
+	// debited) rather than a second GetAgent read: credits_before ==
+	// credits_after + price. This drops one API call and is internally
+	// consistent with the ledger's own Amount (-price) and AuthoritativeBalance
+	// (post-credits), which the ledger anchors on regardless.
+	balanceBefore := purchaseResult.Agent.Credits + purchaseResult.Transaction.Price
 
 	// Update player credits in database and return updated credits after successful purchase
 	updatedPlayer, err := h.updatePlayerCredits(ctx, cmd.PlayerID, purchaseResult.Agent.Credits)
@@ -137,15 +153,16 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to convert ship data: %w", err)
 	}
 
-	// Create idle ship assignment for newly purchased ship
+	// Create idle ship assignment for newly purchased ship. This persists the
+	// full ship built from the AUTHORITATIVE PurchaseShip response
+	// (convertShipDataToEntity above populates role, cargo, nav, fuel, modules,
+	// mounts, reactor, crew from the same ship object a resync would GET), so no
+	// separate post-purchase GET /my/ships resync is needed — the response ship
+	// IS the fresh state. Dropping that resync removes one cold-start API call
+	// per hauler (the L50 cache-heal is already satisfied by this Save).
 	if err := h.createIdleAssignment(ctx, newShip); err != nil {
 		return nil, fmt.Errorf("failed to create ship assignment: %w", err)
 	}
-
-	// Auto-heal the cache the moment the ship exists: force GET /my/ships so a
-	// freshly purchased ship never lingers with an empty Role (invisible to
-	// role-based coordinators) or phantom cargo/nav state (cluster lesson L50).
-	h.refreshPurchasedShip(ctx, newShip.ShipSymbol(), cmd.PlayerID)
 
 	// Record transaction synchronously to ensure it's saved
 	h.recordShipPurchaseTransaction(ctx, cmd, shipyardWaypoint, purchaseResult, balanceBefore)
@@ -272,6 +289,23 @@ func (h *PurchaseShipHandler) dockShipIfNeeded(
 	return purchasingShip, nil
 }
 
+// resolveShipPrice returns the purchase price for cmd.ShipType at shipyardWaypoint
+// and the yard's system symbol. When the caller supplied KnownPurchasePrice (the
+// batch budget pass already read the live listing), it is used directly and the
+// duplicate GetShipyard read is skipped; otherwise the live shipyard listing is
+// read (the CLI single-buy and auto-discovery / empty-listing paths). systemSymbol
+// is always derived locally from the waypoint — it never required an API read.
+func (h *PurchaseShipHandler) resolveShipPrice(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	shipyardWaypoint string,
+) (int, string, error) {
+	if cmd.KnownPurchasePrice > 0 {
+		return cmd.KnownPurchasePrice, shared.ExtractSystemSymbol(shipyardWaypoint), nil
+	}
+	return h.validateAndGetShipPrice(ctx, cmd, shipyardWaypoint)
+}
+
 // validateAndGetShipPrice gets shipyard listings and validates ship availability
 // Returns: purchase price for ship type, system symbol, error
 func (h *PurchaseShipHandler) validateAndGetShipPrice(
@@ -304,23 +338,33 @@ func (h *PurchaseShipHandler) validateAndGetShipPrice(
 	return listing.PurchasePrice, systemSymbol, nil
 }
 
-// ensureSufficientCredits validates player has enough credits for purchase
-// Returns: agent credits after validation, error
-func (h *PurchaseShipHandler) ensureSufficientCredits(
+// guardSufficientCredits fails fast when the agent cannot afford the purchase.
+// When the caller supplied KnownPurchasePrice it already ran this exact check
+// against the same live credits during its budget pass (calculatePurchasableCount
+// caps the count at agentCredits/shipPrice), so the duplicate GetAgent read is
+// skipped and the server-side balance check remains the backstop. The
+// pre-purchase balance the ledger needs is reconstructed from the authoritative
+// purchase response (see Handle), so this guard no longer returns credits.
+func (h *PurchaseShipHandler) guardSufficientCredits(
 	ctx context.Context,
+	cmd *PurchaseShipCommand,
 	token string,
 	purchasePrice int,
-) (int, error) {
+) error {
+	if cmd.KnownPurchasePrice > 0 {
+		return nil
+	}
+
 	agentData, err := h.apiClient.GetAgent(ctx, token)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get agent data: %w", err)
+		return fmt.Errorf("failed to get agent data: %w", err)
 	}
 
 	if agentData.Credits < purchasePrice {
-		return 0, fmt.Errorf("insufficient credits: have %d, need %d", agentData.Credits, purchasePrice)
+		return fmt.Errorf("insufficient credits: have %d, need %d", agentData.Credits, purchasePrice)
 	}
 
-	return agentData.Credits, nil
+	return nil
 }
 
 // updatePlayerCredits updates player's credits in the database
@@ -658,35 +702,6 @@ func (h *PurchaseShipHandler) createShipValueObjects(
 	navStatus := navigation.NavStatus(shipData.NavStatus)
 
 	return cargo, fuel, navStatus, nil
-}
-
-// refreshPurchasedShip forces an authoritative GET /my/ships for a freshly
-// purchased ship, reconciling the daemon cache against the server the moment
-// the ship exists. A brand-new ship can cache with an empty Role (invisible to
-// role-based coordinators) or phantom cargo, and the stale entry never self-
-// heals on its own. Best-effort by design: the ship is already bought and
-// persisted, so a refresh failure must not fail the purchase — the next pool
-// sync reconciles it. Logs the auto-refresh at INFO with the trigger.
-func (h *PurchaseShipHandler) refreshPurchasedShip(
-	ctx context.Context,
-	shipSymbol string,
-	playerID shared.PlayerID,
-) {
-	logger := logging.LoggerFromContext(ctx)
-
-	if _, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID); err != nil {
-		logger.Log("WARN", "Post-purchase ship refresh failed (cache self-heals on next pool sync)", map[string]interface{}{
-			"ship_symbol": shipSymbol,
-			"trigger":     "post_purchase",
-			"error":       err.Error(),
-		})
-		return
-	}
-
-	logger.Log("INFO", "Auto-refreshed ship state after purchase", map[string]interface{}{
-		"ship_symbol": shipSymbol,
-		"trigger":     "post_purchase",
-	})
 }
 
 // createIdleAssignment creates an idle ship assignment for a newly purchased ship
