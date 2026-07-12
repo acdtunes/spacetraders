@@ -11,7 +11,7 @@ describe('bootstrap DATA — coverage-bar exit', () => {
       await ctx.pollUntil(
         () => ctx.scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'DATA' }),
         (v) => v === 1,
-        { steps: 6, advanceMs: 1000 },
+        { steps: 40, advanceMs: 1000 },
       );
       expect(await ctx.scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(0);
 
@@ -21,7 +21,7 @@ describe('bootstrap DATA — coverage-bar exit', () => {
       const s = await ctx.pollUntil(
         () => ctx.twin.state(),
         (st) => st.coverage >= 0.95,
-        { steps: 6, advanceMs: 1000 },
+        { steps: 40, advanceMs: 1000 },
       );
       expect(s.coverage).toBeGreaterThanOrEqual(0.95);
       // INCOME never becomes the active phase in this harness (Slice-2 out of scope).

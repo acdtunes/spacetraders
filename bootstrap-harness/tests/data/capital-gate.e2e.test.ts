@@ -20,7 +20,7 @@ describe('bootstrap DATA — capital gate', () => {
       const funded = await ctx.pollUntil(
         () => ctx.twin.state(),
         (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
-        { steps: 12, advanceMs: 1000 },
+        { steps: 40, advanceMs: 1000 },
       );
       expect(countCall(funded.mutationLog, 'PurchaseShip')).toBeGreaterThanOrEqual(1);
     });

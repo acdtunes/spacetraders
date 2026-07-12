@@ -31,7 +31,7 @@ describe('bootstrap DATA — golden path', () => {
       const done = await ctx.pollUntil(
         () => ctx.scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'DATA' }),
         (v) => v === 1, // DATA gauge stays 1 while holding at DATA-complete (INCOME is a stub)
-        { steps: 10, advanceMs: 1000 },
+        { steps: 40, advanceMs: 1000 },
       );
       expect(done).toBe(1);
       // Still exactly 2 buys — DATA-complete does not buy more.

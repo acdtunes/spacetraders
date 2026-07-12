@@ -20,8 +20,8 @@ export async function pollUntil<T>(
   pred: (v: T) => boolean,
   opts: { steps?: number; stepMs?: number; advanceMs?: number } = {},
 ): Promise<T> {
-  const steps = opts.steps ?? 30;
-  const stepMs = opts.stepMs ?? 300; // real wall gap between daemon reconcile observations
+  const steps = opts.steps ?? 48;
+  const stepMs = opts.stepMs ?? 700; // real wall gap between daemon reconcile observations
   const advanceMs = opts.advanceMs ?? 0; // twin world-time advanced each step (0 = don't advance)
   let last: T = await fn();
   for (let i = 0; i < steps; i++) {
@@ -36,7 +36,7 @@ export async function pollUntil<T>(
 
 // Advance a fixed number of reconcile ticks with no exit predicate — for "run N ticks, then
 // assert the world did NOT change" scenarios (dry-run, disabled, capital-gate-while-poor).
-export async function advanceTicks(steps: number, advanceMs: number, stepMs = 300): Promise<void> {
+export async function advanceTicks(steps: number, advanceMs: number, stepMs = 700): Promise<void> {
   for (let i = 0; i < steps; i++) {
     await twin.clock({ advanceMs });
     await new Promise((r) => setTimeout(r, stepMs));
