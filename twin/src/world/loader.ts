@@ -18,6 +18,8 @@ export function newControlPlaneState(): ControlPlaneState {
     coverage: 0,
     marketScouting: new Map(),
     scoutAssigned: false,
+    contracts: new Map(),
+    activeContractId: null,
     haulers: [],
     frigateContractTagged: false,
     batchContractRunning: false,

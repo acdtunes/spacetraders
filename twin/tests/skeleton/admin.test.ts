@@ -20,6 +20,7 @@ vi.mock('../../src/world/loader', () => ({
     haulers: [], frigateContractTagged: false, batchContractRunning: false, creditsPerHour: 0, hubs: [],
     construction: { site: '', percent: 0, started: false, adopted: false }, gateWorkers: [],
     executorRunning: false, autosizerRunning: false, standingCoordinators: { siting: false, workerRebalancer: false }, done: false,
+    contracts: new Map(), activeContractId: null,
   }),
   registerAgent: (world: World, args: { symbol: string; faction: string; token: string }) => {
     const agent = { accountId: `twin-account-${args.symbol}`, symbol: args.symbol, headquarters: 'X1-PZ28-A1', credits: 175000, startingFaction: args.faction };
@@ -51,6 +52,7 @@ function registeredWorld(): World {
     haulers: [], frigateContractTagged: false, batchContractRunning: false, creditsPerHour: 0, hubs: [],
     construction: { site: '', percent: 0, started: false, adopted: false }, gateWorkers: [],
     executorRunning: false, autosizerRunning: false, standingCoordinators: { siting: false, workerRebalancer: false }, done: false,
+    contracts: new Map(), activeContractId: null,
   };
 }
 

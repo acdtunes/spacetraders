@@ -116,6 +116,39 @@ export interface TransitState {
   arrival: Rfc3339;
 }
 
+// ─── Contracts ───────────────────────────────────────────────────────────────────
+// The CANONICAL SpaceTraders contract object — field-for-field the shape the Go client
+// decodes (client.go parseContractData:1295). The client reads terms.deadline ONLY, and the
+// deliverables key is "deliver" (NOT "deliveries"). serializeContract (world/contracts.ts)
+// emits exactly this shape everywhere a contract appears on the /v2 surface.
+
+/** Contract payment split: credits paid at acceptance vs. at fulfillment. */
+export interface Payment { onAccepted: number; onFulfilled: number }
+
+/** One required delivery line. `unitsFulfilled` climbs (capped at `unitsRequired`) as cargo is
+ *  delivered; the contract is fulfillable once every line has unitsFulfilled >= unitsRequired. */
+export interface ContractDeliverable {
+  tradeSymbol: string;
+  destinationSymbol: string;
+  unitsRequired: number;
+  unitsFulfilled: number;
+}
+
+export interface ContractTerms {
+  deadline: Rfc3339;               // the delivery deadline (terms.deadline — the only one the client reads)
+  payment: Payment;
+  deliver: ContractDeliverable[];  // KEY is "deliver" — the client rejects "deliveries"
+}
+
+export interface Contract {
+  id: string;
+  factionSymbol: string;
+  type: string;        // PROCUREMENT | TRANSPORT | SHUTTLE
+  accepted: boolean;
+  fulfilled: boolean;
+  terms: ContractTerms;
+}
+
 // ─── TWIN-OWNED control-plane state (backs GET /_twin/state + POST /_twin/report) ───
 // Reshaped /_twin/state is a BASE object; the INCOME and GATE phase views read supersets
 // of it. Cold defaults are produced by newControlPlaneState() (loader.ts); mode-specific
@@ -178,6 +211,8 @@ export interface ControlPlaneState {
   coverage: number;
   marketScouting: Map<string, MarketScouting>;   // keyed by waypoint symbol
   scoutAssigned: boolean;                         // scout-all-markets assigned (report seam) -> probes' scoutAssignment
+  contracts: Map<string, Contract>;               // keyed by contract id — the negotiate/accept/deliver/fulfill state machine
+  activeContractId: string | null;                // the ONE active contract (null until negotiate; cleared on fulfill)
   // INCOME view (+)
   haulers: HaulerState[];
   frigateContractTagged: boolean;

@@ -12,6 +12,7 @@ function coldWorld(): World {
     haulers: [], frigateContractTagged: false, batchContractRunning: false, creditsPerHour: 0, hubs: [],
     construction: { site: '', percent: 0, started: false, adopted: false }, gateWorkers: [],
     executorRunning: false, autosizerRunning: false, standingCoordinators: { siting: false, workerRebalancer: false }, done: false,
+    contracts: new Map(), activeContractId: null,
   };
 }
 let app: FastifyInstance;

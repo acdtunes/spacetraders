@@ -16,6 +16,7 @@ describe('world types compile to the Go decode-target shapes', () => {
       haulers: [], frigateContractTagged: false, batchContractRunning: false, creditsPerHour: 0, hubs: [],
       construction: { site: '', percent: 0, started: false, adopted: false }, gateWorkers: [],
       executorRunning: false, autosizerRunning: false, standingCoordinators: { siting: false, workerRebalancer: false }, done: false,
+      contracts: new Map(), activeContractId: null,
     };
     const ship: Ship | undefined = world.ships.get('X');
     expect(agent.credits).toBe(1);
