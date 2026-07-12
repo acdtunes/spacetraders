@@ -670,13 +670,17 @@ func run(cfg *config.Config) error {
 	// treasury/era-clock via the API client, worker/heavy/fleet counts via the ship repo, the
 	// running-chain count via the daemon, the chain-P&L realized worker rate, the shipyard price
 	// read, the buy+dedicate path, and the captain purchase notice — are assembled inside
-	// grpc.NewFleetAutosizerCoordinatorHandler. Heavies are wired but fail-closed (the unserved-lane
-	// read path is a banked seam), so only lights auto-buy live until that seam lands.
+	// grpc.NewFleetAutosizerCoordinatorHandler. Heavies are now LIVE (sp-4ewi): the unserved-lane
+	// signal reads the profitable-lane surface off the persisted market cache (marketRepo, via the
+	// read-only ProfitableLaneReader) and the realized tour-rate reads persisted tour telemetry
+	// (NewTourTelemetryRepository) — both fail closed on a read failure, so the guard stack still
+	// gates every heavy buy.
 	// sp-3yqa: goodsMarketLocator feeds the warehouse portfolio source (resolves each durable
 	// chain's in-system export waypoint — the warehouse's home). The warehouse class stays dormant
 	// until warehouse_hulls_enabled, so this wiring is safe to land ahead of opt-in.
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo, goodsMarketLocator,
+		marketRepo, persistence.NewTourTelemetryRepository(db),
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)

@@ -14,11 +14,14 @@ import (
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // This file wires the fleet capacity autosizer's application ports (sp-1txd M6) to the concrete
@@ -27,14 +30,17 @@ import (
 // / the demand sources, etc.), tested against fakes; these are the thin bridges the daemon injects
 // at boot. No business logic lives here — every method forwards to an existing client/repo.
 //
-// LIGHTS are FULLY LIVE: real worker count (HAULER hulls), running-chain count, chain-P&L realized
-// worker rate, treasury / era-clock / yard-price / fleet-size reads, and the buy+dedicate path.
-// HEAVIES are wired but FAIL-CLOSED: the unserved-lane count and realized tour-rate have no clean
-// read path yet (the banked seam), so the heavy provider returns readable=false and no heavy is
-// ever bought until that seam lands (the vdld TourAlignmentProvider precedent). API utilization
-// likewise has no per-coordinator read path here yet, so its guard fails OPEN (the fleet ceilings
-// are the hard API-budget bound). Vacancies are 0 for now (the rebalancer hub-vacancy query is a
-// later enrichment; a 0 leaves the chain-derived base demand intact).
+// LIGHTS and HEAVIES are both FULLY LIVE. Lights: real worker count (HAULER hulls), running-chain
+// count, chain-P&L realized worker rate. Heavies (sp-4ewi): the unserved-lane count reads the
+// profitable-lane surface off the persisted market cache (the read-only ProfitableLaneReader — the
+// same pure trading.RankSpreads ranking the trade circuit flies, no coordinator perturbation), and
+// the realized tour-rate reads persisted tour telemetry (trading.ComputeFleetTourRate). Both fail
+// CLOSED on a genuine read failure (RULINGS #4 — an unreadable signal never spends); the seam only
+// makes readable demand READABLE, it relaxes no guard. Shared: treasury / era-clock / yard-price /
+// fleet-size reads and the buy+dedicate path. API utilization has no per-coordinator read path here
+// yet, so its guard fails OPEN (the fleet ceilings are the hard API-budget bound). Vacancies are 0
+// for now (the rebalancer hub-vacancy query is a later enrichment; a 0 leaves the chain-derived base
+// demand intact).
 
 // agentReader / serverStatusReader are the narrow slices of *api.SpaceTradersClient the money
 // guards need (treasury + era clock). Declared here so the ports depend on behaviour, not the
@@ -61,6 +67,8 @@ func NewFleetAutosizerCoordinatorHandler(
 	waypointRepo *persistence.GormWaypointRepository,
 	eventStore captain.EventStore,
 	marketLocator *goodsServices.MarketLocator,
+	marketRepo market.MarketRepository,
+	tourTelemetry tourTelemetryReader,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
 
@@ -68,7 +76,17 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.AddDemandProvider(fleetCmd.NewLightDemandProvider(&autosizerLightSources{
 		shipRepo: shipRepo, server: server, chainPnL: chainPnL,
 	}))
-	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{shipRepo: shipRepo}))
+	// HEAVIES ARE NOW LIVE (sp-4ewi): the unserved-lane signal reads the profitable-lane surface
+	// off the persisted market cache (tradingQueries.ProfitableLaneReader, read-only — the same pure
+	// trading.RankSpreads ranking the trade circuit uses, no coordinator perturbation), and the
+	// realized tour-rate reads persisted tour telemetry. Both fail closed on a genuine read failure,
+	// so the guard stack still gates every heavy buy; the seam only makes the demand READABLE.
+	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
+		shipRepo:   shipRepo,
+		laneReader: tradingQueries.NewProfitableLaneReader(marketRepo),
+		tourRates:  tourTelemetry,
+		clock:      shared.NewRealClock(),
+	}))
 
 	// Warehouse class (sp-3yqa): the concrete read-path for the sp-1j3f WarehouseDemandProvider —
 	// the durable-chain portfolio (vdld chains ∩ export waypoint ∩ chain_pnl), the dedicated-hull
@@ -410,25 +428,106 @@ func (s *autosizerLightSources) MarginalWorkerRate(ctx context.Context, playerID
 	return marginal, sum / float64(count), false, true, nil
 }
 
-// --- HEAVY demand sources ---
+// --- HEAVY demand sources (sp-4ewi: the wired seam) ---
 
-type autosizerHeavySources struct{ shipRepo navigation.ShipRepository }
+// profitableLaneCounter counts the profitable, feasible trade lanes ranked across the given systems,
+// read-only, off the persisted market cache. Satisfied by tradingQueries.ProfitableLaneReader.
+type profitableLaneCounter interface {
+	CountProfitableLanes(ctx context.Context, playerID int, systems []string) (count int, readable bool, err error)
+}
+
+// tourTelemetryReader reads the persisted per-leg tour telemetry the realized-rate computation
+// consumes, read-only. Satisfied by *persistence.TourTelemetryRepositoryGORM.
+type tourTelemetryReader interface {
+	ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error)
+}
+
+// heavyTourRateWindow is the trailing window the realized fleet-tour rate is measured over. It is a
+// READ window (how far back to pull realized tours), the heavy twin of the light path's 2h chain-P&L
+// window — not a guard-policy knob, so it lives here rather than on the config surface (RULINGS #5).
+// Wide enough to span several multi-hop tours (so the decline trend has ≥2 tours to compare) while
+// staying fresh; the realized-rate guard reads the RESULT, and an empty window simply fails closed.
+const heavyTourRateWindow = 12 * time.Hour
+
+type autosizerHeavySources struct {
+	shipRepo   navigation.ShipRepository
+	laneReader profitableLaneCounter
+	tourRates  tourTelemetryReader
+	clock      shared.Clock
+}
 
 func (s *autosizerHeavySources) HeavyCount(ctx context.Context, playerID int) (int, error) {
 	return countShips(ctx, s.shipRepo, playerID, func(sh *navigation.Ship) bool { return sh.DedicatedFleet() == "trade" })
 }
 
+// UnservedLaneCount surfaces the trade solver's profitable-but-unflown lane count as the heavy
+// capacity-short signal (sp-4ewi): the number of profitable, feasible lanes the player's trading
+// grounds rank BEYOND the current trade-hull pool. It discovers those grounds from the player's hull
+// locations (the yard-price reader's system-discovery idiom), asks the read-only lane reader how many
+// profitable lanes they hold, and subtracts the current heavies. READ-ONLY: it never perturbs the
+// trade coordinator (it consumes the same pure trading.RankSpreads ranking off the market cache).
+// Fails CLOSED (readable=false) on a genuine ship/market read failure; a readable zero (empty cache,
+// no floor-clearing lane) yields 0 unserved (no demand, no buy) — not a fail-closed.
 func (s *autosizerHeavySources) UnservedLaneCount(ctx context.Context, playerID int) (int, bool, error) {
-	// BANKED SEAM: the trade solver's profitable-but-unflown lane count has no clean read path yet.
-	// Report unreadable so heavies FAIL CLOSED (never wrongly bought). Wire the solver's ranked-plan
-	// surface here when it lands (the vdld TourAlignmentProvider precedent).
-	return 0, false, nil
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, false, nil // invalid player → unreadable → fail closed
+	}
+	ships, err := s.shipRepo.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return 0, false, err // a genuine ship read failure fails closed
+	}
+	profitable, readable, err := s.laneReader.CountProfitableLanes(ctx, playerID, distinctShipSystems(ships))
+	if err != nil || !readable {
+		return 0, false, err // unreadable lane surface → fail closed
+	}
+	heavies := 0
+	for _, sh := range ships {
+		if sh.DedicatedFleet() == "trade" {
+			heavies++
+		}
+	}
+	unserved := profitable - heavies
+	if unserved < 0 {
+		unserved = 0 // never a negative demand (the pool already covers the lanes)
+	}
+	return unserved, true, nil
 }
 
+// FleetTourRate computes the realized fleet-tour rate over the trailing window (sp-4ewi): the
+// fleet-average realized $/hr, the marginal (lowest-earning) heavy's realized $/hr, and whether the
+// per-tour trend is declining (absorption saturating). It reads persisted tour telemetry and defers
+// to the pure trading.ComputeFleetTourRate. Fails CLOSED (readable=false) on a telemetry read
+// failure or when no ship has a computable realized rate — the heavy realized-rate/payback guards
+// then block on their own, never buying against an unseen rate.
 func (s *autosizerHeavySources) FleetTourRate(ctx context.Context, playerID int) (float64, float64, bool, bool, error) {
-	// BANKED SEAM: no fleet-average realized tour-rate reader is wired yet. Report unreadable; heavies
-	// are already fail-closed on the lane signal above, so this does not gate any live buy.
-	return 0, 0, false, false, nil
+	since := s.clock.Now().Add(-heavyTourRateWindow)
+	rows, err := s.tourRates.ListByPlayer(ctx, playerID, since)
+	if err != nil {
+		return 0, 0, false, false, err // genuine telemetry read failure → fail closed
+	}
+	res := trading.ComputeFleetTourRate(rows)
+	return res.FleetAvg, res.Marginal, res.Declining, res.Readable, nil
+}
+
+// distinctShipSystems returns the distinct systems the player's hulls are located in — the trading
+// grounds the unserved-lane count scans. Mirrors autosizerYardPriceReader's system discovery.
+func distinctShipSystems(ships []*navigation.Ship) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(ships))
+	for _, sh := range ships {
+		loc := sh.CurrentLocation()
+		if loc == nil {
+			continue
+		}
+		system := shared.ExtractSystemSymbol(loc.Symbol)
+		if _, ok := seen[system]; ok {
+			continue
+		}
+		seen[system] = struct{}{}
+		out = append(out, system)
+	}
+	return out
 }
 
 // --- shared helper ---
