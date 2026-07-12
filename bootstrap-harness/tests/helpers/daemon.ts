@@ -9,9 +9,9 @@ import {
   TEST_DAEMON_SOCKET,
 } from './config';
 
-const env = () => ({
+const env = (configPath: string) => ({
   ...process.env,
-  SPACETRADERS_CONFIG: TEST_CONFIG,
+  SPACETRADERS_CONFIG: configPath,
   ST_API_BASE_URL: API_BASE_URL,
   DATABASE_URL: TEST_DATABASE_URL,
 });
@@ -30,9 +30,13 @@ async function waitForSocket(timeoutMs = 20_000): Promise<void> {
   throw new Error(`test daemon socket ${TEST_DAEMON_SOCKET} never appeared`);
 }
 
-export async function startTestDaemon(): Promise<DaemonHandle> {
+export async function startTestDaemon(opts: { configPath?: string } = {}): Promise<DaemonHandle> {
   // --force SIGTERM-evicts any prior daemon on the TEST pidfile (isolated by test-config.yaml).
-  const proc = spawn(DAEMON_BIN, ['--force'], { cwd: GOBOT_DIR, env: env(), stdio: 'ignore' });
+  const proc = spawn(DAEMON_BIN, ['--force'], {
+    cwd: GOBOT_DIR,
+    env: env(opts.configPath ?? TEST_CONFIG),
+    stdio: 'ignore',
+  });
   await waitForSocket();
   const stop = () =>
     new Promise<void>((resolve) => {
