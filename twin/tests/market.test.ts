@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT, TWIN_ADMIN, TWIN_BASE_URL, runCli } from './helpers/run-cli';
+import { restartTestDaemon } from './helpers/daemon';
 
 const SYSTEM = 'X1-PZ28'; const HQ = 'X1-PZ28-A1'; const SCOUT = 'TWINAGENT-2'; const AGENT = 'TWINAGENT';
 const MARKETS_FIXTURE = path.join(REPO_ROOT, 'twin', 'fixtures', 'era2-X1-PZ28', 'markets.json');
@@ -43,6 +44,10 @@ describe('GET /systems/{s}/waypoints/{w}/market — goods classified by array me
       expect(memberships, `${g.symbol} must be in exactly one array`).toBe(1);
     }
 
+    // Sync the daemon's local fleet from the (post-reset) twin so scout-markets can find the
+    // scout ship. `ship list` reads the daemon's local DB and does NOT itself trigger a sync —
+    // the daemon syncs its fleet from the API on startup (syncAllShipsOnStartup), so restart it.
+    await restartTestDaemon();
     expect(runCli(['ship', 'list', '--agent', AGENT]).exitCode, 'warm fleet sync').toBe(0);
     const beforeScan = Date.now();
     const launch = runCli(['workflow', 'scout-markets', '--ships', SCOUT, '--system', SYSTEM, '--markets', HQ, '--iterations', '1', '--agent', AGENT]);
@@ -56,7 +61,11 @@ describe('GET /systems/{s}/waypoints/{w}/market — goods classified by array me
     expect(hqRow(exchangeSym)?.TradeType).toBe('EXCHANGE');
     for (const sym of [exportSym, importSym, exchangeSym]) {
       const tg = market.tradeGoods.find((g) => g.symbol === sym)!; const r = hqRow(sym)!;
-      expect(r.PurchasePrice).toBe(tg.purchasePrice); expect(r.SellPrice).toBe(tg.sellPrice);
+      // gobot uses INVERTED market-perspective columns (market.go:679-683): its PurchasePrice is
+      // the market's BUY column (Bid = what you RECEIVE selling to it) = the API's sellPrice; its
+      // SellPrice is the market's SELL column (Ask = what you PAY buying from it) = the API's
+      // purchasePrice. The twin serves the API's purchasePrice/sellPrice verbatim, so they map crossed.
+      expect(r.PurchasePrice).toBe(tg.sellPrice); expect(r.SellPrice).toBe(tg.purchasePrice);
       expect(r.Supply).toBe(tg.supply); expect(r.Activity).toBe(tg.activity); expect(r.TradeVolume).toBe(tg.tradeVolume);
     }
   }, 115_000);
