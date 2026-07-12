@@ -41,6 +41,24 @@ type ScoutingConfig struct {
 	// post is retried on the order of the frontier's own change cadence, not every 30s tick.
 	RepositionFailureCooldownSecs int `mapstructure:"reposition_failure_cooldown_secs"`
 
+	// RespawnAttemptCap bounds how many CONSECUTIVE times the standing scout_post_coordinator
+	// respawns a post's dead tour before it PARKS the post for a backoff window instead of
+	// respawning it yet again (sp-py4n). The reconciler respawns any dead tour every tick, so a
+	// tour crashing on a PERSISTENT non-cross-system reason would respawn-loop at tick cadence
+	// forever; this caps that loop. A tour that finally runs healthy resets the count, so the cap
+	// is on consecutive failures, not lifetime, and the count is persisted per post so it survives
+	// a daemon restart (a crash-loop that reset on every restart would never cap). 0/absent => 10:
+	// ~5 min of 30s-tick respawns before parking — long enough to ride out a transient blip, short
+	// enough to stop a genuinely-broken post from flooding the fleet.
+	RespawnAttemptCap int `mapstructure:"respawn_attempt_cap"`
+
+	// RespawnCapDisabled turns OFF the sp-py4n respawn-loop cap entirely, restoring the
+	// pre-py4n behavior where a dead tour is respawned every tick without limit. false/absent =>
+	// LIVE: the cap is on by default. RULINGS #5 disable escape so a captain can lift the cap
+	// without a redeploy if it ever mis-parks a post that should keep retrying; not expected to be
+	// set in normal operation.
+	RespawnCapDisabled bool `mapstructure:"respawn_cap_disabled"`
+
 	// CoverageSpreadDisabled turns OFF the sp-6ovd coverage-first manning order in the
 	// standing scout_post_coordinator, reverting to the legacy depth-first order (all of a
 	// post's slots before the next post's). false/absent => LIVE: the reconciler interleaves

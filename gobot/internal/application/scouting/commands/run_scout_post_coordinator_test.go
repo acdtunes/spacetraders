@@ -687,7 +687,7 @@ func TestScoutPost_UnmannedSlotTargets_CoverageBeforeDepth(t *testing.T) {
 	}
 
 	h := &RunScoutPostCoordinatorHandler{}
-	targets := h.unmannedSlotTargets(posts, map[string]bool{}, false)
+	targets := h.unmannedSlotTargets(posts, map[string]bool{}, false, false)
 
 	require.Len(t, targets, 12, "every unmanned slot is still a target (8 multi-hull + 4 single-hull)")
 
@@ -725,7 +725,7 @@ func TestScoutPost_UnmannedSlotTargets_DisableEscape_RevertsToDepthFirst(t *test
 	}
 
 	h := &RunScoutPostCoordinatorHandler{}
-	targets := h.unmannedSlotTargets(posts, map[string]bool{}, true)
+	targets := h.unmannedSlotTargets(posts, map[string]bool{}, true, false)
 
 	require.Len(t, targets, 4)
 	got := []string{targets[0].post.SystemSymbol, targets[1].post.SystemSymbol, targets[2].post.SystemSymbol, targets[3].post.SystemSymbol}

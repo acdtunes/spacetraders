@@ -131,6 +131,8 @@ func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
 		Hulls:                  hulls,
 		PrimaryPartition:       marshalPartition(p.PrimaryPartition),
 		ExtraSlots:             marshalExtraSlots(p.ExtraSlots),
+		RespawnAttempts:        p.RespawnAttempts,
+		RespawnParkedUntil:     timeToPtr(p.RespawnParkedUntil),
 		CreatedAt:              p.CreatedAt,
 	}
 }
@@ -152,6 +154,8 @@ func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 		Hulls:                 hulls,
 		PrimaryPartition:      unmarshalPartition(m.PrimaryPartition),
 		ExtraSlots:            unmarshalExtraSlots(m.ExtraSlots),
+		RespawnAttempts:       m.RespawnAttempts,
+		RespawnParkedUntil:    derefTime(m.RespawnParkedUntil),
 		CreatedAt:             m.CreatedAt,
 	}
 }

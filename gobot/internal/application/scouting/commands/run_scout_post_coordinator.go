@@ -59,6 +59,24 @@ const (
 	// long cooldown on one post never starves the others.
 	defaultRepositionFailureCooldown = 30 * time.Minute
 
+	// defaultScoutRespawnAttemptCap bounds CONSECUTIVE dead-tour respawns of one post before
+	// the coordinator parks it for a backoff window instead of respawning yet again (sp-py4n,
+	// [scouting] respawn_attempt_cap) when the launch config leaves it unset (RULINGS #5). The
+	// reconciler respawns any dead tour every ~30s tick, so a tour crashing on a PERSISTENT
+	// non-cross-system reason would otherwise respawn-loop forever; 10 is ~5 min of respawns —
+	// long enough to ride out a transient blip (a tour that ever runs one healthy tick resets
+	// the count), short enough to stop a genuinely-broken post from flooding the fleet.
+	defaultScoutRespawnAttemptCap = 10
+
+	// defaultRespawnParkWindow is how long a post that exhausted its respawn cap is parked
+	// before the coordinator retries it exactly once (sp-py4n). Mirrors
+	// defaultRepositionFailureCooldown's philosophy: a persistently-crashing post is retried on
+	// the order of the frontier's own change cadence rather than every 30s tick, so the freed
+	// probe does useful work elsewhere in between. A retry that still dies re-arms the window; a
+	// retry that finally runs healthy clears it. Persisted with the counter (RespawnParkedUntil),
+	// so the park survives a restart rather than the crash-loop resuming immediately.
+	defaultRespawnParkWindow = 30 * time.Minute
+
 	// partitionAnchorFuelCapacity and partitionAnchorEngineSpeed are the synthetic
 	// probe configs the VRP partitioner anchors at a common waypoint (sp-enry). The
 	// partition is a division of a system's markets into N disjoint tours; it must be
@@ -169,6 +187,20 @@ type RunScoutPostCoordinatorCommand struct {
 	// exists per RULINGS #5 so a captain can pin depth-first without a redeploy; it is not
 	// expected to be set in normal operation.
 	CoverageSpreadDisabled bool
+
+	// RespawnAttemptCap bounds how many CONSECUTIVE respawns of a post's dead tour the
+	// coordinator performs before PARKING the post for a backoff window instead (sp-py4n
+	// [scouting] respawn_attempt_cap). A tour crashing on a PERSISTENT non-cross-system
+	// reason would otherwise respawn-loop at tick cadence forever; a tour that finally runs
+	// healthy resets the count. <= 0 uses defaultScoutRespawnAttemptCap, mirroring
+	// TickIntervalSecs.
+	RespawnAttemptCap int
+
+	// RespawnCapDisabled turns the sp-py4n respawn-loop cap OFF, restoring the pre-py4n
+	// respawn-every-tick behavior ([scouting] respawn_cap_disabled). Default false = LIVE:
+	// the cap is on. RULINGS #5 disable escape so a captain can lift it without a redeploy;
+	// not expected to be set in normal operation.
+	RespawnCapDisabled bool
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -644,8 +676,10 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.reconcileRepositioningSlots(ctx, cmd, post, running, completed, failed)
 	}
 
-	// Pass 2: man the unmanned slots, standing posts first.
-	targets := h.unmannedSlotTargets(posts, removed, cmd.CoverageSpreadDisabled)
+	// Pass 2: man the unmanned slots, standing posts first. A post inside its sp-py4n respawn-cap
+	// backoff window is skipped here so a persistently-crashing tour is not respawned every tick.
+	_, respawnCapEnabled := resolveRespawnCap(cmd)
+	targets := h.unmannedSlotTargets(posts, removed, cmd.CoverageSpreadDisabled, respawnCapEnabled)
 	if len(targets) == 0 {
 		return nil
 	}
@@ -896,6 +930,14 @@ func (h *RunScoutPostCoordinatorHandler) reconcileMannedSlots(
 ) bool {
 	logger := common.LoggerFromContext(ctx)
 
+	// sp-py4n respawn accounting: track, across this post's slots, whether any tour was
+	// observed HEALTHY (a spawn that survived — resets the consecutive-respawn streak) and
+	// whether any dead tour was respawned this tick (advances it). Applied once per post after
+	// the slot loop so a multi-hull post is accounted per-tick, not per-slot, and any one
+	// healthy slot resets the whole post's streak.
+	sawHealthy := false
+	sawRespawn := false
+
 	for _, slot := range post.Slots() {
 		hull := slot.AssignedHull()
 		if hull == "" {
@@ -923,8 +965,10 @@ func (h *RunScoutPostCoordinatorHandler) reconcileMannedSlots(
 			continue
 		}
 
-		// A live tour is healthy — never disturb it.
+		// A live tour is healthy — never disturb it. The spawn that produced it survived to
+		// this tick, so it resets any consecutive-respawn streak (sp-py4n).
 		if tourID != "" && running[tourID] {
+			sawHealthy = true
 			continue
 		}
 
@@ -949,14 +993,77 @@ func (h *RunScoutPostCoordinatorHandler) reconcileMannedSlots(
 		// Otherwise the tour is dead/missing/crashed: free the hull and clear the slot. Pass 2
 		// re-mans it — with this same hull, since it is idle in the post's system — over the
 		// SAME partition (the slot's frozen markets are untouched), so it respawns within a tick.
+		// This is the respawn the sp-py4n cap bounds: a tour crashing on a PERSISTENT reason lands
+		// here every tick, so sawRespawn feeds accountRespawn below.
 		h.reclaimHullFromContainer(ctx, cmd, tourID, "scout_post_respawn")
 		slot.SetAssignedHull("")
 		slot.SetTourContainerID("")
+		sawRespawn = true
 		if err := h.postRepo.Upsert(ctx, post); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to clear assignment on post %s: %v", post.SystemSymbol, err), nil)
 		}
 	}
+
+	// sp-py4n: advance or reset the persisted respawn-attempt counter and park the post once it
+	// exhausts the cap, so a persistently-crashing tour stops respawn-looping at tick cadence.
+	h.accountRespawn(ctx, cmd, post, sawHealthy, sawRespawn)
 	return false
+}
+
+// resolveRespawnCap resolves the sp-py4n respawn-loop cap for this coordinator: whether the cap is
+// LIVE (RespawnCapDisabled is the RULINGS #5 escape) and, when live, the consecutive-respawn
+// ceiling ([scouting] respawn_attempt_cap, else defaultScoutRespawnAttemptCap). Mirrors
+// repositionFailureCooldown's <= 0 → default shape.
+func resolveRespawnCap(cmd *RunScoutPostCoordinatorCommand) (attemptCap int, enabled bool) {
+	if cmd.RespawnCapDisabled {
+		return 0, false
+	}
+	if cmd.RespawnAttemptCap <= 0 {
+		return defaultScoutRespawnAttemptCap, true
+	}
+	return cmd.RespawnAttemptCap, true
+}
+
+// accountRespawn advances or resets a post's PERSISTED consecutive-respawn counter after one
+// reconcile pass over its slots, and parks the post once the counter exhausts the cap (sp-py4n).
+// A tour observed HEALTHY this tick (sawHealthy) means the last spawn survived, so the streak
+// resets and any park is lifted — the cap counts CONSECUTIVE failures, not lifetime. A dead tour
+// respawned this tick (sawRespawn) advances the streak; on reaching the cap the post is parked for
+// defaultRespawnParkWindow (RespawnParkedUntil) instead of respawned yet again, and the exhaustion
+// is logged (naturally rate-limited to one line per window, since a parked post spawns nothing to
+// respawn until the window elapses and it retries once). Both fields persist so the cap survives a
+// daemon restart rather than the crash-loop resuming at tick cadence. Healthy wins over respawn,
+// so any one live slot resets a multi-hull post's whole-post streak. Disabled ⇒ a no-op, the
+// pre-py4n respawn-every-tick behavior.
+func (h *RunScoutPostCoordinatorHandler) accountRespawn(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost, sawHealthy, sawRespawn bool) {
+	attemptCap, enabled := resolveRespawnCap(cmd)
+	if !enabled {
+		return
+	}
+	switch {
+	case sawHealthy:
+		if post.RespawnAttempts == 0 && post.RespawnParkedUntil.IsZero() {
+			return // already clean — nothing to persist
+		}
+		post.RespawnAttempts = 0
+		post.RespawnParkedUntil = time.Time{}
+	case sawRespawn:
+		post.RespawnAttempts++
+		if post.RespawnAttempts < attemptCap {
+			break
+		}
+		post.RespawnParkedUntil = h.clock.Now().Add(defaultRespawnParkWindow)
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Scout post %s exhausted its respawn cap (%d consecutive dead-tour respawns) — parking for %s; the tour keeps dying on a persistent reason and needs operator attention", post.SystemSymbol, post.RespawnAttempts, defaultRespawnParkWindow), map[string]interface{}{
+			"action":           "scout_post_respawn_capped",
+			"system_symbol":    post.SystemSymbol,
+			"respawn_attempts": post.RespawnAttempts,
+		})
+	default:
+		return // neither a respawn nor a healthy tour — nothing to account
+	}
+	if err := h.postRepo.Upsert(ctx, post); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to persist respawn accounting on post %s: %v", post.SystemSymbol, err), nil)
+	}
 }
 
 // reconcileRepositioningSlots runs pass 1.5 over one post's slots: reclaim any ended relay
@@ -1022,15 +1129,27 @@ func (h *RunScoutPostCoordinatorHandler) reconcileRepositioningSlots(
 	}
 }
 
+// isRespawnParked reports whether a post is currently inside its sp-py4n respawn-cap backoff
+// window — it exhausted the consecutive-respawn cap and is not yet due for a retry. Pass 2 skips
+// such a post so a persistently-crashing tour is not respawned every tick. A zero deadline (never
+// capped, or reset by a healthy tour / market-drift re-cut) reads false, and disabling the cap
+// (RULINGS #5) reads false for every post, immediately lifting any park.
+func (h *RunScoutPostCoordinatorHandler) isRespawnParked(post *domainScouting.ScoutPost, capEnabled bool) bool {
+	return capEnabled && !post.RespawnParkedUntil.IsZero() && h.clock.Now().Before(post.RespawnParkedUntil)
+}
+
 // unmannedSlotTargets collects every slot that pass 2 should man: unmanned, not
-// repositioning, in a non-retired post. Standing posts sort before sweep-once (the
-// freshness backbone is manned first), deterministic by system within a kind, and
+// repositioning, in a non-retired, non-respawn-parked post. Standing posts sort before sweep-once
+// (the freshness backbone is manned first), deterministic by system within a kind, and
 // primary-before-extra within a post — so manning order is stable and testable.
-func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool, spreadDisabled bool) []slotTarget {
+func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool, spreadDisabled, respawnCapEnabled bool) []slotTarget {
 	ordered := make([]*domainScouting.ScoutPost, 0, len(posts))
 	for _, post := range posts {
 		if removed[post.SystemSymbol] {
 			continue
+		}
+		if h.isRespawnParked(post, respawnCapEnabled) {
+			continue // sp-py4n: parked in its respawn-cap backoff window — none of its slots man this tick
 		}
 		ordered = append(ordered, post)
 	}
@@ -1432,6 +1551,12 @@ func (h *RunScoutPostCoordinatorHandler) tearDownSlots(ctx context.Context, cmd 
 	post.RepositionContainerID = ""
 	post.PrimaryPartition = nil
 	post.ExtraSlots = nil
+	// sp-py4n: a market-set re-cut is a genuine STATE CHANGE — the post's tour will fly a
+	// different market list, so its old consecutive-respawn streak (which measured failures under
+	// the OLD state) no longer applies. Clear the counter and lift any respawn park so the re-cut
+	// post gets a fresh chance rather than staying parked from a pre-drift crash-loop.
+	post.RespawnAttempts = 0
+	post.RespawnParkedUntil = time.Time{}
 }
 
 // partitionMarkets solves the VRP that splits markets into n DISJOINT per-probe tours

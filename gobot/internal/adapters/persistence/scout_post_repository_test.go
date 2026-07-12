@@ -51,6 +51,45 @@ func TestScoutPostRepo_UpsertThenListActive(t *testing.T) {
 	require.Equal(t, "tour-1", got.TourContainerID)
 }
 
+// The respawn-loop cap's per-post counter and park deadline round-trip through the DB
+// (sp-py4n RULINGS #2): the reconciler reloads the consecutive-respawn count and any park
+// window on boot, so a persistently-crashing post stays capped across a daemon restart rather
+// than the crash-loop resuming at tick cadence. A fresh post reads zero/unset.
+func TestScoutPostRepo_RespawnCapFieldsRoundTrip(t *testing.T) {
+	repo, _, playerID := newScoutPostTestRepo(t)
+	ctx := context.Background()
+
+	parkedUntil := time.Now().Add(30 * time.Minute).UTC()
+	capped := &domainScouting.ScoutPost{
+		PlayerID:           playerID,
+		SystemSymbol:       "X1-GZ7",
+		FreshnessTarget:    time.Hour,
+		Kind:               domainScouting.PostKindStanding,
+		RespawnAttempts:    7,
+		RespawnParkedUntil: parkedUntil,
+		CreatedAt:          time.Now(),
+	}
+	require.NoError(t, repo.Upsert(ctx, capped))
+
+	fresh := &domainScouting.ScoutPost{PlayerID: playerID, SystemSymbol: "X1-QW1", FreshnessTarget: time.Hour, Kind: domainScouting.PostKindStanding}
+	require.NoError(t, repo.Upsert(ctx, fresh))
+
+	posts, err := repo.ListActive(ctx, playerID)
+	require.NoError(t, err)
+	bySystem := map[string]*domainScouting.ScoutPost{}
+	for _, p := range posts {
+		bySystem[p.SystemSymbol] = p
+	}
+
+	gotCapped := bySystem["X1-GZ7"]
+	require.Equal(t, 7, gotCapped.RespawnAttempts, "the consecutive-respawn count survives a DB round-trip")
+	require.WithinDuration(t, parkedUntil, gotCapped.RespawnParkedUntil, time.Second, "the park deadline survives a DB round-trip")
+
+	gotFresh := bySystem["X1-QW1"]
+	require.Equal(t, 0, gotFresh.RespawnAttempts, "a never-capped post reads zero attempts")
+	require.True(t, gotFresh.RespawnParkedUntil.IsZero(), "a never-parked post reads an unset (NULL) deadline")
+}
+
 func TestScoutPostRepo_UpsertUpdatesInPlace(t *testing.T) {
 	repo, _, playerID := newScoutPostTestRepo(t)
 	ctx := context.Background()

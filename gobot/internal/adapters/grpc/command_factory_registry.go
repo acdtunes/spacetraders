@@ -541,6 +541,8 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		MaxRepositionJumps:            cfg.OptionalInt("max_reposition_jumps", 0),
 		RepositionFailureCooldownSecs: cfg.OptionalInt("reposition_failure_cooldown_secs", 0),
 		CoverageSpreadDisabled:        cfg.OptionalBool("coverage_spread_disabled"),
+		RespawnAttemptCap:             cfg.OptionalInt("respawn_attempt_cap", 0),
+		RespawnCapDisabled:            cfg.OptionalBool("respawn_cap_disabled"),
 	}
 }
 

@@ -663,6 +663,16 @@ type ScoutPostModel struct {
 	PrimaryPartition *string `gorm:"column:primary_partition"`
 	ExtraSlots       *string `gorm:"column:extra_slots"`
 
+	// RespawnAttempts and RespawnParkedUntil back the general per-post respawn-loop cap
+	// (sp-py4n): the consecutive dead-tour respawn count and the backoff-window deadline
+	// the reconciler parks a persistently-crashing post under. AutoMigrate adds both in
+	// place — respawn_attempts defaults 0 and reposition_parked_until is nullable, so
+	// every existing row reads as "never capped, not parked". Persisting them is what
+	// makes the cap survive a daemon restart rather than the crash-loop resuming at tick
+	// cadence (RULINGS #2).
+	RespawnAttempts    int        `gorm:"column:respawn_attempts;not null;default:0"`
+	RespawnParkedUntil *time.Time `gorm:"column:respawn_parked_until"`
+
 	EraID     *int      `gorm:"column:era_id;index:idx_scout_posts_era"`
 	CreatedAt time.Time `gorm:"column:created_at;not null"`
 }

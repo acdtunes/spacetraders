@@ -297,6 +297,8 @@ var scoutingConfigKeys = []string{
 	"max_reposition_jumps",
 	"reposition_failure_cooldown_secs",
 	"coverage_spread_disabled",
+	"respawn_attempt_cap",
+	"respawn_cap_disabled",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -329,11 +331,19 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	if sc.RepositionFailureCooldownSecs != 0 {
 		config["reposition_failure_cooldown_secs"] = sc.RepositionFailureCooldownSecs
 	}
+	if sc.RespawnAttemptCap != 0 {
+		config["respawn_attempt_cap"] = sc.RespawnAttemptCap
+	}
 	// Boolean disable escape (sp-6ovd): inject ONLY when set true — false/absent defers to the
 	// coordinator's live-by-default coverage-first order, so an unset knob writes no key. Listed
 	// in scoutingConfigKeys so a stale true from a prior boot is cleared before this re-inject.
 	if sc.CoverageSpreadDisabled {
 		config["coverage_spread_disabled"] = true
+	}
+	// Respawn-cap disable escape (sp-py4n): same true-only injection — false/absent leaves the
+	// respawn-loop cap live-by-default.
+	if sc.RespawnCapDisabled {
+		config["respawn_cap_disabled"] = true
 	}
 }
 

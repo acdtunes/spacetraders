@@ -98,6 +98,25 @@ type ScoutPost struct {
 	// partition without a mass re-tour (RULINGS #2).
 	ExtraSlots []ScoutPostSlot
 
+	// RespawnAttempts counts CONSECUTIVE times the reconciler has respawned this post's
+	// dead tour without the tour surviving to be observed healthy (sp-py4n). The
+	// reconciler respawns any dead tour every tick, so a tour that crashes on a
+	// PERSISTENT non-cross-system reason would otherwise respawn-loop at tick cadence
+	// forever. When this reaches the configured cap the post is PARKED for a backoff
+	// window (RespawnParkedUntil) instead of respawned again; a tour that finally runs
+	// healthy resets it to 0, so it caps CONSECUTIVE failures, not lifetime. Persisted
+	// (RULINGS #2) so the count survives a daemon restart — a crash-loop that reset its
+	// count on every restart would never cap.
+	RespawnAttempts int
+
+	// RespawnParkedUntil is the earliest time the reconciler will respawn this post's
+	// tour again after the respawn cap was hit (sp-py4n). Zero ⇒ not parked. While it
+	// is in the future the post is skipped by the manning passes (park-with-reason);
+	// once it elapses the coordinator retries exactly once, and a still-dead tour
+	// re-arms the window while a healthy one clears it. Persisted with RespawnAttempts
+	// so the park survives a restart rather than the crash-loop resuming at tick cadence.
+	RespawnParkedUntil time.Time
+
 	CreatedAt time.Time
 }
 
