@@ -235,9 +235,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ─── POST /_twin/construction — set construction.percent (NEVER auto-advances) ────
-  // Also derives constructionIsComplete (percent>=100) onto the off-superset World field
-  // (types.ts) for a future /v2 construction endpoint — NOT part of GET /_twin/state, whose
-  // frozen construction view stays exactly {site, percent, started, adopted}.
+  // Sets the /_twin/state percent (the harness's progress view) AND, at completion, drives the
+  // /v2-served construction manifest (world.constructionMaterials) to fully supplied so GET
+  // …/construction reports isComplete — the ONLY completion signal the daemon observes (it never
+  // reads world.construction.percent). Without that the lever was a no-op to the daemon and the gate
+  // never derived COMPLETE (st-drm.19 BUG B). The frozen GET /_twin/state construction view stays
+  // exactly {site, percent, started, adopted}; constructionMaterials is off that superset.
   app.post<{ Body?: { percent?: unknown } }>('/construction', async (req, reply) => {
     const body = req.body ?? {};
     const percent = typeof body.percent === 'number' ? body.percent : Number(body.percent);
@@ -247,6 +250,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const world = getWorld();
     world.construction.percent = percent;
     world.constructionIsComplete = percent >= 100;
+    // At completion, reach the SAME served state a real supply chain does: every material met, so
+    // serializeConstruction (world/serialize.ts) derives isComplete=true on GET /v2 …/construction.
+    if (percent >= 100 && world.constructionMaterials) {
+      for (const material of world.constructionMaterials) {
+        material.fulfilled = material.required;
+      }
+    }
     return reply.code(204).send();
   });
 

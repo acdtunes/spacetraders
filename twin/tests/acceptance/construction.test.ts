@@ -275,3 +275,43 @@ describe('GATE construction — access rules', () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+// st-drm.19 BUG B (b1): the daemon observes gate completion ONLY through GET /v2 …/construction, whose
+// isComplete is DERIVED from the served materials (serializeConstruction: every fulfilled >= required).
+// The GATE specs force completion via the twin lever POST /_twin/construction {percent:100}, but that
+// lever used to touch only world.construction.percent (a /_twin/state field the daemon never reads),
+// leaving the served manifest untouched — so setConstruction(100) was a NO-OP to the daemon and the gate
+// never derived COMPLETE. The lever must drive the SAME served state a real supply chain reaches.
+const setConstruction = (percent: number) =>
+  app.inject({ method: 'POST', url: '/_twin/construction', payload: { percent } });
+
+describe('GATE construction — the setConstruction lever drives the /v2-served completion', () => {
+  it('setConstruction(100) makes GET /v2 construction report isComplete with every material fully supplied', async () => {
+    // Given a gate under construction with nothing delivered yet.
+    expect((await siteNow()).isComplete).toBe(false);
+
+    // When the operator forces construction to 100% via the twin completion lever.
+    const res = await setConstruction(100);
+    expect(res.statusCode).toBeGreaterThanOrEqual(200);
+    expect(res.statusCode).toBeLessThan(300);
+
+    // Then the /v2-served site — the ONLY completion signal the daemon observes — reads complete, with
+    // every material met (teeth: fails if the lever left the served manifest untouched, the b1 bug).
+    const after = await siteNow();
+    expect(after.isComplete).toBe(true);
+    expect(after.materials.length).toBeGreaterThan(0);
+    for (const m of after.materials) {
+      expect(m.fulfilled).toBeGreaterThanOrEqual(m.required);
+    }
+  });
+
+  it('setConstruction below 100 leaves the /v2-served site incomplete', async () => {
+    // Given the operator moves construction partway (not done).
+    const res = await setConstruction(40);
+    expect(res.statusCode).toBeLessThan(300);
+
+    // Then the served site is still incomplete — completion is reported only at the completion path,
+    // never falsely early (teeth on the `percent >= 100` boundary).
+    expect((await siteNow()).isComplete).toBe(false);
+  });
+});
