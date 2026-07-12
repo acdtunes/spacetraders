@@ -21,6 +21,15 @@ type wakeGateInput struct {
 	Policy WakePolicy
 
 	Credits int
+	// CreditsAboveFired/CreditsBelowFired are the persisted edge-state for the
+	// credits wake conditions (sp-l6pz): true when a wake has already been
+	// delivered for the current sojourn in which credits satisfy the corresponding
+	// bound. The gate treats each credits bound as EDGE-triggered — it fires only
+	// while the bound is satisfied AND its edge is still un-fired — so a standing
+	// bound wakes once on crossing, not on every tick. The supervisor re-arms
+	// (clears) each flag when credits exit the bound and sets it on delivery.
+	CreditsAboveFired bool
+	CreditsBelowFired bool
 
 	LastSession            time.Time
 	HeartbeatMinutes       int
@@ -51,11 +60,17 @@ func evaluateWakeGate(in wakeGateInput) wakeGateDecision {
 		return wakeGateDecision{ShouldWake: true, Reason: "cadence due"}
 	}
 
-	if in.Policy.CreditsAbove != nil && in.Credits >= *in.Policy.CreditsAbove {
-		return wakeGateDecision{ShouldWake: true, Reason: "credits at/above CreditsAbove"}
+	// Credits bounds are EDGE-triggered, not level-triggered (sp-l6pz): each fires
+	// only while the bound is satisfied AND its edge is still un-fired. Without the
+	// `!Fired` guard a standing bound (e.g. credits parked below a declared floor)
+	// re-satisfied the pure level check on every 30s tick and spammed an event-less
+	// wake indefinitely. The supervisor owns the edge-state lifecycle: it re-arms
+	// (clears) the flag when credits exit the bound and sets it on wake delivery.
+	if in.Policy.CreditsAbove != nil && in.Credits >= *in.Policy.CreditsAbove && !in.CreditsAboveFired {
+		return wakeGateDecision{ShouldWake: true, Reason: "credits crossed at/above CreditsAbove"}
 	}
-	if in.Policy.CreditsBelow != nil && in.Credits <= *in.Policy.CreditsBelow {
-		return wakeGateDecision{ShouldWake: true, Reason: "credits at/below CreditsBelow"}
+	if in.Policy.CreditsBelow != nil && in.Credits <= *in.Policy.CreditsBelow && !in.CreditsBelowFired {
+		return wakeGateDecision{ShouldWake: true, Reason: "credits crossed at/below CreditsBelow"}
 	}
 
 	return wakeGateDecision{ShouldWake: false, Reason: "deferred only, cadence not due"}

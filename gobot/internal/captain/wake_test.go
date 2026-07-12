@@ -490,6 +490,231 @@ func TestSupervisorStateWithoutLastNudgeFieldLoadsCleanly(t *testing.T) {
 	require.Len(t, gw.nudges, 1)
 }
 
+// --- sp-l6pz: credits wake gate is EDGE-triggered, not level-triggered ---
+//
+// Bug: the PRIMARY wake gate woke on a standing credits LEVEL (Credits <=
+// CreditsBelow / >= CreditsAbove) with no edge guard, so while credits sat past
+// a declared bound it spammed an event-less wake on EVERY 30s tick (live
+// incident: credits_below=600000, credits ~170k). The fix fires the bound ONCE
+// on crossing into the satisfied region, stays quiet while it remains satisfied,
+// and re-arms only after credits exit and re-cross — with the already-fired edge
+// state PERSISTED so a watchkeeper restart does not re-fire a still-satisfied
+// bound (RULINGS #2).
+
+// wireCredits attaches a mutable live-credits source so a test can move the
+// player's credits across a declared bound between ticks: refreshCredits reads
+// the live value fresh on every tick, so mutating api.credits simulates the
+// balance changing under a standing wake policy.
+func wireCredits(sup *Supervisor, credits int) *fakeAgentAPI {
+	api := &fakeAgentAPI{credits: credits}
+	sup.SetAgentAPI(api, "tok")
+	return api
+}
+
+func TestCreditsBelow_FiresOnceOnCrossing_ThenQuietWhileSatisfied(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0 // heartbeat cadence nowhere near due across this short span
+
+	below := 600000
+	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsBelow: &below}))
+	api := wireCredits(sup, 700000) // start ABOVE the floor: armed, nothing to wake
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.False(t, ran, "credits above the floor: no credits wake")
+	require.Empty(t, gw.nudges)
+
+	// Credits cross INTO the satisfied region: exactly one wake.
+	api.credits = 170000
+	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, ran, "credits crossing below the floor wakes once")
+	require.Len(t, gw.nudges, 1)
+
+	// Still below across many subsequent ticks: NO further event-less wake.
+	for i := 2; i < 12; i++ {
+		ran, err = sup.Tick(context.Background(), t0.Add(time.Duration(i)*time.Second))
+		require.NoError(t, err)
+		require.False(t, ran, "a still-satisfied floor must not re-wake (tick %d)", i)
+	}
+	require.Len(t, gw.nudges, 1, "exactly one credits wake for the whole sojourn below the floor")
+}
+
+func TestCreditsBelow_ReArmsAfterExitAndReCross(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0
+
+	below := 600000
+	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsBelow: &below}))
+	api := wireCredits(sup, 170000) // start below: the first crossing fires
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran, "first crossing below the floor fires")
+	require.Len(t, gw.nudges, 1)
+
+	// Quiet while still below.
+	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
+	require.NoError(t, err)
+	require.False(t, ran)
+	require.Len(t, gw.nudges, 1)
+
+	// Credits recover ABOVE the floor (exit): re-arms, and the exit itself is not
+	// a wake (no CreditsAbove bound declared here).
+	api.credits = 900000
+	ran, err = sup.Tick(context.Background(), t0.Add(2*time.Second))
+	require.NoError(t, err)
+	require.False(t, ran, "exiting the satisfied region does not itself wake")
+	require.Len(t, gw.nudges, 1)
+
+	// Credits drop below AGAIN (re-cross): the re-armed bound fires a second time.
+	api.credits = 150000
+	ran, err = sup.Tick(context.Background(), t0.Add(3*time.Second))
+	require.NoError(t, err)
+	require.True(t, ran, "a re-crossing after exit must wake again")
+	require.Len(t, gw.nudges, 2)
+}
+
+func TestCreditsAbove_SameEdgeSemantics(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0
+
+	above := 500000
+	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsAbove: &above}))
+	api := wireCredits(sup, 400000) // start below the ceiling: armed
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.False(t, ran, "credits below the CreditsAbove bound: no wake")
+	require.Empty(t, gw.nudges)
+
+	// Cross UP into the satisfied region: one wake.
+	api.credits = 500000
+	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, ran, "crossing at/above CreditsAbove wakes once")
+	require.Len(t, gw.nudges, 1)
+
+	// Stay above: quiet.
+	for i := 2; i < 6; i++ {
+		ran, err = sup.Tick(context.Background(), t0.Add(time.Duration(i)*time.Second))
+		require.NoError(t, err)
+		require.False(t, ran, "a still-satisfied ceiling must not re-wake (tick %d)", i)
+	}
+	require.Len(t, gw.nudges, 1)
+
+	// Exit below, then re-cross up: re-arms and fires again.
+	api.credits = 400000
+	_, err = sup.Tick(context.Background(), t0.Add(6*time.Second))
+	require.NoError(t, err)
+	api.credits = 600000
+	ran, err = sup.Tick(context.Background(), t0.Add(7*time.Second))
+	require.NoError(t, err)
+	require.True(t, ran, "a re-crossing above the ceiling after exit wakes again")
+	require.Len(t, gw.nudges, 2)
+}
+
+func TestCreditsEdgeState_SurvivesRestart(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	statePath := NewWorkspace(dir).StatePath()
+	below := 600000
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
+
+	// Pre-restart: credits below the floor fire exactly one wake and persist the
+	// fired edge-state.
+	sup1, gw1 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	sup1.lastSession = time.Now()
+	seedBalance(t, sup1, playerID, 170000) // reconstruction reads below the floor
+	ran, err := sup1.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "credits below the floor fire the crossing wake")
+	require.Len(t, gw1.nudges, 1)
+
+	// The already-fired marker is on disk.
+	st, err := loadSupervisorState(statePath)
+	require.NoError(t, err)
+	require.True(t, st.CreditsBelowFired, "the fired edge-state must be persisted")
+
+	// Restart with credits STILL below: the reloaded fired-state must suppress a
+	// re-fire (RULINGS #2 — a restart does not re-wake a still-satisfied bound).
+	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	require.True(t, sup2.creditsBelowFired, "the fired edge-state reloads on boot")
+	sup2.lastSession = time.Now() // cadence not due, isolate credits
+	ran, err = sup2.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.False(t, ran, "a still-satisfied floor must NOT re-fire after a restart")
+	require.Empty(t, gw2.nudges)
+}
+
+func TestCreditsBelow_MissingPersistedField_DefaultsToNotFired(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	statePath := NewWorkspace(dir).StatePath()
+	require.NoError(t, os.MkdirAll(filepath.Dir(statePath), 0o755))
+
+	// An OLD state file — written before the credits-edge fields existed — that
+	// already declares a CreditsBelow floor but has NO credits_below_fired key.
+	below := 600000
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
+	raw, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "credits_below_fired",
+		"precondition: the state file predates the edge field")
+
+	sup, gw := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	require.False(t, sup.creditsBelowFired, "an absent credits_below_fired loads as not-fired")
+	sup.lastSession = time.Now()
+	seedBalance(t, sup, playerID, 170000)
+
+	// A genuine standing crossing still fires exactly ONCE post-upgrade...
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "a still-below floor with no persisted edge fires once post-upgrade")
+	require.Len(t, gw.nudges, 1)
+
+	// ...then goes quiet (the one-time post-upgrade fire, not a storm).
+	ran, err = sup.Tick(context.Background(), time.Now().Add(time.Second))
+	require.NoError(t, err)
+	require.False(t, ran, "then stays quiet")
+	require.Len(t, gw.nudges, 1)
+}
+
+// TestCreditsBelowFloorAcrossTicksAndReloadsFiresExactlyOnce is the headline
+// regression (sp-l6pz AC #5): credits sitting far below a declared floor across
+// N ticks AND M process reloads must fire EXACTLY ONE wake — the genuine
+// crossing — never an event-less storm.
+func TestCreditsBelowFloorAcrossTicksAndReloadsFiresExactlyOnce(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	statePath := NewWorkspace(dir).StatePath()
+	below := 600000
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
+
+	totalNudges := 0
+	base := time.Now()
+	// Three process lifetimes (M reloads), each running five ticks (N ticks) with
+	// credits sitting far below the declared floor for the whole run.
+	for life := 0; life < 3; life++ {
+		sup, gw := reopenBridgeSupervisor(t, db, playerID, store, dir)
+		if life == 0 {
+			seedBalance(t, sup, playerID, 170000) // below the floor, shared DB, for every life
+		}
+		sup.lastSession = base // cadence never due across this short span
+		for k := 0; k < 5; k++ {
+			at := base.Add(time.Duration(life*10+k) * time.Second)
+			_, err := sup.Tick(context.Background(), at)
+			require.NoError(t, err)
+		}
+		totalNudges += len(gw.nudges)
+	}
+	require.Equal(t, 1, totalNudges,
+		"a standing sub-floor across 15 ticks and 3 restarts fires EXACTLY ONE wake")
+}
+
 // TestTickCoalescesDeployStormBehindStandingInterrupt is the faithful incident
 // repro at the Tick level: a mailed interrupt keeps the wake GATE open every
 // tick (evaluateWakeGate wakes on any interrupt in the batch, mailed or not),

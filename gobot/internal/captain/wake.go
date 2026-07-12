@@ -293,6 +293,49 @@ func (s *Supervisor) creditsGateNewlyCrossed(policy WakePolicy) bool {
 	return (aboveNow && !s.lastAttemptCreditsAbove) || (belowNow && !s.lastAttemptCreditsBelow)
 }
 
+// armCreditsEdge re-arms the PRIMARY wake gate's credits edge-state each tick,
+// BEFORE the gate is evaluated (sp-l6pz). It clears creditsAboveFired /
+// creditsBelowFired whenever credits are OUTSIDE the corresponding bound (or the
+// bound is undeclared), so the next crossing INTO the satisfied region fires
+// exactly one wake. It never SETS a flag — a still-satisfied bound keeps its
+// fired flag, so the gate stays quiet; setting is markCreditsFired's job, on
+// delivery. The re-arm is in-memory only (no per-tick disk write): if credits
+// exit and the process restarts before the next delivered wake, the first
+// post-restart tick re-derives the cleared state from live credits before the
+// gate runs, and the next delivered wake persists it. Deliberately independent
+// of the ATTEMPT-relative lastAttemptCredits{Above,Below} snapshot, which paces
+// the sp-sk68 D4 delivery-backoff bypass and is untouched here.
+func (s *Supervisor) armCreditsEdge(policy WakePolicy) {
+	if policy.CreditsAbove == nil || s.lastCredits < *policy.CreditsAbove {
+		s.creditsAboveFired = false
+	}
+	if policy.CreditsBelow == nil || s.lastCredits > *policy.CreditsBelow {
+		s.creditsBelowFired = false
+	}
+}
+
+// markCreditsFired records that this tick's delivered wake has serviced any
+// currently-satisfied CreditsAbove/Below bound, so the edge-triggered gate stays
+// quiet until credits exit and re-cross it (sp-l6pz). Call ONLY after a
+// successful delivery. It persists the edge-state (but only when a flag actually
+// transitions, so an ordinary heartbeat wake in the neutral zone adds no
+// redundant write) so a restart does not re-fire a still-satisfied bound
+// (RULINGS #2). The complementary re-arm on exit is armCreditsEdge.
+func (s *Supervisor) markCreditsFired(policy WakePolicy) {
+	changed := false
+	if policy.CreditsAbove != nil && s.lastCredits >= *policy.CreditsAbove && !s.creditsAboveFired {
+		s.creditsAboveFired = true
+		changed = true
+	}
+	if policy.CreditsBelow != nil && s.lastCredits <= *policy.CreditsBelow && !s.creditsBelowFired {
+		s.creditsBelowFired = true
+		changed = true
+	}
+	if changed {
+		s.saveState()
+	}
+}
+
 // rememberAttempt snapshots the interrupt-event ids present at this delivery
 // attempt, so the NEXT tick can tell a genuinely new interrupt (which bypasses
 // the backoff) from the same unchanged interrupt still failing to deliver.

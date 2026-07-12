@@ -216,6 +216,71 @@ func TestEvaluateWakeGate(t *testing.T) {
 	}
 }
 
+// TestEvaluateWakeGateCreditsEdgeGuard covers sp-l6pz: the CreditsAbove/Below
+// wake conditions are EDGE-triggered, not level-triggered. The gate fires when
+// credits satisfy a declared bound ONLY while that bound's edge is un-fired
+// (CreditsAbove/BelowFired == false, threaded in from the persisted edge-state).
+// Once serviced (Fired == true) a still-satisfied bound must NOT re-wake — the
+// pure level check alone spammed an event-less wake on every 30s tick while
+// credits sat past a declared threshold (the live incident: credits_below=600000,
+// credits ~170k). The interrupt and cadence paths are unaffected by the edge.
+func TestEvaluateWakeGateCreditsEdgeGuard(t *testing.T) {
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	// Cadence far from due for every case, so credits are the only wake driver.
+	notDue := func(in wakeGateInput) wakeGateInput {
+		in.Now = base
+		in.LastSession = base.Add(-time.Minute)
+		in.HeartbeatMinutes = 45
+		return in
+	}
+
+	tests := []struct {
+		name string
+		in   wakeGateInput
+		want bool
+	}{
+		{
+			name: "below bound satisfied and un-fired wakes (the crossing)",
+			in:   notDue(wakeGateInput{Credits: 170000, Policy: WakePolicy{CreditsBelow: intPtr(600000)}, CreditsBelowFired: false}),
+			want: true,
+		},
+		{
+			name: "below bound satisfied but already fired stays quiet",
+			in:   notDue(wakeGateInput{Credits: 170000, Policy: WakePolicy{CreditsBelow: intPtr(600000)}, CreditsBelowFired: true}),
+			want: false,
+		},
+		{
+			name: "above bound satisfied and un-fired wakes (the crossing)",
+			in:   notDue(wakeGateInput{Credits: 500000, Policy: WakePolicy{CreditsAbove: intPtr(500000)}, CreditsAboveFired: false}),
+			want: true,
+		},
+		{
+			name: "above bound satisfied but already fired stays quiet",
+			in:   notDue(wakeGateInput{Credits: 500000, Policy: WakePolicy{CreditsAbove: intPtr(500000)}, CreditsAboveFired: true}),
+			want: false,
+		},
+		{
+			// A fired flag is a per-bound suppressor of the EVENT-LESS credits wake
+			// only; it must never mask a genuine interrupt (checked first).
+			name: "a fired below-bound does not suppress an interrupt event",
+			in: notDue(wakeGateInput{
+				Events:            []*captain.Event{evt(captain.EventWorkflowFailed)},
+				Credits:           170000,
+				Policy:            WakePolicy{CreditsBelow: intPtr(600000)},
+				CreditsBelowFired: true,
+			}),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluateWakeGate(tt.in)
+			require.Equal(t, tt.want, got.ShouldWake, "reason: %s", got.Reason)
+		})
+	}
+}
+
 // TestWakeGateNextWakeAtIsOneShot covers sp-soh9: a captain-declared NextWakeAt
 // is a ONE-SHOT alarm, not a standing wake condition. It governs the next wake
 // only while UNSERVICED (still ahead of the last session that ran). Once a

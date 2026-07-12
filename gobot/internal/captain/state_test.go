@@ -164,6 +164,54 @@ func TestSaveCadenceStatePreservesWakePolicy(t *testing.T) {
 	require.Equal(t, []string{"ship.idle"}, got.InterruptTypes)
 }
 
+// --- sp-l6pz: credits wake-gate edge-state persistence ---
+//
+// CreditsAboveFired/CreditsBelowFired are supervisor-owned cadence-class state:
+// they round-trip through saveCadenceState (the supervisor's read-merge-write
+// path) and survive a concurrent captain-owned WakePolicy write, exactly like
+// the other cadence fields — so a restart reloads the already-fired marker and
+// does not re-wake a still-satisfied bound (RULINGS #2).
+
+func TestCreditsEdgeStateRoundTripsThroughCadenceSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	require.NoError(t, saveCadenceState(path, supervisorState{
+		LastSession:       time.Now().Truncate(time.Second),
+		CreditsAboveFired: true,
+		CreditsBelowFired: true,
+	}))
+
+	got, err := loadSupervisorState(path)
+	require.NoError(t, err)
+	require.True(t, got.CreditsAboveFired, "credits_above_fired must survive a cadence save")
+	require.True(t, got.CreditsBelowFired, "credits_below_fired must survive a cadence save")
+}
+
+func TestSaveCadenceStateStampsCreditsEdgeWithoutClobberingPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	below := 600000
+	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsBelow: &below}))
+
+	// A cadence write (supervisor-owned) stamps the fired edge-state without
+	// clobbering the captain-owned wake policy.
+	require.NoError(t, saveCadenceState(path, supervisorState{
+		LastSession:       time.Now().Truncate(time.Second),
+		CreditsBelowFired: true,
+	}))
+	got, err := loadSupervisorState(path)
+	require.NoError(t, err)
+	require.True(t, got.CreditsBelowFired)
+	require.NotNil(t, got.CreditsBelow, "the cadence write must not clobber the declared floor")
+	require.Equal(t, below, *got.CreditsBelow)
+
+	// A subsequent captain-owned policy write must not clobber the supervisor's
+	// fired edge-state.
+	above := 900000
+	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsAbove: &above, CreditsBelow: &below}))
+	got, err = loadSupervisorState(path)
+	require.NoError(t, err)
+	require.True(t, got.CreditsBelowFired, "a wake-policy write must not clobber the supervisor's fired edge-state")
+}
+
 // --- sp-zlfv: RegimePolicy persistence, mirroring the WakePolicy tests
 // above. supervisor-state.json now has three independent owners (cadence,
 // WakePolicy, RegimePolicy), so the cross-policy preservation tests below
