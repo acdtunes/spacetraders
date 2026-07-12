@@ -3,9 +3,9 @@ import type {
   Agent, ConstructionState, GateWorkerState, HaulerState,
   MutationLogEntry, Ship, ShipNav, StandingCoordinators,
 } from '../world/types.js';
-import { getWorld, resetWorld } from '../world/store.js';
+import { getWorld, resetWorld, type ResetOptions } from '../world/store.js';
 import type { ClockMode } from '../clock.js';
-import { advanceClock, getClockState, getNow, resolveNav, setClockMode, setNow } from '../clock.js';
+import { advanceClock, getClockState, getNow, resetClock, resolveNav, setClockMode, setNow } from '../clock.js';
 import { badRequest } from '../errors.js';
 
 // ─── GET /_twin/state — the FROZEN superset (one object; three typed views) ──────────
@@ -70,8 +70,12 @@ function toStateShip(ship: Ship, transit: Parameters<typeof resolveNav>[1], now:
 }
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/reset', async () => {
-    resetWorld();
+  // POST /_twin/reset — dispatch on `mode` (absent = cold/DATA), seed the world, then leave the
+  // world clock FROZEN so each scenario starts deterministic. Response body is ignored by the
+  // harness (2xx is all it checks); the `{ ok, world }` shape is kept for the skeleton tests.
+  app.post<{ Body?: ResetOptions }>('/reset', async (req) => {
+    resetWorld(req.body ?? {});
+    resetClock();
     const w = getWorld();
     return { ok: true, world: { agent: w.agent, shipCount: w.ships.size } };
   });

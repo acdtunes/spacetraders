@@ -1,4 +1,4 @@
-import type { World } from './types.js';
+import type { GateWorkerState, HaulerState, Ship, World } from './types.js';
 import { loadColdStartWorld, registerAgent } from './loader.js';
 
 /** The single in-memory world every route reads/mutates. Lazily built on first access. */
@@ -12,10 +12,50 @@ export function getWorld(): World {
 /** Replace the live world outright (buildServer({ world }) and tests). */
 export function setWorld(world: World): void { current = world; }
 
-/** POST /_twin/reset: rebuild cold-start from fixtures, PRESERVING the registered
- *  agent's symbol/faction/token so the seeded players row stays valid. Replaces the
- *  singleton — safe because no route captures a reference (all call getWorld()). */
-export function resetWorld(): void {
+// ─── POST /_twin/reset options — one discriminated union over `mode` ─────────────────
+// Absent `mode` = cold/DATA. Every field is optional; the seed functions supply the frozen
+// contract defaults so a bare `{}` (or `{mode}`) reproduces the harness fixture. All three
+// modes first re-materialize the agent + starting fleet (preserving symbol/faction/token so
+// the seeded players row stays valid), THEN layer the mode-specific world state on top.
+
+export interface ColdResetOptions {
+  mode?: 'cold';
+  credits?: number;              // default 175_000 (registerAgent's starting credits)
+  probes?: number;               // default 1 — SATELLITE hull count
+  frigates?: number;             // default 1 — COMMAND hull count
+  probePrice?: number;           // shipyard SHIP_PROBE purchasePrice lever (DATA probe buys)
+  preScoutedMarkets?: string[];  // waypoints to mark scouted+fresh up front
+  coverage?: number;             // starting market-coverage fraction
+}
+export interface IncomeResetOptions {
+  mode: 'income-entry';
+  credits?: number;              // default 600_000
+  haulerPrice?: number;          // default 300_000 — LIGHT_HAULER purchase lever
+  hubs?: string[];               // default H1..H5 — hauler parking targets
+  frigateContractTagged?: boolean; // default true — flips false on fleet-unassign report
+  creditsPerHour?: number;       // default 0 — the ONE $/hr var
+}
+export interface GateResetOptions {
+  mode: 'gate-entry';
+  credits?: number;              // default 1_500_000
+  haulers?: number;              // default 4 — idle income haulers available to repurpose
+  incomePerHour?: number;        // default 50_000 — mapped onto the ONE $/hr var (creditsPerHour)
+  gateSite?: string;             // default = the real JUMP_GATE waypoint from the fixture
+  gateMaterialChains?: number;   // default 3 — worker-sizing input (stored for the autosizer)
+  constructionPercent?: number;  // default 0 — construction never auto-advances
+  workerPrice?: number;          // default 300_000 — LIGHT_HAULER top-up worker lever
+  executorRunning?: boolean;     // default true — construction executor already up at entry
+}
+export type ResetOptions = ColdResetOptions | IncomeResetOptions | GateResetOptions;
+
+const DEFAULT_HUBS = ['X1-PZ28-H1', 'X1-PZ28-H2', 'X1-PZ28-H3', 'X1-PZ28-H4', 'X1-PZ28-H5'];
+const FALLBACK_JUMP_GATE = 'X1-PZ28-I67';
+
+/** POST /_twin/reset: rebuild the world from fixtures, PRESERVING the registered agent's
+ *  symbol/faction/token, then layer the mode-specific seed on top. Replaces the singleton —
+ *  safe because no route captures a reference (all call getWorld()). A bare resetWorld() is
+ *  the cold/DATA reset with contract defaults (backwards-compatible with every prior caller). */
+export function resetWorld(opts: ResetOptions = {}): void {
   const prev = getWorld();
   const prevSymbol = prev.agent?.symbol ?? null;
   const prevFaction = prev.agent?.startingFaction ?? null;
@@ -25,5 +65,108 @@ export function resetWorld(): void {
   if (prevSymbol !== null && prevToken !== null) {
     registerAgent(fresh, { symbol: prevSymbol, faction: prevFaction ?? 'COSMIC', token: prevToken });
   }
+
+  switch (opts.mode) {
+    case 'income-entry': seedIncomeEntry(fresh, opts); break;
+    case 'gate-entry': seedGateEntry(fresh, opts); break;
+    default: seedColdEntry(fresh, opts); break;
+  }
+
   current = fresh;
+}
+
+// ─── mode seeders (self-contained: only mutate `world`, no new loader deps) ──────────
+
+/** cold/DATA: the current re-materialize behavior + the optional levers. */
+function seedColdEntry(world: World, opts: ColdResetOptions): void {
+  if (world.agent && typeof opts.credits === 'number') world.agent.credits = opts.credits;
+  reconcileRoleCount(world, 'COMMAND', opts.frigates);
+  reconcileRoleCount(world, 'SATELLITE', opts.probes);
+  if (typeof opts.coverage === 'number') world.coverage = opts.coverage;
+  if (Array.isArray(opts.preScoutedMarkets)) {
+    for (const wp of opts.preScoutedMarkets) world.marketScouting.set(wp, { scouted: true, fresh: true });
+  }
+  if (typeof opts.probePrice === 'number') {
+    setShipyardPrice(world, 'SHIP_PROBE', opts.probePrice);
+    world.shipPrices = { ...(world.shipPrices ?? {}), SHIP_PROBE: opts.probePrice };
+  }
+}
+
+/** income-entry: seed the INCOME view. haulers[] starts EMPTY — the daemon BUYS them (each
+ *  PurchaseShip appends a hauler); pre-seeding would defeat the capital-gate / buy-count asserts. */
+function seedIncomeEntry(world: World, opts: IncomeResetOptions): void {
+  if (world.agent) world.agent.credits = opts.credits ?? 600_000;
+  world.hubs = opts.hubs ?? [...DEFAULT_HUBS];
+  world.frigateContractTagged = opts.frigateContractTagged ?? true;
+  world.creditsPerHour = opts.creditsPerHour ?? 0;
+  world.batchContractRunning = false;
+  world.haulers = [];
+  world.shipPrices = { ...(world.shipPrices ?? {}), LIGHT_HAULER: opts.haulerPrice ?? 300_000 };
+}
+
+/** gate-entry: seed the GATE view. gateWorkers[] starts EMPTY (repurpose/buy fill it during the
+ *  run); construction.percent never auto-advances. incomePerHour maps onto the ONE $/hr var. */
+function seedGateEntry(world: World, opts: GateResetOptions): void {
+  if (world.agent) world.agent.credits = opts.credits ?? 1_500_000;
+  world.creditsPerHour = opts.incomePerHour ?? 50_000; // the SAME $/hr var as income creditsPerHour
+  world.construction = {
+    site: opts.gateSite ?? findJumpGate(world),
+    percent: opts.constructionPercent ?? 0,
+    started: false,
+    adopted: false,
+  };
+  world.gateWorkers = [] as GateWorkerState[];
+  world.executorRunning = opts.executorRunning ?? true;
+  world.autosizerRunning = false;
+  world.standingCoordinators = { siting: false, workerRebalancer: false };
+  world.done = false;
+  world.gateMaterialChains = opts.gateMaterialChains ?? 3;
+  world.shipPrices = { ...(world.shipPrices ?? {}), LIGHT_HAULER: opts.workerPrice ?? 300_000 };
+  // The idle income fleet carried into GATE — the pool the coordinator repurposes into workers.
+  const n = opts.haulers ?? 4;
+  const agentSym = world.agent?.symbol ?? 'TWIN';
+  world.haulers = Array.from({ length: n }, (_, i): HaulerState => ({
+    symbol: `${agentSym}-H${i + 1}`, role: 'HAULER', parkedHub: null,
+  }));
+}
+
+/** Force the number of hulls with `role` to `target` by cloning/removing (no-op when `target`
+ *  is undefined — "not specified, leave as-is"). Clones the existing hull of that role so the
+ *  extra ship is a faithful copy; skips silently if there is no hull to clone from. */
+function reconcileRoleCount(world: World, role: string, target: number | undefined): void {
+  if (typeof target !== 'number') return;
+  const of = [...world.ships.values()].filter((s) => s.registration?.role === role);
+  if (of.length === target) return;
+  if (of.length > target) {
+    for (const s of of.slice(target)) world.ships.delete(s.symbol);
+    return;
+  }
+  const template = of[0];
+  if (!template) return; // cannot fabricate a hull with no template to copy
+  const agentSym = world.agent?.symbol ?? 'TWIN';
+  for (let i = of.length; i < target; i++) {
+    const symbol = `${agentSym}-${world.shipCounter++}`;
+    const clone = structuredClone(template) as Ship;
+    clone.symbol = symbol;
+    world.ships.set(symbol, clone);
+  }
+}
+
+/** Set the purchasePrice of every shipyard listing whose type is `shipType`. */
+function setShipyardPrice(world: World, shipType: string, price: number): void {
+  for (const sy of world.shipyards.values()) {
+    for (const listing of sy.ships) {
+      if (listing.type === shipType) listing.purchasePrice = price;
+    }
+  }
+}
+
+/** The real JUMP_GATE waypoint symbol from the loaded topology (fixtures have exactly one). */
+function findJumpGate(world: World): string {
+  for (const sys of world.systems.values()) {
+    for (const wp of sys.waypoints.values()) {
+      if (wp.type === 'JUMP_GATE') return wp.symbol;
+    }
+  }
+  return FALLBACK_JUMP_GATE;
 }

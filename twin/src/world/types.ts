@@ -202,4 +202,9 @@ export interface World extends ControlPlaneState {
   shipyards: Map<string, Shipyard>;
   transits: Map<string, TransitState>;
   shipCounter: number;
+  // ─── reset price/sizing levers (NOT part of the /_twin/state superset) ───────────
+  // Seeded by POST /_twin/reset so later pieces (shipyard listing / PurchaseShip route /
+  // gate autosizer) can read them; optional so existing World literals need no change.
+  shipPrices?: Record<string, number>;   // e.g. { SHIP_PROBE: probePrice, LIGHT_HAULER: haulerPrice|workerPrice }
+  gateMaterialChains?: number;           // gate-entry worker-sizing input (producing chains)
 }
