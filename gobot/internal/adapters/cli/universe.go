@@ -40,6 +40,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newUniverseStatusCommand())
+	cmd.AddCommand(newUniverseTransitionCommand())
 	cmd.AddCommand(newUniverseCloseCommand())
 	cmd.AddCommand(newUniverseScrubCommand())
 

@@ -9,9 +9,19 @@ in it ever runs autonomously.** Phases marked **ADMIRAL ONLY** must not be run
 by any agent, script, or automation — ever.
 
 Placeholders: `<era>` = lowercase agent symbol (e.g. `torwind`); `<AGENT>` =
-agent symbol (e.g. `TORWIND`); `<ts>` = timestamp; `<reset-date>` = server
-`resetDate` (YYYY-MM-DD); `<db-conn>` = the live `spacetraders` Postgres
+agent symbol (e.g. `TORWIND`); `<NEW_AGENT>` = the incoming era's agent symbol;
+`<jwt>` = the incoming agent's API token; `<ts>` = timestamp; `<reset-date>` =
+server `resetDate` (YYYY-MM-DD); `<db-conn>` = the live `spacetraders` Postgres
 connection string; `<rig>` = the beads rig repo root.
+
+> **Superseding verb (sp-nax3):** the era flip + new-agent adoption + player
+> repoints + prior-era container drain are now performed by ONE idempotent,
+> guarded command — `spacetraders universe transition --agent <NEW_AGENT>
+> --token <jwt> --confirm`. It API-validates the token BEFORE any write
+> (fail-closed), does **not** truncate the player-partitioned caches, and
+> repoints both the CLI default and `captain.player_id`. It fuses Phases 2 + 6
+> (and the container drain); the phase-by-phase breakdown below remains the
+> reference decomposition and manual-recovery path. Always `--dry-run` first.
 
 ---
 
@@ -56,32 +66,34 @@ the full recovery path for the unscoped-write disaster case.
 
 ---
 
-## Phase 2 — Era close (Postgres)
+## Phase 2 — Era-flip preview (Postgres)
 
 **ADMIRAL ONLY**
 
-```bash
-spacetraders universe close --era <era> --confirm <era>
-```
-
-Stamps `eras.closed_at` + `final_credits` (L28 anchor method), blanks the
-dead player's token, truncates `market_data` + `system_graphs`
-(`TRUNCATE ... RESTART IDENTITY`), backfills `waypoints.era_id` where NULL.
-Refuses without `--confirm` echoing the era name; refuses if the era row is
-already closed (idempotent re-run prints what is already done).
-
-Optional, any time after this phase, never a gate:
+Preview the era flip — it mutates nothing — to confirm the plan before the
+beads phases:
 
 ```bash
-spacetraders universe scrub --era <era> --confirm <era>
+spacetraders universe transition --agent <NEW_AGENT> --token <jwt> --dry-run
 ```
 
-Deletes player-scoped WIPE-class junk rows (containers, container_logs,
-ships, factory states, gas/storage ops) for the dead era's player. Never
-touches ARCHIVE-class history or other players' rows.
+The actual flip is applied atomically in **Phase 6** (`--confirm`), which
+stamps `eras.closed_at` + `final_credits` (L28 anchor method) on the outgoing
+era and opens the incoming one.
 
-**Reversal:** Guarded (name-echo + already-closed check). Reversal = restore
-the Phase 1 dump with `pg_restore`.
+> **Correction (Admiral, 2026-07-12):** `market_data` and `system_graphs` are
+> **NOT** truncated. History is player-partitioned by `player_id`
+> (migration 032 — the agent symbol is intentionally non-unique across eras),
+> so prior-era data coexists via a distinct `player_id` and stays queryable via
+> `history <verb> --era <id>`. The legacy `spacetraders universe close` verb
+> still `TRUNCATE`s `market_data, system_graphs` — that truncation is a known
+> defect and the verb **must not** be used for a player-partitioned reset. Use
+> `universe transition` (above), which never truncates. (`universe scrub` only
+> deletes player-scoped WIPE-class rows for a dead era's player; it does not
+> touch the caches and is unaffected.)
+
+**Reversal:** `--dry-run` is read-only. The Phase 1 dump is the master rollback
+for the Phase 6 apply.
 
 ---
 
@@ -165,20 +177,43 @@ verbatim as notes (Phase 4).
 
 ---
 
-## Phase 6 — Register new agent
+## Phase 6 — Transition to the new agent
 
 **ADMIRAL ONLY**
 
+One idempotent command performs the whole rollover (sp-nax3). Preview, then
+apply:
+
 ```bash
-spacetraders player register --new --agent <NEW_AGENT> --faction <FACTION>
-spacetraders config set-player --agent <NEW_AGENT>
+spacetraders universe transition --agent <NEW_AGENT> --token <jwt> --dry-run
+spacetraders universe transition --agent <NEW_AGENT> --token <jwt> --confirm
 ```
 
-Calls the SpaceTraders API with the account token, stores the new agent
-token, creates the `players` row and an OPEN `eras` row with the server
-`resetDate`.
+In order, on `--confirm`, it:
 
-**Reversal:** API-side one-shot; local rows are re-creatable.
+1. **API-validates `<jwt>` via `GetAgent` BEFORE any write** — a corrupt token
+   is rejected with zero partial state (root-cause fix: `player register` never
+   validated, so a transcription-corrupted JWT was silently stored this era).
+2. **Flips the era table without truncation** — stamps `closed_at` +
+   `final_credits` on the outgoing era and opens a new `eras` row for the server
+   `resetDate` linked to a fresh `player_id` (`market_data` / `system_graphs`
+   retained; see Phase 2 correction).
+3. **Repoints BOTH** the CLI default player (`config set-player`) **AND**
+   `captain.player_id` in `gobot/config.yaml` (comment-preserving edit) — so the
+   supervisor does not wake as the dead prior-era player. **Closes sp-m602.**
+4. **Drains the prior era's containers coordinators-first** (coordinators run
+   `iterations=-1` reconcile loops that relaunch workers; `restart_policy=on-failure`
+   makes an explicit stop terminal), reconciling any daemon-unknown orphan rows
+   to `STOPPED` in the DB.
+
+Re-running once `universe status` is "in sync" is a no-op.
+
+> The daemon's in-memory "Active Containers" gauge may stay high after the drain
+> until an Admiral daemon restart (Phase 8 bring-up) clears it. Verify the drain
+> against DB truth (`spacetraders container list`), not the gauge.
+
+**Reversal:** API-side registration is a one-shot; local rows are re-creatable,
+and the Phase 1 dump restores the pre-transition state.
 
 ---
 
@@ -218,8 +253,13 @@ agent, or runbook phase in this design clears it except this manual step.
 
 ## Ordering rationale
 
-`universe close` (Phase 2) runs before the beads phases because the
-retrospective (Phase 5) consumes `history summary`, which needs the closed
-era row. `universe close` runs before registration (Phase 6) so the new
-agent never coexists with unscoped stale caches. The memory gate (Phase 4)
-runs before any new captain session so false priors never prime even once.
+The era flip is applied once, atomically, in Phase 6 (`universe transition
+--confirm`) — it both closes the outgoing era and opens the incoming one. The
+beads phases (3–5) run before it against the outgoing era's **retained**,
+player-partitioned history (`history <verb> --era <id>`); nothing is truncated,
+so those reads are valid whether or not the era row is formally closed yet.
+Phase 2 previews the flip (`--dry-run`, read-only) so the Admiral confirms the
+plan before the beads work. The memory gate (Phase 4) runs before any new
+captain session so false priors never prime even once. The `captain.player_id`
+repoint is part of the same Phase 6 command, so the supervisor can never wake as
+the dead prior-era player (sp-m602).
