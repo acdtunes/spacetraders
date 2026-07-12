@@ -1,0 +1,35 @@
+# twin/test-config.yaml — config for the ISOLATED digital-twin test daemon.
+#
+# ⚠ THE --force PID TRAP — READ BEFORE EDITING ⚠
+# The production daemon runs `spacetraders-daemon --force`; --force SIGTERM-kills whatever
+# PID is recorded in the loaded config's daemon.pid_file. The compiled-in default is
+# /tmp/spacetraders-daemon.pid — PRODUCTION's pidfile. Every override below is a
+# production-isolation boundary, guarded by twin_test_config_test.go and launch-test-stack.sh.
+
+database:
+  type: postgres
+  # Test Postgres on 5433 — NEVER 5432 (prod, READ-ONLY for the twin project).
+  url: postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable
+
+api:
+  # Display/default only — the real redirect is the ST_API_BASE_URL env seam.
+  base_url: http://127.0.0.1:8080/v2
+  rate_limit:
+    requests: 10 # twin is local; loosen the 2/s live-API ceiling for fast tests
+    burst: 30
+
+daemon:
+  pid_file: /tmp/spacetraders-daemon-test.pid # NOT /tmp/spacetraders-daemon.pid (prod)
+  socket_path: /tmp/spacetraders-daemon-test.sock # NOT /tmp/spacetraders-daemon.sock (prod)
+  address: localhost:50062 # prod gRPC is localhost:50052
+
+metrics:
+  enabled: true
+  port: 9092 # prod daemon serves 9090 (Prometheus scrapes it)
+
+captain:
+  player_id: 1 # the seeded TWINAGENT row — first players row in a fresh spacetraders_test DB
+
+logging:
+  level: info
+  format: text
