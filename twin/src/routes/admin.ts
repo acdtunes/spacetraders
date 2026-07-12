@@ -6,6 +6,7 @@ import type {
 import { getWorld, resetWorld, type ResetOptions } from '../world/store.js';
 import type { ClockMode } from '../clock.js';
 import { advanceClock, getClockState, getNow, resetClock, resolveNav, setClockMode, setNow } from '../clock.js';
+import { applyReport } from '../world/mutation-log.js';
 import { badRequest } from '../errors.js';
 
 // ─── GET /_twin/state — the FROZEN superset (one object; three typed views) ──────────
@@ -149,4 +150,24 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return { now: getClockState().now };
     },
   );
+
+  // ─── POST /_twin/report — the daemon->twin seam for the DAEMON-INTERNAL ops ─────────
+  // The bootstrap coordinator POSTs {call, detail?} when it fires one of the seven daemon-internal
+  // ops (fleet-unassign / batch-contract / construction-start / executor-bounce / launch-autosizer
+  // / launch-siting / launch-worker-rebalancer) — but ONLY when its API base is the twin (test-gated;
+  // prod is unchanged). applyReport appends the mutation-log entry AND flips the paired /_twin/state
+  // flag as one atomic, exactly-once unit: the flag is the guard, so a duplicate report (retry, or a
+  // daemon kill+reboot mid-run) is a pure no-op. An unrecognized call is a harmless 2xx no-op
+  // (applyReport ignores it) — repurpose in particular is STATE-ONLY and never reported here. Void.
+  app.post<{ Body?: { call?: unknown; detail?: unknown } }>('/report', async (req, reply) => {
+    const body = req.body ?? {};
+    if (typeof body.call !== 'string' || body.call === '') {
+      return badRequest(reply, `report requires a non-empty string 'call', got ${JSON.stringify(body.call)}`);
+    }
+    const detail = body.detail !== null && typeof body.detail === 'object'
+      ? (body.detail as Record<string, unknown>)
+      : undefined;
+    applyReport(getWorld(), { call: body.call, detail });
+    return reply.code(204).send();
+  });
 }
