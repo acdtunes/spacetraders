@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { World, Ship, Waypoint, System, Market, Shipyard } from '../../src/world/types';
 
+// A minimal but VALID ship (registration + nav) so the reshaped GET /_twin/state handler —
+// which resolveNav's each ship and reads registration.role / nav.waypointSymbol — never crashes.
+function stubShip(symbol: string): Ship {
+  return {
+    symbol, registration: { role: 'COMMAND' },
+    nav: { systemSymbol: 'X1-PZ28', waypointSymbol: 'X1-PZ28-A1', status: 'DOCKED', flightMode: 'CRUISE', route: null },
+  } as unknown as Ship;
+}
+
 vi.mock('../../src/world/loader', () => ({
   loadColdStartWorld: (): World => ({
     serverStatus: { resetDate: '2026-07-05', serverResets: { next: '2026-08-05T00:00:00.000Z', frequency: 'monthly' } },
@@ -15,7 +24,7 @@ vi.mock('../../src/world/loader', () => ({
   registerAgent: (world: World, args: { symbol: string; faction: string; token: string }) => {
     const agent = { accountId: `twin-account-${args.symbol}`, symbol: args.symbol, headquarters: 'X1-PZ28-A1', credits: 175000, startingFaction: args.faction };
     world.agent = agent; world.agentToken = args.token;
-    world.ships = new Map<string, Ship>([[`${args.symbol}-1`, { symbol: `${args.symbol}-1` } as unknown as Ship]]);
+    world.ships = new Map<string, Ship>([[`${args.symbol}-1`, stubShip(`${args.symbol}-1`)]]);
     world.shipCounter = 2;
     return { agent, ships: [...world.ships.values()] };
   },
@@ -33,7 +42,7 @@ function registeredWorld(): World {
     serverStatus: { resetDate: '2026-07-05', serverResets: { next: '2026-08-05T00:00:00.000Z', frequency: 'monthly' } },
     agent: { accountId: 'acct-TWINAGENT', symbol: 'TWINAGENT', headquarters: 'X1-PZ28-A1', credits: 175000, startingFaction: 'COSMIC' },
     agentToken: 'jwt-preserve-me',
-    ships: new Map<string, Ship>([['TWINAGENT-1', { symbol: 'TWINAGENT-1' } as unknown as Ship]]),
+    ships: new Map<string, Ship>([['TWINAGENT-1', stubShip('TWINAGENT-1')]]),
     systems,
     markets: new Map<string, Market>([['X1-PZ28-A1', { symbol: 'X1-PZ28-A1', exports: [], imports: [], exchange: [], tradeGoods: [] }]]),
     shipyards: new Map<string, Shipyard>([['X1-PZ28-A1', { symbol: 'X1-PZ28-A1', shipTypes: [], ships: [], transactions: [], modificationsFee: 0 }]]),
@@ -48,35 +57,47 @@ function registeredWorld(): World {
 let app: FastifyInstance;
 afterEach(async () => { if (app) await app.close(); vi.clearAllMocks(); });
 
-describe('/_twin admin routes', () => {
-  it('GET /_twin/state returns the foundation TwinState shape', async () => {
+describe('/_twin admin routes (HTTP smoke over a mock world)', () => {
+  it('GET /_twin/state emits the reshaped superset (BASE + INCOME + GATE), one object', async () => {
     app = buildServer({ world: registeredWorld() });
     const res = await app.inject({ method: 'GET', url: '/_twin/state' });
     expect(res.statusCode).toBe(200);
     const s = res.json();
+    // BASE
     expect(s.agent.symbol).toBe('TWINAGENT'); expect(s.agent.credits).toBe(175000);
     expect(Array.isArray(s.ships)).toBe(true); expect(s.ships).toHaveLength(1);
-    expect(Array.isArray(s.transits)).toBe(true); expect(s.transits).toHaveLength(0);
-    expect(s.markets['X1-PZ28-A1'].symbol).toBe('X1-PZ28-A1');
-    expect(s.shipyards['X1-PZ28-A1'].symbol).toBe('X1-PZ28-A1');
-    expect(s.waypointCount).toBe(2);
-    expect(typeof s.compression).toBe('number'); expect(s.compression).toBeGreaterThan(0);
-    expect(s.now).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(s.ships[0].role).toBe('COMMAND'); expect(s.ships[0].nav.waypoint).toBe('X1-PZ28-A1');
+    expect(s.ships[0].scoutAssignment).toBeNull();
+    expect(Array.isArray(s.markets)).toBe(true);
+    expect(typeof s.coverage).toBe('number');
+    expect(s.clock.mode).toBe('frozen'); expect(s.clock.now).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(Array.isArray(s.mutationLog)).toBe(true);
+    // INCOME
+    expect(Array.isArray(s.haulers)).toBe(true);
+    expect(s.frigateContractTagged).toBe(false); expect(s.batchContractRunning).toBe(false);
+    expect(s.creditsPerHour).toBe(0); expect(Array.isArray(s.hubs)).toBe(true);
+    // GATE
+    expect(s.construction).toEqual({ site: '', percent: 0, started: false, adopted: false });
+    expect(Array.isArray(s.gateWorkers)).toBe(true);
+    expect(s.executorRunning).toBe(false); expect(s.autosizerRunning).toBe(false);
+    expect(s.standingCoordinators).toEqual({ siting: false, workerRebalancer: false });
+    expect(s.done).toBe(false);
+    // retired fields gone
+    expect(s.compression).toBeUndefined(); expect(s.transits).toBeUndefined();
+    expect(s.waypointCount).toBeUndefined(); expect(s.now).toBeUndefined();
   });
-  it('POST /_twin/time-compression validates >0 and updates the live factor', async () => {
+
+  it('POST /_twin/clock advances the world clock and returns {now}', async () => {
     app = buildServer({ world: registeredWorld() });
-    const ok = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 250 } });
-    expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toEqual({ ok: true, compression: 250 });
+    const before = (await app.inject({ method: 'GET', url: '/_twin/state' })).json().clock.now;
+    const res = await app.inject({ method: 'POST', url: '/_twin/clock', payload: { advanceMs: 5000 } });
+    expect(res.statusCode).toBe(200);
+    const now = res.json().now;
+    expect(new Date(now).getTime()).toBe(new Date(before).getTime() + 5000);
     const st = await app.inject({ method: 'GET', url: '/_twin/state' });
-    expect(st.json().compression).toBe(250);
+    expect(st.json().clock.now).toBe(now);
   });
-  it('POST /_twin/time-compression rejects <= 0 with the error envelope', async () => {
-    app = buildServer({ world: registeredWorld() });
-    const res = await app.inject({ method: 'POST', url: '/_twin/time-compression', payload: { compression: 0 } });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error.code).toBe(400);
-  });
+
   it('POST /_twin/reset rebuilds cold-start but preserves agent symbol + token', async () => {
     const dirty = registeredWorld(); dirty.agent!.credits = 3; dirty.ships = new Map();
     app = buildServer({ world: dirty });
