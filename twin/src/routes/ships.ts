@@ -4,7 +4,7 @@ import { fuelCostFor, getNow, makeTransit, resolveNav } from '../clock.js';
 import { appendMutation } from '../world/mutation-log.js';
 import { serializeAgent, serializeShip, serializeShipNav } from '../world/serialize.js';
 import { badRequest, notFound, unauthorized, sendError, ERR_SHIP_MUST_BE_DOCKED, ERR_SHIP_NOT_DOCKED } from '../errors.js';
-import type { Ship, Waypoint, World } from '../world/types.js';
+import type { Ship, ShipyardListing, Waypoint, World } from '../world/types.js';
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 20;
@@ -62,18 +62,34 @@ function findWaypoint(world: World, symbol: string): Waypoint | undefined {
   return undefined;
 }
 
-/** engine.speed for a shipType from its shipyard listing (the listing's engine MUST carry a
- *  numeric speed); undefined when no listing is found. */
-function speedForShipType(world: World, shipType: string): number | undefined {
+/** The full shipyard ShipyardShip listing for a shipType, from any yard that sells it (every
+ *  X1-PZ28 yard carries identical per-type specs); undefined when no yard lists the type. This is
+ *  the authoritative per-type spec a purchased hull is built from. */
+function listingForShipType(world: World, shipType: string): ShipyardListing | undefined {
   for (const sy of world.shipyards.values()) {
     for (const listing of sy.ships) {
-      if (listing.type === shipType) {
-        const speed = Number((listing.engine as { speed?: unknown }).speed);
-        if (Number.isFinite(speed) && speed > 0) return speed;
-      }
+      if (listing.type === shipType) return listing;
     }
   }
   return undefined;
+}
+
+/** Number(value) when finite, else `fallback` — for reading numeric fields off the untyped listing. */
+function numberOr(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** Cargo capacity a listing confers = the sum of its cargo-hold modules' capacities (0 when none),
+ *  mirroring how the real API derives a hull's hold from its installed modules. */
+function cargoCapacityOf(modules: Array<Record<string, unknown>> | undefined): number {
+  let total = 0;
+  for (const m of modules ?? []) {
+    if (String((m as { symbol?: unknown }).symbol ?? '').includes('CARGO_HOLD')) {
+      total += numberOr((m as { capacity?: unknown }).capacity, 0);
+    }
+  }
+  return total;
 }
 
 /** purchasePrice for a shipType: the reset price lever (world.shipPrices) wins, else the shipyard
@@ -89,20 +105,44 @@ function purchasePriceFor(world: World, shipType: string): number {
   return 0;
 }
 
-/** A freshly bought hull, DOCKED at `waypoint`. Cloned off an existing hull so every required Ship
- *  field is structurally present (full-fidelity frame/reactor/etc. is Task 27's concern); a minimal
- *  hull is fabricated only in the degenerate no-template case. */
+/** A freshly bought hull, DOCKED at `waypoint`, built from the REQUESTED type's shipyard listing —
+ *  its own frame/reactor/engine/modules/mounts, a tank sized to the frame's fuelCapacity (full on
+ *  purchase), a hold summed from its cargo modules, and its crew (0 when the listing carries none).
+ *  So a bought SHIP_PROBE is a real FRAME_PROBE (tank 0, engine speed 3), never a frigate clone. A
+ *  type no yard lists (legacy un-prefixed hermetic callers) falls back to cloning an existing hull
+ *  for structural completeness; a minimal hull is fabricated only when the world has no template. */
 function buildPurchasedShip(world: World, symbol: string, shipType: string, waypoint: string): Ship {
   const systemSymbol = systemOf(waypoint);
   const role = roleForShipType(shipType);
-  const speed = speedForShipType(world, shipType);
+  const nav: Ship['nav'] = { systemSymbol, waypointSymbol: waypoint, status: 'DOCKED', flightMode: 'CRUISE', route: null };
+
+  const listing = listingForShipType(world, shipType);
+  if (listing) {
+    const frame = structuredClone(listing.frame);
+    const fuelCapacity = numberOr(frame.fuelCapacity, 0);
+    const crew = (listing as { crew?: { required?: number; capacity?: number } }).crew;
+    return {
+      symbol,
+      registration: { role },
+      nav,
+      fuel: { current: fuelCapacity, capacity: fuelCapacity }, // bought hull arrives with a full tank
+      cargo: { capacity: cargoCapacityOf(listing.modules), units: 0, inventory: [] },
+      cooldown: null,
+      engine: structuredClone(listing.engine) as unknown as Ship['engine'],
+      frame: frame as unknown as Ship['frame'],
+      reactor: structuredClone(listing.reactor) as unknown as Ship['reactor'],
+      crew: { current: crew?.required ?? 0, required: crew?.required ?? 0, capacity: crew?.capacity ?? 0 },
+      modules: structuredClone(listing.modules ?? []) as unknown as Ship['modules'],
+      mounts: structuredClone(listing.mounts ?? []) as unknown as Ship['mounts'],
+    };
+  }
+
   const template = [...world.ships.values()][0];
   if (template) {
     const clone = structuredClone(template);
     clone.symbol = symbol;
     clone.registration = { ...clone.registration, role };
-    clone.nav = { ...clone.nav, systemSymbol, waypointSymbol: waypoint, status: 'DOCKED', flightMode: 'CRUISE', route: null };
-    if (speed !== undefined) clone.engine = { ...clone.engine, speed };
+    clone.nav = nav;
     clone.fuel = { ...clone.fuel, current: clone.fuel.capacity };
     clone.cargo = { ...clone.cargo, units: 0, inventory: [] };
     clone.cooldown = null;
@@ -111,11 +151,11 @@ function buildPurchasedShip(world: World, symbol: string, shipType: string, wayp
   return {
     symbol,
     registration: { role },
-    nav: { systemSymbol, waypointSymbol: waypoint, status: 'DOCKED', flightMode: 'CRUISE', route: null },
+    nav,
     fuel: { current: 0, capacity: 0 },
     cargo: { capacity: 0, units: 0, inventory: [] },
     cooldown: null,
-    engine: { speed: speed ?? 30 },
+    engine: { speed: 30 },
     frame: { symbol: `FRAME_${shipType}`, moduleSlots: 0, mountingPoints: 0 },
     reactor: { symbol: 'REACTOR', name: 'Reactor', powerOutput: 0, requirements: { power: 0, crew: 0, slots: 0 } },
     crew: { current: 0, required: 0, capacity: 0 },
@@ -287,6 +327,10 @@ export async function shipRoutes(app: FastifyInstance): Promise<void> {
     if (!ship) return notFound(reply, `Ship ${symbol} not found.`);
     settleArrival(world, ship, symbol);
     if (ship.nav.status !== 'DOCKED') return sendError(reply, 400, ERR_SHIP_NOT_DOCKED, `Ship ${symbol} must be docked to refuel.`);
+    // A full tank (missing 0) buys 0 market units => totalPrice 0: a 0-unit top-up is ALWAYS free
+    // (never a phantom 1-credit charge). A real burn rounds UP to whole market units — the 50 fuel a
+    // A1->F55 CRUISE hop burns costs ONE unit (100 ship-fuel). That single unit is the live daemon's
+    // observed post-arrival auto-refuel (−1 credit), NOT a lost burn: the departure burn persisted.
     const missing = Math.max(0, ship.fuel.capacity - ship.fuel.current);
     const marketUnits = Math.ceil(missing / 100);
     const pricePerUnit = fuelUnitPrice(world, ship.nav.waypointSymbol);

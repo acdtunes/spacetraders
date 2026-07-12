@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../../src/server';
 import { loadColdStartWorld } from '../../src/world/loader';
+import { expectedShipyardResponse } from '../helpers/shipyard-golden';
 
 // Hermetic Fastify-inject proof of Task 23 (GET .../shipyard). Runs under vitest.unit.config
 // (no live stack). The CLI-acceptance proof lives in tests/endpoints/shipyard.test.ts and
@@ -48,10 +49,11 @@ describe('GET /v2/systems/{s}/waypoints/{w}/shipyard (buildServer wiring)', () =
     expect(listing.purchasePrice).toBe(probe.purchasePrice);
     expect(typeof listing.engine.speed).toBe('number');
     expect(listing.engine.speed).toBe(probe.engine.speed);
-    // Every captured field is preserved; the response ADDS the spec-required ShipyardShip fields
-    // (symbol/supply/crew) and the deep condition/integrity/quality/description on frame/reactor/engine,
-    // so this is toMatchObject (superset), not a verbatim toEqual.
-    expect(body.data).toMatchObject(shipyard);
+    // The response ADDS the spec-required ShipyardShip fields (symbol/supply/crew) and the deep
+    // condition/integrity/quality/description on frame/reactor/engine. Assert the EXACT spec-complete
+    // shape via the hand-written golden — this both preserves every captured field AND verifies the
+    // very golden the live tests/endpoints/shipyard.test.ts diffs against (which cannot run here).
+    expect(body.data).toEqual(expectedShipyardResponse(shipyard));
   });
 
   it('404s a waypoint with no shipyard, naming the waypoint in the error envelope', async () => {

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCli, TWIN_BASE_URL, REPO_ROOT } from '../helpers/run-cli';
+import { expectedShipyardResponse } from '../helpers/shipyard-golden';
 
 const SHIPYARDS_FIXTURE = path.join(REPO_ROOT, 'twin', 'fixtures', 'era2-X1-PZ28', 'shipyards.json');
 const HOME_SYSTEM = 'X1-PZ28';
@@ -27,7 +28,11 @@ describe('GET /v2/systems/{s}/waypoints/{w}/shipyard — wire shape vs golden', 
     const listing = body.data.ships.find((s) => s.type === 'SHIP_PROBE')!;
     expect(listing.purchasePrice).toBe(probe.purchasePrice);
     expect(typeof listing.engine.speed).toBe('number'); expect(listing.engine.speed).toBe(probe.engine.speed);
-    expect(body.data).toEqual(shipyard);
+    // Field-for-field STRICT vs the spec-complete golden: the twin enriches the reduced capture with
+    // the spec-required ShipyardShip fields (symbol/supply/crew {required,capacity}) and the deep
+    // condition/integrity/quality/description on frame/reactor/engine. The golden is verified against
+    // the real endpoint output in tests/unit/shipyard-route.test.ts (in-process, runs here).
+    expect(body.data).toEqual(expectedShipyardResponse(shipyard));
   });
 });
 
