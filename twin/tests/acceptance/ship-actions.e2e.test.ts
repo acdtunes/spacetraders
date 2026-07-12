@@ -202,6 +202,7 @@ describe('A captain expands the fleet by purchasing a new hull (CLI → daemon r
     // ── Given: the cold-start roster (two hulls). Baseline captured as a delta, not a magic number. ──
     const before = listFleet();
     const beforeSymbols = before.map((r) => String(r.symbol));
+    const creditsBefore = readCredits(); // the purchase must be a real ECONOMIC transaction, not just a roster row
 
     // ── When: buy a probe at adjacent shipyard A2 (sells SHIP_PROBE @ 24,680; agent holds 175,000).
     //         The purchase container navigates the (idle, adjacent) probe to the yard, docks, buys. ──
@@ -213,6 +214,12 @@ describe('A captain expands the fleet by purchasing a new hull (CLI → daemon r
     expect(after.length, 'the purchased hull must appear in the daemon fleet roster').toBe(before.length + 1);
     const newHulls = after.map((r) => String(r.symbol)).filter((s) => !beforeSymbols.includes(s));
     expect(newHulls.length, 'exactly one brand-new hull was added to the fleet').toBe(1);
+
+    // ── Teeth (F1): prove it was a real ECONOMIC transaction, not just a roster row — the agent
+    //    paid, and the new hull reconciles as a real probe DOCKED at the shipyard via daemon re-sync. ──
+    expect(readCredits(), 'buying a probe charged the agent — credits must drop').toBeLessThan(creditsBefore);
+    const bought = await pollShip(newHulls[0], (v) => v.location === YARD, { tries: 20, delayMs: 500 });
+    expect(bought.location, 'the new hull is a real probe reconciled at the shipyard, not a phantom row').toBe(YARD);
   }, 150_000);
 });
 
