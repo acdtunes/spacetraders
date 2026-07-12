@@ -83,8 +83,14 @@ describe('bootstrap INCOME — restart mid-TRANSIT (in-flight hull re-adoption)'
         const arrivedShip = done.ships.find((x) => x.symbol === symbol);
         expect(arrivedShip?.nav.route?.arrival).toBe(arrivalBefore);
       }
-      // (a) phase re-detection + (d) convergence to distinct hubs.
-      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(1);
+      // (a) phase re-detection (EVENTUAL — poll: the gauge appears on the recovered brain's first
+      // reconcile tick) + (d) convergence to distinct hubs.
+      const phaseGauge = await pollUntil(
+        () => scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' }),
+        (v) => v === 1,
+        { steps: 30, advanceMs: 1000 },
+      );
+      expect(phaseGauge, 'rebooted daemon re-derives INCOME within its first reconcile ticks').toBe(1);
       expect(new Set(done.haulers.filter((h) => h.parkedHub).map((h) => h.parkedHub)).size).toBe(3);
     } finally {
       await daemon.stop();

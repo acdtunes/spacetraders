@@ -45,7 +45,12 @@ describe('bootstrap INCOME — restart idempotency', () => {
       expect(done.frigateContractTagged).toBe(false);
       // (a) phase re-detection after the reboot lands on INCOME again (income/golden-path asserts the
       // same gauge for a placed fleet) — the rebooted daemon re-derives INCOME, it does not regress to DATA.
-      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(1);
+      const phaseGauge = await pollUntil(
+        () => scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' }),
+        (v) => v === 1,
+        { steps: 30, advanceMs: 1000 },
+      );
+      expect(phaseGauge, 'rebooted daemon re-derives INCOME within its first reconcile ticks').toBe(1);
     } finally {
       await daemon.stop();
     }

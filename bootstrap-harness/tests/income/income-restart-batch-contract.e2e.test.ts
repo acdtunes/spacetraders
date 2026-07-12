@@ -70,8 +70,14 @@ describe('bootstrap INCOME — restart after batch-contract launch', () => {
       expect(done.agent.credits).toBeGreaterThanOrEqual(creditsAtLaunch);
       // No re-retire of the frigate across the restart.
       expect(countCall(done.mutationLog, 'fleet-unassign')).toBeLessThanOrEqual(1);
-      // (a) phase re-detection lands on INCOME again.
-      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(1);
+      // (a) phase re-detection lands on INCOME again (EVENTUAL — poll: the gauge appears on the
+      // recovered brain's first reconcile tick).
+      const phaseGauge = await pollUntil(
+        () => scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' }),
+        (v) => v === 1,
+        { steps: 30, advanceMs: 1000 },
+      );
+      expect(phaseGauge, 'rebooted daemon re-derives INCOME within its first reconcile ticks').toBe(1);
     } finally {
       await daemon.stop();
     }

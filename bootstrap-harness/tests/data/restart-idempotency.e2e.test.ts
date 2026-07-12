@@ -41,8 +41,15 @@ describe('bootstrap DATA — restart idempotency', () => {
       expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(2);
       expect(done.ships.filter((x) => x.role === 'SATELLITE').length).toBe(3);
       // (a) phase re-detection after the reboot lands on DATA again — the rebooted daemon re-derives
-      // its phase from DB+twin, it does not thrash to a different phase.
-      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'DATA' })).toBe(1);
+      // its phase from DB+twin, it does not thrash to a different phase. EVENTUAL (poll, not instant
+      // read): the gauge appears on the recovered brain's first reconcile tick, which the fast
+      // compressed convergence above can beat by a few hundred ms.
+      const phaseGauge = await pollUntil(
+        () => scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'DATA' }),
+        (v) => v === 1,
+        { steps: 30, advanceMs: 1000 },
+      );
+      expect(phaseGauge, 'rebooted daemon re-derives DATA within its first reconcile ticks').toBe(1);
       // (b) treasury debited EXACTLY twice (probePrice 40000) across BOTH daemon lifetimes — identical
       // to a single uninterrupted run (data/golden-path asserts the same 175000-2*40000). An independent
       // /v2 observable (agent.credits) pairing the PurchaseShip count: a re-buy would show 55000, not 95000.

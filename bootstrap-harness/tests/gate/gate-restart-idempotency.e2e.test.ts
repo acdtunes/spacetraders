@@ -36,7 +36,14 @@ describe('bootstrap GATE — restart idempotency', () => {
       // gate-sticky proves this WITHOUT a restart; this is the first assertion of it SURVIVING a reboot.
       const reGate = await pollUntil(() => twinGate.gateState(), (s) => s.construction.started, { steps: 30, advanceMs: 1000 });
       expect(reGate.construction.started).toBe(true);
-      expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'GATE' })).toBe(1);
+      // EVENTUAL (poll): construction.started is twin-persisted and true instantly after the reboot;
+      // the gauge only appears on the recovered brain's first reconcile tick.
+      const gateGauge = await pollUntil(
+        () => scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'GATE' }),
+        (v) => v === 1,
+        { steps: 30, advanceMs: 1000 },
+      );
+      expect(gateGauge, 'rebooted daemon re-derives sticky GATE within its first reconcile ticks').toBe(1);
       expect(await scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'INCOME' })).toBe(0);
       // Drive to COMPLETE.
       await twinGate.setConstruction(100);
