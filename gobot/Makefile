@@ -126,9 +126,69 @@ assert-live-stamp:
 	fi; \
 	echo "OK: live binaries report commit $(STAMP_COMMIT)"
 
-# Full deploy: build stamped binaries, install/reload launchd, restart, then
-# assert the live stamp. ORCHESTRATOR-RUN from the PRODUCTION checkout.
-deploy: build install-launchd
+# Assert ONE live service log shows the freshly-built commit.
+# usage: $(MAKE) assert-stamp LOG=daemon.log   ORCHESTRATOR-RUN.
+assert-stamp:
+	@echo "Asserting $(LOG) is at commit $(STAMP_COMMIT)..."
+	@ok=0; \
+	for i in $$(seq 1 30); do \
+		if grep -q "$(STAMP_COMMIT)" "$(GOBOT_DIR)/$(LOG)" 2>/dev/null; then ok=1; break; fi; \
+		sleep 1; \
+	done; \
+	if [ $$ok -ne 1 ]; then \
+		echo "DEPLOY ASSERT FAILED: $(LOG) does not show commit $(STAMP_COMMIT)." >&2; \
+		echo "A stale binary is likely still running. Inspect: launchctl list | grep spacetraders" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK: $(LOG) reports commit $(STAMP_COMMIT)"
+
+# --- Deploy targets. Build the stamped binary, install/reload its plist, restart,
+# assert the live stamp. The watchkeeper (captain) is an autonomous LLM session: it
+# is bounced ONLY by an explicit deploy-captain / deploy-all, never as a side effect
+# of a daemon push. ORCHESTRATOR-RUN from the PRODUCTION checkout.
+#   make deploy           -> daemon only (safe default; leaves the watchkeeper alone)
+#   make deploy-daemon    -> daemon (+ CLI)
+#   make deploy-captain   -> watchkeeper (restarts the LLM supervisor)
+#   make deploy-routing   -> OR-Tools routing service (regenerates the proto)
+#   make deploy-dashboard -> dashboard
+#   make deploy-all       -> everything (daemon + captain + routing + dashboard)
+deploy: deploy-daemon
+
+deploy-daemon: build-cli build-daemon launchd
+	@uid=$$(id -u); label=com.spacetraders.daemon; \
+	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
+	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
+	echo "deployed + restarted $$label"
+	@$(MAKE) assert-stamp LOG=daemon.log
+
+deploy-captain: build-watchkeeper launchd
+	@uid=$$(id -u); label=com.spacetraders.captain; \
+	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
+	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
+	echo "deployed + restarted $$label"
+	@$(MAKE) assert-stamp LOG=captain-supervisor.log
+
+deploy-routing: build-routing-service launchd
+	@uid=$$(id -u); label=com.spacetraders.routing; \
+	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
+	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
+	echo "deployed + restarted $$label"
+
+deploy-dashboard: launchd
+	@uid=$$(id -u); label=com.spacetraders.dashboard; \
+	cp "$(LAUNCHD_OUT)/$$label.plist" "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
+	launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
+	launchctl kickstart -k gui/$$uid/$$label 2>/dev/null || true; \
+	echo "deployed + restarted $$label"
+
+deploy-all: build install-launchd
 	@uid=$$(id -u); \
 	launchctl kickstart -k gui/$$uid/com.spacetraders.daemon 2>/dev/null || true; \
 	launchctl kickstart -k gui/$$uid/com.spacetraders.captain 2>/dev/null || true
