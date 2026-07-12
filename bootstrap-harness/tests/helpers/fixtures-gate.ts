@@ -15,7 +15,7 @@ export function gateEntry(overrides: Partial<GateFixture> = {}): GateFixture {
     credits: 1_500_000,
     haulers: 4,
     incomePerHour: 50000,
-    gateSite: 'X1-PZ28-I57',
+    gateSite: 'X1-PZ28-I67', // the real era-2 JUMP_GATE waypoint (twin fixture waypoints.json); NOT I57
     gateMaterialChains: 3,
     constructionPercent: 0,
     workerPrice: 300000,
