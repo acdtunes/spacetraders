@@ -57,10 +57,14 @@ export async function startTestDaemon(opts: { configPath?: string } = {}): Promi
 }
 
 export async function resetDaemonDb(): Promise<void> {
-  // Truncate every daemon-owned table but preserve the seeded players row + migration ledger.
+  // Truncate every daemon-owned table but preserve the seeded IDENTITY rows (players + the open
+  // era minted by `player register --new`) + the migration ledger. Truncating `eras` makes the
+  // daemon's recovery era-guard read the world as "universe reset" and (correctly, fail-closed)
+  // refuse to recover containers across a restart — which killed every post-reboot bootstrap
+  // (found via data/restart-idempotency's phase-gauge teeth, st-drm.14).
   const sql = `DO $$ DECLARE r RECORD; BEGIN
     FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public'
-             AND tablename NOT IN ('players','schema_migrations','goose_db_version') LOOP
+             AND tablename NOT IN ('players','eras','schema_migrations','goose_db_version') LOOP
       EXECUTE 'TRUNCATE TABLE public.' || quote_ident(r.tablename) || ' RESTART IDENTITY CASCADE';
     END LOOP; END $$;`;
   const res = spawnSync('psql', [TEST_DATABASE_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
