@@ -59,11 +59,18 @@ async function waitPidfileGone(timeoutMs = 20_000): Promise<void> {
   }
 }
 
-/** SIGTERM the test daemon via the -test pidfile (never --force, never prod). */
+/** SIGTERM the test daemon, then GUARANTEE it is dead (SIGKILL fallback). */
 export async function stopTestDaemon(): Promise<void> {
+  const pid = daemon?.pid;
   if (daemon && !daemon.killed) daemon.kill('SIGTERM');
   daemon = undefined;
   await waitPidfileGone();
+  // SIGTERM + pidfile-gone does NOT confirm the process exited — a slow/ignored SIGTERM would
+  // leak an orphaned daemon (reparented to PID 1) holding the test Postgres/gRPC sockets, which
+  // then collides with the next run. Confirm exit and SIGKILL if still alive.
+  if (pid !== undefined) {
+    try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
   // Remove any lingering -test pidfile/socket so the next boot's socket bind + startup
   // fleet-sync are not blocked by a stale file (the daemon does not always unlink on SIGTERM).
   try { rmSync(TEST_PID_FILE, { force: true }); } catch { /* ignore */ }
