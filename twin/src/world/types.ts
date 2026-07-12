@@ -207,4 +207,9 @@ export interface World extends ControlPlaneState {
   // gate autosizer) can read them; optional so existing World literals need no change.
   shipPrices?: Record<string, number>;   // e.g. { SHIP_PROBE: probePrice, LIGHT_HAULER: haulerPrice|workerPrice }
   gateMaterialChains?: number;           // gate-entry worker-sizing input (producing chains)
+  // POST /_twin/construction derives this from percent>=100 (the api-fidelity-spec's /v2
+  // Construction.isComplete) for a future /v2 construction endpoint to read directly off
+  // World. Deliberately NOT read by GET /_twin/state — the frozen contract's construction
+  // view is exactly {site, percent, started, adopted} (3 existing tests assert it via toEqual).
+  constructionIsComplete?: boolean;
 }

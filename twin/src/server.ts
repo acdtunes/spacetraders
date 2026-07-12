@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { World } from './world/types.js';
 import { setWorld } from './world/store.js';
+import { consumeFault } from './world/faults.js';
+import { sendError } from './errors.js';
 import { serverStatusRoutes } from './routes/server-status.js';
 import { registerRoutes } from './routes/register.js';
 import { agentRoutes } from './routes/agent.js';
@@ -12,6 +14,14 @@ import { adminRoutes } from './routes/admin.js';
 
 export interface BuildServerOptions { world?: World }
 
+/** request.url minus the /v2 prefix and any query string: "/v2/my/ships?page=2" -> "/my/ships".
+ *  Matches the "METHOD /path" shape POST /_twin/fault arms (path relative to /v2). */
+function pathWithinV2(url: string): string {
+  const noQuery = url.split('?')[0] ?? url;
+  const stripped = noQuery.replace(/^\/v2(?=\/|$)/, '');
+  return stripped === '' ? '/' : stripped;
+}
+
 /** Compose the twin: the /v2 SpaceTraders API surface + the /_twin admin namespace.
  *  Every endpoint task adds its `await xxxRoutes(v2)` line in the marked block below. */
 export function buildServer(opts: BuildServerOptions = {}): FastifyInstance {
@@ -21,6 +31,14 @@ export function buildServer(opts: BuildServerOptions = {}): FastifyInstance {
 
   app.register(
     async (v2) => {
+      // POST /_twin/fault arms this: checked on EVERY /v2 request, ahead of every route
+      // handler below. /_twin is a separate top-level registration, so it is never faulted.
+      v2.addHook('preHandler', async (request, reply) => {
+        const path = pathWithinV2(request.url);
+        const code = consumeFault(request.method, path);
+        if (code !== null) return sendError(reply, code, code, `Injected fault: ${request.method} ${path}`);
+      });
+
       await serverStatusRoutes(v2);
       // ─── endpoint tasks register their /v2 route plugins here ─────────────
       await registerRoutes(v2);          // Task 17  POST /register

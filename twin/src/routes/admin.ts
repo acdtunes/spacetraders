@@ -7,6 +7,7 @@ import { getWorld, resetWorld, type ResetOptions } from '../world/store.js';
 import type { ClockMode } from '../clock.js';
 import { advanceClock, getClockState, getNow, resetClock, resolveNav, setClockMode, setNow } from '../clock.js';
 import { applyReport } from '../world/mutation-log.js';
+import { armFault, resetFaults } from '../world/faults.js';
 import { badRequest } from '../errors.js';
 
 // ─── GET /_twin/state — the FROZEN superset (one object; three typed views) ──────────
@@ -77,6 +78,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body?: ResetOptions }>('/reset', async (req) => {
     resetWorld(req.body ?? {});
     resetClock();
+    resetFaults(); // a fresh scenario never inherits a stale arm from a previous one
     const w = getWorld();
     return { ok: true, world: { agent: w.agent, shipCount: w.ships.size } };
   });
@@ -150,6 +152,100 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return { now: getClockState().now };
     },
   );
+
+  // ─── POST /_twin/agent — overwrite the treasury (credits) directly ────────────────
+  app.post<{ Body?: { credits?: unknown } }>('/agent', async (req, reply) => {
+    const body = req.body ?? {};
+    const credits = typeof body.credits === 'number' ? body.credits : Number(body.credits);
+    if (!Number.isFinite(credits)) {
+      return badRequest(reply, `agent requires numeric credits, got ${JSON.stringify(body.credits)}`);
+    }
+    const world = getWorld();
+    if (world.agent) world.agent.credits = credits;
+    return reply.code(204).send();
+  });
+
+  // ─── POST /_twin/markets/coverage — set coverage / mark waypoints scouted+fresh ───
+  // Either field is optional; when both are sent, coverage is set AND the waypoints are
+  // marked. Always echoes the resulting coverage fraction (not void, per the contract).
+  app.post<{ Body?: { fraction?: unknown; scoutWaypoints?: unknown } }>(
+    '/markets/coverage',
+    async (req, reply) => {
+      const body = req.body ?? {};
+      const world = getWorld();
+
+      if (body.fraction !== undefined) {
+        const fraction = typeof body.fraction === 'number' ? body.fraction : Number(body.fraction);
+        if (!Number.isFinite(fraction)) {
+          return badRequest(reply, `coverage fraction must be numeric, got ${JSON.stringify(body.fraction)}`);
+        }
+        world.coverage = fraction;
+      }
+
+      if (body.scoutWaypoints !== undefined) {
+        if (!Array.isArray(body.scoutWaypoints)) {
+          return badRequest(reply, `scoutWaypoints must be an array, got ${JSON.stringify(body.scoutWaypoints)}`);
+        }
+        for (const wp of body.scoutWaypoints) {
+          if (typeof wp === 'string') world.marketScouting.set(wp, { scouted: true, fresh: true });
+        }
+      }
+
+      return { coverage: world.coverage };
+    },
+  );
+
+  // ─── POST /_twin/income — set the ONE $/hr var (== gate incomePerHour) ────────────
+  app.post<{ Body?: { creditsPerHour?: unknown } }>('/income', async (req, reply) => {
+    const body = req.body ?? {};
+    const creditsPerHour = typeof body.creditsPerHour === 'number' ? body.creditsPerHour : Number(body.creditsPerHour);
+    if (!Number.isFinite(creditsPerHour)) {
+      return badRequest(reply, `income requires numeric creditsPerHour, got ${JSON.stringify(body.creditsPerHour)}`);
+    }
+    getWorld().creditsPerHour = creditsPerHour;
+    return reply.code(204).send();
+  });
+
+  // ─── POST /_twin/construction — set construction.percent (NEVER auto-advances) ────
+  // Also derives constructionIsComplete (percent>=100) onto the off-superset World field
+  // (types.ts) for a future /v2 construction endpoint — NOT part of GET /_twin/state, whose
+  // frozen construction view stays exactly {site, percent, started, adopted}.
+  app.post<{ Body?: { percent?: unknown } }>('/construction', async (req, reply) => {
+    const body = req.body ?? {};
+    const percent = typeof body.percent === 'number' ? body.percent : Number(body.percent);
+    if (!Number.isFinite(percent)) {
+      return badRequest(reply, `construction requires numeric percent, got ${JSON.stringify(body.percent)}`);
+    }
+    const world = getWorld();
+    world.construction.percent = percent;
+    world.constructionIsComplete = percent >= 100;
+    return reply.code(204).send();
+  });
+
+  // ─── POST /_twin/fault — arm the next `count` matching /v2 requests to return `code` ─
+  // Checked by the preHandler registered on the /v2 plugin (server.ts); self-clears after
+  // the Nth match (world/faults.ts:consumeFault). endpoint is "METHOD /path", path relative
+  // to /v2 (e.g. "GET /my/ships" — matches bootstrap-harness/tests/data/fail-closed.e2e.test.ts).
+  app.post<{ Body?: { endpoint?: unknown; code?: unknown; count?: unknown } }>('/fault', async (req, reply) => {
+    const body = req.body ?? {};
+    const raw = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
+    const spaceAt = raw.indexOf(' ');
+    const method = spaceAt === -1 ? raw : raw.slice(0, spaceAt);
+    const path = spaceAt === -1 ? '' : raw.slice(spaceAt + 1).trim();
+    if (method === '' || !path.startsWith('/')) {
+      return badRequest(reply, `fault requires endpoint 'METHOD /path', got ${JSON.stringify(body.endpoint)}`);
+    }
+    const code = typeof body.code === 'number' ? body.code : Number(body.code);
+    const count = typeof body.count === 'number' ? body.count : Number(body.count);
+    if (!Number.isInteger(code)) {
+      return badRequest(reply, `fault requires an integer code, got ${JSON.stringify(body.code)}`);
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      return badRequest(reply, `fault requires an integer count >= 1, got ${JSON.stringify(body.count)}`);
+    }
+    armFault(method, path, code, count);
+    return reply.code(204).send();
+  });
 
   // ─── POST /_twin/report — the daemon->twin seam for the DAEMON-INTERNAL ops ─────────
   // The bootstrap coordinator POSTs {call, detail?} when it fires one of the seven daemon-internal
