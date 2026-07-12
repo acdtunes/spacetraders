@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -58,12 +59,16 @@ type SpaceTradersClient struct {
 	budgetTracker    *metrics.APIBudgetTracker
 }
 
-// NewSpaceTradersClient creates a new SpaceTraders API client with default settings
-// Rate limit: 2 requests per second with burst of 30
-// Retry: max 10 attempts with 2s exponential backoff + jitter (capped at 30s)
+// NewSpaceTradersClient creates a new SpaceTraders API client with default settings.
+// ST_API_BASE_URL, when set and non-empty, overrides the production base URL — the
+// digital-twin seam. Production never sets it and keeps hitting the real API.
 func NewSpaceTradersClient() *SpaceTradersClient {
+	bu := baseURL
+	if v := os.Getenv("ST_API_BASE_URL"); v != "" {
+		bu = v
+	}
 	return NewSpaceTradersClientWithConfig(
-		baseURL,
+		bu,
 		defaultMaxRetries,
 		defaultBackoffBase,
 		nil, // Use RealClock by default
