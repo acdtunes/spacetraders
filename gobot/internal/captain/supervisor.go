@@ -345,6 +345,11 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		// crossing that rode a concurrent cadence/interrupt wake — the captain has
 		// already seen the balance.
 		s.consumeCreditsBounds(policy)
+		// CONSUME any captain-declared price tripwire whose crossing rode this
+		// delivered wake (sp-a6e0): one-shot, removed from the persisted
+		// RegimePolicy, mirroring the credits bound above. regimePolicy is the copy
+		// loaded fresh at the top of this tick; events is the delivered batch.
+		s.consumeTripwires(regimePolicy, events)
 	}
 	return ran, err
 }

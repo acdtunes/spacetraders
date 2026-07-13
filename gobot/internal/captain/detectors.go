@@ -990,11 +990,14 @@ func regimeDedupKey(good, waypoint, direction string) string {
 // detectRegimeShift scans MarketData for prices crossing a captain-declared
 // tripwire (sp-zlfv): mechanizes the per-wake price sweep the captain used to
 // hand-roll ("any ore bid >=200 or gas bid >=150 (~3x baseline) triggers an
-// immediate extraction re-consult"). Edge-triggered with cooldown via
-// HasSince (sp-1hak lesson): one event per crossing, not per poll — once
-// acknowledged, the same crossing does not re-fire until Window elapses AND
-// the price re-crosses. No tripwires configured means no query at all (zero
-// overhead when unset).
+// immediate extraction re-consult"). Tripwires are ONE-SHOT (sp-a6e0): the
+// supervisor CONSUMES a fired tripwire from the persisted RegimePolicy on the
+// delivered wake, so a crossing cannot recur without the captain re-declaring —
+// there is no Window-based re-fire cooldown here. This scan only avoids piling
+// a DUPLICATE while an identical crossing is still awaiting delivery, via the
+// HasUnprocessed idiom detectCreditsCrossing uses. Window's sole surviving role
+// is the multiplier-mode baseline lookback (resolveRegimeThreshold). No
+// tripwires configured means no query at all (zero overhead when unset).
 func detectRegimeShift(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
 	if len(cfg.RegimeTripwires) == 0 {
 		return nil
@@ -1027,17 +1030,22 @@ func detectRegimeShift(ctx context.Context, db *gorm.DB, store captain.EventStor
 				continue
 			}
 			key := regimeDedupKey(m.GoodSymbol, m.WaypointSymbol, tw.Direction)
-			recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventMarketRegimeShift, key, now.Add(-tw.Window))
+			// One-shot (sp-a6e0): suppress only a DUPLICATE while an identical
+			// crossing is still unprocessed (awaiting delivery). No Window cooldown —
+			// re-firing is prevented by the supervisor consuming the tripwire.
+			dup, err := store.HasUnprocessed(ctx, cfg.PlayerID, captain.EventMarketRegimeShift, key)
 			if err != nil {
 				return err
 			}
-			if recent {
+			if dup {
 				continue
 			}
+			// direction is recorded so the supervisor can map this fired crossing
+			// back to the tripwire that produced it when consuming the one-shot.
 			_ = store.Record(ctx, &captain.Event{
 				Type: captain.EventMarketRegimeShift, Ship: key, PlayerID: cfg.PlayerID,
-				Payload: fmt.Sprintf(`{"good":%q,"market":%q,"price":%d,"baseline":%d,"threshold":%d}`,
-					m.GoodSymbol, m.WaypointSymbol, price, baseline, threshold),
+				Payload: fmt.Sprintf(`{"good":%q,"market":%q,"direction":%q,"price":%d,"baseline":%d,"threshold":%d}`,
+					m.GoodSymbol, m.WaypointSymbol, tw.Direction, price, baseline, threshold),
 			})
 		}
 	}

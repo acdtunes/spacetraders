@@ -333,6 +333,85 @@ func (s *Supervisor) consumeCreditsBounds(policy WakePolicy) {
 	}
 }
 
+// consumeTripwires makes a captain-declared price tripwire ONE-SHOT (sp-a6e0),
+// unifying with the sp-wfut credits-bound and sp-oyer watch disarm-on-fire
+// paths: once a delivered wake carries a market.regime_shift crossing, the
+// tripwire that PRODUCED that crossing is CONSUMED — removed from the persisted
+// RegimePolicy — so it never re-fires until the captain re-declares it. The
+// persisted policy IS the durable one-shot state (a consumed tripwire is simply
+// absent), so a watchkeeper restart never resurrects it (RULINGS #2). This is
+// what retires the old Window-based re-fire cooldown: a consumed tripwire cannot
+// re-cross, so no timer is needed to suppress the re-fire.
+//
+// Call ONLY after a successful delivery (ran==true, no error): a fired crossing
+// stays armed through a delivery outage until it truly reaches the captain,
+// rather than silently burning the one-shot on a wake the captain never saw
+// (mirrors consumeCreditsBounds). Each tripwire is consumed independently: a
+// delivered ORE crossing consumes only the tripwire(s) that own it and leaves
+// every other armed.
+//
+// policy is the RegimePolicy loaded fresh at the top of this tick; writing the
+// survivor list back via SaveRegimePolicy preserves every other state field
+// exactly as sp-oyer's SaveWatchPolicy replaces only the Watches list.
+func (s *Supervisor) consumeTripwires(policy RegimePolicy, events []*captain.Event) {
+	if len(policy.Tripwires) == 0 {
+		return
+	}
+	kept := make([]RegimeTripwire, 0, len(policy.Tripwires))
+	consumed := false
+	for _, tw := range policy.Tripwires {
+		if tripwireFired(tw, events) {
+			consumed = true
+			continue
+		}
+		kept = append(kept, tw)
+	}
+	if consumed {
+		if err := SaveRegimePolicy(s.statePath, RegimePolicy{Tripwires: kept}); err != nil {
+			fmt.Printf("watchkeeper: consuming one-shot price tripwire failed to persist: %v\n", err)
+		}
+	}
+}
+
+// tripwireFired reports whether any delivered market.regime_shift event in the
+// batch was produced by tripwire tw — matched by the SAME good-class + direction
+// identity the detector emits under (matchesGoodClass), so a fired crossing is
+// attributed to exactly the tripwire(s) that own it and consumption can never
+// disagree with emission.
+func tripwireFired(tw RegimeTripwire, events []*captain.Event) bool {
+	for _, e := range events {
+		if e.Type != captain.EventMarketRegimeShift {
+			continue
+		}
+		good, direction, ok := parseRegimeCrossing(e.Payload)
+		if !ok {
+			continue
+		}
+		if direction == tw.Direction && matchesGoodClass(good, tw.Good) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseRegimeCrossing extracts the concrete good symbol and direction recorded
+// on a market.regime_shift event payload (detectRegimeShift). ok=false on an
+// unparseable payload or one missing either field, so a malformed event can
+// never spuriously consume a tripwire.
+func parseRegimeCrossing(payload string) (good, direction string, ok bool) {
+	var p struct {
+		Good      string `json:"good"`
+		Direction string `json:"direction"`
+	}
+	if json.Unmarshal([]byte(payload), &p) != nil {
+		return "", "", false
+	}
+	if p.Good == "" || p.Direction == "" {
+		return "", "", false
+	}
+	return p.Good, p.Direction, true
+}
+
 // rememberAttempt snapshots the interrupt-event ids present at this delivery
 // attempt, so the NEXT tick can tell a genuinely new interrupt (which bypasses
 // the backoff) from the same unchanged interrupt still failing to deliver.

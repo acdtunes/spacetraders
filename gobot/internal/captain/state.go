@@ -53,9 +53,12 @@ type RegimeTripwire struct {
 	// (the oldest price-history sample within Window). Mutually exclusive
 	// with Threshold.
 	Multiplier *float64 `json:"multiplier,omitempty"`
-	// Window is both the baseline lookback (multiplier mode) and the
-	// edge-trigger cooldown: once a crossing fires, the same crossing does
-	// not re-fire until Window elapses (sp-1hak HasSince lesson).
+	// Window is the multiplier-mode baseline lookback: the baseline is the
+	// oldest price-history sample within [now-Window, now]. It is NO LONGER a
+	// re-fire cooldown — tripwires are one-shot (sp-a6e0): a fired tripwire is
+	// consumed from the persisted RegimePolicy on its delivered wake, so it
+	// cannot re-fire until the captain re-declares it. In absolute-threshold
+	// mode Window is unused.
 	Window    time.Duration `json:"window"`
 	CreatedAt time.Time     `json:"created_at,omitempty"`
 }

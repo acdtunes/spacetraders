@@ -78,6 +78,8 @@ This file exists so that class of miss cannot recur.)
     engine (tours pre-position goods home); the Admiral ruled the economically-gated
     exception not worth the complexity.
 
+15. **Captain-set wake triggers are ONE-SHOT.** Every captain-declared wake trigger — credit thresholds (credits_above/credits_below), price tripwires (RegimeTripwire), scheduled wakes (next_wake_at) — fires at most once, then is consumed (removed from the persisted policy); the captain re-declares to re-arm. Wake watches (sp-oyer) already follow this. (Origin: Admiral 2026-07-12; sp-wfut credits, sp-a6e0 tripwires.)
+
 ## Maintenance
 
 New Admiral rulings are appended here (with date + origin) by the shipwright as

@@ -96,7 +96,14 @@ func TestDetectRegimeShiftSilentWithNoTripwiresConfigured(t *testing.T) {
 	require.Empty(t, events, "regime detector fired with no tripwires configured")
 }
 
-func TestDetectRegimeShiftCooldownPreventsSessionBurnLoop(t *testing.T) {
+// sp-a6e0: tripwires are one-shot, so the detector no longer applies a
+// Window-based re-fire cooldown. It only suppresses a DUPLICATE while an
+// identical crossing is still UNPROCESSED (the HasUnprocessed idiom the sibling
+// credits-crossing detector uses) — NOT a time window. The true re-fire
+// guarantee lives one level up, where the supervisor CONSUMES the tripwire on a
+// delivered wake (see regime_oneshot_test.go). Window's only surviving role is
+// the multiplier baseline lookback.
+func TestDetectRegimeShiftDedupesWhileUnprocessedNotByTimeWindow(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()
 	require.NoError(t, db.Create(&persistence.MarketData{
@@ -109,22 +116,27 @@ func TestDetectRegimeShiftCooldownPreventsSessionBurnLoop(t *testing.T) {
 		},
 	}
 
+	// First scan emits one crossing.
 	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
 	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 
+	// While that crossing is still UNPROCESSED, a re-scan does not duplicate it.
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "no duplicate while the crossing is still pending delivery")
+
+	// Once processed there is no pending duplicate to suppress, and — crucially
+	// — WELL WITHIN the 30m Window — the still-crossing market re-emits: the
+	// detector is not a time-window cooldown. (In production the tripwire would
+	// already be consumed by then, so this re-scan would find nothing to fire.)
 	require.NoError(t, store.MarkProcessed(context.Background(), []int64{events[0].ID}, now))
 	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
 	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
 	require.NoError(t, err)
-	require.Empty(t, events, "regime shift re-emitted within cooldown: session-burn loop")
-
-	require.NoError(t, db.Exec("UPDATE captain_events SET created_at = ?", now.Add(-time.Hour)).Error)
-	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
-	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
-	require.NoError(t, err)
-	require.Len(t, events, 1, "regime shift did not re-arm after cooldown window elapsed")
+	require.Len(t, events, 1, "with no unprocessed duplicate to suppress, a still-crossing market re-emits (no Window cooldown)")
 }
 
 func TestDetectRegimeShiftBidBelowDirection(t *testing.T) {
@@ -201,6 +213,37 @@ func TestDetectRegimeShiftMultiplierModeSkipsWithoutBaseline(t *testing.T) {
 	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
 	require.NoError(t, err)
 	require.Empty(t, events, "multiplier tripwire fired with no recorded baseline")
+}
+
+// sp-a6e0: Window's ONLY surviving role after one-shot is the multiplier-mode
+// baseline lookback. A price-history sample OUTSIDE the window must not be
+// adopted as the baseline; the tripwire has nothing in-window to compare
+// against, so it does not fire. Paired with
+// TestDetectRegimeShiftMultiplierModeUsesRecordedBaseline (an in-window sample
+// IS used), this pins Window as the baseline lookback and nothing else.
+func TestDetectRegimeShiftMultiplierBaselineHonorsWindowLookback(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	require.NoError(t, db.Create(&persistence.MarketData{
+		WaypointSymbol: "X1-TEST-A1", GoodSymbol: "IRON_ORE", PlayerID: playerID,
+		PurchasePrice: 100, SellPrice: 240, TradeVolume: 100, LastUpdated: now,
+	}).Error)
+	// Only sample is 2h old — outside the 1h window below.
+	require.NoError(t, db.Create(&persistence.MarketPriceHistoryModel{
+		WaypointSymbol: "X1-TEST-A1", GoodSymbol: "IRON_ORE", PlayerID: playerID,
+		PurchasePrice: 70, SellPrice: 80, TradeVolume: 100, RecordedAt: now.Add(-2 * time.Hour),
+	}).Error)
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: time.Hour,
+		RegimeTripwires: []RegimeTripwire{
+			{Good: "ORE", Direction: "bid-above", Multiplier: regimeMultiplierPtr(3.0), Window: time.Hour},
+		},
+	}
+
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
+
+	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Empty(t, events, "a baseline sample older than Window must not be used as the multiplier baseline")
 }
 
 func TestDetectRegimeShiftLiteralSymbolListMatchesExactGoodOnly(t *testing.T) {
