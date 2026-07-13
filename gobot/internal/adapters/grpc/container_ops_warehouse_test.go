@@ -92,3 +92,44 @@ func TestRecoveryAdoptsRunningWarehouseContainer(t *testing.T) {
 	require.True(t, ship.IsAssigned(), "the warehouse hull must be re-claimed on recovery, not left stranded")
 	require.Equal(t, "wh-rec-1", ship.ContainerID())
 }
+
+// stubWarehouseMiner is a canned demand miner for the target-unit computation test.
+type stubWarehouseMiner struct {
+	rows []persistence.DemandCandidate
+	err  error
+}
+
+func (m *stubWarehouseMiner) Mine(ctx context.Context, homeSystem string, playerID int, eraID *int, opts persistence.DemandMinerOptions) ([]persistence.DemandCandidate, error) {
+	return m.rows, m.err
+}
+
+// warehouseTargetUnits computes the per-good caps StartWarehouse persists into the config
+// (sp-5n7v ENGINE CHANGE #1): auto-computed from live demand over the REAL hull capacity.
+func TestWarehouseTargetUnits_ComputedFromLiveDemandAndRealCapacity(t *testing.T) {
+	miner := &stubWarehouseMiner{rows: []persistence.DemandCandidate{
+		{Good: "DRUGS", ContractCount: 3, DemandUnits: 72, MaxContractUnits: 24, ForeignSystem: "X1-J58", HomeAsk: 700, HomeAskKnown: true},
+		{Good: "ANTIMATTER", ContractCount: 2, DemandUnits: 16, MaxContractUnits: 8, ForeignSystem: "X1-I56", HomeAsk: 900, HomeAskKnown: true},
+	}}
+
+	// Real hull capacity 80 (read from the ship, never assumed).
+	targets := warehouseTargetUnits(context.Background(), miner, 80, "X1-VB74", 1, nil)
+
+	require.Equal(t, 24, targets["DRUGS"], "buffered at its single-contract size")
+	require.Equal(t, 8, targets["ANTIMATTER"])
+}
+
+// With no demand miner (or a mining error) the caps fall back to the static cold-start set,
+// clipped to the REAL hull capacity — never assume-80.
+func TestWarehouseTargetUnits_ColdStartClippedToRealCapacity(t *testing.T) {
+	// A small 50-cargo hull: DRUGS(24)+MEDICINE(20)=44 fit; EQUIPMENT(20) overflows.
+	targets := warehouseTargetUnits(context.Background(), nil, 50, "X1-VB74", 1, nil)
+
+	require.Equal(t, 24, targets["DRUGS"])
+	require.Equal(t, 20, targets["MEDICINE"])
+	require.Zero(t, targets["EQUIPMENT"], "the cold-start set is clipped to the real capacity, not assume-80")
+	total := 0
+	for _, u := range targets {
+		total += u
+	}
+	require.LessOrEqual(t, total, 50)
+}

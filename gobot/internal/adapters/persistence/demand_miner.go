@@ -84,9 +84,12 @@ type DemandMinerOptions struct {
 // for the deposit guard, which needs a known home ask to price the contract-source
 // alternative.
 type DemandCandidate struct {
-	Good                 string  `json:"good"`
-	ContractCount        int     `json:"contract_count"`
-	DemandUnits          int     `json:"demand_units"`
+	Good          string `json:"good"`
+	ContractCount int    `json:"contract_count"`
+	DemandUnits   int    `json:"demand_units"`
+	// MaxContractUnits is the largest SINGLE contract's size for the good — the s_G the
+	// warehouse auto-cap knapsack buffers FULLY or not at all (sp-5n7v). 0 when unknown.
+	MaxContractUnits     int     `json:"max_contract_units"`
 	RecurrenceWindowDays float64 `json:"recurrence_window_days"`
 
 	ForeignMarket string `json:"foreign_market"` // cheapest SOURCE waypoint anywhere (may be in the home system)
@@ -180,6 +183,7 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			Good:                 d.Good,
 			ContractCount:        d.ContractCount,
 			DemandUnits:          d.UnitsRequired,
+			MaxContractUnits:     d.MaxContractUnits,
 			RecurrenceWindowDays: windowDays(d.FirstSeen, d.LastSeen),
 			ForeignMarket:        source.WaypointSymbol,
 			ForeignSystem:        shared.ExtractSystemSymbol(source.WaypointSymbol),

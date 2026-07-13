@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -82,12 +84,32 @@ func (s *DaemonServer) StartWarehouse(
 		supportedGoodsInterface[i] = g
 	}
 
+	// Auto-cap knapsack (sp-5n7v): compute per-good target_units from live contract demand ×
+	// residual-buy-leg over the REAL hull cargo_capacity (never assume-80) and persist them in
+	// the config, so the caps survive + reload with the container (RULINGS #2) and the captain
+	// can inspect the buffer plan. A thin/absent demand history degrades to the static
+	// cold-start caps clipped to the real capacity. The continuous re-solve — and the actual
+	// per-good enforcement — lives in the stocker loop, which re-derives these caps live each
+	// pass from the same optimizer.
+	var miner tradingsvc.DepositDemandMiner
+	if s.db != nil {
+		miner = persistence.NewDemandMiner(s.db)
+	}
+	targetUnits := warehouseTargetUnits(ctx, miner, ship.CargoCapacity(), shared.ExtractSystemSymbol(waypointSymbol), playerID, nil)
+	targetUnitsInterface := make(map[string]interface{}, len(targetUnits))
+	for g, u := range targetUnits {
+		targetUnitsInterface[g] = u
+	}
+
 	config := map[string]interface{}{
 		"ship_symbol":     shipSymbol,
 		"waypoint_symbol": waypointSymbol,
 		"operation_id":    containerID,
 		"supported_goods": supportedGoodsInterface,
 		"container_id":    containerID,
+		// Auto-computed per-good buffer caps (sp-5n7v). Persisted so the plan reloads with the
+		// container; the stocker enforces the live-re-derived equivalents.
+		"target_units": targetUnitsInterface,
 		// The runner claims the hull through the atomic operation-checked
 		// ClaimShip when this key is present (RULINGS #7). Persisted so a
 		// recovery rebuild claims under the same fleet identity.
@@ -135,4 +157,31 @@ func (s *DaemonServer) StartWarehouse(
 		ShipSymbol:     shipSymbol,
 		WaypointSymbol: waypointSymbol,
 	}, nil
+}
+
+// warehouseTargetUnits computes the per-good buffer caps for a warehouse hull (sp-5n7v):
+// the auto-cap knapsack over live contract demand × residual-buy-leg subject to the REAL
+// hull cargo_capacity (capacity — never assume-80). A nil miner, a mining error, or thin
+// demand history degrades to the static cold-start caps clipped to the real capacity, so a
+// warehouse always starts with a sane, capacity-respecting plan. Kept as a small seam so the
+// glue is unit-tested without a live daemon.
+func warehouseTargetUnits(
+	ctx context.Context,
+	miner tradingsvc.DepositDemandMiner,
+	capacity int,
+	homeSystem string,
+	playerID int,
+	params *tradingsvc.WarehouseCapParams,
+) map[string]int {
+	var p tradingsvc.WarehouseCapParams
+	if params != nil {
+		p = *params
+	}
+	var candidates []persistence.DemandCandidate
+	if miner != nil {
+		if rows, err := miner.Mine(ctx, homeSystem, playerID, nil, persistence.DemandMinerOptions{}); err == nil {
+			candidates = rows
+		}
+	}
+	return tradingsvc.PlanWarehouseCaps(candidates, capacity, homeSystem, nil, nil, p).Targets
 }

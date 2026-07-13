@@ -40,6 +40,27 @@ func demand(good string, count, units int, first, last time.Time) ContractGoodDe
 	return ContractGoodDemand{Good: good, ContractCount: count, UnitsRequired: units, FirstSeen: first, LastSeen: last}
 }
 
+// TestDemandMiner_CarriesMaxContractUnits pins that the largest single-contract size (the
+// auto-cap knapsack's s_G, sp-5n7v) flows from the aggregated demand row through to the
+// mined candidate. UnitsRequired is the SUMMED demand across contracts; MaxContractUnits is
+// the biggest single contract — the amount the warehouse buffers FULLY or not at all.
+func TestDemandMiner_CarriesMaxContractUnits(t *testing.T) {
+	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	row := ContractGoodDemand{Good: "DRUGS", ContractCount: 3, UnitsRequired: 90, MaxContractUnits: 40, FirstSeen: now.Add(-24 * time.Hour), LastSeen: now}
+	src := &fakeDemandSource{rows: []ContractGoodDemand{row}}
+	markets := &fakeMarketAsks{
+		crossByGood: map[string][]market.CheapestMarketResult{"DRUGS": {{WaypointSymbol: "X1-J58-SRC", SellPrice: 300}}},
+		homeByGood:  map[string]*market.CheapestMarketResult{"DRUGS": {WaypointSymbol: "X1-VB74-M", SellPrice: 500}},
+	}
+	miner := &DemandMiner{demand: src, markets: markets}
+
+	got, err := miner.Mine(context.Background(), "X1-VB74", 7, nil, DemandMinerOptions{MinRecurrence: 2})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, 40, got[0].MaxContractUnits, "the largest single-contract size (s_G) must reach the candidate")
+	require.Equal(t, 90, got[0].DemandUnits, "summed demand is unchanged")
+}
+
 // TestDemandMiner_SingleSystem_IncludesHomeExport is the sp-layd defect pin. Post-weekly-
 // reset the home system is the ONLY scanned system (0 foreign markets), so the old
 // foreign-only miner dropped EVERY good and returned zero rows — the stocker then refused

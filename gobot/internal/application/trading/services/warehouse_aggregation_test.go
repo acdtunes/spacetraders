@@ -215,3 +215,46 @@ func TestBuildDepositCandidates_AggregateFreeSpaceCapsUnits(t *testing.T) {
 		t.Fatalf("units must be capped by AGGREGATE free space (60+60=120), got %+v", out)
 	}
 }
+
+// TestTotalCapacity_SumsRealHullCapacity pins the auto-cap knapsack's capacity term
+// (sp-5n7v): C is the SUM of the REAL cargo_capacity of every running warehouse hull in
+// the co-located group — never assume-80. A 2nd hull (or a heavy/cargo-module frame)
+// simply raises C.
+func TestTotalCapacity_SumsRealHullCapacity(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	// Real capacities differ from 80: a light 40-cargo hull + a heavy 225-cargo hull = 265.
+	light, lightShip := coLocatedWarehouse(t, "light", "X1-KA42-E42", t0, 40, allGoods, map[string]int{"IRON": 10})
+	heavy, heavyShip := coLocatedWarehouse(t, "heavy", "X1-KA42-E42", t0.Add(time.Hour), 225, allGoods, nil)
+	reader := readerFor(lightShip, heavyShip)
+
+	group := []*storage.StorageOperation{light, heavy}
+	if got := TotalCapacity(reader, group); got != 265 {
+		t.Fatalf("C must sum the REAL hull capacities (40+225=265), never assume 80; got %d", got)
+	}
+}
+
+// TestTotalCapacity_ReflectsFullCapacityNotFreeSpace confirms C is the TOTAL buffer size,
+// independent of current stock: a half-full hull still contributes its full capacity (the
+// per-good targets are absolute holds that must fit the whole buffer, not just its free space).
+func TestTotalCapacity_ReflectsFullCapacityNotFreeSpace(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	full, fullShip := coLocatedWarehouse(t, "full", "X1-KA42-E42", t0, 80, allGoods, map[string]int{"IRON": 80})
+	reader := readerFor(fullShip)
+
+	if got := TotalCapacity(reader, []*storage.StorageOperation{full}); got != 80 {
+		t.Fatalf("C is total capacity (80) regardless of stock, got %d", got)
+	}
+}
+
+// TestTotalCapacity_ZombieContributesZero confirms a stale sp-3lj5 zombie op (no registered
+// storage ship) adds 0 to C, mirroring TotalFreeSpace.
+func TestTotalCapacity_ZombieContributesZero(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	zombie, _ := coLocatedWarehouse(t, "zombie", "X1-TORWIND-12", t0, 80, allGoods, nil)
+	live, liveShip := coLocatedWarehouse(t, "live", "X1-TORWIND-12", t0.Add(2*time.Hour), 120, allGoods, nil)
+	reader := readerFor(liveShip) // zombie ship deliberately unregistered
+
+	if got := TotalCapacity(reader, []*storage.StorageOperation{zombie, live}); got != 120 {
+		t.Fatalf("a zombie op contributes 0 to C (want 120), got %d", got)
+	}
+}

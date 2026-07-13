@@ -158,6 +158,26 @@ type RunStockerCoordinatorHandler struct {
 	// is a SHARED singleton dispatched concurrently across every stocker hull.
 	noReachableSourceMu sync.Mutex
 	noReachableSource   map[string]string
+
+	// Warehouse auto-cap optimizer (sp-5n7v). capParams are the analyst-owned tunables
+	// (RULINGS #5), injected by the daemon via SetWarehouseCapParams (zero-value defaults
+	// otherwise). capState carries per-warehouse EWMA + last-selected targets across passes
+	// so the buffered good-set is STICKY (EWMA damps a one-tick spike; the held-good bonus is
+	// the hysteresis dead-band). It is an in-memory optimization keyed by warehouse waypoint —
+	// the targets are re-derivable from persisted contract history + live Σ hull capacity every
+	// pass (RULINGS #2), so a daemon restart simply re-seeds the smoothing from the raw
+	// observation. Guarded because the handler is a SHARED singleton dispatched per hull.
+	capParams  tradingsvc.WarehouseCapParams
+	capStateMu sync.Mutex
+	capState   map[string]*warehouseCapState
+}
+
+// warehouseCapState is one warehouse's carried optimizer state between passes: the EWMA
+// smoothed demand and the last-selected per-good targets (the incumbent set the hysteresis
+// dead-band protects).
+type warehouseCapState struct {
+	smoothed map[string]float64
+	targets  map[string]int
 }
 
 // NewRunStockerCoordinatorHandler wires the stocker with the same driven ports as the
@@ -195,7 +215,55 @@ func NewRunStockerCoordinatorHandler(
 		config:             cfg,
 		ceilingPct:         ceilingPct,
 		noReachableSource:  make(map[string]string),
+		capState:           make(map[string]*warehouseCapState),
 	}
+}
+
+// SetWarehouseCapParams injects the analyst-owned auto-cap tunables (EWMA half-life,
+// value-formula weights, hysteresis margin, cold-start threshold, cross-system residual —
+// RULINGS #5). The daemon calls this at wiring time; unset, the optimizer uses its documented
+// defaults. Mirrors SetGateGraph/SetEventSubscriber's optional-injection shape.
+func (h *RunStockerCoordinatorHandler) SetWarehouseCapParams(p tradingsvc.WarehouseCapParams) {
+	h.capParams = p
+}
+
+// resolveWarehouseCaps runs the auto-cap knapsack for the co-located warehouse group and
+// returns the per-good target_units to enforce this pass, or nil to defer to the pre-existing
+// per-good target (measured demand / TargetPerGood override). It STANDS ASIDE (nil) on a cold
+// start — too little demand history to trust computed caps — so a thin-data run degrades to
+// the proven behavior rather than churning on noise; the warehouse's own cold-start caps
+// (populated at StartWarehouse) still bound it. Capacity is Σ REAL hull cargo_capacity across
+// the group (never assume-80). EWMA + hysteresis state is carried per warehouse waypoint.
+func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(homeSystem, waypoint string, group []*storage.StorageOperation, rows []persistence.DemandCandidate) map[string]int {
+	capacity := tradingsvc.TotalCapacity(h.storageCoordinator, group)
+	if capacity <= 0 {
+		return nil
+	}
+
+	h.capStateMu.Lock()
+	st := h.capState[waypoint]
+	if st == nil {
+		st = &warehouseCapState{}
+	}
+	prior, current := st.smoothed, st.targets
+	h.capStateMu.Unlock()
+
+	plan := tradingsvc.PlanWarehouseCaps(rows, capacity, homeSystem, prior, current, h.capParams)
+
+	// Persist the advanced EWMA + selection for the next pass's stickiness. Only adopt the
+	// computed targets as the incumbent set when it was a real (non-cold-start) solve.
+	h.capStateMu.Lock()
+	next := &warehouseCapState{smoothed: plan.Smoothed, targets: st.targets}
+	if !plan.ColdStart {
+		next.targets = plan.Targets
+	}
+	h.capState[waypoint] = next
+	h.capStateMu.Unlock()
+
+	if plan.ColdStart {
+		return nil // defer to the pre-existing per-good target on thin history
+	}
+	return plan.Targets
 }
 
 // SetGateGraph wires the multi-jump gate-graph resolver into the delegated movement
@@ -469,6 +537,18 @@ func (h *RunStockerCoordinatorHandler) pick(
 	block := stringSet(h.config.Blocklist)
 	now := h.clock.Now()
 
+	// Auto-cap knapsack (sp-5n7v): per-good target_units from live demand × residual-buy-leg
+	// over Σ REAL hull capacity, re-solved every pass (RULINGS #2 re-derivable; "re-solved as
+	// demand/fleet change"). A nil result means STAND ASIDE — cold start (thin history), an
+	// explicit TargetPerGood override, or zero capacity — and the pre-existing per-good target
+	// governs. When present, capTargets is authoritative: a good absent from it (e.g. a
+	// central/hub-covered in-system good the optimizer refuses) gets target 0 and is skipped,
+	// so no single good can crowd out the far/orphan goods the buffer exists to hold.
+	var capTargets map[string]int
+	if cmd.TargetPerGood <= 0 {
+		capTargets = h.resolveWarehouseCaps(homeSystem, cmd.WarehouseWaypoint, group, rows)
+	}
+
 	var best stockerPick
 	bestValue := 0
 	eligible, afterFilters, unreachable := 0, 0, 0
@@ -498,6 +578,10 @@ func (h *RunStockerCoordinatorHandler) pick(
 		target := r.DemandUnits
 		if cmd.TargetPerGood > 0 {
 			target = cmd.TargetPerGood
+		} else if capTargets != nil {
+			// The auto-cap knapsack has spoken: hold each good to its computed target_units
+			// (0 => not buffered => skipped by the units-short guard below).
+			target = capTargets[r.Good]
 		}
 		// Net the target against AGGREGATE on-hand across the group (sp-5q2c) so a
 		// sibling warehouse's stock is never invisible — the stocker stops buying once

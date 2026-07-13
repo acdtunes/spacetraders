@@ -65,11 +65,12 @@ type ContractsEraStat struct {
 // (the quantity signal the economics guard needs) plus the observation window that
 // makes "recurrence" measurable rather than a raw count.
 type ContractGoodDemand struct {
-	Good          string    `json:"good"`
-	ContractCount int       `json:"contract_count"` // distinct contracts requiring the good
-	UnitsRequired int       `json:"units_required"` // summed UnitsRequired across matching deliveries
-	FirstSeen     time.Time `json:"first_seen"`     // earliest contributing contract observation
-	LastSeen      time.Time `json:"last_seen"`      // latest contributing contract observation
+	Good             string    `json:"good"`
+	ContractCount    int       `json:"contract_count"`     // distinct contracts requiring the good
+	UnitsRequired    int       `json:"units_required"`     // summed UnitsRequired across matching deliveries
+	MaxContractUnits int       `json:"max_contract_units"` // largest SINGLE-contract units (the s_G the warehouse buffers fully, sp-5n7v)
+	FirstSeen        time.Time `json:"first_seen"`         // earliest contributing contract observation
+	LastSeen         time.Time `json:"last_seen"`          // latest contributing contract observation
 }
 
 type PnLBucket struct {
@@ -405,10 +406,10 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 	}
 
 	type demandAgg struct {
-		contracts     map[string]bool
-		unitsRequired int
-		firstSeen     time.Time
-		lastSeen      time.Time
+		unitsByContract map[string]int // per-contract summed units (len => ContractCount; max => MaxContractUnits)
+		unitsRequired   int
+		firstSeen       time.Time
+		lastSeen        time.Time
 	}
 	byGood := map[string]*demandAgg{}
 
@@ -428,10 +429,10 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 			}
 			a := byGood[d.TradeSymbol]
 			if a == nil {
-				a = &demandAgg{contracts: map[string]bool{}}
+				a = &demandAgg{unitsByContract: map[string]int{}}
 				byGood[d.TradeSymbol] = a
 			}
-			a.contracts[row.ID] = true
+			a.unitsByContract[row.ID] += d.UnitsRequired
 			a.unitsRequired += d.UnitsRequired
 			if tsOK {
 				if a.firstSeen.IsZero() || observed.Before(a.firstSeen) {
@@ -453,12 +454,19 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 	out := make([]ContractGoodDemand, 0, len(goods))
 	for _, g := range goods {
 		a := byGood[g]
+		maxUnits := 0
+		for _, u := range a.unitsByContract {
+			if u > maxUnits {
+				maxUnits = u
+			}
+		}
 		out = append(out, ContractGoodDemand{
-			Good:          g,
-			ContractCount: len(a.contracts),
-			UnitsRequired: a.unitsRequired,
-			FirstSeen:     a.firstSeen,
-			LastSeen:      a.lastSeen,
+			Good:             g,
+			ContractCount:    len(a.unitsByContract),
+			UnitsRequired:    a.unitsRequired,
+			MaxContractUnits: maxUnits,
+			FirstSeen:        a.firstSeen,
+			LastSeen:         a.lastSeen,
 		})
 	}
 	return out, nil

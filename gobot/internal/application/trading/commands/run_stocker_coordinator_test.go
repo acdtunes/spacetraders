@@ -933,3 +933,59 @@ func TestStocker_RestartResume_DepositsHeldCargoFirst(t *testing.T) {
 		t.Fatalf("expected 40 deposited on the resume, got %d", r.UnitsDeposited)
 	}
 }
+
+// eligibleRecurring is eligible() plus the auto-cap knapsack inputs (sp-5n7v): a distinct
+// contract count (recurrence) and the largest single-contract size (s_G). foreignMkt's system
+// determines the residual buy-leg — an in-system source is hub-covered (residual 0, not
+// buffered); a cross-system source is far (buffered).
+func eligibleRecurring(good, foreignMkt string, foreignAsk, homeAsk, maxContractUnits, contractCount int) persistence.DemandCandidate {
+	c := eligible(good, foreignMkt, foreignAsk, homeAsk, maxContractUnits*contractCount)
+	c.ContractCount = contractCount
+	c.MaxContractUnits = maxContractUnits
+	return c
+}
+
+// TestStocker_Pick_AutoCapBoundsHaulToSingleContractSize is the stocker-level starvation fix
+// (sp-5n7v): with real recurrence data the pick consults the auto-cap knapsack, which bounds a
+// good's target to its single-contract size s_G (20) rather than the summed demand (100). This
+// is the direct cure for the incident — no single high-demand good can consume the whole hull,
+// so capacity is left for the other supported goods.
+func TestStocker_Pick_AutoCapBoundsHaulToSingleContractSize(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S2-M": {"MEDICINE": 2100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 500, []string{"MEDICINE"})
+	// Summed demand 100 (5 contracts × 20), but a single contract is only 20.
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligibleRecurring("MEDICINE", "X1-S2-M", 2100, 2800, 20, 5)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
+	if !ok {
+		t.Fatalf("expected a pick")
+	}
+	if pick.Units != 20 {
+		t.Fatalf("auto-cap must bound the haul to the single-contract size s_G (20), not the summed demand (100); got %d", pick.Units)
+	}
+}
+
+// TestStocker_Pick_AutoCapCapsAtSingleContractSize proves the per-good target is the
+// single-contract size s_G (24), not the summed demand (72): once the warehouse holds 24 the
+// good is at target and excluded, so no one good can crowd out the others.
+func TestStocker_Pick_AutoCapCapsAtSingleContractSize(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S2-M": {"DRUGS": 500}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 500, []string{"DRUGS"})
+	// Pre-stock DRUGS to its single-contract size (24). Summed demand is 72 (3 × 24).
+	ship, reserved, okr := coord.ReserveSpaceForDeposit("wh", 24)
+	if !okr {
+		t.Fatalf("pre-stock reserve failed")
+	}
+	coord.ConfirmDeposit(ship.ShipSymbol(), "DRUGS", reserved)
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligibleRecurring("DRUGS", "X1-S2-M", 500, 900, 24, 3)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+		t.Fatalf("DRUGS at its single-contract target (24) must be excluded — the cap is s_G, not the summed demand (72)")
+	}
+}

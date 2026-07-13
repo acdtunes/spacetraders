@@ -91,6 +91,23 @@ func TotalFreeSpace(space WarehouseSpaceReader, group []*storage.StorageOperatio
 	return total
 }
 
+// TotalCapacity sums the REAL cargo_capacity of every storage hull across every operation
+// in group — the auto-cap knapsack's capacity term C (sp-5n7v). It reads the live per-hull
+// capacity (a heavy frame or an installed cargo module reports its true capacity, never an
+// assumed 80), so a 2nd/3rd warehouse hull simply raises C and the optimizer buffers more.
+// Unlike TotalFreeSpace this is the TOTAL buffer size independent of current stock — the
+// per-good target_units are absolute holds that must fit the whole buffer, not just its free
+// slots. A zombie op (its storage ship unregistered) contributes 0, mirroring TotalFreeSpace.
+func TotalCapacity(space WarehouseSpaceReader, group []*storage.StorageOperation) int {
+	total := 0
+	for _, op := range group {
+		for _, s := range space.GetStorageShipsForOperation(op.ID()) {
+			total += s.CargoCapacity()
+		}
+	}
+	return total
+}
+
 // TotalCargoAvailable sums the unreserved units of good stocked across every
 // operation in group — the group's aggregate on-hand inventory, which the
 // fill-target / units-short math must net against (target − aggregate) so a second
