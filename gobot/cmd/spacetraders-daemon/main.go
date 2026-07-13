@@ -1078,6 +1078,16 @@ func run(cfg *config.Config) error {
 	contractInventoryFinder := contractServices.NewStorageInventoryFinder(storageOperationRepo, storageCoordinator)
 	contractFleetCoordinatorHandler.SetInventoryFinder(contractInventoryFinder)
 
+	// sp-o477: the in-memory storage coordinator is populated only by live
+	// deposits, so on daemon restart it starts EMPTY and the inventory-first path
+	// wired just above sees 0 available — contracts market-buy goods already
+	// standing in the warehouse. Wire the StorageRecoveryService into daemon boot
+	// so it reloads each running storage operation's ships from the API and
+	// re-registers them with THIS SAME shared coordinator + operation repo (the
+	// exact singletons the finder above reads — not a second instance). Invoked in
+	// DaemonServer.Start AFTER container recovery; idempotent + fail-open.
+	daemonServer.SetStorageRecovery(storageApp.NewStorageRecoveryService(storageOperationRepo, apiClient, storageCoordinator))
+
 	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil,
 		contractCmd.WithInventorySourcing(contractInventoryFinder, storageCoordinator, apiClient))
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {

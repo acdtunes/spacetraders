@@ -21,6 +21,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -58,6 +59,15 @@ type DaemonServer struct {
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository
 	apiClient        domainPorts.APIClient
 	clock            shared.Clock
+
+	// storageRecovery re-seeds the in-memory StorageCoordinator's per-good cargo
+	// availability from live ship state on boot (sp-o477). The coordinator is
+	// populated only by live deposits, so it starts EMPTY on restart; without this
+	// standing warehouse stock is invisible to contract inventory-first sourcing.
+	// Injected post-construction via SetStorageRecovery because the shared storage
+	// coordinator + operation-repo singletons are built after NewDaemonServer runs.
+	// nil disables recovery (fail-open — boot never depends on it).
+	storageRecovery *storageApp.StorageRecoveryService
 
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
@@ -656,6 +666,15 @@ func (s *DaemonServer) Start() error {
 			fmt.Printf("Warning: Container recovery failed: %v\n", err)
 		}
 
+		// Re-seed storage cargo availability from live ship state (sp-o477). MUST
+		// run AFTER RecoverRunningContainers so the storage operations exist and
+		// FindRunning returns them. The in-memory StorageCoordinator starts EMPTY
+		// on restart, so without this the contract inventory-first path sees 0 and
+		// market-buys goods already standing in the warehouse. Idempotent (skips an
+		// already-registered ship) and fail-open (per-player/per-ship errors are
+		// logged and skipped) — RULINGS #1/#2, read-only re-registration (#3).
+		s.recoverStorageOperations(recoveryCtx)
+
 		// Launch the boot-standing coordinators (sp-382j): unconditional, every boot, regardless
 		// of whether a bootstrapper has ever run. Unlike RecoverRunningContainers above, this is
 		// safely re-runnable every boot — each launch goes through the idempotent EnsureRunning
@@ -1087,6 +1106,51 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 	fmt.Printf("Container recovery complete: %d recovered, %d lost%s, %d coordinator-managed skipped, %d dead-era skipped\n",
 		len(recovered), len(lost), formatLostSummary(lost), coordinatorSkipCount, deadEraCount)
 	return nil
+}
+
+// SetStorageRecovery injects the storage recovery service invoked on boot to
+// re-seed the in-memory StorageCoordinator from live ship state (sp-o477). Wired
+// from main.go AFTER the shared storage coordinator + operation-repo singletons
+// are constructed (they do not exist when NewDaemonServer runs), mirroring the
+// codebase's other post-construction setters. A nil service is tolerated —
+// recoverStorageOperations no-ops.
+func (s *DaemonServer) SetStorageRecovery(svc *storageApp.StorageRecoveryService) {
+	s.storageRecovery = svc
+}
+
+// recoverStorageOperations re-seeds the in-memory StorageCoordinator's per-good
+// cargo availability from live ship state after a daemon restart (sp-o477).
+//
+// The coordinator is populated only by live deposits, so on restart it starts
+// EMPTY: standing warehouse/manufacturing stock becomes invisible to
+// GetTotalCargoAvailable, which blinds contract inventory-first sourcing into
+// market-buying goods that are physically present in the warehouse. The injected
+// StorageRecoveryService reloads each RUNNING storage operation and reconstructs
+// its ships' cargo from the Ship API, re-registering them with the SAME shared
+// coordinator the contract StorageInventoryFinder reads.
+//
+// Called on every boot AFTER RecoverRunningContainers so the operations exist.
+// RULINGS #1/#2: idempotent (the service skips an already-registered ship, so a
+// concurrent warehouse-worker registration never double-counts) and fail-open (a
+// per-player DB error is logged and skipped; per-ship API errors are handled
+// inside the service — neither aborts boot nor empties good state). RULING #3:
+// read-only re-registration, no ship state is mutated.
+func (s *DaemonServer) recoverStorageOperations(ctx context.Context) {
+	if s.storageRecovery == nil || s.playerRepo == nil {
+		return
+	}
+	players, err := s.playerRepo.ListAll(ctx)
+	if err != nil {
+		fmt.Printf("Warning: storage recovery skipped — failed to list players: %v\n", err)
+		return
+	}
+	for _, p := range players {
+		if _, err := s.storageRecovery.RecoverStorageOperations(ctx, p.ID.Value(), p.Token); err != nil {
+			// Fail-open (RULINGS #1/#2): one player's recovery failure never aborts
+			// boot or the remaining players' recovery.
+			fmt.Printf("Warning: storage recovery failed for player %s: %v\n", p.AgentSymbol, err)
+		}
+	}
 }
 
 // recoveryLoss identifies a container that was expected to be RUNNING after boot
