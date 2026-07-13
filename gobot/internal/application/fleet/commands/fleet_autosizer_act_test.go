@@ -245,6 +245,52 @@ func TestReconcile_ZeroEffectAlarm_EdgeTriggered(t *testing.T) {
 	}
 }
 
+// sp-a5dq: when API utilization is at/over the ceiling, the autosizer does NOT increase
+// concurrency — the shortfall class is held (no buy) and the block is metered against api_util.
+func TestReconcile_APIUtilSaturated_HoldsGrowth(t *testing.T) {
+	h, purchaser, metrics, _ := armedHandler(lightShortfall())
+	h.SetAPIUtilizationReader(&fakeAPIUtil{pct: 90, ok: true}) // above the default 85 ceiling
+	res, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1"})
+	if err != nil {
+		t.Fatalf("a saturated API must hold growth, not error: %v", err)
+	}
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("saturated API must NOT grow the fleet: purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
+	}
+	if !containsGuard(metrics.blockedGuards, GuardAPIUtil) {
+		t.Fatalf("expected an api_util block metered, got %v", metrics.blockedGuards)
+	}
+}
+
+// sp-a5dq: when the utilization metric is unreadable, the autosizer fails CLOSED — it HOLDS growth
+// (no buy) rather than the old fail-OPEN that grew concurrency into an unmeasured API. A transient
+// read failure holds steady; it never errors or tears the fleet down (the autosizer only ever buys).
+func TestReconcile_APIUtilUnreadable_HoldsGrowth(t *testing.T) {
+	h, purchaser, metrics, _ := armedHandler(lightShortfall())
+	h.SetAPIUtilizationReader(&fakeAPIUtil{ok: false}) // utilization surface unreadable
+	res, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1"})
+	if err != nil {
+		t.Fatalf("an unreadable utilization must hold steady, not error: %v", err)
+	}
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("unreadable utilization must fail closed (hold growth): purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
+	}
+	if !containsGuard(metrics.blockedGuards, GuardAPIUtil) {
+		t.Fatalf("expected an api_util block metered on the unreadable signal, got %v", metrics.blockedGuards)
+	}
+}
+
+// sp-a5dq non-regression: an UNWIRED utilization reader (nil) fails CLOSED too — a mis-wired
+// coordinator holds growth rather than silently permitting unbounded concurrency.
+func TestReconcile_APIUtilReaderUnwired_HoldsGrowth(t *testing.T) {
+	h, purchaser, _, _ := armedHandler(lightShortfall())
+	h.SetAPIUtilizationReader(nil) // never wired
+	res, _ := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1"})
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("an unwired api_util reader must fail closed: purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
+	}
+}
+
 // In-tick total accounting: a buy advances the total hull count so a later class in the SAME tick
 // sees the updated fleet size and is blocked by the absolute ceiling.
 func TestReconcile_InTickTotalAccounting(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/apibudget"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -37,10 +38,11 @@ import (
 // the realized tour-rate reads persisted tour telemetry (trading.ComputeFleetTourRate). Both fail
 // CLOSED on a genuine read failure (RULINGS #4 — an unreadable signal never spends); the seam only
 // makes readable demand READABLE, it relaxes no guard. Shared: treasury / era-clock / yard-price /
-// fleet-size reads and the buy+dedicate path. API utilization has no per-coordinator read path here
-// yet, so its guard fails OPEN (the fleet ceilings are the hard API-budget bound). Vacancies are 0
-// for now (the rebalancer hub-vacancy query is a later enrichment; a 0 leaves the chain-derived base
-// demand intact).
+// fleet-size reads and the buy+dedicate path. API utilization is now LIVE too (sp-a5dq): it reads the
+// rolling-5m window of the sp-51ti budget tracker (the daemon-startup singleton), so its guard fails
+// CLOSED — holding concurrency growth on real saturation or an absent surface — instead of the old
+// fail-open stub. Vacancies are 0 for now (the rebalancer hub-vacancy query is a later enrichment;
+// a 0 leaves the chain-derived base demand intact).
 
 // agentReader / serverStatusReader are the narrow slices of *api.SpaceTradersClient the money
 // guards need (treasury + era clock). Declared here so the ports depend on behaviour, not the
@@ -103,7 +105,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	// Buy-path readers + writers.
 	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient})
 	h.SetEraClockReader(&autosizerEraReader{api: apiClient})
-	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{})
+	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{reporter: metrics.GetGlobalAPIBudgetTracker()})
 	h.SetFleetSizeReader(&autosizerFleetSizeReader{shipRepo: shipRepo})
 	h.SetYardPriceReader(&autosizerYardPriceReader{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
 	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
@@ -144,15 +146,37 @@ func (r *autosizerEraReader) HoursToEraEnd(ctx context.Context) (float64, bool, 
 	return time.Until(next).Hours(), true, nil
 }
 
-// --- API utilization (banked seam: no per-coordinator read path yet → fail OPEN) ---
+// --- API utilization (sp-a5dq: live read off the sp-51ti budget tracker; fail CLOSED) ---
 
-type autosizerAPIUtilReader struct{}
+// apiBudgetReporter is the narrow read the API-util guard needs — the rolling utilization snapshot.
+// Satisfied by *metrics.APIBudgetTracker (the daemon-startup singleton, fed one event per API attempt
+// on the request path). Declared as an interface so the reader depends on behaviour, not the tracker.
+type apiBudgetReporter interface {
+	Report() apibudget.DualReport
+}
+
+// autosizerAPIUtilReader surfaces the fleet-wide API request-utilization percent to the autosizer's
+// api_util guard. It reads the rolling-5m window of the shared budget tracker — the SAME
+// throughput/ceiling basis as the Prometheus ApproachCeiling alert (sum(rate(api_requests_total[5m]))
+// / RateLimitPerSecond) — so the guard gates concurrency GROWTH against genuine API saturation
+// instead of the old fail-open stub. Fails CLOSED (readable=false) when no live surface exists (nil
+// tracker, or an unconfigured/zero ceiling): a guard that cannot read its bound never permits growth
+// (RULINGS #4). In the daemon the tracker is wired unconditionally at startup, so the normal case is
+// readable; blocking only occurs on real saturation or a genuinely-absent metrics subsystem.
+type autosizerAPIUtilReader struct{ reporter apiBudgetReporter }
 
 func (r *autosizerAPIUtilReader) UtilizationPct(ctx context.Context) (float64, bool, error) {
-	// No live per-coordinator utilization read path is wired yet; report unreadable so the guard
-	// fails OPEN (the absolute + per-class fleet ceilings are the hard API-budget bound). Wire the
-	// sp-51ti budget tracker's dual report here when a fleet-wide utilization surface lands.
-	return 0, false, nil
+	if r == nil || r.reporter == nil {
+		return 0, false, nil // no utilization surface wired → unreadable → guard fails CLOSED
+	}
+	rolling := r.reporter.Report().Rolling5m
+	if rolling.CeilingReqPerSec <= 0 {
+		// A typed-nil tracker's nil-safe Report() (or a tracker built with no ceiling) yields a
+		// zero-value report; without a ceiling there is no meaningful utilization → fail CLOSED
+		// rather than let a spurious readable 0% permit unbounded growth.
+		return 0, false, nil
+	}
+	return rolling.UtilizationPct, true, nil
 }
 
 // --- fleet size ---

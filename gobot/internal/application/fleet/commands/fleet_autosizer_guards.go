@@ -9,10 +9,10 @@ import (
 
 // The MONEY-GUARD HEART (sp-1txd M2). A purchase fires ONLY when every guard passes; this is the
 // fail-CLOSED inversion of vdld's fail-open kill-switch — spending is irreversible, not-buying is
-// safe, so any UNREADABLE input (price, era clock, realized rate, treasury) BLOCKS. The one
-// exception is the API-utilization guard, which fails OPEN with a warn: it is a dynamic rate
-// protection, and the absolute + per-class fleet ceilings are the HARD API-request-budget bound,
-// so an unreadable utilization must not freeze all buys forever.
+// safe, so any UNREADABLE input (price, era clock, realized rate, treasury, API utilization) BLOCKS.
+// The API-utilization guard used to be the lone fail-OPEN exception; sp-a5dq made it fail CLOSED too
+// (BurstSaturation was alerted but concurrency growth into a saturated API was never prevented), so
+// every guard now holds growth on an unreadable bound.
 //
 // EvaluateGuards is PURE: it judges a fully-populated PurchaseRequest and reports every guard's
 // verdict plus the full arithmetic (the iv65 park-line idiom — the captain reads one line and
@@ -32,7 +32,7 @@ const (
 	GuardEraPayback    GuardName = "era_payback"    // buy pays back before era reset; hard T-cutoff
 	GuardRealizedRate  GuardName = "realized_rate"  // marginal $/hr clears the floor, not decaying
 	GuardTreasuryPct   GuardName = "treasury_pct"   // a single hull ≤ pct% of live treasury (analyst rule)
-	GuardAPIUtil       GuardName = "api_util"       // sustained request-utilization below ceiling (fail-open)
+	GuardAPIUtil       GuardName = "api_util"       // sustained request-utilization below ceiling (fail-closed)
 	GuardTreasuryFloor GuardName = "treasury_floor" // treasury net of the reserve floor covers price+margin
 )
 
@@ -94,7 +94,8 @@ type PurchaseRequest struct {
 	MarginOverFloor   int64 // credits of headroom required above the reserve floor after the buy.
 	TreasuryPctPerBuy int   // analyst affordability rule: a single hull ≤ this pct% of treasury (0 = not applied).
 
-	// API utilization (dynamic; fails OPEN when unreadable).
+	// API utilization (dynamic; fails CLOSED when unreadable — sp-a5dq). Holds concurrency growth
+	// when sustained utilization is at/over the ceiling OR the signal cannot be read.
 	APIUtilPct      float64
 	APIUtilReadable bool
 	APIUtilCeiling  int
@@ -269,10 +270,14 @@ func guardTreasuryPct(req PurchaseRequest) GuardVerdict {
 }
 
 func guardAPIUtil(req PurchaseRequest) GuardVerdict {
-	// FAILS OPEN: an unreadable utilization must not freeze all buys forever — the fleet ceilings
-	// are the hard API-budget bound. Only a READ value at/above the ceiling blocks.
+	// FAILS CLOSED (sp-a5dq): an unreadable utilization holds concurrency GROWTH — the old fail-OPEN
+	// let the autosizer grow into a saturated API that BurstSaturation (sp-yeiq) alerted but nothing
+	// PREVENTED. RULINGS #4: a guard that cannot read its bound never permits the spend. Holding a buy
+	// only stops GROWTH (the autosizer never sells), so failing closed cannot shrink a healthy fleet;
+	// the live reader (metrics.APIBudgetTracker) makes the signal readable in the normal case, so this
+	// blocks only genuine saturation or a genuinely-absent metrics surface, never wedging forever.
 	if !req.APIUtilReadable {
-		return GuardVerdict{Guard: GuardAPIUtil, Passed: true, Detail: "utilization unreadable — fail-open (ceilings are the hard bound)"}
+		return GuardVerdict{Guard: GuardAPIUtil, Passed: false, Detail: "utilization unreadable — fail-CLOSED (hold growth; RULINGS #4)"}
 	}
 	return GuardVerdict{
 		Guard:  GuardAPIUtil,

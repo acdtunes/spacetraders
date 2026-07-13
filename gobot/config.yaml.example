@@ -37,9 +37,11 @@ api:
   timeout: 30s          # Request timeout (e.g., 30s, 1m)
 
   # Rate limiting (to respect API limits)
+  # NOTE: display-only today — the client uses api.RateLimitPerSecond (2/s) and
+  # api.RateLimitBurst (30); these keys surface in `config show`, not the limiter.
   rate_limit:
     requests: 2         # Requests per second
-    burst: 10           # Burst capacity
+    burst: 30           # Burst capacity (matches the live limiter)
 
   # Retry configuration
   retry:

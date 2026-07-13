@@ -155,8 +155,8 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	clock     shared.Clock
 
 	// Buy-path collaborators (M5), wired by setters at boot. Every one is nil-safe: a nil reader
-	// yields an unreadable input, which the guard stack fails CLOSED on (no buy) — except the
-	// API-utilization reader, whose absence fails OPEN by design.
+	// yields an unreadable input, which the guard stack fails CLOSED on (no buy) — the API-utilization
+	// reader included, since sp-a5dq (an absent/unreadable utilization now holds concurrency growth).
 	treasury  TreasuryReader
 	era       EraClockReader
 	apiUtil   APIUtilizationReader
@@ -223,7 +223,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetTreasuryReader(r TreasuryReader
 func (h *RunFleetAutosizerCoordinatorHandler) SetEraClockReader(r EraClockReader) { h.era = r }
 
 // SetAPIUtilizationReader wires the API-utilization source (M5). Unset → utilization unreadable →
-// the API-util guard fails OPEN (ceilings are the hard bound).
+// the API-util guard fails CLOSED (sp-a5dq): a mis-wired coordinator holds concurrency growth rather
+// than silently permitting unbounded growth into a saturated API.
 func (h *RunFleetAutosizerCoordinatorHandler) SetAPIUtilizationReader(r APIUtilizationReader) {
 	h.apiUtil = r
 }

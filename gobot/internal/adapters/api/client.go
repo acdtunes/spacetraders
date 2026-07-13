@@ -27,11 +27,20 @@ const (
 	maxBackoffDuration = 30 * time.Second // Cap exponential backoff to prevent extreme waits
 
 	// RateLimitPerSecond is the sustained request-rate ceiling this client
-	// enforces against SpaceTraders (burst 30). Exported so the budget
+	// enforces against SpaceTraders. Exported so the budget
 	// tracker (sp-51ti, internal/adapters/grpc composition root) can compute
 	// utilization-vs-ceiling against the same number the limiter actually
 	// uses, instead of a second hardcoded copy that could drift.
 	RateLimitPerSecond = 2.0
+
+	// RateLimitBurst is the token-bucket burst the limiter actually uses
+	// (SpaceTraders allows ~30 req/60s burst). Exported as the SINGLE source of
+	// truth for the burst, the twin of RateLimitPerSecond: sp-a5dq found the
+	// config.yaml api.rate_limit.burst knob (default 10) was never plumbed to
+	// this client and only surfaced in `config show`, so the displayed 10
+	// drifted from the real 30. The config default now mirrors this constant;
+	// wiring the knob through to make burst live-tunable is a deferred decision.
+	RateLimitBurst = 30
 
 	errCodeAgentHasContract = 4511
 	errCodeShipMustBeDocked = 4214
@@ -87,7 +96,7 @@ func NewSpaceTradersClientWithConfig(
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter:      rate.NewLimiter(rate.Limit(RateLimitPerSecond), 30), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
+		rateLimiter:      rate.NewLimiter(rate.Limit(RateLimitPerSecond), RateLimitBurst), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
 		baseURL:          baseURL,
 		maxRetries:       maxRetries,
 		backoffBase:      backoffBase,

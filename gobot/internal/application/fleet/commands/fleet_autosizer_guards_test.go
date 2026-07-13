@@ -175,12 +175,32 @@ func TestGuard_APIUtil_AboveCeilingBlocks(t *testing.T) {
 	assertBlockedBy(t, r, GuardAPIUtil)
 }
 
-func TestGuard_APIUtil_UnreadableFailsOpen(t *testing.T) {
+// sp-a5dq: the guard blocks concurrency GROWTH the moment utilization reaches the ceiling — the
+// bead's "at/over the ceiling" boundary (a pass requires strictly-below).
+func TestGuard_APIUtil_AtCeilingBlocks(t *testing.T) {
 	r := passingRequest()
-	r.APIUtilReadable = false // dynamic protection unreadable → fail-OPEN (ceilings are the hard bound)
+	r.APIUtilPct = 85 // == the 85 ceiling
+	assertBlockedBy(t, r, GuardAPIUtil)
+}
+
+// sp-a5dq: an unreadable utilization signal fails CLOSED (holds growth) — the fail-OPEN inversion
+// let the autosizer grow concurrency into a saturated API that was ALERTED but never PREVENTED.
+// RULINGS #4: a guard that cannot read its bound never permits the spend.
+func TestGuard_APIUtil_UnreadableFailsClosed(t *testing.T) {
+	r := passingRequest()
+	r.APIUtilReadable = false // utilization surface unreadable → fail-CLOSED (hold, do not grow)
+	assertBlockedBy(t, r, GuardAPIUtil)
+}
+
+// Non-regression: a readable, under-ceiling utilization does NOT block — a healthy fleet still
+// autosizes normally (only saturation or an unreadable signal holds growth).
+func TestGuard_APIUtil_UnderCeilingPasses(t *testing.T) {
+	r := passingRequest()
+	r.APIUtilPct = 84 // just below the 85 ceiling
+	r.APIUtilReadable = true
 	d := EvaluateGuards(r)
 	if !d.Approved {
-		t.Fatalf("api_util must fail OPEN when unreadable; got blocked by %q", d.BlockedBy)
+		t.Fatalf("a readable under-ceiling utilization must PASS; got blocked by %q: %s", d.BlockedBy, d.Arithmetic())
 	}
 }
 

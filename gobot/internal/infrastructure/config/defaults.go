@@ -44,7 +44,10 @@ func SetDefaults(cfg *Config) {
 		cfg.API.RateLimit.Requests = 2
 	}
 	if cfg.API.RateLimit.Burst == 0 {
-		cfg.API.RateLimit.Burst = 10
+		// Mirror the limiter's real burst (api.RateLimitBurst = 30). This value
+		// is display-only today (surfaced in `config show`, not plumbed to the
+		// client); the prior default of 10 lied about the live burst (sp-a5dq).
+		cfg.API.RateLimit.Burst = 30
 	}
 	if cfg.API.Retry.MaxAttempts == 0 {
 		cfg.API.Retry.MaxAttempts = 3

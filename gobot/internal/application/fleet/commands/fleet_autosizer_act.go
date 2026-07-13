@@ -33,7 +33,8 @@ type EraClockReader interface {
 }
 
 // APIUtilizationReader reads the sustained request-utilization percent. readable=false ⇒ the
-// API-util guard fails OPEN (dynamic protection; the fleet ceilings are the hard budget bound).
+// API-util guard fails CLOSED (sp-a5dq): an unreadable/absent utilization surface holds concurrency
+// growth rather than the old fail-open that grew into a saturated API.
 type APIUtilizationReader interface {
 	UtilizationPct(ctx context.Context) (pct float64, readable bool, err error)
 }
@@ -101,9 +102,9 @@ type tickInputs struct {
 }
 
 // readTickInputs reads the shared inputs once per tick. Every read is fail-safe: a nil reader or an
-// error yields readable=false, and the guards fail closed on that (except API-util, which fails
-// open). totalOK=false (nil/erroring fleet-size reader) blocks all buys — the ceiling cannot be
-// judged without the total.
+// error yields readable=false, and the guards fail closed on that (API-util included, sp-a5dq).
+// totalOK=false (nil/erroring fleet-size reader) blocks all buys — the ceiling cannot be judged
+// without the total.
 func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context, playerID int) tickInputs {
 	in := tickInputs{}
 	if h.treasury != nil {
