@@ -404,6 +404,7 @@ type ManufacturingPipelineModel struct {
 	SupplyChainDepth int     `gorm:"column:supply_chain_depth;default:0"`
 	MaxWorkers       int     `gorm:"column:max_workers;default:5"`
 	MinSupply        string  `gorm:"column:min_supply;size:20;default:''"`
+	GoodOverrides    string  `gorm:"column:good_overrides;type:text;default:''"` // sp-sdyo: per-good buy-gating overrides (JSON), persisted for restart-resilience (RULINGS #2)
 }
 
 func (ManufacturingPipelineModel) TableName() string {
@@ -557,7 +558,7 @@ func (SpendReservationModel) TableName() string {
 // UnreadableSince/AttemptCount carry the backoff state; its "" connected_system is the
 // structural sentinel that distinguishes it from a real edge (ExtractSystemSymbol never
 // yields "", so an edge's ConnectedSystem is always non-empty). Edges/Adjacency EXCLUDE
-// marker rows (connected_system <> ''); UnreadableState/MarkUnreadable read/write them.
+// marker rows (connected_system <> ”); UnreadableState/MarkUnreadable read/write them.
 type GateEdgeModel struct {
 	SystemSymbol    string `gorm:"column:system_symbol;primaryKey"`
 	ConnectedSystem string `gorm:"column:connected_system;primaryKey"`

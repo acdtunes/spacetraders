@@ -276,11 +276,16 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 		SupplyChainDepth: p.SupplyChainDepth(),
 		MaxWorkers:       p.MaxWorkers(),
 		MinSupply:        p.MinSupply(),
+		GoodOverrides:    p.GoodOverrides().Encode(),
 	}
 }
 
 // modelToPipeline converts database model to domain entity
 func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPipelineModel) (*manufacturing.ManufacturingPipeline, error) {
+	// sp-sdyo: decode the persisted per-good override blob. A corrupt/absent blob degrades to no
+	// overrides (the guard-tightening default: every good uses the global floor), never failing an
+	// otherwise-valid pipeline load.
+	goodOverrides, _ := manufacturing.DecodeGoodGatingOverrides(m.GoodOverrides)
 	pipeline := manufacturing.ReconstitutePipeline(
 		m.ID,
 		m.SequenceNumber,
@@ -301,6 +306,7 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 		m.SupplyChainDepth,
 		m.MaxWorkers,
 		m.MinSupply,
+		goodOverrides,
 	)
 
 	// Parse and set materials for construction pipelines

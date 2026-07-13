@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -52,7 +53,11 @@ type GetConstructionStatusResult struct {
 // StartConstructionPipeline starts or resumes a construction pipeline for a construction site.
 // minSupply is the caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE";
 // empty string means unset, preserving the original MODERATE default.
-func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructionSite string, playerID int, supplyChainDepth int, maxWorkers int, systemSymbol string, minSupply string) (*StartConstructionPipelineResult, error) {
+// goodOverrides carries the per-good buy-gating overrides (sp-sdyo): a per-good MinSupply loosens
+// the sourcing floor for a single bottleneck good while every other material keeps the global
+// floor. The map is persisted on the pipeline so it survives a restart (RULINGS #2). Nil/empty
+// preserves today's behaviour for every good.
+func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructionSite string, playerID int, supplyChainDepth int, maxWorkers int, systemSymbol string, minSupply string, goodOverrides manufacturing.GoodGatingOverrides) (*StartConstructionPipelineResult, error) {
 	// Create dependencies for ConstructionPipelinePlanner
 	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
 	taskRepo := persistence.NewGormManufacturingTaskRepository(s.db)
@@ -79,7 +84,7 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 	)
 
 	// Start or resume pipeline
-	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol, minSupply)
+	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol, minSupply, goodOverrides)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
 	}

@@ -160,7 +160,7 @@ type bootstrapConstructionManager struct{ server *DaemonServer }
 func (c *bootstrapConstructionManager) Start(ctx context.Context, playerID int, site string) error {
 	system := shared.ExtractSystemSymbol(site)
 	// depth 0 (full production), maxWorkers 0 (unset → planner default), minSupply "" (default floor).
-	_, err := c.server.StartConstructionPipeline(ctx, site, playerID, 0, 0, system, "")
+	_, err := c.server.StartConstructionPipeline(ctx, site, playerID, 0, 0, system, "", nil)
 	return err
 }
 

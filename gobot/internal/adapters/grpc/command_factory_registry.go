@@ -18,6 +18,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	storageCmd "github.com/andrescamacho/spacetraders-go/internal/application/storage/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	manufacturingDomain "github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -179,6 +180,24 @@ func (r *configReader) OptionalStringSlice(key string, aliases ...string) []stri
 		}
 	}
 	return nil
+}
+
+// OptionalGoodGatingOverrides reads the per-good buy-gating override map (sp-sdyo) from a launch
+// config key holding the map's JSON encoding (GoodGatingOverrides.Encode). A missing, non-string,
+// or malformed value yields nil (no overrides) — the guard-tightening default that keeps every
+// good on the global gates, matching the lenient Optional* family. This is a PER-LAUNCH key (not a
+// global config.yaml knob and not in manufacturingConfigKeys), so it persists in the container
+// config as a JSON string and reloads on restart untouched (RULINGS #2).
+func (r *configReader) OptionalGoodGatingOverrides(key string) manufacturingDomain.GoodGatingOverrides {
+	raw, ok := r.values[key].(string)
+	if !ok || raw == "" {
+		return nil
+	}
+	overrides, err := manufacturingDomain.DecodeGoodGatingOverrides(raw)
+	if err != nil {
+		return nil
+	}
+	return overrides
 }
 
 // intValue coerces a config value to int. It MUST handle every numeric type a launch
@@ -910,6 +929,11 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// is the emergency off-switch (RULINGS #5).
 		InputPriceCeilingMultiplier: cfg.OptionalFloat("input_price_ceiling_multiplier", 0),
 		InputPriceCeilingDisabled:   cfg.OptionalBool("input_price_ceiling_disabled"),
+		// sp-sdyo: the per-good buy-gating override map (JSON string). A per-launch key that
+		// persists in the container config and reloads on restart (RULINGS #2); absent → nil (every
+		// good on the global gates). NOT added to manufacturingConfigKeys — it is per-launch, not a
+		// global config.yaml knob, so resolveManufacturingConfig must not clear it.
+		GoodGatingOverrides: cfg.OptionalGoodGatingOverrides("good_gating_overrides"),
 		// sp-jav2 / FACTORY_DOCTRINE X1: the fabricate depth cap. 0/absent → the resolver resolves
 		// the depth-1 default at the point of use (the cap runs ON in production without the captain
 		// naming it — fabricate the output, buy its inputs); a set value is the captain's

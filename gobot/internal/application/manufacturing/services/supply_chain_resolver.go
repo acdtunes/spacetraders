@@ -308,7 +308,15 @@ func (r *SupplyChainResolver) shouldBuyGood(
 		canFabricate = err == nil && factory != nil
 	}
 
-	switch r.strategy {
+	// sp-sdyo: the acquisition strategy is GLOBAL (r.strategy) EXCEPT where a per-good override is
+	// stamped on ctx. The override lets a single bottleneck good be bought (or fabricated) against
+	// its own tier while every other good keeps the global strategy — a non-overridden good resolves
+	// to r.strategy unchanged, so its buy-vs-fabricate decision is byte-identical to today.
+	effectiveStrategy := AcquisitionStrategy(
+		goodGatingOverridesFromContext(ctx).StrategyFor(goodSymbol, string(r.strategy)),
+	)
+
+	switch effectiveStrategy {
 	case StrategyPreferBuy:
 		// Always buy if market exists (original behavior)
 		return true, marketData

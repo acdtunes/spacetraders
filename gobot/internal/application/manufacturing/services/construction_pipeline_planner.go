@@ -90,6 +90,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	maxWorkers int,
 	systemSymbol string,
 	minSupply string,
+	goodOverrides manufacturing.GoodGatingOverrides,
 ) (*StartOrResumeResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -119,13 +120,23 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 
 		if hasIncompleteTasks {
 			existingPipeline.SetTasks(persistedTasks)
-			// Only touch the persisted floor when the caller supplied a genuine,
-			// changed value: an empty minSupply means "the flag wasn't passed on
-			// this resume call" and must not clobber a floor set earlier.
+			// Only touch the persisted floor/overrides when the caller supplied a genuine,
+			// changed value: an empty minSupply (or empty override map) means "the flag wasn't
+			// passed on this resume call" and must not clobber a value set earlier.
+			needsUpdate := false
 			if minSupply != "" && minSupply != existingPipeline.MinSupply() {
 				existingPipeline.SetMinSupply(minSupply)
+				needsUpdate = true
+			}
+			// sp-sdyo: a resumed launch that supplies per-good overrides updates the persisted map
+			// (e.g. re-tuning a bottleneck's floor); an empty map leaves the existing overrides intact.
+			if len(goodOverrides) > 0 {
+				existingPipeline.SetGoodOverrides(goodOverrides)
+				needsUpdate = true
+			}
+			if needsUpdate {
 				if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
-					return nil, fmt.Errorf("failed to persist updated min-supply floor for pipeline %s: %w", existingPipeline.ID(), err)
+					return nil, fmt.Errorf("failed to persist updated sourcing config for pipeline %s: %w", existingPipeline.ID(), err)
 				}
 			}
 
@@ -201,6 +212,10 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	// transiently to planMaterial below - a material that defers during THIS
 	// pass is recovered later by reading the floor back off the pipeline row.
 	pipeline.SetMinSupply(minSupply)
+	// sp-sdyo: persist the per-good override map on the entity too, so a per-good sourcing-floor
+	// override survives a restart and is re-read by the deferred-material recovery loop, not just
+	// consumed during this initial planning pass (RULINGS #2).
+	pipeline.SetGoodOverrides(goodOverrides)
 
 	// 5. Add material targets to pipeline
 	for _, mat := range unfulfilledMaterials {
@@ -228,7 +243,11 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	// The SupplyMonitor re-sources deferred tasks when supply regenerates.
 	deferredMaterials := make([]string, 0)
 	for _, mat := range unfulfilledMaterials {
-		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, minSupply)
+		// sp-sdyo: resolve the EXPORT sourcing floor per material — a per-good override loosens the
+		// floor for a single bottleneck (e.g. down to SCARCE) while every other material keeps the
+		// pipeline's global floor unchanged.
+		matMinSupply := goodOverrides.MinSupplyFor(mat.TradeSymbol(), minSupply)
+		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, matMinSupply)
 		if err != nil {
 			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
 		}

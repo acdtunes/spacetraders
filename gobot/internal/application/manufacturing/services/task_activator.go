@@ -300,7 +300,7 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 	// resumed `construction start --min-supply X` call) is honored here too,
 	// not just during the initial planning pass. An unset/unreadable floor
 	// still resolves to "" and FindConstructionSource treats that as MODERATE.
-	minSupply := a.pipelineMinSupply(ctx, task.PipelineID())
+	minSupply := a.pipelineMinSupply(ctx, task.PipelineID(), task.Good())
 	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID, manufacturing.SupplyLevel(minSupply))
 	if err != nil || source == nil {
 		return false
@@ -325,11 +325,14 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 	return true
 }
 
-// pipelineMinSupply reads the caller-set --min-supply EXPORT sourcing floor
-// persisted on a construction pipeline (sp-j2hq). Returns "" (unset) if the
-// pipeline repo is unavailable or the pipeline can't be loaded, which
-// FindConstructionSource treats as the default MODERATE floor.
-func (a *TaskActivator) pipelineMinSupply(ctx context.Context, pipelineID string) string {
+// pipelineMinSupply reads the EXPORT sourcing floor for a specific good on a construction
+// pipeline (sp-j2hq): the pipeline's persisted global --min-supply floor, or the good's per-good
+// override when one is set (sp-sdyo). Returns "" (unset) if the pipeline repo is unavailable or
+// the pipeline can't be loaded, which FindConstructionSource treats as the default MODERATE floor.
+// Reading the override off the SAME persisted pipeline the global floor lives on is what makes a
+// per-good override survive a restart and apply to the deferred-material recovery path, not just
+// the initial planning pass (RULINGS #2).
+func (a *TaskActivator) pipelineMinSupply(ctx context.Context, pipelineID, good string) string {
 	if a.pipelineRepo == nil {
 		return ""
 	}
@@ -337,7 +340,7 @@ func (a *TaskActivator) pipelineMinSupply(ctx context.Context, pipelineID string
 	if err != nil || pipeline == nil {
 		return ""
 	}
-	return pipeline.MinSupply()
+	return pipeline.GoodOverrides().MinSupplyFor(good, pipeline.MinSupply())
 }
 
 // ActivateCollectionPipelineTasks activates PENDING and enqueues READY COLLECT_SELL tasks from COLLECTION pipelines.

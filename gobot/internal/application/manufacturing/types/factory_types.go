@@ -1,6 +1,9 @@
 package types
 
-import "github.com/andrescamacho/spacetraders-go/internal/domain/goods"
+import (
+	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+)
 
 // RunFactoryWorkerCommand initiates a factory worker to produce a good
 type RunFactoryWorkerCommand struct {
@@ -130,6 +133,16 @@ type RunFactoryCoordinatorCommand struct {
 	// genuine own-market premium. Absent/false keeps the signal on at its default window. Fed from
 	// rest_signal_disabled.
 	RestSignalDisabled bool
+	// GoodGatingOverrides is the per-good buy-gating override map (sp-sdyo): a surgical knob that
+	// loosens (or tightens) the supply-strategy and the ladder-chase input-price-ceiling for a
+	// SINGLE bottleneck good while every other good keeps the global default. Consumed on the
+	// factory-coordinator engine — the Strategy override rides the SupplyChainResolver and the
+	// PriceCeilingMult override the executor's per-tranche ceiling (both ctx-stamped in
+	// executeCoordination). The PriceCeilingMult is hard-capped so it can loosen but never disable
+	// the ceiling (RULINGS #4). Fed from the good_gating_overrides launch-config key (a per-launch
+	// key that persists in the container config and reloads on restart, RULINGS #2). Absent/nil
+	// leaves every good on the global gates — byte-identical to today.
+	GoodGatingOverrides manufacturing.GoodGatingOverrides
 	// WorkerCap bounds how many hulls this chain runs CONCURRENTLY per production pass
 	// (sp-ev0n): the coordinator never fans out more than WorkerCap node workers at once,
 	// so a captain caps a factory's hull draw live without a daemon restart. This is the

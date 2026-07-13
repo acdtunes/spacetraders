@@ -42,6 +42,24 @@ func TestConstructionPipelineMinSupplyDefaultsUnsetThenSettable(t *testing.T) {
 	}
 }
 
+// sp-sdyo: a construction pipeline persists the per-good gate-override map alongside the global
+// min-supply floor, so a per-good sourcing-floor override survives a daemon bounce (RULINGS #2)
+// and is re-read by the planner and the deferred-material recovery loop.
+func TestConstructionPipelineGoodOverridesDefaultsEmptyThenSettable(t *testing.T) {
+	p := NewConstructionPipeline("X1-TEST-I1", 1, 3, 5)
+
+	if got := p.GoodOverrides(); len(got) != 0 {
+		t.Fatalf("expected a new construction pipeline to default GoodOverrides to empty, got %v", got)
+	}
+
+	p.SetGoodOverrides(GoodGatingOverrides{"SILICON_CRYSTALS": {MinSupply: "SCARCE"}})
+
+	got := p.GoodOverrides()
+	if got["SILICON_CRYSTALS"].MinSupply != "SCARCE" {
+		t.Fatalf("expected SetGoodOverrides to persist the per-good floor, got %+v", got)
+	}
+}
+
 func TestPipelineTaskStatsReflectTaskStatesAfterCompletion(t *testing.T) {
 	p := NewPipeline("LASER_RIFLES", "MARKET-SELL", 100, 1)
 	first := addNoDependencyTask(t, p)

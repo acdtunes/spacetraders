@@ -137,6 +137,16 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 		multiplier = defaultInputPriceCeilingMultiplier
 	}
 
+	// sp-sdyo: a per-good override tunes THIS good's ladder ceiling only — the surgical knob for
+	// buying a stuck bottleneck past the global 1.5x while every other good keeps the global
+	// multiplier (a non-overridden good's ceiling is byte-identical to today). The override is
+	// HARD-CAPPED at MaxPriceCeilingMultiplier inside PriceCeilingMultFor so a fat-finger can only
+	// LOOSEN, never DISABLE, the ceiling (RULINGS #4). This raises the per-tranche ladder ceiling
+	// ONLY: the structural inputRoundMarginParked round-gate and the sp-9aoc solvency floor read
+	// nothing from the override and still park an underwater round / a treasury breach — the
+	// sp-iv65 bleed stays prevented for overridden and non-overridden goods alike.
+	multiplier = goodGatingOverridesFromContext(ctx).PriceCeilingMultFor(good, multiplier)
+
 	median, count, err := e.marketLocator.EligibleSourceMedianAsk(ctx, good, systemSymbol, playerID)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf(

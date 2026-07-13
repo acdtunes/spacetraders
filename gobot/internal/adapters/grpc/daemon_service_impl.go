@@ -1726,8 +1726,11 @@ func (s *daemonServiceImpl) StartConstructionPipeline(ctx context.Context, req *
 		minSupply = *req.MinSupply
 	}
 
-	// Call daemon's StartConstructionPipeline method
-	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol, minSupply)
+	// Call daemon's StartConstructionPipeline method. Per-good gate overrides (sp-sdyo) have no
+	// gRPC request field yet, so nil is passed here — every good uses the global min-supply floor.
+	// The daemon-level method accepts the map so the plumbing (persist/reload/planner) is fully
+	// exercised; a future proto field wires the analyst-facing surface in without touching it.
+	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol, minSupply, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
 	}

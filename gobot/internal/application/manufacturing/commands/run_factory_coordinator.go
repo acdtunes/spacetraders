@@ -435,6 +435,12 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// disabled=true restores the original unbounded recursion. Stamped unconditionally so a
 	// directly-built command (0/false) still caps at depth-1.
 	ctx = mfgServices.WithFabricateDepthCap(ctx, cmd.FabricateMaxDepth, cmd.FabricateDepthCapDisabled)
+	// sp-sdyo: stamp the per-good buy-gating overrides the same way (same singleton-executor race
+	// reasoning — the resolver and executor are boot singletons shared across sibling factories, so
+	// per-run overrides ride ctx, not a struct field). The resolver reads the per-good strategy and
+	// the executor's ceiling reads the per-good priceCeilingMult (hard-capped, RULINGS #4). A nil map
+	// (a directly-built command, or a launch with no overrides) leaves every good on the global gates.
+	ctx = mfgServices.WithGoodGatingOverrides(ctx, cmd.GoodGatingOverrides)
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,
