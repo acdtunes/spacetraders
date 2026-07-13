@@ -647,6 +647,38 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
 	}
 
+	// Register the standing construction-supply drain (sp-382j): the coordinator that rebuilds
+	// gate-construction EXECUTION post-sp-jav2 — a THIN drain on the SHARED ProductionExecutor
+	// engine (NOT a second parallel task coordinator, NOT folded into the goods factory). Each
+	// tick it runs the surviving activator (PENDING->READY), polls READY DELIVER_TO_CONSTRUCTION
+	// tasks from EXECUTING pipelines, claims idle in-system haulers under the shared
+	// "manufacturing" identity, and delegates source+deliver to the executor. Standing
+	// coordinators are CLI/gRPC/bootstrap first-launched then recovery-adopted; registering the
+	// handler makes a launched or recovered container runnable (nothing auto-starts on boot).
+	constructionPipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
+	constructionTaskRepo := persistence.NewGormManufacturingTaskRepository(db)
+	// The delivery TERMINAL rides the shared engine: ProduceGood sources the material into the
+	// hauler, DeliverToConstructionSite (wired here via the construction supply API) flies it to
+	// the site and supplies it — no duplicate sourcing/nav logic in the drain.
+	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, nil, apiClient)
+	constructionExecutor.SetConstructionRepo(api.NewConstructionSiteRepository(apiClient, playerRepo))
+	// The activator is the SURVIVING SupplyMonitor (sp-jav2 kept the subpackage): NO new
+	// activation logic. Built per-player because it bakes in the playerID; the poll-loop-only
+	// collaborators (factory tracker/state, sell distributor, storage, container reader, event
+	// publisher) are left nil — construction activation uses only task/pipeline/queue/market.
+	constructionActivatorFactory := func(pid int) goodsCmd.ConstructionActivator {
+		return goodsServices.NewSupplyMonitor(
+			marketRepoAdapter, nil, nil, constructionPipelineRepo, goodsServices.NewTaskQueue(),
+			constructionTaskRepo, nil, goodsMarketLocator, nil, nil, nil, time.Minute, pid,
+		)
+	}
+	constructionCoordinatorHandler := goodsCmd.NewRunConstructionCoordinatorHandler(
+		constructionTaskRepo, constructionPipelineRepo, shipRepo, constructionExecutor, constructionActivatorFactory, nil, // nil = use RealClock
+	)
+	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
+	}
+
 	// Register the standing factory-SITING coordinator (sp-vdld): the standing "brain" that
 	// automates factory discovery, placement, and capacity planning. Each slow tick it SCANs
 	// candidate (good,system) sites (export-site hard gate + in-system input eligibility +

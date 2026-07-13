@@ -11,6 +11,7 @@ import (
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -179,6 +180,12 @@ type ProductionExecutor struct {
 	// same optional-port fail-OPEN contract as apiClient/spendLedger (tests wire nothing; the
 	// daemon wires the DB-backed price history repo via SetPriceHistoryReader).
 	priceHistory InputPriceHistoryReader
+	// constructionRepo backs the DeliverToConstructionSite terminal (sp-382j): the construction
+	// supply API a sourced hauler delivers gate materials through. nil leaves the terminal
+	// unavailable (returns an error if reached) — the optional-port contract; the daemon wires
+	// the real API-backed repo via SetConstructionRepo, and only the construction-supply drain
+	// ever calls the terminal, so every other caller is unaffected.
+	constructionRepo manufacturing.ConstructionSiteRepository
 }
 
 // SetSpendLedger wires the cross-container concurrent spend cap (sp-w3he). The daemon calls
@@ -186,6 +193,14 @@ type ProductionExecutor struct {
 // cap fail-open, which is exactly what every non-daemon caller wants.
 func (e *ProductionExecutor) SetSpendLedger(ledger SpendReservationLedger) {
 	e.spendLedger = ledger
+}
+
+// SetConstructionRepo wires the construction supply API the DeliverToConstructionSite terminal
+// delivers gate materials through (sp-382j). The daemon calls this when it builds the executor
+// for the construction-supply drain; leaving it unset keeps the terminal unavailable, which is
+// exactly what every non-construction caller (goods factory, tour, arb) wants.
+func (e *ProductionExecutor) SetConstructionRepo(repo manufacturing.ConstructionSiteRepository) {
+	e.constructionRepo = repo
 }
 
 // NewProductionExecutor creates a new production executor with default polling intervals
@@ -1128,6 +1143,69 @@ func (e *ProductionExecutor) SellFabricatedOutputAtSink(
 		"sink": sink.WaypointSymbol, "sink_bid": sink.Price, "basis": unitBasis,
 	})
 	return sellResp.TotalRevenue, nil
+}
+
+// DeliverToConstructionSite flies an ALREADY-SOURCED hauler to a jump-gate construction site and
+// supplies whatever it carries of good via the construction supply API, returning the units the
+// site accepted (sp-382j). It is the delivery TERMINAL of the construction-supply drain: the drain
+// sources the material into the hull with ProduceGood (the shared engine — no duplicate sourcing
+// logic), then hands off here to deliver. Modeled structurally on SellFabricatedOutputAtSink — the
+// sale terminal's twin — reusing NavigateAndDock so a laden hull reaches a CONFIRMED-DOCKED state at
+// the site before the supply fires, rather than resurrecting the deleted parallel coordinator's own
+// navigation. Recovered from the acquire->navigate->supply->record leg of the sp-jav2-deleted
+// DeliverToConstructionExecutor (ef2281b8), minus the acquire (now ProduceGood's job) and the
+// task/pipeline bookkeeping (now the drain's job).
+//
+// A hull carrying nothing of good is a clean no-op (0 delivered, no flight) — the drain only reaches
+// here after a non-zero ProduceGood, but the guard keeps a stale/empty hull from flying uselessly.
+func (e *ProductionExecutor) DeliverToConstructionSite(
+	ctx context.Context,
+	shipSymbol string,
+	good string,
+	site string,
+	playerID shared.PlayerID,
+) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if e.constructionRepo == nil {
+		return 0, fmt.Errorf("construction repository not wired: cannot supply %s to %s", good, site)
+	}
+
+	ship, err := e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reload ship before construction delivery: %w", err)
+	}
+	if onboardUnits(ship, good) <= 0 {
+		return 0, nil // nothing of this material onboard — nothing to deliver
+	}
+
+	// Fly the delivery leg to the site and dock. Construction legs are in-system by design, so
+	// this is a NavigateAndDock (never a jump), returning only once CONFIRMED docked at the site.
+	docked, err := e.NavigateAndDock(ctx, shipSymbol, site, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to navigate to construction site %s for %s: %w", site, good, err)
+	}
+
+	units := onboardUnits(docked, good)
+	if units <= 0 {
+		return 0, nil // arrived empty (e.g. cargo shed en route) — nothing to supply
+	}
+
+	result, err := e.constructionRepo.SupplyMaterial(ctx, shipSymbol, site, good, units, playerID.Value())
+	if err != nil {
+		// Surface the underlying supply error VERBATIM in the message so it reaches the container
+		// log stream (structured map fields are dropped by the renderer). Recovered from the
+		// deleted executor's supply-error handling.
+		logger.Log("ERROR", fmt.Sprintf("Construction supply failed for %s at %s: %v", good, site, err), map[string]interface{}{
+			"ship": shipSymbol, "construction_site": site, "good": good, "units": units,
+		})
+		return 0, fmt.Errorf("failed to supply construction site %s with %s: %w", site, good, err)
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Supplied %d %s to construction site %s", result.UnitsDelivered, good, site), map[string]interface{}{
+		"ship": shipSymbol, "construction_site": site, "good": good, "units_delivered": result.UnitsDelivered,
+	})
+	return result.UnitsDelivered, nil
 }
 
 // onboardUnits sums how many units of good the ship currently holds.

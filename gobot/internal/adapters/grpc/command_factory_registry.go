@@ -377,6 +377,11 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
+		// construction_coordinator (sp-382j): the standing construction-supply drain. Like
+		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		// Registering it here is what makes a launched or restart-recovered drain runnable.
+		{CommandType: "construction_coordinator", build: buildConstructionCoordinatorCommand},
 		// siting_coordinator (sp-vdld): the standing factory-siting brain. Like
 		// trade_fleet/frontier it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
@@ -856,6 +861,23 @@ func buildBatchPurchaseShipsCommand(cfg *configReader, playerID int, containerID
 		MaxBudget:            cfg.RequiredInt("max_budget"),
 		PlayerID:             shared.MustNewPlayerID(playerID),
 		ShipyardWaypoint:     cfg.OptionalString("shipyard"),
+	}
+}
+
+// buildConstructionCoordinatorCommand rebuilds the standing construction-supply drain command
+// (sp-382j) from a persisted launch config so a daemon restart re-adopts it (RULINGS #2). The
+// drain is queue-driven: it re-polls READY DELIVER_TO_CONSTRUCTION tasks from persistence every
+// tick, so the only launch config it needs is the operating system + identity. max_iterations
+// defaults to -1 (standing: loops forever inside Handle); a positive value bounds a CLI/test run.
+func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &goodsCmd.RunConstructionCoordinatorCommand{
+		PlayerID: playerID,
+		// Optional: an empty system lets the drain derive it per-tick from the construction
+		// site (the bootstrap gate launches it with no system).
+		SystemSymbol:  cfg.OptionalString("system_symbol"),
+		ContainerID:   cfg.RequiredString("container_id"),
+		MaxIterations: cfg.OptionalInt("max_iterations", -1),
+		TickSeconds:   cfg.OptionalInt("tick_seconds", 0),
 	}
 }
 

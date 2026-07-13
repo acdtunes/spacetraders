@@ -7,13 +7,13 @@ package grpc
 // coordinator (the construction executor), fleet dedication (AssignFleet), and the standing-coordinator
 // launches (FleetAutosizer / Siting / WorkerRebalancer).
 //
-// EXECUTOR NOTE (reported to the harbormaster): construction pipelines are worked by the
-// manufacturing/goods-factory coordinator (see operations.go isManufacturingCoordinatorType — "Construction
-// supply pipelines run through this same coordinator"). Post-sp-jav2 there is no clean bootstrap-launchable
-// "start the manufacturing coordinator" verb, so EnsureRunning is best-effort and the L57 adoption bounce
-// uses StopContainer + the daemon's restart-recovery re-adoption (which re-scans and adopts the fresh
-// pipeline). In the normal era the executor is a standing coordinator already running, so the common GATE
-// path is the bounce, which is wired exactly.
+// EXECUTOR NOTE (sp-382j): construction pipelines are worked by the dedicated construction-supply drain
+// (ContainerTypeConstructionCoordinator) — a thin drain on the shared ProductionExecutor engine that
+// re-polls READY DELIVER_TO_CONSTRUCTION tasks every tick. EnsureRunning launches it when down (a fresh
+// start immediately adopts the gate pipeline by re-polling), closing the post-sp-jav2 gap that left the
+// gate EXECUTING@0% forever. Adoption keys on this drain RUNNING, not the pipeline-status string. The L57
+// bounce is now effectively vestigial for construction (a re-polling drain adopts continuously, so the
+// gate reaches EnsureRunning, never the bounce), but BounceForAdoption is kept wired for safety.
 
 import (
 	"context"
@@ -38,11 +38,13 @@ const (
 	jumpGateWaypointType = "JUMP_GATE"
 )
 
-// executorContainerTypes are the container types that run the construction executor (the manufacturing /
-// goods-factory coordinator). A running container of any of these means the executor is up.
+// executorContainerTypes are the container types that run the construction executor. Post-sp-382j
+// this is the dedicated construction-supply drain (ContainerTypeConstructionCoordinator) — NOT the
+// vestigial manufacturing/goods-factory coordinators, which never worked construction pipelines. A
+// running container of this type means the executor is up (and, because the drain re-polls its
+// worklist every tick, actively adopting).
 var executorContainerTypes = []container.ContainerType{
-	container.ContainerTypeManufacturingCoordinator,
-	container.ContainerType("goods_factory_coordinator"),
+	container.ContainerTypeConstructionCoordinator,
 }
 
 // containerTypeRunning reports whether a RUNNING-or-PENDING container of any of the given types exists
@@ -119,9 +121,14 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		if status, gerr := s.GetConstructionStatus(ctx, wp.Symbol, playerID); gerr == nil && status != nil {
 			if status.PipelineID != nil && *status.PipelineID != "" {
 				snap.Started = true
-				// Adopted ⇒ the executor has picked the pipeline up (a non-empty, non-terminal pipeline
-				// status). Bootstrap bounces the executor only while a started pipeline is NOT adopted.
-				snap.Adopted = pipelineStatusAdopted(status.PipelineStatus)
+				// Adopted keys on a RUNNING construction executor, NOT the pipeline-status string
+				// (sp-382j): the planner sets EXECUTING when it creates the pipeline, but that
+				// pipeline is INERT until a drain is running. Reading EXECUTING as adopted (the old
+				// pipelineStatusAdopted) silently skipped the launch and left the gate EXECUTING@0%
+				// forever. A running ConstructionCoordinator re-polls and works the tasks, so its
+				// presence is the adoption signal.
+				running, _ := containerTypeRunning(ctx, s.containerRepo, playerID, executorContainerTypes...)
+				snap.Adopted = constructionExecutorAdopted(running, status.PipelineStatus)
 			}
 			snap.MaterialChain = len(status.Materials)
 			if status.PipelineProgress != nil {
@@ -134,19 +141,16 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 	return snap
 }
 
-// pipelineStatusAdopted reports whether a construction pipeline's status means the executor has adopted
-// it (is working its tasks). An empty/absent status means not-yet-adopted (freshly created, inert).
-func pipelineStatusAdopted(status *string) bool {
-	if status == nil || *status == "" {
-		return false
-	}
-	switch *status {
-	case "PENDING", "CREATED", "NEW":
-		return false
-	default:
-		// ACTIVE / IN_PROGRESS / RUNNING / COMPLETED — the executor has adopted and is working it.
-		return true
-	}
+// constructionExecutorAdopted reports whether the gate pipeline is being worked. Adoption keys on
+// a RUNNING construction executor (a ConstructionCoordinator container), NOT the pipeline-status
+// string (sp-382j): the planner sets EXECUTING when it creates the pipeline, but that pipeline is
+// inert until a drain is running — reading EXECUTING as adopted was the false-adoption bug that
+// silently skipped the launch. The drain re-polls its worklist every tick, so a running drain is
+// continuously adopting; keying on live percent instead would thrash-bounce a legitimately
+// supply-starved drain (a restart cannot conjure supply). pipelineStatus is kept in the signature
+// for symmetry with the observation but is deliberately NOT consulted.
+func constructionExecutorAdopted(coordinatorRunning bool, _ *string) bool {
+	return coordinatorRunning
 }
 
 // --- ConstructionManager: `construction start <site>` (idempotent — resumes an existing pipeline) ---
@@ -164,10 +168,12 @@ func (c *bootstrapConstructionManager) Start(ctx context.Context, playerID int, 
 
 type bootstrapManufacturingController struct{ server *DaemonServer }
 
-// EnsureRunning is best-effort: post-sp-jav2 there is no clean bootstrap-launchable "start the
-// manufacturing coordinator" verb, so when the executor is down this returns a clear error that the GATE
-// phase surfaces as a loud blocker (the captain launches the standing manufacturing coordinator). In the
-// normal era the executor is already running, so this is rarely reached — the common path is the bounce.
+// EnsureRunning launches the standing construction-supply drain (sp-382j) when it is down: a fresh
+// start immediately begins re-polling READY DELIVER_TO_CONSTRUCTION tasks and adopting the gate
+// pipeline. This closes the post-sp-jav2 gap — the GATE phase now has a real, launchable executor
+// instead of a dead-end error. Idempotent: it launches only when no drain is already RUNNING/PENDING.
+// The empty system lets the drain derive its operating system per-tick from each task's construction
+// site, so the bootstrap need not resolve the home system here.
 func (m *bootstrapManufacturingController) EnsureRunning(ctx context.Context, playerID int) error {
 	running, err := containerTypeRunning(ctx, m.server.containerRepo, playerID, executorContainerTypes...)
 	if err != nil {
@@ -176,7 +182,8 @@ func (m *bootstrapManufacturingController) EnsureRunning(ctx context.Context, pl
 	if running {
 		return nil
 	}
-	return fmt.Errorf("construction executor (manufacturing coordinator) is not running and bootstrap has no launch verb for it post-sp-jav2 — launch the standing manufacturing coordinator")
+	_, err = m.server.ConstructionCoordinator(ctx, playerID, "")
+	return err
 }
 
 // BounceForAdoption restarts the running executor so it re-scans and ADOPTS the freshly-created pipeline

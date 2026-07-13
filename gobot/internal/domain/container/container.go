@@ -83,14 +83,21 @@ const (
 	// the cold-start arc to the jump gate (DATA→INCOME→GATE). Like the siting/autosizer
 	// coordinators it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeBootstrapCoordinator ContainerType = "BOOTSTRAP_COORDINATOR"
-	ContainerTypeParallelManufacturing    ContainerType = "PARALLEL_MANUFACTURING"
-	ContainerTypeManufacturingTaskWorker  ContainerType = "MANUFACTURING_TASK_WORKER"
-	ContainerTypeGasCoordinator           ContainerType = "GAS_COORDINATOR"
-	ContainerTypeGasSiphonWorker          ContainerType = "GAS_SIPHON_WORKER"
-	ContainerTypeStorageShip              ContainerType = "STORAGE_SHIP"
-	ContainerTypeWarehouse                ContainerType = "WAREHOUSE"
-	ContainerTypeJump                     ContainerType = "JUMP"
-	ContainerTypeOutfitting               ContainerType = "OUTFITTING"
+	// ContainerTypeConstructionCoordinator is the standing construction-supply drain (sp-382j):
+	// a per-player coordinator that loops forever inside one Handle() sourcing and delivering a
+	// gate-construction pipeline's READY DELIVER_TO_CONSTRUCTION tasks on the shared
+	// ProductionExecutor engine. Like the siting/autosizer/bootstrap coordinators it is NOT a
+	// CoordinatorOwnsIterations type. It is the dedicated executor the bootstrap GATE adoption
+	// check looks for (replacing the vestigial MANUFACTURING_COORDINATOR for construction).
+	ContainerTypeConstructionCoordinator ContainerType = "CONSTRUCTION_COORDINATOR"
+	ContainerTypeParallelManufacturing   ContainerType = "PARALLEL_MANUFACTURING"
+	ContainerTypeManufacturingTaskWorker ContainerType = "MANUFACTURING_TASK_WORKER"
+	ContainerTypeGasCoordinator          ContainerType = "GAS_COORDINATOR"
+	ContainerTypeGasSiphonWorker         ContainerType = "GAS_SIPHON_WORKER"
+	ContainerTypeStorageShip             ContainerType = "STORAGE_SHIP"
+	ContainerTypeWarehouse               ContainerType = "WAREHOUSE"
+	ContainerTypeJump                    ContainerType = "JUMP"
+	ContainerTypeOutfitting              ContainerType = "OUTFITTING"
 	// ContainerTypeRoute is the one-shot cross-system point-to-point move behind the
 	// `ship route` verb (sp-6hjw). Unlike ContainerTypeNavigate (in-system only) it
 	// reuses the trade-route coordinator's multi-jump travel() to cross gates. Like the

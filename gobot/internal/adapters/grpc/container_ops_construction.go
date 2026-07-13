@@ -7,7 +7,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // StartConstructionPipelineResult contains the result of starting a construction pipeline.
@@ -205,6 +207,54 @@ func (s *DaemonServer) StopConstructionPipeline(ctx context.Context, constructio
 		TasksCancelled:   int32(result.TasksCancelled),
 		Message:          fmt.Sprintf("Stopped construction pipeline for %s (%d tasks cancelled)", constructionSite, result.TasksCancelled),
 	}, nil
+}
+
+// ConstructionCoordinator starts the standing construction-supply drain (sp-382j): a
+// recovery-safe container that each tick sources and delivers a gate-construction pipeline's
+// READY DELIVER_TO_CONSTRUCTION tasks to their site on the shared ProductionExecutor engine.
+// It mirrors WorkerRebalancerCoordinator's shape (build config → buildCommandForType so
+// creation and recovery share one builder → NewContainer with iterations=-1 for the infinite
+// drain loop → Add → runner → registerContainer → go Start). The launch config carries only the
+// operating system + identity; the drain re-polls READY tasks from persistence every tick, so a
+// restart resumes supply with no other state (RULINGS #2). This is the dedicated executor the
+// bootstrap GATE adoption check looks for, closing the post-jav2 gate-construction execution gap.
+func (s *DaemonServer) ConstructionCoordinator(ctx context.Context, playerID int, systemSymbol string) (string, error) {
+	containerID := utils.GenerateContainerID("construction_coordinator", fmt.Sprintf("player-%d", playerID))
+
+	config := map[string]interface{}{
+		"container_id":  containerID,
+		"system_symbol": systemSymbol,
+	}
+
+	cmd, err := s.buildCommandForType("construction_coordinator", config, playerID, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create construction coordinator command: %w", err)
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeConstructionCoordinator,
+		playerID,
+		-1,  // Infinite iterations (drain loop) — NOT a CoordinatorOwnsIterations type
+		nil, // No parent container
+		config,
+		nil,
+	)
+
+	if err := s.containerRepo.Add(ctx, containerEntity, "construction_coordinator"); err != nil {
+		return "", fmt.Errorf("failed to persist construction coordinator container: %w", err)
+	}
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Construction coordinator container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
 }
 
 // getAPIClient returns the shared API client for construction operations.

@@ -395,16 +395,17 @@ func isGasWorkerType(containerType string) bool {
 	return strings.EqualFold(containerType, string(container.ContainerTypeGasSiphonWorker))
 }
 
-// isManufacturingCoordinatorType matches both the standard and the parallel
-// task-based manufacturing coordinator. The parallel coordinator (container IDs
-// prefixed "parallel_manufacturing-") registers as ContainerTypeManufacturingCoordinator
-// today; ContainerTypeParallelManufacturing is matched too so the verb stays
-// correct if a coordinator is ever registered under that sibling type.
-// Construction supply pipelines run through this same coordinator, so matching
-// it is what makes the operations verbs see construction activity as well.
+// isManufacturingCoordinatorType matches the standard and parallel task-based manufacturing
+// coordinators, plus the dedicated construction-supply drain (sp-382j). The parallel coordinator
+// (container IDs prefixed "parallel_manufacturing-") registers as ContainerTypeManufacturingCoordinator
+// today; ContainerTypeParallelManufacturing is matched too so the verb stays correct if a coordinator
+// is ever registered under that sibling type. Construction supply now runs through its OWN drain
+// (ContainerTypeConstructionCoordinator, no longer the vestigial manufacturing coordinator), so it is
+// matched here to keep the operations verbs seeing construction activity.
 func isManufacturingCoordinatorType(containerType string) bool {
 	return strings.EqualFold(containerType, string(container.ContainerTypeManufacturingCoordinator)) ||
-		strings.EqualFold(containerType, string(container.ContainerTypeParallelManufacturing))
+		strings.EqualFold(containerType, string(container.ContainerTypeParallelManufacturing)) ||
+		strings.EqualFold(containerType, string(container.ContainerTypeConstructionCoordinator))
 }
 
 func isManufacturingWorkerType(containerType string) bool {
