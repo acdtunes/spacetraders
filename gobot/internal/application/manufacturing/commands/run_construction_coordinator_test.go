@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -482,5 +483,55 @@ func TestConstructionDrain_NoIdleHauler_ReportsNoWork(t *testing.T) {
 	}
 	if resp.NoWorkReason != noWorkNoIdleHauler {
 		t.Fatalf("expected no-idle-hauler reason %q, got %q", noWorkNoIdleHauler, resp.NoWorkReason)
+	}
+}
+
+// sp-382j: the daemon now boot-launches this drain as a STANDING coordinator (MaxIterations=-1,
+// mirroring GoodsFactoryCoordinator/StartGoodsFactory) so it runs continuously with no
+// bootstrapper required — idling when there is no pipeline, ready to supply the moment one
+// appears. Handle (the standing-loop entrypoint the daemon actually launches) must therefore idle
+// CLEANLY on an empty queue: report the no-ready-task reason every tick, claim no hauler,
+// source/deliver nothing, and stop ONLY on context cancellation (never error out or hang) — the
+// exact steady state a boot-standing launch sits in whenever there is no gate pipeline. Unlike the
+// drainOnce-level tests above, this drives Handle itself: previously nothing exercised the actual
+// standing-loop entrypoint in isolation.
+func TestConstructionDrain_IdlesCleanlyWhenNoPipeline(t *testing.T) {
+	taskRepo := &drainStubTaskRepo{}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+	activator := &fakeConstructionActivator{}
+	producer := &fakeConstructionProducer{}
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(activator), &factoryFakeClock{})
+
+	// Handle's per-tick wait uses real wall-clock time (time.After), not the injected Clock, so a
+	// short real deadline stands in for the container's shutdown cancellation — a boot-standing
+	// launch's MaxIterations=-1 means only ctx cancellation ever stops the loop. The tick interval
+	// defaults to 30s (TickSeconds unset), so the deadline fires well before the second tick's
+	// wait would even complete, keeping this test fast and exercising exactly one idle tick.
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	cmd := &RunConstructionCoordinatorCommand{PlayerID: 1, SystemSymbol: testSystem, ContainerID: "construction-coordinator-1", MaxIterations: -1}
+	last, err := handler.Handle(ctx, cmd)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected a standing drain to stop only via context cancellation, got %v", err)
+	}
+
+	resp, ok := last.(*RunConstructionCoordinatorResponse)
+	if !ok {
+		t.Fatalf("expected *RunConstructionCoordinatorResponse, got %T", last)
+	}
+	if resp.NoWorkReason != noWorkNoReadyConstruction {
+		t.Fatalf("expected the idle tick to report %q, got %q", noWorkNoReadyConstruction, resp.NoWorkReason)
+	}
+	if len(shipRepo.claims) != 0 {
+		t.Fatalf("an empty queue must claim no hauler, got %d claims", len(shipRepo.claims))
+	}
+	if len(producer.produceGoods) != 0 || len(producer.deliverCalls) != 0 {
+		t.Fatalf("an empty queue must source/deliver nothing, got produce=%v deliver=%v", producer.produceGoods, producer.deliverCalls)
+	}
+	if activator.calls == 0 {
+		t.Fatal("expected the surviving activator invoked at least once by the idle loop")
 	}
 }

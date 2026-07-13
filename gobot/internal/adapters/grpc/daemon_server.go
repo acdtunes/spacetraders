@@ -655,6 +655,14 @@ func (s *DaemonServer) Start() error {
 		if err := s.RecoverRunningContainers(recoveryCtx); err != nil {
 			fmt.Printf("Warning: Container recovery failed: %v\n", err)
 		}
+
+		// Launch the boot-standing coordinators (sp-382j): unconditional, every boot, regardless
+		// of whether a bootstrapper has ever run. Unlike RecoverRunningContainers above, this is
+		// safely re-runnable every boot — each launch goes through the idempotent EnsureRunning
+		// path (skips if already RUNNING/PENDING), so a container just re-adopted by the recovery
+		// call above is left alone; only a genuinely-never-launched (or previously-stopped)
+		// standing coordinator is started here.
+		s.ensureBootStandingCoordinators(recoveryCtx, s.primaryPlayerID(recoveryCtx))
 	})
 
 	// Start shutdown handler
