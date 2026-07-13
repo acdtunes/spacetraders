@@ -95,24 +95,14 @@ launchd:
 
 # Install rendered plists into ~/Library/LaunchAgents and reload each unit.
 # ORCHESTRATOR-RUN at deploy: this MUTATES the live launchd configuration.
+# Delegates each unit to the SAME hardened scripts/reload-unit.sh as reload-unit
+# (sp-516j) — the old inline loop here carried the identical fail-into-a-down-
+# state bug, so bulk-installing could also strand a service booted-out.
 install-launchd: launchd
-	@uid=$$(id -u); \
-	for f in $(LAUNCHD_OUT)/*.plist; do \
+	@for f in $(LAUNCHD_OUT)/*.plist; do \
 		label=$$(basename "$$f" .plist); \
-		cp "$$f" "$(AGENTS_DIR)/$$label.plist"; \
-		ok=0; \
-		for attempt in 1 2 3; do \
-			launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
-			sleep 1; \
-			if launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist" 2>/dev/null; then ok=1; break; fi; \
-			echo "install-launchd $$label: bootstrap attempt $$attempt hit the launchd I/O race — re-bootout + retry..." >&2; \
-			sleep 2; \
-		done; \
-		if [ $$ok -ne 1 ]; then \
-			echo "install-launchd $$label FAILED after 3 bootstrap attempts (launchd I/O race did not clear)." >&2; \
-			exit 1; \
-		fi; \
-		echo "installed + reloaded $$label"; \
+		LAUNCHD_OUT='$(LAUNCHD_OUT)' AGENTS_DIR='$(AGENTS_DIR)' \
+			./scripts/reload-unit.sh "$$label" || exit $$?; \
 	done
 
 # Assert the freshly-built commit is the one actually running: grep the live
@@ -152,28 +142,22 @@ assert-stamp:
 	fi; \
 	echo "OK: $(LOG) reports commit $(STAMP_COMMIT)"
 
-# Reload ONE launchd unit: copy its plist, bootout, bootstrap, kickstart — with a
-# retry on the flaky "Bootstrap failed: 5: Input/output error" race. launchctl's
-# bootstrap intermittently fails that way right after a bootout; a re-bootout + retry
-# clears it (took the daemon down mid-deploy twice otherwise). usage:
+# Reload ONE launchd unit safely — DIFF-GATED + FAIL-LOUD-BUT-RECOVER (sp-516j).
+# Delegates to scripts/reload-unit.sh so the decision logic (plist-diff gate,
+# poll-until-unloaded, retry/backoff, mandatory running assert) is reviewable and
+# testable in isolation. The old inline loop could `exit 1` while the service was
+# booted-out, taking the PROD daemon down mid-deploy (~3 min unmanaged). It now:
+#   - plist UNCHANGED (common binary-only deploy) -> kickstart in place, NO unload
+#     (the launchd I/O race is structurally impossible on this path);
+#   - plist CHANGED -> install + bootout + bootstrap, retrying with backoff and
+#     NEVER returning until the service is loaded AND running (or a hard deadline
+#     is hit, at which point it fails loudly with the manual recovery command).
+# Protects ALL callers: deploy-daemon / deploy-captain / deploy-routing /
+# deploy-dashboard / deploy-all. usage:
 #   $(MAKE) reload-unit LABEL=com.spacetraders.daemon
 reload-unit:
-	@uid=$$(id -u); \
-	cp "$(LAUNCHD_OUT)/$(LABEL).plist" "$(AGENTS_DIR)/$(LABEL).plist"; \
-	ok=0; \
-	for attempt in 1 2 3; do \
-		launchctl bootout gui/$$uid/$(LABEL) 2>/dev/null || true; \
-		sleep 1; \
-		if launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$(LABEL).plist" 2>/dev/null; then ok=1; break; fi; \
-		echo "reload $(LABEL): bootstrap attempt $$attempt hit the launchd I/O race — re-bootout + retry..." >&2; \
-		sleep 2; \
-	done; \
-	if [ $$ok -ne 1 ]; then \
-		echo "reload $(LABEL) FAILED after 3 bootstrap attempts (launchd I/O race did not clear)." >&2; \
-		exit 1; \
-	fi; \
-	launchctl kickstart -k gui/$$uid/$(LABEL) 2>/dev/null || true; \
-	echo "deployed + restarted $(LABEL)"
+	@LAUNCHD_OUT='$(LAUNCHD_OUT)' AGENTS_DIR='$(AGENTS_DIR)' \
+		./scripts/reload-unit.sh '$(LABEL)'
 
 # --- Deploy targets. Build the stamped binary, install/reload its plist, restart,
 # assert the live stamp. The watchkeeper (captain) is an autonomous LLM session: it
