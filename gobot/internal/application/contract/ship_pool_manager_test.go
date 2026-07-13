@@ -109,14 +109,20 @@ func containsSymbol(symbols []string, want string) bool {
 	return false
 }
 
-// The contract coordinator must treat the command ship as a first-class haul
-// candidate, not a zero-hauler fallback. Before sp-4a4e a 40-cargo COMMAND
-// frigate sat benched for hours whenever any hauler existed, because it only
-// entered the pool when NO haulers existed at all - so a free, fast hull
-// contributed nothing while a light hauler flew oversized legs.
-func TestFindIdleLightHaulers_IncludesIdleCommandShipAlongsideHaulers(t *testing.T) {
-	hauler := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)  // idle, far
-	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 40, 50, 0) // idle, close, command
+// sp-sqq5 (supersedes sp-4a4e's first-class treatment; RULINGS #7): while ANY
+// regular hauler is idle, the command frigate must be HELD OUT of the candidate
+// pool - it hauls only as a last resort. sp-4a4e had made the command ship a
+// first-class candidate that entered the pool alongside idle haulers; the flaw
+// that surfaced (sp-sqq5) is that an undedicated command frigate the captain had
+// deliberately retired via `fleet unassign` was then re-swept back onto
+// contracts by the running coordinator - once stranding a mid-delivery contract.
+// RULINGS #7 ("the command frigate hauls only as last resort") governs: with an
+// idle hauler present, the command ship is excluded; the busy-hauler /
+// no-hauler last-resort cases below prove it is still usable when it is the only
+// option, so this is a CONDITIONAL exclusion, never an absolute ban.
+func TestFindIdleLightHaulers_ExcludesIdleCommandShipWhenHaulerAvailable(t *testing.T) {
+	hauler := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)   // idle, far
+	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 115, 50, 0) // idle, close, command
 	repo := &stubShipRepo{ships: []*navigation.Ship{hauler, command}}
 
 	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
@@ -124,18 +130,19 @@ func TestFindIdleLightHaulers_IncludesIdleCommandShipAlongsideHaulers(t *testing
 		t.Fatalf("FindIdleLightHaulers: %v", err)
 	}
 
-	if !containsSymbol(symbols, "TORWIND-1") {
-		t.Fatalf("command ship TORWIND-1 excluded from candidate pool %v - it is idle and must be a first-class haul candidate, not a benched fallback", symbols)
+	if containsSymbol(symbols, "TORWIND-1") {
+		t.Fatalf("command ship TORWIND-1 must be held out of the pool %v while idle hauler TORWIND-3 is available - RULINGS #7 makes it last-resort only, not a first-class candidate", symbols)
 	}
 	if !containsSymbol(symbols, "TORWIND-3") {
 		t.Fatalf("hauler TORWIND-3 missing from candidate pool %v", symbols)
 	}
 }
 
-// Acceptance (sp-4a4e): with the only hauler busy and the command ship idle, the
-// coordinator must be able to dispatch the command ship - not fall through to an
-// empty pool and wait 5h+ while a 40-cargo hull sits docked. The fallback-only
-// design returned nothing here because a (busy) hauler existed.
+// Acceptance (sp-4a4e, preserved by sp-sqq5's conditional exclusion): with the
+// only hauler busy and the command ship idle, the coordinator must still be able
+// to dispatch the command ship - not fall through to an empty pool and wait 5h+
+// while an idle hull sits docked. No REGULAR hauler is idle here (the only one
+// is busy), so the command frigate is the last resort and enters the pool.
 func TestFindIdleLightHaulers_BusyHauler_IdleCommandShip_CommandIsCandidate(t *testing.T) {
 	hauler := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
 	if err := hauler.AssignToContainer("contract-worker-TORWIND-3", shared.NewRealClock()); err != nil {
@@ -151,6 +158,68 @@ func TestFindIdleLightHaulers_BusyHauler_IdleCommandShip_CommandIsCandidate(t *t
 
 	if len(symbols) != 1 || symbols[0] != "TORWIND-1" {
 		t.Fatalf("expected only the idle command ship [TORWIND-1] as candidate while the hauler is busy, got %v", symbols)
+	}
+}
+
+// ============================================================================
+// RETIRED COMMAND FRIGATE STAYS OUT OF THE RUNNING COORDINATOR POOL (sp-sqq5)
+//
+// A command frigate deliberately retired via `fleet unassign` has its
+// DedicatedFleet tag cleared to "" - it is pinned to no fleet. Before this fix
+// IncludeCommandShip re-admitted it to the contract candidate pool purely by
+// role/symbol (IsCommandHull never consults the tag), so the RUNNING
+// coordinator re-claimed a hull the captain had just pulled off contracts -
+// once stranding a mid-delivery contract into a re-source double-buy, and
+// putting the low-cargo/low-fuel command hull back on contracts against
+// RULINGS #7. The fix keeps the undedicated command frigate OUT of discovery
+// while any regular hauler is idle, yet leaves it usable as the last resort.
+// ============================================================================
+
+// The re-claim vector: an idle, undedicated (fleet-unassign'd) command frigate
+// must NOT re-enter the candidate pool while a regular hauler is idle, and the
+// exclusion must hold across several reconcile ticks - not just the first pass.
+// PROVES RED before the fix (the frigate is re-admitted today).
+func TestCommandHull_FleetUnassigned_NotReclaimedWhileHaulersExist(t *testing.T) {
+	hauler := newCandidateShip(t, "TORWIND-3", "HAULER", 80, 700, 0) // idle regular hauler
+	// Undedicated command frigate (tag cleared by `fleet unassign`), sized to
+	// match the era-2 upgraded frigate's real cargo capacity. FindIdleLightHaulers
+	// applies no cargo-baseline screen to any role - only the generic
+	// CargoCapacity()==0 probe check; the sp-uj6a baseline is a separate,
+	// later, opt-in filter the caller applies AFTER this function returns, so
+	// it is not in play here. This proves the DEDICATION/last-resort path
+	// cleanly, regardless of cargo size.
+	retired := newCandidateShip(t, "TORWIND-1", "COMMAND", 115, 50, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{hauler, retired}}
+
+	for tick := 1; tick <= 3; tick++ {
+		_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
+		if err != nil {
+			t.Fatalf("tick %d: FindIdleLightHaulers: %v", tick, err)
+		}
+		if containsSymbol(symbols, "TORWIND-1") {
+			t.Fatalf("tick %d: retired command frigate TORWIND-1 must stay OUT of the candidate pool %v while hauler TORWIND-3 is idle (RULINGS #7 last-resort) - a `fleet unassign`'d frigate must not be re-swept onto contracts", tick, symbols)
+		}
+		if !containsSymbol(symbols, "TORWIND-3") {
+			t.Fatalf("tick %d: idle hauler TORWIND-3 must remain a candidate, got %v", tick, symbols)
+		}
+	}
+}
+
+// The preserved last-resort path (RULINGS #7: the command frigate CAN haul when
+// it is the ONLY option): with no regular hauler available at all, the command
+// frigate must remain the candidate - benching the only hull would strand the
+// contract. Guards the regression so the fix stays a CONDITIONAL exclusion, not
+// an absolute ban. Stays GREEN across the change.
+func TestCommandHull_LastResort_StillUsableWhenNoOtherHull(t *testing.T) {
+	command := newCandidateShip(t, "TORWIND-1", "COMMAND", 115, 50, 0) // idle, undedicated, and the only hull
+	repo := &stubShipRepo{ships: []*navigation.Ship{command}}
+
+	_, symbols, err := FindIdleLightHaulers(context.Background(), shared.MustNewPlayerID(1), repo, "", IncludeCommandShip)
+	if err != nil {
+		t.Fatalf("FindIdleLightHaulers: %v", err)
+	}
+	if len(symbols) != 1 || symbols[0] != "TORWIND-1" {
+		t.Fatalf("with no regular hauler available the command frigate must remain the last-resort candidate [TORWIND-1], got %v", symbols)
 	}
 }
 

@@ -124,13 +124,101 @@ func contractSpawnCommand() *RunFleetCoordinatorCommand {
 	}
 }
 
+// newCommandFrigateTestShip builds an idle, UNDEDICATED command frigate (role
+// COMMAND, no DedicatedFleet tag) - the shape of a hull deliberately retired via
+// `fleet unassign` (sp-sqq5). 115-cargo matches the era-2 upgraded frigate's
+// real capacity; spawnContractWorker never applies the sp-uj6a cargo baseline
+// (that gate is a separate, later, opt-in filter the caller runs against
+// FindIdleLightHaulers' output, and this handler never calls it), so this
+// exercises the last-resort/dedication path cleanly, regardless of cargo size.
+func newCommandFrigateTestShip(t *testing.T) *navigation.Ship {
+	t.Helper()
+	location, err := shared.NewWaypoint("X1-TEST-A1", 0, 0)
+	if err != nil {
+		t.Fatalf("NewWaypoint: %v", err)
+	}
+	fuel, err := shared.NewFuel(400, 400)
+	if err != nil {
+		t.Fatalf("NewFuel: %v", err)
+	}
+	cargo, err := shared.NewCargo(115, 0, nil)
+	if err != nil {
+		t.Fatalf("NewCargo: %v", err)
+	}
+	ship, err := navigation.NewShip(
+		"TORWIND-1", shared.MustNewPlayerID(1), location, fuel, 400, 115, cargo, 30,
+		"FRAME_FRIGATE", "COMMAND", nil, navigation.NavStatusInOrbit,
+	)
+	if err != nil {
+		t.Fatalf("NewShip: %v", err)
+	}
+	return ship
+}
+
+// sp-sqq5 claim-side backstop: when a regular hauler is available the main loop
+// passes commandDraftAllowed=false, and spawnContractWorker must REFUSE to draft
+// an undedicated command frigate for the contract haul - surfacing the typed
+// ErrCommandFrigateNotLastResort, rolling back the persisted worker container,
+// never claiming the hull, and never starting a worker. This is the atomic
+// single-writer guard behind the discovery-time exclusion: even if discovery
+// ever re-admits a retired frigate alongside a hauler, the frigate is not
+// re-swept onto contracts here.
+func TestSpawnContractWorker_UndedicatedCommandFrigate_NotLastResort_Refused(t *testing.T) {
+	frigate := newCommandFrigateTestShip(t)
+	repo := &spawnContractFakeShipRepo{ship: frigate}
+	daemonClient := &spawnContractFakeDaemonClient{}
+	handler := newContractSpawnHandler(repo, daemonClient)
+
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-1", false)
+	if err == nil {
+		t.Fatalf("expected the undedicated command frigate draft to be refused while a hauler is available")
+	}
+	if !errors.Is(err, ErrCommandFrigateNotLastResort) {
+		t.Fatalf("expected ErrCommandFrigateNotLastResort, got %v", err)
+	}
+	if len(repo.claims) != 0 {
+		t.Fatalf("a refused command-frigate draft must never claim the hull, got %v", repo.claims)
+	}
+	if len(repo.saves) != 0 {
+		t.Fatalf("a refused command-frigate draft must not write the hull, got %v", repo.saves)
+	}
+	if len(daemonClient.started) != 0 {
+		t.Fatalf("a refused command-frigate draft must not start a worker, got %v", daemonClient.started)
+	}
+	if len(daemonClient.stopped) != 1 {
+		t.Fatalf("the persisted worker container must be rolled back exactly once, got %v", daemonClient.stopped)
+	}
+}
+
+// sp-sqq5 last-resort preserved (RULINGS #7: the command frigate CAN haul when
+// it is the ONLY option): with commandDraftAllowed=true (no regular hauler was a
+// candidate), the same undedicated command frigate is drafted normally - the
+// exclusion is conditional, never an absolute ban. Guards the regression.
+func TestSpawnContractWorker_CommandFrigate_LastResort_Drafted(t *testing.T) {
+	frigate := newCommandFrigateTestShip(t)
+	repo := &spawnContractFakeShipRepo{ship: frigate}
+	daemonClient := &spawnContractFakeDaemonClient{}
+	handler := newContractSpawnHandler(repo, daemonClient)
+
+	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-1", true)
+	if err != nil {
+		t.Fatalf("the command frigate must be draftable as a last resort, got error: %v", err)
+	}
+	if claim := repo.lastClaim(t); claim.symbol != "TORWIND-1" || claim.operation != "contract" {
+		t.Fatalf("expected the last-resort command frigate claimed under operation contract, got %+v", claim)
+	}
+	if len(daemonClient.started) != 1 || daemonClient.started[0] != id {
+		t.Fatalf("expected the last-resort worker started, got %v", daemonClient.started)
+	}
+}
+
 func TestSpawnContractWorker_HappyPath_PersistsAssignsStarts(t *testing.T) {
 	ship := newNegotiateTestShip(t, navigation.NavStatusInOrbit)
 	repo := &spawnContractFakeShipRepo{ship: ship}
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3")
+	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
 	if err != nil {
 		t.Fatalf("expected happy path, got error: %v", err)
 	}
@@ -167,7 +255,7 @@ func TestSpawnContractWorker_PersistFails_NothingToRollBack(t *testing.T) {
 	daemonClient := &spawnContractFakeDaemonClient{persistErr: errors.New("db down")}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3")
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
 	if err == nil {
 		t.Fatalf("expected error when persist fails")
 	}
@@ -188,7 +276,7 @@ func TestSpawnContractWorker_ClaimFails_ContainerStoppedNoShipLeak(t *testing.T)
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3")
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
 	if err == nil {
 		t.Fatalf("expected error when claim fails")
 	}
@@ -209,7 +297,7 @@ func TestSpawnContractWorker_StartFails_ShipReleased(t *testing.T) {
 	daemonClient := &spawnContractFakeDaemonClient{startErr: errors.New("start boom")}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3")
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
 	if err == nil {
 		t.Fatalf("expected error when start fails")
 	}
@@ -239,7 +327,7 @@ func TestSpawnContractWorker_CommandPinnedFrigate_RejectedNotPoached(t *testing.
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3")
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
 	if err == nil {
 		t.Fatalf("expected the command-pin dedication to fail the spawn")
 	}

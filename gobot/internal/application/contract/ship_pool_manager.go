@@ -140,7 +140,10 @@ func FindIdleLightHaulers(
 	}
 
 	var idleHaulers []*navigation.Ship
-	var idleHaulerSymbols []string
+
+	// The command frigate is collected separately and admitted only as a LAST
+	// RESORT (sp-sqq5) - see the last-resort merge after the loop.
+	var idleCommandHulls []*navigation.Ship
 
 	// Track whether ANY haul-capable hull exists (regardless of availability),
 	// purely for the discovery log below.
@@ -148,11 +151,9 @@ func FindIdleLightHaulers(
 
 	for _, ship := range allShips {
 		// Candidacy by role. Haulers always qualify. The command ship (role
-		// COMMAND, symbol "*-1") qualifies only when the caller opts in: it
-		// hauls contract legs fine and is often the fastest, largest-cargo hull
-		// owned, so contracts treat it as a first-class candidate (sp-4a4e)
-		// rather than benching it until zero haulers remain. Manufacturing
-		// keeps it reserved by not opting in.
+		// COMMAND, symbol "*-1") qualifies only when the caller opts in
+		// (contracts do; manufacturing keeps it reserved by not opting in), and
+		// even then enters the pool only as a last resort - see the merge below.
 		isCommand := isCommandHull(ship)
 		switch {
 		case isCommand:
@@ -171,7 +172,11 @@ func FindIdleLightHaulers(
 		// finds its own dedicated ships separately via FindIdleShipsByFleet.
 		// This is layer 1 of the two-layer dedication enforcement (sp-l7h2): a
 		// cheap read-side pre-filter. Layer 2 - the correctness guarantee - is
-		// the atomic dedication check inside ShipRepository.ClaimShip.
+		// the atomic dedication check inside ShipRepository.ClaimShip. This is
+		// also what makes the sp-sqq5 last-resort rule below apply to exactly the
+		// UNDEDICATED command frigate: a command hull the captain pinned with
+		// `fleet assign --fleet contract` carries the tag and is routed to the
+		// coordinator's own FindIdleShipsByFleet lookup instead of here.
 		if ship.DedicatedFleet() != "" {
 			continue
 		}
@@ -203,21 +208,52 @@ func FindIdleLightHaulers(
 		}
 
 		// Only idle ships (no active assignment). Ship.IsIdle() checks the
-		// embedded assignment state.
-		if ship.IsIdle() {
+		// embedded assignment state. The command frigate is held back into its
+		// own bucket so it can be admitted last-resort-only below.
+		if !ship.IsIdle() {
+			continue
+		}
+		if isCommand {
+			idleCommandHulls = append(idleCommandHulls, ship)
+		} else {
 			idleHaulers = append(idleHaulers, ship)
-			idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 		}
 	}
 
+	// LAST-RESORT COMMAND FRIGATE (sp-sqq5, RULINGS #7: "the command frigate
+	// hauls only as last resort"). An undedicated command hull - including one
+	// deliberately RETIRED via `fleet unassign` (tag cleared to "") - is admitted
+	// to the candidate pool ONLY when no regular hauler is idle. This stops the
+	// RUNNING contract coordinator from re-sweeping a retired frigate back onto
+	// contracts while haulers exist (the sp-sqq5 defect: a re-claim that stranded
+	// a mid-delivery contract and put the low-cargo/low-fuel command hull on
+	// contracts), WITHOUT benching it when it is the only hull available. The
+	// exclusion is therefore CONDITIONAL, never an absolute ban: with zero idle
+	// haulers the frigate is the last resort and enters the pool (preserving the
+	// sp-4a4e "don't idle a usable hull for 5h" guarantee). Discovery makes the
+	// last-resort decision because only here is the whole idle fleet visible; the
+	// spawn-side claim guard (spawnContractWorker) is the single-writer backstop.
+	commandAdmittedLastResort := false
+	if len(idleHaulers) == 0 && len(idleCommandHulls) > 0 {
+		idleHaulers = append(idleHaulers, idleCommandHulls...)
+		commandAdmittedLastResort = true
+	}
+
+	idleHaulerSymbols := make([]string, 0, len(idleHaulers))
+	for _, ship := range idleHaulers {
+		idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
+	}
+
 	logger.Log("INFO", "Idle light haulers discovered", map[string]interface{}{
-		"action":                "find_idle_haulers",
-		"total_ships":           len(allShips),
-		"candidate_ships_exist": candidateShipsExist,
-		"include_command_ship":  policy == IncludeCommandShip,
-		"system_filter":         systemFilter,
-		"idle_haulers":          len(idleHaulers),
-		"hauler_symbols":        idleHaulerSymbols,
+		"action":                       "find_idle_haulers",
+		"total_ships":                  len(allShips),
+		"candidate_ships_exist":        candidateShipsExist,
+		"include_command_ship":         policy == IncludeCommandShip,
+		"system_filter":                systemFilter,
+		"idle_haulers":                 len(idleHaulers),
+		"hauler_symbols":               idleHaulerSymbols,
+		"command_hulls_held":           len(idleCommandHulls),
+		"command_admitted_last_resort": commandAdmittedLastResort,
 	})
 
 	return idleHaulers, idleHaulerSymbols, nil

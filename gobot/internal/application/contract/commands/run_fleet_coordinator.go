@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -705,7 +706,17 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			}
 		}
 
-		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip)
+		// sp-sqq5 last-resort verdict for the claim-side guard: the command
+		// frigate may be drafted for this leg only when NO regular hauler was an
+		// idle candidate this pass. Discovery (FindIdleLightHaulers) already holds
+		// an undedicated/retired frigate out of the pool while any regular hauler
+		// is idle, so in normal operation this is true exactly when the frigate is
+		// the sole candidate; if a future change ever re-admits it alongside a
+		// hauler, the verdict is false and spawnContractWorker refuses the draft
+		// rather than re-sweeping the retired frigate onto contracts (RULINGS #7).
+		commandDraftAllowed := !hasRegularHaulerCandidate(generalShipEntities)
+
+		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip, commandDraftAllowed)
 		if err != nil {
 			logger.Log("ERROR", err.Error(), nil)
 			result.Errors = append(result.Errors, err.Error())
@@ -772,6 +783,26 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 // dedicatedFleetContract is the Ship.DedicatedFleet() value this coordinator
 // reconciles its --dedicated-ships list into (sp-snmb).
 const dedicatedFleetContract = "contract"
+
+// ErrCommandFrigateNotLastResort is returned by spawnContractWorker when it
+// refuses to draft an UNDEDICATED command frigate for a contract haul because a
+// regular hauler is available (RULINGS #7: the command frigate hauls only as a
+// last resort, sp-sqq5). A sentinel so callers/tests can distinguish this
+// deliberate policy refusal from a transient spawn failure via errors.Is.
+var ErrCommandFrigateNotLastResort = errors.New("command frigate not drafted for contract haul: regular haulers available (last-resort only)")
+
+// hasRegularHaulerCandidate reports whether any candidate is a non-command hull
+// (a regular hauler). The main loop uses it to compute the command frigate's
+// last-resort verdict for the claim-side guard (sp-sqq5): a regular hauler among
+// the discovered candidates means the frigate is NOT the last resort.
+func hasRegularHaulerCandidate(candidates []*navigation.Ship) bool {
+	for _, ship := range candidates {
+		if !domainContract.IsCommandHull(ship) {
+			return true
+		}
+	}
+	return false
+}
 
 // DedicatedFleetSeedMarker durably records that this coordinator has applied its
 // --dedicated-ships launch seed ONCE (sp-86vb), so a later daemon-restart rebuild
@@ -1050,7 +1081,10 @@ func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
 		return ""
 	}
 
-	workerContainerID, err := h.spawnContractWorker(ctx, cmd, shipSymbol)
+	// A resume is never a fresh last-resort decision: the frigate (if this hull
+	// is the command frigate) was already mid-contract, so re-orphaning it is the
+	// strand sp-sqq5 fixes. Always authorize the command draft here.
+	workerContainerID, err := h.spawnContractWorker(ctx, cmd, shipSymbol, true)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to re-adopt in-flight delivery for ship %s (falling back to discovery): %v", shipSymbol, err), nil)
 		return ""
@@ -1064,10 +1098,19 @@ func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
 	return workerContainerID
 }
 
+// spawnContractWorker persists, claims, and starts a contract-workflow worker on
+// selectedShip. commandDraftAllowed authorizes drafting the command frigate for
+// this leg (sp-sqq5): a FRESH draft from the main loop passes the last-resort
+// verdict (true only when no regular hauler is an idle candidate), while a
+// RESUME of an interrupted delivery (readoptInterruptedDeliveries) always passes
+// true — re-orphaning a mid-delivery frigate is the exact strand this bead
+// closes. The value governs only an UNDEDICATED command frigate; every regular
+// hull and every contract-dedicated command hull is unaffected.
 func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,
 	selectedShip string,
+	commandDraftAllowed bool,
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1090,6 +1133,28 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 	if err != nil {
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("Failed to load ship %s: %v", selectedShip, err)
+	}
+
+	// sp-sqq5 (claim-side last-resort backstop, RULINGS #7): refuse to draft an
+	// UNDEDICATED command frigate for a contract haul unless it is a genuine last
+	// resort. Discovery (FindIdleLightHaulers) already holds a retired/`fleet
+	// unassign`'d frigate out of the pool while any regular hauler is idle; this
+	// is the single-writer backstop at the claim itself, so even a discovery
+	// regression cannot silently re-sweep the frigate onto contracts (the sp-sqq5
+	// defect: a re-claim that stranded a mid-delivery contract). A
+	// contract-DEDICATED command hull (tag "contract") is a legitimate fleet
+	// member and passes untouched; a resume (readopt) passes commandDraftAllowed
+	// =true so a mid-delivery frigate is never re-orphaned. Rolled back exactly
+	// like a rejected claim — no ship write, no worker started.
+	if !commandDraftAllowed && ship.DedicatedFleet() == "" && domainContract.IsCommandHull(ship) {
+		logger.Log("INFO", fmt.Sprintf(
+			"Refusing to draft undedicated command frigate %s for a contract haul while a regular hauler is available — command frigate hauls only as last resort (RULINGS #7)", selectedShip),
+			map[string]interface{}{
+				"action":      "skipped:command_frigate_not_last_resort",
+				"ship_symbol": selectedShip,
+			})
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("refusing to draft undedicated command frigate %s for a contract haul: %w", selectedShip, ErrCommandFrigateNotLastResort)
 	}
 
 	// Atomic claim (sp-lprs, l7h2 Phase 2.5): assignment AND fleet dedication are
