@@ -6,9 +6,10 @@ import "context"
 type contextKey int
 
 const (
-	operationContextKey  contextKey = iota
-	skipMarketRefreshKey            // Skip market refresh after cargo transactions (optimization)
-	selectorBranchKey               // Factory input-source selector branch, tagged onto the buy's ledger row (sp-br0m)
+	operationContextKey   contextKey = iota
+	skipMarketRefreshKey             // Skip market refresh after cargo transactions (optimization)
+	selectorBranchKey                // Factory input-source selector branch, tagged onto the buy's ledger row (sp-br0m)
+	constructionSupplyKey            // Marks a ProduceGood run as construction supply, exempt from resale-margin guards (sp-qmp8)
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -126,6 +127,30 @@ func SkipMarketRefreshFromContext(ctx context.Context) bool {
 		return skip
 	}
 	return false
+}
+
+// WithConstructionSupply marks the context as a construction-supply production run (sp-qmp8).
+// The construction drain stamps it before driving ProduceGood so the shared engine sources a
+// gate material by FABRICATION (buy inputs → feed factory → harvest output) and then delivers
+// the harvested output to the construction site.
+//
+// Construction output is delivered to the gate, NEVER resold at a market, so the RESALE-margin
+// guards (the sp-iv65 chain-margin gate and the bp6f #3 crushed-sink harvest guard) do not apply
+// — those guards already exempt the old inputs-only construction model, and this flag extends the
+// same exemption to the new harvest-into-hauler model. It scopes out ONLY the resale-margin
+// checks: every INPUT buy still passes through the full money-guard stack (working-capital floor
+// sp-9aoc, concurrent spend cap sp-w3he, input price ceiling sp-iv65), which is unchanged
+// (RULINGS #4 — input buys still go through the guard stack).
+func WithConstructionSupply(ctx context.Context) context.Context {
+	return context.WithValue(ctx, constructionSupplyKey, true)
+}
+
+// ConstructionSupplyFromContext reports whether the context was marked as a construction-supply
+// run by WithConstructionSupply. Absent (the default for every factory/tour/arb caller) it
+// returns false, leaving the resale-margin guards fully in force for resale production.
+func ConstructionSupplyFromContext(ctx context.Context) bool {
+	supply, ok := ctx.Value(constructionSupplyKey).(bool)
+	return ok && supply
 }
 
 // WithSelectorBranch stamps the a5j7 input-source selector's branch (ELIGIBLE | RESCUE |

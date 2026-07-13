@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -12,12 +11,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
-
-// errMaterialUnsourceable is an internal sentinel signalling that a material (or
-// one of its fabrication inputs) has no market with acceptable supply right now.
-// It is never returned to callers: planMaterial converts it into a DEFERRED task
-// so an unsourceable material never fails the whole pipeline.
-var errMaterialUnsourceable = errors.New("material not sourceable at current supply")
 
 // ConstructionPipelinePlanner creates and manages construction pipelines.
 // It handles:
@@ -478,10 +471,18 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 	return []*manufacturing.ManufacturingTask{deferredTask}, true, nil
 }
 
-// planFabrication stages the fabrication chain for targetGood into a local task
-// list. ok=false (with a nil error) means a factory or an input is not sourceable
-// right now, so the whole material should be deferred rather than partially
-// planned. Only infrastructure failures are returned as errors.
+// planFabrication stages the fabrication of targetGood as a SINGLE dependency-free
+// DELIVER_TO_CONSTRUCTION task carrying the factory (sp-qmp8). ok=false (with a nil error) means
+// a factory or an input is not sourceable right now, so the whole material should be deferred
+// rather than partially planned. Only infrastructure failures are returned as errors.
+//
+// It does NOT stage separate ACQUIRE_DELIVER input legs. The construction drain executes the
+// delivery task by driving ProduceGood(Fabricate) on the shared engine, which buys the inputs,
+// feeds the factory, and harvests the output itself — one engine (the sp-jav2 regression restore).
+// Staging input legs here would only create a dependency the thin drain never satisfies, blocking
+// the delivery task forever (the exact orphaned-legs state this bead fixes). The buy-vs-produce
+// DECISION is unchanged: planMaterial still fabricates only a non-buyable good within the depth
+// ceiling; this method only stops decomposing that decision into legs.
 func (p *ConstructionPipelinePlanner) planFabrication(
 	ctx context.Context,
 	pipelineID string,
@@ -503,122 +504,30 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 		return nil, false, nil
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, 0, len(inputs)+1)
-	inputTaskIDs := make([]string, 0, len(inputs))
+	// Every immediate input must be buyable NOW, or the drain cannot feed the factory this
+	// pass — defer the whole material (the SupplyMonitor re-sources it when supply regenerates).
+	// This mirrors the sourceability gate the old per-input staging enforced, minus the task
+	// creation: the drain's ProduceGood(Fabricate) buys these inputs directly (one-level
+	// fabrication), so verifying the immediate inputs is the feasibility check that matches how
+	// the drain executes.
 	for _, input := range inputs {
-		ids, serr := p.stageInput(ctx, &tasks, pipelineID, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID)
-		if serr != nil {
-			if errors.Is(serr, errMaterialUnsourceable) {
-				return nil, false, nil // an input is unsourceable - defer whole material
-			}
-			return nil, false, serr
+		src, serr := p.marketLocator.FindExportMarketBySupplyPriority(ctx, input, systemSymbol, playerID)
+		if serr != nil || src == nil {
+			return nil, false, nil // an input is unsourceable - defer whole material
 		}
-		inputTaskIDs = append(inputTaskIDs, ids...)
 	}
 
-	// Collect the fabricated good from the factory and deliver it to construction.
+	// A single dependency-free DELIVER_TO_CONSTRUCTION task carrying the factory: the drain
+	// fabricates the good there and delivers it to the site. No input-leg dependencies, so it
+	// becomes READY the moment the pipeline starts.
 	deliverTask := manufacturing.NewDeliverToConstructionTask(
 		pipelineID, playerID, targetGood,
-		"",                     // sourceMarket (collecting from factory, not buying)
+		"",                     // sourceMarket (fabricated at the factory, not bought)
 		factory.WaypointSymbol, // factorySymbol
 		constructionSite,
-		inputTaskIDs, // depends on the input deliveries
+		nil, // no input-leg dependencies — ProduceGood(Fabricate) sources the inputs
 	)
-	tasks = append(tasks, deliverTask)
-	return tasks, true, nil
-}
-
-// stageInput stages the acquisition of a single fabrication input. Within the
-// depth ceiling it either buys the input directly (raw, or depth >= 2 "buy
-// intermediates") or recurses to produce it. Returns errMaterialUnsourceable
-// when the input cannot be sourced.
-func (p *ConstructionPipelinePlanner) stageInput(
-	ctx context.Context,
-	tasks *[]*manufacturing.ManufacturingTask,
-	pipelineID string,
-	input string,
-	systemSymbol string,
-	factorySymbol string,
-	supplyChainDepth int,
-	playerID int,
-) ([]string, error) {
-	if goods.IsRawMaterial(input) || supplyChainDepth >= 2 {
-		id, err := p.stageAcquireDeliver(ctx, tasks, pipelineID, input, systemSymbol, factorySymbol, playerID)
-		if err != nil {
-			return nil, err
-		}
-		return []string{id}, nil
-	}
-	// depth < 2: produce the input from its own inputs (recurse).
-	return p.stageProduction(ctx, tasks, pipelineID, input, systemSymbol, factorySymbol, supplyChainDepth, playerID)
-}
-
-// stageAcquireDeliver stages an ACQUIRE_DELIVER task to buy an input from an
-// export market and deliver it to a factory. Returns errMaterialUnsourceable
-// when no market with acceptable supply exists.
-func (p *ConstructionPipelinePlanner) stageAcquireDeliver(
-	ctx context.Context,
-	tasks *[]*manufacturing.ManufacturingTask,
-	pipelineID string,
-	good string,
-	systemSymbol string,
-	factorySymbol string,
-	playerID int,
-) (string, error) {
-	market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, playerID)
-	if err != nil || market == nil {
-		return "", errMaterialUnsourceable
-	}
-	task := manufacturing.NewAcquireDeliverTask(pipelineID, playerID, good, market.WaypointSymbol, factorySymbol, nil)
-	*tasks = append(*tasks, task)
-	return task.ID(), nil
-}
-
-// stageProduction recursively stages the tasks to produce an intermediate good
-// and deliver it to deliveryDestination. Returns errMaterialUnsourceable when
-// any factory or input in the chain is not sourceable.
-func (p *ConstructionPipelinePlanner) stageProduction(
-	ctx context.Context,
-	tasks *[]*manufacturing.ManufacturingTask,
-	pipelineID string,
-	good string,
-	systemSymbol string,
-	deliveryDestination string,
-	supplyChainDepth int,
-	playerID int,
-) ([]string, error) {
-	inputs := goods.GetRequiredInputs(good)
-	if len(inputs) == 0 {
-		// Raw material - buy and deliver directly.
-		id, err := p.stageAcquireDeliver(ctx, tasks, pipelineID, good, systemSymbol, deliveryDestination, playerID)
-		if err != nil {
-			return nil, err
-		}
-		return []string{id}, nil
-	}
-
-	factory, ferr := p.marketLocator.FindFactoryForProduction(ctx, good, inputs, systemSymbol, playerID)
-	if ferr != nil {
-		return nil, errMaterialUnsourceable
-	}
-
-	inputTaskIDs := make([]string, 0, len(inputs))
-	for _, input := range inputs {
-		ids, err := p.stageInput(ctx, tasks, pipelineID, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID)
-		if err != nil {
-			return nil, err
-		}
-		inputTaskIDs = append(inputTaskIDs, ids...)
-	}
-
-	collectTask := manufacturing.NewAcquireDeliverTask(
-		pipelineID, playerID, good,
-		factory.WaypointSymbol, // collect from this factory
-		deliveryDestination,    // deliver to next factory or construction site
-		inputTaskIDs,           // wait for inputs
-	)
-	*tasks = append(*tasks, collectTask)
-	return []string{collectTask.ID()}, nil
+	return []*manufacturing.ManufacturingTask{deliverTask}, true, nil
 }
 
 // extractSystemSymbol extracts system from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5").

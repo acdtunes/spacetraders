@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // sp-iv65 fix-shape, 2nd half — the chain-level negative-margin gate. Even below the
@@ -217,5 +218,55 @@ func TestFabricateGood_ChainMargin_InputsOnlyBypassesGate(t *testing.T) {
 	_, _ = executor.ProduceGood(ctx, shipRepo.buildShip(), cgChain(), cgSystem, 1, nil, true)
 	if spendFloorWarnContains(logger.entriesWithLevel("WARNING"), "refusing the input round") {
 		t.Fatalf("inputs-only must bypass the resale negative-margin gate, but it fired: %+v", logger.entriesWithLevel("WARNING"))
+	}
+}
+
+// sp-qmp8: the construction-supply drive harvests the output INTO the hauler (inputsOnly=false)
+// and delivers it to the gate — never resells it — so the resale negative-margin gate must be
+// scoped out even though inputsOnly is false, signalled by WithConstructionSupply. Without this
+// scoping, an underwater resale bid would wrongly park the gate fill (the regression this bead
+// fixes, via a different park reason). The INPUT buys still pass the money-guard stack; here we
+// only assert the resale gate did not fire.
+func TestFabricateGood_ChainMargin_ConstructionSupplyBypassesGate(t *testing.T) {
+	repo := &chainGateMarketRepo{sinkBid: 7500, fabAsk: 7000, inputAsks: map[string]int{cgInput1: 19000, cgInput2: 18700}}
+	executor, shipRepo, _ := newChainGateExecutor(t, repo)
+	logger := &dwellCapturingLogger{}
+	ctx := shared.WithConstructionSupply(common.WithLogger(context.Background(), logger))
+
+	// inputsOnly=false (harvest into hauler) BUT construction-supply: the resale gate must be
+	// skipped. Its park WARNING carries the unique phrase "refusing the input round".
+	_, _ = executor.ProduceGood(ctx, shipRepo.buildShip(), cgChain(), cgSystem, 1, nil, false)
+	if spendFloorWarnContains(logger.entriesWithLevel("WARNING"), "refusing the input round") {
+		t.Fatalf("construction supply must bypass the resale negative-margin gate, but it fired: %+v", logger.entriesWithLevel("WARNING"))
+	}
+}
+
+// sp-qmp8 (RULINGS #4): construction supply scopes out ONLY the resale-margin guards — the INPUT
+// buys must STILL pass the money-guard stack. Driving the real fabricate path under construction
+// supply with a live treasury below the working-capital reserve, the input purchase must be
+// PARKED by the sp-9aoc spend floor (not spent blind). Proves the fabricate input legs the drain
+// now sources are money-guarded exactly like every other factory input buy.
+func TestFabricateGood_ConstructionSupply_InputBuysStillMoneyGuarded(t *testing.T) {
+	repo := &chainGateMarketRepo{sinkBid: 7500, fabAsk: 7000, inputAsks: map[string]int{cgInput1: 19000, cgInput2: 18700}}
+	shipRepo := &dockRaceShipRepo{location: dockRaceOrigin, navStatus: navigation.NavStatusDocked, cargoCapacity: 40}
+	mediator := &dockRaceMediator{repo: shipRepo, dockHandler: tactics.NewDockShipHandler(shipRepo)}
+	marketLocator := NewMarketLocator(repo, nil, nil, nil)
+	// Live treasury 40000 < 50000 reserve → every input buy breaches. apiClient WIRED so the
+	// working-capital floor is ACTIVE (the shared chainGate helper leaves it nil/disabled).
+	executor := NewProductionExecutorWithConfig(
+		mediator, shipRepo, repo, marketLocator, &dockRaceClock{}, []time.Duration{time.Millisecond},
+		&spendFloorFakeAPIClient{credits: 40000},
+	)
+	logger := &dwellCapturingLogger{}
+	ctx := shared.WithConstructionSupply(common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-QMP8"), logger))
+
+	_, _ = executor.ProduceGood(ctx, shipRepo.buildShip(), cgChain(), cgSystem, 1, nil, false)
+
+	warns := logger.entriesWithLevel("WARNING")
+	if !spendFloorWarnContains(warns, "working-capital reserve") {
+		t.Fatalf("construction-supply input buys must still be gated by the working-capital floor, got: %+v", warns)
+	}
+	if !spendFloorWarnContains(warns, cgInput1) && !spendFloorWarnContains(warns, cgInput2) {
+		t.Fatalf("expected the spend-floor park to name a fabrication input (%s/%s), got: %+v", cgInput1, cgInput2, warns)
 	}
 }

@@ -28,18 +28,22 @@ const constructionSiteWP = "X1-TEST-GATE"
 // live executor (nav/market/API). *mfgServices.ProductionExecutor satisfies the
 // same ConstructionProducer interface in production.
 type fakeConstructionProducer struct {
-	acquire      int // QuantityAcquired ProduceGood reports (0 models a dry/no-source market)
-	delivered    int // units DeliverToConstructionSite reports the site accepted
-	produceGoods []string
-	deliverCalls []producerDeliverCall
-	produceErr   error
-	deliverErr   error
+	acquire       int // QuantityAcquired ProduceGood reports (0 models a dry/no-source market)
+	delivered     int // units DeliverToConstructionSite reports the site accepted
+	produceGoods  []string
+	produceNodes  []*goods.SupplyChainNode // full node captured per call (acquisition method + children)
+	produceCtxCon []bool                   // whether the ProduceGood ctx was marked construction-supply
+	deliverCalls  []producerDeliverCall
+	produceErr    error
+	deliverErr    error
 }
 
 type producerDeliverCall struct{ ship, good, site string }
 
-func (p *fakeConstructionProducer) ProduceGood(_ context.Context, _ *navigation.Ship, node *goods.SupplyChainNode, _ string, _ int, _ *shared.OperationContext, _ bool) (*mfgServices.ProductionResult, error) {
+func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigation.Ship, node *goods.SupplyChainNode, _ string, _ int, _ *shared.OperationContext, _ bool) (*mfgServices.ProductionResult, error) {
 	p.produceGoods = append(p.produceGoods, node.Good)
+	p.produceNodes = append(p.produceNodes, node)
+	p.produceCtxCon = append(p.produceCtxCon, shared.ConstructionSupplyFromContext(ctx))
 	if p.produceErr != nil {
 		return nil, p.produceErr
 	}
@@ -236,6 +240,89 @@ func TestConstructionDrain_SuppliesReadyTask(t *testing.T) {
 	}
 	if resp.TasksDrained != 1 {
 		t.Fatalf("expected TasksDrained=1, got %d", resp.TasksDrained)
+	}
+}
+
+// sp-qmp8 (regression restore) — a FABRICATE-planned material (the DELIVER_TO_CONSTRUCTION task
+// carries a factory) is sourced by PRODUCTION, not a market buy of the final good: the drain
+// drives ProduceGood with an AcquisitionFabricate node whose children are the good's immediate
+// inputs (each a market BUY), so the shared engine buys inputs → feeds the factory → harvests the
+// output into the hauler, which is then delivered to the site. It also marks the run as
+// construction supply so the engine's resale-margin guards are scoped out.
+func TestConstructionDrain_FabricatePlannedMaterial_ProducesViaFabricateNode(t *testing.T) {
+	const factoryWP = "X1-TEST-FACTORY"
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	// FactorySymbol set, no source market: the planner chose fabrication.
+	task := manufacturing.NewDeliverToConstructionTask(pipeline.ID(), 1, "FAB_MATS", "", factoryWP, constructionSiteWP, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	if err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(producer.produceNodes) != 1 {
+		t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.produceNodes))
+	}
+	node := producer.produceNodes[0]
+	if node.Good != "FAB_MATS" || node.AcquisitionMethod != goods.AcquisitionFabricate {
+		t.Fatalf("expected a FABRICATE node for FAB_MATS (NOT a market buy of the final good), got good=%s method=%s", node.Good, node.AcquisitionMethod)
+	}
+	// Children are the immediate inputs, each a market BUY — the engine sources these itself.
+	gotInputs := map[string]goods.AcquisitionMethod{}
+	for _, c := range node.Children {
+		gotInputs[c.Good] = c.AcquisitionMethod
+	}
+	for _, want := range []string{"IRON", "QUARTZ_SAND"} {
+		if gotInputs[want] != goods.AcquisitionBuy {
+			t.Fatalf("expected input %s to be a BUY child of the fabricate node, got children %+v", want, node.Children)
+		}
+	}
+	if !producer.produceCtxCon[0] {
+		t.Fatal("expected the ProduceGood run marked as construction supply (resale-margin guards scoped out)")
+	}
+	if len(producer.deliverCalls) != 1 || producer.deliverCalls[0].good != "FAB_MATS" || producer.deliverCalls[0].site != constructionSiteWP {
+		t.Fatalf("expected the harvested FAB_MATS delivered to the site, got %+v", producer.deliverCalls)
+	}
+	if resp.TasksDrained != 1 {
+		t.Fatalf("expected TasksDrained=1, got %d", resp.TasksDrained)
+	}
+}
+
+// sp-qmp8 (non-regression) — a BUYABLE material (the planner resolved a source market, no
+// factory) still uses a direct AcquisitionBuy of the final good: the fabricate path must not
+// change how buyable materials are sourced.
+func TestConstructionDrain_BuyableMaterial_UsesBuyNode(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS") // source market set, factory ""
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(producer.produceNodes) != 1 {
+		t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.produceNodes))
+	}
+	node := producer.produceNodes[0]
+	if node.AcquisitionMethod != goods.AcquisitionBuy {
+		t.Fatalf("a buyable material must use AcquisitionBuy, got %s", node.AcquisitionMethod)
+	}
+	if len(node.Children) != 0 {
+		t.Fatalf("a direct buy node must have no fabrication children, got %+v", node.Children)
 	}
 }
 

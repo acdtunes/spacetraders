@@ -683,9 +683,12 @@ func (e *ProductionExecutor) fabricateGood(
 	// output's resale bid — even when no single input trips the per-buy ceiling. Scoped to
 	// resale runs (inputs-only construction supply has no resale sink and is governed by the
 	// construction pipeline's own economics + the bp6f #3 harvest guard), mirroring the
-	// coordinator ChainMarginGuard's scope. Parks with a zero-spend result like the other
-	// recoverable-condition returns in this file.
-	if !inputsOnly && len(node.Children) > 0 && e.inputRoundMarginParked(ctx, node, systemSymbol, playerID) {
+	// coordinator ChainMarginGuard's scope. sp-qmp8 extends that scoping to the new
+	// harvest-into-hauler construction model: a construction-supply run delivers its output to
+	// the gate, never resells it, so a resale-margin veto would wrongly park the gate fill. The
+	// INPUT buys below still pass the full money-guard stack (RULINGS #4). Parks with a
+	// zero-spend result like the other recoverable-condition returns in this file.
+	if !inputsOnly && !shared.ConstructionSupplyFromContext(ctx) && len(node.Children) > 0 && e.inputRoundMarginParked(ctx, node, systemSymbol, playerID) {
 		return &ProductionResult{
 			QuantityAcquired: 0,
 			TotalCost:        0,
@@ -886,22 +889,31 @@ func (e *ProductionExecutor) PollForProduction(
 			// factory's own ask). Fail OPEN (harvest anyway) if no sink can be found at
 			// all - that's normal for goods with no direct resale market, not a signal
 			// to stop production.
-			if sink, sinkErr := e.marketLocator.FindImportMarket(ctx, good, systemSymbol, playerID.Value()); sinkErr == nil && sink != nil {
-				harvestCost := tradeGood.SellPrice()
-				if sink.Price < harvestCost {
-					logger.Log("WARNING", fmt.Sprintf(
-						"Parking %s at %s: crushed sink - resale bid %d at %s is below harvest cost %d, producing would lose money",
-						good, waypointSymbol, sink.Price, sink.WaypointSymbol, harvestCost,
-					), map[string]interface{}{
-						"action":       "factory_parked",
-						"reason":       "crushed_sink",
-						"good":         good,
-						"waypoint":     waypointSymbol,
-						"sink":         sink.WaypointSymbol,
-						"sink_bid":     sink.Price,
-						"harvest_cost": harvestCost,
-					})
-					return 0, 0, nil
+			//
+			// sp-qmp8: a construction-supply harvest delivers its output to the jump-gate
+			// site, NOT to a resale sink, so this resale-margin guard does not apply — skip
+			// straight to the harvest. The construction pipeline's own economics govern the
+			// gate fill (the Admiral's primary objective), and the INPUT buys already passed
+			// the full money-guard stack (RULINGS #4). Without this a market that happens to
+			// import the gate material at a crushed bid would wrongly park the gate fill.
+			if !shared.ConstructionSupplyFromContext(ctx) {
+				if sink, sinkErr := e.marketLocator.FindImportMarket(ctx, good, systemSymbol, playerID.Value()); sinkErr == nil && sink != nil {
+					harvestCost := tradeGood.SellPrice()
+					if sink.Price < harvestCost {
+						logger.Log("WARNING", fmt.Sprintf(
+							"Parking %s at %s: crushed sink - resale bid %d at %s is below harvest cost %d, producing would lose money",
+							good, waypointSymbol, sink.Price, sink.WaypointSymbol, harvestCost,
+						), map[string]interface{}{
+							"action":       "factory_parked",
+							"reason":       "crushed_sink",
+							"good":         good,
+							"waypoint":     waypointSymbol,
+							"sink":         sink.WaypointSymbol,
+							"sink_bid":     sink.Price,
+							"harvest_cost": harvestCost,
+						})
+						return 0, 0, nil
+					}
 				}
 			}
 

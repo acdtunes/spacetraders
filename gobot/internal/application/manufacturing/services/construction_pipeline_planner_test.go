@@ -714,6 +714,13 @@ func TestStartOrResume_BuyableMaterialBoughtEvenAtDepth2(t *testing.T) {
 // Per-material depth ceiling (sp-r900): a material that is NOT buyable but IS
 // fabricable from sourceable inputs must be fabricated within the depth ceiling.
 // MACHINERY (not sold at MODERATE+) is fabricated from IRON (ABUNDANT) at depth 2.
+//
+// sp-qmp8: fabrication is now staged as a SINGLE dependency-free DELIVER_TO_CONSTRUCTION
+// task carrying the factory — NO separate ACQUIRE_DELIVER input legs. The construction drain
+// drives ProduceGood(Fabricate), which buys the inputs, feeds the factory, and harvests the
+// output itself (one engine). The planner still DECIDES to fabricate (it verifies the factory
+// exists and every input is sourceable) but does not decompose that into orphan-able legs. The
+// dependency-free task must be READY immediately so the drain can pick it up.
 func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.T) {
 	const factoryWp = "X1-PZ28-FAC"
 	const ironWp = "X1-PZ28-IRN"
@@ -749,13 +756,15 @@ func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.
 		t.Fatalf("StartOrResume must fabricate a fabricable-only material: %v", err)
 	}
 
-	ironAcquire := findTaskByGood(result.Pipeline, "IRON")
-	if ironAcquire == nil || ironAcquire.TaskType() != manufacturing.TaskTypeAcquireDeliver {
-		t.Fatalf("expected an ACQUIRE_DELIVER task for the IRON input, got %+v", ironAcquire)
+	// Exactly one task: the fabricate delivery. No ACQUIRE_DELIVER legs are staged — the drain
+	// sources inputs itself via ProduceGood(Fabricate).
+	if got := result.Pipeline.TaskCount(); got != 1 {
+		t.Fatalf("expected exactly 1 DELIVER_TO_CONSTRUCTION task (no input legs), got %d", got)
 	}
-	if ironAcquire.SourceMarket() != ironWp || ironAcquire.FactorySymbol() != factoryWp {
-		t.Errorf("expected IRON acquired from %s and delivered to factory %s, got source=%s factory=%s",
-			ironWp, factoryWp, ironAcquire.SourceMarket(), ironAcquire.FactorySymbol())
+	for _, tk := range result.Pipeline.Tasks() {
+		if tk.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			t.Fatalf("fabrication must NOT stage separate ACQUIRE_DELIVER legs anymore (sp-qmp8), got one for %s", tk.Good())
+		}
 	}
 
 	machineryDeliver := findTaskByGood(result.Pipeline, "MACHINERY")
@@ -763,10 +772,70 @@ func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.
 		t.Fatalf("expected a DELIVER_TO_CONSTRUCTION task for MACHINERY, got %+v", machineryDeliver)
 	}
 	if machineryDeliver.FactorySymbol() != factoryWp {
-		t.Errorf("expected MACHINERY collected from factory %s, got %s", factoryWp, machineryDeliver.FactorySymbol())
+		t.Errorf("expected MACHINERY fabricated at factory %s, got %s", factoryWp, machineryDeliver.FactorySymbol())
+	}
+	if machineryDeliver.SourceMarket() != "" {
+		t.Errorf("a fabricate task must carry no source market (it is produced, not bought), got %q", machineryDeliver.SourceMarket())
 	}
 	if machineryDeliver.IsDeferredConstruction() {
 		t.Error("fabricable material must not be deferred - it was fabricated within the ceiling")
+	}
+	// No input-leg dependencies, so the pipeline's Start() marked it READY and the drain can
+	// execute it immediately (the orphaned-legs regression is gone).
+	if len(machineryDeliver.DependsOn()) != 0 {
+		t.Errorf("the fabricate task must have no dependencies (ProduceGood sources inputs), got %v", machineryDeliver.DependsOn())
+	}
+	if machineryDeliver.Status() != manufacturing.TaskStatusReady {
+		t.Errorf("a dependency-free fabricate task must be READY after Start(), got %s", machineryDeliver.Status())
+	}
+}
+
+// sp-qmp8: a fabricable-only material whose immediate input has NO market must DEFER (the whole
+// material becomes a deferred PENDING task), not stage a fabricate task the drain could never
+// feed. This is the sourceability gate the old per-input leg staging enforced, preserved after
+// the switch to single-task fabrication.
+func TestStartOrResume_FabricableMaterialDefersWhenInputUnsourceable(t *testing.T) {
+	const factoryWp = "X1-PZ28-FAC"
+
+	// Factory EXPORTS MACHINERY (LIMITED -> not buyable) and IMPORTS IRON, but NO market in the
+	// system exports IRON, so the factory can never be fed.
+	machineryExport, err := market.NewTradeGood("MACHINERY", strptr("LIMITED"), strptr("RESTRICTED"), 110, 100, 40, market.TradeTypeExport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(MACHINERY): %v", err)
+	}
+	ironImport, err := market.NewTradeGood("IRON", strptr("MODERATE"), strptr("WEAK"), 60, 50, 40, market.TradeTypeImport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(IRON import): %v", err)
+	}
+	factoryMarket, err := market.NewMarket(factoryWp, []market.TradeGood{*machineryExport, *ironImport}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMarket(factory): %v", err)
+	}
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{factoryWp}, // no IRON exporter anywhere
+		markets:         map[string]*market.Market{factoryWp: factoryMarket},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "")
+	if err != nil {
+		t.Fatalf("StartOrResume must defer (not error) an unfeedable fabrication: %v", err)
+	}
+
+	machineryDeliver := findTaskByGood(result.Pipeline, "MACHINERY")
+	if machineryDeliver == nil {
+		t.Fatal("expected a deferred MACHINERY task to still be staged")
+	}
+	if !machineryDeliver.IsDeferredConstruction() {
+		t.Errorf("expected MACHINERY DEFERRED (input unsourceable), got source=%q factory=%q",
+			machineryDeliver.SourceMarket(), machineryDeliver.FactorySymbol())
+	}
+	if len(result.DeferredMaterials) != 1 || result.DeferredMaterials[0] != "MACHINERY" {
+		t.Errorf("expected MACHINERY reported as deferred, got %v", result.DeferredMaterials)
 	}
 }
 

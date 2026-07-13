@@ -174,6 +174,43 @@ func TestPollForProduction_ProfitableSink_StillHarvests(t *testing.T) {
 	}
 }
 
+// sp-qmp8: a construction-supply harvest delivers the output to the gate, NOT a resale sink, so
+// the bp6f #3 crushed-sink guard must be scoped out — even when a market imports the good at a
+// crushed bid. WithConstructionSupply signals this; the harvest proceeds instead of parking.
+// Without this, a crushed import bid on the gate material would wrongly stall the gate fill.
+func TestPollForProduction_CrushedSink_ConstructionSupplyBypassesGuard(t *testing.T) {
+	// Harvest costs 10/unit; the only resale sink bids just 3/unit — a crushed sink that WOULD
+	// park a resale run, but construction supply is not a resale run.
+	executor, _, mediator := newCrushedSinkExecutor(t, 10, 3, nil)
+	logger := &dwellCapturingLogger{}
+	ctx := shared.WithConstructionSupply(common.WithLogger(context.Background(), logger))
+
+	quantity, _, err := executor.PollForProduction(
+		ctx,
+		dockRaceGood,
+		dockRaceMarketWP,
+		dockRaceShip,
+		shared.MustNewPlayerID(1),
+		nil,
+		false, // harvest into the hauler (NOT inputs-only) — construction supply exempts the guard
+		"X1-DR",
+	)
+	if err != nil {
+		t.Fatalf("construction-supply harvest must proceed, got error: %v", err)
+	}
+	if quantity <= 0 {
+		t.Fatalf("expected the construction harvest to proceed despite the crushed resale bid, got %d units", quantity)
+	}
+	if mediator.purchaseAttempts() != 1 {
+		t.Fatalf("expected exactly 1 harvest purchase (crushed-sink guard bypassed), got %d", mediator.purchaseAttempts())
+	}
+	for _, e := range logger.entriesWithLevel("WARNING") {
+		if strings.Contains(e.message, "crushed sink") {
+			t.Fatalf("construction supply must not log a crushed-sink park, got: %+v", e)
+		}
+	}
+}
+
 // A good with no resale sink at all (FindImportMarket errors - e.g. a
 // construction-only intermediate that nothing downstream buys) must NOT be
 // blocked from harvesting: the guard fails OPEN on any lookup error so goods

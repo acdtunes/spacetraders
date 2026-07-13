@@ -216,10 +216,20 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		return false
 	}
 
-	// Source the material INTO the hauler on the shared engine (a market BUY node — the
-	// planner already resolved the source market on the task). No duplicate sourcing logic.
-	node := &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
-	result, err := h.producer.ProduceGood(ctx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
+	// Source the material INTO the hauler on the shared engine, honoring the planner's
+	// already-made buy-vs-produce decision recorded on the task: a direct BUY of the final good
+	// (source market resolved, no factory), or a FABRICATION (a factory resolved) driven as an
+	// AcquisitionFabricate node so the engine buys the inputs, feeds the factory, and harvests
+	// the output into the hauler. sp-qmp8 restores this fabricate sourcing — a buy-only drain
+	// explodes the market bid and cannot fill the gate at scale (regression from sp-jav2). No
+	// duplicate sourcing logic either way; the shared engine owns sourcing.
+	node := constructionSourcingNode(task)
+
+	// Mark the run as construction supply so the engine's RESALE-margin guards (chain-margin
+	// sp-iv65, crushed-sink bp6f #3) are scoped out — the harvested output is delivered to the
+	// gate, never resold. INPUT buys still pass the full money-guard stack (RULINGS #4).
+	produceCtx := shared.WithConstructionSupply(ctx)
+	result, err := h.producer.ProduceGood(produceCtx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
 	if err != nil {
 		h.failTask(ctx, task, fmt.Sprintf("sourcing %s failed: %v", task.Good(), err))
 		return false
@@ -256,6 +266,38 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		"good": task.Good(), "units": delivered, "construction_site": task.ConstructionSite(), "ship": ship.ShipSymbol(),
 	})
 	return true
+}
+
+// constructionSourcingNode builds the SupplyChainNode the drain hands to ProduceGood for one
+// construction material, honoring the buy-vs-produce decision the planner already recorded on the
+// task (sp-qmp8):
+//
+//   - FactorySymbol == "": the planner found a market selling the final good, so BUY it directly
+//     (the non-regression path — one hop, no chain). Unchanged behavior.
+//   - FactorySymbol != "": the planner chose FABRICATION (the final good is not buyable at scale),
+//     so PRODUCE it — a one-level fabricate node whose children are the good's immediate inputs,
+//     each a market BUY. ProduceGood(Fabricate) then buys those inputs, delivers them to the
+//     factory, and harvests the output into the hauler, subsuming the input legs the planner used
+//     to stage separately. One level mirrors the planner's depth>=2 policy and avoids a marathon
+//     single-hauler deep chain; the gate materials' immediate inputs (FAB_MATS ← IRON,
+//     QUARTZ_SAND; ADVANCED_CIRCUITRY ← ELECTRONICS, MICROPROCESSORS) are themselves buyable, and
+//     the planner only stages a fabricate task after verifying every input is sourceable.
+//
+// A fabricate task whose good has no known recipe (should not happen — the planner never
+// fabricates a raw good) falls back to a BUY so the engine attempts a market source rather than
+// polling forever on a childless fabricate.
+func constructionSourcingNode(task *manufacturing.ManufacturingTask) *goods.SupplyChainNode {
+	if task.FactorySymbol() == "" {
+		return &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
+	}
+	node := goods.NewSupplyChainNode(task.Good(), goods.AcquisitionFabricate)
+	for _, input := range goods.GetRequiredInputs(task.Good()) {
+		node.AddChild(goods.NewSupplyChainNode(input, goods.AcquisitionBuy))
+	}
+	if node.IsLeaf() {
+		return &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
+	}
+	return node
 }
 
 // readyConstructionTasks returns the READY DELIVER_TO_CONSTRUCTION tasks whose pipeline is
