@@ -237,7 +237,7 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		return false
 	}
 
-	h.recordDelivery(ctx, task, delivered)
+	pipeline := h.recordDelivery(ctx, task, delivered)
 
 	if err := task.Complete(); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not complete construction task %s: %v", task.ID(), err), nil)
@@ -245,6 +245,12 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	if err := h.taskRepo.Update(ctx, task); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist completed construction task %s: %v", task.ID(), err), nil)
 	}
+
+	// Continuous refill (PHASE-5, restored sp-utjr): one supplyTask delivers a single hauler
+	// load. If the site's bill for this material is not yet met, enqueue the next delivery so
+	// the gate keeps filling without a manual re-plan — the drain self-re-stages until each
+	// material's full bill is met, instead of stalling on the planner's single per-material task.
+	h.enqueueReplenishmentIfNeeded(ctx, task, pipeline)
 
 	logger.Log("INFO", fmt.Sprintf("Supplied %d %s to construction site %s", delivered, task.Good(), task.ConstructionSite()), map[string]interface{}{
 		"good": task.Good(), "units": delivered, "construction_site": task.ConstructionSite(), "ship": ship.ShipSymbol(),
@@ -286,24 +292,88 @@ func (h *RunConstructionCoordinatorHandler) pipelineExecuting(ctx context.Contex
 
 // recordDelivery advances the pipeline's construction progress by the delivered units and
 // persists it, so a supply moves the pipeline past 0%. A missing pipeline/material is a
-// warning, never a task failure — the supply already succeeded.
-func (h *RunConstructionCoordinatorHandler) recordDelivery(ctx context.Context, task *manufacturing.ManufacturingTask, delivered int) {
+// warning, never a task failure — the supply already succeeded. Returns the updated pipeline
+// (with the just-recorded delivery applied to its persisted bill) so the caller can decide
+// whether the material still needs refilling; nil on any path where progress was not recorded.
+func (h *RunConstructionCoordinatorHandler) recordDelivery(ctx context.Context, task *manufacturing.ManufacturingTask, delivered int) *manufacturing.ManufacturingPipeline {
 	logger := common.LoggerFromContext(ctx)
 	if task.PipelineID() == "" || delivered <= 0 {
-		return
+		return nil
 	}
 	pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID())
 	if err != nil || pipeline == nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not load pipeline %s to record construction delivery", task.PipelineID()), nil)
-		return
+		return nil
 	}
 	if err := pipeline.RecordMaterialDelivery(task.Good(), delivered); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not record construction delivery of %s: %v", task.Good(), err), nil)
-		return
+		return nil
 	}
 	if err := h.pipelineRepo.Update(ctx, pipeline); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist construction pipeline progress %s: %v", task.PipelineID(), err), nil)
 	}
+	return pipeline
+}
+
+// enqueueReplenishmentIfNeeded restores PHASE-5 continuous refill (sp-utjr; regression from
+// sp-jav2 ef2281b8). One supplyTask delivers a single hauler cargo-load; the planner stages only
+// one DELIVER_TO_CONSTRUCTION task per material, so without this the pipeline stalls EXECUTING
+// below 100% after that first load. When the delivered material's bill is not yet met, it enqueues
+// the next single-load delivery task — left READY for the drain to pick up next tick — so the
+// pipeline self-re-stages one load at a time until every material's full bill is met. The remaining
+// is read from the pipeline's persisted material bill (RULINGS #2: no new cross-restart state — the
+// pipeline is already persisted and reloaded on boot), and the follow-on reuses this task's resolved
+// delivery spec via the same domain factory the planner uses, so the two paths cannot drift. When
+// remaining <= 0 the material is complete and nothing is queued, so the chain settles cleanly.
+func (h *RunConstructionCoordinatorHandler) enqueueReplenishmentIfNeeded(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline) {
+	logger := common.LoggerFromContext(ctx)
+	if pipeline == nil {
+		return
+	}
+	remaining := remainingForGood(pipeline, task.Good())
+	if remaining <= 0 {
+		return // material bill met — stop cleanly, no further task
+	}
+
+	next := nextConstructionDeliveryTask(task)
+	if err := next.MarkReady(); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Construction refill: could not ready replenishment task for %s: %v", task.Good(), err), nil)
+		return
+	}
+	if err := h.taskRepo.Create(ctx, next); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Construction refill: could not enqueue replenishment task for %s: %v", task.Good(), err), nil)
+		return
+	}
+	logger.Log("INFO", fmt.Sprintf("Construction refill: queued next %s delivery (%d remaining)", task.Good(), remaining), map[string]interface{}{
+		"good": task.Good(), "construction_site": task.ConstructionSite(), "remaining": remaining, "next_task": next.ID(), "pipeline_id": task.PipelineID(),
+	})
+}
+
+// remainingForGood returns how many units of good the pipeline's construction bill still needs,
+// from the just-updated persisted material target (RULINGS #2). A material absent from the pipeline
+// reports 0 — nothing to refill.
+func remainingForGood(pipeline *manufacturing.ManufacturingPipeline, good string) int {
+	material := pipeline.GetMaterial(good)
+	if material == nil {
+		return 0
+	}
+	return material.RemainingQuantity()
+}
+
+// nextConstructionDeliveryTask builds the follow-on single-load delivery task for a just-completed
+// DELIVER_TO_CONSTRUCTION task, reusing its resolved delivery spec (pipeline, player, good, source
+// market or factory, construction site) with no dependencies. It funnels through the same domain
+// factory the planner uses, so planner and refill paths cannot drift.
+func nextConstructionDeliveryTask(completed *manufacturing.ManufacturingTask) *manufacturing.ManufacturingTask {
+	return manufacturing.NewDeliverToConstructionTask(
+		completed.PipelineID(),
+		completed.PlayerID(),
+		completed.Good(),
+		completed.SourceMarket(),
+		completed.FactorySymbol(),
+		completed.ConstructionSite(),
+		nil,
+	)
 }
 
 // deferTask parks an unsourceable material's task back to a deferred PENDING for resupply

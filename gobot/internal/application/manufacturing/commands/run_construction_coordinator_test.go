@@ -74,6 +74,7 @@ type drainStubTaskRepo struct {
 	manufacturing.TaskRepository
 	tasks   []*manufacturing.ManufacturingTask
 	updated map[string]manufacturing.TaskStatus
+	created []*manufacturing.ManufacturingTask
 }
 
 func (r *drainStubTaskRepo) FindByStatus(_ context.Context, _ int, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
@@ -91,6 +92,15 @@ func (r *drainStubTaskRepo) Update(_ context.Context, task *manufacturing.Manufa
 		r.updated = make(map[string]manufacturing.TaskStatus)
 	}
 	r.updated[task.ID()] = task.Status()
+	return nil
+}
+
+// Create persists an enqueued replenishment task (PHASE-5 refill): it is recorded and appended
+// to the ready worklist so a subsequent tick's FindByStatus picks it up, exactly as the real
+// repo + drain loop behave.
+func (r *drainStubTaskRepo) Create(_ context.Context, task *manufacturing.ManufacturingTask) error {
+	r.created = append(r.created, task)
+	r.tasks = append(r.tasks, task)
 	return nil
 }
 
@@ -265,9 +275,10 @@ func TestConstructionDrain_DeferOnDryMarket(t *testing.T) {
 }
 
 // #4 — restart resilience (RULINGS #2): the drain holds no cross-tick task state;
-// its worklist is rebuilt from persistence (FindByStatus) every tick. A brand-new
-// coordinator instance over the same persisted repos resumes supply of a task that
-// was still READY at restart.
+// its worklist is rebuilt from persistence (FindByStatus) every tick. The PHASE-5 refill
+// task is itself persisted (Create), so a brand-new coordinator instance over the same
+// repos resumes the follow-on delivery — the refill survives a restart with no new
+// cross-restart state (the pipeline's persisted bill drives it).
 func TestConstructionDrain_RestartResilient(t *testing.T) {
 	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
 	first := readyConstructionTask(t, pipeline, "FAB_MATS")
@@ -277,7 +288,8 @@ func TestConstructionDrain_RestartResilient(t *testing.T) {
 	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
-	// First coordinator instance drains the first delivery.
+	// First coordinator instance drains the first delivery (40/100). The bill is not met, so
+	// it autonomously enqueues + persists the follow-on delivery task before the "crash".
 	h1 := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	if _, err := h1.drainOnce(context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("first drainOnce: %v", err)
@@ -285,19 +297,20 @@ func TestConstructionDrain_RestartResilient(t *testing.T) {
 	if first.Status() != manufacturing.TaskStatusCompleted {
 		t.Fatalf("precondition: first task should be COMPLETED, got %s", first.Status())
 	}
+	if len(taskRepo.created) != 1 {
+		t.Fatalf("precondition: expected one persisted follow-on task before restart, got %d", len(taskRepo.created))
+	}
+	followOn := taskRepo.created[0]
 
-	// Restart: a follow-on delivery task was persisted READY before the crash.
-	second := readyConstructionTask(t, pipeline, "FAB_MATS")
-	taskRepo.tasks = append(taskRepo.tasks, second)
-
-	// A brand-new coordinator instance (no carried state) over the SAME repos.
+	// A brand-new coordinator instance (no carried state) over the SAME repos rebuilds its
+	// worklist from persistence and resumes the follow-on task that was persisted READY.
 	h2 := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	resp2, err := h2.drainOnce(context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("post-restart drainOnce: %v", err)
 	}
-	if second.Status() != manufacturing.TaskStatusCompleted {
-		t.Fatalf("expected the fresh instance to resume and complete the persisted task, got %s", second.Status())
+	if followOn.Status() != manufacturing.TaskStatusCompleted {
+		t.Fatalf("expected the fresh instance to resume and complete the persisted follow-on task, got %s", followOn.Status())
 	}
 	if resp2.TasksDrained != 1 {
 		t.Fatalf("expected the restarted drain to drain 1 task, got %d", resp2.TasksDrained)
@@ -533,5 +546,109 @@ func TestConstructionDrain_IdlesCleanlyWhenNoPipeline(t *testing.T) {
 	}
 	if activator.calls == 0 {
 		t.Fatal("expected the surviving activator invoked at least once by the idle loop")
+	}
+}
+
+// sp-utjr (PHASE-5 refill restore; regression from sp-jav2 ef2281b8): after a delivery that does
+// NOT yet meet the material's bill, the drain autonomously enqueues the NEXT single-load
+// DELIVER_TO_CONSTRUCTION task for that material — left READY for the next tick — so the gate keeps
+// filling without a manual re-plan. This is the fix for the "one load per material then STALL"
+// regression (the planner stages exactly one task/material; without this the pipeline sat EXECUTING
+// below 100% with no actionable work). The follow-on reuses the completed task's resolved delivery
+// spec via the same domain factory the planner uses, so the two paths cannot drift.
+func TestConstructionDrain_EnqueuesReplenishmentWhenBillRemains(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100) // full bill: 100
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40} // one load = 40 < 100
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(taskRepo.created) != 1 {
+		t.Fatalf("expected exactly one replenishment task enqueued while the bill remains, got %d", len(taskRepo.created))
+	}
+	next := taskRepo.created[0]
+	if next.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+		t.Fatalf("expected a DELIVER_TO_CONSTRUCTION replenishment task, got %s", next.TaskType())
+	}
+	if next.Status() != manufacturing.TaskStatusReady {
+		t.Fatalf("expected the replenishment task READY for the next tick, got %s", next.Status())
+	}
+	if next.Good() != "FAB_MATS" || next.ConstructionSite() != constructionSiteWP || next.PipelineID() != pipeline.ID() {
+		t.Fatalf("replenishment task did not reuse the delivery spec: good=%s site=%s pipeline=%s", next.Good(), next.ConstructionSite(), next.PipelineID())
+	}
+	if next.SourceMarket() != task.SourceMarket() {
+		t.Fatalf("expected the replenishment task to reuse the source market %q, got %q", task.SourceMarket(), next.SourceMarket())
+	}
+}
+
+// sp-utjr: when a delivery MEETS the material's full bill (remaining == 0) the drain enqueues NO
+// further task — the material is complete and the refill chain settles cleanly. Without this
+// stop condition a met gate would spin forever.
+func TestConstructionDrain_NoReplenishmentWhenBillMet(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 40) // full bill: 40
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40} // one load = 40 == bill
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(taskRepo.created) != 0 {
+		t.Fatalf("a met material bill must enqueue no replenishment task, got %d", len(taskRepo.created))
+	}
+	if !pipeline.GetMaterial("FAB_MATS").IsComplete() {
+		t.Fatal("precondition: the material bill should read complete after the full delivery")
+	}
+}
+
+// sp-utjr: the refill chain self-re-stages one cargo-load at a time across successive ticks until
+// the material's FULL bill is met, then stops — the end-to-end continuous-fill behaviour that was
+// lost. Bill 100, one load = 40: ticks deliver 40/80/120 (meeting the bill on the 3rd) then no
+// ready work remains, so exactly two refill tasks are enqueued (after loads 1 and 2, none after
+// the bill-meeting load 3). Each tick rebuilds its worklist from persistence, like the standing loop.
+func TestConstructionDrain_DrivesFullBillAcrossDeliveries(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	cmd := newDrainCommand()
+
+	deliveries := 0
+	for tick := 0; tick < 10; tick++ { // bounded guard: the chain must settle well before this
+		resp, err := handler.drainOnce(context.Background(), cmd)
+		if err != nil {
+			t.Fatalf("tick %d drainOnce: %v", tick, err)
+		}
+		if resp.TasksDrained == 0 {
+			break // chain settled: no ready work remains
+		}
+		deliveries += resp.TasksDrained
+	}
+
+	if deliveries != 3 {
+		t.Fatalf("expected the bill of 100 met in 3 loads of 40 (40/80/120), got %d deliveries", deliveries)
+	}
+	if !pipeline.GetMaterial("FAB_MATS").IsComplete() {
+		t.Fatalf("expected the material bill fully met after the refill chain, progress %.1f%%", pipeline.ConstructionProgress())
+	}
+	if len(taskRepo.created) != 2 {
+		t.Fatalf("expected exactly 2 refill tasks (after loads 1 and 2, none after the bill-meeting load 3), got %d", len(taskRepo.created))
 	}
 }
