@@ -3,6 +3,8 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -13,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"golang.org/x/sync/errgroup"
 )
 
 // Type aliases matching the factory coordinator's pattern (the container command factory
@@ -31,6 +34,13 @@ const (
 
 	// constructionOperationContext labels the sourcing/delivery transactions for attribution.
 	constructionOperationContext = "construction_supply"
+
+	// defaultConstructionWorkerCap bounds concurrent supplyTask workers when a tick's pipeline
+	// exposes no positive max_workers. This is defensive only — readyConstructionTasks yields
+	// tasks solely from EXECUTING pipelines, which always carry a max_workers — and mirrors the
+	// domain's default construction max_workers so an unset pipeline drains at the width the
+	// planner would have chosen (RULINGS #5: a named fallback, not an inline magic number).
+	defaultConstructionWorkerCap = 5
 )
 
 // ConstructionProducer is the narrow slice of the shared ProductionExecutor the drain
@@ -66,6 +76,11 @@ type RunConstructionCoordinatorHandler struct {
 	// the same player-agnostic contract ProduceGood/ClaimShip follow. nil disables activation.
 	newActivator func(playerID int) ConstructionActivator
 	clock        shared.Clock
+	// recordMu serializes the pipeline delivery read-modify-write (recordDelivery) across the
+	// concurrent supplyTask workers (sp-01eh): two workers supplying the SAME pipeline must not
+	// both load-add-store its material counters and lose an update. It guards an in-tick section
+	// only, not any cross-tick/persisted state (RULINGS #2 unaffected).
+	recordMu sync.Mutex
 }
 
 // NewRunConstructionCoordinatorHandler builds the drain. clock defaults to a RealClock when nil.
@@ -178,26 +193,75 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	// reusable next tick (ship claims also auto-release on restart via ReleaseAllActive).
 	defer h.releaseClaims(ctx, cmd.ContainerID, playerID)
 
-	drained := 0
-	for i, task := range tasks {
-		if i >= len(idleShips) {
-			break // out of in-system haulers this tick; remaining tasks are retried next tick
-		}
-		ship := idleShips[i]
-
-		// Atomic claim under the shared "manufacturing" identity (RULINGS #7): a hull pinned
-		// to another fleet, or grabbed since discovery, is rejected at the DB, not clobbered.
-		if err := h.shipRepo.ClaimShip(ctx, ship.ShipSymbol(), cmd.ContainerID, playerID, operationManufacturing); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", ship.ShipSymbol(), err), nil)
-			continue // task stays READY; retried next tick
-		}
-
-		if h.supplyTask(ctx, cmd, systemSymbol, task, ship, playerID) {
-			drained++
-		}
+	// Pair each ready task with an idle hauler 1:1 by index, up to the smaller pool. Extra tasks
+	// are retried next tick (more haulers may free up); surplus haulers stay idle this tick.
+	pairs := len(tasks)
+	if len(idleShips) < pairs {
+		pairs = len(idleShips)
 	}
 
-	return &RunConstructionCoordinatorResponse{TasksDrained: drained}, nil
+	// Dispatch the paired supplyTasks CONCURRENTLY (sp-01eh regression-restore): one goroutine per
+	// hull, each claiming + sourcing + delivering its OWN task in parallel — replacing the serial
+	// loop that left every other idle hull waiting while a single hull navigated/sourced/delivered.
+	// The pipeline's max_workers — until now vestigial (stored, read by no dispatcher) — is WIRED
+	// here as the concurrency bound via errgroup.SetLimit, so throughput scales with the idle pool
+	// (capped) instead of one-hull-at-a-time. No worker-container machinery is revived (Admiral
+	// veto): this stays the thin drain, just no longer serialized.
+	workerCap := h.resolveWorkerCap(ctx, tasks[:pairs])
+	var drained atomic.Int64
+	var group errgroup.Group
+	group.SetLimit(workerCap)
+	for i := 0; i < pairs; i++ {
+		task := tasks[i]
+		ship := idleShips[i]
+		group.Go(func() error {
+			// Atomic claim under the shared "manufacturing" identity (RULINGS #7): a hull pinned
+			// to another fleet, or grabbed since discovery, is rejected at the DB, not clobbered.
+			// The claim tx is the concurrency guard — each worker claims its OWN distinct hull, so
+			// there is no double-claim and no poaching of another operation's pinned hull.
+			if err := h.shipRepo.ClaimShip(ctx, ship.ShipSymbol(), cmd.ContainerID, playerID, operationManufacturing); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", ship.ShipSymbol(), err), nil)
+				return nil // task stays READY; retried next tick
+			}
+			if h.supplyTask(ctx, cmd, systemSymbol, task, ship, playerID) {
+				drained.Add(1)
+			}
+			// Task-level failures are recorded per worker (fail/defer); never propagated, so one
+			// worker's failure does not abort its peers mid-flight.
+			return nil
+		})
+	}
+	_ = group.Wait() // workers always return nil; Wait joins them before the tick reports
+
+	return &RunConstructionCoordinatorResponse{TasksDrained: int(drained.Load())}, nil
+}
+
+// resolveWorkerCap is the concurrency bound for this tick's dispatch: the largest max_workers
+// among the distinct EXECUTING pipelines backing the ready tasks. sp-01eh WIRES pipeline
+// max_workers (previously stored but read by no dispatcher — vestigial) into an actual cap on
+// concurrent supplyTask workers. Falls back to defaultConstructionWorkerCap if no pipeline
+// resolves, and never returns < 1 (SetLimit(0) would deadlock the group).
+func (h *RunConstructionCoordinatorHandler) resolveWorkerCap(ctx context.Context, tasks []*manufacturing.ManufacturingTask) int {
+	workerCap := 0
+	seen := make(map[string]bool)
+	for _, task := range tasks {
+		pipelineID := task.PipelineID()
+		if pipelineID == "" || seen[pipelineID] {
+			continue
+		}
+		seen[pipelineID] = true
+		pipeline, err := h.pipelineRepo.FindByID(ctx, pipelineID)
+		if err != nil || pipeline == nil {
+			continue
+		}
+		if mw := pipeline.MaxWorkers(); mw > workerCap {
+			workerCap = mw
+		}
+	}
+	if workerCap < 1 {
+		workerCap = defaultConstructionWorkerCap
+	}
+	return workerCap
 }
 
 // supplyTask sources the task's material into the claimed hauler via ProduceGood, delivers
@@ -342,6 +406,11 @@ func (h *RunConstructionCoordinatorHandler) recordDelivery(ctx context.Context, 
 	if task.PipelineID() == "" || delivered <= 0 {
 		return nil
 	}
+	// Serialize the load-add-store of pipeline progress across the concurrent workers (sp-01eh):
+	// two workers delivering to the SAME pipeline must not both read the old material total and
+	// store a sum that drops the other's units. Cheap relative to the parallel hauling it guards.
+	h.recordMu.Lock()
+	defer h.recordMu.Unlock()
 	pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID())
 	if err != nil || pipeline == nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not load pipeline %s to record construction delivery", task.PipelineID()), nil)

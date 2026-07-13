@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,15 +74,19 @@ func staticActivator(a ConstructionActivator) func(int) ConstructionActivator {
 }
 
 // drainStubTaskRepo serves READY tasks and records status persistence. Embeds the
-// interface so any unused method panics, keeping the stub honest.
+// interface so any unused method panics, keeping the stub honest. The mutex makes it
+// safe for the concurrent drain workers (sp-01eh) that call Update in parallel.
 type drainStubTaskRepo struct {
 	manufacturing.TaskRepository
+	mu      sync.Mutex
 	tasks   []*manufacturing.ManufacturingTask
 	updated map[string]manufacturing.TaskStatus
 	created []*manufacturing.ManufacturingTask
 }
 
 func (r *drainStubTaskRepo) FindByStatus(_ context.Context, _ int, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var out []*manufacturing.ManufacturingTask
 	for _, t := range r.tasks {
 		if t.Status() == status {
@@ -92,6 +97,8 @@ func (r *drainStubTaskRepo) FindByStatus(_ context.Context, _ int, status manufa
 }
 
 func (r *drainStubTaskRepo) Update(_ context.Context, task *manufacturing.ManufacturingTask) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.updated == nil {
 		r.updated = make(map[string]manufacturing.TaskStatus)
 	}
@@ -108,17 +115,25 @@ func (r *drainStubTaskRepo) Create(_ context.Context, task *manufacturing.Manufa
 	return nil
 }
 
+// drainStubPipelineRepo caches pipelines by ID. The mutex guards the shared map and the
+// updates counter against the concurrent drain workers (sp-01eh); the pipeline object's own
+// read-modify-write (RecordMaterialDelivery) is serialized handler-side so no delivery is lost.
 type drainStubPipelineRepo struct {
 	manufacturing.PipelineRepository
+	mu        sync.Mutex
 	pipelines map[string]*manufacturing.ManufacturingPipeline
 	updates   int
 }
 
 func (r *drainStubPipelineRepo) FindByID(_ context.Context, id string) (*manufacturing.ManufacturingPipeline, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.pipelines[id], nil
 }
 
 func (r *drainStubPipelineRepo) Update(_ context.Context, _ *manufacturing.ManufacturingPipeline) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.updates++
 	return nil
 }
@@ -128,6 +143,7 @@ func (r *drainStubPipelineRepo) Update(_ context.Context, _ *manufacturing.Manuf
 // FindByContainer/Save so a drained hull returns to the idle pool.
 type drainFakeShipRepo struct {
 	navigation.ShipRepository
+	mu          sync.Mutex
 	ships       []*navigation.Ship
 	claims      []drainClaim
 	claimErr    error
@@ -141,10 +157,16 @@ func newDrainShipRepo(ships ...*navigation.Ship) *drainFakeShipRepo {
 }
 
 func (r *drainFakeShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.ships, nil
 }
 
+// ClaimShip records the atomic claim. The mutex models the DB's atomicity so the concurrent
+// drain workers (sp-01eh) each register a distinct claim without a data race (RULINGS #7).
 func (r *drainFakeShipRepo) ClaimShip(_ context.Context, symbol, containerID string, _ shared.PlayerID, operation string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.claimErr != nil {
 		return r.claimErr
 	}
@@ -158,7 +180,16 @@ func (r *drainFakeShipRepo) ClaimShip(_ context.Context, symbol, containerID str
 }
 
 func (r *drainFakeShipRepo) FindByContainer(_ context.Context, containerID string, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.byContainer[containerID], nil
+}
+
+// claimCount returns the number of atomic claims recorded, under lock (for post-drain asserts).
+func (r *drainFakeShipRepo) claimCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.claims)
 }
 
 func (r *drainFakeShipRepo) Save(_ context.Context, _ *navigation.Ship) error { return nil }
