@@ -111,8 +111,9 @@ func TestWarehouseTargetUnits_ComputedFromLiveDemandAndRealCapacity(t *testing.T
 		{Good: "ANTIMATTER", ContractCount: 2, DemandUnits: 16, MaxContractUnits: 8, ForeignSystem: "X1-I56", HomeAsk: 900, HomeAskKnown: true},
 	}}
 
-	// Real hull capacity 80 (read from the ship, never assumed).
-	targets := warehouseTargetUnits(context.Background(), miner, 80, "X1-VB74", 1, nil)
+	// Real hull capacity 80 (read from the ship, never assumed). Nil coords lookup → the
+	// distance-aware residual FAILS OPEN to the coarse in/cross-system constant (RULINGS #1).
+	targets := warehouseTargetUnits(context.Background(), miner, 80, "X1-VB74", "X1-VB74-A1", nil, 1, nil)
 
 	require.Equal(t, 24, targets["DRUGS"], "buffered at its single-contract size")
 	require.Equal(t, 8, targets["ANTIMATTER"])
@@ -122,7 +123,7 @@ func TestWarehouseTargetUnits_ComputedFromLiveDemandAndRealCapacity(t *testing.T
 // clipped to the REAL hull capacity — never assume-80.
 func TestWarehouseTargetUnits_ColdStartClippedToRealCapacity(t *testing.T) {
 	// A small 50-cargo hull: DRUGS(24)+MEDICINE(20)=44 fit; EQUIPMENT(20) overflows.
-	targets := warehouseTargetUnits(context.Background(), nil, 50, "X1-VB74", 1, nil)
+	targets := warehouseTargetUnits(context.Background(), nil, 50, "X1-VB74", "X1-VB74-A1", nil, 1, nil)
 
 	require.Equal(t, 24, targets["DRUGS"])
 	require.Equal(t, 20, targets["MEDICINE"])

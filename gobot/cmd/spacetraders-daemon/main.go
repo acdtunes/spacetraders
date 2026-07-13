@@ -1144,6 +1144,7 @@ func run(cfg *config.Config) error {
 			Blocklist:            pp.Blocklist,
 		},
 		pp.CapitalCeilingPct,
+		waypointRepo, // sp-9274: cache-only coords for the distance-aware residual buy-leg (fail-open)
 	)
 	stockerCoordinatorHandler.SetGateGraph(gateGraphService)
 	stockerCoordinatorHandler.SetEventSubscriber(shipEventBus)

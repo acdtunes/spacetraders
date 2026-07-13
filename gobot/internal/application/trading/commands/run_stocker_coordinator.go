@@ -17,6 +17,7 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 const (
@@ -175,6 +176,11 @@ type RunStockerCoordinatorHandler struct {
 	demandMiner        tradingsvc.DepositDemandMiner
 	config             tradingsvc.DepositCandidateConfig
 	ceilingPct         int
+	// waypointRepo resolves source/warehouse waypoint COORDINATES for the sp-9274 distance-aware
+	// residual buy-leg in the auto-cap knapsack. Cache-only (no API fetch-through), so the
+	// per-pass re-solve costs no API spend; a nil repo (or an uncached waypoint) FAILS OPEN to the
+	// coarse in/cross-system residual (RULINGS #1) — the pre-sp-9274 behavior.
+	waypointRepo system.WaypointRepository
 
 	// noReachableSource de-dups the sp-yuq9 "every ranked candidate is gate-unreachable"
 	// verdict so a hull whose need-rank keeps landing on unreachable-only markets (a
@@ -227,6 +233,7 @@ func NewRunStockerCoordinatorHandler(
 	demandMiner tradingsvc.DepositDemandMiner,
 	cfg tradingsvc.DepositCandidateConfig,
 	ceilingPct int,
+	waypointRepo system.WaypointRepository,
 ) *RunStockerCoordinatorHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -242,6 +249,7 @@ func NewRunStockerCoordinatorHandler(
 		demandMiner:        demandMiner,
 		config:             cfg,
 		ceilingPct:         ceilingPct,
+		waypointRepo:       waypointRepo,
 		noReachableSource:  make(map[string]string),
 		capState:           make(map[string]*warehouseCapState),
 	}
@@ -262,7 +270,7 @@ func (h *RunStockerCoordinatorHandler) SetWarehouseCapParams(p tradingsvc.Wareho
 // the proven behavior rather than churning on noise; the warehouse's own cold-start caps
 // (populated at StartWarehouse) still bound it. Capacity is Σ REAL hull cargo_capacity across
 // the group (never assume-80). EWMA + hysteresis state is carried per warehouse waypoint.
-func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(homeSystem, waypoint string, group []*storage.StorageOperation, rows []persistence.DemandCandidate) map[string]int {
+func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(ctx context.Context, homeSystem, waypoint string, group []*storage.StorageOperation, rows []persistence.DemandCandidate) map[string]int {
 	capacity := tradingsvc.TotalCapacity(h.storageCoordinator, group)
 	if capacity <= 0 {
 		return nil
@@ -276,7 +284,7 @@ func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(homeSystem, waypoint
 	prior, current := st.smoothed, st.targets
 	h.capStateMu.Unlock()
 
-	plan := tradingsvc.PlanWarehouseCaps(rows, capacity, homeSystem, prior, current, h.capParams)
+	plan := tradingsvc.PlanWarehouseCaps(rows, capacity, homeSystem, waypoint, h.waypointCoords(ctx), prior, current, h.capParams)
 
 	// Persist the advanced EWMA + selection for the next pass's stickiness. Only adopt the
 	// computed targets as the incumbent set when it was a real (non-cold-start) solve.
@@ -292,6 +300,25 @@ func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(homeSystem, waypoint
 		return nil // defer to the pre-existing per-good target on thin history
 	}
 	return plan.Targets
+}
+
+// waypointCoords builds the sp-9274 coordinate lookup the auto-cap knapsack uses to turn the
+// residual buy-leg into a real dist(warehouse, source). It is a CACHE-ONLY read (waypointRepo,
+// never an API fetch-through) so the per-pass re-solve costs no API spend; a nil repo, an
+// unresolvable waypoint, or a TTL-expired cache row returns ok=false and the optimizer FAILS OPEN
+// to the coarse in/cross-system residual (RULINGS #1). A nil repo yields a nil lookup, degrading
+// the solve to the pre-sp-9274 binary proxy byte-for-byte.
+func (h *RunStockerCoordinatorHandler) waypointCoords(ctx context.Context) tradingsvc.WaypointCoordsLookup {
+	if h.waypointRepo == nil {
+		return nil
+	}
+	return func(waypoint string) (float64, float64, bool) {
+		wp, err := h.waypointRepo.FindBySymbol(ctx, waypoint, shared.ExtractSystemSymbol(waypoint))
+		if err != nil || wp == nil {
+			return 0, 0, false
+		}
+		return wp.X, wp.Y, true
+	}
 }
 
 // SetGateGraph wires the multi-jump gate-graph resolver into the delegated movement
@@ -603,7 +630,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 	// so no single good can crowd out the far/orphan goods the buffer exists to hold.
 	var capTargets map[string]int
 	if cmd.TargetPerGood <= 0 {
-		capTargets = h.resolveWarehouseCaps(homeSystem, cmd.WarehouseWaypoint, group, rows)
+		capTargets = h.resolveWarehouseCaps(ctx, homeSystem, cmd.WarehouseWaypoint, group, rows)
 	}
 
 	var best stockerPick

@@ -306,7 +306,7 @@ func TestPlanWarehouseCaps_BuffersFarGoodsAtSingleContractSize(t *testing.T) {
 		candidate("ANTIMATTER", "X1-I56", 2, 8, 900),  // cross-system → far
 	}
 
-	res := PlanWarehouseCaps(candidates, 80, home, nil, nil, WarehouseCapParams{})
+	res := PlanWarehouseCaps(candidates, 80, home, "", nil, nil, nil, WarehouseCapParams{})
 
 	assert.Equal(t, 24, res.Targets["DRUGS"], "DRUGS (far) buffered at its single-contract size s_G")
 	assert.Equal(t, 8, res.Targets["ANTIMATTER"], "ANTIMATTER (far) buffered at s_G")
@@ -324,7 +324,7 @@ func TestPlanWarehouseCaps_CrossSystemPreferredAtEqualDemand(t *testing.T) {
 	}
 
 	// Capacity fits exactly one size-40 good.
-	res := PlanWarehouseCaps(candidates, 40, home, nil, nil, WarehouseCapParams{})
+	res := PlanWarehouseCaps(candidates, 40, home, "", nil, nil, nil, WarehouseCapParams{})
 
 	assert.Equal(t, 40, res.Targets["FAR"], "the cross-system good wins the contested slot")
 	assert.Zero(t, res.Targets["NEAR"], "the in-system good yields when capacity is scarce")
@@ -339,7 +339,7 @@ func TestPlanWarehouseCaps_SizesFromSingleContractNotSummedDemand(t *testing.T) 
 	c := candidate("DRUGS", "X1-J58", 10, 30, 700)
 	c.DemandUnits = 764
 
-	res := PlanWarehouseCaps([]persistence.DemandCandidate{c}, 80, home, nil, nil, WarehouseCapParams{})
+	res := PlanWarehouseCaps([]persistence.DemandCandidate{c}, 80, home, "", nil, nil, nil, WarehouseCapParams{})
 
 	assert.Equal(t, 30, res.Targets["DRUGS"], "buffered at one contract's size (30), not the summed 764")
 }
@@ -347,9 +347,139 @@ func TestPlanWarehouseCaps_SizesFromSingleContractNotSummedDemand(t *testing.T) 
 // With no candidates the composer falls back to the static cold-start caps clipped to the
 // real capacity (never assume-80) — the same fallback the pure optimizer uses.
 func TestPlanWarehouseCaps_NoCandidatesColdStart(t *testing.T) {
-	res := PlanWarehouseCaps(nil, 78, "X1-VB74", nil, nil, WarehouseCapParams{})
+	res := PlanWarehouseCaps(nil, 78, "X1-VB74", "", nil, nil, nil, WarehouseCapParams{})
 
 	require.True(t, res.ColdStart)
 	assert.Equal(t, 24, res.Targets["DRUGS"])
 	assert.LessOrEqual(t, sumTargets(res), 78)
+}
+
+// ---- sp-9274: distance-aware residual buy-leg (dist(warehouse, source) replaces the binary) ----
+
+// coordsFrom builds a WaypointCoordsLookup from a static position map; an absent waypoint
+// resolves ok=false, exercising the fail-open path (RULINGS #1). A cache-only stand-in for the
+// waypoint repository the live callers wire in.
+func coordsFrom(positions map[string][2]float64) WaypointCoordsLookup {
+	return func(waypoint string) (float64, float64, bool) {
+		if p, ok := positions[waypoint]; ok {
+			return p[0], p[1], true
+		}
+		return 0, 0, false
+	}
+}
+
+// The whole point of sp-9274: at IDENTICAL demand/size, a FAR in-system good out-ranks a CLOSE
+// in-system one for a contested buffer slot — because dist(warehouse, source) now drives the
+// residual buy-leg. The pre-fix binary proxy scored both in-system goods identically and could
+// not tell them apart; this is the discriminating signal the incident lacked.
+func TestPlanWarehouseCaps_FarInSystemGoodOutranksCloseInSystemGood(t *testing.T) {
+	home := "X1-VB74"
+	wh := "X1-VB74-A1"
+	coords := coordsFrom(map[string][2]float64{
+		wh:            {0, 0},   // warehouse + the CLOSE source are co-located
+		"X1-VB74-J58": {400, 0}, // the FAR source, a long intra-system haul away
+	})
+
+	closeGood := candidate("CLOSE", home, 4, 40, 1000) // in-system (ForeignSystem == home)
+	closeGood.ForeignMarket = wh                        // sourced AT the warehouse — nothing to pre-stage
+	farGood := candidate("FAR", home, 4, 40, 1000)      // identical demand/size
+	farGood.ForeignMarket = "X1-VB74-J58"               // sourced far away — the haul the buffer compresses
+
+	// Capacity fits exactly one size-40 good, forcing the contest.
+	res := PlanWarehouseCaps([]persistence.DemandCandidate{closeGood, farGood}, 40, home, wh, coords, nil, nil, WarehouseCapParams{})
+
+	assert.Equal(t, 40, res.Targets["FAR"], "the FAR in-system good wins the contested slot — its dist-based residual is higher")
+	assert.Zero(t, res.Targets["CLOSE"], "the CLOSE in-system good yields — a homed hauler reaches its source cheaply")
+}
+
+// The DRUGS@J58 incident, reproduced: a LOW-recurrence FAR good must beat a HIGHER-recurrence
+// CLOSE good once the far haul dominates. With the binary proxy DRUGS (recurrence 3) always lost
+// its slot to a central good (recurrence 8) and was market-bought at J58 every time; the distance
+// premium now flips it, so the buffer holds DRUGS and contracts WITHDRAW it.
+func TestPlanWarehouseCaps_LowRecurrenceFarGoodBeatsHighRecurrenceCloseGood(t *testing.T) {
+	home := "X1-VB74"
+	wh := "X1-VB74-A1"
+	coords := coordsFrom(map[string][2]float64{
+		wh:            {0, 0},
+		"X1-VB74-J58": {400, 0},
+	})
+
+	central := candidate("CLOTHING", home, 8, 40, 700) // high recurrence, sourced at the hub
+	central.ForeignMarket = wh
+	drugs := candidate("DRUGS", home, 3, 40, 700) // low recurrence, sourced far (J58)
+	drugs.ForeignMarket = "X1-VB74-J58"
+
+	res := PlanWarehouseCaps([]persistence.DemandCandidate{central, drugs}, 40, home, wh, coords, nil, nil, WarehouseCapParams{})
+
+	assert.Equal(t, 40, res.Targets["DRUGS"], "the far, low-recurrence good is now buffered — the far haul dominates recurrence")
+	assert.Zero(t, res.Targets["CLOTHING"], "the close, high-recurrence good yields the scarce slot")
+}
+
+// REGRESSION GUARD (pairs with the test above): a nil coords lookup FAILS OPEN to the coarse
+// binary proxy — byte-identical to the pre-sp-9274 behavior. With no distance signal the far
+// DRUGS reverts to losing its slot to the higher-recurrence central good (the exact live bug),
+// proving the ONLY thing that flipped the selection above is the distance residual.
+func TestPlanWarehouseCaps_NilCoordsFailsOpenToBinaryProxy(t *testing.T) {
+	home := "X1-VB74"
+
+	central := candidate("CLOTHING", home, 8, 40, 700)
+	central.ForeignMarket = "X1-VB74-A1"
+	drugs := candidate("DRUGS", home, 3, 40, 700)
+	drugs.ForeignMarket = "X1-VB74-J58"
+
+	// nil coords + empty warehouse waypoint → every in-system good gets the coarse InSystemResidual.
+	res := PlanWarehouseCaps([]persistence.DemandCandidate{central, drugs}, 40, home, "", nil, nil, nil, WarehouseCapParams{})
+
+	assert.Equal(t, 40, res.Targets["CLOTHING"], "without coords the residual is binary — recurrence alone decides, as before the fix")
+	assert.Zero(t, res.Targets["DRUGS"], "the far good is invisible to the binary proxy — the incident behavior, preserved on fail-open")
+}
+
+// RULING #14 preserved: a CROSS-system good (which the single-system worker can never chase) must
+// rank at least as high as ANY in-system good — even one at the far end of the distance ramp. The
+// ramp's ceiling is clamped at/below CrossSystemResidual, so at equal demand the cross-system good
+// still wins the contested slot over a maximally-far in-system good.
+func TestPlanWarehouseCaps_CrossSystemStillOutranksFarthestInSystem(t *testing.T) {
+	home := "X1-VB74"
+	wh := "X1-VB74-A1"
+	coords := coordsFrom(map[string][2]float64{
+		wh:            {0, 0},
+		"X1-VB74-J58": {900, 0}, // well beyond saturation → the in-system residual is pinned at its ceiling
+	})
+
+	farIn := candidate("FARIN", home, 4, 40, 1000) // in-system but maximally far
+	farIn.ForeignMarket = "X1-VB74-J58"
+	cross := candidate("CROSS", "X1-Z99", 4, 40, 1000) // cross-system, identical demand/size
+	cross.ForeignMarket = "X1-Z99-K1"
+
+	res := PlanWarehouseCaps([]persistence.DemandCandidate{farIn, cross}, 40, home, wh, coords, nil, nil, WarehouseCapParams{})
+
+	assert.Equal(t, 40, res.Targets["CROSS"], "cross-system still out-ranks even the farthest in-system good (RULING #14)")
+	assert.Zero(t, res.Targets["FARIN"], "the far in-system good approaches but never passes the cross-system max")
+}
+
+// Determinism (RULINGS #2): identical inputs → identical targets across repeated solves, so the
+// distance-aware plan is re-derivable and stable (no map-iteration nondeterminism leaking in).
+func TestPlanWarehouseCaps_DistanceResidualDeterministic(t *testing.T) {
+	home := "X1-VB74"
+	wh := "X1-VB74-A1"
+	coords := coordsFrom(map[string][2]float64{
+		wh:            {0, 0},
+		"X1-VB74-J58": {400, 0},
+		"X1-VB74-K20": {150, 120},
+	})
+	build := func() []persistence.DemandCandidate {
+		a := candidate("DRUGS", home, 3, 24, 700)
+		a.ForeignMarket = "X1-VB74-J58"
+		b := candidate("MEDICINE", home, 5, 20, 900)
+		b.ForeignMarket = "X1-VB74-K20"
+		c := candidate("CLOTHING", home, 8, 20, 700)
+		c.ForeignMarket = wh
+		return []persistence.DemandCandidate{a, b, c}
+	}
+
+	first := PlanWarehouseCaps(build(), 44, home, wh, coords, nil, nil, WarehouseCapParams{})
+	for i := 0; i < 5; i++ {
+		again := PlanWarehouseCaps(build(), 44, home, wh, coords, nil, nil, WarehouseCapParams{})
+		assert.Equal(t, first.Targets, again.Targets, "identical inputs must yield identical targets every solve")
+	}
 }

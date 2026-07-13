@@ -95,7 +95,7 @@ func (s *DaemonServer) StartWarehouse(
 	if s.db != nil {
 		miner = persistence.NewDemandMiner(s.db)
 	}
-	targetUnits := warehouseTargetUnits(ctx, miner, ship.CargoCapacity(), shared.ExtractSystemSymbol(waypointSymbol), playerID, nil)
+	targetUnits := warehouseTargetUnits(ctx, miner, ship.CargoCapacity(), shared.ExtractSystemSymbol(waypointSymbol), waypointSymbol, s.waypointCoords(ctx), playerID, nil)
 	targetUnitsInterface := make(map[string]interface{}, len(targetUnits))
 	for g, u := range targetUnits {
 		targetUnitsInterface[g] = u
@@ -170,6 +170,8 @@ func warehouseTargetUnits(
 	miner tradingsvc.DepositDemandMiner,
 	capacity int,
 	homeSystem string,
+	warehouseWaypoint string,
+	coords tradingsvc.WaypointCoordsLookup,
 	playerID int,
 	params *tradingsvc.WarehouseCapParams,
 ) map[string]int {
@@ -183,5 +185,22 @@ func warehouseTargetUnits(
 			candidates = rows
 		}
 	}
-	return tradingsvc.PlanWarehouseCaps(candidates, capacity, homeSystem, nil, nil, p).Targets
+	return tradingsvc.PlanWarehouseCaps(candidates, capacity, homeSystem, warehouseWaypoint, coords, nil, nil, p).Targets
+}
+
+// waypointCoords builds the sp-9274 cache-only coordinate lookup for the warehouse-launch
+// auto-cap plan (mirrors the stocker's live-loop lookup). Reads the waypoint repository only
+// (no API fetch-through); a nil repo or an unresolvable/TTL-expired waypoint returns ok=false and
+// the optimizer FAILS OPEN to the coarse in/cross-system residual (RULINGS #1).
+func (s *DaemonServer) waypointCoords(ctx context.Context) tradingsvc.WaypointCoordsLookup {
+	if s.waypointRepo == nil {
+		return nil
+	}
+	return func(waypoint string) (float64, float64, bool) {
+		wp, err := s.waypointRepo.FindBySymbol(ctx, waypoint, shared.ExtractSystemSymbol(waypoint))
+		if err != nil || wp == nil {
+			return 0, 0, false
+		}
+		return wp.X, wp.Y, true
+	}
 }

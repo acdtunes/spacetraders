@@ -115,13 +115,26 @@ type WarehouseCapParams struct {
 	// compresses the in-system export→delivery haul the worker would fly), but ranks below the
 	// far/orphan goods the buffer chiefly exists for. <= 0 => the documented defaults.
 	//
-	// This location proxy is deliberately COARSE: it cannot yet tell a truly hub-covered
-	// in-system good (a homed hauler sits at its source → residual ~0, should NOT be buffered)
-	// from an in-system good whose source is far from any hauler (should be buffered). The
-	// sp-q2zq follow-on replaces both knobs with the shared dist(homed-hauler, source) coverage
-	// service, at which point a genuinely hub-covered good scores ~0 and drops out on its own.
+	// This location proxy is the COARSE FAIL-OPEN fallback (RULINGS #1): it is used only when a
+	// source waypoint's real coordinates are unavailable (a nil coords lookup, an uncharted /
+	// TTL-expired waypoint). When coords ARE resolvable, the sp-9274 distance ramp below
+	// supersedes InSystemResidual with a real dist(warehouse, source) so a far intra-system good
+	// out-ranks a close one; a nil lookup degrades the whole solve to this binary proxy
+	// byte-for-byte (the pre-sp-9274 behavior, the regression floor).
 	InSystemResidual    float64
 	CrossSystemResidual float64
+	// DistanceResidualFloor / DistanceResidualCeiling / DistanceSaturation parametrize the
+	// sp-9274 DISTANCE-AWARE in-system residual buy-leg (RULINGS #5, analyst-owned — the shipwright
+	// owns the mechanism, the analyst tunes these values). When PlanWarehouseCaps can resolve both
+	// the warehouse and an in-system source's coordinates, that good's residual is a linear ramp
+	// from Floor (source co-located with the warehouse — nothing to pre-stage, a homed hauler
+	// reaches it for free) rising to Ceiling (source at/beyond Saturation units — a long intra-system
+	// haul the buffer compresses, e.g. DRUGS@J58). Ceiling is CLAMPED at/below CrossSystemResidual so
+	// a cross-system source (which the single-system worker can never chase, RULING #14) always
+	// out-ranks every in-system good. <= 0 => the documented default.
+	DistanceResidualFloor   float64
+	DistanceResidualCeiling float64
+	DistanceSaturation      float64
 }
 
 // Default residual buy-legs by source location (analyst-owned, RULINGS #5). Cross-system is
@@ -130,6 +143,19 @@ type WarehouseCapParams struct {
 const (
 	DefaultInSystemResidual    = 1.0
 	DefaultCrossSystemResidual = 4.0
+)
+
+// Default distance-ramp knobs for the sp-9274 in-system residual buy-leg (analyst-owned,
+// RULINGS #5). The ramp turns dist(warehouse, source) into a residual in [Floor, Ceiling]:
+// a co-located source keeps the in-system baseline (Floor == DefaultInSystemResidual, so a
+// resolvable-but-co-located good matches the coarse fallback), while a far intra-system source
+// approaches — but by the Ceiling clamp never exceeds — the cross-system maximum, preserving
+// RULING #14 (cross-system out-ranks any in-system good). Saturation is the intra-system
+// distance (in SpaceTraders coordinate units) past which a source counts as maximally far.
+const (
+	DefaultDistanceResidualFloor   = 1.0
+	DefaultDistanceResidualCeiling = 3.0
+	DefaultDistanceSaturation      = 400.0
 )
 
 // Analyst-owned defaults (RULINGS #5). These are the fallbacks the params substitute when a
@@ -157,6 +183,15 @@ func DefaultColdStartCaps() []GoodCap {
 	}
 }
 
+// WaypointCoordsLookup resolves a waypoint symbol to its in-system coordinates for the sp-9274
+// distance-aware residual buy-leg. ok=false means the position is unknown (a nil lookup, or an
+// uncharted / TTL-expired waypoint) — PlanWarehouseCaps then FAILS OPEN to the coarse in/cross-system
+// residual constant for that good (RULINGS #1: never crash, never drop the good). It is a cache-only
+// position read (the caller wires it over the waypoint repository, NOT an API fetch-through) so a
+// per-pass re-solve costs no API spend. ok is keyed on the lookup outcome, never on zero coordinates
+// — a waypoint legitimately at the origin resolves ok=true with (0,0).
+type WaypointCoordsLookup func(waypointSymbol string) (x, y float64, ok bool)
+
 // PlanWarehouseCaps is the live-state adapter over ComputeWarehouseCaps: it builds the
 // per-good GoodDemand from mined contract-demand candidates (the shared sp-dchv Lane A
 // demand model this bead consumes, sibling of sp-q2zq) and solves the knapsack over the real
@@ -166,23 +201,31 @@ func DefaultColdStartCaps() []GoodCap {
 //   - Payment    = the good's home ask (its market value — the per-unit "payment" magnitude
 //     the buffer serves). A follow-on can thread the true contract reward.
 //   - ResidualBuyLeg = CrossSystemResidual when the cheapest source is in ANOTHER system (the
-//     single-system contract worker cannot chase it, RULING #14 — the buffer pre-stages it),
-//     else the smaller InSystemResidual (still worth buffering per sp-layd, but ranked below
-//     the far goods). This coarse location proxy fixes the incident's STARVATION — cross-system
-//     DRUGS/ANTIMATTER out-rank central goods and, combined with the per-good caps, no good
-//     monopolises the hull — but cannot yet zero a truly hub-covered in-system good; the sp-q2zq
-//     dist(hauler, source) coverage service (follow-on) does that, and the pure optimizer
-//     already honours a 0 residual by excluding the good.
+//     single-system contract worker cannot chase it, RULING #14 — the buffer pre-stages it); for
+//     an IN-system source it is a REAL dist(warehouse, source) mapped onto the [floor, ceiling]
+//     ramp (sp-9274 — see residualBuyLeg), so a FAR intra-system good (e.g. DRUGS@J58) out-ranks a
+//     CLOSE one instead of the old binary proxy that scored every in-system good identically and
+//     starved the far goods. The ceiling is clamped ≤ CrossSystemResidual so cross-system stays the
+//     max, and a co-located source (distance 0) matches the coarse in-system baseline. When coords
+//     are unavailable it FAILS OPEN to the coarse InSystemResidual (RULINGS #1); the pure optimizer
+//     still honours a 0 residual by excluding the good.
 //   - Size s_G = the largest single-contract size (MaxContractUnits), falling back to the
 //     summed demand only when the single-contract size is unknown, so the buffer holds one
 //     contract's worth — never the (often hull-dwarfing) summed demand.
 //
-// homeSystem is the warehouse's own system. prior/current carry the persisted EWMA + held
-// targets for stickiness (RULINGS #2). A caller with no candidates gets the cold-start fallback.
+// homeSystem is the warehouse's own system. warehouseWaypoint is the buffer's own waypoint and
+// coords resolves any waypoint symbol to its in-system position (sp-9274): together they turn the
+// residual buy-leg into a real dist(warehouse, source) for in-system goods. A nil coords lookup,
+// an empty warehouseWaypoint, or an unresolvable waypoint FAILS OPEN to the coarse in/cross-system
+// constant (RULINGS #1) — a nil lookup makes the whole solve byte-identical to the pre-sp-9274
+// binary proxy. prior/current carry the persisted EWMA + held targets for stickiness (RULINGS #2).
+// A caller with no candidates gets the cold-start fallback.
 func PlanWarehouseCaps(
 	candidates []persistence.DemandCandidate,
 	capacity int,
 	homeSystem string,
+	warehouseWaypoint string,
+	coords WaypointCoordsLookup,
 	prior map[string]float64,
 	current map[string]int,
 	params WarehouseCapParams,
@@ -195,6 +238,33 @@ func PlanWarehouseCaps(
 	if crossResidual <= 0 {
 		crossResidual = DefaultCrossSystemResidual
 	}
+	floor := params.DistanceResidualFloor
+	if floor <= 0 {
+		floor = DefaultDistanceResidualFloor
+	}
+	ceiling := params.DistanceResidualCeiling
+	if ceiling <= 0 {
+		ceiling = DefaultDistanceResidualCeiling
+	}
+	// RULING #14: a cross-system source (which the single-system worker can never chase) must
+	// out-rank ANY in-system good, so the distance ramp's ceiling can never exceed the
+	// cross-system residual — a far in-system good approaches, but never passes, the cross max.
+	if ceiling > crossResidual {
+		ceiling = crossResidual
+	}
+	saturation := params.DistanceSaturation
+	if saturation <= 0 {
+		saturation = DefaultDistanceSaturation
+	}
+
+	// Resolve the warehouse's own position ONCE. When it (or the whole lookup) is unavailable, no
+	// in-system distance can be computed and every in-system good FAILS OPEN to the coarse constant
+	// (RULINGS #1) — byte-identical to the pre-sp-9274 binary proxy.
+	var whX, whY float64
+	whKnown := false
+	if coords != nil && warehouseWaypoint != "" {
+		whX, whY, whKnown = coords(warehouseWaypoint)
+	}
 
 	goods := make([]GoodDemand, 0, len(candidates))
 	for _, c := range candidates {
@@ -205,10 +275,7 @@ func PlanWarehouseCaps(
 		if size <= 0 {
 			continue // nothing to size — cannot buffer
 		}
-		residual := inResidual
-		if c.ForeignSystem != "" && c.ForeignSystem != homeSystem {
-			residual = crossResidual
-		}
+		residual := residualBuyLeg(c, homeSystem, whX, whY, whKnown, coords, inResidual, crossResidual, floor, ceiling, saturation)
 		payment := float64(c.HomeAsk)
 		if payment <= 0 {
 			payment = float64(c.ForeignAsk) // last-resort value proxy when the home ask is unknown
@@ -228,6 +295,72 @@ func PlanWarehouseCaps(
 		PriorSmoothed:  prior,
 		CurrentTargets: current,
 	}, params)
+}
+
+// residualBuyLeg assigns one candidate's residual buy-leg (coverage_G) for the knapsack value —
+// the sp-9274 distance-aware upgrade of the old binary in/cross-system proxy:
+//
+//   - A CROSS-system source keeps the MAX (cross) residual: the single-system contract worker
+//     can never chase it (RULING #14), so the buffer is most valuable there. An in-system
+//     Euclidean distance is meaningless across systems, so distance is NOT computed for it.
+//   - An IN-system source with resolvable coordinates gets a REAL distance residual:
+//     dist(warehouse, source) mapped onto the [floor, ceiling] ramp, so a FAR intra-system source
+//     (a long haul the buffer compresses, e.g. DRUGS@J58) out-ranks a CLOSE one (a source a homed
+//     hauler reaches cheaply) — the exact starvation the incident exposed.
+//   - Coordinates unavailable — a nil lookup, an unknown warehouse position, or an uncached /
+//     TTL-expired source waypoint — FAILS OPEN to the coarse InSystemResidual constant (RULINGS
+//     #1): never crashes, never drops the good. A nil lookup makes every good fall back, so the
+//     whole solve is byte-identical to the pre-sp-9274 binary proxy (the regression floor).
+func residualBuyLeg(
+	c persistence.DemandCandidate,
+	homeSystem string,
+	whX, whY float64,
+	whKnown bool,
+	coords WaypointCoordsLookup,
+	inResidual, crossResidual, floor, ceiling, saturation float64,
+) float64 {
+	if c.ForeignSystem != "" && c.ForeignSystem != homeSystem {
+		return crossResidual // cross-system: the buffer's highest-value case (RULING #14)
+	}
+	// In-system: try a real dist(warehouse, source); fail open to the coarse in-system constant.
+	if !whKnown || coords == nil || c.ForeignMarket == "" {
+		return inResidual
+	}
+	srcX, srcY, ok := coords(c.ForeignMarket)
+	if !ok {
+		return inResidual
+	}
+	return residualForDistance(euclidDist(whX, whY, srcX, srcY), floor, ceiling, saturation)
+}
+
+// euclidDist is the in-system Euclidean distance between two positions (mirrors
+// shared.Waypoint.DistanceTo and the sp-q2zq coverage scorer's euclid in
+// run_contract_hub_coordinator_score.go; the optimizer works in raw coordinates so it needs no
+// Waypoint value objects).
+func euclidDist(x1, y1, x2, y2 float64) float64 {
+	dx := x2 - x1
+	dy := y2 - y1
+	return math.Sqrt(dx*dx + dy*dy)
+}
+
+// residualForDistance maps an IN-SYSTEM source distance onto the residual-buy-leg ramp: `floor`
+// at a co-located source (distance 0 — a homed hauler reaches it for free, nothing to pre-stage)
+// rising linearly to `ceiling` at/beyond `saturation` units (a long intra-system haul). It is
+// monotonic in distance, so a far in-system good always out-ranks a close one; the caller holds
+// `ceiling` ≤ CrossSystemResidual so a cross-system good still out-ranks every in-system good
+// (RULING #14).
+func residualForDistance(distance, floor, ceiling, saturation float64) float64 {
+	if saturation <= 0 {
+		return ceiling // degenerate: treat any positive distance as maximally far
+	}
+	frac := distance / saturation
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	return floor + (ceiling-floor)*frac
 }
 
 // ComputeWarehouseCaps solves one warehouse auto-cap allocation. It is a pure, deterministic

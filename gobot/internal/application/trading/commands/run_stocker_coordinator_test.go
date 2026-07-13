@@ -244,6 +244,7 @@ func newStockerHandlerMulti(t *testing.T, fx *stkFixture, coord storage.StorageC
 		&trFakeClock{},
 		apiClient,
 		coord, finder, miner, cfg, ceilingPct,
+		nil, // waypointRepo: nil → coords lookup fails open to the coarse residual (RULINGS #1)
 	)
 }
 
@@ -299,7 +300,7 @@ func TestStockerWarehouseAt_ResolvesToNewestOnZombieCollision(t *testing.T) {
 	zombie := stkWarehouseOpAt(t, "warehouse-TORWIND-12-bad719ff", "X1-TORWIND-12", t0)
 	live := stkWarehouseOpAt(t, "warehouse-TORWIND-12-3477282e", "X1-TORWIND-12", t0.Add(2*time.Hour))
 	finder := &fakeRunningFinder{ops: []*storage.StorageOperation{zombie, live}}
-	h := NewRunStockerCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, finder, nil, tradingsvc.DepositCandidateConfig{}, 0)
+	h := NewRunStockerCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, finder, nil, tradingsvc.DepositCandidateConfig{}, 0, nil)
 
 	got := h.warehouseAt(context.Background(), 1, "X1-TORWIND-12")
 
@@ -315,7 +316,7 @@ func TestStockerWarehouseAt_ResolvesToNewestOnZombieCollision(t *testing.T) {
 // speculative stocking).
 func TestStockerWarehouseAt_NoRunningWarehouseReturnsNil(t *testing.T) {
 	finder := &fakeRunningFinder{ops: nil}
-	h := NewRunStockerCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, finder, nil, tradingsvc.DepositCandidateConfig{}, 0)
+	h := NewRunStockerCoordinatorHandler(nil, nil, nil, nil, nil, nil, nil, finder, nil, tradingsvc.DepositCandidateConfig{}, 0, nil)
 
 	got := h.warehouseAt(context.Background(), 1, "X1-TORWIND-12")
 
@@ -977,6 +978,7 @@ func newStockerHandlerClock(t *testing.T, fx *stkFixture, coord storage.StorageC
 		clock,
 		apiClient,
 		coord, finder, miner, cfg, ceilingPct,
+		nil, // waypointRepo: nil → coords lookup fails open to the coarse residual (RULINGS #1)
 	)
 }
 
