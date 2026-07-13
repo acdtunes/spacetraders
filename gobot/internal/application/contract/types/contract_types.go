@@ -126,6 +126,16 @@ type RunFleetCoordinatorCommand struct {
 	// still get the claim-filter, they just don't relocate when idle).
 	StandbyStations []string
 
+	// DedicatedShipsSeeded (sp-86vb) is the first-boot marker for the
+	// DedicatedShips launch seed. It is false on a genuine first boot (the seed
+	// is applied into the dedication tag) and true on every later daemon-restart
+	// rebuild (the seed is NOT replayed). Persisted into the coordinator's OWN
+	// container config right after the first seed and reloaded here on recovery
+	// (buildContractFleetCoordinatorCommand), so the immutable launch snapshot can
+	// never re-stamp "contract" onto a hull that was deliberately `fleet remove`d
+	// while the coordinator ran — the removal survives the restart (RULINGS #2).
+	DedicatedShipsSeeded bool
+
 	// Idle-gap arb (sp-1z2h): harvest the dedicated fleet's idle time with
 	// hub-local one-shot arb legs (see contract.IdleArbDispatcher). All knobs
 	// flow from the persisted launch config (RULINGS #5); zero values take the

@@ -800,6 +800,11 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		ContainerID:     cfg.RequiredString("container_id"),
 		DedicatedShips:  cfg.OptionalStringSlice("dedicated_ships"),
 		StandbyStations: cfg.OptionalStringSlice("standby_stations"),
+		// First-boot seed marker (sp-86vb): absent on creation → false → the seed
+		// is applied once and the marker persisted; true on every restart rebuild →
+		// the seed is NOT replayed, so a live `fleet remove` survives the restart
+		// (RULINGS #2). Written by DedicatedFleetSeedConfigPersister after first boot.
+		DedicatedShipsSeeded: cfg.OptionalBool(dedicatedShipsSeededConfigKey),
 		// Command-cargo baseline (sp-uj6a, RULINGS #5): absent key → 0 → the
 		// contract package's documented default (80, the light-hauler
 		// standard - see CommandCargoBaselineDefault).

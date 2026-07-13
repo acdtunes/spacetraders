@@ -556,6 +556,11 @@ func run(cfg *config.Config) error {
 
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	// First-boot seed marker (sp-86vb): persist "the --dedicated-ships seed has
+	// been applied" into the coordinator's own container config after first boot,
+	// so a daemon restart does NOT replay the stale seed over live fleet state and
+	// a `fleet remove` survives the restart (RULINGS #2).
+	contractFleetCoordinatorHandler.SetDedicatedFleetSeedMarker(grpc.NewDedicatedFleetSeedConfigPersister(containerRepo))
 	// Idle-gap arb (sp-1z2h): the coordinator's dispatcher launches its
 	// one-shot legs through the daemon server (claim-first, recovery-safe).
 	contractFleetCoordinatorHandler.SetIdleArbLauncher(daemonServer)

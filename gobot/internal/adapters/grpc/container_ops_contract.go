@@ -144,6 +144,64 @@ func (s *DaemonServer) StartContractWorkflow(
 	return nil
 }
 
+// dedicatedShipsSeededConfigKey is the container-config marker recording that a
+// contract coordinator has applied its --dedicated-ships launch seed once (sp-86vb).
+// DedicatedFleetSeedConfigPersister writes it after the first seed;
+// buildContractFleetCoordinatorCommand reads it back on restart. Keep the two in
+// lockstep — the read and the write must name the same key.
+const dedicatedShipsSeededConfigKey = "dedicated_ships_seeded"
+
+// DedicatedFleetSeedConfigPersister backs the contract coordinator's
+// contractCmd.DedicatedFleetSeedMarker with the container config (sp-86vb),
+// mirroring ArbCostConfigPersister (sp-dkj7 / RULINGS #2). After the coordinator
+// applies its --dedicated-ships seed on first boot it merges
+// dedicated_ships_seeded=true into the SAME persisted config the recovery rebuild
+// reads (buildContractFleetCoordinatorCommand), so a daemon restart reloads the
+// marker and SKIPS the seed replay that would otherwise re-stamp "contract" onto a
+// hull the operator deliberately `fleet remove`d. It is a read-modify-write of the
+// config map guarded to the single config column; the config has no other writer
+// during a coordinator run, so it never clobbers the status/heartbeat columns the
+// runner updates concurrently.
+type DedicatedFleetSeedConfigPersister struct {
+	containerRepo *persistence.ContainerRepositoryGORM
+}
+
+// NewDedicatedFleetSeedConfigPersister wires the config-backed first-boot marker for
+// the contract fleet coordinator.
+func NewDedicatedFleetSeedConfigPersister(containerRepo *persistence.ContainerRepositoryGORM) *DedicatedFleetSeedConfigPersister {
+	return &DedicatedFleetSeedConfigPersister{containerRepo: containerRepo}
+}
+
+// MarkDedicatedShipsSeeded merges dedicated_ships_seeded=true into the container's
+// persisted config. It reads the current config, sets the key, and writes just the
+// config column — preserving every launch knob (dedicated_ships/standby_stations)
+// the rebuild also needs. A missing container row (already terminalized) is a no-op
+// error the caller logs and swallows: the seed has already been applied, and this is
+// restart-resilience of the removal, never a spend guard.
+func (p *DedicatedFleetSeedConfigPersister) MarkDedicatedShipsSeeded(ctx context.Context, containerID string, playerID int) error {
+	model, err := p.containerRepo.Get(ctx, containerID, playerID)
+	if err != nil {
+		return fmt.Errorf("load container %s to persist dedicated-ships seeded marker: %w", containerID, err)
+	}
+	if model == nil {
+		return fmt.Errorf("container %s not found - cannot persist dedicated-ships seeded marker", containerID)
+	}
+
+	config := map[string]interface{}{}
+	if model.Config != "" {
+		if uerr := json.Unmarshal([]byte(model.Config), &config); uerr != nil {
+			return fmt.Errorf("deserialize container %s config to persist seeded marker: %w", containerID, uerr)
+		}
+	}
+	config[dedicatedShipsSeededConfigKey] = true
+
+	merged, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("serialize container %s config after merging seeded marker: %w", containerID, err)
+	}
+	return p.containerRepo.UpdateContainerConfig(ctx, containerID, playerID, string(merged))
+}
+
 // ContractFleetCoordinator creates a fleet coordinator for multi-ship contract operations
 // Ships are discovered dynamically - no pre-assignment needed.
 //

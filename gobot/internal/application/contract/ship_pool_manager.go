@@ -432,6 +432,42 @@ func FleetHasMembers(
 	return false, nil
 }
 
+// FindFleetMemberSymbols returns the symbols of EVERY ship currently carrying the
+// given DedicatedFleet tag — idle, busy, or in transit — the LIVE membership of a
+// coordinator's dedicated fleet (sp-cmwc). Unlike FindIdleShipsByFleet it applies no
+// idle/role/cargo filter: pure membership by tag, because the callers that need it
+// (the between-legs homing gate and the standby-station occupancy balancer) care who
+// BELONGS to the fleet, not who is dispatchable right now.
+//
+// Reading the persisted tag on every call is what makes membership live: a hull
+// added via `fleet add` (tag set, absent from the immutable --dedicated-ships launch
+// list) is a member immediately, and a hull `fleet remove`d (tag cleared) drops out —
+// no restart, and no dependence on the stale launch snapshot (the sp-cmwc defect).
+// The "" fleet returns nothing, mirroring FindIdleShipsByFleet / FleetHasMembers.
+func FindFleetMemberSymbols(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
+	fleet string,
+) ([]string, error) {
+	if fleet == "" {
+		return nil, nil
+	}
+
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+
+	var members []string
+	for _, ship := range allShips {
+		if ship.DedicatedFleet() == fleet {
+			members = append(members, ship.ShipSymbol())
+		}
+	}
+	return members, nil
+}
+
 // SelectAvailableShips combines the general and dedicated-fleet candidate
 // pools into the coordinator's working set for one discovery pass.
 //

@@ -44,6 +44,14 @@ type RunFleetCoordinatorHandler struct {
 	// Event bus for inter-container communication
 	eventSubscriber navigation.ShipEventSubscriber
 
+	// seedMarker (sp-86vb) durably records that this coordinator has applied its
+	// --dedicated-ships launch seed once, so a daemon restart does NOT replay the
+	// stale seed over live fleet state. Optional; nil leaves the seed un-persisted
+	// (a restart then re-seeds exactly as before this fix — fail-open, matching the
+	// sibling optional-port contract). The daemon injects a container-config-backed
+	// marker via SetDedicatedFleetSeedMarker, mirroring the arb cost persister.
+	seedMarker DedicatedFleetSeedMarker
+
 	// idleArbLauncher (sp-1z2h) starts recovery-safe one-shot arb containers
 	// for the idle-gap dispatcher. Wired at daemon startup like the event
 	// subscriber; nil (e.g. in tests) leaves the harvest off entirely.
@@ -110,6 +118,15 @@ func (h *RunFleetCoordinatorHandler) SetEventSubscriber(subscriber navigation.Sh
 	h.eventSubscriber = subscriber
 }
 
+// SetDedicatedFleetSeedMarker wires the durable first-boot marker (sp-86vb) so
+// the coordinator persists "the --dedicated-ships seed has been applied" after
+// its first boot and skips replaying that seed on every later restart. Left unset
+// (nil), the seed is re-applied on every boot exactly as before this fix
+// (fail-open). Mirrors the SetIdleArbLauncher optional-injection idiom.
+func (h *RunFleetCoordinatorHandler) SetDedicatedFleetSeedMarker(marker DedicatedFleetSeedMarker) {
+	h.seedMarker = marker
+}
+
 // SetIdleArbLauncher wires the daemon-server launcher the idle-gap arb
 // dispatcher (sp-1z2h) spawns its one-shot legs through. Optional: without it
 // the coordinator runs exactly as before, no harvest.
@@ -148,14 +165,19 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		Errors:             []string{},
 	}
 
-	// Reconcile the operator's --dedicated-ships list into the DedicatedFleet
-	// claim-filter (sp-snmb), routed through AssignShipFleetCommand — the
-	// single write path for the tag (sp-l7h2). Best-effort and additive-only:
-	// a ship symbol dropped from a later --dedicated-ships list on restart is
-	// NOT un-dedicated here, only newly-configured symbols are marked. The
-	// empty default must not touch anything, mediator lookup included.
+	// Seed the operator's --dedicated-ships list into the DedicatedFleet
+	// claim-filter (sp-snmb) — but ONCE, on genuine first boot only (sp-86vb).
+	// Routed through AssignShipFleetCommand, the single write path for the tag
+	// (sp-l7h2). On a daemon restart the launch seed is a STALE snapshot: a hull
+	// deliberately `fleet remove`d while the coordinator ran had its live tag
+	// cleared, and replaying the immutable seed would re-stamp "contract" onto it,
+	// resurrecting the removal. seedDedicatedFleetIfFirstBoot gates the replay on
+	// the persisted DedicatedShipsSeeded marker so the live tag stays authoritative
+	// across restarts. The len>0 guard keeps the empty default from touching the
+	// mediator at all (the seed function is a no-op then anyway).
 	if len(cmd.DedicatedShips) > 0 {
-		reconcileDedicatedFleet(ctx, logger, h.fleetPoolManager.GetMediator(), cmd.PlayerID, cmd.DedicatedShips, dedicatedFleetContract,
+		seedDedicatedFleetIfFirstBoot(ctx, logger, h.fleetPoolManager.GetMediator(), h.seedMarker,
+			cmd.PlayerID, cmd.ContainerID, cmd.DedicatedShips, cmd.DedicatedShipsSeeded, dedicatedFleetContract,
 			fmt.Sprintf("contract-coordinator-reconcile:%s", cmd.ContainerID))
 	}
 
@@ -184,9 +206,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// re-homing off, exactly as it leaves the contract-handoff homing off.
 		homer := &mediatorShipHomer{
 			mediator:        h.fleetPoolManager.GetMediator(),
+			shipRepo:        h.shipRepo,
 			playerID:        cmd.PlayerID,
 			standbyStations: cmd.StandbyStations,
-			fleetShips:      cmd.DedicatedShips,
+			fleet:           dedicatedFleetContract,
 		}
 		dispatcher := appContract.NewIdleArbDispatcher(
 			h.shipRepo,
@@ -636,7 +659,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// treatment, since it's exclusively reserved for this coordinator and
 		// has no reason to loiter at a general market.
 		if previousShipSymbol != "" && previousShipSymbol != selectedShip {
-			if isDedicatedShip(previousShipSymbol, cmd.DedicatedShips) {
+			// LIVE dedicated-fleet membership (sp-cmwc), not the frozen launch list:
+			// a hull `fleet add`ed after launch homes between legs like any dedicated
+			// member, and this same list is the standby-station occupancy peer set.
+			dedicatedMembers := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
+			if isDedicatedShip(previousShipSymbol, dedicatedMembers) {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - homing dedicated ship %s to standby station", previousShipSymbol, selectedShip, previousShipSymbol), nil)
 
 				// Launch homing command asynchronously (fire-and-forget)
@@ -655,7 +682,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					if err != nil {
 						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
 					}
-				}(previousShipSymbol, cmd.PlayerID, cmd.StandbyStations, cmd.DedicatedShips)
+				}(previousShipSymbol, cmd.PlayerID, cmd.StandbyStations, dedicatedMembers)
 			} else {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 
@@ -746,6 +773,79 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 // reconciles its --dedicated-ships list into (sp-snmb).
 const dedicatedFleetContract = "contract"
 
+// DedicatedFleetSeedMarker durably records that this coordinator has applied its
+// --dedicated-ships launch seed ONCE (sp-86vb), so a later daemon-restart rebuild
+// reads the marker back and does NOT replay the stale launch seed over live fleet
+// state — a hull deliberately `fleet remove`d stays removed across the restart
+// (RULINGS #2). The daemon backs it with the coordinator's OWN container config
+// (the same map the recovery rebuild reads its command from), mirroring the arb
+// cost persister (sp-dkj7). Reporting/gating only — no ship state is written here.
+type DedicatedFleetSeedMarker interface {
+	// MarkDedicatedShipsSeeded records that containerID's --dedicated-ships seed
+	// has been applied, so a later restart rebuild reads DedicatedShipsSeeded=true.
+	// A returned error is advisory: the seed has already been applied, so the caller
+	// logs and continues (a persistence failure degrades restart-resilience of the
+	// removal, it never fails the coordinator).
+	MarkDedicatedShipsSeeded(ctx context.Context, containerID string, playerID int) error
+}
+
+// seedDedicatedFleetIfFirstBoot applies the --dedicated-ships launch seed EXACTLY
+// once per coordinator lifetime (sp-86vb). On genuine first boot (seeded=false) it
+// reconciles the seed into the dedication tag and then persists a durable "seeded"
+// marker into the coordinator's own container config; on every subsequent daemon
+// restart (seeded=true, reloaded from that marker) it does NOTHING, leaving the
+// live dedicated_fleet tag authoritative.
+//
+// This is the fix for the restart-resurrection defect: fleet add/remove mutate the
+// live tag atomically, but the launch seed is a frozen snapshot the coordinator
+// used to replay ADDITIVELY on every boot. A hull removed via `fleet remove` (tag
+// cleared) that was in the original seed got its "contract" tag re-stamped on the
+// next restart — resurrecting a deliberate removal. Gating the replay on a
+// persisted first-boot marker stops that while still seeding a genuine first boot.
+//
+// An empty seed still touches nothing (mediator lookup included). A nil marker
+// leaves the seed un-persisted and warns: the seed still applies, but a restart
+// would re-seed exactly as before this fix (fail-open; production always wires it).
+func seedDedicatedFleetIfFirstBoot(
+	ctx context.Context,
+	logger common.ContainerLogger,
+	med common.Mediator,
+	marker DedicatedFleetSeedMarker,
+	playerID shared.PlayerID,
+	containerID string,
+	dedicatedShips []string,
+	seeded bool,
+	fleetName string,
+	assigner string,
+) {
+	if len(dedicatedShips) == 0 {
+		return
+	}
+	// Already seeded on a previous boot — the live dedicated_fleet tag is now
+	// authoritative. Do NOT replay the stale launch snapshot, or a hull removed
+	// via `fleet remove` (tag cleared) that is still listed in the seed would be
+	// re-stamped "contract", resurrecting a deliberate removal (sp-86vb).
+	if seeded {
+		return
+	}
+
+	reconcileDedicatedFleet(ctx, logger, med, playerID, dedicatedShips, fleetName, assigner)
+
+	// Persist the first-boot marker so a later restart reloads seeded=true and skips
+	// the replay above. Fail-open: the seed has already been applied, so a marker
+	// failure is a WARNING, never a coordinator abort (RULINGS #1 never-skip).
+	if marker == nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"dedicated fleet seed applied for %d ship(s) but no seed marker is wired - a daemon restart may replay the launch seed over live fleet state (sp-86vb)",
+			len(dedicatedShips)), nil)
+		return
+	}
+	if err := marker.MarkDedicatedShipsSeeded(ctx, containerID, playerID.Value()); err != nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"dedicated fleet seed applied but failed to persist the seeded marker (a restart may replay the launch seed): %v", err), nil)
+	}
+}
+
 // reconcileDedicatedFleet marks every operator-configured --dedicated-ships
 // entry into fleetName so the DedicatedFleet claim-filter in
 // FindIdleLightHaulers actually takes effect. Routed through
@@ -799,6 +899,11 @@ func reconcileDedicatedFleet(
 // fleet-peer list the contract-handoff homing uses (RULINGS #7: no parallel
 // homing algorithm).
 //
+// The fleet-peer list is resolved LIVE per re-home from the dedicated_fleet tag
+// (sp-cmwc), not a frozen launch snapshot, so a hull `fleet add`ed after launch is
+// counted in standby-station occupancy and a `fleet remove`d one is not — matching
+// the contract-handoff homing gate.
+//
 // Navigation runs FIRE-AND-FORGET, mirroring the coordinator's own
 // `go func(){ Send(homeCmd) }` at the contract-handoff hook: HomeShipCommand
 // blocks until the hull arrives (navigate_route executes the whole route), so a
@@ -809,9 +914,10 @@ func reconcileDedicatedFleet(
 // at WARNING rather than surfacing it (re-homing is best-effort).
 type mediatorShipHomer struct {
 	mediator        common.Mediator
+	shipRepo        navigation.ShipRepository
 	playerID        shared.PlayerID
 	standbyStations []string
-	fleetShips      []string
+	fleet           string
 }
 
 var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
@@ -822,7 +928,7 @@ func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string) err
 		ShipSymbol:      shipSymbol,
 		PlayerID:        m.playerID,
 		StandbyStations: m.standbyStations,
-		FleetShips:      m.fleetShips,
+		FleetShips:      resolveDedicatedMembersForHoming(ctx, logger, m.shipRepo, m.playerID, m.fleet, nil),
 	}
 	go func() {
 		// Background context (the dispatch ctx may be cancelled when the
@@ -836,10 +942,11 @@ func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string) err
 	return nil
 }
 
-// isDedicatedShip reports whether shipSymbol is one of the operator's
-// configured --dedicated-ships (sp-snmb). Used at the "previous ship" hook to
-// decide whether an idle ship should home to a standby station instead of
-// being balanced to a market.
+// isDedicatedShip reports whether shipSymbol is present in the given
+// dedicated-membership list. Used at the "previous ship" hook to decide whether
+// an idle ship homes to a standby station instead of being balanced to a market.
+// The list is the LIVE dedicated-fleet membership (sp-cmwc), not the immutable
+// --dedicated-ships launch snapshot — see resolveDedicatedMembersForHoming.
 func isDedicatedShip(shipSymbol string, dedicatedShips []string) bool {
 	for _, symbol := range dedicatedShips {
 		if symbol == shipSymbol {
@@ -847,6 +954,35 @@ func isDedicatedShip(shipSymbol string, dedicatedShips []string) bool {
 		}
 	}
 	return false
+}
+
+// resolveDedicatedMembersForHoming returns the LIVE dedicated-fleet membership the
+// between-legs homing gate keys off (sp-cmwc). Before this, the gate read the frozen
+// --dedicated-ships launch list, so a hull added via `fleet add --operation contract`
+// after launch (tag set, absent from that list) failed the gate and was market-balanced
+// like a general-pool hull instead of homed to a standby station between legs — while a
+// `fleet remove`d hull still counted. Reading the live dedicated_fleet tag makes the
+// gate and the standby-occupancy peer list track actual membership, matching the live
+// authority FindIdleShipsByFleet / FleetHasMembers already give the selection side.
+//
+// On a membership read error it falls back to launchList (the pre-fix source), so a
+// transient repo failure is never WORSE than the old behavior — it just forgoes the
+// live view for that one repositioning.
+func resolveDedicatedMembersForHoming(
+	ctx context.Context,
+	logger common.ContainerLogger,
+	shipRepo navigation.ShipRepository,
+	playerID shared.PlayerID,
+	fleet string,
+	launchList []string,
+) []string {
+	members, err := appContract.FindFleetMemberSymbols(ctx, playerID, shipRepo, fleet)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"failed to read live %s-fleet membership for homing (falling back to launch --dedicated-ships list): %v", fleet, err), nil)
+		return launchList
+	}
+	return members
 }
 
 // recordWorkerCompletion logs the outcome of a worker-completion event honestly
