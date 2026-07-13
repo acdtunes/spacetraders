@@ -293,46 +293,43 @@ func (s *Supervisor) creditsGateNewlyCrossed(policy WakePolicy) bool {
 	return (aboveNow && !s.lastAttemptCreditsAbove) || (belowNow && !s.lastAttemptCreditsBelow)
 }
 
-// armCreditsEdge re-arms the PRIMARY wake gate's credits edge-state each tick,
-// BEFORE the gate is evaluated (sp-l6pz). It clears creditsAboveFired /
-// creditsBelowFired whenever credits are OUTSIDE the corresponding bound (or the
-// bound is undeclared), so the next crossing INTO the satisfied region fires
-// exactly one wake. It never SETS a flag — a still-satisfied bound keeps its
-// fired flag, so the gate stays quiet; setting is markCreditsFired's job, on
-// delivery. The re-arm is in-memory only (no per-tick disk write): if credits
-// exit and the process restarts before the next delivered wake, the first
-// post-restart tick re-derives the cleared state from live credits before the
-// gate runs, and the next delivered wake persists it. Deliberately independent
-// of the ATTEMPT-relative lastAttemptCredits{Above,Below} snapshot, which paces
-// the sp-sk68 D4 delivery-backoff bypass and is untouched here.
-func (s *Supervisor) armCreditsEdge(policy WakePolicy) {
-	if policy.CreditsAbove == nil || s.lastCredits < *policy.CreditsAbove {
-		s.creditsAboveFired = false
+// consumeCreditsBounds makes a captain-declared credits bound ONE-SHOT (sp-wfut,
+// revising sp-l6pz): once a delivered wake has serviced a satisfied
+// CreditsAbove/Below bound, that specific bound is CONSUMED — set to nil in the
+// WakePolicy and persisted via SaveWakePolicy — so it never fires again until the
+// captain re-declares it. This unifies with the sp-oyer one-shot watch
+// disarm-on-fire path (SaveWatchPolicy of the surviving watches): the persisted
+// policy IS the durable one-shot state, so a watchkeeper restart never
+// resurrects a consumed trigger (RULINGS #2). No separate fired-flag/edge-state
+// exists — a consumed bound is simply absent.
+//
+// Call ONLY after a successful delivery (ran==true, no error): marking on
+// success alone keeps a genuine crossing live (gate + sp-sk68 D4 backoff-bypass)
+// through a delivery outage until it truly reaches the captain, rather than
+// silently burning the one-shot on a wake the captain never saw. Consuming a
+// satisfied bound regardless of WHY the wake fired coalesces a credits crossing
+// that rode a concurrent cadence/interrupt wake — the captain has already seen
+// the balance — instead of leaving a redundant credits wake armed.
+//
+// Each bound is consumed independently: firing CreditsBelow leaves a set
+// CreditsAbove untouched, and vice-versa. policy is the copy loaded fresh at the
+// top of this tick; nilling a bound on it and writing the whole struct back
+// preserves every other field (NextWakeAt, InterruptTypes, DeclaredAt, the other
+// bound) exactly as sp-oyer's SaveWatchPolicy replaces only the Watches list.
+func (s *Supervisor) consumeCreditsBounds(policy WakePolicy) {
+	consumed := false
+	if policy.CreditsAbove != nil && s.lastCredits >= *policy.CreditsAbove {
+		policy.CreditsAbove = nil
+		consumed = true
 	}
-	if policy.CreditsBelow == nil || s.lastCredits > *policy.CreditsBelow {
-		s.creditsBelowFired = false
+	if policy.CreditsBelow != nil && s.lastCredits <= *policy.CreditsBelow {
+		policy.CreditsBelow = nil
+		consumed = true
 	}
-}
-
-// markCreditsFired records that this tick's delivered wake has serviced any
-// currently-satisfied CreditsAbove/Below bound, so the edge-triggered gate stays
-// quiet until credits exit and re-cross it (sp-l6pz). Call ONLY after a
-// successful delivery. It persists the edge-state (but only when a flag actually
-// transitions, so an ordinary heartbeat wake in the neutral zone adds no
-// redundant write) so a restart does not re-fire a still-satisfied bound
-// (RULINGS #2). The complementary re-arm on exit is armCreditsEdge.
-func (s *Supervisor) markCreditsFired(policy WakePolicy) {
-	changed := false
-	if policy.CreditsAbove != nil && s.lastCredits >= *policy.CreditsAbove && !s.creditsAboveFired {
-		s.creditsAboveFired = true
-		changed = true
-	}
-	if policy.CreditsBelow != nil && s.lastCredits <= *policy.CreditsBelow && !s.creditsBelowFired {
-		s.creditsBelowFired = true
-		changed = true
-	}
-	if changed {
-		s.saveState()
+	if consumed {
+		if err := SaveWakePolicy(s.statePath, policy); err != nil {
+			fmt.Printf("watchkeeper: consuming one-shot credits bound failed to persist: %v\n", err)
+		}
 	}
 }
 

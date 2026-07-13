@@ -216,15 +216,15 @@ func TestEvaluateWakeGate(t *testing.T) {
 	}
 }
 
-// TestEvaluateWakeGateCreditsEdgeGuard covers sp-l6pz: the CreditsAbove/Below
-// wake conditions are EDGE-triggered, not level-triggered. The gate fires when
-// credits satisfy a declared bound ONLY while that bound's edge is un-fired
-// (CreditsAbove/BelowFired == false, threaded in from the persisted edge-state).
-// Once serviced (Fired == true) a still-satisfied bound must NOT re-wake — the
-// pure level check alone spammed an event-less wake on every 30s tick while
-// credits sat past a declared threshold (the live incident: credits_below=600000,
-// credits ~170k). The interrupt and cadence paths are unaffected by the edge.
-func TestEvaluateWakeGateCreditsEdgeGuard(t *testing.T) {
+// TestEvaluateWakeGateCreditsOneShot covers sp-wfut (revising sp-l6pz): a
+// captain-set CreditsAbove/Below bound is a ONE-SHOT trigger. Because the
+// supervisor CONSUMES a fired bound from the persisted policy (sets it to nil),
+// the gate itself carries no fired-flag/edge-state: a bound PRESENT in the policy
+// has never fired and wakes on the plain level check; a consumed bound is simply
+// ABSENT (nil) and cannot wake. This is what ended the event-less storm the
+// original level gate produced — a consumed bound can never re-cross. The
+// interrupt path is checked first and is unaffected by credits.
+func TestEvaluateWakeGateCreditsOneShot(t *testing.T) {
 	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	// Cadence far from due for every case, so credits are the only wake driver.
 	notDue := func(in wakeGateInput) wakeGateInput {
@@ -240,34 +240,38 @@ func TestEvaluateWakeGateCreditsEdgeGuard(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "below bound satisfied and un-fired wakes (the crossing)",
-			in:   notDue(wakeGateInput{Credits: 170000, Policy: WakePolicy{CreditsBelow: intPtr(600000)}, CreditsBelowFired: false}),
+			name: "an armed below bound satisfied wakes (the crossing)",
+			in:   notDue(wakeGateInput{Credits: 170000, Policy: WakePolicy{CreditsBelow: intPtr(600000)}}),
 			want: true,
 		},
 		{
-			name: "below bound satisfied but already fired stays quiet",
-			in:   notDue(wakeGateInput{Credits: 170000, Policy: WakePolicy{CreditsBelow: intPtr(600000)}, CreditsBelowFired: true}),
+			name: "a consumed (nil) below bound never wakes, even far below",
+			in:   notDue(wakeGateInput{Credits: 170000, Policy: WakePolicy{CreditsBelow: nil}}),
 			want: false,
 		},
 		{
-			name: "above bound satisfied and un-fired wakes (the crossing)",
-			in:   notDue(wakeGateInput{Credits: 500000, Policy: WakePolicy{CreditsAbove: intPtr(500000)}, CreditsAboveFired: false}),
+			name: "an armed above bound satisfied wakes (the crossing)",
+			in:   notDue(wakeGateInput{Credits: 500000, Policy: WakePolicy{CreditsAbove: intPtr(500000)}}),
 			want: true,
 		},
 		{
-			name: "above bound satisfied but already fired stays quiet",
-			in:   notDue(wakeGateInput{Credits: 500000, Policy: WakePolicy{CreditsAbove: intPtr(500000)}, CreditsAboveFired: true}),
+			name: "a consumed (nil) above bound never wakes, even far above",
+			in:   notDue(wakeGateInput{Credits: 999999, Policy: WakePolicy{CreditsAbove: nil}}),
 			want: false,
 		},
 		{
-			// A fired flag is a per-bound suppressor of the EVENT-LESS credits wake
-			// only; it must never mask a genuine interrupt (checked first).
-			name: "a fired below-bound does not suppress an interrupt event",
+			name: "an armed below bound NOT satisfied stays quiet",
+			in:   notDue(wakeGateInput{Credits: 700000, Policy: WakePolicy{CreditsBelow: intPtr(600000)}}),
+			want: false,
+		},
+		{
+			// Credits bounds are the EVENT-LESS wake driver; a genuine interrupt is
+			// checked first and always wakes regardless of any credits state.
+			name: "an interrupt event wakes regardless of a consumed credits bound",
 			in: notDue(wakeGateInput{
-				Events:            []*captain.Event{evt(captain.EventWorkflowFailed)},
-				Credits:           170000,
-				Policy:            WakePolicy{CreditsBelow: intPtr(600000)},
-				CreditsBelowFired: true,
+				Events:  []*captain.Event{evt(captain.EventWorkflowFailed)},
+				Credits: 170000,
+				Policy:  WakePolicy{CreditsBelow: nil},
 			}),
 			want: true,
 		},

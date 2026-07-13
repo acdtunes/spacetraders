@@ -44,18 +44,6 @@ type Supervisor struct {
 	lastCredits   int
 	sessionStarts []time.Time
 
-	// creditsAboveFired/creditsBelowFired are the PERSISTED edge-state that makes
-	// the primary wake gate's CreditsAbove/Below conditions edge-triggered
-	// (sp-l6pz): true once a wake has been DELIVERED for the current sojourn in
-	// which credits satisfy the corresponding bound, cleared when credits exit it.
-	// armCreditsEdge re-arms them each tick before the gate; markCreditsFired sets
-	// them on a successful delivery. They persist (supervisorState) so a restart
-	// does not re-fire a still-satisfied bound (RULINGS #2). This is DELIVERY-
-	// relative and distinct from the ATTEMPT-relative lastAttemptCredits{Above,
-	// Below} snapshot below, which paces the sp-sk68 D4 delivery-backoff bypass.
-	creditsAboveFired bool
-	creditsBelowFired bool
-
 	// lastNudge is the time of the last non-interrupt firstWake nudge. It gates
 	// nudge coalescing (see nudgeCooldown): a fresh firstWake for newly-arrived
 	// non-interrupt events must wait out the cooldown since this stamp. Persisted
@@ -186,12 +174,6 @@ func (s *Supervisor) restoreState(now time.Time) {
 	// (sp-o8wi). An old state file without the field loads as zero — backward
 	// compatible.
 	s.lastNudge = st.LastNudge
-	// Credits wake-gate edge-state (sp-l6pz). An old state file without these keys
-	// loads as false ("not yet fired"), so a genuine standing crossing still fires
-	// exactly once post-upgrade; a persisted true suppresses a re-fire on restart
-	// while the bound stays satisfied (RULINGS #2).
-	s.creditsAboveFired = st.CreditsAboveFired
-	s.creditsBelowFired = st.CreditsBelowFired
 }
 
 // saveState persists current scheduling (cadence) state. Best-effort: a
@@ -208,8 +190,6 @@ func (s *Supervisor) saveState() {
 		Escalated:         s.escalated,
 		LastCredits:       s.lastCredits,
 		LastNudge:         s.lastNudge,
-		CreditsAboveFired: s.creditsAboveFired,
-		CreditsBelowFired: s.creditsBelowFired,
 	}
 	if err := saveCadenceState(s.statePath, st); err != nil {
 		fmt.Printf("watchkeeper: supervisor state persist failed: %v\n", err)
@@ -320,18 +300,15 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		fmt.Printf("watchkeeper: wake policy unreadable, using defaults: %v\n", err)
 		policy = WakePolicy{}
 	}
-	// Re-arm the credits wake-gate edge BEFORE evaluating the gate: if credits have
-	// exited a bound (or the bound is undeclared) this clears the already-fired
-	// flag so the NEXT crossing fires again (sp-l6pz). It only clears on exit, so a
-	// still-satisfied bound keeps its fired flag and stays quiet.
-	s.armCreditsEdge(policy)
+	// The credits bounds are ONE-SHOT (sp-wfut): a bound still present in the
+	// policy has never fired, so the gate fires on the plain level check and the
+	// delivery path consumes the bound. No per-tick edge re-arm is needed — a
+	// consumed bound is simply absent from the reloaded policy.
 	decision := evaluateWakeGate(wakeGateInput{
 		Now:                    now,
 		Events:                 events,
 		Policy:                 policy,
 		Credits:                s.lastCredits,
-		CreditsAboveFired:      s.creditsAboveFired,
-		CreditsBelowFired:      s.creditsBelowFired,
 		LastSession:            s.lastSession,
 		HeartbeatMinutes:       s.cfg.HeartbeatMinutes,
 		MaxWakeIntervalMinutes: s.cfg.MaxWakeIntervalMinutes,
@@ -359,14 +336,15 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if err != nil {
 		s.noteDeliveryFailure(now, err)
 	} else if ran {
-		// A wake was actually DELIVERED this tick. Mark any currently-satisfied
-		// credits bound as serviced so its edge stays quiet until credits exit and
-		// re-cross (sp-l6pz). Marking only on success keeps a genuine crossing live
+		// A wake was actually DELIVERED this tick. CONSUME any currently-satisfied
+		// captain-declared credits bound (sp-wfut): a one-shot trigger fires once and
+		// is removed from the persisted policy, so it never re-fires until the captain
+		// re-declares it. Consuming only on success keeps a genuine crossing live
 		// (gate + backoff-bypass) through a delivery outage until it truly reaches
-		// the captain. Marking regardless of WHY the wake fired coalesces a credits
+		// the captain; consuming regardless of WHY the wake fired coalesces a credits
 		// crossing that rode a concurrent cadence/interrupt wake — the captain has
-		// already seen the balance — instead of emitting a redundant credits wake.
-		s.markCreditsFired(policy)
+		// already seen the balance.
+		s.consumeCreditsBounds(policy)
 	}
 	return ran, err
 }

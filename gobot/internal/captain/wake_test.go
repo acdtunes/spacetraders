@@ -490,16 +490,17 @@ func TestSupervisorStateWithoutLastNudgeFieldLoadsCleanly(t *testing.T) {
 	require.Len(t, gw.nudges, 1)
 }
 
-// --- sp-l6pz: credits wake gate is EDGE-triggered, not level-triggered ---
+// --- sp-l6pz → sp-wfut: credits wake bounds fire once, then are CONSUMED ---
 //
-// Bug: the PRIMARY wake gate woke on a standing credits LEVEL (Credits <=
-// CreditsBelow / >= CreditsAbove) with no edge guard, so while credits sat past
-// a declared bound it spammed an event-less wake on EVERY 30s tick (live
-// incident: credits_below=600000, credits ~170k). The fix fires the bound ONCE
-// on crossing into the satisfied region, stays quiet while it remains satisfied,
-// and re-arms only after credits exit and re-cross — with the already-fired edge
-// state PERSISTED so a watchkeeper restart does not re-fire a still-satisfied
-// bound (RULINGS #2).
+// History: the original PRIMARY wake gate woke on a standing credits LEVEL with
+// no guard, spamming an event-less wake on EVERY 30s tick while credits sat past
+// a declared bound (live incident: credits_below=600000, credits ~170k). sp-l6pz
+// first tamed that with an edge gate + hysteresis re-arm — fire once on crossing
+// in, re-arm on exit, fire AGAIN on re-cross. sp-wfut supersedes that: a
+// captain-set bound is a true ONE-SHOT (see the sp-wfut section below), consumed
+// from the persisted policy on its first delivered wake, so it neither storms nor
+// re-fires on a re-cross. These retained Tick-level tests pin the surviving
+// property — a standing sub-bound fires EXACTLY ONCE across ticks and restarts.
 
 // wireCredits attaches a mutable live-credits source so a test can move the
 // player's credits across a declared bound between ticks: refreshCredits reads
@@ -541,49 +542,19 @@ func TestCreditsBelow_FiresOnceOnCrossing_ThenQuietWhileSatisfied(t *testing.T) 
 	require.Len(t, gw.nudges, 1, "exactly one credits wake for the whole sojourn below the floor")
 }
 
-func TestCreditsBelow_ReArmsAfterExitAndReCross(t *testing.T) {
-	sup, s, gw := newBridgeSupervisor(t)
-	t0 := time.Now()
-	sup.lastSession = t0
-
-	below := 600000
-	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsBelow: &below}))
-	api := wireCredits(sup, 170000) // start below: the first crossing fires
-
-	ran, err := sup.Tick(context.Background(), t0)
-	require.NoError(t, err)
-	require.True(t, ran, "first crossing below the floor fires")
-	require.Len(t, gw.nudges, 1)
-
-	// Quiet while still below.
-	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
-	require.NoError(t, err)
-	require.False(t, ran)
-	require.Len(t, gw.nudges, 1)
-
-	// Credits recover ABOVE the floor (exit): re-arms, and the exit itself is not
-	// a wake (no CreditsAbove bound declared here).
-	api.credits = 900000
-	ran, err = sup.Tick(context.Background(), t0.Add(2*time.Second))
-	require.NoError(t, err)
-	require.False(t, ran, "exiting the satisfied region does not itself wake")
-	require.Len(t, gw.nudges, 1)
-
-	// Credits drop below AGAIN (re-cross): the re-armed bound fires a second time.
-	api.credits = 150000
-	ran, err = sup.Tick(context.Background(), t0.Add(3*time.Second))
-	require.NoError(t, err)
-	require.True(t, ran, "a re-crossing after exit must wake again")
-	require.Len(t, gw.nudges, 2)
-}
-
-func TestCreditsAbove_SameEdgeSemantics(t *testing.T) {
+// TestCreditsAbove_OneShot_ConsumedOnFire covers the CreditsAbove (ceiling)
+// arm of the one-shot contract (the below arm is covered in the sp-wfut section):
+// crossing up into the satisfied region fires exactly one wake and consumes the
+// bound, and a later exit-then-re-cross does NOT wake again — the consumed bound
+// is gone from the persisted policy.
+func TestCreditsAbove_OneShot_ConsumedOnFire(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
 	t0 := time.Now()
 	sup.lastSession = t0
 
 	above := 500000
-	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsAbove: &above}))
+	statePath := NewWorkspace(s.dir).StatePath()
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsAbove: &above}))
 	api := wireCredits(sup, 400000) // start below the ceiling: armed
 
 	ran, err := sup.Tick(context.Background(), t0)
@@ -591,102 +562,33 @@ func TestCreditsAbove_SameEdgeSemantics(t *testing.T) {
 	require.False(t, ran, "credits below the CreditsAbove bound: no wake")
 	require.Empty(t, gw.nudges)
 
-	// Cross UP into the satisfied region: one wake.
+	// Cross UP into the satisfied region: one wake, and the bound is consumed.
 	api.credits = 500000
 	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
 	require.NoError(t, err)
 	require.True(t, ran, "crossing at/above CreditsAbove wakes once")
 	require.Len(t, gw.nudges, 1)
+	pol, err := LoadWakePolicy(statePath)
+	require.NoError(t, err)
+	require.Nil(t, pol.CreditsAbove, "the fired ceiling is consumed (nil) in the persisted policy")
 
-	// Stay above: quiet.
-	for i := 2; i < 6; i++ {
-		ran, err = sup.Tick(context.Background(), t0.Add(time.Duration(i)*time.Second))
-		require.NoError(t, err)
-		require.False(t, ran, "a still-satisfied ceiling must not re-wake (tick %d)", i)
-	}
-	require.Len(t, gw.nudges, 1)
-
-	// Exit below, then re-cross up: re-arms and fires again.
+	// Exit below, then re-cross up: a one-shot bound was consumed, so NO second wake.
 	api.credits = 400000
-	_, err = sup.Tick(context.Background(), t0.Add(6*time.Second))
+	_, err = sup.Tick(context.Background(), t0.Add(2*time.Second))
 	require.NoError(t, err)
 	api.credits = 600000
-	ran, err = sup.Tick(context.Background(), t0.Add(7*time.Second))
+	ran, err = sup.Tick(context.Background(), t0.Add(3*time.Second))
 	require.NoError(t, err)
-	require.True(t, ran, "a re-crossing above the ceiling after exit wakes again")
-	require.Len(t, gw.nudges, 2)
-}
-
-func TestCreditsEdgeState_SurvivesRestart(t *testing.T) {
-	db, playerID, store := setupDB(t)
-	dir := t.TempDir()
-	statePath := NewWorkspace(dir).StatePath()
-	below := 600000
-	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
-
-	// Pre-restart: credits below the floor fire exactly one wake and persist the
-	// fired edge-state.
-	sup1, gw1 := reopenBridgeSupervisor(t, db, playerID, store, dir)
-	sup1.lastSession = time.Now()
-	seedBalance(t, sup1, playerID, 170000) // reconstruction reads below the floor
-	ran, err := sup1.Tick(context.Background(), time.Now())
-	require.NoError(t, err)
-	require.True(t, ran, "credits below the floor fire the crossing wake")
-	require.Len(t, gw1.nudges, 1)
-
-	// The already-fired marker is on disk.
-	st, err := loadSupervisorState(statePath)
-	require.NoError(t, err)
-	require.True(t, st.CreditsBelowFired, "the fired edge-state must be persisted")
-
-	// Restart with credits STILL below: the reloaded fired-state must suppress a
-	// re-fire (RULINGS #2 — a restart does not re-wake a still-satisfied bound).
-	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
-	require.True(t, sup2.creditsBelowFired, "the fired edge-state reloads on boot")
-	sup2.lastSession = time.Now() // cadence not due, isolate credits
-	ran, err = sup2.Tick(context.Background(), time.Now())
-	require.NoError(t, err)
-	require.False(t, ran, "a still-satisfied floor must NOT re-fire after a restart")
-	require.Empty(t, gw2.nudges)
-}
-
-func TestCreditsBelow_MissingPersistedField_DefaultsToNotFired(t *testing.T) {
-	db, playerID, store := setupDB(t)
-	dir := t.TempDir()
-	statePath := NewWorkspace(dir).StatePath()
-	require.NoError(t, os.MkdirAll(filepath.Dir(statePath), 0o755))
-
-	// An OLD state file — written before the credits-edge fields existed — that
-	// already declares a CreditsBelow floor but has NO credits_below_fired key.
-	below := 600000
-	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
-	raw, err := os.ReadFile(statePath)
-	require.NoError(t, err)
-	require.NotContains(t, string(raw), "credits_below_fired",
-		"precondition: the state file predates the edge field")
-
-	sup, gw := reopenBridgeSupervisor(t, db, playerID, store, dir)
-	require.False(t, sup.creditsBelowFired, "an absent credits_below_fired loads as not-fired")
-	sup.lastSession = time.Now()
-	seedBalance(t, sup, playerID, 170000)
-
-	// A genuine standing crossing still fires exactly ONCE post-upgrade...
-	ran, err := sup.Tick(context.Background(), time.Now())
-	require.NoError(t, err)
-	require.True(t, ran, "a still-below floor with no persisted edge fires once post-upgrade")
-	require.Len(t, gw.nudges, 1)
-
-	// ...then goes quiet (the one-time post-upgrade fire, not a storm).
-	ran, err = sup.Tick(context.Background(), time.Now().Add(time.Second))
-	require.NoError(t, err)
-	require.False(t, ran, "then stays quiet")
+	require.False(t, ran, "a re-cross above the ceiling after exit must NOT wake: the one-shot was consumed")
 	require.Len(t, gw.nudges, 1)
 }
 
 // TestCreditsBelowFloorAcrossTicksAndReloadsFiresExactlyOnce is the headline
-// regression (sp-l6pz AC #5): credits sitting far below a declared floor across
-// N ticks AND M process reloads must fire EXACTLY ONE wake — the genuine
-// crossing — never an event-less storm.
+// regression (sp-l6pz AC #5, preserved under sp-wfut): credits sitting far below
+// a declared floor across N ticks AND M process reloads must fire EXACTLY ONE
+// wake — the genuine crossing — never an event-less storm. Under one-shot this
+// holds because the floor is consumed from the persisted policy on that single
+// fire, so every later tick and reload sees no bound to fire.
 func TestCreditsBelowFloorAcrossTicksAndReloadsFiresExactlyOnce(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	dir := t.TempDir()
@@ -713,6 +615,171 @@ func TestCreditsBelowFloorAcrossTicksAndReloadsFiresExactlyOnce(t *testing.T) {
 	}
 	require.Equal(t, 1, totalNudges,
 		"a standing sub-floor across 15 ticks and 3 restarts fires EXACTLY ONE wake")
+}
+
+// --- sp-wfut: captain-set credit thresholds are ONE-SHOT (revises sp-l6pz) ---
+//
+// A captain-declared CreditsAbove/CreditsBelow bound is a one-shot trigger,
+// mirroring the sp-oyer one-shot watches: the FIRST delivered wake that services
+// a satisfied bound CONSUMES that specific bound — sets it to nil in the
+// WakePolicy and persists it — so it never fires again until the captain
+// re-declares it. The reverted sp-l6pz behaviour was a standing edge gate with
+// hysteresis re-arm: after firing once it re-armed when credits exited the bound
+// and fired AGAIN on the next re-cross. These tests pin the one-shot contract:
+// consume-on-fire, no re-fire while satisfied, no re-fire on re-cross, the
+// consumption survives a restart (RULINGS #2), and the two bounds are consumed
+// independently.
+
+// TestCreditsBelow_OneShot_ConsumedOnFire: a CreditsBelow floor crossed for the
+// first time fires exactly one wake AND is consumed (nil) in the persisted policy.
+func TestCreditsBelow_OneShot_ConsumedOnFire(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0 // heartbeat cadence nowhere near due across this short span
+
+	below := 600000
+	statePath := NewWorkspace(s.dir).StatePath()
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
+	api := wireCredits(sup, 700000) // start ABOVE the floor: armed, nothing to wake
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.False(t, ran, "credits above the floor: no credits wake")
+	require.Empty(t, gw.nudges)
+
+	// Credits cross INTO the satisfied region: exactly one delivered wake.
+	api.credits = 170000
+	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, ran, "credits crossing below the floor wakes once")
+	require.Len(t, gw.nudges, 1)
+
+	// The fired bound is CONSUMED from the persisted policy (one-shot): nil on disk.
+	pol, err := LoadWakePolicy(statePath)
+	require.NoError(t, err)
+	require.Nil(t, pol.CreditsBelow, "a fired credits bound is consumed (nil) in the persisted policy")
+}
+
+// TestCreditsBelow_NoRefireWhileSatisfied: after the one-shot fire, credits
+// staying below the (now-consumed) floor never wake again.
+func TestCreditsBelow_NoRefireWhileSatisfied(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0
+
+	below := 600000
+	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsBelow: &below}))
+	wireCredits(sup, 170000) // start below: the first crossing fires and consumes
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran, "first crossing below the floor fires")
+	require.Len(t, gw.nudges, 1)
+
+	// Credits remain below across many subsequent ticks: the consumed bound is gone,
+	// so no further event-less wake.
+	for i := 1; i < 12; i++ {
+		ran, err = sup.Tick(context.Background(), t0.Add(time.Duration(i)*time.Second))
+		require.NoError(t, err)
+		require.False(t, ran, "a consumed floor must not re-wake while still satisfied (tick %d)", i)
+	}
+	require.Len(t, gw.nudges, 1, "exactly one credits wake for the life of the one-shot bound")
+}
+
+// TestCreditsBelow_NoRefireOnRecross is the case that FAILS under the reverted
+// sp-l6pz re-arm: credits fire below, recover above (exit), then drop below
+// AGAIN. The reverted edge gate re-armed on exit and fired a SECOND wake on the
+// re-cross; a one-shot bound was consumed on its first fire, so a re-cross must
+// NOT wake — the captain must re-declare to be notified again.
+func TestCreditsBelow_NoRefireOnRecross(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0
+
+	below := 600000
+	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsBelow: &below}))
+	api := wireCredits(sup, 170000) // start below: first crossing fires and consumes
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran, "first crossing below the floor fires")
+	require.Len(t, gw.nudges, 1)
+
+	// Credits recover ABOVE the floor (exit).
+	api.credits = 900000
+	ran, err = sup.Tick(context.Background(), t0.Add(time.Second))
+	require.NoError(t, err)
+	require.False(t, ran, "exiting the satisfied region does not itself wake")
+	require.Len(t, gw.nudges, 1)
+
+	// Credits drop BELOW the floor AGAIN (re-cross).
+	api.credits = 150000
+	ran, err = sup.Tick(context.Background(), t0.Add(2*time.Second))
+	require.NoError(t, err)
+	require.False(t, ran, "a re-cross after exit must NOT wake: the one-shot bound was consumed on first fire")
+	require.Len(t, gw.nudges, 1, "still exactly one wake for the whole life of the one-shot bound")
+}
+
+// TestCreditsTrigger_ConsumptionSurvivesRestart is the RULINGS #2 core: once a
+// one-shot bound is consumed on fire, a watchkeeper restart with credits STILL
+// satisfying the (former) bound must never resurrect it — the consumption is
+// persisted, so the reloaded policy has no bound to fire.
+func TestCreditsTrigger_ConsumptionSurvivesRestart(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	statePath := NewWorkspace(dir).StatePath()
+	below := 600000
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsBelow: &below}))
+
+	// Pre-restart: credits below the floor fire exactly one wake and CONSUME the bound.
+	sup1, gw1 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	sup1.lastSession = time.Now()
+	wireCredits(sup1, 170000)
+	ran, err := sup1.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "credits below the floor fire the crossing wake")
+	require.Len(t, gw1.nudges, 1)
+
+	// The consumption is on disk: the bound is gone.
+	pol, err := LoadWakePolicy(statePath)
+	require.NoError(t, err)
+	require.Nil(t, pol.CreditsBelow, "the consumed bound must be persisted as nil (RULINGS #2)")
+
+	// Restart with credits STILL below: the reloaded policy has no bound, so nothing
+	// re-fires — a restart never resurrects a consumed one-shot trigger.
+	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	sup2.lastSession = time.Now() // cadence not due, isolate credits
+	wireCredits(sup2, 170000)
+	ran, err = sup2.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.False(t, ran, "a restart must NOT resurrect a consumed one-shot credits trigger")
+	require.Empty(t, gw2.nudges)
+}
+
+// TestCreditsBounds_Independent: with both bounds declared, firing the satisfied
+// one consumes ONLY it; the unsatisfied bound survives untouched.
+func TestCreditsBounds_Independent(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	t0 := time.Now()
+	sup.lastSession = t0
+
+	below := 200000
+	above := 900000
+	statePath := NewWorkspace(s.dir).StatePath()
+	require.NoError(t, SaveWakePolicy(statePath, WakePolicy{CreditsAbove: &above, CreditsBelow: &below}))
+	// Credits satisfy ONLY the below bound (170k <= 200k, and 170k < 900k).
+	wireCredits(sup, 170000)
+
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran, "the satisfied below bound fires")
+	require.Len(t, gw.nudges, 1)
+
+	pol, err := LoadWakePolicy(statePath)
+	require.NoError(t, err)
+	require.Nil(t, pol.CreditsBelow, "firing the below bound consumes it")
+	require.NotNil(t, pol.CreditsAbove, "the unsatisfied above bound is left intact")
+	require.Equal(t, above, *pol.CreditsAbove, "the surviving above bound keeps its value")
 }
 
 // TestTickCoalescesDeployStormBehindStandingInterrupt is the faithful incident

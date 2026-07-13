@@ -21,15 +21,6 @@ type wakeGateInput struct {
 	Policy WakePolicy
 
 	Credits int
-	// CreditsAboveFired/CreditsBelowFired are the persisted edge-state for the
-	// credits wake conditions (sp-l6pz): true when a wake has already been
-	// delivered for the current sojourn in which credits satisfy the corresponding
-	// bound. The gate treats each credits bound as EDGE-triggered — it fires only
-	// while the bound is satisfied AND its edge is still un-fired — so a standing
-	// bound wakes once on crossing, not on every tick. The supervisor re-arms
-	// (clears) each flag when credits exit the bound and sets it on delivery.
-	CreditsAboveFired bool
-	CreditsBelowFired bool
 
 	LastSession            time.Time
 	HeartbeatMinutes       int
@@ -60,16 +51,19 @@ func evaluateWakeGate(in wakeGateInput) wakeGateDecision {
 		return wakeGateDecision{ShouldWake: true, Reason: "cadence due"}
 	}
 
-	// Credits bounds are EDGE-triggered, not level-triggered (sp-l6pz): each fires
-	// only while the bound is satisfied AND its edge is still un-fired. Without the
-	// `!Fired` guard a standing bound (e.g. credits parked below a declared floor)
-	// re-satisfied the pure level check on every 30s tick and spammed an event-less
-	// wake indefinitely. The supervisor owns the edge-state lifecycle: it re-arms
-	// (clears) the flag when credits exit the bound and sets it on wake delivery.
-	if in.Policy.CreditsAbove != nil && in.Credits >= *in.Policy.CreditsAbove && !in.CreditsAboveFired {
+	// Credits bounds are ONE-SHOT triggers, not standing conditions (sp-wfut,
+	// revising sp-l6pz). A declared bound present in the policy fires the moment
+	// credits satisfy it; on that fire the supervisor CONSUMES the bound — sets it
+	// to nil in the persisted WakePolicy — exactly like a fired sp-oyer one-shot
+	// watch is dropped from its policy. So a still-present bound here has never
+	// fired, and the plain level check is correct: there is no separate "fired"
+	// edge-state to guard against, because a consumed bound is simply absent (nil).
+	// This is what stops the event-less wake storm the reverted sp-l6pz edge gate
+	// papered over with a re-arming flag: a consumed bound cannot re-cross.
+	if in.Policy.CreditsAbove != nil && in.Credits >= *in.Policy.CreditsAbove {
 		return wakeGateDecision{ShouldWake: true, Reason: "credits crossed at/above CreditsAbove"}
 	}
-	if in.Policy.CreditsBelow != nil && in.Credits <= *in.Policy.CreditsBelow && !in.CreditsBelowFired {
+	if in.Policy.CreditsBelow != nil && in.Credits <= *in.Policy.CreditsBelow {
 		return wakeGateDecision{ShouldWake: true, Reason: "credits crossed at/below CreditsBelow"}
 	}
 

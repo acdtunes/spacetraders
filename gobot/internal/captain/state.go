@@ -95,20 +95,13 @@ type supervisorState struct {
 	// with LastNudge zero, which correctly means "fire the first wake at once".
 	LastNudge time.Time `json:"last_nudge,omitempty"`
 
-	// CreditsAboveFired/CreditsBelowFired persist the credits wake-gate edge
-	// state (sp-l6pz): true once a wake has been DELIVERED for the current sojourn
-	// in which credits satisfy the corresponding CreditsAbove/Below bound, and
-	// cleared once credits exit that bound. This makes the credits wake conditions
-	// edge-triggered — fire once on crossing into the satisfied region, stay quiet
-	// while it remains satisfied — instead of the pure level check that spammed an
-	// event-less wake every tick while credits sat past a declared bound. Persisted
-	// so a watchkeeper restart does not re-fire a still-satisfied bound (RULINGS
-	// #2). omitempty + the bool zero value means an old state file without these
-	// keys loads as "not yet fired", so a genuine standing crossing still fires
-	// exactly once post-upgrade, then persists.
-	CreditsAboveFired bool `json:"credits_above_fired,omitempty"`
-	CreditsBelowFired bool `json:"credits_below_fired,omitempty"`
-
+	// A captain-declared credits wake bound is ONE-SHOT (sp-wfut, revising
+	// sp-l6pz): it is consumed — set to nil in the embedded WakePolicy — on the
+	// delivered wake that services it, so the persisted policy itself IS the
+	// durable one-shot state. No separate fired-flag/edge field is needed (the
+	// sp-l6pz credits_above_fired/credits_below_fired keys are retired). An old
+	// state file that still carries those keys loads fine: JSON ignores the now-
+	// unknown fields, and any bound already consumed pre-upgrade is simply absent.
 	WakePolicy
 	RegimePolicy
 	WatchPolicy
@@ -195,8 +188,8 @@ func atomicUpdateState(path string, mutate func(*supervisorState)) error {
 
 // saveCadenceState updates only the supervisor-owned cadence fields
 // (LastSession, LastSurveyorNudge, Renudges, Escalated, LastCredits,
-// LastNudge, CreditsAboveFired, CreditsBelowFired), preserving whatever wake
-// policy the captain has separately declared.
+// LastNudge), preserving whatever wake policy the captain has separately
+// declared.
 func saveCadenceState(path string, cadence supervisorState) error {
 	return atomicUpdateState(path, func(st *supervisorState) {
 		st.LastSession = cadence.LastSession
@@ -205,8 +198,6 @@ func saveCadenceState(path string, cadence supervisorState) error {
 		st.Escalated = cadence.Escalated
 		st.LastCredits = cadence.LastCredits
 		st.LastNudge = cadence.LastNudge
-		st.CreditsAboveFired = cadence.CreditsAboveFired
-		st.CreditsBelowFired = cadence.CreditsBelowFired
 	})
 }
 

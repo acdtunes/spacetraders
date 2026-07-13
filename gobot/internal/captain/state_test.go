@@ -164,52 +164,28 @@ func TestSaveCadenceStatePreservesWakePolicy(t *testing.T) {
 	require.Equal(t, []string{"ship.idle"}, got.InterruptTypes)
 }
 
-// --- sp-l6pz: credits wake-gate edge-state persistence ---
+// --- sp-wfut: a consumed one-shot credits bound is persisted as absent ---
 //
-// CreditsAboveFired/CreditsBelowFired are supervisor-owned cadence-class state:
-// they round-trip through saveCadenceState (the supervisor's read-merge-write
-// path) and survive a concurrent captain-owned WakePolicy write, exactly like
-// the other cadence fields — so a restart reloads the already-fired marker and
-// does not re-wake a still-satisfied bound (RULINGS #2).
-
-func TestCreditsEdgeStateRoundTripsThroughCadenceSave(t *testing.T) {
+// sp-wfut retires the sp-l6pz credits_above_fired/credits_below_fired edge-state
+// entirely: a captain-set bound is ONE-SHOT and consumed by nilling it in the
+// embedded WakePolicy on the delivered wake. The consumption therefore rides the
+// ordinary WakePolicy persistence path (SaveWakePolicy), whose cross-writer
+// preservation is already covered by the WakePolicy tests above; the Tick-level
+// consume-and-persist behaviour (RULINGS #2) is covered by the sp-wfut tests in
+// wake_test.go. Here we only pin that a cadence write does not resurrect a bound
+// the captain never set — the same dual-writer property, now with no fired-flag.
+func TestCadenceSaveDoesNotIntroduceCreditsBound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
 	require.NoError(t, saveCadenceState(path, supervisorState{
-		LastSession:       time.Now().Truncate(time.Second),
-		CreditsAboveFired: true,
-		CreditsBelowFired: true,
+		LastSession: time.Now().Truncate(time.Second),
+		LastCredits: 42,
 	}))
 
 	got, err := loadSupervisorState(path)
 	require.NoError(t, err)
-	require.True(t, got.CreditsAboveFired, "credits_above_fired must survive a cadence save")
-	require.True(t, got.CreditsBelowFired, "credits_below_fired must survive a cadence save")
-}
-
-func TestSaveCadenceStateStampsCreditsEdgeWithoutClobberingPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
-	below := 600000
-	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsBelow: &below}))
-
-	// A cadence write (supervisor-owned) stamps the fired edge-state without
-	// clobbering the captain-owned wake policy.
-	require.NoError(t, saveCadenceState(path, supervisorState{
-		LastSession:       time.Now().Truncate(time.Second),
-		CreditsBelowFired: true,
-	}))
-	got, err := loadSupervisorState(path)
-	require.NoError(t, err)
-	require.True(t, got.CreditsBelowFired)
-	require.NotNil(t, got.CreditsBelow, "the cadence write must not clobber the declared floor")
-	require.Equal(t, below, *got.CreditsBelow)
-
-	// A subsequent captain-owned policy write must not clobber the supervisor's
-	// fired edge-state.
-	above := 900000
-	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsAbove: &above, CreditsBelow: &below}))
-	got, err = loadSupervisorState(path)
-	require.NoError(t, err)
-	require.True(t, got.CreditsBelowFired, "a wake-policy write must not clobber the supervisor's fired edge-state")
+	require.Nil(t, got.CreditsAbove, "a cadence-only write must not introduce a credits bound")
+	require.Nil(t, got.CreditsBelow, "a cadence-only write must not introduce a credits bound")
+	require.Equal(t, 42, got.LastCredits)
 }
 
 // --- sp-zlfv: RegimePolicy persistence, mirroring the WakePolicy tests
