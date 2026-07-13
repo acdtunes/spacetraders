@@ -941,7 +941,32 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// is the RULINGS #5 emergency off-switch.
 		RestWindowMinutes:  cfg.OptionalInt("rest_window_minutes", 0),
 		RestSignalDisabled: cfg.OptionalBool("rest_signal_disabled"),
+		// sp-ev0n: the live-tunable concurrent-hull cap. worker_cap is the PER-OP override the
+		// `goods factory workers` RPC writes live; it is NOT among the config.yaml-reinjected
+		// manufacturingConfigKeys, so a live value persists verbatim across a restart (RULINGS
+		// #2). factory_worker_cap_default carries the global [manufacturing.siting]
+		// workers_per_chain (injected by injectManufacturingConfig, re-resolved from config.yaml
+		// each build). resolveFactoryWorkerCap prefers the per-op override, else the global
+		// default, else 0 = unbounded — so a fleet that never set workers_per_chain keeps the
+		// pre-sp-ev0n emergent fan-out (RULINGS #5).
+		WorkerCap: resolveFactoryWorkerCap(cfg.OptionalInt("worker_cap", 0), cfg.OptionalInt("factory_worker_cap_default", 0)),
 	}
+}
+
+// resolveFactoryWorkerCap picks the concurrent-hull cap a goods_factory launches with
+// (sp-ev0n): the per-op override (set live via `goods factory workers`) wins; absent that,
+// the global [manufacturing.siting] workers_per_chain default; absent both, 0 = unbounded
+// (the pre-sp-ev0n emergent fan-out, so a fleet that never configured workers_per_chain is
+// unchanged). A negative override is treated as unset. The live provider re-reads the per-op
+// value each pass, so this only sets the launch/restart baseline (RULINGS #2/#5).
+func resolveFactoryWorkerCap(perOpOverride, globalDefault int) int {
+	if perOpOverride > 0 {
+		return perOpOverride
+	}
+	if globalDefault > 0 {
+		return globalDefault
+	}
+	return 0
 }
 
 // buildSitingCoordinatorCommand rebuilds the standing siting coordinator command (sp-vdld)

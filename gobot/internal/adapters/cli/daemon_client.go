@@ -1055,6 +1055,24 @@ func (c *DaemonClient) FleetHub(ctx context.Context, operation, waypoint string,
 	return resp, nil
 }
 
+// FactoryWorkerCap sets the live concurrent-hull cap on a running goods factory
+// operation, with no container restart (sp-ev0n).
+func (c *DaemonClient) FactoryWorkerCap(ctx context.Context, containerID string, count int, playerID *int32, agentSymbol *string) (*pb.FactoryWorkerCapResponse, error) {
+	req := &pb.FactoryWorkerCapRequest{
+		ContainerId: containerID,
+		Count:       int32(count),
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.FactoryWorkerCap(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
 func (c *DaemonClient) ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error) {
 	req := &pb.ListFleetsRequest{

@@ -130,6 +130,18 @@ type RunFactoryCoordinatorCommand struct {
 	// genuine own-market premium. Absent/false keeps the signal on at its default window. Fed from
 	// rest_signal_disabled.
 	RestSignalDisabled bool
+	// WorkerCap bounds how many hulls this chain runs CONCURRENTLY per production pass
+	// (sp-ev0n): the coordinator never fans out more than WorkerCap node workers at once,
+	// so a captain caps a factory's hull draw live without a daemon restart. This is the
+	// build-time resolved value — the live per-op override (worker_cap in the container
+	// config, set by the `goods factory workers` RPC) is re-read fresh each pass via the
+	// injected FactoryWorkerCapProvider and wins over this snapshot. 0/absent → unbounded
+	// (the pre-sp-ev0n emergent min(nodes, idle hulls) behavior); the goods_factory build
+	// resolves 0 to the global [manufacturing.siting] workers_per_chain default when the
+	// captain set one, so an unconfigured fleet is unchanged (RULINGS #5). A live-set value
+	// survives a restart because worker_cap is persisted in the container config and is NOT
+	// among the config.yaml-reinjected keys (RULINGS #2).
+	WorkerCap int
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

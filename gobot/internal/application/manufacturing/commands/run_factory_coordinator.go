@@ -125,6 +125,32 @@ type RunFactoryCoordinatorHandler struct {
 	// planner_stock_disabled escape hatch is set. nil only in tests / a build that
 	// omits the wiring, in which case output sells as before.
 	plannerStock plannerStockDepositor
+
+	// workerCapProvider resolves the LIVE per-op worker/hull cap from this
+	// container's OWN config each pass (sp-ev0n) — the store the `goods factory
+	// workers` daemon RPC mutates. It is the factory analogue of the contract
+	// coordinator's StandbyStationProvider (sp-jcke): a live cap change is honored
+	// on the very next pass with no restart. nil (tests, or a build that omits the
+	// wiring) leaves the coordinator on the launch-resolved cmd.WorkerCap, which is
+	// never worse than the pre-fix behavior. The daemon wires the real
+	// container-config-backed reader via SetWorkerCapProvider.
+	workerCapProvider FactoryWorkerCapProvider
+}
+
+// FactoryWorkerCapProvider resolves the LIVE per-op worker/hull cap for a
+// goods_factory container each production pass (sp-ev0n), the operation-level
+// analogue of the contract coordinator's live standby-station read (sp-jcke). It
+// is backed by the coordinator's OWN container config — the store the `goods
+// factory workers` daemon RPC mutates — so a cap set live is visible to the
+// fan-out on the very next pass with no restart. A nil provider or a read error
+// leaves the coordinator on the launch-resolved cap (never worse than the pre-fix
+// behavior); ok=false means no live per-op override is set, so the launch cap
+// stands.
+type FactoryWorkerCapProvider interface {
+	// WorkerCap returns the container's live per-op cap and whether a positive
+	// live override is currently set. ok=false (absent, non-positive, or an
+	// unreadable key) tells the caller to keep the launch-resolved cap.
+	WorkerCap(ctx context.Context, containerID string, playerID int) (cap int, ok bool, err error)
 }
 
 // plannerStockDepositor is the factory's view of the planner-visible-stock
@@ -215,6 +241,43 @@ func (h *RunFactoryCoordinatorHandler) SetPlannerStockDepositor(dep plannerStock
 // SetSpendLedger; left unset the ceiling is fail-open, which is what every test caller wants.
 func (h *RunFactoryCoordinatorHandler) SetPriceHistoryReader(reader mfgServices.InputPriceHistoryReader) {
 	h.productionExecutor.SetPriceHistoryReader(reader)
+}
+
+// SetWorkerCapProvider wires the live per-op worker-cap reader (sp-ev0n) so the
+// coordinator re-reads its concurrent-hull cap from its own container config each
+// pass — the factory mirror of SetStandbyStationProvider (sp-jcke). The daemon
+// calls this after construction with the container-config-backed provider
+// (main.go); left unset the coordinator uses the launch-resolved cmd.WorkerCap,
+// which is exactly what every test caller wants.
+func (h *RunFactoryCoordinatorHandler) SetWorkerCapProvider(provider FactoryWorkerCapProvider) {
+	h.workerCapProvider = provider
+}
+
+// resolveEffectiveWorkerCap returns the concurrent-hull cap this pass must honor,
+// mirroring ResolveStandbyStations (sp-jcke): the live per-op override read from
+// the container config is authoritative; a nil provider, a read error, or no live
+// override falls back to the launch-resolved cmd.WorkerCap so a transient failure
+// is never worse than the frozen-launch behavior. A returned <=0 means unbounded
+// (the pre-sp-ev0n emergent fan-out). Because worker_cap is persisted in the
+// container config and is NOT re-injected from config.yaml on rebuild, the
+// launch value already reflects a prior live change across a restart (RULINGS #2).
+func (h *RunFactoryCoordinatorHandler) resolveEffectiveWorkerCap(ctx context.Context, cmd *RunFactoryCoordinatorCommand) int {
+	if h.workerCapProvider == nil {
+		return cmd.WorkerCap
+	}
+	live, ok, err := h.workerCapProvider.WorkerCap(ctx, cmd.ContainerID, cmd.PlayerID)
+	if err != nil {
+		if logger := common.LoggerFromContext(ctx); logger != nil {
+			logger.Log("WARNING", fmt.Sprintf(
+				"failed to read live worker cap for factory %s (falling back to launch cap %d): %v",
+				cmd.ContainerID, cmd.WorkerCap, err), nil)
+		}
+		return cmd.WorkerCap
+	}
+	if !ok {
+		return cmd.WorkerCap
+	}
+	return live
 }
 
 // Handle executes the factory coordinator command
@@ -548,8 +611,23 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"estimated_speedup": speedup,
 	})
 
+	// Live per-op worker cap (sp-ev0n): resolve the concurrent-hull bound FRESH this
+	// pass from the container config (via the injected provider), so a `goods factory
+	// workers` change converges the fan-out to the new N on the very next pass with no
+	// restart. <=0 = unbounded (the pre-fix emergent fan-out). Resolved here — after the
+	// pre-spend guards, right before the fan-out — so the read is skipped entirely on a
+	// parked/no-work pass.
+	workerCap := h.resolveEffectiveWorkerCap(ctx, cmd)
+	if workerCap > 0 {
+		logger.Log("INFO", fmt.Sprintf("Factory worker cap: at most %d concurrent hull(s) this pass", workerCap), map[string]interface{}{
+			"factory_id":   response.FactoryID,
+			"container_id": cmd.ContainerID,
+			"worker_cap":   workerCap,
+		})
+	}
+
 	// Step 5: Execute production in parallel levels
-	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, relatedGoods); err != nil {
+	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, relatedGoods, workerCap); err != nil {
 		// Release all ship assignments on error
 		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
 		return fmt.Errorf("parallel production failed: %w", err)
@@ -765,6 +843,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	idleShips []*navigation.Ship,
 	response *RunFactoryCoordinatorResponse,
 	relatedGoods []string,
+	workerCap int, // sp-ev0n: <=0 = unbounded; >0 bounds concurrent hulls to N this pass
 ) error {
 	// Get operation context from context
 	opContext := shared.OperationContextFromContext(ctx)
@@ -774,7 +853,12 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	totalCost := 0
 	nodesCompleted := 0
 
-	// Capacity: 2× initial ships to accommodate dynamic discovery
+	// Capacity: 2× initial ships to accommodate dynamic discovery. Under a live worker
+	// cap (sp-ev0n) the fan-out never runs more than workerCap node workers at once
+	// (runWorkersBounded's semaphore), so only workerCap ships are ever in flight
+	// concurrently — the surplus idle hulls stay unclaimed for the gate-drain/contract
+	// fleets. The pool itself keeps its full 2× capacity so the background refresher can
+	// still stage a replacement the instant an in-flight hull is released.
 	shipPool := make(chan *navigation.Ship, len(idleShips)*shipPoolCapacityFactor)
 	for _, ship := range idleShips {
 		shipPool <- ship
@@ -816,6 +900,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 			opContext:            opContext,
 			inputsOnly:           cmd.InputsOnly && isRootLevel,
 			isRootLevel:          isRootLevel,
+			workerCap:            workerCap,
 		}
 
 		// Execute all nodes in this level in parallel
@@ -1054,6 +1139,11 @@ type levelExecution struct {
 	// the guard's resale sink and sold there (sp-rqwm) — intermediate levels' output
 	// is a feed for the level above and is never resold at an import sink.
 	isRootLevel bool
+	// workerCap bounds concurrent node workers in this level (sp-ev0n): runWorkersBounded
+	// never runs more than workerCap goroutines at once, so at most workerCap hulls are in
+	// flight. <=0 = unbounded (one worker per node, the pre-fix fan-out). Levels run
+	// sequentially, so bounding each level bounds the instantaneous concurrent-hull count.
+	workerCap int
 }
 
 // executeLevelParallel executes all nodes in a level in parallel using goroutines
@@ -1062,31 +1152,85 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 	exec levelExecution,
 	nodes []*goods.SupplyChainNode,
 ) ([]*mfgServices.ProductionResult, error) {
+	// The per-node worker: pull a hull from the shared pool (blocking until one is
+	// free), run the node, and return the hull. runWorkersBounded gates how many of
+	// these run at once (exec.workerCap, sp-ev0n) — the ship-pull stays inside the
+	// gated region so a hull is held only while a concurrency slot is.
+	return h.runWorkersBounded(ctx, exec.workerCap, nodes, func(ctx context.Context, n *goods.SupplyChainNode) (*mfgServices.ProductionResult, error) {
+		ship := <-exec.shipPool
+		defer func() { exec.shipPool <- ship }() // Return ship to pool
+		return h.runNodeWorker(ctx, exec, n, ship)
+	})
+}
+
+// nodeWorkerResult carries one node worker's outcome back to the collector in
+// runWorkersBounded.
+type nodeWorkerResult struct {
+	result *mfgServices.ProductionResult
+	err    error
+	node   *goods.SupplyChainNode
+}
+
+// nodeWorker produces one node using one hull. executeLevelParallel supplies the
+// real worker (pull a ship, run the node); tests supply a fake so the concurrency
+// bound can be exercised in isolation without the full production stack.
+type nodeWorker func(ctx context.Context, n *goods.SupplyChainNode) (*mfgServices.ProductionResult, error)
+
+// runWorkersBounded runs one worker goroutine per node while never letting more
+// than workerCap run CONCURRENTLY — the sp-ev0n concurrent-hull bound. workerCap<=0
+// is unbounded (one worker per node, the pre-fix emergent fan-out of
+// min(nodes, idle hulls)); workerCap>0 caps in-flight workers — and therefore
+// in-flight hulls — at N via a buffered semaphore acquired before the worker runs
+// and released after. Because the coordinator re-resolves workerCap fresh each pass
+// (resolveEffectiveWorkerCap), a lowered cap converges the fan-out to the new N on
+// the very next pass (a hull already mid-node finishes first, never force-killed);
+// a raised cap scales the fan-out back up the next pass.
+//
+// The sp-vsfn park-vs-abort policy is preserved verbatim from the pre-extraction
+// executeLevelParallel: a worker error PARKS that node (excluded from results, run
+// continues) UNLESS it is a container-shutdown signal (context cancel/deadline), the
+// one case that aborts the run rather than misreporting a killed run as a clean
+// partial success. A ctx cancellation while a worker waits for a semaphore slot
+// yields exactly that shutdown-signal result, so a live shutdown aborts cleanly
+// instead of hanging on a full semaphore.
+func (h *RunFactoryCoordinatorHandler) runWorkersBounded(
+	ctx context.Context,
+	workerCap int,
+	nodes []*goods.SupplyChainNode,
+	worker nodeWorker,
+) ([]*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
+	resultChan := make(chan nodeWorkerResult, len(nodes))
 
-	// Result channel for workers
-	type workerResult struct {
-		result *mfgServices.ProductionResult
-		err    error
-		node   *goods.SupplyChainNode
+	// sp-ev0n: a buffered semaphore of workerCap slots bounds concurrency. nil (cap
+	// <=0) disables the bound entirely, so the unbounded path is byte-for-byte the
+	// old fan-out.
+	var sem chan struct{}
+	if workerCap > 0 {
+		sem = make(chan struct{}, workerCap)
 	}
-	resultChan := make(chan workerResult, len(nodes))
 
-	// WaitGroup to track goroutine completion
 	var wg sync.WaitGroup
-
-	// Launch a worker for each node
 	for _, node := range nodes {
 		wg.Add(1)
 		go func(n *goods.SupplyChainNode) {
 			defer wg.Done()
 
-			ship := <-exec.shipPool
-			defer func() { exec.shipPool <- ship }() // Return ship to pool
+			if sem != nil {
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					// Shutdown before a slot freed: report it as a shutdown signal so
+					// the collector aborts (never a silent park), and never pull a hull.
+					resultChan <- nodeWorkerResult{err: ctx.Err(), node: n}
+					return
+				}
+				defer func() { <-sem }()
+			}
 
-			result, err := h.runNodeWorker(ctx, exec, n, ship)
+			result, err := worker(ctx, n)
 
-			resultChan <- workerResult{
+			resultChan <- nodeWorkerResult{
 				result: result,
 				err:    err,
 				node:   n,

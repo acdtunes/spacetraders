@@ -1069,6 +1069,33 @@ func (s *daemonServiceImpl) FleetHub(ctx context.Context, req *pb.FleetHubReques
 	}, nil
 }
 
+// FactoryWorkerCap sets the live concurrent-hull cap on a running goods factory
+// operation (sp-ev0n). Resolves the player from player_id or agent_symbol (like the
+// other coordinator RPCs), then delegates the persisted-config mutation to the
+// daemon, which is the single writer (RULINGS #3). The running coordinator re-reads
+// the cap each pass and converges its fan-out to N with no restart.
+func (s *daemonServiceImpl) FactoryWorkerCap(ctx context.Context, req *pb.FactoryWorkerCapRequest) (*pb.FactoryWorkerCapResponse, error) {
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	cap, changed, err := s.daemon.MutateFactoryWorkerCap(ctx, req.ContainerId, int(req.Count), playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set factory worker cap: %w", err)
+	}
+
+	return &pb.FactoryWorkerCapResponse{
+		ContainerId: req.ContainerId,
+		WorkerCap:   int32(cap),
+		Changed:     changed,
+	}, nil
+}
+
 func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.UnassignShipFleetRequest) (*pb.UnassignShipFleetResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

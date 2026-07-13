@@ -1,5 +1,7 @@
 package grpc
 
+import "math"
+
 // This file holds the shared [manufacturing] launch-config plumbing for the
 // goods_factory_coordinator. The parallel task-style manufacturing coordinator and its task
 // worker that once also lived here were retired in sp-jav2 (X2) — their launch/persist/cleanup
@@ -29,6 +31,13 @@ var manufacturingConfigKeys = []string{
 	"anti_cycle_disabled",
 	"rest_window_minutes",
 	"rest_signal_disabled",
+	// sp-ev0n: the GLOBAL worker-cap default derived from [manufacturing.siting]
+	// workers_per_chain. Cleared+reinjected from config.yaml on every build (sp-ts82) so a
+	// retune reaches a recovered coordinator. NOTE the per-op live override key `worker_cap`
+	// is deliberately NOT listed here — it is the authoritative live value the `goods factory
+	// workers` RPC writes, and must survive a restart untouched (RULINGS #2), exactly as
+	// sp-jcke's standby_stations is excluded from any reinjection.
+	"factory_worker_cap_default",
 }
 
 // resolveManufacturingConfig makes config.yaml the single LIVE source of truth for
@@ -148,5 +157,15 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.FabricateDepthCapDisabled {
 		config["fabricate_depth_cap_disabled"] = true
+	}
+	// sp-ev0n: the GLOBAL concurrent-hull default for factories, derived from the
+	// [manufacturing.siting] workers_per_chain rotation divisor (the value siting already
+	// assumes each chain occupies). Only written when the captain set it (non-zero) —
+	// an unset knob leaves factories UNBOUNDED (resolveFactoryWorkerCap → 0), so a fleet
+	// that never configured workers_per_chain keeps the pre-sp-ev0n emergent fan-out
+	// (RULINGS #5). Rounded to a whole hull count. The per-op live override (`worker_cap`)
+	// is written separately by the RPC and takes precedence in resolveFactoryWorkerCap.
+	if wpc := s.manufacturingConfig.Siting.WorkersPerChain; wpc > 0 {
+		config["factory_worker_cap_default"] = int(math.Round(wpc))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +32,106 @@ Examples:
 	cmd.AddCommand(newGoodsProduceCommand())
 	cmd.AddCommand(newGoodsStatusCommand())
 	cmd.AddCommand(newGoodsStopCommand())
+	cmd.AddCommand(newGoodsFactoryCommand())
+
+	return cmd
+}
+
+// factoryWorkerCapMutator is the subset of daemon operations the `goods factory
+// workers` verb needs (sp-ev0n). By construction it exposes ONLY the
+// FactoryWorkerCap RPC — no container-restart method — so "the coordinator is never
+// restarted" is guaranteed by the surface this verb can reach, exactly as the
+// `fleet hub` verbs guarantee it for the standby set.
+type factoryWorkerCapMutator interface {
+	FactoryWorkerCap(ctx context.Context, containerID string, count int, playerID *int32, agentSymbol *string) (*pb.FactoryWorkerCapResponse, error)
+}
+
+// runGoodsFactoryWorkers sets a RUNNING goods factory's concurrent-hull cap live via
+// the daemon, then formats the operator-facing result. The coordinator re-reads the
+// cap each production pass and converges its fan-out to count on the next tick — no
+// container restart. A no-op (the cap already equalled count) is reported honestly.
+func runGoodsFactoryWorkers(ctx context.Context, client factoryWorkerCapMutator, containerID string, count int, playerID *int32, agentSymbol *string) (string, error) {
+	resp, err := client.FactoryWorkerCap(ctx, containerID, count, playerID, agentSymbol)
+	if err != nil {
+		return "", fmt.Errorf("failed to set worker cap %d on factory %s: %w", count, containerID, err)
+	}
+	if !resp.Changed {
+		return fmt.Sprintf("• factory %s worker cap is already %d — unchanged\n", containerID, resp.WorkerCap), nil
+	}
+	return fmt.Sprintf("✓ factory %s worker cap set to %d — the coordinator re-reads it live and converges to at most %d concurrent hull(s) next pass; no container restart.\n", containerID, resp.WorkerCap, resp.WorkerCap), nil
+}
+
+// newGoodsFactoryCommand creates the `goods factory` subcommand group (sp-ev0n) —
+// live tuning of a RUNNING goods factory operation, the factory analogue of the
+// live coordinator knobs (`fleet hub`, `fleet add`/`remove`).
+func newGoodsFactoryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "factory",
+		Short: "Tune a running goods factory operation live (no restart)",
+		Long: `Tune a RUNNING goods factory operation without restarting it.
+
+Examples:
+  spacetraders goods factory workers --container goods_factory-FAB_MATS-abcd --count 2`,
+	}
+	cmd.AddCommand(newGoodsFactoryWorkersCommand())
+	return cmd
+}
+
+// newGoodsFactoryWorkersCommand creates the `goods factory workers` subcommand — the
+// live per-op concurrent-hull cap (sp-ev0n).
+func newGoodsFactoryWorkersCommand() *cobra.Command {
+	var (
+		containerID string
+		count       int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "workers",
+		Short: "Set a running goods factory's concurrent-hull cap live (no restart)",
+		Long: `Set the maximum number of hulls a RUNNING goods factory runs concurrently,
+without a restart. The coordinator re-reads its cap from its own container config
+every production pass, so it converges the fan-out to the new count on the next
+tick — a hull already mid-node finishes first, never force-killed. The cap is
+per-operation (each goods factory has its own) and persists across daemon restarts.
+
+Examples:
+  spacetraders goods factory workers --container goods_factory-FAB_MATS-abcd --count 2
+  spacetraders goods factory workers --container goods_factory-FAB_MATS-abcd --count 4`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if containerID == "" {
+				return fmt.Errorf("--container flag is required (the goods factory operation to cap)")
+			}
+			if count < 1 {
+				return fmt.Errorf("--count must be at least 1 (got %d) — raise it to widen the fan-out", count)
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+
+			msg, err := runGoodsFactoryWorkers(ctx, client, containerID, count, playerID, agentSymbol)
+			if err != nil {
+				return err
+			}
+			fmt.Print(msg)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&containerID, "container", "", "Goods factory container/operation ID to cap (required)")
+	cmd.Flags().IntVar(&count, "count", 0, "Maximum number of hulls the factory runs concurrently (required, >= 1)")
 
 	return cmd
 }

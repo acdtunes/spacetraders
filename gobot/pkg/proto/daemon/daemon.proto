@@ -176,6 +176,12 @@ service DaemonService {
   // StopGoodsFactory stops a running goods factory operation
   rpc StopGoodsFactory(StopGoodsFactoryRequest) returns (StopGoodsFactoryResponse);
 
+  // FactoryWorkerCap sets the live concurrent-hull cap on a RUNNING goods factory
+  // operation (sp-ev0n). The coordinator re-reads it each production pass and
+  // converges its fan-out to N with no container restart; the cap persists across
+  // restarts.
+  rpc FactoryWorkerCap(FactoryWorkerCapRequest) returns (FactoryWorkerCapResponse);
+
   // GetFactoryStatus retrieves status and progress of a goods factory
   rpc GetFactoryStatus(GetFactoryStatusRequest) returns (GetFactoryStatusResponse);
 
@@ -1168,6 +1174,27 @@ message StopGoodsFactoryResponse {
   string factory_id = 1;
   string status = 2;
   string message = 3;
+}
+
+// FactoryWorkerCapRequest sets the live per-op concurrent-hull cap on a running
+// goods factory (sp-ev0n).
+message FactoryWorkerCapRequest {
+  // container_id is the goods_factory container whose cap to set (its factory id).
+  string container_id = 1;
+  // count is the maximum number of hulls the chain runs concurrently (>= 1).
+  int32 count = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+// FactoryWorkerCapResponse returns the resulting live cap after the mutation.
+message FactoryWorkerCapResponse {
+  string container_id = 1;
+  // worker_cap is the resulting concurrent-hull cap now in force.
+  int32 worker_cap = 2;
+  // changed is false when the verb was a no-op (the cap already equalled count),
+  // so the CLI can report it honestly.
+  bool changed = 3;
 }
 
 // GetFactoryStatusRequest retrieves factory status

@@ -643,6 +643,12 @@ func run(cfg *config.Config) error {
 	// the kill-switch is fail-open (disabled) — the optional-port contract; the daemon turns it
 	// on by injecting the real reader here.
 	factoryCoordinatorHandler.SetChainPnLReader(persistence.NewGormChainPnLRepository(db))
+	// sp-ev0n: live per-op worker cap. The coordinator resolves its concurrent-hull cap
+	// from its own container config every production pass, so a `goods factory workers`
+	// change converges the fan-out with no restart — the factory mirror of the contract
+	// coordinator's live standby-station provider (sp-jcke). The value persists across a
+	// restart (worker_cap is not a config.yaml-reinjected key, RULINGS #2).
+	factoryCoordinatorHandler.SetWorkerCapProvider(grpc.NewFactoryWorkerCapConfigProvider(containerRepo))
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
 	}

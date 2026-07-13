@@ -65,6 +65,7 @@ const (
 	DaemonService_GetShipyardListings_FullMethodName          = "/daemon.DaemonService/GetShipyardListings"
 	DaemonService_StartGoodsFactory_FullMethodName            = "/daemon.DaemonService/StartGoodsFactory"
 	DaemonService_StopGoodsFactory_FullMethodName             = "/daemon.DaemonService/StopGoodsFactory"
+	DaemonService_FactoryWorkerCap_FullMethodName             = "/daemon.DaemonService/FactoryWorkerCap"
 	DaemonService_GetFactoryStatus_FullMethodName             = "/daemon.DaemonService/GetFactoryStatus"
 	DaemonService_ScanArbitrageOpportunities_FullMethodName   = "/daemon.DaemonService/ScanArbitrageOpportunities"
 	DaemonService_StartArbitrageCoordinator_FullMethodName    = "/daemon.DaemonService/StartArbitrageCoordinator"
@@ -210,6 +211,11 @@ type DaemonServiceClient interface {
 	StartGoodsFactory(ctx context.Context, in *StartGoodsFactoryRequest, opts ...grpc.CallOption) (*StartGoodsFactoryResponse, error)
 	// StopGoodsFactory stops a running goods factory operation
 	StopGoodsFactory(ctx context.Context, in *StopGoodsFactoryRequest, opts ...grpc.CallOption) (*StopGoodsFactoryResponse, error)
+	// FactoryWorkerCap sets the live concurrent-hull cap on a RUNNING goods factory
+	// operation (sp-ev0n). The coordinator re-reads it each production pass and
+	// converges its fan-out to N with no container restart; the cap persists across
+	// restarts.
+	FactoryWorkerCap(ctx context.Context, in *FactoryWorkerCapRequest, opts ...grpc.CallOption) (*FactoryWorkerCapResponse, error)
 	// GetFactoryStatus retrieves status and progress of a goods factory
 	GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
@@ -713,6 +719,16 @@ func (c *daemonServiceClient) StopGoodsFactory(ctx context.Context, in *StopGood
 	return out, nil
 }
 
+func (c *daemonServiceClient) FactoryWorkerCap(ctx context.Context, in *FactoryWorkerCapRequest, opts ...grpc.CallOption) (*FactoryWorkerCapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FactoryWorkerCapResponse)
+	err := c.cc.Invoke(ctx, DaemonService_FactoryWorkerCap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFactoryStatusResponse)
@@ -973,6 +989,11 @@ type DaemonServiceServer interface {
 	StartGoodsFactory(context.Context, *StartGoodsFactoryRequest) (*StartGoodsFactoryResponse, error)
 	// StopGoodsFactory stops a running goods factory operation
 	StopGoodsFactory(context.Context, *StopGoodsFactoryRequest) (*StopGoodsFactoryResponse, error)
+	// FactoryWorkerCap sets the live concurrent-hull cap on a RUNNING goods factory
+	// operation (sp-ev0n). The coordinator re-reads it each production pass and
+	// converges its fan-out to N with no container restart; the cap persists across
+	// restarts.
+	FactoryWorkerCap(context.Context, *FactoryWorkerCapRequest) (*FactoryWorkerCapResponse, error)
 	// GetFactoryStatus retrieves status and progress of a goods factory
 	GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
@@ -1153,6 +1174,9 @@ func (UnimplementedDaemonServiceServer) StartGoodsFactory(context.Context, *Star
 }
 func (UnimplementedDaemonServiceServer) StopGoodsFactory(context.Context, *StopGoodsFactoryRequest) (*StopGoodsFactoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopGoodsFactory not implemented")
+}
+func (UnimplementedDaemonServiceServer) FactoryWorkerCap(context.Context, *FactoryWorkerCapRequest) (*FactoryWorkerCapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FactoryWorkerCap not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFactoryStatus not implemented")
@@ -2042,6 +2066,24 @@ func _DaemonService_StopGoodsFactory_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_FactoryWorkerCap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FactoryWorkerCapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).FactoryWorkerCap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_FactoryWorkerCap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).FactoryWorkerCap(ctx, req.(*FactoryWorkerCapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_GetFactoryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetFactoryStatusRequest)
 	if err := dec(in); err != nil {
@@ -2466,6 +2508,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopGoodsFactory",
 			Handler:    _DaemonService_StopGoodsFactory_Handler,
+		},
+		{
+			MethodName: "FactoryWorkerCap",
+			Handler:    _DaemonService_FactoryWorkerCap_Handler,
 		},
 		{
 			MethodName: "GetFactoryStatus",
