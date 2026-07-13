@@ -50,6 +50,28 @@ func (r *buyFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) error
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the handler's migrated cargo persist (sp-wa7c) exercises the same
+// closure it uses in production. The fake has no version conflict to re-apply
+// against, so a single find+mutate+save is faithful.
+func (r *buyFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 type buyFakePlayerRepo struct {
 	player.PlayerRepository
 	player *player.Player

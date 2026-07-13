@@ -265,15 +265,33 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 			_ = h.containerRepo.Remove(ctx, jumpContainerID, playerID.Value())
 		}()
 
-		if err := ship.AssignToContainer(jumpContainerID, h.clock); err != nil {
-			return nil, fmt.Errorf("failed to claim ship for jump: %w", err)
-		}
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
+		// Claim under CAS-retry (sp-wa7c): the closure re-applies AssignToContainer
+		// on the FRESH row so a concurrent writer's cargo/nav/fuel update on the
+		// same hull survives instead of being last-write-wins clobbered by this
+		// handler's pre-jump snapshot. This op owns ONLY the assignment; a fresh row
+		// already assigned to someone else still surfaces the AssignToContainer
+		// error, so exclusivity (RULINGS #7) is unchanged.
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, playerID,
+			func(sh *domainNavigation.Ship) (bool, error) {
+				if aerr := sh.AssignToContainer(jumpContainerID, h.clock); aerr != nil {
+					return false, aerr
+				}
+				return true, nil
+			}); err != nil {
 			return nil, fmt.Errorf("failed to save ship claim: %w", err)
 		}
 		defer func() {
-			ship.ForceRelease("jump_complete", h.clock)
-			_ = h.shipRepo.Save(ctx, ship)
+			// Release under CAS-retry too: re-apply ForceRelease on the fresh row,
+			// touching only the assignment, and skip if the hull is no longer this
+			// jump's claim (already released / re-claimed) so nothing else is clobbered.
+			_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, playerID,
+				func(sh *domainNavigation.Ship) (bool, error) {
+					if !sh.IsAssigned() || sh.ContainerID() != jumpContainerID {
+						return false, nil
+					}
+					sh.ForceRelease("jump_complete", h.clock)
+					return true, nil
+				})
 		}()
 	}
 
@@ -346,9 +364,21 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	if err != nil {
 		return nil, fmt.Errorf("invalid destination waypoint: %w", err)
 	}
+	// Persist the post-jump nav state under CAS-retry (sp-wa7c): the closure
+	// re-applies ONLY this op's own fields — destination location + jump cooldown —
+	// on the FRESH row, so a concurrent writer's cargo/fuel update on the same hull
+	// survives instead of being last-write-wins clobbered by this handler's
+	// pre-jump snapshot (the reported nav-write-vs-cargo desync). Keep the local
+	// pointer consistent for any post-return use, then persist the fresh row.
 	ship.SetLocation(destinationWaypoint)
-	ship.SetCooldown(h.clock.Now().Add(time.Duration(jumpResult.CooldownSeconds) * time.Second))
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
+	cooldownUntil := h.clock.Now().Add(time.Duration(jumpResult.CooldownSeconds) * time.Second)
+	ship.SetCooldown(cooldownUntil)
+	if _, _, err := h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, playerID,
+		func(sh *domainNavigation.Ship) (bool, error) {
+			sh.SetLocation(destinationWaypoint)
+			sh.SetCooldown(cooldownUntil)
+			return true, nil
+		}); err != nil {
 		return nil, fmt.Errorf("failed to save ship state after jump: %w", err)
 	}
 

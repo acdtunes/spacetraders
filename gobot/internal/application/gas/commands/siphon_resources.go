@@ -104,8 +104,15 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 		if err != nil {
 			return nil, fmt.Errorf("failed to create cargo from API response: %w", err)
 		}
-		ship.SetCargo(newCargo)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
+		// Persist the authoritative post-siphon cargo under CAS-retry (sp-wa7c): the
+		// closure sets ONLY cargo on the FRESH row, so a concurrent writer's nav/fuel
+		// update on the same hull survives instead of being last-write-wins clobbered
+		// by this handler's pre-siphon snapshot.
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				sh.SetCargo(newCargo)
+				return true, nil
+			}); err != nil {
 			return nil, fmt.Errorf("failed to persist cargo after siphon: %w", err)
 		}
 	}

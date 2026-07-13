@@ -217,7 +217,7 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
 	waypointSymbol := ship.CurrentLocation().Symbol
 
-	response, err := h.executeTransactions(ctx, cmd, ship, token, transactionLimit, waypointSymbol)
+	response, err := h.executeTransactions(ctx, cmd, token, transactionLimit, waypointSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +271,13 @@ func (h *CargoTransactionHandler) getTransactionLimit(ctx context.Context, ship 
 //
 // OPTIMIZATION: waypointSymbol is passed from caller to avoid duplicate ship API load.
 // Balance tracking is skipped to avoid GetAgent API call - transactions still recorded.
-func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, ship *navigation.Ship, token string, transactionLimit int, waypointSymbol string) (*CargoTransactionResponse, error) {
+//
+// The net cargo delta this transaction produces is accumulated (unitsProcessed for
+// cmd.GoodSymbol) and persisted once, after all batches, via SaveWithRetry so a
+// concurrent writer's nav/fuel/other-cargo update on the same hull is re-applied
+// rather than last-write-wins clobbered (sp-wa7c). The pre-loaded ship snapshot is
+// therefore no longer needed here — the persist closure reads the fresh row.
+func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, token string, transactionLimit int, waypointSymbol string) (*CargoTransactionResponse, error) {
 	totalAmount := 0
 	unitsProcessed := 0
 	transactionCount := 0
@@ -350,13 +356,6 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		transactionCount++
 		unitsRemaining -= unitsToProcess
 
-		// Update ship cargo using domain methods
-		if transactionType == "purchase" {
-			_ = ship.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: result.UnitsProcessed})
-		} else {
-			_ = ship.RemoveCargo(cmd.GoodSymbol, result.UnitsProcessed)
-		}
-
 		// Record ledger entry immediately after each successful batch.
 		// The API returns the agent's post-transaction credits in-band per
 		// batch; each recorded row re-anchors the ledger to that truth so the
@@ -369,8 +368,28 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance, result.AgentCredits)
 	}
 
-	// Persist ship cargo changes to DB once after all batches
-	_ = h.shipRepo.Save(ctx, ship)
+	// Persist the cargo delta this transaction produced onto the FRESH ship row
+	// under CAS-retry (sp-wa7c): on a concurrent-writer version conflict the
+	// closure re-loads the fresh row and re-applies ONLY this op's own cargo
+	// delta for cmd.GoodSymbol, so a colliding writer's nav/fuel/other-cargo
+	// update survives instead of being last-write-wins clobbered (the reported
+	// cargo desync). This is the single field this transaction owns; the closure
+	// touches nothing else. A zero-unit transaction (e.g. floor/ceiling-aborted
+	// before any tranche) is not persisted — no spurious version bump. The
+	// persist error is intentionally not fatal: the API transaction already
+	// committed and the daemon cache reconciles from the API on the next sync
+	// (unchanged from the prior best-effort Save).
+	if unitsProcessed > 0 {
+		_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if transactionType == "purchase" {
+					_ = sh.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: unitsProcessed})
+				} else {
+					_ = sh.RemoveCargo(cmd.GoodSymbol, unitsProcessed)
+				}
+				return true, nil
+			})
+	}
 
 	// Refresh market data once after all batches complete (not per-batch)
 	// This reduces API calls from 2N to N+1 for N batches

@@ -268,22 +268,27 @@ func (h *OutfittingHandler) floorGuardBreached(ctx context.Context, ship *naviga
 	return false, agent.Credits, fee, ""
 }
 
-// releaseClaim releases the outfitting claim on shipSymbol. It reloads the ship
-// FRESH from the DB (so it carries whatever capacity was just persisted) before
-// clearing the assignment, guaranteeing the release never clobbers the new
-// cargo capacity. Runs on a cancellation-proof context so release survives even
-// if the RPC's context was cancelled (RULING #2). Best-effort: the daemon's
-// startup ReleaseAllActive sweep is the backstop.
+// releaseClaim releases the outfitting claim on shipSymbol under CAS-retry
+// (sp-wa7c): SaveWithRetry re-loads the ship FRESH (so it carries whatever
+// capacity/cargo was just persisted) and re-applies ForceRelease on that fresh
+// row on every version conflict, so the release never clobbers a concurrent
+// writer's fields — closing the residual find→save race the plain Save left open.
+// Skips the write when the hull is already idle (changed=false), so no spurious
+// version bump. Runs on a cancellation-proof context so release survives even if
+// the RPC's context was cancelled (RULING #2). Best-effort: the daemon's startup
+// ReleaseAllActive sweep is the backstop.
 func (h *OutfittingHandler) releaseClaim(shipSymbol string, playerID shared.PlayerID, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), releaseContextTimeout)
 	defer cancel()
 
-	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-	if err != nil {
-		return
-	}
-	ship.ForceRelease(reason, h.clock)
-	_ = h.shipRepo.Save(ctx, ship)
+	_, _, _ = h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() {
+				return false, nil
+			}
+			sh.ForceRelease(reason, h.clock)
+			return true, nil
+		})
 }
 
 // removeContainer deletes the lightweight outfitting container row on a

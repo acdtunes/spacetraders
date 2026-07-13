@@ -52,6 +52,23 @@ func (s *stubOrbitJumpShipRepo) Save(_ context.Context, _ *domainNavigation.Ship
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path so the migrated
+// claim/release/nav persists (sp-wa7c) exercise their production closures against
+// this stub's single ship.
+func (s *stubOrbitJumpShipRepo) SaveWithRetry(ctx context.Context, _ string, _ shared.PlayerID, mutate domainNavigation.ShipMutation) (*domainNavigation.Ship, bool, error) {
+	changed, err := mutate(s.ship)
+	if err != nil {
+		return s.ship, false, err
+	}
+	if !changed {
+		return s.ship, false, nil
+	}
+	if err := s.Save(ctx, s.ship); err != nil {
+		return s.ship, false, err
+	}
+	return s.ship, true, nil
+}
+
 func (s *stubOrbitJumpShipRepo) Orbit(_ context.Context, ship *domainNavigation.Ship, _ shared.PlayerID) error {
 	s.orbitCalls++
 	s.log.calls = append(s.log.calls, "orbit")

@@ -49,6 +49,27 @@ func (r *spawnContractFakeShipRepo) Save(_ context.Context, ship *navigation.Shi
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated balance-release (sp-wa7c) exercises its production closure
+// while still recording into saves.
+func (r *spawnContractFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 // ClaimShip records the atomic operation-checked claim at the port boundary
 // (sp-lprs / sp-l7h2 Phase 2.5). The dedication/assignment guard logic itself
 // lives in the real repository and is covered by

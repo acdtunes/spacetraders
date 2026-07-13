@@ -138,13 +138,28 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 		return nil
 	}
 
-	// Positive orphan evidence — free the hull. ForceRelease + Save clears
+	// Positive orphan evidence — free the hull. ForceRelease clears
 	// container_id -> NULL, assignment_status -> idle, and records released_at +
 	// release_reason. This is the same release path daemon workers run on stop
 	// (ContainerRunner.releaseShipAssignments), so the ships row ends up in a
 	// clean idle state the mfg coordinator / trade-route can re-claim.
-	ship.ForceRelease(releaseReasonStaleClaim, h.clock)
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
+	//
+	// Persist under CAS-retry (sp-wa7c): the closure re-applies ForceRelease on
+	// the FRESH row so a concurrent writer's cargo/nav update on the same hull
+	// survives instead of being last-write-wins clobbered by this reconciler's
+	// post-sync snapshot. It re-checks that the SAME orphaned claim is still
+	// present on the fresh row — a concurrent release, a captain reservation, or
+	// a fresh re-claim by another container all yield changed=false (no write),
+	// so a live worker's claim is never ripped away by a raced retry.
+	orphanedContainerID := ship.ContainerID()
+	if _, _, err := h.shipRepo.SaveWithRetry(ctx, ship.ShipSymbol(), playerID,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() || sh.IsReservedByCaptain() || sh.ContainerID() != orphanedContainerID {
+				return false, nil
+			}
+			sh.ForceRelease(releaseReasonStaleClaim, h.clock)
+			return true, nil
+		}); err != nil {
 		return fmt.Errorf("failed to persist stale-claim release: %w", err)
 	}
 	return nil

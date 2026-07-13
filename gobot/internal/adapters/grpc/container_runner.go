@@ -1209,9 +1209,22 @@ func (r *ContainerRunner) releaseShipAssignments(reason string) {
 	}
 
 	for _, ship := range assignedShips {
-		ship.ForceRelease(reason, r.clock)
-		if err := r.shipRepo.Save(ctx, ship); err != nil {
-			r.log("ERROR", fmt.Sprintf("Failed to release ship %s: %v", ship.ShipSymbol(), err), nil)
+		symbol := ship.ShipSymbol()
+		// Release under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+		// so a concurrent writer's cargo/nav update on the same hull survives instead
+		// of being last-write-wins clobbered by the FindByContainer snapshot. Skip
+		// unless the hull is still assigned to THIS container (a concurrent release or
+		// a fresh re-claim by another container -> changed=false), so a hull that
+		// moved on is never released out from under its new owner (RULINGS #7).
+		if _, _, err := r.shipRepo.SaveWithRetry(ctx, symbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != r.containerEntity.ID() {
+					return false, nil
+				}
+				sh.ForceRelease(reason, r.clock)
+				return true, nil
+			}); err != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to release ship %s: %v", symbol, err), nil)
 		}
 	}
 

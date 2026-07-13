@@ -37,6 +37,23 @@ func (s *refreshStubShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 	return nil
 }
 
+// SaveWithRetry models the real repository's re-load-and-re-apply path (sp-wa7c):
+// the freshly re-loaded row is the just-synced ship, so the closure is applied to
+// syncedShip and the released aggregate is captured exactly as Save would. A
+// closure that reports no change (already released / re-claimed elsewhere) persists
+// nothing, matching the production skip-on-changed=false contract.
+func (s *refreshStubShipRepo) SaveWithRetry(_ context.Context, _ string, _ shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	changed, err := mutate(s.syncedShip)
+	if err != nil {
+		return s.syncedShip, false, err
+	}
+	if !changed {
+		return s.syncedShip, false, nil
+	}
+	s.savedShips = append(s.savedShips, s.syncedShip)
+	return s.syncedShip, true, nil
+}
+
 // stubContainerStatusReader reports a fixed container status so the handler's
 // orphaned-claim predicate can be exercised for each owner state.
 type stubContainerStatusReader struct {

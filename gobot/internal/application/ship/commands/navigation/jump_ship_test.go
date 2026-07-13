@@ -53,6 +53,24 @@ func (s *stubJumpShipRepo) Save(_ context.Context, ship *domainNavigation.Ship) 
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated claim/release/nav persists (sp-wa7c) exercise the same
+// closures they use in production while still funneling through Save's snapshot
+// capture. The fake has no version conflict, so a single mutate+save is faithful.
+func (s *stubJumpShipRepo) SaveWithRetry(ctx context.Context, _ string, _ shared.PlayerID, mutate domainNavigation.ShipMutation) (*domainNavigation.Ship, bool, error) {
+	changed, err := mutate(s.ship)
+	if err != nil {
+		return s.ship, false, err
+	}
+	if !changed {
+		return s.ship, false, nil
+	}
+	if err := s.Save(ctx, s.ship); err != nil {
+		return s.ship, false, err
+	}
+	return s.ship, true, nil
+}
+
 // stubJumpPlayerRepo embeds the domain interface so we only implement FindByID.
 type stubJumpPlayerRepo struct {
 	player.PlayerRepository

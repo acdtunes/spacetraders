@@ -85,15 +85,26 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("failed to transfer cargo: %w", err)
 	}
 
-	// 6. Update ships' cargo state using domain methods. The visitor (FromShip) was
-	// orbited/docked to match the warehouse; reconcile its in-memory nav so the Save
-	// below persists the aligned state instead of the pre-alignment one.
-	reconcileNavStatus(fromShip, alignedNav)
-	_ = fromShip.RemoveCargo(cmd.GoodSymbol, result.UnitsTransferred)
-	_ = h.shipRepo.Save(ctx, fromShip)
+	// 6. Persist each hull's own delta under CAS-retry (sp-wa7c): re-apply on the
+	// FRESH row so a concurrent writer's fields on either hull survive instead of
+	// being last-write-wins clobbered by these pre-transfer snapshots. The visitor
+	// (FromShip) owns its post-alignment nav + the cargo it shipped out; the
+	// warehouse (ToShip) owns the cargo it received. The persist error stays
+	// non-fatal (best-effort, unchanged): the transfer already committed on the API
+	// and the cache reconciles on the next sync.
+	transferred := result.UnitsTransferred
+	_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.FromShip, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			reconcileNavStatus(sh, alignedNav)
+			_ = sh.RemoveCargo(cmd.GoodSymbol, transferred)
+			return true, nil
+		})
 
-	_ = toShip.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: result.UnitsTransferred})
-	_ = h.shipRepo.Save(ctx, toShip)
+	_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ToShip, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			_ = sh.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: transferred})
+			return true, nil
+		})
 
 	return &TransferCargoResponse{
 		UnitsTransferred: result.UnitsTransferred,

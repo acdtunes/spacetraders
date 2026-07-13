@@ -133,10 +133,20 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		logger.Log("WARNING", fmt.Sprintf("Skipping balance for %s: could not claim ship: %v", cmd.ShipSymbol, err), nil)
 		return &BalanceShipPositionResponse{Navigated: false}, nil
 	}
-	// DB claim committed — release it on exit (success or failure).
+	// DB claim committed — release it on exit (success or failure) under CAS-retry
+	// (sp-wa7c): re-apply ForceRelease on the FRESH row so a concurrent writer's
+	// cargo/nav update survives instead of being last-write-wins clobbered by this
+	// handler's pre-claim snapshot, and skip the write unless the hull is still
+	// this balancer's claim (RULINGS #7 — never release out from under a new owner).
 	defer func() {
-		ship.ForceRelease("balancing_complete", h.clock)
-		_ = h.shipRepo.Save(ctx, ship)
+		_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != balancingContainerID {
+					return false, nil
+				}
+				sh.ForceRelease("balancing_complete", h.clock)
+				return true, nil
+			})
 	}()
 	// Mirror the claim into the in-memory entity (best-effort: the DB claim
 	// already holds the reservation, and the release defer's ForceRelease+Save

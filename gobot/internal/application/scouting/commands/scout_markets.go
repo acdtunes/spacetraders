@@ -177,9 +177,19 @@ func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *S
 				})
 			}
 
-			// Release ship assignment using Ship aggregate
-			ship.ForceRelease("scout_all_markets_reset", h.clock)
-			if err := h.shipRepo.Save(ctx, ship); err != nil {
+			// Release the scout claim under CAS-retry (sp-wa7c): re-apply ForceRelease
+			// on the FRESH row so a concurrent writer's cargo/nav update on the same
+			// hull survives instead of being last-write-wins clobbered, and skip the
+			// write when the hull is no longer this scout's claim (already released /
+			// re-claimed elsewhere -> changed=false), so no other owner is disturbed.
+			if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
+				func(sh *navigation.Ship) (bool, error) {
+					if !sh.IsAssigned() || sh.ContainerID() != containerID {
+						return false, nil
+					}
+					sh.ForceRelease("scout_all_markets_reset", h.clock)
+					return true, nil
+				}); err != nil {
 				logger.Log("WARNING", "Ship assignment release failed", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"action":      "release_ship",

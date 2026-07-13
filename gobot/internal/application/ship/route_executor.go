@@ -590,12 +590,31 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		return err
 	}
 
-	// Persist ship state to DB after arrival to prevent stale state loops
+	// Persist ship state to DB after arrival to prevent stale state loops.
+	// Clear the local pointer's arrival clock first so the caller keeps using a
+	// consistent ship, then persist the arrival under CAS-retry (sp-wa7c): the
+	// closure re-applies the IN_TRANSIT->arrived transition on the FRESH row so a
+	// concurrent writer's cargo/fuel update on the same hull survives instead of
+	// being last-write-wins clobbered by this executor's older in-memory snapshot.
+	// This op owns ONLY the arrival: it touches nothing but nav status + arrival
+	// clock. If a concurrent writer (typically ShipStateScheduler) already landed
+	// the arrival, the fresh row is no longer IN_TRANSIT -> changed=false -> no
+	// write and no spurious version bump.
 	if e.shipRepo != nil && ship.NavStatus() != domainNavigation.NavStatusInTransit {
 		// Clear arrival time since ship has arrived
 		ship.ClearArrivalTime()
 
-		if err := e.shipRepo.Save(ctx, ship); err != nil {
+		if _, _, err := e.shipRepo.SaveWithRetry(ctx, ship.ShipSymbol(), playerID,
+			func(sh *domainNavigation.Ship) (bool, error) {
+				if sh.NavStatus() != domainNavigation.NavStatusInTransit {
+					return false, nil
+				}
+				if aerr := sh.Arrive(); aerr != nil {
+					return false, aerr
+				}
+				sh.ClearArrivalTime()
+				return true, nil
+			}); err != nil {
 			logger.Log("WARNING", "Failed to persist ship state after transit wait", map[string]interface{}{
 				"ship_symbol": ship.ShipSymbol(),
 				"error":       err.Error(),

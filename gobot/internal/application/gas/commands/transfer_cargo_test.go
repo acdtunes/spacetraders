@@ -58,6 +58,27 @@ func (r *transferFakeRepo) Save(_ context.Context, ship *navigation.Ship) error 
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated transfer persists (sp-wa7c) exercise their production
+// closures while still recording into the saved map.
+func (r *transferFakeRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 func buildTransferShip(t *testing.T, symbol, waypoint string, nav navigation.NavStatus, good string, units, capacity int) *navigation.Ship {
 	t.Helper()
 	wp, err := shared.NewWaypoint(waypoint, 1, 1)

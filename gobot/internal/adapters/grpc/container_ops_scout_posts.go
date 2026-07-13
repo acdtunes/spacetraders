@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -149,16 +150,18 @@ func (s *DaemonServer) ListScoutPosts(ctx context.Context, playerID int) ([]*dom
 // coordinator's own reclaim on the next tick, it does not strand the removal.
 func (s *DaemonServer) releaseScoutHull(ctx context.Context, playerID int, hullSymbol string) {
 	pid := shared.MustNewPlayerID(playerID)
-	ship, err := s.shipRepo.FindBySymbol(ctx, hullSymbol, pid)
-	if err != nil {
-		fmt.Printf("Warning: failed to load hull %s for release: %v\n", hullSymbol, err)
-		return
-	}
-	if !ship.IsAssigned() {
-		return
-	}
-	ship.ForceRelease("scout_post_removed", s.clock)
-	if err := s.shipRepo.Save(ctx, ship); err != nil {
+	// Release under CAS-retry (sp-wa7c): the closure re-applies ForceRelease on the
+	// FRESH row so a concurrent writer's cargo/nav update on the same hull survives
+	// instead of being last-write-wins clobbered, and skips the write when the hull
+	// is already idle (changed=false, no spurious version bump).
+	if _, _, err := s.shipRepo.SaveWithRetry(ctx, hullSymbol, pid,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() {
+				return false, nil
+			}
+			sh.ForceRelease("scout_post_removed", s.clock)
+			return true, nil
+		}); err != nil {
 		fmt.Printf("Warning: failed to release hull %s: %v\n", hullSymbol, err)
 	}
 }
