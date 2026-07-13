@@ -153,6 +153,24 @@ type ShipRepository interface {
 	// reserved by the captain.
 	ReleaseCaptainReservation(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error
 
+	// PreemptForCaptain atomically REVOKES a coordinator's live container claim
+	// and transfers the hull to the captain — the operator-authority preempt
+	// behind `ship reserve --force` (sp-w3yd). Unlike ReserveForCaptain, a live
+	// container claim is transferred (not rejected) in a single row-locked swap
+	// (RULING #7), so a coordinator re-grab cannot race a lost update; the
+	// coordinator's per-tick FindByContainer then drops the hull and it re-plans.
+	// Returns the container id the claim was revoked from, or "" if the hull was
+	// idle. A hull the captain already holds is rejected like ReserveForCaptain.
+	PreemptForCaptain(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) (string, error)
+
+	// ReleaseContainerClaim atomically breaks a hull's LIVE coordinator
+	// work-claim, returning it to idle so the coordinator stops routing it — the
+	// extra step `fleet unassign` performs beyond clearing the DedicatedFleet tag
+	// (sp-w3yd). Scoped to a container claim: a captain reservation is left
+	// untouched (that is `ship release`'s job) and an idle hull is a no-op.
+	// Returns whether a live claim was actually broken.
+	ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error)
+
 	// Sync methods (API -> Database)
 	SyncAllFromAPI(ctx context.Context, playerID shared.PlayerID) (int, error)
 	SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*Ship, error)

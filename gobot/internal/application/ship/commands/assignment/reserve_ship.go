@@ -24,6 +24,14 @@ type ReserveShipCommand struct {
 	Reason      string // Optional: free-text reason, shown in `ship list`
 	PlayerID    *int   // Resolve by numeric player ID (takes precedence)
 	AgentSymbol string // Resolve by agent symbol if PlayerID is nil
+
+	// Force PREEMPTS a coordinator's live claim (sp-w3yd): `ship reserve --force`.
+	// When true, a hull actively claimed by a coordinator container is atomically
+	// revoked and transferred to the captain (operator authority wins) instead of
+	// being rejected. The zero value (false) is the byte-identical pre-sp-w3yd
+	// behavior: a claimed hull is rejected exactly as before. --force is the ONLY
+	// new ownership bypass — explicit and operator-initiated.
+	Force bool
 }
 
 // ReserveShipResponse confirms the reservation and carries a soft warning
@@ -36,6 +44,14 @@ type ReserveShipResponse struct {
 	// reservation has already succeeded by the time this is computed
 	// (sp-i1ku acceptance criterion: "a soft warning, still reserve").
 	Warning string
+
+	// Preempted is true when --force revoked a coordinator's live claim (as
+	// opposed to reserving an already-idle hull). PreemptedFrom names the
+	// container the claim was revoked from, so the CLI can tell the operator
+	// exactly what was taken back (sp-w3yd). Both are zero for a non-force
+	// reserve or a force reserve of an idle hull.
+	Preempted     bool
+	PreemptedFrom string
 }
 
 // ReserveShipHandler handles the ReserveShip command.
@@ -68,14 +84,27 @@ func (h *ReserveShipHandler) Handle(ctx context.Context, request common.Request)
 		return nil, err
 	}
 
-	if err := h.shipRepo.ReserveForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID); err != nil {
+	var preemptedFrom string
+	if cmd.Force {
+		// --force: atomically revoke any coordinator claim and transfer the hull
+		// to the captain (sp-w3yd). preemptedFrom is the container the claim was
+		// revoked from, or "" when the hull was already idle.
+		preemptedFrom, err = h.shipRepo.PreemptForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to preempt ship for captain: %w", err)
+		}
+	} else if err := h.shipRepo.ReserveForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID); err != nil {
+		// Non-force: unchanged — a live coordinator claim is rejected exactly as
+		// before (byte-identical to pre-sp-w3yd).
 		return nil, fmt.Errorf("failed to reserve ship: %w", err)
 	}
 
 	return &ReserveShipResponse{
-		ShipSymbol: cmd.ShipSymbol,
-		Reason:     cmd.Reason,
-		Warning:    h.idleCriticalWarning(ctx, cmd.ShipSymbol, playerID),
+		ShipSymbol:    cmd.ShipSymbol,
+		Reason:        cmd.Reason,
+		Warning:       h.idleCriticalWarning(ctx, cmd.ShipSymbol, playerID),
+		Preempted:     preemptedFrom != "",
+		PreemptedFrom: preemptedFrom,
 	}, nil
 }
 

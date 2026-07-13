@@ -40,6 +40,16 @@ type AssignShipFleetCommand struct {
 	// anything. The zero value (false) fails closed: an assigner that forgets
 	// to set it gets the strict auto behavior.
 	Manual bool
+
+	// BreakWorkClaim additionally severs the hull's LIVE coordinator work-claim
+	// after clearing the dedication (sp-w3yd) — the operator's `fleet unassign`
+	// sets this so the coordinator actually STOPS routing the hull, closing the
+	// "unassign says success but the coordinator keeps routing it" gap. Scoped to
+	// the operator path on purpose: the zero value (false) fails safe so the
+	// automated dedication reconcile — which shares this handler — never strands a
+	// running worker by breaking its claim. Only meaningful on the unassign
+	// (Fleet=="") path; a captain reservation is left untouched by the break.
+	BreakWorkClaim bool
 }
 
 // AssignShipFleetResponse confirms the dedication write.
@@ -202,6 +212,29 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 
 	if err := h.shipRepo.AssignFleet(ctx, cmd.ShipSymbol, cmd.Fleet, playerID); err != nil {
 		return nil, fmt.Errorf("failed to assign ship fleet: %w", err)
+	}
+
+	// sp-w3yd: `fleet unassign` (BreakWorkClaim) additionally severs the live
+	// coordinator work-claim so the coordinator stops routing the hull — clearing
+	// the dedication alone only governs the NEXT acquisition, not the current
+	// claim. Scoped to the operator path (the reconcile leaves BreakWorkClaim
+	// false), and a captain reservation is left untouched by the break (that is
+	// `ship release`'s job). Best-effort audit: a broken claim logs one line.
+	if cmd.BreakWorkClaim {
+		broke, err := h.shipRepo.ReleaseContainerClaim(ctx, cmd.ShipSymbol, playerID, "fleet unassign (sp-w3yd)")
+		if err != nil {
+			return nil, fmt.Errorf("failed to break live work-claim on unassign: %w", err)
+		}
+		if broke {
+			logger.Log("INFO", fmt.Sprintf(
+				"Broke live coordinator work-claim on %s during unassign — coordinator will stop routing it [assigner=%s]",
+				cmd.ShipSymbol, assigner),
+				map[string]interface{}{
+					"action":      "break_work_claim_on_unassign",
+					"ship_symbol": cmd.ShipSymbol,
+					"assigner":    assigner,
+				})
+		}
 	}
 
 	// Assigner-named audit line (sp-r6f1 finding #3): EVERY actual dedication

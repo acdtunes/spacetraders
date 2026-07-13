@@ -966,13 +966,18 @@ func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playe
 }
 
 // ReserveShip reserves a ship for the captain's direct manual use, hiding it
-// from every coordinator's assignment discovery (sp-i1ku)
-func (c *DaemonClient) ReserveShip(ctx context.Context, shipSymbol string, reason *string, playerID *int32, agentSymbol *string) (*pb.ReserveShipResponse, error) {
+// from every coordinator's assignment discovery (sp-i1ku). When force is true,
+// a coordinator's live claim is PREEMPTED — atomically revoked and transferred
+// to the captain (sp-w3yd) — instead of rejected.
+func (c *DaemonClient) ReserveShip(ctx context.Context, shipSymbol string, reason *string, playerID *int32, agentSymbol *string, force bool) (*pb.ReserveShipResponse, error) {
 	req := &pb.ReserveShipRequest{
 		ShipSymbol:  shipSymbol,
 		Reason:      reason,
 		PlayerId:    playerID,
 		AgentSymbol: agentSymbol,
+	}
+	if force {
+		req.Force = &force
 	}
 
 	resp, err := c.client.ReserveShip(ctx, req)

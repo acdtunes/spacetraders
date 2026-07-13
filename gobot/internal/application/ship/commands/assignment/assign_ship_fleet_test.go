@@ -29,6 +29,21 @@ type assignStubShipRepo struct {
 	assignedFleet  string
 	assignedPlayer shared.PlayerID
 	assignCalled   int
+
+	// ReleaseContainerClaim behavior + capture (sp-w3yd: the `fleet unassign`
+	// work-claim break). releaseClaimReleased is what the repo reports it did.
+	releaseClaimReleased bool
+	releaseClaimErr      error
+	releaseClaimSymbol   string
+	releaseClaimReason   string
+	releaseClaimCalled   int
+}
+
+func (s *assignStubShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, reason string) (bool, error) {
+	s.releaseClaimCalled++
+	s.releaseClaimSymbol = shipSymbol
+	s.releaseClaimReason = reason
+	return s.releaseClaimReleased, s.releaseClaimErr
 }
 
 func (s *assignStubShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
@@ -176,6 +191,64 @@ func TestAssignShipFleet_EmptyFleetClearsDedication(t *testing.T) {
 	}
 	if resp.(*AssignShipFleetResponse).Fleet != "" {
 		t.Fatalf("expected response fleet to be empty after clearing, got %q", resp.(*AssignShipFleetResponse).Fleet)
+	}
+}
+
+// The sp-w3yd fix: `fleet unassign` must break the LIVE coordinator work-claim,
+// not just clear the dedication tag — otherwise the coordinator keeps routing
+// the hull ("unassign says success but the coordinator keeps routing it"). With
+// BreakWorkClaim set, the handler clears the dedication AND releases the
+// container claim so the coordinator stops routing it on its next tick.
+func TestAssignShipFleet_UnassignWithBreakWorkClaimBreaksContainerClaim(t *testing.T) {
+	repo := &assignStubShipRepo{
+		ship:                 newFleetTestShip(t, "TORWIND-8", "FRAME_FREIGHTER", "HAULER", 40, "goods_factory"),
+		releaseClaimReleased: true, // the hull was live-claimed; the break acted
+	}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 1
+	_, err := handler.Handle(common.WithLogger(context.Background(), &captureLogger{}), &AssignShipFleetCommand{
+		ShipSymbol:     "TORWIND-8",
+		Fleet:          "",
+		BreakWorkClaim: true,
+		PlayerID:       &pid,
+	})
+	if err != nil {
+		t.Fatalf("expected unassign+break to succeed, got: %v", err)
+	}
+
+	if repo.assignCalled != 1 || repo.assignedFleet != "" {
+		t.Fatalf("expected the dedication cleared via AssignFleet(\"\"), got calls=%d fleet=%q", repo.assignCalled, repo.assignedFleet)
+	}
+	if repo.releaseClaimCalled != 1 {
+		t.Fatalf("expected exactly one ReleaseContainerClaim call to break the live work-claim, got %d", repo.releaseClaimCalled)
+	}
+	if repo.releaseClaimSymbol != "TORWIND-8" {
+		t.Fatalf("expected the work-claim break to target TORWIND-8, got %q", repo.releaseClaimSymbol)
+	}
+}
+
+// The work-claim break is scoped to the operator's `fleet unassign` (which sets
+// BreakWorkClaim). A plain `fleet assign` — and the automated coordinator
+// reconcile, which shares this handler — must NEVER break a live claim, or the
+// reconcile would strand running workers on every restart. The zero value
+// (BreakWorkClaim=false) fails safe.
+func TestAssignShipFleet_AssignDoesNotBreakWorkClaim(t *testing.T) {
+	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-19", "FRAME_FREIGHTER", "HAULER", 40, "")}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 1
+	_, err := handler.Handle(context.Background(), &AssignShipFleetCommand{
+		ShipSymbol: "TORWIND-19",
+		Fleet:      "contract",
+		PlayerID:   &pid,
+		// BreakWorkClaim left false (the reconcile path).
+	})
+	if err != nil {
+		t.Fatalf("expected assign to succeed, got: %v", err)
+	}
+	if repo.releaseClaimCalled != 0 {
+		t.Fatalf("a plain assign/reconcile must never break a live work-claim, got %d ReleaseContainerClaim calls", repo.releaseClaimCalled)
 	}
 }
 

@@ -178,25 +178,30 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 // from every coordinator's assignment discovery (sp-i1ku). Returns the
 // ship's own reservation reason (defaulted server-side if the caller gave
 // none) plus an advisory warning when the reserved hull was idle-critical.
-func (s *DaemonServer) ReserveShip(ctx context.Context, shipSymbol, reason string, playerID *int, agentSymbol string) (string, string, string, error) {
+//
+// When force is true, a coordinator's live claim is PREEMPTED — atomically
+// revoked and transferred to the captain (sp-w3yd) — rather than rejected; the
+// returned preempted flag and preemptedFrom container report what was revoked.
+func (s *DaemonServer) ReserveShip(ctx context.Context, shipSymbol, reason string, playerID *int, agentSymbol string, force bool) (string, string, string, bool, string, error) {
 	cmd := &shipAssignmentCmd.ReserveShipCommand{
 		ShipSymbol:  shipSymbol,
 		Reason:      reason,
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
+		Force:       force,
 	}
 
 	response, err := s.mediator.Send(ctx, cmd)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to reserve ship: %w", err)
+		return "", "", "", false, "", fmt.Errorf("failed to reserve ship: %w", err)
 	}
 
 	reserveResp, ok := response.(*shipAssignmentCmd.ReserveShipResponse)
 	if !ok {
-		return "", "", "", fmt.Errorf("unexpected response type")
+		return "", "", "", false, "", fmt.Errorf("unexpected response type")
 	}
 
-	return reserveResp.ShipSymbol, reserveResp.Reason, reserveResp.Warning, nil
+	return reserveResp.ShipSymbol, reserveResp.Reason, reserveResp.Warning, reserveResp.Preempted, reserveResp.PreemptedFrom, nil
 }
 
 // ReleaseShip clears a captain reservation, returning the ship to idle so
@@ -249,6 +254,38 @@ func (s *DaemonServer) AssignShipFleet(ctx context.Context, shipSymbol, fleet st
 	}
 
 	return assignResp.ShipSymbol, assignResp.Fleet, nil
+}
+
+// UnassignShipFleet clears a ship's dedication AND breaks its live coordinator
+// work-claim (sp-w3yd) — the operator's `fleet unassign`. Clearing the
+// DedicatedFleet tag alone governs only the NEXT acquisition, so the coordinator
+// keeps routing a hull it currently holds; BreakWorkClaim additionally severs
+// that live claim so the coordinator actually stops routing it on its next tick.
+// A captain reservation is left untouched by the break (that is `ship release`'s
+// job). Routed through the single dedication write path (Fleet=="" clears it),
+// Manual+cli like `fleet assign`.
+func (s *DaemonServer) UnassignShipFleet(ctx context.Context, shipSymbol string, playerID *int, agentSymbol string) (string, error) {
+	cmd := &shipAssignmentCmd.AssignShipFleetCommand{
+		ShipSymbol:     shipSymbol,
+		Fleet:          "",
+		PlayerID:       playerID,
+		AgentSymbol:    agentSymbol,
+		Assigner:       "cli",
+		Manual:         true,
+		BreakWorkClaim: true,
+	}
+
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to unassign ship fleet: %w", err)
+	}
+
+	assignResp, ok := response.(*shipAssignmentCmd.AssignShipFleetResponse)
+	if !ok {
+		return "", fmt.Errorf("unexpected response type")
+	}
+
+	return assignResp.ShipSymbol, nil
 }
 
 // ListFleets lists every dedicated fleet and its member ships (sp-l7h2).

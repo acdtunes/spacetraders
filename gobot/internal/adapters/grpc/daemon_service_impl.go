@@ -989,15 +989,17 @@ func (s *daemonServiceImpl) ReserveShip(ctx context.Context, req *pb.ReserveShip
 	agentSymbol := stringValue(req.AgentSymbol)
 	reason := stringValue(req.Reason)
 
-	shipSymbol, respReason, warning, err := s.daemon.ReserveShip(ctx, req.ShipSymbol, reason, playerID, agentSymbol)
+	shipSymbol, respReason, warning, preempted, preemptedFrom, err := s.daemon.ReserveShip(ctx, req.ShipSymbol, reason, playerID, agentSymbol, req.GetForce())
 	if err != nil {
 		return nil, fmt.Errorf("failed to reserve ship: %w", err)
 	}
 
 	return &pb.ReserveShipResponse{
-		ShipSymbol: shipSymbol,
-		Reason:     respReason,
-		Warning:    warning,
+		ShipSymbol:    shipSymbol,
+		Reason:        respReason,
+		Warning:       warning,
+		Preempted:     preempted,
+		PreemptedFrom: preemptedFrom,
 	}, nil
 }
 
@@ -1105,9 +1107,10 @@ func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.Unass
 
 	agentSymbol := stringValue(req.AgentSymbol)
 
-	// Unassign is assign-to-empty: Fleet "" clears the dedication through the
-	// same single write path (sp-l7h2).
-	shipSymbol, _, err := s.daemon.AssignShipFleet(ctx, req.ShipSymbol, "", playerID, agentSymbol)
+	// Unassign clears the dedication (assign-to-empty through the single write
+	// path, sp-l7h2) AND breaks the live coordinator work-claim so the
+	// coordinator stops routing the hull (sp-w3yd) — not just the tag.
+	shipSymbol, err := s.daemon.UnassignShipFleet(ctx, req.ShipSymbol, playerID, agentSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unassign ship fleet: %w", err)
 	}

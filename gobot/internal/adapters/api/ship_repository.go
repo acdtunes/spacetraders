@@ -1368,6 +1368,175 @@ func (r *ShipRepository) ReleaseCaptainReservation(ctx context.Context, shipSymb
 	})
 }
 
+// PreemptForCaptain atomically REVOKES a coordinator's live container claim and
+// transfers ownership of the hull to the captain — the operator-authority
+// preempt behind `ship reserve --force` (sp-w3yd). It is the ONLY path that may
+// take a hull out from under a running coordinator, and it does so in a single
+// row-locked transaction (RULING #7): the claim swap — clear container_id, set
+// assignment_owner=captain — is one atomic write, so a coordinator re-grabbing
+// the hull can never race in a lost update. After the swap the coordinator's own
+// per-tick FindByContainer derivation no longer returns the hull, so it re-plans
+// on its next tick through the same "ship went unavailable mid-plan" path it
+// already handles (no crash, task deferred).
+//
+// Returns the container id the claim was revoked from (for the operator-facing
+// "preempted from X" message), or "" when the hull was idle (nothing to preempt —
+// a plain reservation). Unlike the non-force ReserveForCaptain, a live container
+// claim is transferred rather than rejected; every other guard is identical, so
+// `--force` is a strict superset of reserve, never a divergent code path. A hull
+// the captain already holds is rejected exactly as ReserveForCaptain rejects it
+// (the reason-change contract: release + reserve to change a reason).
+func (r *ShipRepository) PreemptForCaptain(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) (string, error) {
+	if r.db == nil {
+		return "", fmt.Errorf("database not configured")
+	}
+
+	var preemptedFrom string
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		// Lock the row with SELECT FOR UPDATE so the claim swap cannot interleave
+		// with a concurrent coordinator ClaimShip (RULING #7).
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		// Already the captain's — nothing to preempt. Reject exactly like
+		// ReserveForCaptain so `ship reserve --force`'s output always means "this
+		// just took effect," never a possible silent no-op.
+		if model.AssignmentStatus == "active" && model.AssignmentOwner == string(navigation.AssignmentOwnerCaptain) {
+			return fmt.Errorf("ship %s is already reserved by the captain", shipSymbol)
+		}
+
+		// A live coordinator claim — record which container we are revoking it
+		// from, then fall through to the transfer. This is the preempt: the
+		// operator (captain) authority wins over a coordinator claim.
+		if model.AssignmentStatus == "active" && model.ContainerID != nil {
+			preemptedFrom = *model.ContainerID
+		}
+
+		// Transfer ownership to the captain: clear the container claim in the SAME
+		// locked write that stamps captain ownership, so the swap is atomic.
+		//
+		// version is advanced so a coordinator that loaded this hull BEFORE the
+		// preempt (and is mid-operation) loses the optimistic-concurrency CAS race
+		// when it writes back through the SaveWithRetry seam (sp-01wc): the conflict
+		// forces it to RELOAD the fresh (captain-owned) row and re-apply only its
+		// nav/cargo mutation, so it cannot resurrect its stale container claim. This
+		// closes the clobber for every writer already migrated to SaveWithRetry
+		// (sell/purchase, siphon, mfg supply write-back, route-executor legs). NOTE:
+		// the plain-Save operation methods still on the un-migrated path (Navigate/
+		// Dock/Orbit/Refuel/SetFlightMode — the sp-wa7c migration target) fall back
+		// to last-write-wins on a version conflict and CAN still re-assert the claim
+		// within a single-operation window; that residual is sp-wa7c territory, not
+		// closed here (see sp-w3yd report). This is the "no lost update" half of
+		// RULING #7 for the migrated seam.
+		now := r.clock.Now()
+		err = tx.Model(&model).Updates(map[string]interface{}{
+			"container_id":      nil,
+			"assignment_status": "active",
+			"assigned_at":       now,
+			"released_at":       nil,
+			"release_reason":    "",
+			"assignment_owner":  string(navigation.AssignmentOwnerCaptain),
+			"assignment_reason": reason,
+			"version":           gorm.Expr("version + 1"),
+		}).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to preempt ship for captain: %w", err)
+		}
+
+		// Invalidate cache since assignment changed
+		r.shipListCache.Delete(playerID.Value())
+
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return preemptedFrom, nil
+}
+
+// ReleaseContainerClaim atomically breaks a hull's LIVE coordinator work-claim,
+// returning it to idle so the claiming coordinator stops routing it — its own
+// per-tick FindByContainer derivation no longer returns the hull (sp-w3yd). This
+// is the extra step `fleet unassign` performs beyond clearing the DedicatedFleet
+// tag, closing the documented "unassign says success but the coordinator keeps
+// routing it" gap: clearing dedication alone governs only the NEXT acquisition,
+// never the current claim. Uses the same row-level locking as ClaimShip.
+//
+// Scoped to a CONTAINER claim: a captain reservation is left untouched (breaking
+// it is `ship release`'s job, not unassign's — unassign must never silently drop
+// a reservation), and an already-idle hull is a harmless no-op. Returns whether a
+// live claim was actually broken.
+func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error) {
+	if r.db == nil {
+		return false, fmt.Errorf("database not configured")
+	}
+
+	var released bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		// Only a live CONTAINER claim is broken. A captain reservation
+		// (owner=captain) is deliberately preserved, and an idle hull is a no-op.
+		if model.AssignmentStatus != "active" ||
+			model.AssignmentOwner == string(navigation.AssignmentOwnerCaptain) ||
+			model.ContainerID == nil {
+			return nil
+		}
+
+		// version advanced for the same anti-clobber reason as PreemptForCaptain:
+		// a coordinator mid-operation on this hull loses the CAS race on its next
+		// SaveWithRetry write-back and reloads the fresh (idle) row, so it cannot
+		// re-assert the broken claim. Same residual as PreemptForCaptain: the
+		// un-migrated plain-Save operation methods (sp-wa7c) can still re-assert
+		// within a single-operation window (RULING #7 for the migrated seam).
+		now := r.clock.Now()
+		err = tx.Model(&model).Updates(map[string]interface{}{
+			"assignment_status": "idle",
+			"container_id":      nil,
+			"released_at":       now,
+			"release_reason":    reason,
+			"version":           gorm.Expr("version + 1"),
+		}).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to release container claim: %w", err)
+		}
+
+		released = true
+
+		// Invalidate cache since assignment changed
+		r.shipListCache.Delete(playerID.Value())
+
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return released, nil
+}
+
 // AssignFleet atomically sets the ship's DedicatedFleet tag — the single
 // write path for fleet dedication (sp-l7h2). fleet == "" clears it. Uses the
 // same row-level locking as ClaimShip so an assignment can never interleave

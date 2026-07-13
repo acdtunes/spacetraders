@@ -20,6 +20,15 @@ type reserveStubShipRepo struct {
 	reservedReason string
 	reserveCalled  int
 
+	// PreemptForCaptain behavior + capture (sp-w3yd: the --force path). preemptedFrom
+	// is the container id the atomic swap reports it revoked the claim from ("" when
+	// the hull was idle).
+	preemptErr      error
+	preemptedSymbol string
+	preemptedReason string
+	preemptedFrom   string
+	preemptCalled   int
+
 	shipToReturn *navigation.Ship
 	findErr      error
 
@@ -32,6 +41,13 @@ func (s *reserveStubShipRepo) ReserveForCaptain(_ context.Context, shipSymbol st
 	s.reservedSymbol = shipSymbol
 	s.reservedReason = reason
 	return s.reserveErr
+}
+
+func (s *reserveStubShipRepo) PreemptForCaptain(_ context.Context, shipSymbol string, reason string, _ shared.PlayerID) (string, error) {
+	s.preemptCalled++
+	s.preemptedSymbol = shipSymbol
+	s.preemptedReason = reason
+	return s.preemptedFrom, s.preemptErr
 }
 
 func (s *reserveStubShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
@@ -102,6 +118,9 @@ func TestReserveShip_ReservesShipAndReturnsSuccess(t *testing.T) {
 	if repo.reserveCalled != 1 {
 		t.Fatalf("expected exactly one ReserveForCaptain call, got %d", repo.reserveCalled)
 	}
+	if repo.preemptCalled != 0 {
+		t.Fatalf("a plain (non-force) reserve must never preempt, got %d PreemptForCaptain calls", repo.preemptCalled)
+	}
 	if repo.reservedSymbol != "TORWIND-7" {
 		t.Fatalf("expected TORWIND-7 reserved, got %q", repo.reservedSymbol)
 	}
@@ -161,6 +180,81 @@ func TestReserveShip_RejectsWhenShipHeldByContainer(t *testing.T) {
 	var alreadyAssigned *shared.ShipAlreadyAssignedError
 	if !errors.As(err, &alreadyAssigned) {
 		t.Fatalf("expected ShipAlreadyAssignedError, got: %T %v", err, err)
+	}
+}
+
+// The sp-w3yd fix: `ship reserve --force` (Force=true) must route through the
+// atomic PREEMPT path, revoking a coordinator's live claim, NOT the plain
+// reserve path that rejects a claimed hull. The handler must surface the
+// preemption (Preempted + the revoked container) so the operator is told what
+// was taken back — and must NOT touch the non-force ReserveForCaptain path.
+func TestReserveShip_ForcePreemptsContainerClaim(t *testing.T) {
+	repo := &reserveStubShipRepo{
+		shipToReturn:  newReserveTestShip(t, "TORWIND-8", "HAULER"),
+		idleShips:     []*navigation.Ship{newReserveTestShip(t, "TORWIND-7", "HAULER")},
+		preemptedFrom: "goods_factory-FAB_MATS-a6984433",
+	}
+	handler := NewReserveShipHandler(repo, nil)
+
+	pid := 1
+	resp, err := handler.Handle(context.Background(), &ReserveShipCommand{
+		ShipSymbol: "TORWIND-8",
+		Reason:     "reclaim stranded FAB_MATS",
+		Force:      true,
+		PlayerID:   &pid,
+	})
+	if err != nil {
+		t.Fatalf("expected no error on a force preempt, got: %v", err)
+	}
+
+	if repo.preemptCalled != 1 {
+		t.Fatalf("expected exactly one PreemptForCaptain call on --force, got %d", repo.preemptCalled)
+	}
+	if repo.reserveCalled != 0 {
+		t.Fatalf("--force must not fall through to the plain reserve path, got %d ReserveForCaptain calls", repo.reserveCalled)
+	}
+	if repo.preemptedSymbol != "TORWIND-8" || repo.preemptedReason != "reclaim stranded FAB_MATS" {
+		t.Fatalf("preempt must receive the exact symbol/reason, got %q / %q", repo.preemptedSymbol, repo.preemptedReason)
+	}
+
+	reserveResp, ok := resp.(*ReserveShipResponse)
+	if !ok {
+		t.Fatalf("unexpected response type: %T", resp)
+	}
+	if !reserveResp.Preempted {
+		t.Fatalf("expected Preempted=true when a live container claim was revoked")
+	}
+	if reserveResp.PreemptedFrom != "goods_factory-FAB_MATS-a6984433" {
+		t.Fatalf("expected the revoked container reported, got %q", reserveResp.PreemptedFrom)
+	}
+}
+
+// A force reserve of an IDLE hull is a plain reservation, not a preemption: the
+// repository reports no revoked container, so Preempted must be false (the CLI
+// then prints the ordinary "reserved" message, not "preempted from ...").
+func TestReserveShip_ForceOnIdleHullReportsNoPreemption(t *testing.T) {
+	repo := &reserveStubShipRepo{
+		shipToReturn:  newReserveTestShip(t, "TORWIND-8", "HAULER"),
+		idleShips:     []*navigation.Ship{newReserveTestShip(t, "TORWIND-7", "HAULER")},
+		preemptedFrom: "", // idle hull: nothing to preempt
+	}
+	handler := NewReserveShipHandler(repo, nil)
+
+	pid := 1
+	resp, err := handler.Handle(context.Background(), &ReserveShipCommand{
+		ShipSymbol: "TORWIND-8",
+		Force:      true,
+		PlayerID:   &pid,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	reserveResp := resp.(*ReserveShipResponse)
+	if reserveResp.Preempted {
+		t.Fatalf("expected Preempted=false for a force reserve of an idle hull")
+	}
+	if reserveResp.PreemptedFrom != "" {
+		t.Fatalf("expected no revoked container for an idle hull, got %q", reserveResp.PreemptedFrom)
 	}
 }
 

@@ -5179,11 +5179,15 @@ func (x *RefreshShipResponse) GetShip() *ShipDetail {
 
 // ReserveShipRequest reserves a ship for the captain's direct manual use
 type ReserveShipRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShipSymbol    string                 `protobuf:"bytes,1,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
-	Reason        *string                `protobuf:"bytes,2,opt,name=reason,proto3,oneof" json:"reason,omitempty"`
-	PlayerId      *int32                 `protobuf:"varint,3,opt,name=player_id,json=playerId,proto3,oneof" json:"player_id,omitempty"`
-	AgentSymbol   *string                `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ShipSymbol  string                 `protobuf:"bytes,1,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	Reason      *string                `protobuf:"bytes,2,opt,name=reason,proto3,oneof" json:"reason,omitempty"`
+	PlayerId    *int32                 `protobuf:"varint,3,opt,name=player_id,json=playerId,proto3,oneof" json:"player_id,omitempty"`
+	AgentSymbol *string                `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	// force (sp-w3yd): when true, PREEMPT a coordinator's live claim — atomically
+	// revoke it and transfer the hull to the captain (operator authority wins)
+	// instead of rejecting. Absent/false is the byte-identical pre-sp-w3yd behavior.
+	Force         *bool `protobuf:"varint,5,opt,name=force,proto3,oneof" json:"force,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5246,13 +5250,25 @@ func (x *ReserveShipRequest) GetAgentSymbol() string {
 	return ""
 }
 
+func (x *ReserveShipRequest) GetForce() bool {
+	if x != nil && x.Force != nil {
+		return *x.Force
+	}
+	return false
+}
+
 type ReserveShipResponse struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	ShipSymbol string                 `protobuf:"bytes,1,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
 	Reason     string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	// warning is non-empty if reserving this ship left zero other idle ships
 	// sharing its role. Advisory only — the reservation already succeeded.
-	Warning       string `protobuf:"bytes,3,opt,name=warning,proto3" json:"warning,omitempty"`
+	Warning string `protobuf:"bytes,3,opt,name=warning,proto3" json:"warning,omitempty"`
+	// preempted (sp-w3yd) is true when --force revoked a coordinator's live claim;
+	// preempted_from names the container the claim was revoked from. Both zero for a
+	// non-force reserve or a force reserve of an already-idle hull.
+	Preempted     bool   `protobuf:"varint,4,opt,name=preempted,proto3" json:"preempted,omitempty"`
+	PreemptedFrom string `protobuf:"bytes,5,opt,name=preempted_from,json=preemptedFrom,proto3" json:"preempted_from,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5304,6 +5320,20 @@ func (x *ReserveShipResponse) GetReason() string {
 func (x *ReserveShipResponse) GetWarning() string {
 	if x != nil {
 		return x.Warning
+	}
+	return ""
+}
+
+func (x *ReserveShipResponse) GetPreempted() bool {
+	if x != nil {
+		return x.Preempted
+	}
+	return false
+}
+
+func (x *ReserveShipResponse) GetPreemptedFrom() string {
+	if x != nil {
+		return x.PreemptedFrom
 	}
 	return ""
 }
@@ -10623,22 +10653,26 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"_player_idB\x0f\n" +
 	"\r_agent_symbol\"=\n" +
 	"\x13RefreshShipResponse\x12&\n" +
-	"\x04ship\x18\x01 \x01(\v2\x12.daemon.ShipDetailR\x04ship\"\xc6\x01\n" +
+	"\x04ship\x18\x01 \x01(\v2\x12.daemon.ShipDetailR\x04ship\"\xeb\x01\n" +
 	"\x12ReserveShipRequest\x12\x1f\n" +
 	"\vship_symbol\x18\x01 \x01(\tR\n" +
 	"shipSymbol\x12\x1b\n" +
 	"\x06reason\x18\x02 \x01(\tH\x00R\x06reason\x88\x01\x01\x12 \n" +
 	"\tplayer_id\x18\x03 \x01(\x05H\x01R\bplayerId\x88\x01\x01\x12&\n" +
-	"\fagent_symbol\x18\x04 \x01(\tH\x02R\vagentSymbol\x88\x01\x01B\t\n" +
+	"\fagent_symbol\x18\x04 \x01(\tH\x02R\vagentSymbol\x88\x01\x01\x12\x19\n" +
+	"\x05force\x18\x05 \x01(\bH\x03R\x05force\x88\x01\x01B\t\n" +
 	"\a_reasonB\f\n" +
 	"\n" +
 	"_player_idB\x0f\n" +
-	"\r_agent_symbol\"h\n" +
+	"\r_agent_symbolB\b\n" +
+	"\x06_force\"\xad\x01\n" +
 	"\x13ReserveShipResponse\x12\x1f\n" +
 	"\vship_symbol\x18\x01 \x01(\tR\n" +
 	"shipSymbol\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x18\n" +
-	"\awarning\x18\x03 \x01(\tR\awarning\"\xc6\x01\n" +
+	"\awarning\x18\x03 \x01(\tR\awarning\x12\x1c\n" +
+	"\tpreempted\x18\x04 \x01(\bR\tpreempted\x12%\n" +
+	"\x0epreempted_from\x18\x05 \x01(\tR\rpreemptedFrom\"\xc6\x01\n" +
 	"\x12ReleaseShipRequest\x12\x1f\n" +
 	"\vship_symbol\x18\x01 \x01(\tR\n" +
 	"shipSymbol\x12\x1b\n" +

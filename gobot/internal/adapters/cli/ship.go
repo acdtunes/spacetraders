@@ -503,6 +503,7 @@ func newShipReserveCommand() *cobra.Command {
 	var (
 		shipSymbol string
 		reason     string
+		force      bool
 	)
 
 	cmd := &cobra.Command{
@@ -521,9 +522,16 @@ the ship's cache will never release the reservation on your behalf. Use
 If the reserved hull was the last idle ship of its role, a warning is
 printed — the reservation still succeeds; the warning is advisory only.
 
+By default, reserving a hull a coordinator is actively working fails
+('already assigned to container ...'). Pass --force to PREEMPT that claim:
+the coordinator's live claim is atomically revoked and the hull transferred
+to you, and the coordinator gracefully re-plans without it on its next tick.
+--force is the only way to take back a hull the operator is locked out of.
+
 Examples:
   spacetraders ship reserve --ship ENDURANCE-1 --reason "manual gate-supply errand"
-  spacetraders ship reserve --ship ENDURANCE-1 --agent ENDURANCE`,
+  spacetraders ship reserve --ship ENDURANCE-1 --agent ENDURANCE
+  spacetraders ship reserve --ship TORWIND-8 --force --reason "reclaim stranded cargo"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if shipSymbol == "" {
 				return fmt.Errorf("--ship flag is required")
@@ -550,12 +558,17 @@ Examples:
 				reasonPtr = &reason
 			}
 
-			response, err := client.ReserveShip(ctx, shipSymbol, reasonPtr, playerID, agentSymbol)
+			response, err := client.ReserveShip(ctx, shipSymbol, reasonPtr, playerID, agentSymbol, force)
 			if err != nil {
 				return fmt.Errorf("failed to reserve ship: %w", err)
 			}
 
-			fmt.Printf("✓ %s reserved for captain use\n", response.ShipSymbol)
+			if response.Preempted {
+				fmt.Printf("✓ %s preempted from container %s and reserved for captain use\n", response.ShipSymbol, response.PreemptedFrom)
+				fmt.Printf("  The coordinator will drop the hull and re-plan on its next tick.\n")
+			} else {
+				fmt.Printf("✓ %s reserved for captain use\n", response.ShipSymbol)
+			}
 			if response.Reason != "" {
 				fmt.Printf("  Reason: %s\n", response.Reason)
 			}
@@ -569,6 +582,8 @@ Examples:
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
 	cmd.Flags().StringVar(&reason, "reason", "", "Free-text reason, shown in 'ship list' (optional)")
+	cmd.Flags().BoolVar(&force, "force", false, "Preempt a coordinator's live claim: revoke it and take the hull for the captain (sp-w3yd)")
+	cmd.Flags().BoolVar(&force, "preempt", false, "Alias for --force")
 
 	return cmd
 }
