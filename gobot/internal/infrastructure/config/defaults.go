@@ -259,4 +259,17 @@ func SetDefaults(cfg *Config) {
 		tradeFleetEnabledDefault := true
 		cfg.TradeFleet.Enabled = &tradeFleetEnabledDefault
 	}
+
+	// Gate source-factory feeders (sp-hoc6): a live-by-default set covering the current gate's
+	// buy-direct materials, so the construction drain never buys the gate output with ZERO feeding
+	// (RULINGS: no dark-shipping). This is a config-field DEFAULT — a parameter the Analyst retunes in
+	// [bootstrap] gate_source_feeders (RULINGS #5), not a launch-code literal. Each entry carries an
+	// empty System, resolved to the home system at launch (single-system, RULINGS #14), so the default
+	// is not era-specific. Inputs come from goods.ExportToImportMap automatically — none are listed here.
+	if len(cfg.Bootstrap.GateSourceFeeders) == 0 {
+		cfg.Bootstrap.GateSourceFeeders = []GateSourceFeeder{
+			{Good: "FAB_MATS"},
+			{Good: "ADVANCED_CIRCUITRY"},
+		}
+	}
 }

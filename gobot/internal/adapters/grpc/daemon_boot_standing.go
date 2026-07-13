@@ -48,4 +48,12 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			}
 		}
 	}
+
+	// sp-hoc6: ALONGSIDE the construction drain, keep the gate's source EXPORT-factories fed with their
+	// import inputs (standing InputsOnly goods_factory feeders) so the drain's buying of the gate output
+	// stays under the buy-ceiling (sp-layd) instead of depleting export supply. Config-driven feeder set
+	// (RULINGS #5), idempotent, and restart-resilient the same way the drain is — the feeders are
+	// goods_factory coordinators re-adopted by RecoverRunningContainers, and this pass skips any already
+	// running (RULINGS #2). Runs here, after recovery, so a warm restart re-adopts rather than duplicates.
+	s.ensureGateSourceFeeders(ctx, playerID)
 }
