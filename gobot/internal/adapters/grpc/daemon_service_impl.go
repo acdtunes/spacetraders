@@ -11,6 +11,7 @@ import (
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipOutfit "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/outfitting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
@@ -1744,11 +1745,21 @@ func (s *daemonServiceImpl) StartConstructionPipeline(ctx context.Context, req *
 		minSupply = *req.MinSupply
 	}
 
-	// Call daemon's StartConstructionPipeline method. Per-good gate overrides (sp-sdyo) have no
-	// gRPC request field yet, so nil is passed here — every good uses the global min-supply floor.
-	// The daemon-level method accepts the map so the plumbing (persist/reload/planner) is fully
-	// exercised; a future proto field wires the analyst-facing surface in without touching it.
-	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol, minSupply, nil)
+	// Decode the optional per-good buy-gating overrides (sp-sdyo values, sp-pdb3 launch surface).
+	// The CLI encodes the validated+clamped GoodGatingOverrides map to JSON in good_overrides; an
+	// unset/empty field decodes to nil, preserving the global-default behaviour for every good. A
+	// malformed blob is a hard error rather than a silently-dropped bottleneck override.
+	var goodOverrides manufacturing.GoodGatingOverrides
+	if req.GoodOverrides != nil {
+		goodOverrides, err = manufacturing.DecodeGoodGatingOverrides(*req.GoodOverrides)
+		if err != nil {
+			return nil, fmt.Errorf("invalid good_overrides: %w", err)
+		}
+	}
+
+	// Call daemon's StartConstructionPipeline method with the decoded per-good overrides (sp-sdyo
+	// plumbing persists/reloads them on the pipeline; nil/empty keeps every good on the global floor).
+	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol, minSupply, goodOverrides)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
 	}
@@ -1833,5 +1844,39 @@ func (s *daemonServiceImpl) StopConstructionPipeline(ctx context.Context, req *p
 		Status:           result.Status,
 		TasksCancelled:   result.TasksCancelled,
 		Message:          result.Message,
+	}, nil
+}
+
+// ConstructionGoodOverride sets or clears one good's per-good buy-gating override on a running
+// construction pipeline live (sp-pdb3). It resolves the player, builds a patch from the optional
+// request knobs (a nil field leaves that dimension unchanged so an operator can tune one at a
+// time), and delegates the persisted-map mutation to the daemon — the single writer (RULINGS #3).
+// The multiplier is clamped to the domain hard cap inside the mutation (RULINGS #4). The
+// coordinator re-reads the persisted overrides on its next discovery pass — no restart.
+func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *pb.ConstructionGoodOverrideRequest) (*pb.ConstructionGoodOverrideResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	patch := goodOverridePatch{
+		strategy:         req.Strategy,
+		minSupply:        req.MinSupply,
+		priceCeilingMult: req.PriceCeilingMult,
+	}
+
+	result, err := s.daemon.MutateConstructionGoodOverride(ctx, req.ConstructionSite, playerID, req.Good, patch, req.Clear)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set construction good override: %w", err)
+	}
+
+	return &pb.ConstructionGoodOverrideResponse{
+		ConstructionSite: result.ConstructionSite,
+		Good:             result.Good,
+		Cleared:          result.Cleared,
+		Changed:          result.Changed,
+		Strategy:         result.Override.Strategy,
+		PriceCeilingMult: result.Override.PriceCeilingMult,
+		MinSupply:        result.Override.MinSupply,
 	}, nil
 }

@@ -9627,7 +9627,13 @@ type StartConstructionPipelineRequest struct {
 	// Lowers the supply-priority locator's acceptance floor below the default
 	// MODERATE using its existing tolerance ladder. Unset preserves the
 	// original MODERATE-floor behavior unchanged.
-	MinSupply     *string `protobuf:"bytes,7,opt,name=min_supply,json=minSupply,proto3,oneof" json:"min_supply,omitempty"`
+	MinSupply *string `protobuf:"bytes,7,opt,name=min_supply,json=minSupply,proto3,oneof" json:"min_supply,omitempty"`
+	// Optional per-good buy-gating overrides (sp-sdyo values, sp-pdb3 launch surface) as a
+	// JSON-encoded GoodGatingOverrides map: good -> {strategy?, priceCeilingMult?, minSupply?}.
+	// Loosens gating for named bottleneck goods only; every other good keeps the global floor above.
+	// Persisted on the pipeline so it survives a restart (RULINGS #2). Unset preserves today's
+	// global-default behaviour for every good. priceCeilingMult is clamped to the domain hard cap.
+	GoodOverrides *string `protobuf:"bytes,8,opt,name=good_overrides,json=goodOverrides,proto3,oneof" json:"good_overrides,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9707,6 +9713,13 @@ func (x *StartConstructionPipelineRequest) GetSystemSymbol() string {
 func (x *StartConstructionPipelineRequest) GetMinSupply() string {
 	if x != nil && x.MinSupply != nil {
 		return *x.MinSupply
+	}
+	return ""
+}
+
+func (x *StartConstructionPipelineRequest) GetGoodOverrides() string {
+	if x != nil && x.GoodOverrides != nil {
+		return *x.GoodOverrides
 	}
 	return ""
 }
@@ -10182,6 +10195,209 @@ func (x *StopConstructionPipelineResponse) GetTasksCancelled() int32 {
 func (x *StopConstructionPipelineResponse) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+// ConstructionGoodOverrideRequest sets or clears ONE good's per-good buy-gating override on a
+// running construction pipeline (sp-pdb3). construction_site + good identify the target. clear
+// removes the good's override, reverting it to the global default. The three optional knobs mirror
+// manufacturing.GoodGatingOverride; an unset knob leaves that dimension unchanged (tune one at a
+// time). price_ceiling_mult is clamped to the domain hard cap — the CLI never bypasses the
+// guardrail (RULINGS #4).
+type ConstructionGoodOverrideRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ConstructionSite string                 `protobuf:"bytes,1,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
+	Good             string                 `protobuf:"bytes,2,opt,name=good,proto3" json:"good,omitempty"`
+	PlayerId         int32                  `protobuf:"varint,3,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol      *string                `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	// clear removes any existing override for good, reverting it to the global default.
+	Clear            bool     `protobuf:"varint,5,opt,name=clear,proto3" json:"clear,omitempty"`
+	MinSupply        *string  `protobuf:"bytes,6,opt,name=min_supply,json=minSupply,proto3,oneof" json:"min_supply,omitempty"`
+	Strategy         *string  `protobuf:"bytes,7,opt,name=strategy,proto3,oneof" json:"strategy,omitempty"`
+	PriceCeilingMult *float64 `protobuf:"fixed64,8,opt,name=price_ceiling_mult,json=priceCeilingMult,proto3,oneof" json:"price_ceiling_mult,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ConstructionGoodOverrideRequest) Reset() {
+	*x = ConstructionGoodOverrideRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[141]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConstructionGoodOverrideRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConstructionGoodOverrideRequest) ProtoMessage() {}
+
+func (x *ConstructionGoodOverrideRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[141]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConstructionGoodOverrideRequest.ProtoReflect.Descriptor instead.
+func (*ConstructionGoodOverrideRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{141}
+}
+
+func (x *ConstructionGoodOverrideRequest) GetConstructionSite() string {
+	if x != nil {
+		return x.ConstructionSite
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideRequest) GetGood() string {
+	if x != nil {
+		return x.Good
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *ConstructionGoodOverrideRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideRequest) GetClear() bool {
+	if x != nil {
+		return x.Clear
+	}
+	return false
+}
+
+func (x *ConstructionGoodOverrideRequest) GetMinSupply() string {
+	if x != nil && x.MinSupply != nil {
+		return *x.MinSupply
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideRequest) GetStrategy() string {
+	if x != nil && x.Strategy != nil {
+		return *x.Strategy
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideRequest) GetPriceCeilingMult() float64 {
+	if x != nil && x.PriceCeilingMult != nil {
+		return *x.PriceCeilingMult
+	}
+	return 0
+}
+
+// ConstructionGoodOverrideResponse confirms the resulting override state for the good.
+type ConstructionGoodOverrideResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ConstructionSite string                 `protobuf:"bytes,1,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
+	Good             string                 `protobuf:"bytes,2,opt,name=good,proto3" json:"good,omitempty"`
+	// cleared is true when the request removed the override.
+	Cleared bool `protobuf:"varint,3,opt,name=cleared,proto3" json:"cleared,omitempty"`
+	// changed is false when the request was a no-op (the value already matched).
+	Changed bool `protobuf:"varint,4,opt,name=changed,proto3" json:"changed,omitempty"`
+	// The resulting override values for the good (empty/zero when cleared or that knob is unset).
+	Strategy         string  `protobuf:"bytes,5,opt,name=strategy,proto3" json:"strategy,omitempty"`
+	PriceCeilingMult float64 `protobuf:"fixed64,6,opt,name=price_ceiling_mult,json=priceCeilingMult,proto3" json:"price_ceiling_mult,omitempty"`
+	MinSupply        string  `protobuf:"bytes,7,opt,name=min_supply,json=minSupply,proto3" json:"min_supply,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ConstructionGoodOverrideResponse) Reset() {
+	*x = ConstructionGoodOverrideResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[142]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConstructionGoodOverrideResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConstructionGoodOverrideResponse) ProtoMessage() {}
+
+func (x *ConstructionGoodOverrideResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[142]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConstructionGoodOverrideResponse.ProtoReflect.Descriptor instead.
+func (*ConstructionGoodOverrideResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{142}
+}
+
+func (x *ConstructionGoodOverrideResponse) GetConstructionSite() string {
+	if x != nil {
+		return x.ConstructionSite
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideResponse) GetGood() string {
+	if x != nil {
+		return x.Good
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideResponse) GetCleared() bool {
+	if x != nil {
+		return x.Cleared
+	}
+	return false
+}
+
+func (x *ConstructionGoodOverrideResponse) GetChanged() bool {
+	if x != nil {
+		return x.Changed
+	}
+	return false
+}
+
+func (x *ConstructionGoodOverrideResponse) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideResponse) GetPriceCeilingMult() float64 {
+	if x != nil {
+		return x.PriceCeilingMult
+	}
+	return 0
+}
+
+func (x *ConstructionGoodOverrideResponse) GetMinSupply() string {
+	if x != nil {
+		return x.MinSupply
 	}
 	return ""
 }
@@ -11145,7 +11361,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x122\n" +
 	"\vship_routes\x18\x06 \x03(\v2\x11.daemon.ShipRouteR\n" +
 	"shipRoutes\x12\x16\n" +
-	"\x06errors\x18\a \x03(\tR\x06errors\"\xe3\x02\n" +
+	"\x06errors\x18\a \x03(\tR\x06errors\"\xa2\x03\n" +
 	" StartConstructionPipelineRequest\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x1b\n" +
 	"\tplayer_id\x18\x02 \x01(\x05R\bplayerId\x12&\n" +
@@ -11155,10 +11371,12 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"maxWorkers\x12(\n" +
 	"\rsystem_symbol\x18\x06 \x01(\tH\x01R\fsystemSymbol\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"min_supply\x18\a \x01(\tH\x02R\tminSupply\x88\x01\x01B\x0f\n" +
+	"min_supply\x18\a \x01(\tH\x02R\tminSupply\x88\x01\x01\x12*\n" +
+	"\x0egood_overrides\x18\b \x01(\tH\x03R\rgoodOverrides\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\x10\n" +
 	"\x0e_system_symbolB\r\n" +
-	"\v_min_supply\"\xcc\x02\n" +
+	"\v_min_supplyB\x11\n" +
+	"\x0f_good_overrides\"\xcc\x02\n" +
 	"!StartConstructionPipelineResponse\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12+\n" +
@@ -11206,7 +11424,30 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x11construction_site\x18\x02 \x01(\tR\x10constructionSite\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12'\n" +
 	"\x0ftasks_cancelled\x18\x04 \x01(\x05R\x0etasksCancelled\x12\x18\n" +
-	"\amessage\x18\x05 \x01(\tR\amessage2\xe9'\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage\"\xf9\x02\n" +
+	"\x1fConstructionGoodOverrideRequest\x12+\n" +
+	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x12\n" +
+	"\x04good\x18\x02 \x01(\tR\x04good\x12\x1b\n" +
+	"\tplayer_id\x18\x03 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x04 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x14\n" +
+	"\x05clear\x18\x05 \x01(\bR\x05clear\x12\"\n" +
+	"\n" +
+	"min_supply\x18\x06 \x01(\tH\x01R\tminSupply\x88\x01\x01\x12\x1f\n" +
+	"\bstrategy\x18\a \x01(\tH\x02R\bstrategy\x88\x01\x01\x121\n" +
+	"\x12price_ceiling_mult\x18\b \x01(\x01H\x03R\x10priceCeilingMult\x88\x01\x01B\x0f\n" +
+	"\r_agent_symbolB\r\n" +
+	"\v_min_supplyB\v\n" +
+	"\t_strategyB\x15\n" +
+	"\x13_price_ceiling_mult\"\x80\x02\n" +
+	" ConstructionGoodOverrideResponse\x12+\n" +
+	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x12\n" +
+	"\x04good\x18\x02 \x01(\tR\x04good\x12\x18\n" +
+	"\acleared\x18\x03 \x01(\bR\acleared\x12\x18\n" +
+	"\achanged\x18\x04 \x01(\bR\achanged\x12\x1a\n" +
+	"\bstrategy\x18\x05 \x01(\tR\bstrategy\x12,\n" +
+	"\x12price_ceiling_mult\x18\x06 \x01(\x01R\x10priceCeilingMult\x12\x1d\n" +
+	"\n" +
+	"min_supply\x18\a \x01(\tR\tminSupply2\xd8(\n" +
 	"\rDaemonService\x12I\n" +
 	"\fNavigateShip\x12\x1b.daemon.NavigateShipRequest\x1a\x1c.daemon.NavigateShipResponse\x12@\n" +
 	"\tRouteShip\x12\x18.daemon.RouteShipRequest\x1a\x19.daemon.RouteShipResponse\x12=\n" +
@@ -11269,7 +11510,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\fStartStocker\x12\x1b.daemon.StartStockerRequest\x1a\x1c.daemon.StartStockerResponse\x12p\n" +
 	"\x19StartConstructionPipeline\x12(.daemon.StartConstructionPipelineRequest\x1a).daemon.StartConstructionPipelineResponse\x12d\n" +
 	"\x15GetConstructionStatus\x12$.daemon.GetConstructionStatusRequest\x1a%.daemon.GetConstructionStatusResponse\x12m\n" +
-	"\x18StopConstructionPipeline\x12'.daemon.StopConstructionPipelineRequest\x1a(.daemon.StopConstructionPipelineResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
+	"\x18StopConstructionPipeline\x12'.daemon.StopConstructionPipelineRequest\x1a(.daemon.StopConstructionPipelineResponse\x12m\n" +
+	"\x18ConstructionGoodOverride\x12'.daemon.ConstructionGoodOverrideRequest\x1a(.daemon.ConstructionGoodOverrideResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
 
 var (
 	file_pkg_proto_daemon_daemon_proto_rawDescOnce sync.Once
@@ -11283,7 +11525,7 @@ func file_pkg_proto_daemon_daemon_proto_rawDescGZIP() []byte {
 	return file_pkg_proto_daemon_daemon_proto_rawDescData
 }
 
-var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 144)
+var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 146)
 var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*NavigateShipRequest)(nil),                  // 0: daemon.NavigateShipRequest
 	(*NavigateShipResponse)(nil),                 // 1: daemon.NavigateShipResponse
@@ -11426,9 +11668,11 @@ var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*GetConstructionStatusResponse)(nil),        // 138: daemon.GetConstructionStatusResponse
 	(*StopConstructionPipelineRequest)(nil),      // 139: daemon.StopConstructionPipelineRequest
 	(*StopConstructionPipelineResponse)(nil),     // 140: daemon.StopConstructionPipelineResponse
-	nil,                                          // 141: daemon.ScoutMarketsResponse.AssignmentsEntry
-	nil,                                          // 142: daemon.APIBudgetReport.PurposeCountsEntry
-	nil,                                          // 143: daemon.APIBudgetReport.PurposeSharePctEntry
+	(*ConstructionGoodOverrideRequest)(nil),      // 141: daemon.ConstructionGoodOverrideRequest
+	(*ConstructionGoodOverrideResponse)(nil),     // 142: daemon.ConstructionGoodOverrideResponse
+	nil,                                          // 143: daemon.ScoutMarketsResponse.AssignmentsEntry
+	nil,                                          // 144: daemon.APIBudgetReport.PurposeCountsEntry
+	nil,                                          // 145: daemon.APIBudgetReport.PurposeSharePctEntry
 }
 var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	12,  // 0: daemon.InstallModuleResponse.modules:type_name -> daemon.ShipModuleInfo
@@ -11437,12 +11681,12 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	13,  // 3: daemon.ListShipModulesResponse.feasibility:type_name -> daemon.ModuleFeasibility
 	26,  // 4: daemon.ScoutPostResponse.post:type_name -> daemon.ScoutPost
 	26,  // 5: daemon.ListScoutPostsResponse.posts:type_name -> daemon.ScoutPost
-	141, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
+	143, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
 	54,  // 7: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
 	54,  // 8: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
 	61,  // 9: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
-	142, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
-	143, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
+	144, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
+	145, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
 	65,  // 12: daemon.APIBudgetReport.per_hull:type_name -> daemon.APIBudgetHullStats
 	67,  // 13: daemon.DutyCycleReport.hulls:type_name -> daemon.DutyCycleHullStats
 	66,  // 14: daemon.GetAPIBudgetResponse.current:type_name -> daemon.APIBudgetReport
@@ -11523,68 +11767,70 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	134, // 89: daemon.DaemonService.StartConstructionPipeline:input_type -> daemon.StartConstructionPipelineRequest
 	137, // 90: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
 	139, // 91: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
-	1,   // 92: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
-	3,   // 93: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
-	5,   // 94: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
-	7,   // 95: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
-	9,   // 96: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
-	11,  // 97: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
-	15,  // 98: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
-	17,  // 99: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
-	19,  // 100: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
-	21,  // 101: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
-	23,  // 102: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
-	25,  // 103: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
-	48,  // 104: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
-	51,  // 105: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
-	28,  // 106: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
-	30,  // 107: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
-	32,  // 108: daemon.DaemonService.SitingCoordinator:output_type -> daemon.SitingCoordinatorResponse
-	34,  // 109: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
-	36,  // 110: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
-	38,  // 111: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
-	40,  // 112: daemon.DaemonService.WorkerRebalancerCoordinator:output_type -> daemon.WorkerRebalancerCoordinatorResponse
-	42,  // 113: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
-	44,  // 114: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
-	46,  // 115: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
-	53,  // 116: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
-	56,  // 117: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
-	58,  // 118: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
-	60,  // 119: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
-	63,  // 120: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
-	69,  // 121: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
-	71,  // 122: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
-	74,  // 123: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
-	76,  // 124: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
-	78,  // 125: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
-	80,  // 126: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
-	82,  // 127: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
-	86,  // 128: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
-	90,  // 129: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
-	84,  // 130: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
-	92,  // 131: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
-	94,  // 132: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
-	98,  // 133: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
-	100, // 134: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
-	102, // 135: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
-	108, // 136: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
-	110, // 137: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
-	112, // 138: daemon.DaemonService.FactoryWorkerCap:output_type -> daemon.FactoryWorkerCapResponse
-	114, // 139: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
-	117, // 140: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
-	119, // 141: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
-	121, // 142: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
-	133, // 143: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
-	123, // 144: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
-	125, // 145: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
-	127, // 146: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
-	129, // 147: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
-	131, // 148: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
-	135, // 149: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
-	138, // 150: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
-	140, // 151: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
-	92,  // [92:152] is the sub-list for method output_type
-	32,  // [32:92] is the sub-list for method input_type
+	141, // 92: daemon.DaemonService.ConstructionGoodOverride:input_type -> daemon.ConstructionGoodOverrideRequest
+	1,   // 93: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
+	3,   // 94: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
+	5,   // 95: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
+	7,   // 96: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
+	9,   // 97: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
+	11,  // 98: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
+	15,  // 99: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
+	17,  // 100: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
+	19,  // 101: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
+	21,  // 102: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
+	23,  // 103: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
+	25,  // 104: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
+	48,  // 105: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
+	51,  // 106: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
+	28,  // 107: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
+	30,  // 108: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
+	32,  // 109: daemon.DaemonService.SitingCoordinator:output_type -> daemon.SitingCoordinatorResponse
+	34,  // 110: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
+	36,  // 111: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
+	38,  // 112: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
+	40,  // 113: daemon.DaemonService.WorkerRebalancerCoordinator:output_type -> daemon.WorkerRebalancerCoordinatorResponse
+	42,  // 114: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
+	44,  // 115: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
+	46,  // 116: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
+	53,  // 117: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
+	56,  // 118: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
+	58,  // 119: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
+	60,  // 120: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
+	63,  // 121: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
+	69,  // 122: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
+	71,  // 123: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
+	74,  // 124: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
+	76,  // 125: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
+	78,  // 126: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
+	80,  // 127: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
+	82,  // 128: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
+	86,  // 129: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
+	90,  // 130: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
+	84,  // 131: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
+	92,  // 132: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
+	94,  // 133: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
+	98,  // 134: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
+	100, // 135: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
+	102, // 136: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
+	108, // 137: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
+	110, // 138: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
+	112, // 139: daemon.DaemonService.FactoryWorkerCap:output_type -> daemon.FactoryWorkerCapResponse
+	114, // 140: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
+	117, // 141: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
+	119, // 142: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
+	121, // 143: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
+	133, // 144: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
+	123, // 145: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
+	125, // 146: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
+	127, // 147: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
+	129, // 148: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
+	131, // 149: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
+	135, // 150: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
+	138, // 151: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
+	140, // 152: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
+	142, // 153: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
+	93,  // [93:154] is the sub-list for method output_type
+	32,  // [32:93] is the sub-list for method input_type
 	32,  // [32:32] is the sub-list for extension type_name
 	32,  // [32:32] is the sub-list for extension extendee
 	0,   // [0:32] is the sub-list for field type_name
@@ -11649,13 +11895,14 @@ func file_pkg_proto_daemon_daemon_proto_init() {
 	file_pkg_proto_daemon_daemon_proto_msgTypes[137].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[138].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[139].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[141].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_daemon_daemon_proto_rawDesc), len(file_pkg_proto_daemon_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   144,
+			NumMessages:   146,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

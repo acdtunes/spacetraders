@@ -79,6 +79,7 @@ const (
 	DaemonService_StartConstructionPipeline_FullMethodName    = "/daemon.DaemonService/StartConstructionPipeline"
 	DaemonService_GetConstructionStatus_FullMethodName        = "/daemon.DaemonService/GetConstructionStatus"
 	DaemonService_StopConstructionPipeline_FullMethodName     = "/daemon.DaemonService/StopConstructionPipeline"
+	DaemonService_ConstructionGoodOverride_FullMethodName     = "/daemon.DaemonService/ConstructionGoodOverride"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -249,6 +250,10 @@ type DaemonServiceClient interface {
 	GetConstructionStatus(ctx context.Context, in *GetConstructionStatusRequest, opts ...grpc.CallOption) (*GetConstructionStatusResponse, error)
 	// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
 	StopConstructionPipeline(ctx context.Context, in *StopConstructionPipelineRequest, opts ...grpc.CallOption) (*StopConstructionPipelineResponse, error)
+	// ConstructionGoodOverride sets or clears one good's per-good buy-gating override (the sp-sdyo
+	// override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
+	// coordinator / task activator re-read the persisted overrides on their next discovery pass.
+	ConstructionGoodOverride(ctx context.Context, in *ConstructionGoodOverrideRequest, opts ...grpc.CallOption) (*ConstructionGoodOverrideResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -859,6 +864,16 @@ func (c *daemonServiceClient) StopConstructionPipeline(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *daemonServiceClient) ConstructionGoodOverride(ctx context.Context, in *ConstructionGoodOverrideRequest, opts ...grpc.CallOption) (*ConstructionGoodOverrideResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConstructionGoodOverrideResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ConstructionGoodOverride_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -1027,6 +1042,10 @@ type DaemonServiceServer interface {
 	GetConstructionStatus(context.Context, *GetConstructionStatusRequest) (*GetConstructionStatusResponse, error)
 	// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
 	StopConstructionPipeline(context.Context, *StopConstructionPipelineRequest) (*StopConstructionPipelineResponse, error)
+	// ConstructionGoodOverride sets or clears one good's per-good buy-gating override (the sp-sdyo
+	// override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
+	// coordinator / task activator re-read the persisted overrides on their next discovery pass.
+	ConstructionGoodOverride(context.Context, *ConstructionGoodOverrideRequest) (*ConstructionGoodOverrideResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -1216,6 +1235,9 @@ func (UnimplementedDaemonServiceServer) GetConstructionStatus(context.Context, *
 }
 func (UnimplementedDaemonServiceServer) StopConstructionPipeline(context.Context, *StopConstructionPipelineRequest) (*StopConstructionPipelineResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopConstructionPipeline not implemented")
+}
+func (UnimplementedDaemonServiceServer) ConstructionGoodOverride(context.Context, *ConstructionGoodOverrideRequest) (*ConstructionGoodOverrideResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConstructionGoodOverride not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -2318,6 +2340,24 @@ func _DaemonService_StopConstructionPipeline_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ConstructionGoodOverride_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConstructionGoodOverrideRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ConstructionGoodOverride(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ConstructionGoodOverride_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ConstructionGoodOverride(ctx, req.(*ConstructionGoodOverrideRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2564,6 +2604,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopConstructionPipeline",
 			Handler:    _DaemonService_StopConstructionPipeline_Handler,
+		},
+		{
+			MethodName: "ConstructionGoodOverride",
+			Handler:    _DaemonService_ConstructionGoodOverride_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

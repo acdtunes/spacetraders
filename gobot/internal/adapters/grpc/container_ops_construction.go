@@ -266,3 +266,119 @@ func (s *DaemonServer) ConstructionCoordinator(ctx context.Context, playerID int
 func (s *DaemonServer) getAPIClient() domainPorts.APIClient {
 	return s.apiClient
 }
+
+// --- sp-pdb3: live per-good buy-gating override verb ---------------------------------------------
+//
+// The daemon side of the live `construction override` verb (sp-pdb3): it SETS the values of the
+// sp-sdyo per-good buy-gating override map on a RUNNING construction pipeline, with no restart. The
+// construction coordinator / task activator re-read the persisted GoodGatingOverrides off the
+// pipeline row on their next discovery pass (task_activator.pipelineMinSupply loads it via
+// FindByID), so the change is honored live and survives a daemon bounce (RULINGS #2). The daemon is
+// the SOLE writer of the value (RULINGS #3); the CLI only feeds it. This mirrors sp-ev0n's live
+// factory-worker-cap verb, with the pipeline row (not a container config) as the durable store.
+
+// goodOverridePatch carries the knobs a live `construction override` sets on one good. A nil
+// pointer means "knob not supplied this call" — leave the good's existing value intact so an
+// operator can tune one dimension at a time; a non-nil pointer sets that dimension. This
+// provided-vs-absent distinction is why pointers are used instead of a bare GoodGatingOverride.
+type goodOverridePatch struct {
+	strategy         *string
+	minSupply        *string
+	priceCeilingMult *float64
+}
+
+// applyGoodOverride merges patch into a COPY of current for good (or clears good's entry when
+// clear), returning the next map, the resulting override for good, and whether anything changed.
+// Pure over the map — MutateConstructionGoodOverride wraps it with the find→persist plumbing.
+// The price-ceiling multiplier is clamped to manufacturing.MaxPriceCeilingMultiplier HERE so the
+// daemon single-writer (RULINGS #3) enforces the ladder-chase guardrail (RULINGS #4) regardless of
+// how the request reached it — the CLI clamp is a friendly early bound, this is the authoritative
+// one. changed=false lets the caller skip a redundant DB write and report the no-op honestly
+// (mirrors mutateFactoryWorkerCapConfig). The input map is never mutated in place.
+func applyGoodOverride(current manufacturing.GoodGatingOverrides, good string, patch goodOverridePatch, clear bool) (manufacturing.GoodGatingOverrides, manufacturing.GoodGatingOverride, bool) {
+	next := manufacturing.GoodGatingOverrides{}
+	for k, v := range current {
+		next[k] = v
+	}
+
+	if clear {
+		if _, existed := next[good]; !existed {
+			return next, manufacturing.GoodGatingOverride{}, false
+		}
+		delete(next, good)
+		return next, manufacturing.GoodGatingOverride{}, true
+	}
+
+	prev, existed := next[good]
+	updated := prev
+	if patch.strategy != nil {
+		updated.Strategy = *patch.strategy
+	}
+	if patch.minSupply != nil {
+		updated.MinSupply = *patch.minSupply
+	}
+	if patch.priceCeilingMult != nil {
+		mult := *patch.priceCeilingMult
+		switch {
+		case mult < 0:
+			mult = 0
+		case mult > manufacturing.MaxPriceCeilingMultiplier:
+			mult = manufacturing.MaxPriceCeilingMultiplier
+		}
+		updated.PriceCeilingMult = mult
+	}
+
+	changed := !existed || updated != prev
+	next[good] = updated
+	return next, updated, changed
+}
+
+// ConstructionGoodOverrideResult reports the outcome of a live per-good override mutation.
+type ConstructionGoodOverrideResult struct {
+	ConstructionSite string
+	Good             string
+	Cleared          bool
+	Changed          bool
+	Override         manufacturing.GoodGatingOverride
+}
+
+// MutateConstructionGoodOverride sets or clears one good's buy-gating override on the RUNNING
+// construction pipeline for constructionSite, persisting it on the pipeline row (RULINGS #2) with
+// no restart. It locates the active pipeline, applies the pure applyGoodOverride merge to its
+// current map, and (only when changed) writes the pipeline back via the repo's full-row Update —
+// the same durable path StartOrResume uses on resume. The daemon is the single writer (RULINGS #3).
+// Returns a clear error when there is no active construction pipeline for the site.
+func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, constructionSite string, playerID int, good string, patch goodOverridePatch, clear bool) (*ConstructionGoodOverrideResult, error) {
+	if good == "" {
+		return nil, fmt.Errorf("a good symbol is required to set a per-good construction override")
+	}
+
+	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
+
+	pipeline, err := pipelineRepo.FindByConstructionSite(ctx, constructionSite, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to locate construction pipeline for %s: %w", constructionSite, err)
+	}
+	if pipeline == nil {
+		return nil, fmt.Errorf("no active construction pipeline for %s (player %d) — start one before setting a per-good override", constructionSite, playerID)
+	}
+
+	next, resulting, changed := applyGoodOverride(pipeline.GoodOverrides(), good, patch, clear)
+
+	result := &ConstructionGoodOverrideResult{
+		ConstructionSite: constructionSite,
+		Good:             good,
+		Cleared:          clear,
+		Changed:          changed,
+		Override:         resulting,
+	}
+	if !changed {
+		return result, nil // idempotent verb: nothing to persist
+	}
+
+	pipeline.SetGoodOverrides(next)
+	if err := pipelineRepo.Update(ctx, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to persist per-good override for %s on pipeline %s: %w", good, pipeline.ID(), err)
+	}
+	return result, nil
+}

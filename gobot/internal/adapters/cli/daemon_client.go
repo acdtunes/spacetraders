@@ -1908,7 +1908,9 @@ type GetConstructionStatusResponse struct {
 	PipelineProgress *float64
 }
 
-// StartConstructionPipeline starts a pipeline to supply materials to a construction site
+// StartConstructionPipeline starts a pipeline to supply materials to a construction site.
+// goodOverrides is the optional JSON-encoded per-good buy-gating override map (sp-sdyo values,
+// sp-pdb3 launch surface); nil/empty preserves the global-default floor for every good.
 func (c *DaemonClient) StartConstructionPipeline(
 	ctx context.Context,
 	constructionSite string,
@@ -1918,6 +1920,7 @@ func (c *DaemonClient) StartConstructionPipeline(
 	maxWorkers int32,
 	systemSymbol *string,
 	minSupply *string,
+	goodOverrides *string,
 ) (*StartConstructionPipelineResponse, error) {
 	req := &pb.StartConstructionPipelineRequest{
 		ConstructionSite: constructionSite,
@@ -1927,6 +1930,7 @@ func (c *DaemonClient) StartConstructionPipeline(
 		MaxWorkers:       maxWorkers,
 		SystemSymbol:     systemSymbol,
 		MinSupply:        minSupply,
+		GoodOverrides:    goodOverrides,
 	}
 
 	resp, err := c.client.StartConstructionPipeline(ctx, req)
@@ -2033,4 +2037,15 @@ func (c *DaemonClient) StopConstructionPipeline(
 		TasksCancelled:   resp.TasksCancelled,
 		Message:          resp.Message,
 	}, nil
+}
+
+// ConstructionGoodOverride sets or clears one good's per-good buy-gating override on a running
+// construction pipeline live, with no restart (sp-pdb3). The daemon is the single writer of the
+// persisted override (RULINGS #3); the coordinator re-reads it on its next discovery pass.
+func (c *DaemonClient) ConstructionGoodOverride(ctx context.Context, req *pb.ConstructionGoodOverrideRequest) (*pb.ConstructionGoodOverrideResponse, error) {
+	resp, err := c.client.ConstructionGoodOverride(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp, nil
 }

@@ -227,6 +227,11 @@ service DaemonService {
 
   // StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
   rpc StopConstructionPipeline(StopConstructionPipelineRequest) returns (StopConstructionPipelineResponse);
+
+  // ConstructionGoodOverride sets or clears one good's per-good buy-gating override (the sp-sdyo
+  // override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
+  // coordinator / task activator re-read the persisted overrides on their next discovery pass.
+  rpc ConstructionGoodOverride(ConstructionGoodOverrideRequest) returns (ConstructionGoodOverrideResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -1458,6 +1463,13 @@ message StartConstructionPipelineRequest {
   // MODERATE using its existing tolerance ladder. Unset preserves the
   // original MODERATE-floor behavior unchanged.
   optional string min_supply = 7;
+
+  // Optional per-good buy-gating overrides (sp-sdyo values, sp-pdb3 launch surface) as a
+  // JSON-encoded GoodGatingOverrides map: good -> {strategy?, priceCeilingMult?, minSupply?}.
+  // Loosens gating for named bottleneck goods only; every other good keeps the global floor above.
+  // Persisted on the pipeline so it survives a restart (RULINGS #2). Unset preserves today's
+  // global-default behaviour for every good. priceCeilingMult is clamped to the domain hard cap.
+  optional string good_overrides = 8;
 }
 
 // StartConstructionPipelineResponse returns the result of starting a construction pipeline
@@ -1518,4 +1530,36 @@ message StopConstructionPipelineResponse {
   string status = 3;         // pipeline status after cancellation (CANCELLED)
   int32 tasks_cancelled = 4;
   string message = 5;
+}
+
+// ConstructionGoodOverrideRequest sets or clears ONE good's per-good buy-gating override on a
+// running construction pipeline (sp-pdb3). construction_site + good identify the target. clear
+// removes the good's override, reverting it to the global default. The three optional knobs mirror
+// manufacturing.GoodGatingOverride; an unset knob leaves that dimension unchanged (tune one at a
+// time). price_ceiling_mult is clamped to the domain hard cap — the CLI never bypasses the
+// guardrail (RULINGS #4).
+message ConstructionGoodOverrideRequest {
+  string construction_site = 1;
+  string good = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+  // clear removes any existing override for good, reverting it to the global default.
+  bool clear = 5;
+  optional string min_supply = 6;
+  optional string strategy = 7;
+  optional double price_ceiling_mult = 8;
+}
+
+// ConstructionGoodOverrideResponse confirms the resulting override state for the good.
+message ConstructionGoodOverrideResponse {
+  string construction_site = 1;
+  string good = 2;
+  // cleared is true when the request removed the override.
+  bool cleared = 3;
+  // changed is false when the request was a no-op (the value already matched).
+  bool changed = 4;
+  // The resulting override values for the good (empty/zero when cleared or that knob is unset).
+  string strategy = 5;
+  double price_ceiling_mult = 6;
+  string min_supply = 7;
 }
