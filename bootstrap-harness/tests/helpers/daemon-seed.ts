@@ -295,10 +295,15 @@ export async function seedDaemonGateEntry(fixture: GateFixture = {}): Promise<Se
     txRows.join(',\n') +
     `;`;
 
-  // (3) D1 hauler dedication — N contract-tagged SHIP_LIGHT_HAULER rows so obs.Haulers is non-empty and
-  // GATE repurposes the surplus (all but min_contract_earners). Realistic fuel/cargo/frame/role so
-  // modelToDomain reconstructs each cleanly and classifies it as a non-scout hauler. Parked at a real
-  // home-system marketplace (fallback-safe if absent).
+  // (3) D1 hauler dedication — N contract-tagged SHIP_LIGHT_HAULER rows so obs.Haulers is non-empty.
+  // Under Option B these STAY contract earners the whole GATE run: the coordinator no longer repurposes
+  // them — it BUYS the gate-delivery fleet from their income — so the contract fleet is left intact and
+  // earning. They carry NO container assignment, so each is IsIdle()==true and therefore DOUBLES as an
+  // idle purchaser (obs.HasIdlePurchaser, bootstrap_ports.go:144-145): the coordinator flies one to the
+  // yard to execute each all-bought buy and it returns still contract-tagged (only the newly bought hulls
+  // are manufacturing-tagged gate workers). N>=1 thus guarantees a free hull for the larger all-bought
+  // count. Realistic fuel/cargo/frame/role so modelToDomain reconstructs each cleanly and classifies it as
+  // a non-scout hauler. Parked at a real home-system marketplace (fallback-safe if absent).
   const homeMarket =
     scalar(
       `SELECT waypoint_symbol FROM waypoints WHERE system_symbol=${q(SYSTEM_SYMBOL)} ` +
