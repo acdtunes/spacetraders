@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,16 @@ const (
 	// domain's default construction max_workers so an unset pipeline drains at the width the
 	// planner would have chosen (RULINGS #5: a named fallback, not an inline magic number).
 	defaultConstructionWorkerCap = 5
+
+	// constructionSupplyTaskDefaultTimeout bounds a single supplyTask so one wedged task can never
+	// silently freeze the drain goroutine (sp-6zkg). The drain dispatches workers under errgroup and
+	// joins them with group.Wait(); before this, a worker blocked in an unbounded downstream wait (a
+	// hull already at the gate whose supply 4219s, a navigation/dock that never returns, a bad task
+	// state) held Wait() forever — the coordinator stayed RUNNING but went fully SILENT, cleared only
+	// by a daemon bounce. Generous enough never to cut a legitimate in-system source+deliver round trip
+	// (construction legs are single-system, RULINGS #14); firm enough to convert an "indefinite hang"
+	// into a logged, retried tick. A named default (RULINGS #5), tunable via the handler's taskTimeout.
+	constructionSupplyTaskDefaultTimeout = 10 * time.Minute
 )
 
 // ConstructionProducer is the narrow slice of the shared ProductionExecutor the drain
@@ -95,6 +106,11 @@ type RunConstructionCoordinatorHandler struct {
 	// both load-add-store its material counters and lose an update. It guards an in-tick section
 	// only, not any cross-tick/persisted state (RULINGS #2 unaffected).
 	recordMu sync.Mutex
+	// taskTimeout bounds a single supplyTask (claim→source→deliver→record) so one wedged task can
+	// never silently freeze the whole drain goroutine (sp-6zkg). Defaulted in the constructor to
+	// constructionSupplyTaskDefaultTimeout; overridable (RULINGS #5) — the daemon can tune it and the
+	// in-package tests set a tiny bound to keep the timeout test fast.
+	taskTimeout time.Duration
 }
 
 // NewRunConstructionCoordinatorHandler builds the drain. clock defaults to a RealClock when nil.
@@ -116,6 +132,7 @@ func NewRunConstructionCoordinatorHandler(
 		producer:     producer,
 		newActivator: newActivator,
 		clock:        clock,
+		taskTimeout:  constructionSupplyTaskDefaultTimeout,
 	}
 }
 
@@ -179,9 +196,13 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 
 	// Surviving activator (sp-jav2 kept the subpackage): PENDING -> READY for construction
 	// tasks whose deps are complete (and re-source deferred ones). NO new activation logic.
+	// Per-step enter/exit + count logging (sp-6zkg): a stuck activation used to be an
+	// undiagnosable silent block; the enter/exit bracket makes it visible in the log stream.
 	if h.newActivator != nil {
 		if activator := h.newActivator(cmd.PlayerID); activator != nil {
-			activator.ActivateConstructionTasks(ctx)
+			logger.Log("INFO", "Construction drain: activating construction tasks", nil)
+			promoted := activator.ActivateConstructionTasks(ctx)
+			logger.Log("INFO", fmt.Sprintf("Construction drain: activation done (%d task(s) promoted to READY)", promoted), map[string]interface{}{"promoted": promoted})
 		}
 	}
 
@@ -231,6 +252,11 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	// (capped) instead of one-hull-at-a-time. No worker-container machinery is revived (Admiral
 	// veto): this stays the thin drain, just no longer serialized.
 	workerCap := h.resolveWorkerCap(ctx, tasks[:pairs])
+	// Per-tick summary (sp-6zkg observability): a drain tick can no longer be silent — it always
+	// announces how much work it is about to dispatch, so a stall is visible against this line.
+	logger.Log("INFO", fmt.Sprintf("Construction drain: dispatching %d/%d ready task(s) across %d idle hauler(s) (worker cap %d)", pairs, len(tasks), len(idleShips), workerCap), map[string]interface{}{
+		"ready_tasks": len(tasks), "idle_haulers": len(idleShips), "pairs": pairs, "worker_cap": workerCap,
+	})
 	var drained atomic.Int64
 	var group errgroup.Group
 	group.SetLimit(workerCap)
@@ -246,7 +272,9 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 				logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", ship.ShipSymbol(), err), nil)
 				return nil // task stays READY; retried next tick
 			}
-			if h.supplyTask(ctx, cmd, systemSymbol, task, ship, playerID) {
+			// supplyTaskBounded (sp-6zkg): a per-task deadline so a single wedged task can never
+			// hold group.Wait() — and thus this whole tick / the coordinator goroutine — forever.
+			if h.supplyTaskBounded(ctx, cmd, systemSymbol, task, ship, playerID) {
 				drained.Add(1)
 			}
 			// Task-level failures are recorded per worker (fail/defer); never propagated, so one
@@ -325,6 +353,11 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	if onHandUnits(ship, task.Good()) > 0 && h.remainingBill(ctx, task) > 0 {
 		delivered, err := h.producer.DeliverToConstructionSite(ctx, ship.ShipSymbol(), task.Good(), task.ConstructionSite(), playerID)
 		if err != nil {
+			// A 4219 'ship has 0 units' means the on-hand cargo was PHANTOM (the cache was never
+			// decremented after an earlier supply, sp-v5d1): resync the hull + defer, never fail/loop.
+			if isPhantomCargoSupplyError(err) {
+				return h.handlePhantomCargo(ctx, task, nil, ship, playerID, 0)
+			}
 			h.failTask(ctx, task, fmt.Sprintf("delivering on-hand %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
 			return false
 		}
@@ -391,6 +424,11 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 
 	delivered, err := h.producer.DeliverToConstructionSite(ctx, ship.ShipSymbol(), task.Good(), task.ConstructionSite(), playerID)
 	if err != nil {
+		// A 4219 on the sourced load is the same phantom-cargo signal: resync + recover without failing.
+		// On-hand progress already recorded this tick is preserved by handlePhantomCargo (never stranded).
+		if isPhantomCargoSupplyError(err) {
+			return h.handlePhantomCargo(ctx, task, pipeline, ship, playerID, deliveredOnHand)
+		}
 		if deliveredOnHand > 0 {
 			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
 		}
@@ -400,6 +438,50 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 
 	pipeline = h.recordDelivery(ctx, task, delivered)
 	return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand+delivered)
+}
+
+// supplyTaskTimeout is the per-task deadline (sp-6zkg), defaulting to constructionSupplyTaskDefaultTimeout.
+func (h *RunConstructionCoordinatorHandler) supplyTaskTimeout() time.Duration {
+	if h.taskTimeout > 0 {
+		return h.taskTimeout
+	}
+	return constructionSupplyTaskDefaultTimeout
+}
+
+// supplyTaskBounded runs supplyTask under a per-task deadline so a single wedged task can NEVER hold
+// group.Wait() — and thus the whole drain goroutine — indefinitely (sp-6zkg). The task body runs on a
+// child goroutine over a timeout ctx; the worker is reclaimed the instant the task finishes OR the
+// deadline elapses, whichever comes first, so the tick always makes progress and always reports. This
+// is the hard safety net: even a downstream op that ignored ctx entirely (the "silent for hours until
+// a daemon bounce" incident) can no longer freeze the coordinator — at worst its goroutine unwinds
+// later while the drain keeps ticking, and because taskCtx is cancelled the money paths abort rather
+// than spend (RULINGS #4). done is buffered so a late finish never blocks a possibly-orphaned child.
+// Per-step enter/exit logging makes a slow/wedged task diagnosable rather than an undiagnosable hang.
+func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, task *manufacturing.ManufacturingTask, ship *navigation.Ship, playerID shared.PlayerID) bool {
+	logger := common.LoggerFromContext(ctx)
+	timeout := h.supplyTaskTimeout()
+	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	logger.Log("INFO", fmt.Sprintf("Construction drain: START supply of %s via %s -> %s (timeout %s)", task.Good(), ship.ShipSymbol(), task.ConstructionSite(), timeout), map[string]interface{}{
+		"ship": ship.ShipSymbol(), "good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(),
+	})
+
+	done := make(chan bool, 1)
+	go func() { done <- h.supplyTask(taskCtx, cmd, systemSymbol, task, ship, playerID) }()
+
+	select {
+	case drained := <-done:
+		logger.Log("INFO", fmt.Sprintf("Construction drain: END supply of %s via %s (drained=%t)", task.Good(), ship.ShipSymbol(), drained), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "good": task.Good(), "task": task.ID(), "drained": drained,
+		})
+		return drained
+	case <-taskCtx.Done():
+		logger.Log("ERROR", fmt.Sprintf("Construction drain: supply of %s via %s exceeded %s — ABANDONING this tick (hull released, task retried next tick; the coordinator keeps ticking, never hangs): %v", task.Good(), ship.ShipSymbol(), timeout, taskCtx.Err()), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(), "timeout": timeout.String(),
+		})
+		return false
+	}
 }
 
 // completeSupply finishes a task that delivered a load this tick: complete + persist it, enqueue the
@@ -696,6 +778,54 @@ func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task 
 	logger.Log("INFO", fmt.Sprintf("Deferred unsourceable construction material %s for resupply", task.Good()), map[string]interface{}{
 		"good": task.Good(), "construction_site": task.ConstructionSite(),
 	})
+}
+
+// isPhantomCargoSupplyError reports whether err is the API's 4219 'ship cargo does not contain N
+// units / ship has 0 units' — the signal that the hull does NOT actually hold the cargo the drain
+// routed it to deliver (a PHANTOM left by an un-written-back cache after an earlier supply, sp-v5d1).
+// It is NOT a site/bill failure and must NOT be treated as a generic delivery error: retrying re-routes
+// the empty hull to re-deliver forever (sp-j09q) and, when the hull is already at the gate, wedges the
+// drain (sp-6zkg). Matched on the API error-code substring, consistent with isTransientDockStateError's
+// 4214/4244 matching — the raw response body ({"error":{"code":4219,...}}) is wrapped through verbatim.
+func isPhantomCargoSupplyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "4219")
+}
+
+// handlePhantomCargo recovers from a 4219 phantom-cargo supply rejection (sp-6zkg/sp-j09q) instead of
+// failing or re-looping. The hull did not actually hold the cargo the drain routed it to deliver, so:
+// (1) RESYNC the hull from the server, clearing the desynced cache (belt-and-suspenders with the
+// sp-v5d1 write-back — so even a phantom that arose some other way is reconciled); then (2) advance
+// WITHOUT failing (RULINGS #1): if on-hand progress was already recorded this tick, complete it (never
+// strand delivered units); otherwise DEFER the task for re-sourcing, so the NEXT tick sources into a
+// hull with REAL cargo rather than re-routing this empty one to re-deliver. Returns whether the task
+// counts as drained this tick.
+func (h *RunConstructionCoordinatorHandler) handlePhantomCargo(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline, ship *navigation.Ship, playerID shared.PlayerID, deliveredOnHand int) bool {
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("WARNING", fmt.Sprintf("Construction drain: hauler %s supply of %s rejected as PHANTOM cargo (API 4219, ship has 0 units) — resyncing hull and recovering the task (never re-routing/hanging) [sp-6zkg/sp-j09q]", ship.ShipSymbol(), task.Good()), map[string]interface{}{
+		"ship": ship.ShipSymbol(), "good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(),
+	})
+	h.resyncShipCargo(ctx, ship.ShipSymbol(), playerID)
+	if deliveredOnHand > 0 {
+		// On-hand units already delivered + recorded this tick — complete (never strand them).
+		return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+	}
+	h.deferTask(ctx, task)
+	return false
+}
+
+// resyncShipCargo forces the hull's cached state back to server truth after a phantom-cargo 4219
+// (sp-6zkg). SyncShipFromAPI is the daemon's own GET-and-write-through reconcile — the same path a
+// boot sync and `ship refresh` run — so this stays within the single-writer model (RULINGS #3; the
+// daemon is reconciling its OWN cache, not a CLI writer). Best-effort: a resync failure is logged, not
+// fatal — the next tick re-polls and the sp-v5d1 write-back keeps the cache coherent on the happy path.
+func (h *RunConstructionCoordinatorHandler) resyncShipCargo(ctx context.Context, shipSymbol string, playerID shared.PlayerID) {
+	logger := common.LoggerFromContext(ctx)
+	if _, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Construction drain: could not resync hull %s after phantom-cargo 4219 (cache reconciles on next sync): %v", shipSymbol, err), nil)
+	}
 }
 
 func (h *RunConstructionCoordinatorHandler) failTask(ctx context.Context, task *manufacturing.ManufacturingTask, reason string) {

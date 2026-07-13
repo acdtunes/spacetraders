@@ -1336,6 +1336,44 @@ func (e *ProductionExecutor) DeliverToConstructionSite(
 	logger.Log("INFO", fmt.Sprintf("Supplied %d %s to construction site %s", result.UnitsDelivered, good, site), map[string]interface{}{
 		"ship": shipSymbol, "construction_site": site, "good": good, "units_delivered": result.UnitsDelivered,
 	})
+
+	// sp-v5d1/sp-j09q — post-supply cargo WRITE-BACK (the root fix). The server just removed
+	// result.UnitsDelivered of good from this hull, but the daemon's cached ship row still holds the
+	// pre-delivery cargo. Write the decrement back through the single-writer CAS path (RULINGS #3 — the
+	// same SaveWithRetry seam sp-wa7c routes ship writes through) so the NEXT drain tick reads the REAL
+	// emptied hold, not PHANTOM cargo it would re-route to re-deliver (→ API 4219 → the sp-6zkg drain
+	// hang). Mirrors transfer_cargo.go's post-transfer RemoveCargo write-back.
+	//
+	// Idempotent under CAS re-apply: the mutation removes only what the FRESH row still holds — a
+	// concurrent writer or a `ship refresh` that already reconciled the hull leaves nothing to remove
+	// (changed=false, no spurious version bump), so it can never error on an already-reconciled row.
+	// Best-effort: the supply already committed server-side, so a write-back failure is logged, never
+	// fatal — the cache reconciles on the next sync.
+	if delivered := result.UnitsDelivered; delivered > 0 {
+		if _, _, wbErr := e.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				cargo := sh.Cargo()
+				if cargo == nil {
+					return false, nil
+				}
+				have := cargo.GetItemUnits(good)
+				if have <= 0 {
+					return false, nil // already reconciled — no phantom to clear
+				}
+				remove := delivered
+				if remove > have {
+					remove = have // fresh row holds fewer than we delivered; strip only what is actually there
+				}
+				if err := sh.RemoveCargo(good, remove); err != nil {
+					return false, err
+				}
+				return true, nil
+			}); wbErr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Post-supply cargo write-back failed for %s (%d %s) — cache may briefly show phantom until next sync: %v", shipSymbol, delivered, good, wbErr), map[string]interface{}{
+				"ship": shipSymbol, "good": good, "units_delivered": delivered,
+			})
+		}
+	}
 	return result.UnitsDelivered, nil
 }
 

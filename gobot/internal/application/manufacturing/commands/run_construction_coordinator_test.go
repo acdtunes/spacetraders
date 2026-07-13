@@ -174,6 +174,7 @@ type drainFakeShipRepo struct {
 	claims      []drainClaim
 	claimErr    error
 	byContainer map[string][]*navigation.Ship
+	resyncs     []string // sp-6zkg: hull symbols the drain forced a server resync on (SyncShipFromAPI)
 }
 
 type drainClaim struct{ symbol, containerID, operation string }
@@ -219,6 +220,28 @@ func (r *drainFakeShipRepo) claimCount() int {
 }
 
 func (r *drainFakeShipRepo) Save(_ context.Context, _ *navigation.Ship) error { return nil }
+
+// SyncShipFromAPI records that the drain forced a server-truth resync of a hull (sp-6zkg): the
+// recovery a phantom-cargo 4219 triggers so the desynced cache is reconciled before the task is
+// deferred, instead of re-routing the (really empty) hull to re-deliver forever.
+func (r *drainFakeShipRepo) SyncShipFromAPI(_ context.Context, symbol string, _ shared.PlayerID) (*navigation.Ship, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resyncs = append(r.resyncs, symbol)
+	for _, s := range r.ships {
+		if s.ShipSymbol() == symbol {
+			return s, nil
+		}
+	}
+	return nil, nil
+}
+
+// resyncCount returns how many hull resyncs were recorded, under lock (for post-drain asserts).
+func (r *drainFakeShipRepo) resyncCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.resyncs)
+}
 
 // newDrainPipeline builds an EXECUTING construction pipeline with a single
 // material bill (good x targetQty), so RecordMaterialDelivery moves progress.

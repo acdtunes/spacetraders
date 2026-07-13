@@ -155,6 +155,65 @@ func TestDeliverToConstructionSite_RepoNotWired_Errors(t *testing.T) {
 	}
 }
 
+// sp-v5d1/sp-j09q (REPRO — the ROOT, fail-when-reverted): after a successful supply removes N units
+// server-side, the delivering hull's CACHED cargo MUST be decremented by N. Without the post-supply
+// write-back the cache keeps the pre-delivery value (a PHANTOM) — the next drain tick reads the hull
+// as still laden, re-routes it to re-deliver, and the server rejects it with API 4219 (→ the sp-6zkg
+// hang). This asserts the cache reflects the server-side removal (0 remaining), which is the fix that
+// collapses the whole cascade at its root.
+func TestDeliverToConstructionSite_WritesBackDecrementedCargo(t *testing.T) {
+	construction := &fakeConstructionRepo{}
+	executor, repo, _ := newDeliveryExecutor(t, makeCargo(deliveryTestGood, 30), construction)
+
+	delivered, err := executor.DeliverToConstructionSite(
+		context.Background(), dockRaceShip, deliveryTestGood, deliveryTestSiteWP, shared.MustNewPlayerID(1),
+	)
+	if err != nil {
+		t.Fatalf("supplying a carried material must succeed, got %v", err)
+	}
+	if delivered != 30 {
+		t.Fatalf("expected 30 units delivered, got %d", delivered)
+	}
+
+	// The daemon cache must now reflect the server-side removal: NO phantom cargo remains onboard.
+	reloaded, err := repo.FindBySymbol(context.Background(), dockRaceShip, shared.MustNewPlayerID(1))
+	if err != nil {
+		t.Fatalf("reload after supply: %v", err)
+	}
+	if got := reloaded.Cargo().GetItemUnits(deliveryTestGood); got != 0 {
+		t.Fatalf("expected cached cargo decremented to 0 after supply (no phantom); got %d — a phantom re-routes the hull to re-deliver (sp-j09q) and hangs the drain (sp-6zkg)", got)
+	}
+	if got := reloaded.Cargo().Units; got != 0 {
+		t.Fatalf("expected total cached cargo units 0 after full delivery, got %d", got)
+	}
+}
+
+// sp-v5d1 (write-back precision): the cache is decremented by the units the site ACCEPTED
+// (result.UnitsDelivered), not merely the units offered. A hull carrying 30 whose site accepts only 20
+// must leave 10 in the cache — never a stale 30 (phantom) and never an over-decremented negative.
+func TestDeliverToConstructionSite_WriteBackUsesDeliveredUnits(t *testing.T) {
+	construction := &fakeConstructionRepo{unitsResult: 20} // site accepts 20 of the 30 offered
+	executor, repo, _ := newDeliveryExecutor(t, makeCargo(deliveryTestGood, 30), construction)
+
+	delivered, err := executor.DeliverToConstructionSite(
+		context.Background(), dockRaceShip, deliveryTestGood, deliveryTestSiteWP, shared.MustNewPlayerID(1),
+	)
+	if err != nil {
+		t.Fatalf("supply must succeed, got %v", err)
+	}
+	if delivered != 20 {
+		t.Fatalf("expected 20 units accepted by the site, got %d", delivered)
+	}
+
+	reloaded, err := repo.FindBySymbol(context.Background(), dockRaceShip, shared.MustNewPlayerID(1))
+	if err != nil {
+		t.Fatalf("reload after supply: %v", err)
+	}
+	if got := reloaded.Cargo().GetItemUnits(deliveryTestGood); got != 10 {
+		t.Fatalf("expected cache decremented by the 20 DELIVERED units (30-20=10 remaining), got %d", got)
+	}
+}
+
 // A construction supply API failure surfaces as an error and delivers nothing (the drain
 // then fails the task) — the error is not swallowed.
 func TestDeliverToConstructionSite_SupplyError_Bubbles(t *testing.T) {

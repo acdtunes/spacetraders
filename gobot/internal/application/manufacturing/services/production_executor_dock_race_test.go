@@ -113,6 +113,28 @@ func (r *dockRaceShipRepo) Save(ctx context.Context, ship *navigation.Ship) erro
 	return nil
 }
 
+// SaveWithRetry models the real single-writer CAS path (sp-01wc): load the ship FRESH from the
+// persisted primitives, apply the mutation, and — only when it reports a change — persist the
+// resulting cargo/nav back to those primitives, so a follow-up FindBySymbol reflects it. This lets
+// the construction-supply terminal's post-supply cargo write-back (sp-v5d1) be exercised against a
+// faithful persistence fake rather than a re-implemented one.
+func (r *dockRaceShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ship := r.buildShip()
+	changed, err := mutate(ship)
+	if err != nil {
+		return nil, false, err
+	}
+	if changed {
+		cargo := ship.Cargo()
+		r.cargoUnits = cargo.Units
+		r.cargoInventory = cargo.Inventory
+		r.navStatus = ship.NavStatus()
+	}
+	return ship, changed, nil
+}
+
 func (r *dockRaceShipRepo) arriveInOrbit(destination string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
