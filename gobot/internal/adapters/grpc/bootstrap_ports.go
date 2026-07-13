@@ -80,12 +80,11 @@ func NewBootstrapCoordinatorHandler(
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
 
-	// GATE-phase collaborators (Slice 3): construction start, the manufacturing-executor ensure/bounce,
-	// the repurpose-to-manufacturing re-tag, the gate-worker buy, and the COMPLETE hand-off — each a thin
-	// wrapper over an existing daemon capability (build nothing new).
+	// GATE-phase collaborators (Slice 3): construction start, the manufacturing-executor ensure/bounce, the
+	// gate-delivery-hauler buy (Option B — the whole gate fleet is bought from contract income, no repurpose),
+	// and the COMPLETE hand-off — each a thin wrapper over an existing daemon capability (build nothing new).
 	h.SetConstructionManager(&bootstrapConstructionManager{server: server})
 	h.SetManufacturingController(&bootstrapManufacturingController{server: server})
-	h.SetWorkerRepurposer(&bootstrapWorkerRepurposer{shipRepo: shipRepo})
 	h.SetGateWorkerAcquirer(&bootstrapGateWorkerAcquirer{bootstrapAcquirer: acq, shipRepo: shipRepo})
 	h.SetHandoffLauncher(&bootstrapHandoffLauncher{server: server})
 	return h

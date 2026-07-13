@@ -22,13 +22,17 @@ type bootstrapRunConfig struct {
 	ProbeShipType string
 
 	// INCOME-phase knobs (Slice 2), each resolved to its documented default when unset.
-	HaulerTarget       int
-	IncomeBar          float64
-	MinContractEarners int
-	HaulerShipType     string
+	HaulerTarget   int
+	IncomeBar      float64
+	HaulerShipType string
 
-	// GATE-phase knob (Slice 3), resolved to its documented default when unset.
+	// GATE-phase knobs (Slice 3), resolved to their documented defaults when unset.
 	GateWorkerTarget int
+	// Reserve/ReservePct are the shared working-capital SOLVENCY floor for gate-delivery-fleet buys — the
+	// SAME max(50k, min(Reserve, ReservePct%×treasury)) primitive the material engine enforces at a factory
+	// input buy (common.EffectiveReserveFloor), so fleet and materials can't starve each other (Option B).
+	Reserve    int64
+	ReservePct int
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunConfig {
@@ -41,12 +45,13 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 		ReserveMargin: cmd.ReserveMargin,
 		ProbeShipType: cmd.ProbeShipType,
 
-		HaulerTarget:       cmd.HaulerTarget,
-		IncomeBar:          cmd.IncomeBar,
-		MinContractEarners: cmd.MinContractEarners,
-		HaulerShipType:     cmd.HaulerShipType,
+		HaulerTarget:   cmd.HaulerTarget,
+		IncomeBar:      cmd.IncomeBar,
+		HaulerShipType: cmd.HaulerShipType,
 
 		GateWorkerTarget: cmd.GateWorkerTarget,
+		Reserve:          cmd.Reserve,
+		ReservePct:       cmd.ReservePct,
 	}
 	if c.Tick <= 0 {
 		c.Tick = defaultBootstrapTickSeconds * time.Second
@@ -69,14 +74,17 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 	if c.IncomeBar <= 0 {
 		c.IncomeBar = defaultIncomeBar
 	}
-	if c.MinContractEarners <= 0 {
-		c.MinContractEarners = defaultMinContractEarners
-	}
 	if c.HaulerShipType == "" {
 		c.HaulerShipType = defaultHaulerShipType
 	}
 	if c.GateWorkerTarget <= 0 {
 		c.GateWorkerTarget = defaultGateWorkerTarget
+	}
+	if c.Reserve <= 0 {
+		c.Reserve = defaultBootstrapReserve
+	}
+	if c.ReservePct <= 0 {
+		c.ReservePct = common.DefaultReserveTreasuryPct
 	}
 	return c
 }
@@ -99,8 +107,7 @@ type reconcileResult struct {
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
 	MfgEnsured           bool // the manufacturing coordinator (executor) was ensured-running this tick
 	MfgBounced           bool // the executor was bounced for pipeline adoption this tick (captain L57)
-	WorkersReleased      int  // contract haulers released to construction this tick (repurpose-first)
-	GateWorkersBought    int  // gate-worker hulls actually bought this tick (staged: at most 1)
+	GateWorkersBought    int  // gate-delivery-hauler hulls actually bought this tick (staged: at most 1)
 	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
 
 	// COMPLETE tallies (Slice 3).
@@ -207,12 +214,14 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // scouted yet) in DATA rather than reading an empty world as "100% covered"; income_bar is positive by
 // default, so a fresh INCOME entry (0 $/hr) never skips straight to GATE.
 //
-// The arc must be MONOTONE, but realized income is NOT monotone across the INCOME→GATE boundary: GATE
-// repurposes contract haulers to construction, which DROPS realized $/hr back under income_bar. So GATE
-// is made STICKY on obs.ConstructionStarted — once a construction pipeline exists the arc stays in GATE
-// regardless of income, never regressing to INCOME (which would re-buy the just-repurposed haulers and
-// thrash). COMPLETE is terminal and monotone (a built gate stays built). A restart at any point
-// re-derives the true phase from these live signals — no persisted cursor, no double-advance.
+// The arc must be MONOTONE. Under Option B the whole contract fleet keeps earning through GATE — the
+// gate-delivery fleet is BOUGHT from that income, not repurposed from it — so realized $/hr no longer
+// collapses at the INCOME→GATE boundary, and the income-thrash this stickiness once guarded against is
+// gone. GATE is STILL made STICKY on obs.ConstructionStarted, now as belt-and-suspenders rather than
+// load-bearing: once a construction pipeline exists the arc stays in GATE regardless of any transient
+// income dip, never regressing to INCOME. COMPLETE is terminal and monotone (a built gate stays built).
+// A restart at any point re-derives the true phase from these live signals — no persisted cursor, no
+// double-advance.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 	if !(obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar) {
 		return PhaseData
@@ -221,7 +230,7 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 		return PhaseComplete
 	}
 	if obs.ConstructionStarted {
-		return PhaseGate // sticky: stay in GATE even as repurposed haulers pull income under the bar
+		return PhaseGate // sticky (belt-and-suspenders): stay in GATE regardless of any transient income dip
 	}
 	if obs.IncomePerHour >= cfg.IncomeBar {
 		return PhaseGate
@@ -442,7 +451,7 @@ func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v gate_workers_bought=%d handoff=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.GateWorkersBought, res.HandoffLaunched)
 	if cfg.DryRun {
 		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
 	}
@@ -477,7 +486,6 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"construction_pct": obs.ConstructionPercent,
 		"gate_workers":     obs.GateWorkers,
 		"desired_workers":  res.DesiredWorkers,
-		"workers_released": res.WorkersReleased,
 		"handoff":          res.HandoffLaunched,
 		"blocker":          blockers,
 	})
@@ -523,11 +531,8 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 			return "bounce the manufacturing coordinator so it adopts the pipeline (L57)"
 		}
 		plan := planGateWorkers(obs, cfg)
-		if len(plan.ReleaseShips) > 0 {
-			return fmt.Sprintf("repurpose %d surplus hauler(s) to gate construction", len(plan.ReleaseShips))
-		}
 		if plan.Buy > 0 {
-			return fmt.Sprintf("buy 1 gate worker (staged, capital-gated; %d have/%d desired)", obs.GateWorkers, plan.DesiredWorkers)
+			return fmt.Sprintf("buy 1 gate-delivery hauler (staged, solvency-gated; %d have/%d desired)", obs.GateWorkers, plan.DesiredWorkers)
 		}
 		return fmt.Sprintf("monitor construction to 100%% (%.0f%%)", obs.ConstructionPercent)
 	case PhaseComplete:

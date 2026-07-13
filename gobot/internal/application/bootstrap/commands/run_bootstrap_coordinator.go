@@ -29,24 +29,27 @@ const (
 	// HIGH the arc never reaches GATE — a lower bar only risks starting GATE with a still-warming
 	// fleet. This is the primary field-calibration knob (spec Slice-2 open question).
 	defaultIncomeBar = 10000.0
-	// defaultMinContractEarners is how many haulers stay on contracts through GATE to keep funding
-	// material acquisition (consumed by the GATE phase in Slice 3; plumbed here with the INCOME ramp).
-	defaultMinContractEarners = 1
 	// defaultHaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the
 	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
 	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
 
 	// GATE-phase defaults (Slice 3).
-	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
-	// chain + a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of
-	// producing chains + delivery) without letting a wide pipeline drain the treasury; the Analyst tunes
-	// it. The worker pool is mostly REPURPOSED idle contract haulers, so this rarely drives a buy.
+	// defaultGateWorkerTarget caps the gate-delivery fleet (actual = ~one per active gate-material chain +
+	// a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of producing
+	// chains + delivery) without letting a wide pipeline drain the treasury; the Analyst tunes it. Under
+	// Option B the whole gate-delivery fleet is BOUGHT from contract income, so this cap bounds that spend.
 	defaultGateWorkerTarget = 6
 	// gateDeliveryHaulers is the small fixed delivery allowance added to the per-chain worker target
 	// (spec §Fleet scaling: "~one worker per active gate-material chain + 1–2 delivery haulers"). Kept a
 	// call-site constant (not a knob) — it is a shape detail of the sizing formula, bounded by
 	// gate_worker_target which IS the operator-reachable cap.
 	gateDeliveryHaulers = 1
+	// defaultBootstrapReserve is the absolute working-capital reserve for the GATE-fleet SOLVENCY floor —
+	// the same class of knob the material engine runs (working_capital_reserve). It defaults to the fleet's
+	// ~1M reserve so the counter-cyclical proportional term (reserve_pct%×treasury) binds through the whole
+	// sub-2.5M bootstrap treasury regime: common.EffectiveReserveFloor then resolves to
+	// max(50k, reserve_pct%×treasury). The captain tunes it via config.yaml to the fleet's exact reserve.
+	defaultBootstrapReserve = 1_000_000
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -140,18 +143,11 @@ type ManufacturingController interface {
 	BounceForAdoption(ctx context.Context, playerID int) error
 }
 
-// WorkerRepurposer releases a contract-dedicated income hauler back to the idle pool (reuses fleet
-// unassign — the same tag-clear as retiring the frigate) so the manufacturing coordinator claims it as
-// a gate-construction worker. This is the "repurpose idle INCOME haulers FIRST" seed (spec §Fleet
-// scaling): the income fleet becomes the seed construction workforce before any hull is bought.
-type WorkerRepurposer interface {
-	RepurposeToConstruction(ctx context.Context, playerID int, shipSymbol string) error
-}
-
-// GateWorkerAcquirer price-checks and buys ONE gate-construction worker hull and dedicates it to
-// construction (reuses shipyard purchase + fleet assign). The staged top-up when repurposed haulers
-// don't cover the pipeline's shape. Mirrors HaulerAcquirer but does not place on a hub (the executor
-// claims the worker); PriceCheck readable=false ⇒ the capital gate fails closed (no buy).
+// GateWorkerAcquirer price-checks and buys ONE gate-construction (delivery-hauler) hull and dedicates it
+// to construction (reuses shipyard purchase + fleet assign). Under Option B the WHOLE gate-delivery fleet
+// is bought from contract income, one hull per staged tick, when existing gate workers don't cover the
+// pipeline's shape (contract haulers are never repurposed). Mirrors HaulerAcquirer but does not place on a
+// hub (the executor claims the worker); PriceCheck readable=false ⇒ the solvency gate fails closed (no buy).
 type GateWorkerAcquirer interface {
 	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
 	BuyForConstruction(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
@@ -203,13 +199,14 @@ type RunBootstrapCoordinatorCommand struct {
 	ProbeShipType    string
 
 	// INCOME-phase knobs (Slice 2, RULINGS #5; the zero value defers to the documented default).
-	HaulerTarget       int     // INCOME hull cap — actual = one per viable contract hub, up to this.
-	IncomeBar          float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
-	MinContractEarners int     // haulers kept on contracts through GATE (consumed in Slice 3).
-	HaulerShipType     string  // the shipyard ship-type bought for a contract hauler.
+	HaulerTarget   int     // INCOME hull cap — actual = one per viable contract hub, up to this.
+	IncomeBar      float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
+	HaulerShipType string  // the shipyard ship-type bought for a contract hauler.
 
-	// GATE-phase knob (Slice 3, RULINGS #5; the zero value defers to the documented default).
-	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
+	// GATE-phase knobs (Slice 3, RULINGS #5; the zero value defers to the documented default).
+	GateWorkerTarget int   // GATE worker cap — actual = ~one per active gate-material chain + delivery.
+	Reserve          int64 // absolute working-capital reserve for the shared GATE-fleet solvency floor.
+	ReservePct       int   // treasury-percent for that floor: max(50k, min(Reserve, ReservePct%×treasury)).
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress. Because the loop is infinite it is
@@ -246,7 +243,6 @@ type RunBootstrapCoordinatorHandler struct {
 	// GATE-phase collaborators (Slice 3). Same nil-safe contract.
 	construction  ConstructionManager
 	manufacturing ManufacturingController
-	repurposer    WorkerRepurposer
 	gateAcquirer  GateWorkerAcquirer
 	handoff       HandoffLauncher
 }
@@ -308,12 +304,8 @@ func (h *RunBootstrapCoordinatorHandler) SetManufacturingController(m Manufactur
 	h.manufacturing = m
 }
 
-// SetWorkerRepurposer wires the "release an income hauler to construction" action (reuses fleet
-// unassign). Unset → GATE cannot repurpose haulers and top-up buys carry the whole worker load (surfaced loudly).
-func (h *RunBootstrapCoordinatorHandler) SetWorkerRepurposer(r WorkerRepurposer) { h.repurposer = r }
-
 // SetGateWorkerAcquirer wires the price-check + buy-for-construction path (reuses shipyard purchase +
-// fleet assign). Unset → GATE repurposes but never buys the top-up delta (surfaced loudly).
+// fleet assign). Unset → GATE cannot buy the gate-delivery fleet (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetGateWorkerAcquirer(a GateWorkerAcquirer) {
 	h.gateAcquirer = a
 }
@@ -332,7 +324,7 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	}
 
 	cfg := resolveBootstrapConfig(cmd)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, reserve_margin=%.2f, hauler_target=%d, income_bar=%.0f, min_contract_earners=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.ReserveMargin, cfg.HaulerTarget, cfg.IncomeBar, cfg.MinContractEarners), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, reserve_margin=%.2f, hauler_target=%d, income_bar=%.0f, gate_worker_target=%d, reserve=%d, reserve_pct=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.ReserveMargin, cfg.HaulerTarget, cfg.IncomeBar, cfg.GateWorkerTarget, cfg.Reserve, cfg.ReservePct), map[string]interface{}{
 		"action":       "bootstrap_start",
 		"container_id": cmd.ContainerID,
 		"dry_run":      cfg.DryRun,

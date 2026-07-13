@@ -17,18 +17,20 @@ func TestBootstrap_DerivePhase_EntersGateAtIncomeBar(t *testing.T) {
 	}
 }
 
-// THE key correctness pin: once a construction pipeline exists, GATE is STICKY even though contract
-// income has fallen back under the bar (haulers repurposed to construction). Without this, derivePhase
-// regresses GATE→INCOME and re-buys haulers — a thrash loop.
+// GATE stays STICKY once a construction pipeline exists, even at a low income read. Under Option B the
+// whole contract fleet keeps earning through GATE (the gate-delivery fleet is BOUGHT from that income,
+// never repurposed from it), so income no longer collapses at the boundary — the stickiness is now
+// belt-and-suspenders against any transient dip, keeping derivePhase from regressing GATE→INCOME (which
+// would re-buy contract haulers and thrash).
 func TestBootstrap_DerivePhase_GateStickyOnceConstructionStarted(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd())
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 10,
-		IncomePerHour:       500, // well under the 10000 bar — haulers repurposed
+		IncomePerHour:       500, // a transient dip well under the 10000 bar
 		ConstructionStarted: true,
 	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("construction started should keep GATE despite low income, got %s (would thrash to INCOME)", p)
+		t.Fatalf("construction started should keep GATE despite a low income read, got %s (would thrash to INCOME)", p)
 	}
 }
 
@@ -56,50 +58,62 @@ func TestBootstrap_DerivePhase_DataDominatesConstructionFlags(t *testing.T) {
 	}
 }
 
-// --- planGateWorkers: deterministic repurpose-first → top-up sizing (Slice 3) ---
+// --- config defaults: the shared GATE-fleet solvency floor resolves LIVE (Option B) ---
 
-// Repurpose-first: when GATE begins, all contract haulers beyond min_contract_earners are released to
-// the executor as the seed workforce — BEFORE the pipeline reveals its shape (chains still 0), so no buy.
-func TestBootstrap_PlanGateWorkers_RepurposesSurplusFirst(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // min_contract_earners 1, gate_worker_target 6
+// The shared working-capital floor knobs resolve to their documented defaults: the fleet's ~1M reserve
+// and the 40% counter-cyclical treasury-percent, so the gate fleet shares the material engine's floor.
+func TestBootstrap_ResolvesGateReserveDefaults(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd())
+	if cfg.Reserve != defaultBootstrapReserve {
+		t.Fatalf("reserve default = %d, got %d", defaultBootstrapReserve, cfg.Reserve)
+	}
+	if cfg.ReservePct != 40 {
+		t.Fatalf("reserve_pct default = 40 (common.DefaultReserveTreasuryPct), got %d", cfg.ReservePct)
+	}
+}
+
+// --- planGateWorkers: deterministic all-bought sizing (Option B, Slice 3) ---
+
+// Option B: the ENTIRE gate-delivery fleet is BOUGHT from contract income — contract haulers are NEVER
+// repurposed — so a tick with idle contract haulers and an uncovered pipeline shape still stages a buy
+// (desired > GateWorkers); it does not release haulers to cover it.
+func TestBootstrap_PlanGateWorkers_BuysEntireFleet_NoRepurpose(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd())
 	obs := Observation{
 		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}},
+		GateWorkers:        0,
+		GateMaterialChains: 2, // desired = min(2+1, 6) = 3; 3 > 0 workers ⇒ buy the whole fleet, one/tick
+	}
+	plan := planGateWorkers(obs, cfg)
+	if plan.Buy != 1 {
+		t.Fatalf("Option B buys the whole gate fleet from income (contract haulers not repurposed): desired 3 > 0 workers ⇒ buy=1, got %d", plan.Buy)
+	}
+}
+
+// No buy before the pipeline reveals its chains: with chains still 0 the sizing target is 0, so the buy
+// holds until the shape is known (there is no seed release to run ahead of it any more).
+func TestBootstrap_PlanGateWorkers_NoBuyBeforeChainsKnown(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd())
+	obs := Observation{
+		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}},
+		GateWorkers:        0,
 		GateMaterialChains: 0, // pipeline shape not yet known
 	}
 	plan := planGateWorkers(obs, cfg)
-	if got := len(plan.ReleaseShips); got != 3 {
-		t.Fatalf("expected 3 surplus haulers released (4 on contract − 1 kept), got %d (%v)", got, plan.ReleaseShips)
-	}
-	if plan.KeptOnContract != 1 {
-		t.Fatalf("expected 1 hauler kept on contract, got %d", plan.KeptOnContract)
+	if plan.DesiredWorkers != 0 {
+		t.Fatalf("desired must be 0 before the pipeline reveals its chains, got %d", plan.DesiredWorkers)
 	}
 	if plan.Buy != 0 {
 		t.Fatalf("no buy before the pipeline reveals its chains, got buy=%d", plan.Buy)
 	}
-	// The kept earner (first) is NOT released; the surplus (H2..H4) is.
-	for _, s := range plan.ReleaseShips {
-		if s == "H1" {
-			t.Fatalf("the kept contract earner H1 must not be released, got %v", plan.ReleaseShips)
-		}
-	}
 }
 
-// The keep guard holds: at exactly min_contract_earners on contract, nothing is released.
-func TestBootstrap_PlanGateWorkers_KeepsMinContractEarners(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // keep 1
-	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateMaterialChains: 3}
-	plan := planGateWorkers(obs, cfg)
-	if len(plan.ReleaseShips) != 0 {
-		t.Fatalf("must keep min_contract_earners on contract, released %v", plan.ReleaseShips)
-	}
-}
-
-// Top-up buy: the pipeline reveals 3 chains, no repurposable haulers cover it and no workers yet, so
-// the staged delta buys ONE hull (never a blind buy-all).
-func TestBootstrap_PlanGateWorkers_TopsUpWhenShort(t *testing.T) {
+// The pipeline reveals 3 chains and no workers exist yet, so the staged delta buys ONE hull (the whole
+// gate-delivery fleet is bought from income, one per tick — never a blind buy-all).
+func TestBootstrap_PlanGateWorkers_BuysWhenShort(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd()) // target 6, delivery +1 ⇒ desired = min(3+1,6) = 4
 	obs := Observation{
-		Haulers:            []HaulerSnapshot{{Symbol: "H1"}}, // only the kept earner, nothing to repurpose
+		Haulers:            []HaulerSnapshot{{Symbol: "H1"}}, // a contract earner, untouched
 		GateWorkers:        0,
 		GateMaterialChains: 3,
 	}
@@ -116,34 +130,14 @@ func TestBootstrap_PlanGateWorkers_TopsUpWhenShort(t *testing.T) {
 func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd()) // target 6
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 0, GateMaterialChains: 5}
-	plan := planGateWorkers(obs, cfg) // desired = min(5+1,6) = 6, pool 0 ⇒ deficit 6
+	plan := planGateWorkers(obs, cfg) // desired = min(5+1,6) = 6, workers 0 ⇒ deficit 6
 	if plan.Buy != 1 {
 		t.Fatalf("deficit of 6 must still stage exactly one buy, got %d", plan.Buy)
 	}
 }
 
-// No buy when the repurposed seed + existing workers already cover the pipeline's shape.
-func TestBootstrap_PlanGateWorkers_NoBuyWhenPoolCovers(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // target 6, desired = min(2+1,6) = 3
-	obs := Observation{
-		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}}, // release 3
-		GateWorkers:        0,
-		GateMaterialChains: 2,
-	}
-	plan := planGateWorkers(obs, cfg)
-	if plan.DesiredWorkers != 3 {
-		t.Fatalf("desired = 3, got %d", plan.DesiredWorkers)
-	}
-	if len(plan.ReleaseShips) != 3 {
-		t.Fatalf("expected 3 released, got %d", len(plan.ReleaseShips))
-	}
-	if plan.Buy != 0 {
-		t.Fatalf("pool after release (0 workers + 3 released) covers desired 3 — no buy, got %d", plan.Buy)
-	}
-}
-
-// No buy when the executor already has enough workers (idempotency: a restart mid-GATE re-observes
-// GateWorkers and never re-buys or re-overshoots).
+// No buy when the executor already has enough workers (idempotency + no over-buy: a restart mid-GATE
+// re-observes GateWorkers and never re-buys or overshoots the pipeline's shape).
 func TestBootstrap_PlanGateWorkers_NoBuyWhenWorkersSuffice(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd())
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 4, GateMaterialChains: 3}
@@ -196,18 +190,6 @@ func (f *fakeManufacturing) BounceForAdoption(ctx context.Context, playerID int)
 	return f.bounceErr
 }
 
-type fakeRepurposer struct {
-	calls int
-	ships []string
-	err   error
-}
-
-func (f *fakeRepurposer) RepurposeToConstruction(ctx context.Context, playerID int, shipSymbol string) error {
-	f.calls++
-	f.ships = append(f.ships, shipSymbol)
-	return f.err
-}
-
 type fakeGateAcquirer struct {
 	price     int64
 	yard      string
@@ -250,7 +232,8 @@ func (f *fakeHandoff) LaunchStandingCoordinators(ctx context.Context, playerID i
 
 // gateHandler wires a handler with the given GATE collaborators plus the always-needed refresher/observer
 // (a fixed observation per tick — GATE guards are all observation-driven, so one snapshot exercises them).
-func gateHandler(obs Observation, con ConstructionManager, mfg ManufacturingController, rep WorkerRepurposer, acq GateWorkerAcquirer, ho HandoffLauncher) *RunBootstrapCoordinatorHandler {
+// There is NO worker-repurposer any more: Option B buys the whole gate-delivery fleet from contract income.
+func gateHandler(obs Observation, con ConstructionManager, mfg ManufacturingController, acq GateWorkerAcquirer, ho HandoffLauncher) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
@@ -259,9 +242,6 @@ func gateHandler(obs Observation, con ConstructionManager, mfg ManufacturingCont
 	}
 	if mfg != nil {
 		h.SetManufacturingController(mfg)
-	}
-	if rep != nil {
-		h.SetWorkerRepurposer(rep)
 	}
 	if acq != nil {
 		h.SetGateWorkerAcquirer(acq)
@@ -272,12 +252,13 @@ func gateHandler(obs Observation, con ConstructionManager, mfg ManufacturingCont
 	return h
 }
 
-// gateObs is a covered, GATE-phase observation (construction started + adopted by default, income low
-// because haulers are repurposed). Tests tweak individual fields for the guard under test.
+// gateObs is a covered, GATE-phase observation (construction started + adopted by default, treasury ample).
+// GATE stays sticky on ConstructionStarted regardless of income; tests tweak individual fields for the
+// guard under test.
 func gateObs() Observation {
 	return Observation{
 		HomeSystem: "X1-HQ", MarketsTotal: 10, MarketsCovered: 10, Treasury: 1000000,
-		IncomePerHour:        500, // repurposed — under the bar; GATE stays sticky on ConstructionStarted
+		IncomePerHour:        12000, // whole contract fleet keeps earning through GATE (Option B — no repurpose)
 		GateSite:             "X1-HQ-GATE",
 		ConstructionStarted:  true,
 		ManufacturingRunning: true,
@@ -296,7 +277,7 @@ func TestBootstrap_Gate_NoSite_Blocks(t *testing.T) {
 	obs.ConstructionStarted = false
 	obs.IncomePerHour = 12000 // over the bar so the phase is GATE even without a pipeline
 	con := &fakeConstruction{}
-	h := gateHandler(obs, con, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
+	h := gateHandler(obs, con, &fakeManufacturing{}, &fakeGateAcquirer{}, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Phase != PhaseGate {
 		t.Fatalf("expected GATE phase, got %s", res.Phase)
@@ -317,7 +298,7 @@ func TestBootstrap_Gate_StartsConstructionOnce_NoAdoptSameTick(t *testing.T) {
 	obs.IncomePerHour = 12000 // GATE entry via the income bar
 	con := &fakeConstruction{}
 	mfg := &fakeManufacturing{}
-	h := gateHandler(obs, con, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
+	h := gateHandler(obs, con, mfg, &fakeGateAcquirer{}, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if con.starts != 1 || con.sites[0] != "X1-HQ-GATE" {
 		t.Fatalf("expected one construction start on X1-HQ-GATE, got starts=%d sites=%v", con.starts, con.sites)
@@ -333,7 +314,7 @@ func TestBootstrap_Gate_StartsConstructionOnce_NoAdoptSameTick(t *testing.T) {
 // Construction already started (idempotency) ⇒ never a second start.
 func TestBootstrap_Gate_DoesNotRestartConstruction(t *testing.T) {
 	con := &fakeConstruction{}
-	h := gateHandler(gateObs(), con, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
+	h := gateHandler(gateObs(), con, &fakeManufacturing{}, &fakeGateAcquirer{}, &fakeHandoff{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if con.starts != 0 {
 		t.Fatalf("must not re-start an already-started pipeline, got %d starts", con.starts)
@@ -346,7 +327,7 @@ func TestBootstrap_Gate_EnsuresExecutorWhenDown(t *testing.T) {
 	obs.ManufacturingRunning = false
 	obs.ManufacturingAdopted = false
 	mfg := &fakeManufacturing{}
-	h := gateHandler(obs, &fakeConstruction{}, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
+	h := gateHandler(obs, &fakeConstruction{}, mfg, &fakeGateAcquirer{}, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if mfg.ensures != 1 {
 		t.Fatalf("expected 1 EnsureRunning, got %d", mfg.ensures)
@@ -365,7 +346,7 @@ func TestBootstrap_Gate_BouncesExecutorForAdoption(t *testing.T) {
 	obs.ManufacturingRunning = true
 	obs.ManufacturingAdopted = false
 	mfg := &fakeManufacturing{}
-	h := gateHandler(obs, &fakeConstruction{}, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
+	h := gateHandler(obs, &fakeConstruction{}, mfg, &fakeGateAcquirer{}, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if mfg.bounces != 1 {
 		t.Fatalf("expected 1 BounceForAdoption (L57), got %d", mfg.bounces)
@@ -381,78 +362,68 @@ func TestBootstrap_Gate_BouncesExecutorForAdoption(t *testing.T) {
 // Executor up AND adopted ⇒ neither ensure nor bounce (idempotent settled adoption).
 func TestBootstrap_Gate_NoBounceWhenAdopted(t *testing.T) {
 	mfg := &fakeManufacturing{}
-	h := gateHandler(gateObs(), &fakeConstruction{}, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
+	h := gateHandler(gateObs(), &fakeConstruction{}, mfg, &fakeGateAcquirer{}, &fakeHandoff{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if mfg.ensures != 0 || mfg.bounces != 0 {
 		t.Fatalf("a running+adopted executor needs no action, got ensures=%d bounces=%d", mfg.ensures, mfg.bounces)
 	}
 }
 
-// Repurpose-first: surplus contract haulers beyond min_contract_earners are released to the executor.
-func TestBootstrap_Gate_RepurposesSurplusHaulers(t *testing.T) {
+// Option B at the handler: with the pipeline short of workers, the coordinator BUYS a gate-delivery hull
+// from contract income — and with contract haulers present it STILL buys (never repurposes them), so the
+// contract fleet stays intact and earning through GATE.
+func TestBootstrap_Gate_BuysGateFleet_LeavesContractHaulersIntact(t *testing.T) {
 	obs := gateObs()
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}}
-	rep := &fakeRepurposer{}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, rep, &fakeGateAcquirer{}, &fakeHandoff{})
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if rep.calls != 2 { // keep 1, release 2
-		t.Fatalf("expected 2 haulers repurposed (3 − 1 kept), got %d (%v)", rep.calls, rep.ships)
-	}
-	if res.WorkersReleased != 2 {
-		t.Fatalf("expected WorkersReleased=2, got %d", res.WorkersReleased)
-	}
-}
-
-// Top-up buy: the pipeline reveals chains the repurposed pool + workers don't cover ⇒ ONE staged buy.
-func TestBootstrap_Gate_BuysTopUpWorkerWhenShort(t *testing.T) {
-	obs := gateObs()
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // only the kept earner; nothing to repurpose
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}} // contract earners — must NOT be touched
 	obs.GateWorkers = 0
-	obs.GateMaterialChains = 3 // desired = min(3+1,6) = 4
+	obs.GateMaterialChains = 3 // desired = min(3+1,6) = 4 > 0 ⇒ buy
 	acq := &fakeGateAcquirer{price: 200000, yard: "Y1", readable: true}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 1 {
-		t.Fatalf("expected one staged gate-worker buy, got %d", acq.buys)
+		t.Fatalf("expected one staged gate-delivery buy from income, got %d", acq.buys)
 	}
 	if res.GateWorkersBought != 1 {
 		t.Fatalf("expected GateWorkersBought=1, got %d", res.GateWorkersBought)
 	}
 }
 
-// The capital gate blocks a needed worker buy that would exceed reserve_margin × treasury.
-func TestBootstrap_Gate_CapitalGateBlocksWorkerBuy(t *testing.T) {
+// The SHARED solvency floor blocks a gate-delivery buy that would breach the working-capital reserve — the
+// same max(50k, min(reserve, reserve_pct%×treasury)) primitive the material engine enforces. At mid
+// treasury the counter-cyclical PROPORTIONAL term (40%×treasury) binds ABOVE the immutable 50k floor, so a
+// buy that would clear a flat 50k is still blocked: proof the gate fleet shares the material engine's floor,
+// not a looser cap. It retries as contract income refills the treasury.
+func TestBootstrap_Gate_SolvencyFloorBlocksWorkerBuy(t *testing.T) {
 	obs := gateObs()
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}}
 	obs.GateWorkers = 0
 	obs.GateMaterialChains = 3
-	obs.Treasury = 100000 // cap = 50k; price 200k unaffordable
-	acq := &fakeGateAcquirer{price: 200000, yard: "Y1", readable: true}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	obs.Treasury = 500000 // floor = max(50k, min(1M, 40%×500k=200k)) = 200k; treasury−price = 500k−350k = 150k < 200k ⇒ blocked
+	acq := &fakeGateAcquirer{price: 350000, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
-		t.Fatalf("capital gate must block the buy, got %d buys", acq.buys)
+		t.Fatalf("shared proportional floor (40%%×treasury=200k) must block the buy (150k left < 200k), got %d buys", acq.buys)
 	}
-	if res.Blocker != "capital_gate" {
-		t.Fatalf("expected blocker capital_gate, got %q", res.Blocker)
+	if res.Blocker != "gate_worker_capital_gate" {
+		t.Fatalf("expected blocker gate_worker_capital_gate, got %q", res.Blocker)
 	}
 }
 
-// A settled GATE tick (started, adopted, workers suffice, no surplus) takes NO action — quiet reconcile.
+// A settled GATE tick (started, adopted, workers suffice) takes NO action — quiet reconcile.
 func TestBootstrap_Gate_SettledTickIsQuiet(t *testing.T) {
 	obs := gateObs()
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // exactly the kept earner
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // a contract earner, untouched
 	obs.GateWorkers = 4
 	obs.GateMaterialChains = 3 // desired 4, have 4
 	con := &fakeConstruction{}
 	mfg := &fakeManufacturing{}
-	rep := &fakeRepurposer{}
 	acq := &fakeGateAcquirer{price: 1, yard: "Y", readable: true}
-	h := gateHandler(obs, con, mfg, rep, acq, &fakeHandoff{})
+	h := gateHandler(obs, con, mfg, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if con.starts+mfg.ensures+mfg.bounces+rep.calls+acq.buys != 0 {
-		t.Fatalf("settled GATE tick must be quiet, got starts=%d ensures=%d bounces=%d repurpose=%d buys=%d",
-			con.starts, mfg.ensures, mfg.bounces, rep.calls, acq.buys)
+	if con.starts+mfg.ensures+mfg.bounces+acq.buys != 0 {
+		t.Fatalf("settled GATE tick must be quiet, got starts=%d ensures=%d bounces=%d buys=%d",
+			con.starts, mfg.ensures, mfg.bounces, acq.buys)
 	}
 	if res.Blocker != "" {
 		t.Fatalf("settled tick should have no blocker, got %q", res.Blocker)
@@ -468,7 +439,7 @@ func TestBootstrap_Complete_LaunchesHandoffAndExits(t *testing.T) {
 	obs.ConstructionComplete = true // derives COMPLETE
 	obs.AutosizerRunning = false
 	ho := &fakeHandoff{}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeGateAcquirer{}, ho)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Phase != PhaseComplete {
 		t.Fatalf("expected COMPLETE phase, got %s", res.Phase)
@@ -487,7 +458,7 @@ func TestBootstrap_Complete_NoRelaunchWhenAutosizerRunning(t *testing.T) {
 	obs.ConstructionComplete = true
 	obs.AutosizerRunning = true
 	ho := &fakeHandoff{}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeGateAcquirer{}, ho)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if ho.autosizer != 0 || ho.standing != 0 {
 		t.Fatalf("must not relaunch the hand-off when the autosizer already runs, got autosizer=%d standing=%d", ho.autosizer, ho.standing)
@@ -504,7 +475,7 @@ func TestBootstrap_Complete_HoldsWhenHandoffFails(t *testing.T) {
 	obs.ConstructionComplete = true
 	obs.AutosizerRunning = false
 	ho := &fakeHandoff{autoErr: errors.New("boom")}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeGateAcquirer{}, ho)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Done {
 		t.Fatalf("a failed hand-off must NOT exit (Done must stay false), got Done=true")
