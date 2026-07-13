@@ -19,22 +19,6 @@ type RunConstructionCoordinatorCommand struct {
 	MaxIterations int
 	// TickSeconds is the delay between drain ticks; <=0 uses the coordinator's default.
 	TickSeconds int
-	// DedicatedFleet is the Ship.DedicatedFleet() tag this drain PREFERS (sp-e55b): each
-	// tick it claims idle hulls carrying this tag — its own gate haulers (e.g. TORWIND-C/-D)
-	// — BEFORE any opportunistic non-dedicated idle hull. Empty defaults (in-handler) to the
-	// shared "manufacturing" identity, which is ALSO the ClaimShip operation string: the two
-	// MUST match, or ClaimShip's atomic no-poach guard would reject the drain claiming its
-	// own dedicated hull. Preference derives from the LIVE persisted tag read every tick, so
-	// a `fleet assign` (or a restart) re-derives it with no carried state (RULINGS #2, #5).
-	DedicatedFleet string
-	// ExclusiveDedicatedFleet seals the drain to its dedicated fleet (contract sp-wq7r parity):
-	// when true and ANY hull carries the DedicatedFleet tag, the drain draws ONLY from idle
-	// dedicated members and never supplements from the opportunistic pool — even while a
-	// dedicated hull is busy or out-of-system. Default false = PREFER dedicated first, then
-	// fall back to opportunistic idle hulls when dedicated capacity is insufficient (the
-	// sp-e55b default). A hull pinned to ANOTHER fleet is never claimed either way — ClaimShip
-	// enforces that atomically (RULINGS #7).
-	ExclusiveDedicatedFleet bool
 }
 
 // RunConstructionCoordinatorResponse reports the outcome of the last drain tick.

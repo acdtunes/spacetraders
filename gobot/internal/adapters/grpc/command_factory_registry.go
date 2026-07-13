@@ -882,12 +882,6 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", -1),
 		TickSeconds:   cfg.OptionalInt("tick_seconds", 0),
-		// sp-e55b: prefer the drain's OWN dedicated gate-hauler fleet (e.g. TORWIND-C/-D)
-		// before opportunistic idle hulls. Empty dedicated_fleet defaults (in-handler) to the
-		// shared "manufacturing" identity that also authorizes the claim; exclusive_dedicated_fleet
-		// seals the drain to that fleet (no opportunistic fallback). Both reload on restart (RULINGS #2).
-		DedicatedFleet:          cfg.OptionalString("dedicated_fleet"),
-		ExclusiveDedicatedFleet: cfg.OptionalBool("exclusive_dedicated_fleet"),
 	}
 }
 

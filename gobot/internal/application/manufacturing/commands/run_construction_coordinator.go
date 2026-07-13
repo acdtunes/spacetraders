@@ -166,9 +166,9 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	}
 
 	playerID := shared.MustNewPlayerID(cmd.PlayerID)
-	idleShips, err := h.selectHaulers(ctx, cmd, playerID, systemSymbol)
+	idleShips, _, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo, systemSymbol)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to discover idle haulers: %w", err)
 	}
 	if len(idleShips) == 0 {
 		return &RunConstructionCoordinatorResponse{NoWorkReason: noWorkNoIdleHauler}, nil
@@ -185,12 +185,9 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 		}
 		ship := idleShips[i]
 
-		// Atomic claim under the drain's dedicated-fleet identity (RULINGS #7): a hull pinned
-		// to ANOTHER fleet, or grabbed since discovery, is rejected at the DB, not clobbered.
-		// The operation string equals the preferred fleet tag (h.dedicatedFleet) so the drain
-		// can claim its OWN dedicated hulls (tag == operation) while a foreign-pinned hull is
-		// still rejected — the same coupling the contract coordinator uses ("contract").
-		if err := h.shipRepo.ClaimShip(ctx, ship.ShipSymbol(), cmd.ContainerID, playerID, h.dedicatedFleet(cmd)); err != nil {
+		// Atomic claim under the shared "manufacturing" identity (RULINGS #7): a hull pinned
+		// to another fleet, or grabbed since discovery, is rejected at the DB, not clobbered.
+		if err := h.shipRepo.ClaimShip(ctx, ship.ShipSymbol(), cmd.ContainerID, playerID, operationManufacturing); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", ship.ShipSymbol(), err), nil)
 			continue // task stays READY; retried next tick
 		}
@@ -201,88 +198,6 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	}
 
 	return &RunConstructionCoordinatorResponse{TasksDrained: drained}, nil
-}
-
-// dedicatedFleet is the Ship.DedicatedFleet() tag this drain prefers, defaulting to the
-// shared "manufacturing" identity. The default is deliberately EQUAL to operationManufacturing
-// (the ClaimShip operation): FindIdleShipsByFleet looks hulls up by this tag AND ClaimShip
-// authorizes a claim only when the hull's tag equals the operation, so one value must drive
-// both — a mismatch would leave the drain unable to claim its own dedicated hull. Parametrized
-// per-launch via cmd.DedicatedFleet (RULINGS #5); read fresh each tick so a live re-pin (or a
-// restart) re-derives preference with no carried state (RULINGS #2).
-func (h *RunConstructionCoordinatorHandler) dedicatedFleet(cmd *RunConstructionCoordinatorCommand) string {
-	if cmd.DedicatedFleet != "" {
-		return cmd.DedicatedFleet
-	}
-	return operationManufacturing
-}
-
-// selectHaulers builds the tick's ordered claim pool, PREFERRING the drain's own dedicated
-// fleet (sp-e55b). The bug it fixes: the drain used to consult ONLY FindIdleLightHaulers,
-// which by design EXCLUDES every dedicated hull (ship_pool_manager.go:
-// `if ship.DedicatedFleet() != "" { continue }`) — so its own gate haulers (TORWIND-C/-D,
-// pinned "manufacturing") were structurally INVISIBLE while an idle UNPINNED former-trade
-// hull (TORWIND-8) was grabbed opportunistically.
-//
-// The fix mirrors the contract coordinator's split (run_fleet_coordinator.go): FindIdleShipsByFleet
-// surfaces the OWN dedicated fleet, FindIdleLightHaulers the opportunistic pool. The two pools are
-// DISJOINT (FindIdleLightHaulers excludes every tagged hull), and dedicated hulls are placed FIRST
-// so the claim loop drains them before any opportunistic hull — regardless of proximity/list order.
-// Opportunistic hulls only SUPPLEMENT, when dedicated capacity is insufficient (default), and are
-// dropped entirely in ExclusiveDedicatedFleet mode. A hull pinned to ANOTHER operation is in
-// NEITHER pool, and even if it were, ClaimShip rejects it atomically (RULINGS #7).
-func (h *RunConstructionCoordinatorHandler) selectHaulers(ctx context.Context, cmd *RunConstructionCoordinatorCommand, playerID shared.PlayerID, systemSymbol string) ([]*navigation.Ship, error) {
-	fleet := h.dedicatedFleet(cmd)
-
-	// The drain's OWN dedicated fleet: idle, cargo-capable members. FindIdleShipsByFleet is
-	// fleet-wide (no system filter), so restrict to the operating system here — construction
-	// legs never jump, so an out-of-system dedicated hull is UNSELECTABLE, not claimed-then-
-	// failed (sp-qr3v fail-closed, matching FindIdleLightHaulers' own single-system pre-filter).
-	dedicatedIdle, _, err := contract.FindIdleShipsByFleet(ctx, playerID, h.shipRepo, fleet, contract.RequireCargoCapacity)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover dedicated construction haulers: %w", err)
-	}
-	dedicatedIdle = haulersInSystem(dedicatedIdle, systemSymbol)
-
-	// EXCLUSIVE MODE (opt-in, contract sp-wq7r parity): once ANY hull carries the fleet tag,
-	// the drain is sealed to its dedicated members and never supplements from the opportunistic
-	// pool — even when no dedicated hull is dispatchable this tick.
-	if cmd.ExclusiveDedicatedFleet {
-		active, err := contract.FleetHasMembers(ctx, playerID, h.shipRepo, fleet)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check dedicated fleet membership: %w", err)
-		}
-		if active {
-			return dedicatedIdle, nil
-		}
-	}
-
-	// Opportunistic pool: undedicated idle haulers in-system. FindIdleLightHaulers already
-	// excludes every dedicated hull and system-filters, so it never double-counts the dedicated
-	// pool above. Appended AFTER dedicated so the claim loop always prefers dedicated first.
-	opportunistic, _, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo, systemSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover idle haulers: %w", err)
-	}
-	return append(dedicatedIdle, opportunistic...), nil
-}
-
-// haulersInSystem keeps only ships whose CURRENT system equals systemSymbol; a hull whose
-// location is unknown is dropped (fail-closed), mirroring FindIdleLightHaulers' single-system
-// pre-filter. Used to system-scope the fleet-wide FindIdleShipsByFleet result.
-func haulersInSystem(ships []*navigation.Ship, systemSymbol string) []*navigation.Ship {
-	filtered := make([]*navigation.Ship, 0, len(ships))
-	for _, ship := range ships {
-		loc := ship.CurrentLocation()
-		if loc == nil {
-			continue
-		}
-		if shared.ExtractSystemSymbol(loc.Symbol) != systemSymbol {
-			continue
-		}
-		filtered = append(filtered, ship)
-	}
-	return filtered
 }
 
 // supplyTask sources the task's material into the claimed hauler via ProduceGood, delivers

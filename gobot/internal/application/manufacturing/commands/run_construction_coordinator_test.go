@@ -134,18 +134,6 @@ func (r *drainFakeShipRepo) ClaimShip(_ context.Context, symbol, containerID str
 	if r.claimErr != nil {
 		return r.claimErr
 	}
-	// Mirror the real repository's atomic no-poach guard (ship_repository.go ClaimShip,
-	// RULINGS #7): a hull dedicated to a fleet OTHER than the claiming operation is
-	// rejected. This makes the fake a faithful seam so a drain that ever attempted to
-	// poach a foreign-pinned hull would be caught here, not silently recorded.
-	for _, s := range r.ships {
-		if s.ShipSymbol() == symbol {
-			if f := s.DedicatedFleet(); f != "" && f != operation {
-				return errors.New("ship dedicated to another fleet")
-			}
-			break
-		}
-	}
 	r.claims = append(r.claims, drainClaim{symbol: symbol, containerID: containerID, operation: operation})
 	for _, s := range r.ships {
 		if s.ShipSymbol() == symbol {
@@ -186,15 +174,6 @@ func readyConstructionTask(t *testing.T, pipeline *manufacturing.ManufacturingPi
 
 func newDrainCommand() *RunConstructionCoordinatorCommand {
 	return &RunConstructionCoordinatorCommand{PlayerID: 1, SystemSymbol: testSystem, ContainerID: "construction-coordinator-1"}
-}
-
-// newTestHaulerInFleet builds an idle in-system HAULER carrying the given DedicatedFleet
-// tag ("" = unpinned/opportunistic), for the sp-e55b dedicated-fleet preference tests.
-func newTestHaulerInFleet(t *testing.T, symbol, fleet string) *navigation.Ship {
-	t.Helper()
-	ship := newTestHauler(t, symbol, nil)
-	ship.SetDedicatedFleet(fleet)
-	return ship
 }
 
 // #1 — a READY DELIVER_TO_CONSTRUCTION task from an EXECUTING pipeline is drained:
@@ -554,159 +533,5 @@ func TestConstructionDrain_IdlesCleanlyWhenNoPipeline(t *testing.T) {
 	}
 	if activator.calls == 0 {
 		t.Fatal("expected the surviving activator invoked at least once by the idle loop")
-	}
-}
-
-// sp-e55b — PREFERENCE: with BOTH an idle dedicated manufacturing hull (the drain's own
-// gate hauler, pinned "manufacturing") and an idle opportunistic UNPINNED hull, a single
-// ready task is drained by the DEDICATED hull — never the opportunistic one — even though
-// the opportunistic hull is listed FIRST in the fleet snapshot (refuting a proximity/list-
-// order cause). This is the live TORWIND incident inverted: TORWIND-C/-D must be claimed
-// before an idle -8-style hull. Before the fix the drain consulted ONLY FindIdleLightHaulers,
-// which EXCLUDES every dedicated hull, so its own fleet was structurally invisible.
-func TestConstructionDrain_PrefersDedicatedFleetOverOpportunistic(t *testing.T) {
-	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
-	task := readyConstructionTask(t, pipeline, "FAB_MATS")
-
-	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
-	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
-	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-
-	// Opportunistic hull listed FIRST; the drain must STILL prefer the dedicated hull,
-	// proving preference is by fleet tag, not list position/proximity.
-	opportunistic := newTestHaulerInFleet(t, "TORWIND-8", "")                 // unpinned former-trade hull, idle
-	dedicated := newTestHaulerInFleet(t, "TORWIND-C", operationManufacturing) // gate hauler pinned "manufacturing"
-	shipRepo := newDrainShipRepo(opportunistic, dedicated)
-
-	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
-	}
-
-	if len(shipRepo.claims) != 1 {
-		t.Fatalf("expected exactly one hauler claimed for one task, got %d: %+v", len(shipRepo.claims), shipRepo.claims)
-	}
-	if shipRepo.claims[0].symbol != "TORWIND-C" {
-		t.Fatalf("expected the DEDICATED gate hauler TORWIND-C claimed first, got %q (opportunistic hull poached instead)", shipRepo.claims[0].symbol)
-	}
-	if shipRepo.claims[0].operation != operationManufacturing {
-		t.Fatalf("expected the claim under the manufacturing identity, got %q", shipRepo.claims[0].operation)
-	}
-	if resp.TasksDrained != 1 {
-		t.Fatalf("expected the task drained, got %d", resp.TasksDrained)
-	}
-}
-
-// sp-e55b — NO-POACH (RULINGS #7): a hull pinned/dedicated to ANOTHER operation ("trade")
-// is NEVER claimed by the construction drain, even when it is the only idle hull in-system
-// and a task waits. The foreign hull is invisible to BOTH discovery pools (FindIdleLightHaulers
-// excludes every tagged hull; FindIdleShipsByFleet matches only the drain's own tag), and the
-// atomic ClaimShip guard is the backstop. This is the ownership-model half of the bug: the
-// drain must not drop trade income by yanking a still-pinned trade hull to the gate.
-func TestConstructionDrain_NeverPoachesForeignPinnedHull(t *testing.T) {
-	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
-	task := readyConstructionTask(t, pipeline, "FAB_MATS")
-
-	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
-	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
-	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-
-	// The only idle in-system hull is pinned to the TRADE fleet.
-	tradePinned := newTestHaulerInFleet(t, "TORWIND-8", "trade")
-	shipRepo := newDrainShipRepo(tradePinned)
-
-	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
-	}
-
-	if len(shipRepo.claims) != 0 {
-		t.Fatalf("a trade-pinned hull must never be claimed by construction, got %+v", shipRepo.claims)
-	}
-	if len(producer.produceGoods) != 0 {
-		t.Fatalf("no claim means nothing sourced, got %v", producer.produceGoods)
-	}
-	if task.Status() != manufacturing.TaskStatusReady {
-		t.Fatalf("the task must stay READY when only a foreign-pinned hull exists, got %s", task.Status())
-	}
-	if resp.NoWorkReason != noWorkNoIdleHauler {
-		t.Fatalf("expected the no-idle-hauler reason (foreign hull excluded), got %q", resp.NoWorkReason)
-	}
-	if resp.TasksDrained != 0 {
-		t.Fatalf("expected TasksDrained=0, got %d", resp.TasksDrained)
-	}
-}
-
-// sp-e55b — FALLBACK: opportunistic idle hulls supplement when dedicated capacity is
-// INSUFFICIENT. With TWO ready tasks but only ONE idle dedicated hull plus one idle unpinned
-// hull, the drain claims the dedicated hull FIRST and then falls back to the opportunistic
-// hull for the second task — proving opportunistic hulls ARE used, but only after the
-// dedicated fleet is exhausted (the default prefer-then-fallback mode, not exclusive).
-func TestConstructionDrain_FallsBackToOpportunisticWhenDedicatedInsufficient(t *testing.T) {
-	pipeline := newDrainPipeline(t, "FAB_MATS", 200)
-	task1 := readyConstructionTask(t, pipeline, "FAB_MATS")
-	task2 := readyConstructionTask(t, pipeline, "FAB_MATS")
-
-	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
-	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task1, task2}}
-	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-
-	dedicated := newTestHaulerInFleet(t, "TORWIND-C", operationManufacturing)
-	opportunistic := newTestHaulerInFleet(t, "TORWIND-8", "")
-	shipRepo := newDrainShipRepo(opportunistic, dedicated) // opportunistic listed first
-
-	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
-	}
-
-	if len(shipRepo.claims) != 2 {
-		t.Fatalf("expected a dedicated AND an opportunistic hauler claimed for two tasks, got %d: %+v", len(shipRepo.claims), shipRepo.claims)
-	}
-	if shipRepo.claims[0].symbol != "TORWIND-C" {
-		t.Fatalf("expected the dedicated hull claimed FIRST, got %q", shipRepo.claims[0].symbol)
-	}
-	if shipRepo.claims[1].symbol != "TORWIND-8" {
-		t.Fatalf("expected the opportunistic hull claimed as fallback for the second task, got %q", shipRepo.claims[1].symbol)
-	}
-	if resp.TasksDrained != 2 {
-		t.Fatalf("expected both tasks drained, got %d", resp.TasksDrained)
-	}
-}
-
-// sp-e55b — EXCLUSIVE MODE (opt-in knob, RULINGS #5): with ExclusiveDedicatedFleet set and
-// the dedicated fleet holding a member, the drain draws ONLY from its dedicated fleet and
-// NEVER supplements from the opportunistic pool — even when a dedicated hull is unavailable
-// and an idle unpinned hull sits ready. Mirrors the contract coordinator's sp-wq7r seal.
-func TestConstructionDrain_ExclusiveModeNeverDraftsOpportunistic(t *testing.T) {
-	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
-	task := readyConstructionTask(t, pipeline, "FAB_MATS")
-
-	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
-	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
-	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-
-	// A dedicated member exists but is OUT-OF-SYSTEM (so not dispatchable this tick); an idle
-	// in-system unpinned hull is available. Exclusive mode must still refuse to draft it.
-	dedicatedElsewhere := newTestHaulerAt(t, "TORWIND-C", "X1-OTHER-Z1")
-	dedicatedElsewhere.SetDedicatedFleet(operationManufacturing)
-	opportunistic := newTestHaulerInFleet(t, "TORWIND-8", "")
-	shipRepo := newDrainShipRepo(opportunistic, dedicatedElsewhere)
-
-	cmd := &RunConstructionCoordinatorCommand{PlayerID: 1, SystemSymbol: testSystem, ContainerID: "cc-1", ExclusiveDedicatedFleet: true}
-	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
-	}
-
-	if len(shipRepo.claims) != 0 {
-		t.Fatalf("exclusive mode must not draft the opportunistic hull while a dedicated fleet exists, got %+v", shipRepo.claims)
-	}
-	if resp.NoWorkReason != noWorkNoIdleHauler {
-		t.Fatalf("expected the no-idle-hauler reason under a sealed dedicated fleet, got %q", resp.NoWorkReason)
 	}
 }
