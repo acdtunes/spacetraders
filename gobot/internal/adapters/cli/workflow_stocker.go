@@ -34,6 +34,9 @@ func newWorkflowStockerCommand() *cobra.Command {
 		iterations        int
 		maxMarketAge      int
 		targetPerGood     int
+		standing          bool
+		tickSeconds       int
+		refillHysteresis  int
 	)
 
 	cmd := &cobra.Command{
@@ -93,8 +96,13 @@ Examples:
 			// max_market_age_minutes → 75, target_per_good → the miner's measured demand,
 			// iterations → one round-trip). --iterations -1 (continuous) is non-zero, so it
 			// maps through to &(-1) and is honored.
+			// --standing (sp-k1ka): a standing refill that never completes at target — it
+			// parks and auto-re-stages when contracts drain the warehouse below target, and
+			// survives daemon restart (re-adopted standing). Launch it ONCE; no manual
+			// relaunch. &standing is passed always (false = the historical finite behavior).
 			result, err := client.StartStocker(ctx, shipSymbol, warehouseWaypoint, playerIdent.PlayerID, &playerIdent.AgentSymbol,
-				optionalInt32(budgetPerLeg), optionalInt64(reserve), optionalInt32(iterations), optionalInt32(maxMarketAge), optionalInt32(targetPerGood))
+				optionalInt32(budgetPerLeg), optionalInt64(reserve), optionalInt32(iterations), optionalInt32(maxMarketAge), optionalInt32(targetPerGood),
+				&standing, optionalInt32(tickSeconds), optionalInt32(refillHysteresis))
 			if err != nil {
 				return fmt.Errorf("failed to start stocker: %w", err)
 			}
@@ -120,6 +128,9 @@ Examples:
 	cmd.Flags().IntVar(&iterations, "iterations", 0, "Round-trip count: -1 = CONTINUOUS (fill until nothing left to stock), N>0 = N round-trips, 0 = one")
 	cmd.Flags().IntVar(&maxMarketAge, "max-market-age-minutes", 0, "Freshness cap on the foreign ask at pick (0 = coordinator default, 75)")
 	cmd.Flags().IntVar(&targetPerGood, "target-per-good", 0, "Fill-target override per good (0 = the miner's measured demand units)")
+	cmd.Flags().BoolVar(&standing, "standing", false, "STANDING refill: never complete at target — park and auto-re-stage when contracts drain the warehouse below target; survives daemon restart. Launch once; no manual relaunch (sp-k1ka)")
+	cmd.Flags().IntVar(&tickSeconds, "tick-seconds", 0, "STANDING park cadence between at-target re-checks in seconds (0 = default 30s); only used with --standing")
+	cmd.Flags().IntVar(&refillHysteresis, "refill-hysteresis", 0, "STANDING target-hysteresis: minimum units-short before re-staging a good (0 = default 1), so a tiny gap does not thrash a refill; only used with --standing")
 
 	return cmd
 }

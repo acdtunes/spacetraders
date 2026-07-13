@@ -62,6 +62,9 @@ func (s *DaemonServer) StartStocker(
 	iterations int,
 	maxMarketAgeMinutes int,
 	targetPerGood int,
+	standing bool,
+	tickSeconds int,
+	refillHysteresis int,
 	agentSymbol string,
 	playerID int,
 ) (*StockerOperationResult, error) {
@@ -95,6 +98,13 @@ func (s *DaemonServer) StartStocker(
 		"iterations":              iterations,
 		"max_market_age_minutes":  maxMarketAgeMinutes,
 		"target_per_good":         targetPerGood,
+		// sp-k1ka: the STANDING intent + its cadence/hysteresis knobs are PERSISTED here so a
+		// daemon restart re-adopts the stocker STANDING from this exact config (RULINGS #2) —
+		// the recovery rebuild (buildCommandForType) resumes the park-and-re-stage loop with
+		// no manual relaunch. A non-standing launch persists standing=false (a no-op).
+		"standing":          standing,
+		"tick_seconds":      tickSeconds,
+		"refill_hysteresis": refillHysteresis,
 		// The runner claims the hull through the atomic operation-checked
 		// ClaimShip when this key is present (sp-m92a, mirroring the warehouse):
 		// operation="stocker" matches the hull's "stocker" DedicatedFleet tag, so

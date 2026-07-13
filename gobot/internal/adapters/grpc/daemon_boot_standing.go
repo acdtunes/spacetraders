@@ -20,6 +20,15 @@ import (
 // boot (Start()), regardless of whether a bootstrapper has ever run. Each launch reuses the
 // idempotent EnsureRunning path (skips if already RUNNING/PENDING), so a restart never
 // double-launches — it simply re-adopts the container already running from the prior boot.
+//
+// The STANDING stocker (sp-k1ka) is deliberately NOT a member here: unlike the player-scoped
+// construction drain (which discovers idle haulers per-tick and needs no launch parameters), a
+// stocker is pinned to a SPECIFIC dedicated hull + home warehouse, so there is nothing to
+// unconditionally boot-launch without captain-supplied config. Its "survives restart" comes
+// instead from the persisted `standing` launch config + RecoverRunningContainers, which re-adopts
+// the RUNNING stocker row and rebuilds it STANDING via buildCommandForType (RULINGS #2). The
+// captain launches it once (`workflow stocker --standing`); it then self-sustains and re-adopts
+// across restarts with no manual relaunch.
 var bootStandingCoordinatorTypes = []container.ContainerType{
 	container.ContainerTypeConstructionCoordinator,
 }

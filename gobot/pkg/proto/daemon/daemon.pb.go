@@ -9186,6 +9186,9 @@ type StartStockerRequest struct {
 	Iterations            *int32                 `protobuf:"varint,7,opt,name=iterations,proto3,oneof" json:"iterations,omitempty"`                                                      // -1 = CONTINUOUS (fill until nothing left to stock), N>0 = N round-trips, 0/unset = one round-trip
 	MaxMarketAgeMinutes   *int32                 `protobuf:"varint,8,opt,name=max_market_age_minutes,json=maxMarketAgeMinutes,proto3,oneof" json:"max_market_age_minutes,omitempty"`     // Freshness cap on the foreign ask (0/unset = 75)
 	TargetPerGood         *int32                 `protobuf:"varint,9,opt,name=target_per_good,json=targetPerGood,proto3,oneof" json:"target_per_good,omitempty"`                         // Fill-target override per good (0/unset = the miner's measured demand units)
+	Standing              *bool                  `protobuf:"varint,10,opt,name=standing,proto3,oneof" json:"standing,omitempty"`                                                         // STANDING refill (sp-k1ka): never completes at target — parks and auto-re-stages when contracts drain the warehouse below target; survives restart (re-adopted standing from persisted config). No manual relaunch.
+	TickSeconds           *int32                 `protobuf:"varint,11,opt,name=tick_seconds,json=tickSeconds,proto3,oneof" json:"tick_seconds,omitempty"`                                // STANDING park cadence between at-target re-checks (0/unset = 30s)
+	RefillHysteresis      *int32                 `protobuf:"varint,12,opt,name=refill_hysteresis,json=refillHysteresis,proto3,oneof" json:"refill_hysteresis,omitempty"`                 // STANDING target-hysteresis: minimum units-short before re-staging a good (0/unset = 1), so a tiny gap does not thrash a refill
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -9279,6 +9282,27 @@ func (x *StartStockerRequest) GetMaxMarketAgeMinutes() int32 {
 func (x *StartStockerRequest) GetTargetPerGood() int32 {
 	if x != nil && x.TargetPerGood != nil {
 		return *x.TargetPerGood
+	}
+	return 0
+}
+
+func (x *StartStockerRequest) GetStanding() bool {
+	if x != nil && x.Standing != nil {
+		return *x.Standing
+	}
+	return false
+}
+
+func (x *StartStockerRequest) GetTickSeconds() int32 {
+	if x != nil && x.TickSeconds != nil {
+		return *x.TickSeconds
+	}
+	return 0
+}
+
+func (x *StartStockerRequest) GetRefillHysteresis() int32 {
+	if x != nil && x.RefillHysteresis != nil {
+		return *x.RefillHysteresis
 	}
 	return 0
 }
@@ -11032,7 +11056,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +
 	"shipSymbol\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\x18\n" +
-	"\amessage\x18\x04 \x01(\tR\amessage\"\x9c\x04\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"\xcb\x05\n" +
 	"\x13StartStockerRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +
@@ -11045,13 +11069,20 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"iterations\x18\a \x01(\x05H\x03R\n" +
 	"iterations\x88\x01\x01\x128\n" +
 	"\x16max_market_age_minutes\x18\b \x01(\x05H\x04R\x13maxMarketAgeMinutes\x88\x01\x01\x12+\n" +
-	"\x0ftarget_per_good\x18\t \x01(\x05H\x05R\rtargetPerGood\x88\x01\x01B\x0f\n" +
+	"\x0ftarget_per_good\x18\t \x01(\x05H\x05R\rtargetPerGood\x88\x01\x01\x12\x1f\n" +
+	"\bstanding\x18\n" +
+	" \x01(\bH\x06R\bstanding\x88\x01\x01\x12&\n" +
+	"\ftick_seconds\x18\v \x01(\x05H\aR\vtickSeconds\x88\x01\x01\x120\n" +
+	"\x11refill_hysteresis\x18\f \x01(\x05H\bR\x10refillHysteresis\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\x11\n" +
 	"\x0f_budget_per_legB\x1a\n" +
 	"\x18_working_capital_reserveB\r\n" +
 	"\v_iterationsB\x19\n" +
 	"\x17_max_market_age_minutesB\x12\n" +
-	"\x10_target_per_good\"\xbb\x01\n" +
+	"\x10_target_per_goodB\v\n" +
+	"\t_standingB\x0f\n" +
+	"\r_tick_secondsB\x14\n" +
+	"\x12_refill_hysteresis\"\xbb\x01\n" +
 	"\x14StartStockerResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +

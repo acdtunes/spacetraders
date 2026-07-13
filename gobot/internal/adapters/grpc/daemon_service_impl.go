@@ -1539,12 +1539,27 @@ func (s *daemonServiceImpl) StartStocker(ctx context.Context, req *pb.StartStock
 	if req.TargetPerGood != nil {
 		targetPerGood = int(*req.TargetPerGood)
 	}
+	// sp-k1ka: STANDING refill + its cadence/hysteresis knobs. standing=false (unset) keeps
+	// the historical finite/continuous behavior; standing=true makes the container park-and-
+	// re-stage at target and survive restart (re-adopted standing from persisted config).
+	standing := false
+	if req.Standing != nil {
+		standing = *req.Standing
+	}
+	tickSeconds := 0
+	if req.TickSeconds != nil {
+		tickSeconds = int(*req.TickSeconds)
+	}
+	refillHysteresis := 0
+	if req.RefillHysteresis != nil {
+		refillHysteresis = int(*req.RefillHysteresis)
+	}
 	agentSymbol := ""
 	if req.AgentSymbol != nil {
 		agentSymbol = *req.AgentSymbol
 	}
 
-	result, err := s.daemon.StartStocker(ctx, req.ShipSymbol, req.WarehouseWaypoint, budgetPerLeg, workingCapitalReserve, iterations, maxMarketAgeMinutes, targetPerGood, agentSymbol, playerID)
+	result, err := s.daemon.StartStocker(ctx, req.ShipSymbol, req.WarehouseWaypoint, budgetPerLeg, workingCapitalReserve, iterations, maxMarketAgeMinutes, targetPerGood, standing, tickSeconds, refillHysteresis, agentSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start stocker: %w", err)
 	}

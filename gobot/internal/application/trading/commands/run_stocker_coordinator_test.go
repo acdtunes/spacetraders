@@ -32,8 +32,8 @@ type stkFixture struct {
 	cargo     map[string]int
 	location  string
 	cargoCap  int
-	ask       map[string]map[string]int     // waypoint -> good -> ask (SellPrice, buy cost)
-	marketAge map[string]time.Duration      // waypoint -> how old the cached data is (0 = fresh/now)
+	ask       map[string]map[string]int // waypoint -> good -> ask (SellPrice, buy cost)
+	marketAge map[string]time.Duration  // waypoint -> how old the cached data is (0 = fresh/now)
 	buys      int
 	buyUnits  int
 	transfers int
@@ -175,7 +175,9 @@ func (m *stkFakeMiner) Mine(ctx context.Context, homeSystem string, playerID int
 // NewDemandMinerWithSources) so a stocker test can exercise the actual cheapest-anywhere
 // mining logic end-to-end — no live DB. They satisfy the miner's unexported source
 // interfaces structurally.
-type stkFakeContractDemand struct{ rows []persistence.ContractGoodDemand }
+type stkFakeContractDemand struct {
+	rows []persistence.ContractGoodDemand
+}
 
 func (f *stkFakeContractDemand) ContractGoodDemand(ctx context.Context, eraID *int, deliverySystem *string) ([]persistence.ContractGoodDemand, error) {
 	return f.rows, nil
@@ -666,7 +668,7 @@ func TestStocker_Pick_FullOnlyWhenAllMembersFull(t *testing.T) {
 		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}}, marketAge: map[string]time.Duration{}}
 	coord := storageApp.NewInMemoryStorageCoordinator()
 	full := stkRegisterWarehouse(t, coord, "wh-full", "X1-S1-H", 10, t0.Add(time.Hour), []string{"MEDICINE"}, map[string]int{"MEDICINE": 10}) // newest, full
-	spare := stkRegisterWarehouse(t, coord, "wh-spare", "X1-S1-H", 50, t0, []string{"MEDICINE"}, nil)                                       // older, has room
+	spare := stkRegisterWarehouse(t, coord, "wh-spare", "X1-S1-H", 50, t0, []string{"MEDICINE"}, nil)                                         // older, has room
 	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
 	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{full, spare}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
@@ -931,6 +933,223 @@ func TestStocker_RestartResume_DepositsHeldCargoFirst(t *testing.T) {
 	}
 	if r.UnitsDeposited != 40 {
 		t.Fatalf("expected 40 deposited on the resume, got %d", r.UnitsDeposited)
+	}
+}
+
+// ---- standing: auto-refill without manual re-launch (sp-k1ka) ----
+
+// stkCancelOnSleepClock cancels the run's context the first time the STANDING loop PARKS
+// (its only Sleep — the delegated round-trip legs never sleep, verified in the coordinator).
+// So a standing Handle() terminates DETERMINISTICALLY after exactly the passes that precede
+// the first park: no wall-clock wait, no busy-spin. Now() is real (the freshness math reads
+// it); Sleep fires the cancel and records the park count.
+type stkCancelOnSleepClock struct {
+	mu     sync.Mutex
+	sleeps int
+	cancel context.CancelFunc
+}
+
+func (c *stkCancelOnSleepClock) Now() time.Time { return time.Now() }
+func (c *stkCancelOnSleepClock) Sleep(time.Duration) {
+	c.mu.Lock()
+	c.sleeps++
+	cancel := c.cancel
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+func (c *stkCancelOnSleepClock) sleepCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sleeps
+}
+
+// newStockerHandlerClock is newStockerHandlerMulti with an injectable clock, so a standing
+// test can drive termination through the park (Sleep) rather than a wall-clock wait.
+func newStockerHandlerClock(t *testing.T, fx *stkFixture, coord storage.StorageCoordinator, ops []*storage.StorageOperation, miner tradingsvc.DepositDemandMiner, apiClient domainPorts.APIClient, cfg tradingsvc.DepositCandidateConfig, ceilingPct int, clock shared.Clock) *RunStockerCoordinatorHandler {
+	finder := &fakeRunningFinder{ops: ops}
+	return NewRunStockerCoordinatorHandler(
+		&stkFakeMediator{fx: fx},
+		&stkFakeShipRepo{fx: fx, t: t},
+		&stkFakeMarketRepo{fx: fx, t: t},
+		nil,
+		clock,
+		apiClient,
+		coord, finder, miner, cfg, ceilingPct,
+	)
+}
+
+// A STANDING stocker with a warehouse below target and an affordable, fresh source RE-STAGES
+// a stock run (buys + deposits to target) and, critically, NEVER reports completion: it only
+// ever exits RESUMABLE on stop/shutdown (ctx cancel). That is the sp-k1ka contract — contracts
+// draining the warehouse are auto-topped-up with no manual 'workflow stocker' relaunch.
+func TestStocker_Standing_ReStagesRefillBelowTarget(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 1000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+	clock := &stkCancelOnSleepClock{}
+	h := newStockerHandlerClock(t, fx, coord, []*storage.StorageOperation{op}, miner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10, clock)
+
+	ctx, cancel := context.WithCancel(auth.WithPlayerToken(context.Background(), "TOK"))
+	defer cancel()
+	clock.cancel = cancel
+
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STK-STD", PlayerID: 1, ContainerID: "ctr-std", WarehouseWaypoint: "X1-S1-H", Standing: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a standing stocker exits ONLY on ctx-cancel (resumable), got err=%v", err)
+	}
+	r := stkResponse(t, resp)
+
+	if got := coord.GetTotalCargoAvailable("wh", "MEDICINE"); got != 40 {
+		t.Fatalf("standing stocker must re-stage the fill to target 40, warehouse holds %d", got)
+	}
+	if fx.buys < 1 {
+		t.Fatalf("a below-target gap must stage a stock run (>=1 buy), got %d", fx.buys)
+	}
+	if r.RoundTripsCompleted != 1 {
+		t.Fatalf("expected exactly 1 productive round-trip before the at-target park, got %d", r.RoundTripsCompleted)
+	}
+	if r.Completed {
+		t.Fatalf("a standing refill must NEVER report completion while it can still refill — got Completed=true")
+	}
+}
+
+// A STANDING stocker on an EMPTY demand table (momentarily nothing to stock) must PARK and
+// stay alive — NOT take the finite/continuous run's HONEST starvation COMPLETION. This is the
+// heart of sp-k1ka: never 'complete' while a fillable gap can reopen. Contrast
+// TestStocker_StarvationExit_Honest, where a NON-standing -1 run DOES complete on the same table.
+func TestStocker_Standing_EmptyDemandParksNotCompletes(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 1000, []string{"MEDICINE"})
+	clock := &stkCancelOnSleepClock{}
+	h := newStockerHandlerClock(t, fx, coord, []*storage.StorageOperation{op}, &stkFakeMiner{}, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10, clock)
+
+	ctx, cancel := context.WithCancel(auth.WithPlayerToken(context.Background(), "TOK"))
+	defer cancel()
+	clock.cancel = cancel
+
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STK-STD", PlayerID: 1, ContainerID: "ctr-std", WarehouseWaypoint: "X1-S1-H", Standing: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a standing stocker exits ONLY on ctx-cancel (resumable), got err=%v", err)
+	}
+	r := stkResponse(t, resp)
+
+	if r.ExitReason != stockerExitStanding {
+		t.Fatalf("standing must PARK (%q), not take the starvation completion (%q); got %q", stockerExitStanding, stockerExitStarvation, r.ExitReason)
+	}
+	if r.Completed {
+		t.Fatalf("standing must never COMPLETE on an empty pass — got Completed=true")
+	}
+	if fx.buys != 0 {
+		t.Fatalf("an empty demand table must stage no buys, got %d", fx.buys)
+	}
+	if clock.sleepCount() < 1 {
+		t.Fatalf("standing must PARK (>=1 tick) on an empty pass, got %d sleeps", clock.sleepCount())
+	}
+}
+
+// STANDING + fail-closed (RULINGS #4): with live treasury at/below the working-capital reserve
+// the capital ceiling is 0, so pick stages nothing — and standing must PARK (fail closed,
+// loop alive) rather than complete or spend. The guard is intact AND the loop survives to
+// re-check once treasury recovers.
+func TestStocker_Standing_ReserveFloorParksFailClosed(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
+	clock := &stkCancelOnSleepClock{}
+	// Treasury 50000 == the default 50k reserve → ceiling avail 0 → nothing affordable.
+	h := newStockerHandlerClock(t, fx, coord, []*storage.StorageOperation{op}, miner, &sfFakeAPIClient{credits: 50000}, tradingsvc.DepositCandidateConfig{}, 10, clock)
+
+	ctx, cancel := context.WithCancel(auth.WithPlayerToken(context.Background(), "TOK"))
+	defer cancel()
+	clock.cancel = cancel
+
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STK-STD", PlayerID: 1, ContainerID: "ctr-std", WarehouseWaypoint: "X1-S1-H", Standing: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a guard-blocked standing pass must PARK (loop alive, resumable), got err=%v", err)
+	}
+	r := stkResponse(t, resp)
+	if fx.buys != 0 {
+		t.Fatalf("the reserve floor must block every buy (fail closed), got %d", fx.buys)
+	}
+	if r.Completed {
+		t.Fatalf("a fail-closed park must not COMPLETE the standing loop, got Completed=true")
+	}
+	if r.ExitReason != stockerExitStanding {
+		t.Fatalf("expected a standing park (%q), got %q", stockerExitStanding, r.ExitReason)
+	}
+	if clock.sleepCount() < 1 {
+		t.Fatalf("a fail-closed guard must PARK the loop (>=1 tick), got %d sleeps", clock.sleepCount())
+	}
+}
+
+// STANDING + fail-closed freshness (RULINGS #4): a stale foreign price is skipped at pick, so
+// standing PARKS rather than hauling to a stale market or completing. The freshness discipline
+// is intact AND the loop survives to re-check once a fresh price lands.
+func TestStocker_Standing_StaleForeignMarketParksFailClosed(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask:       map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}},
+		marketAge: map[string]time.Duration{"X1-S1-M": 76 * time.Minute}} // > 75-min cap
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
+	clock := &stkCancelOnSleepClock{}
+	h := newStockerHandlerClock(t, fx, coord, []*storage.StorageOperation{op}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10, clock)
+
+	ctx, cancel := context.WithCancel(auth.WithPlayerToken(context.Background(), "TOK"))
+	defer cancel()
+	clock.cancel = cancel
+
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STK-STD", PlayerID: 1, ContainerID: "ctr-std", WarehouseWaypoint: "X1-S1-H", Standing: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a stale-source standing pass must PARK (loop alive), got err=%v", err)
+	}
+	r := stkResponse(t, resp)
+	if fx.buys != 0 {
+		t.Fatalf("a stale foreign price must be skipped (no buy), got %d", fx.buys)
+	}
+	if r.Completed {
+		t.Fatalf("a freshness park must not COMPLETE the standing loop, got Completed=true")
+	}
+	if clock.sleepCount() < 1 {
+		t.Fatalf("a stale-source pass must PARK the loop, got %d sleeps", clock.sleepCount())
+	}
+}
+
+// RefillHysteresis raises the re-stage threshold (RULINGS #5): a shortfall smaller than the
+// hysteresis is excluded (treated as at-target) so a standing loop does not thrash a 1-2 unit
+// refill; a shortfall AT/above it is still picked. The default (0→1) is unchanged — any
+// shortfall re-stages — which every other pick test exercises.
+func TestStocker_Pick_RefillHysteresisFloorsShortfall(t *testing.T) {
+	build := func(onHand int) (*RunStockerCoordinatorHandler, []*storage.StorageOperation, context.Context) {
+		fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+			ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+		coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
+		if onHand > 0 {
+			s, reserved, ok := coord.ReserveSpaceForDeposit("wh", onHand)
+			if !ok {
+				t.Fatalf("pre-stock reserve failed")
+			}
+			coord.ConfirmDeposit(s.ShipSymbol(), "MEDICINE", reserved)
+		}
+		miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+		h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+		return h, []*storage.StorageOperation{op}, auth.WithPlayerToken(context.Background(), "TOK")
+	}
+
+	// 3 short (on-hand 37 of target 40), hysteresis 5 → below floor → excluded.
+	hLow, opsLow, ctxLow := build(37)
+	if _, ok := hLow.pick(ctxLow, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", RefillHysteresis: 5}, opsLow, int64(defaultWorkingCapitalReserve), maxListingAge); ok {
+		t.Fatalf("a 3-unit shortfall below a hysteresis of 5 must be excluded (no thrash)")
+	}
+
+	// 10 short (on-hand 30 of target 40), hysteresis 5 → at/above floor → picked.
+	hHi, opsHi, ctxHi := build(30)
+	if _, ok := hHi.pick(ctxHi, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", RefillHysteresis: 5}, opsHi, int64(defaultWorkingCapitalReserve), maxListingAge); !ok {
+		t.Fatalf("a 10-unit shortfall at/above a hysteresis of 5 must be picked")
 	}
 }
 

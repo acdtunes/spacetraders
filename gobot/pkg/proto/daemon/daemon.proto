@@ -1393,6 +1393,9 @@ message StartStockerRequest {
   optional int32 iterations = 7;               // -1 = CONTINUOUS (fill until nothing left to stock), N>0 = N round-trips, 0/unset = one round-trip
   optional int32 max_market_age_minutes = 8;   // Freshness cap on the foreign ask (0/unset = 75)
   optional int32 target_per_good = 9;          // Fill-target override per good (0/unset = the miner's measured demand units)
+  optional bool standing = 10;                 // STANDING refill (sp-k1ka): never completes at target — parks and auto-re-stages when contracts drain the warehouse below target; survives restart (re-adopted standing from persisted config). No manual relaunch.
+  optional int32 tick_seconds = 11;            // STANDING park cadence between at-target re-checks (0/unset = 30s)
+  optional int32 refill_hysteresis = 12;       // STANDING target-hysteresis: minimum units-short before re-staging a good (0/unset = 1), so a tiny gap does not thrash a refill
 }
 
 message StartStockerResponse {

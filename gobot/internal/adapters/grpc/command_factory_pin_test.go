@@ -565,6 +565,33 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				ContainerID:       "stocker-2",
 			},
 		},
+		{
+			// sp-k1ka: a STANDING stocker must re-adopt STANDING on restart. The standing
+			// intent + its cadence/hysteresis knobs round-trip through the persisted launch
+			// config (standing bool preserved; tick_seconds/refill_hysteresis JSON int →
+			// float64 coercion pinned), so recovery rebuilds a standing command — the loop
+			// resumes park-and-re-stage with no manual relaunch (RULINGS #2).
+			name:        "stocker standing",
+			commandType: "stocker",
+			containerID: "stocker-std",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":        "SHIP-D",
+				"warehouse_waypoint": "X1-GZ7-H1",
+				"container_id":       "stocker-std",
+				"standing":           true,
+				"tick_seconds":       45,
+				"refill_hysteresis":  8,
+			},
+			want: &tradingCmd.RunStockerCoordinatorCommand{
+				ShipSymbol:        "SHIP-D",
+				WarehouseWaypoint: "X1-GZ7-H1",
+				PlayerID:          playerID,
+				ContainerID:       "stocker-std",
+				Standing:          true,
+				TickSeconds:       45,
+				RefillHysteresis:  8,
+			},
+		},
 	}
 
 	for _, tc := range cases {

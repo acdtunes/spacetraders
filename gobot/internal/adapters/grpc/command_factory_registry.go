@@ -1209,5 +1209,12 @@ func buildStockerCoordinatorCommand(cfg *configReader, playerID int, containerID
 		Iterations:            cfg.OptionalInt("iterations", 0),
 		MaxMarketAgeMinutes:   cfg.OptionalInt("max_market_age_minutes", 0),
 		TargetPerGood:         cfg.OptionalInt("target_per_good", 0),
+		// sp-k1ka standing intent + its cadence/hysteresis knobs round-trip through the
+		// launch config so a restart RE-ADOPTS the stocker STANDING (RULINGS #2): recovery
+		// rebuilds this exact command from the persisted config, so the resumed loop parks-
+		// and-re-stages exactly as before — no manual relaunch.
+		Standing:         cfg.OptionalBool("standing"),
+		TickSeconds:      cfg.OptionalInt("tick_seconds", 0),
+		RefillHysteresis: cfg.OptionalInt("refill_hysteresis", 0),
 	}
 }

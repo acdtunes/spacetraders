@@ -32,6 +32,10 @@ const (
 	// Generous (mirrors the tour assembler's depositCandidateMinerTopN) so a blocklist
 	// or allowlist can never starve the pick.
 	stockerMinerTopN = 50
+	// defaultStockerStandingTick is the STANDING park cadence between at-target re-checks
+	// when TickSeconds is unset — the same 30-60s band as the construction drain's tick
+	// (sp-382j). Overridable per-launch via TickSeconds (RULINGS #5).
+	defaultStockerStandingTick = 30 * time.Second
 )
 
 // exitReason* enumerates why the stocker loop stopped (observability, mirrors the
@@ -42,6 +46,11 @@ const (
 	// stockerExitStarvation: stockerStarvationLimit consecutive passes found nothing
 	// to stock — the warehouse is at target / nothing eligible fits. An HONEST completion.
 	stockerExitStarvation = "starvation"
+	// stockerExitStanding: a STANDING run is parked at target, waiting for contracts to
+	// drain the warehouse back below target. NON-terminal — the standing loop only exits
+	// resumable on ctx-cancel (stop/shutdown/restart); this is set purely for observability
+	// on the in-flight response so a reader can see the loop is alive-but-parked, not done.
+	stockerExitStanding = "standing_parked"
 )
 
 // RunStockerCoordinatorCommand is a captain-directed, guarded STOCKER LOOP (sp-zdwg):
@@ -87,6 +96,25 @@ type RunStockerCoordinatorCommand struct {
 	// DemandUnits (never speculative, RULINGS #6). A positive value stocks every good to
 	// this absolute level.
 	TargetPerGood int
+	// Standing turns the stocker into a STANDING refill coordinator (sp-k1ka): instead of
+	// COMPLETING once the warehouse reaches target (the starvation exit a finite/continuous
+	// run takes), it PARKS a tick and re-checks, re-staging a stock run automatically the
+	// moment contracts drain the warehouse back below target — with NO manual relaunch. It
+	// never completes while a fillable gap exists; it exits only on stop/shutdown (ctx
+	// cancel, resumable) and is re-adopted STANDING on the next boot from its persisted
+	// config (RULINGS #2). Every fail-closed money guard (capital ceiling, reserve floor,
+	// freshness) is UNCHANGED — a guard-blocked pass simply PARKS (fail-closed) instead of
+	// killing the loop (RULINGS #4). Standing implies continuous fill semantics.
+	Standing bool
+	// TickSeconds is the STANDING park cadence between at-target re-checks; 0 → the default
+	// 30s (same band as the construction drain). Parametrized per RULINGS #5. Ignored when
+	// Standing is false.
+	TickSeconds int
+	// RefillHysteresis is the minimum units-short a good must be before the stocker
+	// re-stages it — target-hysteresis that stops a STANDING loop thrashing on a 1-unit gap
+	// (RULINGS #5). 0 → the default 1 (re-stage on any shortfall, the historical behavior);
+	// a positive value raises the re-stage threshold. Applied to the need-rank in pick().
+	RefillHysteresis int
 }
 
 // RunStockerCoordinatorResponse reports the realised stocking economics and — via
@@ -325,12 +353,16 @@ func (h *RunStockerCoordinatorHandler) execute(ctx context.Context, cmd *RunStoc
 	}
 
 	// Iteration budget: 0 → the one-round-trip default; -1 → continuous until nothing is
-	// left to stock; N>0 → exactly N productive round-trips.
+	// left to stock; N>0 → exactly N productive round-trips. STANDING (sp-k1ka) forces
+	// continuous fill semantics AND replaces the starvation COMPLETION with a park-and-recheck
+	// (never completes while a fillable gap can reopen).
 	iterations := cmd.Iterations
 	if iterations == 0 {
 		iterations = 1
 	}
-	continuous := iterations < 0
+	standing := cmd.Standing
+	continuous := standing || iterations < 0
+	tick := h.standingTick(cmd)
 
 	depositedGoods := map[string]bool{}
 
@@ -339,16 +371,41 @@ func (h *RunStockerCoordinatorHandler) execute(ctx context.Context, cmd *RunStoc
 		// A stop/shutdown cancels ctx. Exit RESUMABLE at the round-trip boundary by
 		// returning the ctx error, which the runner routes through its ctx.Err() path
 		// (re-adopted at next boot) — never let a cancel be misread as starvation and
-		// COMPLETE a -1 container (the sp-ovkn trap).
+		// COMPLETE a -1/standing container (the sp-ovkn trap).
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
 		productive, terr := h.runOneRoundTrip(ctx, cmd, response, depositedGoods, reserve, maxAge)
 		if terr != nil {
+			if standing {
+				// A STANDING refill is self-sustaining (RULINGS #2, mirroring the construction
+				// drain that swallows a failed tick): a transient nav/dock/market failure must
+				// not terminalize the loop. Log, PARK, re-tick — the next tick resumes
+				// deposit-first from the hull's live cargo, so no bought cargo is lost.
+				logger.Log("WARNING", fmt.Sprintf("Stocker (standing): round-trip failed - parking %s then retrying: %v", tick, terr), map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "warehouse": cmd.WarehouseWaypoint, "error": terr.Error(),
+				})
+				if perr := h.parkTick(ctx, tick); perr != nil {
+					return perr
+				}
+				continue
+			}
 			return terr
 		}
 		if !productive {
+			if standing {
+				// STANDING NEVER completes on an empty pass: the warehouse is at target (or
+				// nothing is affordable/fresh/reachable — every money guard already failed
+				// CLOSED inside pick, RULINGS #4). PARK a tick and re-check; the moment
+				// contracts drain the warehouse back below target the next tick re-stages a
+				// stock run automatically, with NO manual relaunch (sp-k1ka).
+				response.ExitReason = stockerExitStanding
+				if perr := h.parkTick(ctx, tick); perr != nil {
+					return perr
+				}
+				continue
+			}
 			noProgressStreak++
 			if noProgressStreak >= stockerStarvationLimit {
 				response.ExitReason = stockerExitStarvation
@@ -587,8 +644,15 @@ func (h *RunStockerCoordinatorHandler) pick(
 		// sibling warehouse's stock is never invisible — the stocker stops buying once
 		// the COMBINED inventory reaches target, not once any single hull does.
 		unitsShort := target - tradingsvc.TotalCargoAvailable(h.storageCoordinator, group, r.Good)
-		if unitsShort <= 0 {
-			continue // already at/over the fill target
+		// Target-hysteresis (RULINGS #5): re-stage only once the shortfall reaches the
+		// hysteresis floor, so a STANDING loop does not thrash on a 1-unit gap. Default 1 →
+		// re-stage on any shortfall (unitsShort <= 0 excluded), the historical behavior.
+		refillFloor := cmd.RefillHysteresis
+		if refillFloor < 1 {
+			refillFloor = 1
+		}
+		if unitsShort < refillFloor {
+			continue // at/over target, or within the hysteresis band — nothing to re-stage
 		}
 
 		// Reachability (sp-yuq9): an unreachable-cheapest foreign market must never win
@@ -1040,6 +1104,35 @@ func (h *RunStockerCoordinatorHandler) strandedReason(ctx context.Context, cmd *
 	}
 	sort.Strings(parts)
 	return fmt.Sprintf("stranded cargo: %s still aboard at %s (undeposited) - reporting failure", strings.Join(parts, ", "), ship.CurrentLocation().Symbol), true
+}
+
+// standingTick resolves the STANDING park cadence between at-target re-checks: TickSeconds
+// when set (RULINGS #5), else the default 30s. Only consulted on the standing path.
+func (h *RunStockerCoordinatorHandler) standingTick(cmd *RunStockerCoordinatorCommand) time.Duration {
+	if cmd.TickSeconds > 0 {
+		return time.Duration(cmd.TickSeconds) * time.Second
+	}
+	return defaultStockerStandingTick
+}
+
+// parkTick blocks for the standing cadence, returning early with the context error if a
+// stop/shutdown cancels ctx first — so a Stop never has to wait the full tick out (the
+// standing loop's ONLY sleep). It races the injected clock's Sleep — instant under the test
+// MockClock, a real wait in production — against ctx.Done, mirroring the container runner's
+// sleepOrCancel. The detached sleeper goroutine outlives an early return by at most one tick
+// before exiting, so it cannot leak.
+func (h *RunStockerCoordinatorHandler) parkTick(ctx context.Context, tick time.Duration) error {
+	slept := make(chan struct{})
+	go func() {
+		h.clock.Sleep(tick)
+		close(slept)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-slept:
+		return nil
+	}
 }
 
 // heldUnits reports the total units of cargo aboard (0 when the hold is empty) — the

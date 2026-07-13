@@ -1615,6 +1615,9 @@ func (c *DaemonClient) StartStocker(
 	iterations *int32,
 	maxMarketAgeMinutes *int32,
 	targetPerGood *int32,
+	standing *bool,
+	tickSeconds *int32,
+	refillHysteresis *int32,
 ) (*StartStockerResult, error) {
 	resp, err := c.client.StartStocker(ctx, &pb.StartStockerRequest{
 		PlayerId:              int32(playerID),
@@ -1626,6 +1629,9 @@ func (c *DaemonClient) StartStocker(
 		Iterations:            iterations,
 		MaxMarketAgeMinutes:   maxMarketAgeMinutes,
 		TargetPerGood:         targetPerGood,
+		Standing:              standing,
+		TickSeconds:           tickSeconds,
+		RefillHysteresis:      refillHysteresis,
 	})
 	if err != nil {
 		return nil, err
