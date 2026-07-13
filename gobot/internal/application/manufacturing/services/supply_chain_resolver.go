@@ -168,15 +168,15 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 		}
 	}
 
-	// Fabricate depth cap (sp-jav2 / FACTORY_DOCTRINE X1): beyond the configured fabricate depth,
-	// resolve this input to a market-BUY instead of recursing into its sub-chain. len(path) is the
-	// current node's depth (root == 0, its direct inputs == 1), so with the default cap of 1 the
-	// root fabricates and every input is bought — "buy inputs, lift output". Recursive fabricate
-	// ladders past depth-1 are dead weight (raw inputs ~0.29% of spend; market-buy ruled correct,
-	// sp-naw6), and the furnace class lived in the recursion. buyGood re-resolves the source at
-	// buy time and PARKS gracefully if none exists, so a market-less BUY leaf is safe here — we
-	// populate market hints when available for downstream tree consumers, but the node stands
-	// without them. isTargetGood (the root) is exempt; disabled restores the unbounded recursion.
+	// Fabricate depth cap (sp-jav2 X1, default RAISED to 3 by sp-yfzi): beyond the configured
+	// fabricate depth, resolve this input to a market-BUY instead of recursing into its sub-chain.
+	// len(path) is the current node's depth (root == 0, its direct inputs == 1). This is now a
+	// SAFETY BACKSTOP, not the terminator — StrategySmart (shouldBuyGood, above) already stopped the
+	// recursion at every abundant good; the cap only bounds how deep a genuinely-scarce sub-chain may
+	// fabricate before it is forced to buy. buyGood re-resolves the source at buy time and PARKS
+	// gracefully if none exists, so a market-less BUY leaf is safe here — we populate market hints
+	// when available for downstream tree consumers, but the node stands without them. isTargetGood
+	// (the root) is exempt; disabled restores the fully-unbounded recursion.
 	depthCfg := fabricateDepthConfigFromContext(ctx)
 	if !isTargetGood && !depthCfg.disabled && len(path) >= depthCfg.maxDepth {
 		node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionBuy)
@@ -308,12 +308,21 @@ func (r *SupplyChainResolver) shouldBuyGood(
 		canFabricate = err == nil && factory != nil
 	}
 
-	// sp-sdyo: the acquisition strategy is GLOBAL (r.strategy) EXCEPT where a per-good override is
-	// stamped on ctx. The override lets a single bottleneck good be bought (or fabricated) against
-	// its own tier while every other good keeps the global strategy — a non-overridden good resolves
-	// to r.strategy unchanged, so its buy-vs-fabricate decision is byte-identical to today.
+	// The GLOBAL default fed into the per-good override lookup is the ctx-scoped PRODUCTION strategy
+	// when a production path stamped one (sp-yfzi WithProductionStrategy — smart, fleet-wide), else
+	// the resolver's own default (r.strategy = prefer-buy, the estimation default the demand finder
+	// and siting scanners rely on). Estimators and directly-built commands never stamp it, so they
+	// keep r.strategy — byte-identical to today.
+	globalStrategy := string(r.strategy)
+	if runStrategy := productionStrategyFromContext(ctx); runStrategy != "" {
+		globalStrategy = runStrategy
+	}
+	// sp-sdyo: a per-good override still wins over the global run-strategy. The override lets a single
+	// bottleneck good be bought (or fabricated) against its own tier while every other good keeps the
+	// global strategy — a non-overridden good resolves to globalStrategy unchanged, so its
+	// buy-vs-fabricate decision is byte-identical to the global path.
 	effectiveStrategy := AcquisitionStrategy(
-		goodGatingOverridesFromContext(ctx).StrategyFor(goodSymbol, string(r.strategy)),
+		goodGatingOverridesFromContext(ctx).StrategyFor(goodSymbol, globalStrategy),
 	)
 
 	switch effectiveStrategy {

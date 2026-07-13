@@ -11,6 +11,7 @@ import (
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	liquidationCmd "github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNavCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
@@ -901,6 +902,11 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", -1),
 		TickSeconds:   cfg.OptionalInt("tick_seconds", 0),
+		// sp-yfzi: the production acquisition strategy the drain resolves a FABRICATE material's tree
+		// on. Empty/absent → "smart" (resolveProductionStrategy), so construction produces scarce
+		// intermediates recursively without the captain naming it; a per-launch production_strategy
+		// override or the pipeline's per-good overrides dial it back (RULINGS #5).
+		ProductionStrategy: resolveProductionStrategy(cfg.OptionalString("production_strategy")),
 	}
 }
 
@@ -940,6 +946,10 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// [manufacturing] override. The disable flag is the RULINGS #5 emergency off-switch.
 		FabricateMaxDepth:         cfg.OptionalInt("fabricate_max_depth", 0),
 		FabricateDepthCapDisabled: cfg.OptionalBool("fabricate_depth_cap_disabled"),
+		// sp-yfzi: the production acquisition strategy. Empty/absent → "smart" (resolveProductionStrategy),
+		// so this factory resolves its tree with scarcity-gated recursion ON without the captain naming
+		// it; a captain pins "prefer-buy" in [manufacturing] to dial back to the sp-jav2 posture.
+		ProductionStrategy: resolveProductionStrategy(cfg.OptionalString("production_strategy")),
 		// sp-a5j7 Phase 2: supply-first sourcing (the wedx restoration). Rescue multiplier 0 →
 		// the executor resolves the 1.2 default; era-end flips to price-first < T-6h; the disable
 		// flag is the RULINGS #5 escape hatch back to pure price-first.
@@ -1127,6 +1137,21 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 func resolveReserveTreasuryPct(configured int) int {
 	if configured <= 0 {
 		return commonApp.DefaultReserveTreasuryPct
+	}
+	return configured
+}
+
+// resolveProductionStrategy resolves the production acquisition strategy for the PRODUCTION command
+// builders (goods_factory + construction), sp-yfzi. An empty/absent value → the scarcity-gated
+// "smart" default (mfgServices.DefaultProductionStrategy): the resolver fabricates a SCARCE
+// intermediate that has a factory and buys an abundant one, ON in production without the captain
+// naming it. A configured value ("prefer-buy" to dial back to the sp-jav2 posture, or
+// "prefer-fabricate") is passed through verbatim so the knob stays operator-tunable (RULINGS #5).
+// Applied at the launch build so a directly-built command (tests) keeps the empty value — the
+// resolver then falls back to its own prefer-buy default, byte-identical to today.
+func resolveProductionStrategy(configured string) string {
+	if configured == "" {
+		return mfgServices.DefaultProductionStrategy
 	}
 	return configured
 }

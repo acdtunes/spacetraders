@@ -59,6 +59,17 @@ type ConstructionActivator interface {
 	ActivateConstructionTasks(ctx context.Context) int
 }
 
+// ConstructionTreeResolver builds the scarcity-gated supply-chain dependency tree for a FABRICATE
+// material (sp-yfzi), so the drain PRODUCES a scarce intermediate that has a factory (recursing its
+// sub-chain) instead of the old flat one-level "fabricate root, buy every immediate input" node.
+// *services.SupplyChainResolver satisfies it via BuildDependencyTree. It is an OPTIONAL collaborator
+// wired by SetTreeResolver: left unset (nil), the drain falls back to the one-level node — the
+// pre-sp-yfzi construction behaviour, so a coordinator built without it is byte-identical (and the
+// buy-final path never consults it at all).
+type ConstructionTreeResolver interface {
+	BuildDependencyTree(ctx context.Context, targetGood, systemSymbol string, playerID int) (*goods.SupplyChainNode, error)
+}
+
 // RunConstructionCoordinatorHandler is the thin construction-supply drain (sp-382j). Each
 // tick it: runs the activator, polls READY DELIVER_TO_CONSTRUCTION tasks from EXECUTING
 // pipelines, claims idle in-system haulers under the shared "manufacturing" identity, then
@@ -76,6 +87,9 @@ type RunConstructionCoordinatorHandler struct {
 	// the same player-agnostic contract ProduceGood/ClaimShip follow. nil disables activation.
 	newActivator func(playerID int) ConstructionActivator
 	clock        shared.Clock
+	// resolver builds the scarcity-gated dependency tree for a FABRICATE material (sp-yfzi). Optional
+	// (wired by SetTreeResolver); nil falls back to the pre-sp-yfzi one-level fabricate node.
+	resolver ConstructionTreeResolver
 	// recordMu serializes the pipeline delivery read-modify-write (recordDelivery) across the
 	// concurrent supplyTask workers (sp-01eh): two workers supplying the SAME pipeline must not
 	// both load-add-store its material counters and lose an update. It guards an in-tick section
@@ -103,6 +117,15 @@ func NewRunConstructionCoordinatorHandler(
 		newActivator: newActivator,
 		clock:        clock,
 	}
+}
+
+// SetTreeResolver wires the scarcity-gated supply-chain resolver (sp-yfzi) so the drain PRODUCES a
+// FABRICATE material's scarce intermediates recursively instead of the flat one-level node. Optional
+// — the daemon injects the shared goodsResolver singleton; left unset the drain uses the one-level
+// fallback (pre-sp-yfzi behaviour). A setter (not a constructor arg) keeps the existing coordinator
+// tests, which never build the resolver tree, unchanged (nil → fallback → byte-identical).
+func (h *RunConstructionCoordinatorHandler) SetTreeResolver(resolver ConstructionTreeResolver) {
+	h.resolver = resolver
 }
 
 // Handle runs the standing drain loop: drain each tick until the container is cancelled
@@ -333,8 +356,10 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	// AcquisitionFabricate node so the engine buys the inputs, feeds the factory, and harvests
 	// the output into the hauler. sp-qmp8 restores this fabricate sourcing — a buy-only drain
 	// explodes the market bid and cannot fill the gate at scale (regression from sp-jav2). No
-	// duplicate sourcing logic either way; the shared engine owns sourcing.
-	node := constructionSourcingNode(task)
+	// duplicate sourcing logic either way; the shared engine owns sourcing. sp-yfzi: a FABRICATE
+	// material now resolves the FULL scarcity-gated tree (produce scarce intermediates, buy abundant)
+	// via the shared resolver, bounded by the pipeline's depth; a buy-final material is unchanged.
+	node := h.constructionSourcingNode(ctx, cmd, task, systemSymbol, cmd.PlayerID)
 
 	// Mark the run as construction supply so the engine's RESALE-margin guards (chain-margin
 	// sp-iv65, crushed-sink bp6f #3) are scoped out — the harvested output is delivered to the
@@ -412,27 +437,32 @@ func onHandUnits(ship *navigation.Ship, good string) int {
 }
 
 // constructionSourcingNode builds the SupplyChainNode the drain hands to ProduceGood for one
-// construction material, honoring the buy-vs-produce decision the planner already recorded on the
-// task (sp-qmp8):
+// construction material, honoring the buy-vs-produce decision the planner recorded on the task:
 //
 //   - FactorySymbol == "": the planner found a market selling the final good, so BUY it directly
-//     (the non-regression path — one hop, no chain). Unchanged behavior.
-//   - FactorySymbol != "": the planner chose FABRICATION (the final good is not buyable at scale),
-//     so PRODUCE it — a one-level fabricate node whose children are the good's immediate inputs,
-//     each a market BUY. ProduceGood(Fabricate) then buys those inputs, delivers them to the
-//     factory, and harvests the output into the hauler, subsuming the input legs the planner used
-//     to stage separately. One level mirrors the planner's depth>=2 policy and avoids a marathon
-//     single-hauler deep chain; the gate materials' immediate inputs (FAB_MATS ← IRON,
-//     QUARTZ_SAND; ADVANCED_CIRCUITRY ← ELECTRONICS, MICROPROCESSORS) are themselves buyable, and
-//     the planner only stages a fabricate task after verifying every input is sourceable.
+//     (the non-regression path — one hop, no chain). UNCHANGED, byte-identical: the resolver is
+//     never consulted here.
+//   - FactorySymbol != "": the planner chose FABRICATION. sp-yfzi builds the FULL scarcity-gated
+//     dependency tree via the shared SupplyChainResolver, so the drain PRODUCES a scarce
+//     intermediate that has a factory (recursing its sub-chain to relieve the scarcity) and BUYS an
+//     abundant one — instead of the old flat one-level "fabricate root, buy every immediate input"
+//     node. The tree resolves under the run strategy (smart by default) and is bounded by the
+//     pipeline's SupplyChainDepth (the depth backstop) + the resolver's cycle guard. When the
+//     resolver is unwired (existing coordinator tests) OR cannot resolve the good (stale/absent
+//     market data), it FALLS BACK to the original one-level fabricate node — never dying (RULINGS
+//     #1) and never worse than pre-sp-yfzi.
 //
 // A fabricate task whose good has no known recipe (should not happen — the planner never
 // fabricates a raw good) falls back to a BUY so the engine attempts a market source rather than
 // polling forever on a childless fabricate.
-func constructionSourcingNode(task *manufacturing.ManufacturingTask) *goods.SupplyChainNode {
+func (h *RunConstructionCoordinatorHandler) constructionSourcingNode(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask, systemSymbol string, playerID int) *goods.SupplyChainNode {
 	if task.FactorySymbol() == "" {
 		return &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
 	}
+	if tree := h.resolveFabricationTree(ctx, cmd, task, systemSymbol, playerID); tree != nil {
+		return tree
+	}
+	// Fallback: the original one-level fabricate node (byte-identical to pre-sp-yfzi construction).
 	node := goods.NewSupplyChainNode(task.Good(), goods.AcquisitionFabricate)
 	for _, input := range goods.GetRequiredInputs(task.Good()) {
 		node.AddChild(goods.NewSupplyChainNode(input, goods.AcquisitionBuy))
@@ -441,6 +471,42 @@ func constructionSourcingNode(task *manufacturing.ManufacturingTask) *goods.Supp
 		return &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
 	}
 	return node
+}
+
+// resolveFabricationTree builds the scarcity-gated dependency tree for a FABRICATE material via the
+// shared resolver (sp-yfzi). It stamps, on the tree-build ctx only (the buy-vs-fabricate decision is
+// baked into the tree at build time — ProduceGood just walks the shape, so produceCtx is untouched):
+//   - the per-run PRODUCTION strategy (WithProductionStrategy — smart by default), so a scarce
+//     intermediate with a factory fabricates while an abundant one is bought;
+//   - the pipeline's SupplyChainDepth as the fabricate depth cap (WithFabricateDepthCap — the safety
+//     backstop; a 0/unset pipeline resolves to the depth-3 default);
+//   - the pipeline's per-good overrides (WithGoodGatingOverrides), so a single bottleneck material
+//     can be pinned buy/fabricate without disturbing the rest (sp-sdyo).
+//
+// Returns nil — so constructionSourcingNode falls back to the one-level node — when the resolver is
+// unwired or errors (stale/absent market data). The pipeline is read the way remainingBill does
+// (FindByID); config fields (depth, overrides) are immutable post-creation, so this read needs no
+// lock (matching pipelineExecuting's unlocked read).
+func (h *RunConstructionCoordinatorHandler) resolveFabricationTree(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask, systemSymbol string, playerID int) *goods.SupplyChainNode {
+	if h.resolver == nil {
+		return nil
+	}
+	depth := 0
+	var overrides manufacturing.GoodGatingOverrides
+	if task.PipelineID() != "" {
+		if pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID()); err == nil && pipeline != nil {
+			depth = pipeline.SupplyChainDepth()
+			overrides = pipeline.GoodOverrides()
+		}
+	}
+	buildCtx := mfgServices.WithProductionStrategy(ctx, cmd.ProductionStrategy)
+	buildCtx = mfgServices.WithFabricateDepthCap(buildCtx, depth, false)
+	buildCtx = mfgServices.WithGoodGatingOverrides(buildCtx, overrides)
+	tree, err := h.resolver.BuildDependencyTree(buildCtx, task.Good(), systemSymbol, playerID)
+	if err != nil || tree == nil {
+		return nil
+	}
+	return tree
 }
 
 // readyConstructionTasks returns the READY DELIVER_TO_CONSTRUCTION tasks whose pipeline is

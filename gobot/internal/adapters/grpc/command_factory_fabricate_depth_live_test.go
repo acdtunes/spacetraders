@@ -34,7 +34,7 @@ func TestGoodsFactoryResolvesFabricateDepthDisabledFromLiveConfig(t *testing.T) 
 	require.True(t, cmd.FabricateDepthCapDisabled)
 }
 
-// Unset live config leaves the depth at the 0 sentinel (resolved to depth-1 downstream in the
+// Unset live config leaves the depth at the 0 sentinel (resolved to depth-3 downstream in the
 // resolver) and the cap enabled — the daemon never hardcodes an operational value into the launch
 // config.
 func TestGoodsFactoryUnsetFabricateDepthIsZeroSentinelAndEnabled(t *testing.T) {

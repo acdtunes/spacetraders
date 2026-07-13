@@ -441,6 +441,12 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// the executor's ceiling reads the per-good priceCeilingMult (hard-capped, RULINGS #4). A nil map
 	// (a directly-built command, or a launch with no overrides) leaves every good on the global gates.
 	ctx = mfgServices.WithGoodGatingOverrides(ctx, cmd.GoodGatingOverrides)
+	// sp-yfzi: stamp the per-run PRODUCTION acquisition strategy so the shared singleton resolver
+	// resolves this factory's tree on Smart (fabricate a SCARCE intermediate that has a factory, buy
+	// an abundant one) instead of its prefer-buy estimation default. Same ctx-not-struct-field race
+	// reasoning as the depth cap above. Empty (a directly-built command) is a no-op — the resolver
+	// keeps prefer-buy, byte-identical to today; the goods_factory launch build defaults it to smart.
+	ctx = mfgServices.WithProductionStrategy(ctx, cmd.ProductionStrategy)
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,

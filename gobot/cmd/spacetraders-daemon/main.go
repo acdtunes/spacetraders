@@ -681,6 +681,11 @@ func run(cfg *config.Config) error {
 	constructionCoordinatorHandler := goodsCmd.NewRunConstructionCoordinatorHandler(
 		constructionTaskRepo, constructionPipelineRepo, shipRepo, constructionExecutor, constructionActivatorFactory, nil, // nil = use RealClock
 	)
+	// sp-yfzi: DI the SAME resolver singleton the goods-factory path holds so the construction drain
+	// builds the FULL scarcity-gated dependency tree for a FABRICATE material (produce scarce
+	// intermediates that have a factory, buy abundant ones) instead of the flat one-level node —
+	// bounded by the pipeline's SupplyChainDepth + the resolver's cycle guard, config-reversible.
+	constructionCoordinatorHandler.SetTreeResolver(goodsResolver)
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
 	}

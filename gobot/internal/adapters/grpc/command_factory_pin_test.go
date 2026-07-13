@@ -219,7 +219,8 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				SystemSymbol:                     "X1-TEST",
 				ContainerID:                      "goods-1",
 				MaxIterations:                    5,
-				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
+				WorkingCapitalReserveTreasuryPct: 40,      // sp-yqx4: absent key → the 40% default
+				ProductionStrategy:               "smart", // sp-yfzi: absent key → the smart default
 			},
 		},
 		{
@@ -237,7 +238,8 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				SystemSymbol:                     "X1-TEST",
 				ContainerID:                      "goods-2",
 				MaxIterations:                    1,
-				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default
+				WorkingCapitalReserveTreasuryPct: 40,      // sp-yqx4: absent key → the 40% default
+				ProductionStrategy:               "smart", // sp-yfzi: absent key → the smart default
 			},
 		},
 		{
@@ -264,7 +266,8 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				MaxIterations: 1,
 				// WorkingCapitalReserve left at zero value: cleared by
 				// resolveManufacturingConfig since the live config is unset.
-				WorkingCapitalReserveTreasuryPct: 40, // sp-yqx4: absent key → the 40% default (reserve pct is not cleared, it defaults)
+				WorkingCapitalReserveTreasuryPct: 40,      // sp-yqx4: absent key → the 40% default (reserve pct is not cleared, it defaults)
+				ProductionStrategy:               "smart", // sp-yfzi: absent key → the smart default (strategy is not cleared, it defaults)
 			},
 		},
 		{

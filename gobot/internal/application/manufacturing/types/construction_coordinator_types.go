@@ -19,6 +19,15 @@ type RunConstructionCoordinatorCommand struct {
 	MaxIterations int
 	// TickSeconds is the delay between drain ticks; <=0 uses the coordinator's default.
 	TickSeconds int
+	// ProductionStrategy is the SupplyChainResolver acquisition strategy the drain resolves a
+	// FABRICATE material's dependency tree on (sp-yfzi): "smart" (fabricate a SCARCE intermediate
+	// that has a factory, buy an abundant one — the fleet-wide production default) unsticks a scarce
+	// gate material by producing it locally instead of buying it scarce; "prefer-buy" dials back to
+	// the flat one-level sourcing. Stamped onto the tree-build ctx (WithProductionStrategy). Empty is
+	// a no-op (resolver keeps prefer-buy); the launch build defaults it to "smart"
+	// (resolveProductionStrategy). Fed from production_strategy. Only consulted on the FABRICATE
+	// branch — a buy-final material (no factory) never touches the resolver.
+	ProductionStrategy string
 }
 
 // RunConstructionCoordinatorResponse reports the outcome of the last drain tick.

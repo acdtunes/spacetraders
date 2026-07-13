@@ -20,6 +20,7 @@ var manufacturingConfigKeys = []string{
 	"input_price_ceiling_disabled",
 	"fabricate_max_depth",
 	"fabricate_depth_cap_disabled",
+	"production_strategy",
 	"input_rescue_multiplier",
 	"input_era_end_price_first",
 	"input_sourcing_disabled",
@@ -147,7 +148,7 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 		config["rest_signal_disabled"] = true
 	}
 	// sp-jav2 / FACTORY_DOCTRINE X1: the fabricate depth cap. Only written when the captain set a
-	// non-zero depth — an unset key defers to the goods_factory build's depth-1 default (the cap runs
+	// non-zero depth — an unset key defers to the resolver's depth-3 default (sp-yfzi; the cap runs
 	// ON in production without the captain naming it, a protective default that only redirects an
 	// input from fabrication to a market-buy, RULINGS #5). The disable flag is written only when true,
 	// so absent/false keeps the cap on; the clear in resolveManufacturingConfig makes turning it back
@@ -157,6 +158,15 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.FabricateDepthCapDisabled {
 		config["fabricate_depth_cap_disabled"] = true
+	}
+	// sp-yfzi: the production acquisition strategy. Only written when the captain set it — an unset
+	// key defers to the goods_factory build's "smart" default (resolveProductionStrategy), so
+	// scarcity-gated recursion runs ON in production without the captain naming it. Cleared+reinjected
+	// via resolveManufacturingConfig so dropping it from config.yaml reverts to the smart default
+	// rather than shadowing it with a stale persisted copy (sp-ts82). A captain pins "prefer-buy" here
+	// to dial back to the sp-jav2 buy-all-inputs posture (RULINGS #5).
+	if s.manufacturingConfig.ProductionStrategy != "" {
+		config["production_strategy"] = s.manufacturingConfig.ProductionStrategy
 	}
 	// sp-ev0n: the GLOBAL concurrent-hull default for factories, derived from the
 	// [manufacturing.siting] workers_per_chain rotation divisor (the value siting already

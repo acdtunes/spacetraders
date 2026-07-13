@@ -66,13 +66,15 @@ func twoLevelChainResolver() *SupplyChainResolver {
 	return NewSupplyChainResolver(supplyChainMap, repo)
 }
 
-// TestDepthCapCollapsesDepth2FabricateToBuy pins the live-by-default behavior: with no config
-// stamped on the context, a depth-1 input that would otherwise fabricate is resolved to a
-// market-BUY leaf, and no depth-2 sub-chain is built.
+// TestDepthCapCollapsesDepth2FabricateToBuy pins the cap-at-1 collapse: with maxDepth stamped to 1
+// (the sp-jav2 X1 posture — no longer the default after sp-yfzi raised it to 3), a depth-1 input
+// that would otherwise fabricate is resolved to a market-BUY leaf, and no depth-2 sub-chain is
+// built. The cap value is now an explicit override rather than the default.
 func TestDepthCapCollapsesDepth2FabricateToBuy(t *testing.T) {
 	resolver := twoLevelChainResolver()
 
-	root, err := resolver.BuildDependencyTree(context.Background(), "ADVANCED_CIRCUITRY", "X1-AA", 1)
+	ctx := WithFabricateDepthCap(context.Background(), 1, false) // sp-yfzi: pin the depth-1 cap explicitly
+	root, err := resolver.BuildDependencyTree(ctx, "ADVANCED_CIRCUITRY", "X1-AA", 1)
 	if err != nil {
 		t.Fatalf("BuildDependencyTree returned error: %v", err)
 	}

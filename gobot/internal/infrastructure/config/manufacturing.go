@@ -58,6 +58,16 @@ type ManufacturingConfig struct {
 	// default depth.
 	FabricateDepthCapDisabled bool `mapstructure:"fabricate_depth_cap_disabled"`
 
+	// ProductionStrategy is the SupplyChainResolver acquisition strategy the PRODUCTION coordinators
+	// (goods_factory + construction) resolve their trees on (sp-yfzi, Admiral directive 2026-07-13):
+	// "smart" (fabricate a SCARCE/LIMITED intermediate that has a factory, buy an abundant one — the
+	// scarcity-gated recursion this bead re-enables fleet-wide), "prefer-buy" (the sp-jav2 X1
+	// buy-all-inputs posture, the dial-back), or "prefer-fabricate". Empty/absent → the coordinators'
+	// "smart" default (resolveProductionStrategy at the launch build), so recursive production runs
+	// ON without the captain naming it; a captain pins "prefer-buy" here to reverse it live (RULINGS
+	// #5). Threaded into goods_factory_coordinator (and construction) via the launch config.
+	ProductionStrategy string `mapstructure:"production_strategy"`
+
 	// InputRescueMultiplier caps the supply-first sourcing rescue clause (sp-a5j7 Phase 2, wedx
 	// restoration): when NO eligible (MODERATE+) source exists and the chain is blocked, a
 	// SCARCE/LIMITED source is bought ONLY if its ask is within this multiple of the good's

@@ -80,6 +80,14 @@ type RunFactoryCoordinatorCommand struct {
 	// FabricateDepthCapDisabled is the emergency off-switch for the fabricate depth cap (RULINGS #5):
 	// true restores the original unbounded recursion. Fed from fabricate_depth_cap_disabled.
 	FabricateDepthCapDisabled bool
+	// ProductionStrategy is the SupplyChainResolver acquisition strategy for THIS factory's tree
+	// build (sp-yfzi): "smart" (fabricate a scarce intermediate that has a factory, buy an abundant
+	// one — the fleet-wide production default), "prefer-buy" (the sp-jav2 buy-all-inputs posture), or
+	// "prefer-fabricate". Stamped onto ctx (WithProductionStrategy) so the shared singleton resolver
+	// reads it race-free. Empty resolves to the resolver's own prefer-buy default at the point of use
+	// — so a directly-built command (tests) stays byte-identical; the goods_factory launch build
+	// defaults it to "smart" (resolveProductionStrategy). Fed from production_strategy.
+	ProductionStrategy string
 	// InputRescueMultiplier caps the supply-first sourcing rescue clause (sp-a5j7 Phase 2): a
 	// SCARCE/LIMITED source is bought only when no eligible source exists AND its ask is within
 	// this multiple of the trailing median. 0/absent → the 1.2 default. Fed from
