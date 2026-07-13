@@ -156,6 +156,10 @@ type RunFleetCoordinatorCommand struct {
 	// 20min). Keeps a (good, sink) lane closed after its leg terminates so
 	// sequential passes never re-dump a sink the last leg just depressed.
 	IdleArbRecoveryHoldSecs int
+	// sp-u4tv per-trip live-profitability floor (all parametrized, RULINGS #5):
+	IdleArbMinNetProfit    int // absolute after-fuel net floor per unit (default 100)
+	IdleArbNetProfitPct    int // relative net floor as % of buy price (default 20)
+	IdleArbFuelCostPerUnit int // per-cargo-unit fuel estimate subtracted from spread (default 35)
 
 	// CommandCargoBaseline (sp-uj6a, RULINGS #5): minimum cargo capacity a
 	// COMMAND-role hull must carry to remain a contract-selection candidate

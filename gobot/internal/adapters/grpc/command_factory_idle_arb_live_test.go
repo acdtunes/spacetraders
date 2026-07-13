@@ -161,19 +161,26 @@ func TestContractCoordinatorResolvesAllIdleArbSiblingsFromLiveConfig(t *testing.
 		MarginVerifyPct: 90,
 		IntervalSeconds: 120,
 		Blacklist:       []string{"ELECTRONICS", "FUEL"},
+		// sp-u4tv per-trip profitability floor siblings.
+		MinNetProfitPerUnit: 150,
+		NetProfitPct:        25,
+		FuelCostPerUnit:     40,
 	}
 	// Stale persisted launch config from a PRIOR boot: every sibling holds an
 	// outdated value the recovery rebuild must discard in favor of `live`.
 	persisted := idleArbLaunchConfig(map[string]interface{}{
-		"idle_arb_reserve_hulls":     1,
-		"idle_arb_hub_radius":        250,
-		"idle_arb_leash_radius":      80,
-		"idle_arb_max_leg_secs":      480,
-		"idle_arb_max_spend":         100000,
-		"idle_arb_min_margin":        1,
-		"idle_arb_margin_verify_pct": 80,
-		"idle_arb_interval_secs":     90,
-		"idle_arb_blacklist":         []interface{}{"STALE_GOOD"},
+		"idle_arb_reserve_hulls":      1,
+		"idle_arb_hub_radius":         250,
+		"idle_arb_leash_radius":       80,
+		"idle_arb_max_leg_secs":       480,
+		"idle_arb_max_spend":          100000,
+		"idle_arb_min_margin":         1,
+		"idle_arb_margin_verify_pct":  80,
+		"idle_arb_interval_secs":      90,
+		"idle_arb_blacklist":          []interface{}{"STALE_GOOD"},
+		"idle_arb_min_net_profit":     100,
+		"idle_arb_net_profit_pct":     20,
+		"idle_arb_fuel_cost_per_unit": 35,
 	})
 
 	s := newIdleArbFactoryTestServer(live)
@@ -188,6 +195,10 @@ func TestContractCoordinatorResolvesAllIdleArbSiblingsFromLiveConfig(t *testing.
 	require.Equal(t, 90, cmd.IdleArbMarginVerifyPct)
 	require.Equal(t, 120, cmd.IdleArbIntervalSecs)
 	require.Equal(t, []string{"ELECTRONICS", "FUEL"}, cmd.IdleArbBlacklist)
+	// sp-u4tv: the profitability floor knobs resolve live too (stale 100/20/35 discarded).
+	require.Equal(t, 150, cmd.IdleArbMinNetProfit)
+	require.Equal(t, 25, cmd.IdleArbNetProfitPct)
+	require.Equal(t, 40, cmd.IdleArbFuelCostPerUnit)
 }
 
 // TestContractCoordinatorResolvesDisabledToggleFromLiveConfig: the harvest escape

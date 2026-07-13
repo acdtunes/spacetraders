@@ -124,4 +124,12 @@ type IdleArbSettings struct {
 	// long a (good, sink) lane stays closed after its leg terminates before another
 	// hull may work it. 0 → the contract package default (1200s = 20min).
 	RecoveryHoldSeconds int `mapstructure:"recovery_hold_seconds"`
+	// sp-u4tv per-trip live-profitability floor (all 0 → the contract package
+	// defaults: net >= max(100/u, 20% of buy) after ~35/u fuel). The gate re-prices
+	// every trip from live prices and refuses a lane whose net (spread − fuel) is
+	// below the binding floor — the fix for the fleet's own buys inflating a thin
+	// export until the leg goes net-negative.
+	MinNetProfitPerUnit int `mapstructure:"min_net_profit_per_unit"`
+	NetProfitPct        int `mapstructure:"net_profit_pct"`
+	FuelCostPerUnit     int `mapstructure:"fuel_cost_per_unit"`
 }

@@ -37,7 +37,7 @@ func idleArbSingleSinkClockHarness(t *testing.T, clock shared.Clock, hulls int, 
 	graph := &fakeGraphProvider{waypoints: map[string]*shared.Waypoint{hub.Symbol: hub, sink.Symbol: sink}}
 	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
 		hub.Symbol:  marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 90, 100)),
-		sink.Symbol: marketAt(t, sink.Symbol, tradeGood(t, "MACHINERY", 150, 160)),
+		sink.Symbol: marketAt(t, sink.Symbol, tradeGood(t, "MACHINERY", 350, 360)),
 	}}
 	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
 	d := NewIdleArbDispatcher(repo, markets, graph, launcher, nil, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg)

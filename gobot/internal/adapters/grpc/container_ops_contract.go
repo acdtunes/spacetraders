@@ -282,6 +282,9 @@ var idleArbConfigKeys = []string{
 	"idle_arb_interval_secs",
 	"idle_arb_recovery_hold_secs",
 	"idle_arb_blacklist",
+	"idle_arb_min_net_profit",
+	"idle_arb_net_profit_pct",
+	"idle_arb_fuel_cost_per_unit",
 }
 
 // resolveIdleArbConfig makes config.yaml the single LIVE source of truth for the
@@ -350,6 +353,15 @@ func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
 	}
 	if ia.Blacklist != nil {
 		config["idle_arb_blacklist"] = ia.Blacklist
+	}
+	if ia.MinNetProfitPerUnit != 0 {
+		config["idle_arb_min_net_profit"] = ia.MinNetProfitPerUnit
+	}
+	if ia.NetProfitPct != 0 {
+		config["idle_arb_net_profit_pct"] = ia.NetProfitPct
+	}
+	if ia.FuelCostPerUnit != 0 {
+		config["idle_arb_fuel_cost_per_unit"] = ia.FuelCostPerUnit
 	}
 }
 

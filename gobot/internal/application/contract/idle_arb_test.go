@@ -137,7 +137,15 @@ func idleArbHull(t *testing.T, symbol string, at *shared.Waypoint, fleet string)
 
 func tradeGood(t *testing.T, symbol string, bid, ask int) market.TradeGood {
 	t.Helper()
-	g, err := market.NewTradeGood(symbol, nil, nil, bid, ask, 100, market.TradeType("EXCHANGE"))
+	return tradeGoodVol(t, symbol, bid, ask, 100)
+}
+
+// tradeGoodVol is tradeGood with an explicit trade volume, so a test can set a
+// sink's absorptive DEPTH (sp-3meh depth-aware consult): the consult excludes a
+// lane only when the remaining unreserved depth can't fit the leg's tranche.
+func tradeGoodVol(t *testing.T, symbol string, bid, ask, volume int) market.TradeGood {
+	t.Helper()
+	g, err := market.NewTradeGood(symbol, nil, nil, bid, ask, volume, market.TradeType("EXCHANGE"))
 	if err != nil {
 		t.Fatalf("trade good %s: %v", symbol, err)
 	}
@@ -158,10 +166,12 @@ func marketAt(t *testing.T, waypoint string, goods ...market.TradeGood) *market.
 const testFleet = "contract"
 
 // hub layout: hull(s) at HUB (0,0); NEAR market at (0,50) INSIDE the 80u leash
-// buying MACHINERY at 150 vs the hub's 100 ask (margin 50/unit); FAR market at
-// (0,400) outside both the leash and the 250 hub-radius with an even juicier bid
-// that must be IGNORED. NEAR sits at ~50u — the "legs max ~52u naturally" shape
-// the sp-uohe leash formalizes — so the default 80u leash still admits it.
+// buying MACHINERY at 350 vs the hub's 100 ask (margin 250/unit — a fat lane that
+// clears the sp-u4tv profitability floor of net >= max(100, 20% of buy) after
+// fuel); FAR market at (0,400) outside both the leash and the 250 hub-radius with
+// an even juicier bid that must be IGNORED. NEAR sits at ~50u — the "legs max ~52u
+// naturally" shape the sp-uohe leash formalizes — so the default 80u leash still
+// admits it.
 func idleArbHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArbDispatcher, *idleArbFakeShipRepo, *fakeIdleArbLauncher) {
 	t.Helper()
 	return idleArbHarnessGoods(t, hulls, cfg, nil)
@@ -187,7 +197,7 @@ func idleArbHarnessGoods(t *testing.T, hulls int, cfg IdleArbConfig, contractGoo
 
 	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
 		hub.Symbol:  marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 90, 100)),
-		near.Symbol: marketAt(t, near.Symbol, tradeGood(t, "MACHINERY", 150, 160)),
+		near.Symbol: marketAt(t, near.Symbol, tradeGood(t, "MACHINERY", 350, 360)),
 		far.Symbol:  marketAt(t, far.Symbol, tradeGood(t, "MACHINERY", 1000, 1100)),
 	}}
 
@@ -200,8 +210,9 @@ func idleArbHarnessGoods(t *testing.T, hulls int, cfg IdleArbConfig, contractGoo
 // --- tests -----------------------------------------------------------------
 
 // idleArbTwoSinkHarness builds a dispatcher over a hub with TWO distinct in-leash
-// sinks for the same good (sp-lbbm): sinkA (0,40) at a fatter margin (100) than
-// sinkB (0,50) (50). Because the lane mutex forbids two hulls dumping ONE sink in
+// sinks for the same good (sp-lbbm): sinkA (0,40) at a fatter margin (300) than
+// sinkB (0,50) (250) — both fat enough to clear the sp-u4tv profitability floor.
+// Because the lane mutex forbids two hulls dumping ONE sink in
 // a window, a reserve/claim-race test that must still launch two legs needs two
 // sinks — the highest-margin hull takes sinkA and the next falls back to sinkB.
 // Hulls are TORWIND-1..N at the shared hub.
@@ -220,8 +231,8 @@ func idleArbTwoSinkHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArb
 	}}
 	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
 		hub.Symbol:   marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 90, 100)),
-		sinkA.Symbol: marketAt(t, sinkA.Symbol, tradeGood(t, "MACHINERY", 200, 210)), // margin 100
-		sinkB.Symbol: marketAt(t, sinkB.Symbol, tradeGood(t, "MACHINERY", 150, 160)), // margin 50
+		sinkA.Symbol: marketAt(t, sinkA.Symbol, tradeGood(t, "MACHINERY", 400, 410)), // margin 300
+		sinkB.Symbol: marketAt(t, sinkB.Symbol, tradeGood(t, "MACHINERY", 350, 360)), // margin 250
 	}}
 	clock := shared.NewRealClock()
 	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
@@ -292,10 +303,10 @@ func TestIdleArb_LaneIsHubLocal_AndSpecInheritsGuards(t *testing.T) {
 		t.Errorf("max-spend guard knob must pass through untouched, got %d", spec.MaxSpend)
 	}
 	// Guard 1 (sp-uohe): the spec's MinMargin is the RELATIVE live-verify floor,
-	// max(absolute floor 5, ceil(0.80 × quoted margin 50) = 40) = 40 — NOT the
+	// max(absolute floor 5, ceil(0.80 × quoted margin 250) = 200) = 200 — NOT the
 	// flat absolute floor. This is what arms the arb run's live-verify gate.
-	if spec.MinMargin != 40 {
-		t.Errorf("MinMargin must be the 80%%-of-quote live-verify floor (40), got %d", spec.MinMargin)
+	if spec.MinMargin != 200 {
+		t.Errorf("MinMargin must be the 80%%-of-quote live-verify floor (200), got %d", spec.MinMargin)
 	}
 }
 
@@ -445,9 +456,9 @@ func TestIdleArb_MarginVerifyFloorArmsTheGate(t *testing.T) {
 	if launched := d.DispatchOnce(context.Background()); launched != 1 {
 		t.Fatalf("expected exactly 1 launch, got %d", launched)
 	}
-	// NEAR quotes margin 50/unit → floor ceil(0.80 × 50) = 40, not the flat 1.
-	if got := launcher.launches[0].MinMargin; got != 40 {
-		t.Fatalf("launched leg must carry the 80%%-of-quote floor (40), got %d", got)
+	// NEAR quotes margin 250/unit → floor ceil(0.80 × 250) = 200, not the flat 1.
+	if got := launcher.launches[0].MinMargin; got != 200 {
+		t.Fatalf("launched leg must carry the 80%%-of-quote floor (200), got %d", got)
 	}
 }
 
@@ -567,7 +578,7 @@ func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
 // exclusion) is invisible (the diagnosis that produced this observable had to be
 // reconstructed from the DB). An ELIGIBLE lane and a leash-SKIPPED lane both log.
 func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
-	// (a) An eligible in-leash candidate: hub(0,0)->near(0,50), margin 50, dist 50<80.
+	// (a) An eligible in-leash candidate: hub(0,0)->near(0,50), margin 250, dist 50<80.
 	loggerA := &idleArbCapturingLogger{}
 	dA, _, _ := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	dA.DispatchOnce(common.WithLogger(context.Background(), loggerA))
@@ -575,7 +586,7 @@ func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
 	eligible := loggerA.messageWithPrefix(t, "Idle-arb candidate:")
 	for _, want := range []string{
 		"MACHINERY", "buy@X1-HUB-E42(0,0)", "sell@X1-HUB-D40(0,50)",
-		"dist 50u", "leash 80", "margin 50/u", "bid 150 - ask 100", "verdict eligible",
+		"dist 50u", "leash 80", "margin 250/u", "bid 350 - ask 100", "verdict eligible",
 	} {
 		if !strings.Contains(eligible, want) {
 			t.Fatalf("eligible candidate line must carry %q in message TEXT, got: %s", want, eligible)
@@ -666,12 +677,13 @@ func idleArbRehomeHarness(t *testing.T, repo *idleArbFakeShipRepo, standby []str
 	graph := &fakeGraphProvider{waypoints: map[string]*shared.Waypoint{
 		hub.Symbol: hub, near.Symbol: near,
 	}}
-	// Both markets buy MACHINERY at 150 vs a 100 sell — a profitable lane out of
-	// hub (hub->near) AND out of near (near->hub), so an idle hull at either end
-	// would be arbed if re-homing didn't hold it back.
+	// Both markets buy MACHINERY at 350 vs a 100 sell — a profitable lane (margin
+	// 250, clearing the sp-u4tv floor) out of hub (hub->near) AND out of near
+	// (near->hub), so an idle hull at either end would be arbed if re-homing didn't
+	// hold it back.
 	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
-		hub.Symbol:  marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 150, 100)),
-		near.Symbol: marketAt(t, near.Symbol, tradeGood(t, "MACHINERY", 150, 100)),
+		hub.Symbol:  marketAt(t, hub.Symbol, tradeGood(t, "MACHINERY", 350, 100)),
+		near.Symbol: marketAt(t, near.Symbol, tradeGood(t, "MACHINERY", 350, 100)),
 	}}
 
 	cfg.StandbyStations = standby

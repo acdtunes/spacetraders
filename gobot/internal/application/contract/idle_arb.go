@@ -134,6 +134,36 @@ type IdleArbConfig struct {
 	// laneMutex for why a flat hold (not the routing service's recovery model) is
 	// the honest v1 and how it cites the model's half-lives.
 	RecoveryHold time.Duration
+
+	// --- sp-u4tv per-trip live-profitability floor ---------------------------
+	// The dispatcher launches one arb leg (one buy->sell round trip) per lane per
+	// pass, RE-PRICED every pass from the freshly-read ask/bid (never a cached
+	// spread). A lane clears only when, at current live prices,
+	//   net_per_u = (sink bid − hub ask) − FuelCostPerUnit
+	// meets the BINDING floor: max(MinNetProfitPerUnit, ceil(NetProfitFraction ×
+	// hub ask)). This is the −net-negative-tail fix (sp-u4tv): the fleet's OWN
+	// repeated buys walk a thin EXPORT price up (and its dumps walk the IMPORT
+	// price down), so a good that quoted a healthy spread degrades trip-over-trip;
+	// re-pricing every pass catches it and the lane AUTO-RE-ENTERS when the price
+	// recovers. GENERIC — no per-good knowledge; the floors are tunable config
+	// (RULINGS #5), never a hardcoded good list.
+
+	// MinNetProfitPerUnit is the ABSOLUTE after-fuel net floor a lane must clear.
+	MinNetProfitPerUnit int
+	// NetProfitFraction is the RELATIVE floor: a lane's net must also be at least
+	// this fraction of the hub ask. It is what stops a HIGH-PRICED good with a thin
+	// absolute spread (e.g. buy 5000/u, +265 net) from clearing on the flat floor
+	// alone — the flat floor governs cheap goods, this one governs expensive ones,
+	// and the binding (larger) of the two applies.
+	NetProfitFraction float64
+	// FuelCostPerUnit is the per-cargo-unit fuel estimate subtracted from the gross
+	// spread to get net. It is a flat hub-local estimate (the leash bounds every leg
+	// to a short, similar hop, so a flat figure is honest here) grounded in the
+	// sp-u4tv incident (~35/u on central lanes); a captain whose lanes differ retunes
+	// it. The within-trip price ladder is guarded downstream by the arb run's live
+	// per-tranche buy ceiling / sell floor — this floor is the CROSS-trip decision:
+	// should this lane be flown AT ALL this pass, at current live prices.
+	FuelCostPerUnit int
 }
 
 // Idle-arb defaults. Sizing notes: HubRadius 250 is the loose outer hub-local
@@ -165,6 +195,16 @@ const (
 	// the rest of the defense; a captain wanting the fuller modelled hold raises
 	// the config knob with no code change.
 	DefaultIdleArbRecoveryHold = 20 * time.Minute
+	// Per-trip profitability floor defaults (sp-u4tv). 100/u absolute after fuel and
+	// 20% of the buy price are the bead-grounded floors: on central lanes fuel is
+	// ~35/u, so POLYNUCLEOTIDES at +33/u gross correctly nets below the floor and is
+	// refused, while fat lanes (FABRICS/CLOTHING/JEWELRY/MACHINERY/MEDICINE, ~800–1800/u)
+	// clear it 10×+. The 20% relative floor stops a high-priced good with a thin
+	// absolute spread from sneaking through on the flat floor. 35/u fuel matches the
+	// same central-lane grounding.
+	DefaultIdleArbMinNetProfit      = 100
+	DefaultIdleArbNetProfitFraction = 0.20
+	DefaultIdleArbFuelCostPerUnit   = 35
 )
 
 // DefaultIdleArbBlacklist is the initial excluded-goods list (sp-uohe): the
@@ -205,6 +245,18 @@ func (c IdleArbConfig) WithDefaults() IdleArbConfig {
 	}
 	if c.RecoveryHold <= 0 {
 		c.RecoveryHold = DefaultIdleArbRecoveryHold
+	}
+	// sp-u4tv: the per-trip profitability floor is DEFAULT-ON — a config that omits
+	// it must not silently disable a money guard (RULINGS #4, matching the sibling
+	// MarginVerifyFraction/Blacklist defaults). A captain retune sets a non-zero value.
+	if c.MinNetProfitPerUnit <= 0 {
+		c.MinNetProfitPerUnit = DefaultIdleArbMinNetProfit
+	}
+	if c.NetProfitFraction <= 0 {
+		c.NetProfitFraction = DefaultIdleArbNetProfitFraction
+	}
+	if c.FuelCostPerUnit <= 0 {
+		c.FuelCostPerUnit = DefaultIdleArbFuelCostPerUnit
 	}
 	return c
 }
@@ -354,6 +406,7 @@ type IdleArbDispatcher struct {
 	skipContractGood int // legs skipped: good under an open contract
 	skipLeash        int // legs skipped: only profit was beyond the leash/leg-time
 	skipLaneHeld     int // sp-lbbm: legs skipped: best lane held by a live/recovering leg
+	skipUnprofitable int // sp-u4tv: legs skipped: live net_per_u below the profitability floor
 	rehomed          int // sp-8bpr: hulls re-homed post-leg (cumulative)
 }
 
@@ -460,13 +513,24 @@ type absorptionConsult struct {
 	pools      map[absorption.LaneKey]absorption.KeyOccupancy
 }
 
-// reserved reports whether a (good, sink) sell is blocked by the ledger: an in-flight
-// PLANNED leg on the key, or a recovering EXECUTED shadow still above its floor
-// (Outstanding already drops sub-floor shadows). Fail-closed: an unreadable ledger
-// blocks EVERY candidate — never dispatch blind into depth another engine may have
-// reserved or just crushed (RULINGS #4). Same structural hole as sp-i8vx's in-flight
-// exposure finding, closed here from the market-absorption side.
-func (c absorptionConsult) reserved(good, sink string) bool {
+// reserved reports whether a (good, sink) sell is blocked by the ledger, DEPTH-AWARE
+// (sp-3meh — the trade-route evaluate() shape ported to idle-arb):
+//   - unreadable ledger → blocks EVERY candidate (fail-closed: never dispatch blind
+//     into depth another engine may have reserved or just crushed, RULINGS #4);
+//   - a recovering EXECUTED shadow (RecoveringResidual > 0, Outstanding already drops
+//     sub-floor shadows) → blocks OUTRIGHT: the sink is actively healing and no leg
+//     should step into it regardless of nominal headroom;
+//   - in-flight PLANNED units → block ONLY when the remaining unreserved depth can't
+//     fit THIS leg's tranche at the quoted price. The tranche is the smaller of the
+//     sink's absorptive depth (sinkDepthCap = the sink good's trade volume) and the
+//     leg's own lot (legUnits — a leg dumps at most one hold). This is the fix for the
+//     old BINARY block that vetoed a whole lane on ANY positive occupancy and launched
+//     0 legs at shared hubs; idle-arb now flies into partially-reserved sinks the way
+//     the trade-route circuit already does, without abandoning absorption safety.
+//
+// An unknown/absent depth (sinkDepthCap <= 0) falls back to the conservative binary
+// block on any PLANNED occupancy — never relax depth we can't measure.
+func (c absorptionConsult) reserved(good, sink string, sinkDepthCap, legUnits int) bool {
 	if !c.active {
 		return false
 	}
@@ -474,7 +538,21 @@ func (c absorptionConsult) reserved(good, sink string) bool {
 		return true
 	}
 	occ := c.pools[absorption.LaneKey{Waypoint: sink, Good: good, Side: absorption.SideSell}]
-	return occ.PlannedUnits > 0 || occ.RecoveringResidual > 0
+	if occ.RecoveringResidual > 0 {
+		return true
+	}
+	if occ.PlannedUnits <= 0 {
+		return false
+	}
+	if sinkDepthCap <= 0 {
+		return true // unknown depth + real planned occupancy → conservative binary block
+	}
+	tranche := sinkDepthCap
+	if legUnits > 0 && legUnits < tranche {
+		tranche = legUnits
+	}
+	remaining := sinkDepthCap - occ.PlannedUnits
+	return remaining < tranche
 }
 
 // readAbsorption performs the once-per-pass consult read. Inert (never blocks) when
@@ -546,6 +624,11 @@ const (
 	// lane-mutex's guarantee generalized CROSS-ENGINE and across a restart: a tour or
 	// another dispatcher's leg the in-memory mutex cannot see is caught here.
 	skipReasonReserved
+	// skipReasonUnprofitable (sp-u4tv): at current LIVE prices the lane's per-unit net
+	// (spread − fuel) is below the binding profitability floor. This is the per-trip
+	// money guard that stops the fleet's own self-inflated thin lanes from flying
+	// net-negative; a below-floor lane auto-re-enters when its price recovers.
+	skipReasonUnprofitable
 )
 
 // String names the skip reason for the per-candidate verdict line (sp-nw9v). It
@@ -563,6 +646,8 @@ func (r idleArbSkipReason) String() string {
 		return "lane-held"
 	case skipReasonReserved:
 		return "reserved"
+	case skipReasonUnprofitable:
+		return "unprofitable"
 	default:
 		return "none"
 	}
@@ -580,6 +665,36 @@ func idleArbMinMargin(cfg IdleArbConfig, quotedMargin int) int {
 		return relative
 	}
 	return cfg.MinMarginPerUnit
+}
+
+// laneNetPerUnit (sp-u4tv) is the lane's per-unit net at the prices passed in:
+// the gross spread (sink bid − hub ask) minus the per-unit fuel estimate. Callers
+// pass the FRESHLY-READ ask/bid every pass, so a lane the fleet's own repeated
+// buys have inflated (or whose sink its dumps have decayed) is re-scored down
+// trip-over-trip — never off a cached spread.
+func (d *IdleArbDispatcher) laneNetPerUnit(hubAsk, sinkBid int) int {
+	return (sinkBid - hubAsk) - d.cfg.FuelCostPerUnit
+}
+
+// netProfitFloor (sp-u4tv) is the BINDING per-unit floor for a lane bought at
+// hubAsk: the greater of the absolute after-fuel floor and the fraction-of-buy
+// floor. The relative floor is what stops a HIGH-PRICED good with a thin absolute
+// spread from clearing on the flat floor alone (e.g. buy 5000/u, +265 net clears
+// 100 but not 20%×5000 = 1000).
+func (d *IdleArbDispatcher) netProfitFloor(hubAsk int) int {
+	relative := int(math.Ceil(d.cfg.NetProfitFraction * float64(hubAsk)))
+	if relative > d.cfg.MinNetProfitPerUnit {
+		return relative
+	}
+	return d.cfg.MinNetProfitPerUnit
+}
+
+// laneClearsProfitFloor (sp-u4tv) reports whether the lane's live net_per_u meets
+// its binding floor — the per-trip go/no-go the dispatcher applies to an otherwise
+// eligible lane before launching. A lane that fails auto-re-enters the next pass
+// its price recovers (a profitability skip never latches the lane mutex).
+func (d *IdleArbDispatcher) laneClearsProfitFloor(hubAsk, sinkBid int) bool {
+	return d.laneNetPerUnit(hubAsk, sinkBid) >= d.netProfitFloor(hubAsk)
 }
 
 // Run ticks DispatchOnce every Interval until ctx is cancelled. Started as a
@@ -978,7 +1093,22 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 				DestBid:       bid,
 			}
 
-			reason := d.laneSkipReason(hubGood.Symbol(), wp, distance, excludedContractGoods, hull.EngineSpeed(), consult)
+			// sp-3meh: the sink's absorptive depth (its trade volume) and this leg's
+			// lot feed the depth-aware absorption consult, so a partially-reserved sink
+			// with room for the tranche is not vetoed.
+			reason := d.laneSkipReason(hubGood.Symbol(), wp, distance, excludedContractGoods, hull.EngineSpeed(), consult, destGood.TradeVolume(), units)
+
+			// Per-trip live-profitability gate (sp-u4tv): the FINAL money guard on an
+			// otherwise-eligible lane. Re-priced this pass from the ask/bid read above
+			// (never a cached spread), it refuses a lane whose live net_per_u (spread −
+			// fuel) is below the binding floor — the fix for the fleet's own buys walking
+			// a thin export up until the leg goes net-negative. Only checked when nothing
+			// cheaper already excluded the lane, so a below-floor lane is attributed to
+			// this gate (not masked by a policy/leash skip), and it auto-re-enters the
+			// pass its price recovers.
+			if reason == skipNone && !d.laneClearsProfitFloor(ask, bid) {
+				reason = skipReasonUnprofitable
+			}
 
 			// Per-candidate verdict logging (sp-nw9v): emit one terse line for
 			// every positive-margin candidate with the COMPUTED distance the leash
@@ -1019,7 +1149,9 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 // value the leash decision turned on so a masked mis-pick is impossible to hide:
 // the good, the buy/sell waypoints WITH the coordinates the distance was measured
 // between, that computed distance against the live leash/hub radii, the projected
-// CRUISE leg-time against the cap, the quoted margin (bid−ask), the buy/sell
+// CRUISE leg-time against the cap, the quoted margin (bid−ask), the per-unit net
+// after fuel against the binding profitability floor (sp-u4tv — so a
+// skipped:unprofitable verdict shows the numbers that refused it), the buy/sell
 // market read ages, and the verdict (eligible, or skipped:<reason>). This is the
 // surface an all-pairs analyst scan is diffed against. It is LOG-ONLY: it reads
 // no new state and changes no pick, threshold, or guard (RULINGS #4).
@@ -1044,12 +1176,13 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 	legSeconds := shared.FlightModeCruise.TravelTime(lane.Distance, hull.EngineSpeed())
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", fmt.Sprintf(
-		"Idle-arb candidate: %s %s buy@%s(%.0f,%.0f) -> sell@%s(%.0f,%.0f) dist %.0fu (leash %.0f, hub %.0f), leg %ds (cap %s), margin %d/u (bid %d - ask %d), age buy %s/sell %s, verdict %s",
+		"Idle-arb candidate: %s %s buy@%s(%.0f,%.0f) -> sell@%s(%.0f,%.0f) dist %.0fu (leash %.0f, hub %.0f), leg %ds (cap %s), margin %d/u (bid %d - ask %d), net %d/u after fuel %d (floor %d), age buy %s/sell %s, verdict %s",
 		hull.ShipSymbol(), lane.Good,
 		buy.Symbol, buy.X, buy.Y, sell.Symbol, sell.X, sell.Y,
 		lane.Distance, d.cfg.LeashRadius, d.cfg.HubRadius,
 		legSeconds, d.cfg.MaxLegDuration,
 		lane.MarginPerUnit, lane.DestBid, lane.SourceAsk,
+		d.laneNetPerUnit(lane.SourceAsk, lane.DestBid), d.cfg.FuelCostPerUnit, d.netProfitFloor(lane.SourceAsk),
 		now.Sub(buyMarket.LastUpdated()).Round(time.Second), now.Sub(sellMarket.LastUpdated()).Round(time.Second),
 		verdict,
 	), nil)
@@ -1061,7 +1194,7 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 // 2: the LeashRadius bound, then the projected CRUISE leg-time from the hull's
 // engine speed against MaxLegDuration). None weakens the pre-existing HubRadius
 // filter; each only tightens (RULINGS #4).
-func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int, consult absorptionConsult) idleArbSkipReason {
+func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int, consult absorptionConsult, sinkDepthCap, legUnits int) idleArbSkipReason {
 	if d.isBlacklisted(good) {
 		return skipReasonBlacklist
 	}
@@ -1084,12 +1217,14 @@ func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, 
 	if d.lanes.held(laneKey{good: good, sink: sink}) {
 		return skipReasonLaneHeld
 	}
-	// ABSORPTION LEDGER (sp-78ai L2): a sink the in-memory mutex does NOT hold but
-	// another engine has reserved in flight, or a recovering shadow still blocks — the
-	// cross-engine / cross-restart generalization of the mutex. Same structural hole
-	// as sp-i8vx (in-flight exposure), closed here from the market-absorption side.
-	// Metrics (sp-dp92 P6): observation only, mirrors the two outcomes of this guard.
-	if consult.reserved(good, sink) {
+	// ABSORPTION LEDGER (sp-78ai L2, depth-aware sp-3meh): a sink the in-memory mutex
+	// does NOT hold but another engine has reserved in flight (only blocking when the
+	// remaining depth can't fit this leg's tranche), or a recovering shadow still
+	// blocks — the cross-engine / cross-restart generalization of the mutex. Same
+	// structural hole as sp-i8vx (in-flight exposure), closed here from the
+	// market-absorption side. Metrics (sp-dp92 P6): observation only, mirrors the two
+	// outcomes of this guard.
+	if consult.reserved(good, sink, sinkDepthCap, legUnits) {
 		metrics.RecordAbsorptionConsultVerdict(d.playerID.Value(), "skip_reserved", absorptionEngineIdleArb)
 		return skipReasonReserved
 	}
@@ -1112,6 +1247,8 @@ func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
 		d.skipLaneHeld++
 	case skipReasonReserved:
 		d.skipReserved++
+	case skipReasonUnprofitable:
+		d.skipUnprofitable++
 	default:
 		return false
 	}
@@ -1137,8 +1274,8 @@ func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisP
 	}
 	logger.Log("INFO", fmt.Sprintf(
 		"Idle-arb harvest: %d leg(s) launched this pass; %d hull(s) re-homed this pass; %d attempt(s) total at %.1f/hr; "+
-			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d, reserved %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
+			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d, reserved %d, unprofitable %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
 		launchedThisPass, rehomedThisPass, d.attempts, rate,
-		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.skipReserved, d.rehomed,
+		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.skipReserved, d.skipUnprofitable, d.rehomed,
 	), nil)
 }

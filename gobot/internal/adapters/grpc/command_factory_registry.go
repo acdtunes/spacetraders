@@ -841,6 +841,10 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		IdleArbMarginVerifyPct:  cfg.OptionalInt("idle_arb_margin_verify_pct", 0),
 		IdleArbRecoveryHoldSecs: cfg.OptionalInt("idle_arb_recovery_hold_secs", 0),
 		IdleArbBlacklist:        cfg.OptionalStringSlice("idle_arb_blacklist"),
+		// sp-u4tv per-trip profitability floor (0 → WithDefaults: 100/u, 20%, 35/u fuel).
+		IdleArbMinNetProfit:    cfg.OptionalInt("idle_arb_min_net_profit", 0),
+		IdleArbNetProfitPct:    cfg.OptionalInt("idle_arb_net_profit_pct", 0),
+		IdleArbFuelCostPerUnit: cfg.OptionalInt("idle_arb_fuel_cost_per_unit", 0),
 	}
 }
 

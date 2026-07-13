@@ -254,6 +254,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				Interval:             time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
 				// sp-lbbm lane mutex recovery hold (0 → WithDefaults applies 20min).
 				RecoveryHold: time.Duration(cmd.IdleArbRecoveryHoldSecs) * time.Second,
+				// sp-u4tv per-trip profitability floor. Percent → fraction (0 →
+				// WithDefaults applies 100/u, 0.20, 35/u fuel).
+				MinNetProfitPerUnit: cmd.IdleArbMinNetProfit,
+				NetProfitFraction:   float64(cmd.IdleArbNetProfitPct) / 100.0,
+				FuelCostPerUnit:     cmd.IdleArbFuelCostPerUnit,
 			},
 		)
 		// sp-78ai L2: wire the cross-engine absorption ledger so the dispatcher
