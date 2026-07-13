@@ -37,12 +37,20 @@ type fakeConstructionProducer struct {
 	deliverCalls  []producerDeliverCall
 	produceErr    error
 	deliverErr    error
+	// sp-2me2: capture the hull-fill target the drain stamped on ctx at ProduceGood, so a test can
+	// assert the drain fills toward the outstanding bill rather than one trade-volume tranche.
+	observedBill   int
+	observedFillOK bool
 }
 
 type producerDeliverCall struct{ ship, good, site string }
 
 func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigation.Ship, node *goods.SupplyChainNode, _ string, _ int, _ *shared.OperationContext, _ bool) (*mfgServices.ProductionResult, error) {
 	p.produceGoods = append(p.produceGoods, node.Good)
+	if bill, _, ok := mfgServices.HullFillTargetFromContext(ctx); ok {
+		p.observedBill = bill
+		p.observedFillOK = true
+	}
 	p.produceNodes = append(p.produceNodes, node)
 	p.produceCtxCon = append(p.produceCtxCon, shared.ConstructionSupplyFromContext(ctx))
 	if p.produceErr != nil {
@@ -271,6 +279,36 @@ func TestConstructionDrain_SuppliesReadyTask(t *testing.T) {
 	}
 	if resp.TasksDrained != 1 {
 		t.Fatalf("expected TasksDrained=1, got %d", resp.TasksDrained)
+	}
+}
+
+// sp-2me2 — before sourcing, the drain stamps the material's OUTSTANDING bill (target minus
+// delivered) as the hull-fill target on ctx, so the shared executor tops the hauler up toward
+// capacity (bounded by the bill) instead of carrying one ~trade-volume tranche (~1/4 hull, 4x the
+// round-trips). FAB_MATS here has a 100-unit target with 30 already delivered, so the drain must
+// stamp a 70-unit fill target.
+func TestConstructionDrain_StampsRemainingBillAsHullFillTarget(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	if err := pipeline.RecordMaterialDelivery("FAB_MATS", 30); err != nil {
+		t.Fatalf("RecordMaterialDelivery: %v", err)
+	}
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if !producer.observedFillOK {
+		t.Fatal("expected the drain to stamp a hull-fill target on ctx before sourcing the material")
+	}
+	if producer.observedBill != 70 {
+		t.Fatalf("expected the outstanding bill (100 target - 30 delivered = 70) as the fill target, got %d", producer.observedBill)
 	}
 }
 

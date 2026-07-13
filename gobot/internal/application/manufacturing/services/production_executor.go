@@ -141,6 +141,66 @@ func resolveInputBuyFloor(ctx context.Context, absolute, liveTreasury int) int {
 	return effective
 }
 
+// defaultHullFillFraction is the fraction of a hauler's hold the construction-supply drain fills
+// per trip when no fraction is configured (sp-2me2). 1.0 = fill the whole hull — the fix's intent:
+// a construction buy tops the hold up toward capacity instead of stopping at one trade-volume
+// tranche (~1/4 hull), which quartered per-trip throughput. A 0/absent value resolves here at the
+// point of use — a protective default that turns the FILL on, not money movement, so a default is
+// correct (RULINGS #5); WithHullFillTarget's fraction parameter is the seam a per-run config sets
+// to fill a smaller fraction.
+const defaultHullFillFraction = 1.0
+
+// hullFillCtxKey carries the per-trip hull-fill target for a construction-supply input buy. It
+// rides on ctx (not a struct field) for the SAME singleton-executor race reason as the reserve /
+// price-ceiling / sourcing configs: the ProductionExecutor is shared across every concurrent
+// container, so a struct field would race between sibling drains; ctx is per-Handle and race-free.
+type hullFillCtxKey struct{}
+
+type hullFillTarget struct {
+	billRemaining int     // units of this material the site still needs; <=0 => no bill cap (fill to fraction × hull)
+	fraction      float64 // fraction of hull capacity to fill this trip; <=0 => defaultHullFillFraction
+}
+
+// WithHullFillTarget stamps the per-trip hull-fill target onto ctx so buyGood tops the hold up
+// toward hull capacity for a construction-supply buy instead of carrying a single trade-volume
+// tranche (sp-2me2). billRemaining caps the fill at the material's outstanding bill (never
+// over-buying past demand); fraction (<=0 => full hull) parametrizes how much of the hold to fill
+// (RULINGS #5). ONLY the construction drain stamps this; every other buyGood caller (goods-factory
+// inputs) leaves it unset and keeps the single-tranche behavior exactly as before (RULINGS #2).
+func WithHullFillTarget(ctx context.Context, billRemaining int, fraction float64) context.Context {
+	return context.WithValue(ctx, hullFillCtxKey{}, hullFillTarget{billRemaining: billRemaining, fraction: fraction})
+}
+
+// HullFillTargetFromContext reports the per-trip hull-fill target stamped by WithHullFillTarget.
+// ok is false when no target was stamped — buyGood then keeps its single-tranche behavior.
+func HullFillTargetFromContext(ctx context.Context) (billRemaining int, fraction float64, ok bool) {
+	if v, vok := ctx.Value(hullFillCtxKey{}).(hullFillTarget); vok {
+		return v.billRemaining, v.fraction, true
+	}
+	return 0, 0, false
+}
+
+// liveAsk re-reads the current EXPORT ask (sell price) of good at waypoint from the market DB — the
+// per-iteration price the hull-fill loop re-checks its guards against, so a laddering market is not
+// chased tranche-by-tranche (sp-2me2). ok is false when the market/good is unreadable or the ask is
+// non-positive; the loop treats that as fail-CLOSED (stop, deliver what is aboard), never buying at
+// an unknown price (RULINGS #4).
+func (e *ProductionExecutor) liveAsk(ctx context.Context, waypoint, good string, playerID int) (int, bool) {
+	marketData, err := e.marketRepo.GetMarketData(ctx, waypoint, playerID)
+	if err != nil || marketData == nil {
+		return 0, false
+	}
+	tradeGood := marketData.FindGood(good)
+	if tradeGood == nil {
+		return 0, false
+	}
+	ask := tradeGood.SellPrice()
+	if ask <= 0 {
+		return 0, false
+	}
+	return ask, true
+}
+
 // SpendReservationLedger is the cross-container concurrent factory-input spend cap
 // (sp-w3he). The per-buy floor (sp-9aoc) checks live treasury per container, but N factory
 // containers can each pass that independent check inside the check->buy window and
@@ -398,100 +458,159 @@ func (e *ProductionExecutor) buyGood(
 		}
 	}
 
-	// Cap at trade volume to leave room for other inputs
-	purchaseQty := min(availableSpace, marketResult.TradeVolume)
-	if purchaseQty <= 0 {
+	// A zero-volume market cannot be bought from (preserves the prior "trade volume is zero"
+	// error for both the single-tranche and hull-fill paths).
+	if marketResult.TradeVolume <= 0 {
 		return nil, fmt.Errorf("trade volume is zero for %s", node.Good)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Purchasing %d units of %s (cargo: %d, trade_volume: %d)", purchaseQty, node.Good, availableSpace, marketResult.TradeVolume), nil)
+	// Per-trip fill target (sp-2me2). A construction-supply buy tops the hold up TOWARD hull
+	// capacity so a full round-trip carries ~a hull, not one ~trade-volume tranche (~1/4 hull,
+	// which quadrupled the round-trips). A single SpaceTraders market buy is itself capped at
+	// trade_volume, so filling the hold needs a LOOP of tranches. Every OTHER caller (goods-factory
+	// inputs) stamps NO fill target and keeps the original single-tranche behavior — buy ONE input
+	// so the hold has room for the factory's other inputs (RULINGS #2).
+	capacity := updatedShip.Cargo().Capacity
+	onboard := updatedShip.Cargo().Units
+	billRemaining, fraction, fillMode := HullFillTargetFromContext(ctx)
 
-	// Working-capital spend floor (sp-9aoc): refuse this input buy BEFORE it dispatches
-	// if paying for it would drop live treasury below the reserve. This is the per-buy
-	// backstop to bp6f's circuit-level floor — 4 goods factories buying inputs
-	// concurrently with no floor drained 848k→23k in ~1min, the same drain class the
-	// trade incident had. chain_margin_guard (sp-2dv4) sits UPSTREAM at the coordinator
-	// on projected chain margin; this is the last-line check at the actual point of spend.
-	projectedCost := purchaseQty * marketResult.Price
-	if e.spendFloorBreached(ctx, projectedCost) {
-		// PARK: zero-spend result, mirroring the recoverable-condition returns above
-		// (full-hold skip, empty-tranche skip). The numbers go IN THE MESSAGE too
-		// (sp-iqyq) — the container log renderer drops the metadata map, so a park
-		// hidden only in {"projected_cost": ...} never reaches an operator.
-		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
-			"good":           node.Good,
-			"market":         marketResult.WaypointSymbol,
-			"projected_cost": projectedCost,
-			"action":         "factory_parked",
-			"reason":         "spend_floor",
+	// tripTarget = the max units of node.Good to acquire THIS trip.
+	tripTarget := marketResult.TradeVolume // single-tranche default (factory input path)
+	if fillMode {
+		if fraction <= 0 {
+			fraction = defaultHullFillFraction
+		}
+		tripTarget = int(float64(capacity) * fraction)
+		if billRemaining > 0 && billRemaining < tripTarget {
+			tripTarget = billRemaining // never over-buy past the outstanding bill
+		}
+	}
+
+	acquired := 0
+	totalCost := 0
+	for {
+		availableSpace := capacity - onboard
+		if availableSpace <= 0 {
+			break // STOP: hold full
+		}
+		want := tripTarget - acquired
+		if want <= 0 {
+			break // STOP: fill target / remaining bill met (single-tranche: one buy already done)
+		}
+		trancheQty := min(availableSpace, marketResult.TradeVolume, want)
+		if trancheQty <= 0 {
+			break
+		}
+
+		// Per-tranche price. The single-tranche path keeps the selection-time snapshot (behavior
+		// preserved). The hull-fill loop RE-READS the live ask each iteration and re-checks the
+		// cross-market price ceiling, so a market laddering under our own draw is not chased
+		// tranche-by-tranche (sp-2me2). An unreadable live ask fails CLOSED — stop the loop and
+		// deliver what is aboard, never buy blind (RULINGS #4).
+		ask := marketResult.Price
+		if fillMode {
+			liveAsk, ok := e.liveAsk(ctx, marketResult.WaypointSymbol, node.Good, playerID)
+			if !ok {
+				logger.Log("WARNING", fmt.Sprintf("Stopping hull-fill of %s at %s after %d units — could not re-read the live ask for the per-tranche price check (fail-closed); delivering what is aboard", node.Good, marketResult.WaypointSymbol, acquired), map[string]interface{}{
+					"good": node.Good, "market": marketResult.WaypointSymbol, "acquired": acquired,
+					"action": "hull_fill_stopped", "reason": "live_ask_unreadable",
+				})
+				break
+			}
+			ask = liveAsk
+			if mode == sourceModeEligible && e.inputPriceCeilingParked(ctx, marketResult.WaypointSymbol, node.Good, systemSymbol, playerID, ask) {
+				break // STOP: ask laddered above the ceiling — deliver what is aboard, park the rest
+			}
+		}
+
+		// Working-capital spend floor (sp-9aoc) — re-checked EACH iteration against live treasury,
+		// fail-CLOSED under the loop (RULINGS #4): once the NEXT tranche would drop treasury below
+		// the reserve the loop stops and delivers what is aboard, never forcing the buy. This is the
+		// per-buy backstop to bp6f's circuit-level floor; chain_margin_guard (sp-2dv4) sits UPSTREAM
+		// at the coordinator. The park cause goes IN THE MESSAGE (sp-iqyq) — the container log
+		// renderer drops the metadata map.
+		projectedCost := trancheQty * ask
+		if e.spendFloorBreached(ctx, projectedCost) {
+			if acquired == 0 {
+				logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
+					"good": node.Good, "market": marketResult.WaypointSymbol, "projected_cost": projectedCost,
+					"action": "factory_parked", "reason": "spend_floor",
+				})
+			} else {
+				logger.Log("WARNING", fmt.Sprintf("Stopping purchase of %s at %s after %d units — next tranche would breach the working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, acquired, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
+					"good": node.Good, "market": marketResult.WaypointSymbol, "projected_cost": projectedCost, "acquired": acquired,
+					"action": "factory_parked", "reason": "spend_floor",
+				})
+			}
+			break
+		}
+
+		// Cross-container concurrent spend cap (sp-w3he): the floor above is a PER-CONTAINER live
+		// check, so N containers can each clear it inside their own check->buy window and
+		// collectively breach the reserve. This HARD cap serializes all containers' in-flight input
+		// spend through a shared DB ledger and PARKS if the combined exposure would breach. Also
+		// re-checked per iteration and fail-CLOSED. Reserved per tranche and released after it.
+		reservationID, parked := e.reserveConcurrentSpendOrPark(ctx, playerID, projectedCost, marketResult.WaypointSymbol, node.Good)
+		if parked {
+			break // STOP: concurrent cap (reserveConcurrentSpendOrPark logged the cause)
+		}
+
+		logger.Log("INFO", fmt.Sprintf("Purchasing %d units of %s (cargo space: %d, trade_volume: %d, acquired so far: %d)", trancheQty, node.Good, availableSpace, marketResult.TradeVolume, acquired), nil)
+
+		purchaseCmd := &shipCargo.PurchaseCargoCommand{
+			ShipSymbol: updatedShip.ShipSymbol(),
+			GoodSymbol: node.Good,
+			Units:      trancheQty,
+			PlayerID:   playerIDValue,
+		}
+
+		// Dispatch through the empty-tranche guard: a transient "must be docked" is still re-docked
+		// and retried inside (sp-n7yp); an empty / zero-volume tranche ("partial failure: ... 0
+		// units processed" / API 400) is bounded-retried then reported as a skip so the feeder
+		// survives instead of crashing the container (sp-q02m crash #4).
+		response, err := e.purchaseInputWithEmptyTrancheGuard(ctx, purchaseCmd)
+		if err != nil {
+			e.releaseSpendReservation(ctx, reservationID)
+			return nil, fmt.Errorf("failed to purchase cargo: %w", err)
+		}
+		if response == nil {
+			// Empty tranche persisted across the retry bound — the market is drained. STOP the fill
+			// and deliver whatever is aboard (nothing yet if this was the first tranche).
+			e.releaseSpendReservation(ctx, reservationID)
+			if acquired == 0 {
+				logger.Log("WARN", fmt.Sprintf("Skipped empty tranche for %s at %s — market sold 0 units; feeder continues", node.Good, marketResult.WaypointSymbol), map[string]interface{}{
+					"good": node.Good, "market": marketResult.WaypointSymbol,
+				})
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Stopping hull-fill of %s at %s after %d units — market stock exhausted; delivering what is aboard", node.Good, marketResult.WaypointSymbol, acquired), map[string]interface{}{
+					"good": node.Good, "market": marketResult.WaypointSymbol, "acquired": acquired,
+				})
+			}
+			break
+		}
+		e.releaseSpendReservation(ctx, reservationID)
+
+		acquired += response.UnitsAdded
+		onboard += response.UnitsAdded
+		totalCost += response.TotalCost
+		logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, node.Good, response.TotalCost), map[string]interface{}{
+			"good":       node.Good,
+			"quantity":   response.UnitsAdded,
+			"total_cost": response.TotalCost,
+			"market":     marketResult.WaypointSymbol,
 		})
-		return &ProductionResult{
-			QuantityAcquired: 0,
-			TotalCost:        0,
-			WaypointSymbol:   marketResult.WaypointSymbol,
-		}, nil
-	}
 
-	// Cross-container concurrent spend cap (sp-w3he): the floor above is a PER-CONTAINER
-	// live check, so N factory containers can each clear it inside their own check->buy
-	// window and collectively breach the reserve. This HARD cap serializes all factories'
-	// in-flight input spend through a shared DB ledger — it records this buy's intent and
-	// PARKS if the combined exposure would breach. Kept as a SECOND gate (not folded into
-	// the floor) so each guard owns a distinct, legible park reason and sp-9aoc stays intact.
-	reservationID, parked := e.reserveConcurrentSpendOrPark(ctx, playerID, projectedCost, marketResult.WaypointSymbol, node.Good)
-	if parked {
-		return &ProductionResult{
-			QuantityAcquired: 0,
-			TotalCost:        0,
-			WaypointSymbol:   marketResult.WaypointSymbol,
-		}, nil
+		if !fillMode {
+			break // single-tranche (goods-factory input) path: exactly one buy, unchanged
+		}
+		if response.UnitsAdded <= 0 {
+			break // safety: no forward progress (never spin)
+		}
 	}
-	if reservationID != "" {
-		// Release on EVERY exit below (success, empty-tranche skip, or error) — defer covers
-		// them all. A failed release only leaks until the staleness sweep reclaims it.
-		defer e.releaseSpendReservation(ctx, reservationID)
-	}
-
-	// Purchase cargo (capped by trade volume)
-	purchaseCmd := &shipCargo.PurchaseCargoCommand{
-		ShipSymbol: updatedShip.ShipSymbol(),
-		GoodSymbol: node.Good,
-		Units:      purchaseQty,
-		PlayerID:   playerIDValue,
-	}
-
-	// Dispatch through the empty-tranche guard: a transient "must be docked" is still
-	// re-docked and retried inside (sp-n7yp); an empty / zero-volume tranche
-	// ("partial failure: ... 0 units processed" / API 400) is bounded-retried then
-	// skipped so the feeder survives instead of crashing the container (sp-q02m crash #4).
-	response, err := e.purchaseInputWithEmptyTrancheGuard(ctx, purchaseCmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
-	}
-	if response == nil {
-		// Empty tranche persisted across the retry bound: skip this input with a
-		// zero-unit result and let the run continue rather than crashing the container.
-		logger.Log("WARN", fmt.Sprintf("Skipped empty tranche for %s at %s — market sold 0 units; feeder continues", node.Good, marketResult.WaypointSymbol), map[string]interface{}{
-			"good":   node.Good,
-			"market": marketResult.WaypointSymbol,
-		})
-		return &ProductionResult{
-			QuantityAcquired: 0,
-			TotalCost:        0,
-			WaypointSymbol:   marketResult.WaypointSymbol,
-		}, nil
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, node.Good, response.TotalCost), map[string]interface{}{
-		"good":       node.Good,
-		"quantity":   response.UnitsAdded,
-		"total_cost": response.TotalCost,
-		"market":     marketResult.WaypointSymbol,
-	})
 
 	return &ProductionResult{
-		QuantityAcquired: response.UnitsAdded,
-		TotalCost:        response.TotalCost,
+		QuantityAcquired: acquired,
+		TotalCost:        totalCost,
 		WaypointSymbol:   marketResult.WaypointSymbol,
 	}, nil
 }

@@ -280,6 +280,15 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		return false
 	}
 
+	// Fill the hauler TOWARD hull capacity before delivering (sp-2me2): stamp the material's
+	// outstanding bill as the executor's hull-fill target so a full round-trip carries ~a hull,
+	// not one ~trade-volume tranche (~1/4 hull, which quadrupled the round-trips). The executor
+	// loops market buys until the hold is full, the bill is met, or a money/price guard trips
+	// (fail-closed). fraction 0 => the full-hull default resolved in the executor; the fraction is
+	// the RULINGS #5 seam a per-run config can later tighten. A 0 bill (pipeline/material
+	// unreadable) leaves the executor to fill to full capacity — a supply is never harmful.
+	ctx = mfgServices.WithHullFillTarget(ctx, h.remainingBill(ctx, task), 0)
+
 	// Source the material INTO the hauler on the shared engine, honoring the planner's
 	// already-made buy-vs-produce decision recorded on the task: a direct BUY of the final good
 	// (source market resolved, no factory), or a FABRICATION (a factory resolved) driven as an
@@ -291,7 +300,8 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 
 	// Mark the run as construction supply so the engine's RESALE-margin guards (chain-margin
 	// sp-iv65, crushed-sink bp6f #3) are scoped out — the harvested output is delivered to the
-	// gate, never resold. INPUT buys still pass the full money-guard stack (RULINGS #4).
+	// gate, never resold. INPUT buys still pass the full money-guard stack (RULINGS #4). The
+	// hull-fill target stamped above rides on ctx, so produceCtx carries both (sp-2me2 + sp-qmp8).
 	produceCtx := shared.WithConstructionSupply(ctx)
 	result, err := h.producer.ProduceGood(produceCtx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
 	if err != nil {
@@ -394,6 +404,30 @@ func (h *RunConstructionCoordinatorHandler) pipelineExecuting(ctx context.Contex
 	executing := err == nil && pipeline != nil && pipeline.Status() == manufacturing.PipelineStatusExecuting
 	cache[pipelineID] = executing
 	return executing
+}
+
+// remainingBill returns how many more units of the task's material the construction site still
+// needs — the pipeline material target minus what has been delivered (sp-2me2). It bounds the
+// executor's hull-fill so a trip never over-buys past demand. Returns 0 (no bill cap → the
+// executor fills to full hull capacity) whenever the pipeline or material is unavailable: a
+// supply is never harmful (the site accepts only what it needs and the next tick re-polls), so an
+// unreadable bill safely falls back to a full-hull fill rather than blocking the trip.
+func (h *RunConstructionCoordinatorHandler) remainingBill(ctx context.Context, task *manufacturing.ManufacturingTask) int {
+	if task.PipelineID() == "" {
+		return 0
+	}
+	pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID())
+	if err != nil || pipeline == nil {
+		return 0
+	}
+	material := pipeline.GetMaterial(task.Good())
+	if material == nil {
+		return 0
+	}
+	if remaining := material.RemainingQuantity(); remaining > 0 {
+		return remaining
+	}
+	return 0
 }
 
 // recordDelivery advances the pipeline's construction progress by the delivered units and
