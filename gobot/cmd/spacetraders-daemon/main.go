@@ -712,6 +712,29 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register SitingCoordinator handler: %w", err)
 	}
 
+	// Register the standing contract-HUB placement coordinator (sp-q2zq): the demand-side
+	// SIBLING of the factory-siting coordinator above. Each slow tick it SCANs candidate hubs
+	// (the cheapest in-system EXPORT/EXCHANGE source for each recent-contract good — single
+	// system, RULINGS #14), SCOREs them by the MARGINAL payment-weighted buy-leg each eliminates
+	// (greedy facility-location over an EWMA-smoothed demand signal, so a central cluster
+	// self-limits and outliers score high), and PLACEs each new / idle-unhomed contract hauler at
+	// argmax marginal, growing the hub portfolio with the fleet. Phase 1 is placement-only: it
+	// never re-homes an already-homed hull (zero thrash) and is idle-only (never strands a hull
+	// mid-contract). LIVE BY DEFAULT (Admiral: no dark-shipping); every knob resolves live from
+	// the launch config (RULINGS #5). Like the siting sibling, registering the handler makes a
+	// launched or recovered container runnable — nothing auto-starts on daemon boot.
+	// The concrete port adapters (candidate scan over the market repo, demand EWMA source over the
+	// recent-contracts projection, hauler-home source over the ship repo, and the home ASSIGNER
+	// that persists to the contract coordinator's standby-station set via the daemon single-writer
+	// `fleet hub` path — RULINGS #2/#3) are assembled inside grpc.NewContractHubCoordinatorHandler
+	// from the SAME contract/market/waypoint/ship repos the contract path already uses.
+	contractHubCoordinatorHandler := grpc.NewContractHubCoordinatorHandler(
+		daemonServer, contractRepo, marketRepoAdapter, waypointRepo, shipRepo,
+	)
+	if err := mediator.RegisterHandler[*contractCmd.RunContractHubCoordinatorCommand](med, contractHubCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register ContractHubCoordinator handler: %w", err)
+	}
+
 	// Fleet capacity autosizer (sp-1txd): the buy-side twin of the siting coordinator. It sizes the
 	// hull pool to demand and auto-buys hulls behind the fail-closed money-guard stack. LIVE BY
 	// DEFAULT once first-launched (CLI/gRPC), recovery-adopted on restart. All concrete ports —

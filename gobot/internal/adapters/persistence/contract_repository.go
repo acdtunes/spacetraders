@@ -75,6 +75,62 @@ func (r *GormContractRepository) Add(ctx context.Context, c *contract.Contract) 
 	return nil
 }
 
+// RecentContractDemand is one recent contract's demand signal for the contract-hub
+// placement coordinator (sp-q2zq): the DISTINCT goods it required plus its
+// payment-on-fulfilled. The hub coordinator folds a SEQUENCE of these into an EWMA per
+// good (payment × recurrence, smoothed), so single-contract noise cannot move a hauler's
+// home. It is a read-only projection over the contracts table — no schema change.
+type RecentContractDemand struct {
+	Goods              []string
+	PaymentOnFulfilled int
+}
+
+// RecentContractDemand returns up to `limit` of the player's most-recent contracts as
+// demand rows, ordered OLDEST→NEWEST — the order the hub coordinator's EWMA folds them
+// (a recurring good keeps a high smoothed weight; a one-off decays). last_updated is an
+// ISO-8601 string, so a lexicographic DESC sort is chronological newest-first; the slice
+// is then reversed for the fold. A single unparseable deliveries blob is skipped, never
+// fatal, so one corrupt row can never blind placement (the coordinator is fail-safe).
+func (r *GormContractRepository) RecentContractDemand(ctx context.Context, playerID, limit int) ([]RecentContractDemand, error) {
+	if limit <= 0 {
+		limit = defaultRecentContractDemandLimit
+	}
+
+	var models []ContractModel
+	result := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Order("last_updated DESC").
+		Limit(limit).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to read recent contracts for demand: %w", result.Error)
+	}
+
+	out := make([]RecentContractDemand, 0, len(models))
+	for i := len(models) - 1; i >= 0; i-- { // reverse newest-first → oldest→newest for the EWMA
+		var deliveries []contract.Delivery
+		if err := json.Unmarshal([]byte(models[i].DeliveriesJSON), &deliveries); err != nil {
+			continue // one corrupt blob must not blind the whole demand read
+		}
+		seen := make(map[string]struct{}, len(deliveries))
+		var goods []string
+		for _, d := range deliveries {
+			if _, ok := seen[d.TradeSymbol]; ok {
+				continue
+			}
+			seen[d.TradeSymbol] = struct{}{}
+			goods = append(goods, d.TradeSymbol)
+		}
+		out = append(out, RecentContractDemand{Goods: goods, PaymentOnFulfilled: models[i].PaymentOnFulfilled})
+	}
+	return out, nil
+}
+
+// defaultRecentContractDemandLimit bounds the demand read to the recent contract history
+// (an era ran ~46 contracts; 200 comfortably covers it). It is a query bound, not an
+// operational threshold — the EWMA half-life (the tuned knob) lives on the coordinator.
+const defaultRecentContractDemandLimit = 200
+
 // modelToEntity converts database model to domain entity
 func (r *GormContractRepository) modelToEntity(model *ContractModel) (*contract.Contract, error) {
 	// Unmarshal deliveries JSON
