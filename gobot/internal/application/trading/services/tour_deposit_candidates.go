@@ -46,8 +46,12 @@ type DepositCandidateConfig struct {
 	TopN              int
 	MinRecurrence     int
 	MinSavingsPerUnit int
-	Allowlist         []string // nil => every stock-eligible good; else restrict to these
-	Blocklist         []string // never deposited; wins over the allowlist
+	// BuyLegSavingsPerUnit credits the source→central buy-leg the contract worker skips
+	// (sp-layd), passed through to the miner so an in-system-sourceable good clears the
+	// savings guard. <=0 => the miner's DefaultBuyLegSavingsPerUnit.
+	BuyLegSavingsPerUnit int
+	Allowlist            []string // nil => every stock-eligible good; else restrict to these
+	Blocklist            []string // never deposited; wins over the allowlist
 }
 
 // depositVerdict accumulates the per-re-plan deposit-candidate funnel so the
@@ -202,7 +206,7 @@ func BuildDepositCandidates(
 	}
 
 	rows, err := miner.Mine(ctx, v.homeSystem, playerID, nil, persistence.DemandMinerOptions{
-		MinRecurrence: cfg.MinRecurrence, TopN: depositCandidateMinerTopN,
+		MinRecurrence: cfg.MinRecurrence, TopN: depositCandidateMinerTopN, BuyLegSavingsPerUnit: cfg.BuyLegSavingsPerUnit,
 	})
 	if err != nil {
 		v.level = "WARNING"

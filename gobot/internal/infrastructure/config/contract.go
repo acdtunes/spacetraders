@@ -86,8 +86,15 @@ type PrePositioningSettings struct {
 	// defaultDepositCeilingPct.)
 	CapitalCeilingPct int `mapstructure:"capital_ceiling_pct"`
 	// MinSavingsPerUnit is the static per-unit savings floor a candidate must clear
-	// to be worth stocking (home_ask - foreign_ask >= this). <=0 => default 1.
+	// to be worth stocking (projected_savings >= this). <=0 => default 1.
 	MinSavingsPerUnit int `mapstructure:"min_savings_per_unit"`
+	// BuyLegSavingsPerUnit is the per-unit value credited to the source→central buy-leg
+	// the contract worker skips when a good is pre-positioned (sp-layd). It makes
+	// IN-SYSTEM pre-positioning worthwhile when the cheapest source is the home system
+	// (price differential 0): the warehouse compresses the export→A1 haul. <=0 => the
+	// miner's DefaultBuyLegSavingsPerUnit (fail OPEN for the in-system case, RULINGS #5 —
+	// the captain/analyst raises it to the real haul value).
+	BuyLegSavingsPerUnit int `mapstructure:"buy_leg_savings_per_unit"`
 	// Allowlist, when non-nil, restricts candidates to exactly these goods (after
 	// the eligibility + savings gates). Nil => every stock-eligible good qualifies.
 	Allowlist []string `mapstructure:"allowlist"`

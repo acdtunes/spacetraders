@@ -21,10 +21,19 @@ const (
 	// DefaultTopN caps the ranked candidate rows returned when the caller does not
 	// specify its own limit.
 	DefaultTopN = 20
-	// foreignMarketScanLimit bounds the cross-system cheapest-ask scan per good. The
-	// miner keeps only the cheapest FOREIGN market, and few systems have scanned data,
-	// so a small window suffices (mirrors the sourcing optimizer's crossSystemCandidateLimit).
-	foreignMarketScanLimit = 25
+	// DefaultBuyLegSavingsPerUnit is the per-unit value credited to the source→central
+	// buy-leg the contract worker skips when a good is pre-positioned (sp-layd reframe).
+	// It is what makes IN-SYSTEM pre-positioning worthwhile even when the cheapest source
+	// IS the home system (price differential 0): the warehouse compresses the export→A1
+	// haul the worker would otherwise fly. A small positive default keeps the in-system
+	// case FAIL-OPEN (a home-sourceable recurrent good clears the "savings > 0" guard by
+	// default) while the captain/analyst tunes it up to the real haul value (RULINGS #5 —
+	// config wins, this is only the fallback).
+	DefaultBuyLegSavingsPerUnit = 1
+	// sourceMarketScanLimit bounds the cross-system cheapest-ask scan per good. The miner
+	// keeps only the cheapest source overall, and few systems have scanned data, so a
+	// small window suffices (mirrors the sourcing optimizer's crossSystemCandidateLimit).
+	sourceMarketScanLimit = 25
 )
 
 // contractDemandSource yields the units-aware, home-scoped per-good contract demand
@@ -34,10 +43,11 @@ type contractDemandSource interface {
 }
 
 // marketAskFinder is the pair of cheapest-ask lookups the miner joins against: the
-// cross-system scan for the cheapest FOREIGN ask and the in-system scan for the HOME
-// ask. Satisfied by *MarketRepositoryGORM. Kept as a local narrow interface (not the
-// application/contract CrossSystemMarketFinder port) so the miner couples only to the
-// method shapes it uses.
+// all-systems scan for the cheapest SOURCE ask anywhere (home OR foreign — sp-layd) and
+// the in-system scan for the HOME ask (the contract-source alternative the worker would
+// otherwise buy at). Satisfied by *MarketRepositoryGORM. Kept as a local narrow interface
+// (not the application/contract CrossSystemMarketFinder port) so the miner couples only to
+// the method shapes it uses.
 type marketAskFinder interface {
 	FindCheapestMarketsSellingAllSystems(ctx context.Context, goodSymbol string, playerID int, limit int) ([]market.CheapestMarketResult, error)
 	FindCheapestMarketSelling(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.CheapestMarketResult, error)
@@ -48,32 +58,50 @@ type marketAskFinder interface {
 type DemandMinerOptions struct {
 	MinRecurrence int // drop goods demanded by fewer than this many contracts (<1 => DefaultMinRecurrence)
 	TopN          int // cap on ranked rows returned (<=0 => DefaultTopN)
+	// BuyLegSavingsPerUnit is the per-unit value of the source→central buy-leg the
+	// contract worker skips when a good is pre-positioned (sp-layd). Added to the
+	// price differential so an IN-SYSTEM-sourceable good (cheapest source == home,
+	// differential 0) still clears the "savings > 0" guard. <=0 =>
+	// DefaultBuyLegSavingsPerUnit (fail OPEN for the in-system case).
+	BuyLegSavingsPerUnit int
 }
 
 // DemandCandidate is one ranked pre-positioning row: a recurrently-contracted good
-// joined to the cheapest FOREIGN market that sells it and, when the home system sells
-// it, the home ask plus the per-unit savings.
+// joined to the cheapest SOURCE market anywhere that sells it (home OR foreign — sp-layd)
+// and, when the home system sells it, the home ask plus the per-unit savings.
 //
-// A row with no known foreign ask is DROPPED — there is nowhere to pre-position from,
-// so it is not a candidate (fail closed, RULINGS #4). A row with no known home ask is
-// RETAINED but flagged StockEligible=false: it is informative for the captain (and is
-// the sp-dchv "home never sells the good" signal, design §5 Q5) while remaining
-// unstockable for the deposit guard, which needs a known home ask to price savings.
+// The Foreign* field names are HISTORICAL (sp-dchv shipped cross-system-only): they now
+// carry the cheapest source ANYWHERE, which may be a market in the HOME system itself.
+// The consumers (stocker buy leg, tour deposit sink) buy at ForeignMarket regardless of
+// its system — an in-system source is trivially reachable (0 jumps) and hauled to the
+// central warehouse.
+//
+// A row with NO market anywhere (not even home) is DROPPED — nothing to source, nowhere
+// to buy, so it cannot be pre-positioned (fail closed, RULINGS #4; this is NOT the
+// in-system case the reframe protects). A row with a source but no known HOME ask is
+// RETAINED but flagged StockEligible=false: it is informative for the captain (the
+// sp-dchv "home never sells the good" signal, design §5 Q5) while remaining unstockable
+// for the deposit guard, which needs a known home ask to price the contract-source
+// alternative.
 type DemandCandidate struct {
 	Good                 string  `json:"good"`
 	ContractCount        int     `json:"contract_count"`
 	DemandUnits          int     `json:"demand_units"`
 	RecurrenceWindowDays float64 `json:"recurrence_window_days"`
 
-	ForeignMarket string `json:"foreign_market"` // cheapest foreign waypoint selling the good
+	ForeignMarket string `json:"foreign_market"` // cheapest SOURCE waypoint anywhere (may be in the home system)
 	ForeignSystem string `json:"foreign_system"`
-	ForeignAsk    int    `json:"foreign_ask"`
+	ForeignAsk    int    `json:"foreign_ask"` // the source ask (cheapest anywhere) — what the stocker pays to buy
 
 	HomeAsk      int  `json:"home_ask"` // 0 when the home system does not sell the good
 	HomeAskKnown bool `json:"home_ask_known"`
 
-	ProjectedSavingsPerUnit int  `json:"projected_savings_per_unit"` // HomeAsk-ForeignAsk when both known, else 0
-	StockEligible           bool `json:"stock_eligible"`             // both asks known AND savings > 0
+	// ProjectedSavingsPerUnit is the per-unit saving vs the CONTRACT-SOURCE ALTERNATIVE:
+	// (HomeAsk + buy-leg) − ForeignAsk when the home ask is known, else 0. The buy-leg
+	// term is what makes an in-system-sourceable good (ForeignAsk == HomeAsk) show a
+	// positive saving — the warehouse compresses the export→central haul the worker skips.
+	ProjectedSavingsPerUnit int  `json:"projected_savings_per_unit"`
+	StockEligible           bool `json:"stock_eligible"` // home ask known AND savings > 0
 }
 
 // DemandMiner produces the sp-dchv Lane A demand signal: the goods contract history
@@ -94,15 +122,24 @@ func NewDemandMiner(db *gorm.DB) *DemandMiner {
 	}
 }
 
+// NewDemandMinerWithSources wires a miner over explicit demand + market sources. It exists
+// so callers in other packages (and integration tests) can compose a real miner over
+// fakes without a live DB — the parameter interfaces are unexported, but a value that
+// satisfies them can still be passed from anywhere.
+func NewDemandMinerWithSources(demand contractDemandSource, markets marketAskFinder) *DemandMiner {
+	return &DemandMiner{demand: demand, markets: markets}
+}
+
 // Mine ranks the pre-positioning candidates for homeSystem. homeSystem is an EXPLICIT
 // parameter — there is no global "home" anchor today (design §5 Q1), so the caller
 // (CLI flag) must supply it. eraID scopes the contract history (nil = all eras; the
 // home-system filter already confines demand to the current universe's waypoints).
 //
-// Pipeline: home-scoped demand -> minRecurrence filter -> per good, cheapest FOREIGN
-// ask (home-system markets excluded) [required, else drop] + home ask [optional] ->
-// per-unit savings -> rank (stock-eligible first, then by total projected savings) ->
-// TopN.
+// Pipeline: home-scoped demand -> minRecurrence filter -> per good, cheapest SOURCE ask
+// ANYWHERE (home OR foreign — sp-layd) [required, else drop: no source = nothing to
+// pre-position] + home ask [optional, prices the contract-source alternative] -> per-unit
+// savings = (home ask + buy-leg) − source ask -> rank (stock-eligible first, then by total
+// projected savings) -> TopN.
 func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int, eraID *int, opts DemandMinerOptions) ([]DemandCandidate, error) {
 	if homeSystem == "" {
 		return nil, fmt.Errorf("home system is required (no default anchor — design §5 Q1)")
@@ -114,6 +151,10 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 	topN := opts.TopN
 	if topN <= 0 {
 		topN = DefaultTopN
+	}
+	buyLeg := opts.BuyLegSavingsPerUnit
+	if buyLeg <= 0 {
+		buyLeg = DefaultBuyLegSavingsPerUnit
 	}
 
 	rows, err := m.demand.ContractGoodDemand(ctx, eraID, &homeSystem)
@@ -127,12 +168,12 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			continue
 		}
 
-		foreign, err := m.cheapestForeignMarket(ctx, d.Good, homeSystem, playerID)
+		source, err := m.cheapestSourceMarket(ctx, d.Good, playerID)
 		if err != nil {
 			return nil, err
 		}
-		if foreign == nil {
-			continue // no reachable foreign source => cannot pre-position => drop (fail closed)
+		if source == nil {
+			continue // no market sells it anywhere => nothing to source => drop (fail closed)
 		}
 
 		c := DemandCandidate{
@@ -140,9 +181,9 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			ContractCount:        d.ContractCount,
 			DemandUnits:          d.UnitsRequired,
 			RecurrenceWindowDays: windowDays(d.FirstSeen, d.LastSeen),
-			ForeignMarket:        foreign.WaypointSymbol,
-			ForeignSystem:        shared.ExtractSystemSymbol(foreign.WaypointSymbol),
-			ForeignAsk:           foreign.SellPrice,
+			ForeignMarket:        source.WaypointSymbol,
+			ForeignSystem:        shared.ExtractSystemSymbol(source.WaypointSymbol),
+			ForeignAsk:           source.SellPrice,
 		}
 
 		home, err := m.markets.FindCheapestMarketSelling(ctx, d.Good, homeSystem, playerID)
@@ -150,9 +191,14 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			return nil, fmt.Errorf("failed to find home ask for %s: %w", d.Good, err)
 		}
 		if home != nil {
+			// Savings vs the contract-source alternative: the worker would source in-system
+			// at the home ask AND fly the export→delivery buy-leg; the warehouse buys at the
+			// cheapest source anywhere and pre-positions centrally. When the cheapest source
+			// IS the home system, the differential is 0 and the buy-leg alone carries the
+			// value (sp-layd: in-system pre-positioning is worthwhile, fail OPEN).
 			c.HomeAsk = home.SellPrice
 			c.HomeAskKnown = true
-			c.ProjectedSavingsPerUnit = home.SellPrice - foreign.SellPrice
+			c.ProjectedSavingsPerUnit = home.SellPrice + buyLeg - source.SellPrice
 			c.StockEligible = c.ProjectedSavingsPerUnit > 0
 		}
 
@@ -181,22 +227,22 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 	return candidates, nil
 }
 
-// cheapestForeignMarket returns the cheapest market selling good OUTSIDE homeSystem,
-// or nil when only the home system (or no system) sells it. Market data exists only
-// for scouted systems, so "has scanned data" doubles as the reachability filter — the
-// same working definition the sourcing optimizer uses for cross-system candidates.
-func (m *DemandMiner) cheapestForeignMarket(ctx context.Context, good, homeSystem string, playerID int) (*market.CheapestMarketResult, error) {
-	all, err := m.markets.FindCheapestMarketsSellingAllSystems(ctx, good, playerID, foreignMarketScanLimit)
+// cheapestSourceMarket returns the cheapest market selling good ANYWHERE — home system OR
+// foreign (sp-layd). It no longer excludes the home system: when home is the only scanned
+// system (post-weekly-reset), the home export IS the cheapest source and the good must be
+// pre-positionable from it, not dropped. Returns nil only when NO market anywhere sells the
+// good. Market data exists only for scouted systems, so "has scanned data" doubles as the
+// reachability filter — the same working definition the sourcing optimizer uses.
+func (m *DemandMiner) cheapestSourceMarket(ctx context.Context, good string, playerID int) (*market.CheapestMarketResult, error) {
+	all, err := m.markets.FindCheapestMarketsSellingAllSystems(ctx, good, playerID, sourceMarketScanLimit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan foreign markets for %s: %w", good, err)
+		return nil, fmt.Errorf("failed to scan source markets for %s: %w", good, err)
 	}
-	// Results are cheapest-first, so the first non-home market is the cheapest foreign one.
-	for i := range all {
-		if shared.ExtractSystemSymbol(all[i].WaypointSymbol) != homeSystem {
-			return &all[i], nil
-		}
+	if len(all) == 0 {
+		return nil, nil // no market sells it anywhere
 	}
-	return nil, nil
+	// Results are cheapest-first (sell_price ASC), so the first is the cheapest source.
+	return &all[0], nil
 }
 
 func windowDays(first, last time.Time) float64 {

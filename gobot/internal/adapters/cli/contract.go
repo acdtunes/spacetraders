@@ -421,20 +421,22 @@ func newContractDemandCommand() *cobra.Command {
 		homeSystem    string
 		minRecurrence int
 		topN          int
+		buyLeg        int
 		eraFlag       string
 		jsonOut       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "demand --system <SYSTEM>",
-		Short: "Recurring contract demand joined to cheapest foreign markets (pre-positioning candidates)",
+		Short: "Recurring contract demand joined to the cheapest source market anywhere (pre-positioning candidates)",
 		Long: `Mine contract history for the goods a HOME system's contracts repeatedly need,
-join each to the cheapest FOREIGN market that sells it and (when the home system
-sells it) the home ask, and rank the pre-positioning candidates by projected savings.
+join each to the cheapest SOURCE market that sells it ANYWHERE (home OR foreign) and
+(when the home system sells it) the home ask, and rank the pre-positioning candidates
+by projected savings vs the contract-source alternative.
 
 Read-only: no spending, no dispatch. The home system is an explicit --system flag —
-there is no global "home" anchor. Goods with no reachable foreign source are dropped;
-goods the home system does not sell are shown but flagged not stock-eligible.
+there is no global "home" anchor. Goods no market sells anywhere are dropped; goods the
+home system does not sell are shown but flagged not stock-eligible.
 
 Examples:
   spacetraders contract demand --system X1-KA42
@@ -459,7 +461,7 @@ Examples:
 				return err
 			}
 
-			opts := persistence.DemandMinerOptions{MinRecurrence: minRecurrence, TopN: topN}
+			opts := persistence.DemandMinerOptions{MinRecurrence: minRecurrence, TopN: topN, BuyLegSavingsPerUnit: buyLeg}
 			return runContractDemand(ctx, miner, os.Stdout, homeSystem, resolved.ID.Value(), eraID, opts, jsonOut)
 		},
 	}
@@ -467,6 +469,7 @@ Examples:
 	cmd.Flags().StringVar(&homeSystem, "system", "", "Home system to pre-position for, e.g. X1-KA42 [required]")
 	cmd.Flags().IntVar(&minRecurrence, "min-recurrence", persistence.DefaultMinRecurrence, "Minimum distinct contracts demanding a good before it counts as recurring")
 	cmd.Flags().IntVar(&topN, "top", persistence.DefaultTopN, "Cap on ranked candidate rows")
+	cmd.Flags().IntVar(&buyLeg, "buy-leg", persistence.DefaultBuyLegSavingsPerUnit, "Per-unit value of the source→central buy-leg the contract worker skips (makes in-system pre-positioning worthwhile)")
 	cmd.Flags().StringVar(&eraFlag, "era", "", "Era ID (default: all eras; the home-system filter already confines to the current universe)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 
@@ -484,13 +487,13 @@ func runContractDemand(ctx context.Context, miner demandMinerProvider, out io.Wr
 		return writeJSON(out, candidates)
 	}
 	if len(candidates) == 0 {
-		fmt.Fprintf(out, "No recurring contract demand with a reachable foreign source for home system %s.\n", homeSystem)
+		fmt.Fprintf(out, "No recurring contract demand with a sourceable market for home system %s.\n", homeSystem)
 		return nil
 	}
 
 	fmt.Fprintf(out, "Contract demand for home system %s (pre-positioning candidates)\n", homeSystem)
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "GOOD\tCONTRACTS\tUNITS\tWINDOW(d)\tFOREIGN MKT\tFOREIGN SYS\tF.ASK\tHOME ASK\tSAV/U\tSTOCK?")
+	fmt.Fprintln(w, "GOOD\tCONTRACTS\tUNITS\tWINDOW(d)\tSOURCE MKT\tSOURCE SYS\tSRC ASK\tHOME ASK\tSAV/U\tSTOCK?")
 	for _, c := range candidates {
 		homeAsk, savings := "-", "-"
 		if c.HomeAskKnown {

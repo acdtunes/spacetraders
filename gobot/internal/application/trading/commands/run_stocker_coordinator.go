@@ -452,7 +452,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 
 	homeSystem := shared.ExtractSystemSymbol(cmd.WarehouseWaypoint)
 	rows, err := h.demandMiner.Mine(ctx, homeSystem, cmd.PlayerID, nil, persistence.DemandMinerOptions{
-		MinRecurrence: h.config.MinRecurrence, TopN: stockerMinerTopN,
+		MinRecurrence: h.config.MinRecurrence, TopN: stockerMinerTopN, BuyLegSavingsPerUnit: h.config.BuyLegSavingsPerUnit,
 	})
 	if err != nil {
 		logger.Log("WARNING", "Stocker: demand mining failed - nothing to stock this pass: "+err.Error(), map[string]interface{}{

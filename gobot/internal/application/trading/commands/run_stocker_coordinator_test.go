@@ -171,6 +171,29 @@ func (m *stkFakeMiner) Mine(ctx context.Context, homeSystem string, playerID int
 	return m.rows, m.err
 }
 
+// stkFakeContractDemand + stkFakeMarketAsks feed a REAL *persistence.DemandMiner (via
+// NewDemandMinerWithSources) so a stocker test can exercise the actual cheapest-anywhere
+// mining logic end-to-end — no live DB. They satisfy the miner's unexported source
+// interfaces structurally.
+type stkFakeContractDemand struct{ rows []persistence.ContractGoodDemand }
+
+func (f *stkFakeContractDemand) ContractGoodDemand(ctx context.Context, eraID *int, deliverySystem *string) ([]persistence.ContractGoodDemand, error) {
+	return f.rows, nil
+}
+
+type stkFakeMarketAsks struct {
+	cross map[string][]market.CheapestMarketResult // cheapest-first, ALL systems incl home
+	home  map[string]*market.CheapestMarketResult
+}
+
+func (f *stkFakeMarketAsks) FindCheapestMarketsSellingAllSystems(ctx context.Context, good string, playerID, limit int) ([]market.CheapestMarketResult, error) {
+	return f.cross[good], nil
+}
+
+func (f *stkFakeMarketAsks) FindCheapestMarketSelling(ctx context.Context, good, system string, playerID int) (*market.CheapestMarketResult, error) {
+	return f.home[good], nil
+}
+
 // eligible builds a stock-eligible candidate row (both asks known, home > foreign).
 func eligible(good, foreignMkt string, foreignAsk, homeAsk, demandUnits int) persistence.DemandCandidate {
 	return persistence.DemandCandidate{
@@ -777,6 +800,53 @@ func TestStocker_FullRoundTrip_StocksWarehouse(t *testing.T) {
 	}
 	if ok, reason := r.CompletionOutcome(); !ok {
 		t.Fatalf("expected honest completion, got veto: %s", reason)
+	}
+}
+
+// TestStocker_StocksInSystemGood is the sp-layd end-to-end pin: with a REAL demand miner
+// over a SINGLE-SYSTEM world (the good is sold only at a home-system export — 0 foreign
+// markets, exactly the post-weekly-reset state), the old foreign-only miner returned
+// miner_rows=0 and the stocker refused ("nothing to stock miner_rows=0"). The reframed
+// miner sources the cheapest market ANYWHERE (the home export) and credits the buy-leg, so
+// the good is stock-eligible and the stocker fills the warehouse from an IN-SYSTEM source.
+func TestStocker_StocksInSystemGood(t *testing.T) {
+	// FUEL sells ONLY at the home export X1-VB74-EXPORT — no foreign market anywhere.
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-VB74-A1", cargoCap: 200,
+		ask: map[string]map[string]int{"X1-VB74-EXPORT": {"FUEL": 40}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-VB74-A1", 1000, []string{"FUEL"})
+
+	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	realMiner := persistence.NewDemandMinerWithSources(
+		&stkFakeContractDemand{rows: []persistence.ContractGoodDemand{
+			{Good: "FUEL", ContractCount: 3, UnitsRequired: 120, FirstSeen: now.Add(-48 * time.Hour), LastSeen: now},
+		}},
+		&stkFakeMarketAsks{
+			cross: map[string][]market.CheapestMarketResult{
+				"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
+			},
+			home: map[string]*market.CheapestMarketResult{
+				"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40},
+			},
+		},
+	)
+	h := newStockerHandler(t, fx, coord, op, realMiner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STOCKER-VB74", PlayerID: 1, ContainerID: "ctr-vb74", WarehouseWaypoint: "X1-VB74-A1"})
+	if err != nil {
+		t.Fatalf("stocker returned error: %v", err)
+	}
+	r := stkResponse(t, resp)
+
+	// The in-system good was stocked — the miner_rows=0 refusal is gone.
+	if got := coord.GetTotalCargoAvailable("wh", "FUEL"); got != 120 {
+		t.Fatalf("warehouse should hold 120 deposited FUEL from the in-system source, got %d", got)
+	}
+	if r.RoundTripsCompleted != 1 || r.UnitsDeposited != 120 {
+		t.Fatalf("expected 1 round-trip / 120 deposited from the home export, got %d / %d", r.RoundTripsCompleted, r.UnitsDeposited)
+	}
+	if len(fx.navs) == 0 || fx.navs[0] != "X1-VB74-EXPORT" {
+		t.Fatalf("expected the buy leg to travel to the in-system source X1-VB74-EXPORT, got navs %v", fx.navs)
 	}
 }
 
