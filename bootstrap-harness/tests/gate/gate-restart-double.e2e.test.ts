@@ -15,8 +15,9 @@ import { countCall } from '../helpers/mutation-log';
 // Bar coverage: (e) double/rapid restart is a no-op beyond (a)-(d) — this is the ONLY double-restart
 //   spec, placed in GATE for the densest exactly-once guard set (construction-start, launch-autosizer,
 //   executor-bounce) plus the sticky-phase invariant, so it stresses the most idempotence guards at once.
-//   Uses the haulers:2 / chains:4 fixture (gate-worker-sizing) whose clean run buys EXACTLY 2 workers,
-//   so PurchaseShip<=2 is a real /v2 no-double-buy observable, not a flag.
+//   Uses the haulers:2 fixture (gate-worker-sizing) whose clean run BUYS the whole gate-delivery fleet
+//   D = min(2 /v2-manifest chains + 1 delivery, 6) = 3, so PurchaseShip<=3 is a real /v2 no-double-buy
+//   observable, not a flag.
 //
 // EXPECTED: GREEN. Each guard is a report-seam flag flipped exactly-once (a repeat report after any
 //   reboot is a pure no-op) and phase stickiness re-derives from the persisted construction.started.
@@ -29,7 +30,8 @@ describe('bootstrap GATE — double (back-to-back) restart idempotency', () => {
     await resetDaemonDb();
 
     // Sticky-GATE re-detection: after a boot the daemon must re-derive GATE from persisted
-    // construction.started, never thrashing to INCOME even though haulers were repurposed.
+    // construction.started, never thrashing to INCOME. (Option B keeps the contract fleet earning through
+    // GATE — nothing is repurposed — so income never collapses; the stickiness is belt-and-suspenders.)
     const expectStickyGate = async () => {
       const s = await pollUntil(() => twinGate.gateState(), (st) => st.construction.started, { steps: 30, advanceMs: 1000 });
       expect(s.construction.started).toBe(true);
@@ -75,9 +77,9 @@ describe('bootstrap GATE — double (back-to-back) restart idempotency', () => {
       expect(countCall(done.mutationLog, 'construction-start')).toBe(1);         // never re-started
       expect(countCall(done.mutationLog, 'launch-autosizer')).toBeLessThanOrEqual(1);
       expect(countCall(done.mutationLog, 'executor-bounce')).toBeLessThanOrEqual(1);
-      // (b) independent /v2 no-double-buy: the 2-worker delta (2 idle repurposed, 2 bought) is never
-      // re-bought — two reboots do not push this past 2.
-      expect(countCall(done.mutationLog, 'PurchaseShip')).toBeLessThanOrEqual(2);
+      // (b) independent /v2 no-double-buy: the whole D=3 gate-delivery fleet is BOUGHT once (Option B —
+      // nothing repurposed) and never re-bought — two reboots do not push this past D=3.
+      expect(countCall(done.mutationLog, 'PurchaseShip')).toBeLessThanOrEqual(3);
       // (d) convergence.
       expect(done.done).toBe(true);
     } finally {

@@ -261,20 +261,6 @@ func (m *bootstrapManufacturingController) BounceForAdoption(ctx context.Context
 	return m.server.StopContainer(id) // daemon restart-recovery re-adopts → re-scans → adopts the pipeline
 }
 
-// --- WorkerRepurposer: re-dedicate a contract hauler to the manufacturing fleet (the executor claims it) ---
-
-type bootstrapWorkerRepurposer struct{ shipRepo navigation.ShipRepository }
-
-func (r *bootstrapWorkerRepurposer) RepurposeToConstruction(ctx context.Context, playerID int, shipSymbol string) error {
-	pid, err := shared.NewPlayerID(playerID)
-	if err != nil {
-		return err
-	}
-	// Re-tag from the contract fleet to the manufacturing fleet — the executor's worker pool selects on
-	// this tag, so the hull becomes a gate-construction worker (reuse fleet assign, no new logic).
-	return r.shipRepo.AssignFleet(ctx, shipSymbol, manufacturingFleetTag, pid)
-}
-
 // --- GateWorkerAcquirer: buy a worker hull and dedicate it to the manufacturing fleet ---
 
 type bootstrapGateWorkerAcquirer struct {

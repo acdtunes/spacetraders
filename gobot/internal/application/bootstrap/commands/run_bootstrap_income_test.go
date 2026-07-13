@@ -201,9 +201,6 @@ func TestBootstrap_ResolvesIncomeDefaults(t *testing.T) {
 	if cfg.IncomeBar != defaultIncomeBar {
 		t.Fatalf("income_bar default = %.0f, got %.0f", defaultIncomeBar, cfg.IncomeBar)
 	}
-	if cfg.MinContractEarners != defaultMinContractEarners {
-		t.Fatalf("min_contract_earners default = %d, got %d", defaultMinContractEarners, cfg.MinContractEarners)
-	}
 	if cfg.HaulerShipType != defaultHaulerShipType {
 		t.Fatalf("hauler_ship_type default = %q, got %q", defaultHaulerShipType, cfg.HaulerShipType)
 	}

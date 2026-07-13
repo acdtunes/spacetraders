@@ -32,8 +32,10 @@ describe('bootstrap GATE — restart idempotency', () => {
       launchBootstrap();
       // (a) STICKY phase re-detection ACROSS the restart — the crux of "GATE sticky once construction
       // started". construction.started persisted (twin) → the rebooted daemon must re-derive GATE from
-      // it BEFORE we force completion, never thrashing back to INCOME when the haulers were repurposed.
-      // gate-sticky proves this WITHOUT a restart; this is the first assertion of it SURVIVING a reboot.
+      // it BEFORE we force completion, never thrashing back to INCOME. (Under Option B the contract fleet
+      // keeps earning through GATE — nothing is repurposed — so income never even collapses; stickiness is
+      // now belt-and-suspenders.) gate-sticky proves this WITHOUT a restart; this is the first assertion
+      // of it SURVIVING a reboot.
       const reGate = await pollUntil(() => twinGate.gateState(), (s) => s.construction.started, { steps: 30, advanceMs: 1000 });
       expect(reGate.construction.started).toBe(true);
       // EVENTUAL (poll): construction.started is twin-persisted and true instantly after the reboot;
@@ -53,10 +55,10 @@ describe('bootstrap GATE — restart idempotency', () => {
       expect(countCall(done.mutationLog, 'executor-bounce')).toBeLessThanOrEqual(Math.max(1, bouncesBefore)); // not re-bounced once adopted
       expect(countCall(done.mutationLog, 'launch-autosizer')).toBe(1);           // launched once total
       // "no double-worker-buy" — the title's core claim, previously UNASSERTED. Independent /v2
-      // observable (not the report-seam gateWorkers flag): a clean run buys exactly the 2-worker
-      // delta (see gate-worker-sizing, same fixture); re-buying the mid-flight worker after the
-      // restart would push this to 3+.
-      expect(countCall(done.mutationLog, 'PurchaseShip')).toBeLessThanOrEqual(2);
+      // observable (not the report-seam gateWorkers flag): under Option B a clean run BUYS the whole
+      // gate-delivery fleet D = min(2 manifest chains + 1 delivery, 6) = 3 (see gate-worker-sizing, same
+      // /v2 manifest); re-buying a mid-flight worker after the restart would push this past D=3.
+      expect(countCall(done.mutationLog, 'PurchaseShip')).toBeLessThanOrEqual(3);
       expect(done.done).toBe(true);
     } finally {
       await daemon.stop();

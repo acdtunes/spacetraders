@@ -130,9 +130,10 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_probe_ship_type",
 	"bootstrap_hauler_target",
 	"bootstrap_income_bar",
-	"bootstrap_min_contract_earners",
 	"bootstrap_hauler_ship_type",
 	"bootstrap_gate_worker_target",
+	"bootstrap_working_capital_reserve",
+	"bootstrap_working_capital_reserve_treasury_pct",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -182,14 +183,17 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.IncomeBar != 0 {
 		config["bootstrap_income_bar"] = b.IncomeBar
 	}
-	if b.MinContractEarners != 0 {
-		config["bootstrap_min_contract_earners"] = b.MinContractEarners
-	}
 	if b.HaulerShipType != "" {
 		config["bootstrap_hauler_ship_type"] = b.HaulerShipType
 	}
 	if b.GateWorkerTarget != 0 {
 		config["bootstrap_gate_worker_target"] = b.GateWorkerTarget
+	}
+	if b.WorkingCapitalReserve != 0 {
+		config["bootstrap_working_capital_reserve"] = int(b.WorkingCapitalReserve)
+	}
+	if b.WorkingCapitalReserveTreasuryPct != 0 {
+		config["bootstrap_working_capital_reserve_treasury_pct"] = b.WorkingCapitalReserveTreasuryPct
 	}
 }
 
@@ -215,11 +219,12 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		ReserveMargin:    cfg.OptionalFloat("bootstrap_reserve_margin", 0),
 		ProbeShipType:    cfg.OptionalString("bootstrap_probe_ship_type"),
 
-		HaulerTarget:       cfg.OptionalInt("bootstrap_hauler_target", 0),
-		IncomeBar:          cfg.OptionalFloat("bootstrap_income_bar", 0),
-		MinContractEarners: cfg.OptionalInt("bootstrap_min_contract_earners", 0),
-		HaulerShipType:     cfg.OptionalString("bootstrap_hauler_ship_type"),
+		HaulerTarget:   cfg.OptionalInt("bootstrap_hauler_target", 0),
+		IncomeBar:      cfg.OptionalFloat("bootstrap_income_bar", 0),
+		HaulerShipType: cfg.OptionalString("bootstrap_hauler_ship_type"),
 
 		GateWorkerTarget: cfg.OptionalInt("bootstrap_gate_worker_target", 0),
+		Reserve:          int64(cfg.OptionalInt("bootstrap_working_capital_reserve", 0)),
+		ReservePct:       cfg.OptionalInt("bootstrap_working_capital_reserve_treasury_pct", 0),
 	}
 }
