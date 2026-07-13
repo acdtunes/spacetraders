@@ -636,11 +636,13 @@ func TestIdleArb_StartLog_SurfacesLeashRadius(t *testing.T) {
 // for the coordinator's mediator-backed HomeShipCommand dispatch. failNext lets
 // a test simulate a homing dispatch that could not even be initiated.
 type fakeShipHomer struct {
-	homed    []string
-	failNext bool
+	homed       []string
+	lastStandby []string // sp-jcke: the standby set the dispatcher passed on the last call
+	failNext    bool
 }
 
-func (f *fakeShipHomer) HomeShip(_ context.Context, shipSymbol string) error {
+func (f *fakeShipHomer) HomeShip(_ context.Context, shipSymbol string, standbyStations []string) error {
+	f.lastStandby = standbyStations
 	if f.failNext {
 		f.failNext = false
 		return fmt.Errorf("home dispatch refused for %s", shipSymbol)

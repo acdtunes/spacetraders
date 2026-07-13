@@ -58,6 +58,14 @@ type RunFleetCoordinatorHandler struct {
 	// subscriber; nil (e.g. in tests) leaves the harvest off entirely.
 	idleArbLauncher appContract.IdleArbLauncher
 
+	// standbyProvider (sp-jcke) resolves the LIVE standby-station set from this
+	// coordinator's OWN container config each discovery pass, so a hub added or
+	// removed via `fleet hub add|remove` on the running coordinator is honored
+	// with NO restart — the operation-level analogue of the live dedicated-fleet
+	// tag read (sp-cmwc). Nil (tests / daemon predating the wiring) leaves homing
+	// on the frozen launch --standby-stations snapshot, exactly as before.
+	standbyProvider appContract.StandbyStationProvider
+
 	// invFinder (sp-dchv Lane D) lets the sourcing plan see in-system warehouse
 	// stock as a zero-ask source, so the defer gate does not park a contract
 	// inventory can fulfill for free. Nil (tests / feature off) => market-only
@@ -135,6 +143,17 @@ func (h *RunFleetCoordinatorHandler) SetIdleArbLauncher(launcher appContract.Idl
 	h.idleArbLauncher = launcher
 }
 
+// SetStandbyStationProvider wires the live standby-station reader (sp-jcke) so
+// the coordinator resolves its hub set from its own container config each pass
+// instead of the frozen launch snapshot — the operation-level mirror of the live
+// dedicated-fleet tag read (sp-cmwc). Optional and nil-safe: without it homing
+// stays on the launch --standby-stations list, exactly as before. The daemon
+// injects a container-config-backed provider at startup, mirroring the seed
+// marker's optional-injection idiom.
+func (h *RunFleetCoordinatorHandler) SetStandbyStationProvider(provider appContract.StandbyStationProvider) {
+	h.standbyProvider = provider
+}
+
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L2) into the
 // idle-arb dispatcher this coordinator spawns, with the two ledger knobs (consult
 // kill-switch, PLANNED-hold TTL slack). Nil leaves the dispatcher's ledger
@@ -206,11 +225,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// never a parallel homing path (RULINGS #7). Empty StandbyStations leaves
 		// re-homing off, exactly as it leaves the contract-handoff homing off.
 		homer := &mediatorShipHomer{
-			mediator:        h.fleetPoolManager.GetMediator(),
-			shipRepo:        h.shipRepo,
-			playerID:        cmd.PlayerID,
-			standbyStations: cmd.StandbyStations,
-			fleet:           dedicatedFleetContract,
+			mediator: h.fleetPoolManager.GetMediator(),
+			shipRepo: h.shipRepo,
+			playerID: cmd.PlayerID,
+			fleet:    dedicatedFleetContract,
 		}
 		dispatcher := appContract.NewIdleArbDispatcher(
 			h.shipRepo,
@@ -241,6 +259,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// sp-78ai L2: wire the cross-engine absorption ledger so the dispatcher
 		// consults it (skip:reserved) and records launched legs. Inert when unwired.
 		dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionConsultOff, h.absorptionPlannedTTLSlack)
+		// LIVE hub set (sp-jcke): the dispatcher's post-leg re-homing resolves the
+		// CURRENT standby set each pass from this coordinator's container config, so a
+		// `fleet hub add|remove` re-homes idle hulls across the new set with no
+		// restart. Falls back to cmd.StandbyStations on a read failure / no provider.
+		dispatcher.SetStandbyResolver(func(resolveCtx context.Context) []string {
+			return appContract.ResolveStandbyStations(resolveCtx, common.LoggerFromContext(resolveCtx), h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
+		})
 		go dispatcher.Run(ctx)
 	}
 
@@ -667,6 +692,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			if isDedicatedShip(previousShipSymbol, dedicatedMembers) {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - homing dedicated ship %s to standby station", previousShipSymbol, selectedShip, previousShipSymbol), nil)
 
+				// LIVE standby-station set (sp-jcke), not the frozen launch snapshot: a
+				// hub `fleet hub add`ed after launch draws idle hulls toward it and a
+				// removed one re-homes its hulls to the remaining set, all with no
+				// restart — the operation-level mirror of the live dedicated-fleet read
+				// above. Resolved per repositioning; falls back to cmd.StandbyStations
+				// on a read failure or when no provider is wired.
+				liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
+
 				// Launch homing command asynchronously (fire-and-forget)
 				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
 					homeCmd := &HomeShipCommand{
@@ -683,7 +716,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					if err != nil {
 						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
 					}
-				}(previousShipSymbol, cmd.PlayerID, cmd.StandbyStations, dedicatedMembers)
+				}(previousShipSymbol, cmd.PlayerID, liveStandby, dedicatedMembers)
 			} else {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 
@@ -930,10 +963,13 @@ func reconcileDedicatedFleet(
 // fleet-peer list the contract-handoff homing uses (RULINGS #7: no parallel
 // homing algorithm).
 //
-// The fleet-peer list is resolved LIVE per re-home from the dedicated_fleet tag
-// (sp-cmwc), not a frozen launch snapshot, so a hull `fleet add`ed after launch is
-// counted in standby-station occupancy and a `fleet remove`d one is not — matching
-// the contract-handoff homing gate.
+// Both membership inputs are LIVE, not frozen launch snapshots. The standby set
+// is passed in per re-home (sp-jcke) — the dispatcher resolves the CURRENT hub
+// set from the coordinator's container config each pass, so a `fleet hub
+// add|remove` re-homes across the new set with no restart. The fleet-peer list is
+// resolved LIVE per re-home from the dedicated_fleet tag (sp-cmwc), so a hull
+// `fleet add`ed after launch is counted in standby-station occupancy and a `fleet
+// remove`d one is not — both matching the contract-handoff homing gate.
 //
 // Navigation runs FIRE-AND-FORGET, mirroring the coordinator's own
 // `go func(){ Send(homeCmd) }` at the contract-handoff hook: HomeShipCommand
@@ -944,21 +980,24 @@ func reconcileDedicatedFleet(
 // exactly as the coordinator's homing goroutine does, and logs a homing failure
 // at WARNING rather than surfacing it (re-homing is best-effort).
 type mediatorShipHomer struct {
-	mediator        common.Mediator
-	shipRepo        navigation.ShipRepository
-	playerID        shared.PlayerID
-	standbyStations []string
-	fleet           string
+	mediator common.Mediator
+	shipRepo navigation.ShipRepository
+	playerID shared.PlayerID
+	fleet    string
 }
 
 var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
 
-func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string) error {
+// HomeShip re-homes the hull to the LIVE standby set the dispatcher resolved this
+// pass (sp-jcke), passed in rather than frozen on the homer, so an idle-arb
+// re-home tracks a `fleet hub add|remove` with no restart — the same live set the
+// coordinator's between-legs homing uses.
+func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string, standbyStations []string) error {
 	logger := common.LoggerFromContext(ctx)
 	homeCmd := &HomeShipCommand{
 		ShipSymbol:      shipSymbol,
 		PlayerID:        m.playerID,
-		StandbyStations: m.standbyStations,
+		StandbyStations: standbyStations,
 		FleetShips:      resolveDedicatedMembersForHoming(ctx, logger, m.shipRepo, m.playerID, m.fleet, nil),
 	}
 	go func() {

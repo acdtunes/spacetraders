@@ -1026,6 +1026,34 @@ func (s *daemonServiceImpl) AssignShipFleet(ctx context.Context, req *pb.AssignS
 	}, nil
 }
 
+// FleetHub adds or removes a standby-station ("hub") on a running operation's
+// coordinator, live (sp-jcke). Resolves the player from player_id or agent_symbol
+// (like the other coordinator RPCs), then delegates the persisted-set mutation to
+// the daemon, which is the single writer (RULINGS #3).
+func (s *daemonServiceImpl) FleetHub(ctx context.Context, req *pb.FleetHubRequest) (*pb.FleetHubResponse, error) {
+	// player_id is optional (*int32) on this request; 0 lets resolvePlayerID fall
+	// back to agent_symbol, matching the other fleet RPCs.
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	stations, changed, err := s.daemon.MutateStandbyStation(ctx, req.Operation, req.Waypoint, req.Add, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to mutate standby station: %w", err)
+	}
+
+	return &pb.FleetHubResponse{
+		Operation:       req.Operation,
+		StandbyStations: stations,
+		Changed:         changed,
+	}, nil
+}
+
 func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.UnassignShipFleetRequest) (*pb.UnassignShipFleetResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

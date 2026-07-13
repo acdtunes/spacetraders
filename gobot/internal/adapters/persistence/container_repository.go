@@ -419,6 +419,33 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
 	return &model, nil
 }
 
+// FindActiveCoordinatorByType finds an active (PENDING or RUNNING) coordinator of
+// the given type for a player, regardless of system (sp-jcke). Unlike
+// FindActiveCoordinatorByTypeAndSystem this applies no system filter — the
+// contract coordinator is not system-scoped, so the live `fleet hub` mutation
+// locates it by type alone. Returns nil if none is active.
+func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
+	ctx context.Context,
+	containerType string,
+	playerID int,
+) (*ContainerModel, error) {
+	var model ContainerModel
+
+	result := r.db.WithContext(ctx).
+		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
+			containerType, playerID, containerStatusPending, containerStatusRunning).
+		First(&model)
+
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find active coordinator by type: %w", result.Error)
+	}
+
+	return &model, nil
+}
+
 // StopOrphanedWorkersByParent marks all RUNNING/PENDING worker containers
 // with the given parent container ID as STOPPED. Used during coordinator
 // startup to clean up orphaned workers from crashed coordinators.

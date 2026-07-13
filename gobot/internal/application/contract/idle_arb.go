@@ -255,7 +255,11 @@ type IdleArbLauncher interface {
 // skips in-transit hulls); a returned error means the home could not even be
 // dispatched, and the dispatcher leaves the hull for the next pass.
 type ShipHomer interface {
-	HomeShip(ctx context.Context, shipSymbol string) error
+	// HomeShip re-homes shipSymbol to the balanced standby station of the given
+	// standbyStations set. The set is passed per call (sp-jcke) rather than frozen
+	// in the homer, so the dispatcher can hand it the LIVE hub set it resolved this
+	// pass — a `fleet hub add|remove` is honored with no restart.
+	HomeShip(ctx context.Context, shipSymbol string, standbyStations []string) error
 }
 
 // ContractGoodsProvider lists the delivery goods of the player's OPEN contracts
@@ -319,9 +323,10 @@ type IdleArbDispatcher struct {
 	playerID        shared.PlayerID
 	fleet           string
 	cfg             IdleArbConfig
-	blacklist       map[string]struct{} // upper-cased cfg.Blacklist, built once
-	standbyStations map[string]struct{} // sp-8bpr: cfg.StandbyStations as a set, for the at-home filter
-	lanes           *laneMutex          // sp-lbbm: one hull per (good, sink) per recovery window
+	blacklist       map[string]struct{}            // upper-cased cfg.Blacklist, built once
+	launchStandby   []string                       // sp-8bpr/sp-jcke: the launch standby set — the fallback when no live resolver is wired
+	standbyResolver func(context.Context) []string // sp-jcke: resolves the LIVE standby set each pass (nil → launchStandby)
+	lanes           *laneMutex                     // sp-lbbm: one hull per (good, sink) per recovery window
 
 	// sp-78ai L2: the cross-engine absorption ledger. nil → integration inert (the
 	// same optional-port contract the other guards use). When wired, the dispatcher
@@ -377,31 +382,57 @@ func NewIdleArbDispatcher(
 	for _, g := range cfg.Blacklist {
 		blacklist[strings.ToUpper(strings.TrimSpace(g))] = struct{}{}
 	}
-	// Pre-build the standby-station lookup once (sp-8bpr): the at-home filter in
-	// rehomeDriftedHulls asks "is this hull's waypoint a standby station?" per
-	// hull per tick. Waypoint symbols are case-exact, so no case-folding here.
-	standbyStations := make(map[string]struct{}, len(cfg.StandbyStations))
-	for _, s := range cfg.StandbyStations {
+	// The launch standby set is the fallback the at-home filter uses when no LIVE
+	// resolver is wired (sp-jcke); trimmed of blank entries here so the per-pass
+	// lookup (standbyLookup) need not. When a resolver IS wired (production), the
+	// coordinator resolves the CURRENT hub set from its container config each pass
+	// so a `fleet hub` change is honored with no restart.
+	return &IdleArbDispatcher{
+		shipRepo:      shipRepo,
+		marketRepo:    marketRepo,
+		graphProvider: graphProvider,
+		launcher:      launcher,
+		homer:         homer,
+		contractGoods: contractGoods,
+		clock:         clock,
+		playerID:      playerID,
+		fleet:         fleet,
+		cfg:           cfg,
+		blacklist:     blacklist,
+		launchStandby: trimmedStandby(cfg.StandbyStations),
+		lanes:         newLaneMutex(clock, cfg.RecoveryHold),
+		startTime:     clock.Now(),
+	}
+}
+
+// trimmedStandby drops blank entries from a standby-station set. Waypoint symbols
+// are case-exact, so no case-folding.
+func trimmedStandby(stations []string) []string {
+	out := make([]string, 0, len(stations))
+	for _, s := range stations {
 		if s = strings.TrimSpace(s); s != "" {
-			standbyStations[s] = struct{}{}
+			out = append(out, s)
 		}
 	}
-	return &IdleArbDispatcher{
-		shipRepo:        shipRepo,
-		marketRepo:      marketRepo,
-		graphProvider:   graphProvider,
-		launcher:        launcher,
-		homer:           homer,
-		contractGoods:   contractGoods,
-		clock:           clock,
-		playerID:        playerID,
-		fleet:           fleet,
-		cfg:             cfg,
-		blacklist:       blacklist,
-		standbyStations: standbyStations,
-		lanes:           newLaneMutex(clock, cfg.RecoveryHold),
-		startTime:       clock.Now(),
+	return out
+}
+
+// SetStandbyResolver wires the LIVE standby-station resolver (sp-jcke): the
+// dispatcher calls it once per pass to get the CURRENT hub set instead of the
+// frozen launch set, so a `fleet hub add|remove` on the running coordinator is
+// honored with no restart. Nil (unset) keeps the launch set — the pre-jcke
+// behavior, which every existing test exercises.
+func (d *IdleArbDispatcher) SetStandbyResolver(resolver func(context.Context) []string) {
+	d.standbyResolver = resolver
+}
+
+// resolveStandby returns the standby-station set for THIS pass: the live resolver
+// when wired, else the launch set.
+func (d *IdleArbDispatcher) resolveStandby(ctx context.Context) []string {
+	if d.standbyResolver != nil {
+		return d.standbyResolver(ctx)
 	}
+	return d.launchStandby
 }
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L2), the
@@ -787,8 +818,20 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 // operator has not configured standby stations.
 func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]bool {
 	homed := map[string]bool{}
-	if d.homer == nil || len(d.standbyStations) == 0 {
+	if d.homer == nil {
 		return homed
+	}
+
+	// LIVE standby set for this pass (sp-jcke): a `fleet hub add|remove` is honored
+	// with no restart. An empty set disables re-homing entirely, matching
+	// HomeShipCommand's own "empty stations = no relocation" contract.
+	liveStandby := d.resolveStandby(ctx)
+	if len(liveStandby) == 0 {
+		return homed
+	}
+	atStandby := make(map[string]struct{}, len(liveStandby))
+	for _, s := range liveStandby {
+		atStandby[s] = struct{}{}
 	}
 
 	logger := common.LoggerFromContext(ctx)
@@ -804,10 +847,10 @@ func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]b
 		if loc == nil {
 			continue
 		}
-		if _, atStandby := d.standbyStations[loc.Symbol]; atStandby {
+		if _, home := atStandby[loc.Symbol]; home {
 			continue // already home — re-firing would chase balance and churn
 		}
-		if err := d.homer.HomeShip(ctx, hull.ShipSymbol()); err != nil {
+		if err := d.homer.HomeShip(ctx, hull.ShipSymbol(), liveStandby); err != nil {
 			logger.Log("WARNING", fmt.Sprintf(
 				"Idle-arb re-home: could not dispatch homing for %s from %s: %v", hull.ShipSymbol(), loc.Symbol, err), nil)
 			continue

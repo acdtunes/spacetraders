@@ -1036,6 +1036,25 @@ func (c *DaemonClient) UnassignShipFleet(ctx context.Context, shipSymbol string,
 	return resp, nil
 }
 
+// FleetHub adds or removes a standby-station ("hub") waypoint on a running
+// operation's coordinator, live, with no container restart (sp-jcke).
+func (c *DaemonClient) FleetHub(ctx context.Context, operation, waypoint string, add bool, playerID *int32, agentSymbol *string) (*pb.FleetHubResponse, error) {
+	req := &pb.FleetHubRequest{
+		Operation:   operation,
+		Waypoint:    waypoint,
+		Add:         add,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.FleetHub(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
 func (c *DaemonClient) ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error) {
 	req := &pb.ListFleetsRequest{

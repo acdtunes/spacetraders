@@ -147,6 +147,14 @@ service DaemonService {
   // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
   rpc ListFleets(ListFleetsRequest) returns (ListFleetsResponse);
 
+  // FleetHub adds or removes a standby-station ("hub") waypoint on a RUNNING
+  // operation's coordinator, live, with no container restart (sp-jcke). The
+  // coordinator reads its standby set from its own container config every
+  // discovery pass, so a hub added draws idle dedicated hulls toward it and a
+  // hub removed re-homes its hulls to the remaining set on the next tick. The
+  // daemon is the sole writer of the persisted set (RULINGS #3).
+  rpc FleetHub(FleetHubRequest) returns (FleetHubResponse);
+
   // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
   rpc ListWaypoints(ListWaypointsRequest) returns (ListWaypointsResponse);
 
@@ -930,6 +938,29 @@ message AssignShipFleetRequest {
 message AssignShipFleetResponse {
   string ship_symbol = 1;
   string fleet = 2;
+}
+
+// FleetHubRequest adds or removes a standby-station waypoint on a running
+// operation's coordinator, live (sp-jcke).
+message FleetHubRequest {
+  // operation is the fleet/operation whose coordinator owns the standby set,
+  // e.g. "contract" — the same tag its dedicated ships carry.
+  string operation = 1;
+  // waypoint is the standby-station waypoint symbol to add or remove.
+  string waypoint = 2;
+  // add=true adds the hub; add=false removes it.
+  bool add = 3;
+  optional int32 player_id = 4;
+  optional string agent_symbol = 5;
+}
+
+message FleetHubResponse {
+  string operation = 1;
+  // standby_stations is the resulting live standby set after the mutation.
+  repeated string standby_stations = 2;
+  // changed is false when the verb was a no-op (add of an existing hub, or
+  // remove of an absent one), so the CLI can report it honestly.
+  bool changed = 3;
 }
 
 // UnassignShipFleetRequest clears a ship's fleet dedication (sp-l7h2)

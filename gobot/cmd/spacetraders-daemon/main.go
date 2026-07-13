@@ -561,6 +561,11 @@ func run(cfg *config.Config) error {
 	// so a daemon restart does NOT replay the stale seed over live fleet state and
 	// a `fleet remove` survives the restart (RULINGS #2).
 	contractFleetCoordinatorHandler.SetDedicatedFleetSeedMarker(grpc.NewDedicatedFleetSeedConfigPersister(containerRepo))
+	// Live standby-station ("hub") set (sp-jcke): the coordinator resolves its hub
+	// set from its own container config every discovery pass, so a `fleet hub
+	// add|remove` on the running coordinator is honored with no restart — the
+	// operation-level mirror of the live dedicated-fleet tag read (sp-cmwc).
+	contractFleetCoordinatorHandler.SetStandbyStationProvider(grpc.NewStandbyStationConfigProvider(containerRepo))
 	// Idle-gap arb (sp-1z2h): the coordinator's dispatcher launches its
 	// one-shot legs through the daemon server (claim-first, recovery-safe).
 	contractFleetCoordinatorHandler.SetIdleArbLauncher(daemonServer)

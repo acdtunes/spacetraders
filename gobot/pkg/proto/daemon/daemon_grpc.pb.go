@@ -57,6 +57,7 @@ const (
 	DaemonService_AssignShipFleet_FullMethodName              = "/daemon.DaemonService/AssignShipFleet"
 	DaemonService_UnassignShipFleet_FullMethodName            = "/daemon.DaemonService/UnassignShipFleet"
 	DaemonService_ListFleets_FullMethodName                   = "/daemon.DaemonService/ListFleets"
+	DaemonService_FleetHub_FullMethodName                     = "/daemon.DaemonService/FleetHub"
 	DaemonService_ListWaypoints_FullMethodName                = "/daemon.DaemonService/ListWaypoints"
 	DaemonService_GetWaypoint_FullMethodName                  = "/daemon.DaemonService/GetWaypoint"
 	DaemonService_PurchaseShip_FullMethodName                 = "/daemon.DaemonService/PurchaseShip"
@@ -188,6 +189,13 @@ type DaemonServiceClient interface {
 	UnassignShipFleet(ctx context.Context, in *UnassignShipFleetRequest, opts ...grpc.CallOption) (*UnassignShipFleetResponse, error)
 	// ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
 	ListFleets(ctx context.Context, in *ListFleetsRequest, opts ...grpc.CallOption) (*ListFleetsResponse, error)
+	// FleetHub adds or removes a standby-station ("hub") waypoint on a RUNNING
+	// operation's coordinator, live, with no container restart (sp-jcke). The
+	// coordinator reads its standby set from its own container config every
+	// discovery pass, so a hub added draws idle dedicated hulls toward it and a
+	// hub removed re-homes its hulls to the remaining set on the next tick. The
+	// daemon is the sole writer of the persisted set (RULINGS #3).
+	FleetHub(ctx context.Context, in *FleetHubRequest, opts ...grpc.CallOption) (*FleetHubResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -625,6 +633,16 @@ func (c *daemonServiceClient) ListFleets(ctx context.Context, in *ListFleetsRequ
 	return out, nil
 }
 
+func (c *daemonServiceClient) FleetHub(ctx context.Context, in *FleetHubRequest, opts ...grpc.CallOption) (*FleetHubResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FleetHubResponse)
+	err := c.cc.Invoke(ctx, DaemonService_FleetHub_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWaypointsResponse)
@@ -934,6 +952,13 @@ type DaemonServiceServer interface {
 	UnassignShipFleet(context.Context, *UnassignShipFleetRequest) (*UnassignShipFleetResponse, error)
 	// ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
 	ListFleets(context.Context, *ListFleetsRequest) (*ListFleetsResponse, error)
+	// FleetHub adds or removes a standby-station ("hub") waypoint on a RUNNING
+	// operation's coordinator, live, with no container restart (sp-jcke). The
+	// coordinator reads its standby set from its own container config every
+	// discovery pass, so a hub added draws idle dedicated hulls toward it and a
+	// hub removed re-homes its hulls to the remaining set on the next tick. The
+	// daemon is the sole writer of the persisted set (RULINGS #3).
+	FleetHub(context.Context, *FleetHubRequest) (*FleetHubResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -1104,6 +1129,9 @@ func (UnimplementedDaemonServiceServer) UnassignShipFleet(context.Context, *Unas
 }
 func (UnimplementedDaemonServiceServer) ListFleets(context.Context, *ListFleetsRequest) (*ListFleetsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListFleets not implemented")
+}
+func (UnimplementedDaemonServiceServer) FleetHub(context.Context, *FleetHubRequest) (*FleetHubResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FleetHub not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWaypoints not implemented")
@@ -1870,6 +1898,24 @@ func _DaemonService_ListFleets_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_FleetHub_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FleetHubRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).FleetHub(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_FleetHub_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).FleetHub(ctx, req.(*FleetHubRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListWaypoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWaypointsRequest)
 	if err := dec(in); err != nil {
@@ -2388,6 +2434,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListFleets",
 			Handler:    _DaemonService_ListFleets_Handler,
+		},
+		{
+			MethodName: "FleetHub",
+			Handler:    _DaemonService_FleetHub_Handler,
 		},
 		{
 			MethodName: "ListWaypoints",
