@@ -816,10 +816,25 @@ func (s *daemonServiceImpl) GetContainer(ctx context.Context, req *pb.GetContain
 		return nil, fmt.Errorf("failed to get container: %w", err)
 	}
 
-	// Serialize metadata to JSON
-	metadataJSON, err := json.Marshal(container.Metadata())
+	// Source the displayed config from Store A — the persisted ContainerModel.Config —
+	// NOT the in-memory entity's Metadata(), which NewContainer freezes at launch. A live
+	// config mutation (UpdateContainerConfig via `fleet hub`) rewrites only the persisted
+	// config, so serializing Metadata() here made live changes invisible until a daemon
+	// restart (sp-aoy2). The runtime/lifecycle fields below still come from the live
+	// in-memory entity; only the config JSON is re-sourced from the DB.
+	metadataJSON, found, err := s.daemon.PersistedContainerConfig(ctx, container.ID(), container.PlayerID())
 	if err != nil {
-		return nil, fmt.Errorf("failed to serialize metadata: %w", err)
+		return nil, fmt.Errorf("failed to read container config: %w", err)
+	}
+	if !found {
+		// No persisted row (e.g. an ephemeral container never written to the DB) — fall
+		// back to the in-memory launch metadata so `container get` still returns its config
+		// rather than an empty string.
+		fallback, merr := json.Marshal(container.Metadata())
+		if merr != nil {
+			return nil, fmt.Errorf("failed to serialize metadata: %w", merr)
+		}
+		metadataJSON = string(fallback)
 	}
 
 	pbContainer := &pb.ContainerInfo{
@@ -836,7 +851,7 @@ func (s *daemonServiceImpl) GetContainer(ctx context.Context, req *pb.GetContain
 
 	return &pb.GetContainerResponse{
 		Container: pbContainer,
-		Metadata:  string(metadataJSON),
+		Metadata:  metadataJSON,
 	}, nil
 }
 

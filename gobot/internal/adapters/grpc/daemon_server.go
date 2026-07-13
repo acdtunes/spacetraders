@@ -1375,6 +1375,24 @@ func (s *DaemonServer) GetContainer(containerID string) (*container.Container, e
 	return runner.Container(), nil
 }
 
+// PersistedContainerConfig returns a container's config JSON as persisted in the
+// database — Store A, the source of truth that live config mutations write
+// (UpdateContainerConfig, e.g. a `fleet hub add|remove`). The in-memory container
+// entity's Metadata() is frozen at launch by NewContainer and does NOT reflect a
+// live mutation until a daemon restart rebuilds the entity, so the `container get`
+// read path must source the displayed config here rather than serialize the launch
+// snapshot (sp-aoy2). found is false when no row exists for the (id, playerID) pair.
+func (s *DaemonServer) PersistedContainerConfig(ctx context.Context, containerID string, playerID int) (config string, found bool, err error) {
+	model, err := s.containerRepo.Get(ctx, containerID, playerID)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to read persisted container config: %w", err)
+	}
+	if model == nil {
+		return "", false, nil
+	}
+	return model.Config, true, nil
+}
+
 // StopContainer stops a running container and all its child containers
 func (s *DaemonServer) StopContainer(containerID string) error {
 	s.containersMu.RLock()

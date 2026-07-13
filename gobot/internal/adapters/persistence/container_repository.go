@@ -424,6 +424,11 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
 // FindActiveCoordinatorByTypeAndSystem this applies no system filter — the
 // contract coordinator is not system-scoped, so the live `fleet hub` mutation
 // locates it by type alone. Returns nil if none is active.
+//
+// With >=2 active rows of the same type the result is made deterministic by
+// Order("heartbeat_at DESC") — the freshest (most-recently heartbeating)
+// coordinator wins, so a live mutation never lands on a stale row on the whim of
+// the DB's default ordering (sp-aoy2 latent hardening).
 func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
 	ctx context.Context,
 	containerType string,
@@ -434,6 +439,7 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
 	result := r.db.WithContext(ctx).
 		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
 			containerType, playerID, containerStatusPending, containerStatusRunning).
+		Order("heartbeat_at DESC").
 		First(&model)
 
 	if result.Error != nil {
