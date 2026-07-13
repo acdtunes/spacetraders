@@ -264,10 +264,24 @@ func (h *RunConstructionCoordinatorHandler) resolveWorkerCap(ctx context.Context
 	return workerCap
 }
 
-// supplyTask sources the task's material into the claimed hauler via ProduceGood, delivers
-// it to the construction site via DeliverToConstructionSite, records the delivery on the
-// pipeline, and completes the task. Returns true only on a delivered supply. An unsourceable
-// material is deferred (parked PENDING, source cleared) rather than failed (RULINGS #1).
+// supplyTask advances one construction material for the claimed hauler. It runs in two phases:
+//
+//	PHASE 1 (deliver-on-hand, sp-9ptm): if the hull ALREADY HOLDS units of the material the site
+//	still needs, unload them to the site FIRST — UNCONDITIONALLY, before and independent of the
+//	source-buy gate below. Delivering cargo already aboard has zero market impact and always
+//	advances the gate (RULINGS #1 never-skip); it is NOT a buy, so the sp-a5j7 fail-closed buy
+//	guard does not govern it (RULINGS #4 untouched). This is the fix for stranded gate material:
+//	a laden hull released mid-delivery (pipeline/coordinator restart) used to reach ProduceGood
+//	first and park on a dry source WITHOUT ever unloading.
+//
+//	PHASE 2 (source-then-deliver): source the still-outstanding remainder via the shared engine
+//	(the fail-closed buy path, UNCHANGED) and deliver it. Reached for the common empty-hull drain
+//	(nothing on-hand) or when the hull's on-hand load did not cover the full bill.
+//
+// Returns true when the tick delivered anything for this task. A genuinely-unsourceable remainder
+// is deferred (parked PENDING, source cleared) rather than failed (RULINGS #1) — but on-hand cargo
+// that was already delivered is never stranded: such a task advances (completed; the outstanding
+// remainder re-stages via replenishment).
 func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, task *manufacturing.ManufacturingTask, ship *navigation.Ship, playerID shared.PlayerID) bool {
 	logger := common.LoggerFromContext(ctx)
 
@@ -280,13 +294,37 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		return false
 	}
 
+	// ── PHASE 1: deliver ON-HAND cargo first, bypassing the source-buy gate (sp-9ptm). Gated ONLY
+	// by "does the site still need this good" so a met bill never over-delivers. The common empty
+	// hull (on-hand == 0) skips this entirely and behaves exactly as before (RULINGS #2).
+	deliveredOnHand := 0
+	var pipeline *manufacturing.ManufacturingPipeline
+	if onHandUnits(ship, task.Good()) > 0 && h.remainingBill(ctx, task) > 0 {
+		delivered, err := h.producer.DeliverToConstructionSite(ctx, ship.ShipSymbol(), task.Good(), task.ConstructionSite(), playerID)
+		if err != nil {
+			h.failTask(ctx, task, fmt.Sprintf("delivering on-hand %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
+			return false
+		}
+		if delivered > 0 {
+			deliveredOnHand = delivered
+			pipeline = h.recordDelivery(ctx, task, delivered)
+			// The on-hand load met the site's remaining bill: complete now — never buy past demand.
+			if h.remainingForGoodLocked(pipeline, task.Good()) <= 0 {
+				return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+			}
+			// Otherwise fall through to source the still-outstanding remainder.
+		}
+	}
+
+	// ── PHASE 2: source + deliver the REMAINDER via the shared engine.
 	// Fill the hauler TOWARD hull capacity before delivering (sp-2me2): stamp the material's
-	// outstanding bill as the executor's hull-fill target so a full round-trip carries ~a hull,
-	// not one ~trade-volume tranche (~1/4 hull, which quadrupled the round-trips). The executor
-	// loops market buys until the hold is full, the bill is met, or a money/price guard trips
-	// (fail-closed). fraction 0 => the full-hull default resolved in the executor; the fraction is
-	// the RULINGS #5 seam a per-run config can later tighten. A 0 bill (pipeline/material
-	// unreadable) leaves the executor to fill to full capacity — a supply is never harmful.
+	// outstanding bill (now net of any on-hand delivery above) as the executor's hull-fill target so
+	// a full round-trip carries ~a hull, not one ~trade-volume tranche (~1/4 hull, which quadrupled
+	// the round-trips). The executor loops market buys until the hold is full, the bill is met, or a
+	// money/price guard trips (fail-closed). fraction 0 => the full-hull default resolved in the
+	// executor; the fraction is the RULINGS #5 seam a per-run config can later tighten. A 0 bill
+	// (pipeline/material unreadable) leaves the executor to fill to full capacity — a supply is never
+	// harmful.
 	ctx = mfgServices.WithHullFillTarget(ctx, h.remainingBill(ctx, task), 0)
 
 	// Source the material INTO the hauler on the shared engine, honoring the planner's
@@ -305,41 +343,72 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	produceCtx := shared.WithConstructionSupply(ctx)
 	result, err := h.producer.ProduceGood(produceCtx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
 	if err != nil {
+		// A hard sourcing error on the remainder must not nuke on-hand progress already recorded:
+		// if the hull delivered its on-hand load this tick, complete the task (it advanced the gate)
+		// and let replenishment re-stage the remainder. Only a task that delivered NOTHING fails.
+		if deliveredOnHand > 0 {
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+		}
 		h.failTask(ctx, task, fmt.Sprintf("sourcing %s failed: %v", task.Good(), err))
 		return false
 	}
 	if result == nil || result.QuantityAcquired == 0 {
-		// Dry / no eligible source: DEFER, do not fail (RULINGS #1 never-skip). Parking to a
-		// deferred PENDING re-arms the SupplyMonitor re-sourcing path when the market refills.
+		// Dry / no eligible source (the sp-a5j7 fail-closed park, UNCHANGED). If on-hand cargo was
+		// already delivered this tick, NEVER strand it: the task advanced, so complete it and let
+		// replenishment re-stage the unsourceable remainder for the SupplyMonitor to re-source. Only
+		// an empty-of-the-material hull defers here (RULINGS #1 never-skip) — the incident's fix.
+		if deliveredOnHand > 0 {
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+		}
 		h.deferTask(ctx, task)
 		return false
 	}
 
 	delivered, err := h.producer.DeliverToConstructionSite(ctx, ship.ShipSymbol(), task.Good(), task.ConstructionSite(), playerID)
 	if err != nil {
+		if deliveredOnHand > 0 {
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+		}
 		h.failTask(ctx, task, fmt.Sprintf("delivering %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
 		return false
 	}
 
-	pipeline := h.recordDelivery(ctx, task, delivered)
+	pipeline = h.recordDelivery(ctx, task, delivered)
+	return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand+delivered)
+}
 
+// completeSupply finishes a task that delivered a load this tick: complete + persist it, enqueue the
+// next single-load replenishment when the site's bill is not yet met (PHASE-5 continuous refill,
+// sp-utjr), and log the supply. Returns true (the task drained). Shared by the deliver-on-hand path
+// and the source-then-deliver path (sp-9ptm) so the completion/refill logic cannot drift.
+func (h *RunConstructionCoordinatorHandler) completeSupply(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline, ship *navigation.Ship, delivered int) bool {
+	logger := common.LoggerFromContext(ctx)
 	if err := task.Complete(); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not complete construction task %s: %v", task.ID(), err), nil)
 	}
 	if err := h.taskRepo.Update(ctx, task); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist completed construction task %s: %v", task.ID(), err), nil)
 	}
-
-	// Continuous refill (PHASE-5, restored sp-utjr): one supplyTask delivers a single hauler
-	// load. If the site's bill for this material is not yet met, enqueue the next delivery so
-	// the gate keeps filling without a manual re-plan — the drain self-re-stages until each
-	// material's full bill is met, instead of stalling on the planner's single per-material task.
+	// One supplyTask delivers a single hauler load. If the site's bill for this material is not yet
+	// met, enqueue the next delivery so the gate keeps filling without a manual re-plan — the drain
+	// self-re-stages until each material's full bill is met, instead of stalling on the planner's
+	// single per-material task.
 	h.enqueueReplenishmentIfNeeded(ctx, task, pipeline)
-
 	logger.Log("INFO", fmt.Sprintf("Supplied %d %s to construction site %s", delivered, task.Good(), task.ConstructionSite()), map[string]interface{}{
 		"good": task.Good(), "units": delivered, "construction_site": task.ConstructionSite(), "ship": ship.ShipSymbol(),
 	})
 	return true
+}
+
+// onHandUnits reports how many units of good the ship currently holds (0 if the hold is empty or
+// unset) — the nil-safe read the deliver-on-hand path uses to decide whether the claimed hull is
+// already laden with the construction material (sp-9ptm).
+func onHandUnits(ship *navigation.Ship, good string) int {
+	cargo := ship.Cargo()
+	if cargo == nil {
+		return 0
+	}
+	return cargo.GetItemUnits(good)
 }
 
 // constructionSourcingNode builds the SupplyChainNode the drain hands to ProduceGood for one
@@ -416,6 +485,12 @@ func (h *RunConstructionCoordinatorHandler) remainingBill(ctx context.Context, t
 	if task.PipelineID() == "" {
 		return 0
 	}
+	// Read the shared material counter under recordMu (the sp-01eh serializer): a concurrent worker's
+	// recordDelivery mutates deliveredQuantity, so this read must be serialized with that write to
+	// stay race-free when several workers drain the SAME pipeline object. Value-identical to an
+	// unlocked read — the lock only removes the data race, not any behavior.
+	h.recordMu.Lock()
+	defer h.recordMu.Unlock()
 	pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID())
 	if err != nil || pipeline == nil {
 		return 0
@@ -475,7 +550,7 @@ func (h *RunConstructionCoordinatorHandler) enqueueReplenishmentIfNeeded(ctx con
 	if pipeline == nil {
 		return
 	}
-	remaining := remainingForGood(pipeline, task.Good())
+	remaining := h.remainingForGoodLocked(pipeline, task.Good())
 	if remaining <= 0 {
 		return // material bill met — stop cleanly, no further task
 	}
@@ -495,14 +570,30 @@ func (h *RunConstructionCoordinatorHandler) enqueueReplenishmentIfNeeded(ctx con
 }
 
 // remainingForGood returns how many units of good the pipeline's construction bill still needs,
-// from the just-updated persisted material target (RULINGS #2). A material absent from the pipeline
-// reports 0 — nothing to refill.
+// from the just-updated persisted material target (RULINGS #2). A nil pipeline (recordDelivery could
+// not load/persist it) or a material absent from the pipeline reports 0 — nothing to refill. The
+// nil guard lets the deliver-on-hand path (sp-9ptm) treat an unrecordable delivery as "bill met"
+// exactly as the pre-existing success tail does (complete, no replenishment).
 func remainingForGood(pipeline *manufacturing.ManufacturingPipeline, good string) int {
+	if pipeline == nil {
+		return 0
+	}
 	material := pipeline.GetMaterial(good)
 	if material == nil {
 		return 0
 	}
 	return material.RemainingQuantity()
+}
+
+// remainingForGoodLocked reads pipeline's remaining bill for good under recordMu (the sp-01eh
+// serializer), so the read is race-free against a concurrent worker's recordDelivery write when
+// several workers drain the SAME pipeline object. Value-identical to remainingForGood — the lock
+// only removes the data race. Callers must NOT already hold recordMu (recordDelivery releases it
+// before its result is read here), so there is no reentrancy.
+func (h *RunConstructionCoordinatorHandler) remainingForGoodLocked(pipeline *manufacturing.ManufacturingPipeline, good string) int {
+	h.recordMu.Lock()
+	defer h.recordMu.Unlock()
+	return remainingForGood(pipeline, good)
 }
 
 // nextConstructionDeliveryTask builds the follow-on single-load delivery task for a just-completed

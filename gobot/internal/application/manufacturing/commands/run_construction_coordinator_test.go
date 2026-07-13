@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ const constructionSiteWP = "X1-TEST-GATE"
 // same ConstructionProducer interface in production.
 type fakeConstructionProducer struct {
 	acquire       int // QuantityAcquired ProduceGood reports (0 models a dry/no-source market)
-	delivered     int // units DeliverToConstructionSite reports the site accepted
+	delivered     int // units DeliverToConstructionSite reports the site accepted (default per call)
 	produceGoods  []string
 	produceNodes  []*goods.SupplyChainNode // full node captured per call (acquisition method + children)
 	produceCtxCon []bool                   // whether the ProduceGood ctx was marked construction-supply
@@ -41,11 +42,18 @@ type fakeConstructionProducer struct {
 	// assert the drain fills toward the outstanding bill rather than one trade-volume tranche.
 	observedBill   int
 	observedFillOK bool
+	// sp-9ptm: callSeq is the ORDERED trace of "produce"/"deliver" across the run, so a test can
+	// prove the deliver-on-hand leg runs BEFORE the source-buy attempt. deliveredSeq scripts the
+	// units each successive DeliverToConstructionSite reports (on-hand load, then sourced load);
+	// it falls back to `delivered` once exhausted, so existing single-delivery tests are unchanged.
+	callSeq      []string
+	deliveredSeq []int
 }
 
 type producerDeliverCall struct{ ship, good, site string }
 
 func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigation.Ship, node *goods.SupplyChainNode, _ string, _ int, _ *shared.OperationContext, _ bool) (*mfgServices.ProductionResult, error) {
+	p.callSeq = append(p.callSeq, "produce")
 	p.produceGoods = append(p.produceGoods, node.Good)
 	if bill, _, ok := mfgServices.HullFillTargetFromContext(ctx); ok {
 		p.observedBill = bill
@@ -60,9 +68,15 @@ func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigatio
 }
 
 func (p *fakeConstructionProducer) DeliverToConstructionSite(_ context.Context, shipSymbol, good, site string, _ shared.PlayerID) (int, error) {
+	p.callSeq = append(p.callSeq, "deliver")
 	p.deliverCalls = append(p.deliverCalls, producerDeliverCall{ship: shipSymbol, good: good, site: site})
 	if p.deliverErr != nil {
 		return 0, p.deliverErr
+	}
+	if len(p.deliveredSeq) > 0 {
+		n := p.deliveredSeq[0]
+		p.deliveredSeq = p.deliveredSeq[1:]
+		return n, nil
 	}
 	return p.delivered, nil
 }
@@ -116,8 +130,12 @@ func (r *drainStubTaskRepo) Update(_ context.Context, task *manufacturing.Manufa
 
 // Create persists an enqueued replenishment task (PHASE-5 refill): it is recorded and appended
 // to the ready worklist so a subsequent tick's FindByStatus picks it up, exactly as the real
-// repo + drain loop behave.
+// repo + drain loop behave. Locks r.mu (like Update/FindByStatus) so concurrent drain workers
+// (sp-01eh) each enqueuing a replenishment task append safely — the real GORM repo serializes
+// concurrent inserts at the DB, so this models that atomicity.
 func (r *drainStubTaskRepo) Create(_ context.Context, task *manufacturing.ManufacturingTask) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.created = append(r.created, task)
 	r.tasks = append(r.tasks, task)
 	return nil
@@ -806,5 +824,160 @@ func TestConstructionDrain_DrivesFullBillAcrossDeliveries(t *testing.T) {
 	}
 	if len(taskRepo.created) != 2 {
 		t.Fatalf("expected exactly 2 refill tasks (after loads 1 and 2, none after the bill-meeting load 3), got %d", len(taskRepo.created))
+	}
+}
+
+// ladenHauler builds an idle in-system hauler already CARRYING `units` of `good` (sp-9ptm), so a
+// test can model a hull released mid-delivery that must unload its on-hand cargo. Capacity is the
+// newTestHauler default (40), so `units` must be <= 40.
+func ladenHauler(t *testing.T, symbol, good string, units int) *navigation.Ship {
+	t.Helper()
+	item, err := shared.NewCargoItem(good, good, "", units)
+	if err != nil {
+		t.Fatalf("NewCargoItem: %v", err)
+	}
+	return newTestHauler(t, symbol, []*shared.CargoItem{item})
+}
+
+// sp-9ptm (REPRO — the incident): a claimed hull that ALREADY HOLDS the construction material must
+// UNLOAD it to the site even when the source is unbuyable and the fail-closed buy gate (sp-a5j7)
+// parks. Before the fix the drain evaluated ProduceGood FIRST and, on a dry source, parked the task
+// WITHOUT ever delivering — stranding the on-hand cargo (TORWIND-8/-F sat idle+laden at F48 while
+// the gate stalled at 160/1600). Now the on-hand units are delivered UNCONDITIONALLY (before any
+// buy), pipeline progress is recorded, and the task advances instead of stranding.
+func TestConstructionDrain_DeliversOnHandCargoWhenSourceParks(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100) // bill 100; hull carries 30, source is dry
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 0, delivered: 30} // acquire 0 == the sp-a5j7 park
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "FAB_MATS", 30))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	if err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(producer.deliverCalls) != 1 || producer.deliverCalls[0].good != "FAB_MATS" || producer.deliverCalls[0].site != constructionSiteWP {
+		t.Fatalf("expected the 30 on-hand FAB_MATS delivered to the site despite the dry source, got %+v", producer.deliverCalls)
+	}
+	if len(producer.callSeq) == 0 || producer.callSeq[0] != "deliver" {
+		t.Fatalf("expected the on-hand DELIVERY to run BEFORE any source-buy attempt, call order was %v", producer.callSeq)
+	}
+	if got := pipeline.GetMaterial("FAB_MATS").DeliveredQuantity(); got != 30 {
+		t.Fatalf("expected the 30 on-hand units recorded on the pipeline, got %d", got)
+	}
+	if pipelineRepo.updates == 0 {
+		t.Fatal("expected the on-hand delivery persisted to the pipeline")
+	}
+	if resp.TasksDrained != 1 {
+		t.Fatalf("expected the laden hull's delivery to count as drained (not stranded), got %d", resp.TasksDrained)
+	}
+	if task.Status() != manufacturing.TaskStatusCompleted {
+		t.Fatalf("expected the task to ADVANCE (completed; remainder re-staged), got %s", task.Status())
+	}
+}
+
+// sp-9ptm (partial): a hull holding SOME of the material while the site still needs more delivers its
+// on-hand load FIRST, then sources + delivers the remainder in the SAME pass — the buy path is still
+// exercised (fail-closed, unchanged) for what the hull could not carry, and the hull-fill target for
+// the sourced leg is the bill remaining AFTER the on-hand delivery.
+func TestConstructionDrain_DeliversOnHandFirstThenSourcesRemainder(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100) // bill 100
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	// On-hand 30 delivered first; then a sourced 40-unit load delivered → 70 recorded, 30 still open.
+	producer := &fakeConstructionProducer{acquire: 40, deliveredSeq: []int{30, 40}}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "FAB_MATS", 30))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	if err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if want := []string{"deliver", "produce", "deliver"}; !reflect.DeepEqual(producer.callSeq, want) {
+		t.Fatalf("expected on-hand delivery FIRST, then source, then remainder delivery %v, got %v", want, producer.callSeq)
+	}
+	if len(producer.produceGoods) != 1 || producer.produceGoods[0] != "FAB_MATS" {
+		t.Fatalf("expected the remainder sourced once via ProduceGood, got %v", producer.produceGoods)
+	}
+	if !producer.observedFillOK || producer.observedBill != 70 {
+		t.Fatalf("expected the sourced leg's hull-fill target to be the POST-on-hand remainder (100-30=70), got %d (set=%v)", producer.observedBill, producer.observedFillOK)
+	}
+	if got := pipeline.GetMaterial("FAB_MATS").DeliveredQuantity(); got != 70 {
+		t.Fatalf("expected 30 on-hand + 40 sourced = 70 recorded, got %d", got)
+	}
+	if resp.TasksDrained != 1 {
+		t.Fatalf("expected the task drained, got %d", resp.TasksDrained)
+	}
+	if task.Status() != manufacturing.TaskStatusCompleted {
+		t.Fatalf("expected the task COMPLETED after on-hand + sourced delivery, got %s", task.Status())
+	}
+}
+
+// sp-9ptm (regression — the fail-closed buy guard is intact): the deliver-on-hand bypass is keyed to
+// the TASK's material. A hull laden only with an UNRELATED good (nothing of the needed material
+// aboard) still parks on a dry source exactly as before (sp-a5j7 unchanged) — the bypass never
+// fabricates a bogus delivery, and there is nothing to strand. (The literally-empty hull is covered
+// by TestConstructionDrain_DeferOnDryMarket.)
+func TestConstructionDrain_UnrelatedCargoDryMarket_StillDefers(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 0} // dry source (the sp-a5j7 park)
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "IRON", 20)) // holds IRON, task needs FAB_MATS
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	if err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(producer.deliverCalls) != 0 {
+		t.Fatalf("a hull holding none of the needed material must not deliver, got %+v", producer.deliverCalls)
+	}
+	if task.Status() != manufacturing.TaskStatusPending || !task.IsDeferredConstruction() {
+		t.Fatalf("expected the task PARKED (deferred) on the dry source, got %s (deferred=%v)", task.Status(), task.IsDeferredConstruction())
+	}
+	if pipeline.ConstructionProgress() != 0 {
+		t.Fatalf("expected no progress, got %.1f%%", pipeline.ConstructionProgress())
+	}
+	if resp.TasksDrained != 0 {
+		t.Fatalf("expected TasksDrained=0 (nothing delivered, remainder parked), got %d", resp.TasksDrained)
+	}
+}
+
+// sp-9ptm (regression — no over-delivery): a hull laden with a material whose site bill is ALREADY
+// MET must not dump its cargo. The deliver-on-hand bypass is gated on the site still NEEDING the
+// good, so a met bill skips it — the drain must not attempt a surplus supply the site would reject.
+func TestConstructionDrain_BillMet_DoesNotOverDeliverOnHand(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 40)
+	if err := pipeline.RecordMaterialDelivery("FAB_MATS", 40); err != nil { // bill fully met
+		t.Fatalf("RecordMaterialDelivery: %v", err)
+	}
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 0, delivered: 40} // acquire 0: the source path cannot deliver either
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "FAB_MATS", 40))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(producer.deliverCalls) != 0 {
+		t.Fatalf("a met bill must NOT trigger an on-hand delivery (no over-supply), got %+v", producer.deliverCalls)
+	}
+	if !pipeline.GetMaterial("FAB_MATS").IsComplete() {
+		t.Fatalf("expected the bill to remain complete/unchanged, progress %.1f%%", pipeline.ConstructionProgress())
 	}
 }
