@@ -221,6 +221,24 @@ func (r *drainFakeShipRepo) claimCount() int {
 
 func (r *drainFakeShipRepo) Save(_ context.Context, _ *navigation.Ship) error { return nil }
 
+// SaveWithRetry models the real repo's CAS re-apply path (sp-wa7c) that
+// releaseClaims now routes through: find the hull fresh by symbol and apply the
+// mutation in place. The stored *Ship is a shared pointer, so the re-applied
+// change (e.g. a ForceRelease) is reflected for the next find — mirroring the
+// no-op Save above, which likewise relied on the caller's in-place mutation. A
+// symbol the fake doesn't hold reports changed=false (no mutate, no nil deref).
+func (r *drainFakeShipRepo) SaveWithRetry(_ context.Context, symbol string, _ shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.ships {
+		if s.ShipSymbol() == symbol {
+			changed, err := mutate(s)
+			return s, changed, err
+		}
+	}
+	return nil, false, nil
+}
+
 // SyncShipFromAPI records that the drain forced a server-truth resync of a hull (sp-6zkg): the
 // recovery a phantom-cargo 4219 triggers so the desynced cache is reconciled before the task is
 // deferred, instead of re-routing the (really empty) hull to re-deliver forever.

@@ -1110,9 +1110,24 @@ func (h *RunConstructionCoordinatorHandler) releaseClaims(ctx context.Context, c
 		return
 	}
 	for _, ship := range ships {
-		ship.ForceRelease("construction_tick_complete", h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Could not release hauler %s after construction tick: %v", ship.ShipSymbol(), err), nil)
+		symbol := ship.ShipSymbol()
+		// Release under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+		// so a concurrent lot-task's cargo/nav update on the same hull survives
+		// instead of being last-write-wins clobbered by this tick's cached
+		// FindByContainer snapshot — the gate-FAB stall under sp-ubwi fan-out. The
+		// guard lives INSIDE the mutation so it is re-checked on every re-find: a
+		// hull already released, or freshly re-claimed by another container, yields
+		// changed=false (no write, no spurious version bump), so a live claim is
+		// never ripped out from under its new owner by a raced retry (RULING #7).
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, symbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != containerID {
+					return false, nil
+				}
+				sh.ForceRelease("construction_tick_complete", h.clock)
+				return true, nil
+			}); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Could not release hauler %s after construction tick: %v", symbol, err), nil)
 		}
 	}
 }
