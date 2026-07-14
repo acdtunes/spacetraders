@@ -169,8 +169,11 @@ func depotWarehouseTargetUnits(
 	var candidates []persistence.DemandCandidate
 	if miner != nil {
 		// Mine what the DESTINATION system RECEIVES (deliverySystem == destinationSystem): the
-		// receipt-demand signal, not the source buy-leg.
-		if rows, err := miner.Mine(ctx, destinationSystem, playerID, nil, persistence.DemandMinerOptions{}); err == nil {
+		// receipt-demand signal, not the source buy-leg. RankByContractReward (sp-wxf2) makes the
+		// candidate selection + TopN cull rank by contract-reward value — the SAME axis the receipt
+		// knapsack below optimizes — so a high-reward/low-savings good (MEDICINE/CLOTHING-like) is
+		// not dropped by the source-side savings cull before PlanReceiptCaps ever weighs it.
+		if rows, err := miner.Mine(ctx, destinationSystem, playerID, nil, persistence.DemandMinerOptions{RankBy: persistence.RankByContractReward}); err == nil {
 			candidates = rows
 		}
 	}

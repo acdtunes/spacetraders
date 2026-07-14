@@ -374,3 +374,54 @@ func TestDemandMiner_RequiresHomeSystem(t *testing.T) {
 	_, err := miner.Mine(context.Background(), "", 7, nil, DemandMinerOptions{})
 	require.Error(t, err)
 }
+
+// rewardVsSavingsMiner builds the sp-wxf2 contrast fixture: two contracted goods whose SAVINGS
+// order and REWARD order are OPPOSITE. POLYNUCLEOTIDES is low reward but high savings (known home
+// ask => stock-eligible, big buy-leg spread); MEDICINE is high reward but low savings (no home ask
+// => savings 0, stock-INELIGIBLE). Under a TopN=1 cull the savings ranking keeps POLYNUCLEOTIDES
+// and the reward ranking keeps MEDICINE — the two selection modes must diverge on the SAME input.
+func rewardVsSavingsMiner() *DemandMiner {
+	now := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	src := &fakeDemandSource{rows: []ContractGoodDemand{
+		{Good: "POLYNUCLEOTIDES", ContractCount: 3, UnitsRequired: 200, MaxContractUnits: 40, RewardPerUnit: 10, FirstSeen: now.Add(-24 * time.Hour), LastSeen: now},
+		{Good: "MEDICINE", ContractCount: 2, UnitsRequired: 30, MaxContractUnits: 30, RewardPerUnit: 5000, FirstSeen: now.Add(-24 * time.Hour), LastSeen: now},
+	}}
+	markets := &fakeMarketAsks{
+		crossByGood: map[string][]market.CheapestMarketResult{
+			"POLYNUCLEOTIDES": {{WaypointSymbol: "X1-FOREIGN-P1", SellPrice: 40}},
+			"MEDICINE":        {{WaypointSymbol: "X1-FOREIGN-M1", SellPrice: 40}},
+		},
+		homeByGood: map[string]*market.CheapestMarketResult{
+			"POLYNUCLEOTIDES": {WaypointSymbol: "X1-VB74-P", SellPrice: 500}, // high home ask => big savings, stock-eligible
+			// MEDICINE: no home ask => savings 0 => stock-ineligible => ranked last by the savings cull
+		},
+	}
+	return &DemandMiner{demand: src, markets: markets}
+}
+
+// TestDemandMiner_RankByContractReward_KeepsHighRewardUnderTopNCull (sp-wxf2) pins the DEPOT
+// receipt selection: RankByContractReward orders by total contract-reward value (ContractCount ×
+// ContractRewardPerUnit) so the TopN cut keeps the HIGH-reward/low-savings good (MEDICINE), not
+// the high-savings one. Without the reward ranking the savings cull would drop MEDICINE (savings
+// 0, ranked last) at TopN=1 — the exact defect that buried MEDICINE-like goods before the knapsack.
+func TestDemandMiner_RankByContractReward_KeepsHighRewardUnderTopNCull(t *testing.T) {
+	got, err := rewardVsSavingsMiner().Mine(context.Background(), "X1-VB74", 7, nil,
+		DemandMinerOptions{MinRecurrence: 2, TopN: 1, RankBy: RankByContractReward})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "MEDICINE", got[0].Good,
+		"depot reward ranking keeps the HIGH contract-reward good under the TopN cull, not the high-savings one")
+}
+
+// TestDemandMiner_DefaultRankBySavings_Unchanged_KeepsHighSavingsUnderTopNCull (sp-wxf2) proves
+// the STOCKER path is untouched: with no rank mode (RankBySavings, the zero value) the SAME
+// fixture keeps the HIGH-savings good (POLYNUCLEOTIDES) under the TopN cull — the source-side
+// buy-leg ordering, unchanged. This is the non-regression guard paired with the depot test above.
+func TestDemandMiner_DefaultRankBySavings_Unchanged_KeepsHighSavingsUnderTopNCull(t *testing.T) {
+	got, err := rewardVsSavingsMiner().Mine(context.Background(), "X1-VB74", 7, nil,
+		DemandMinerOptions{MinRecurrence: 2, TopN: 1}) // RankBy unset => RankBySavings (stocker default)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "POLYNUCLEOTIDES", got[0].Good,
+		"the default (stocker) ranking is UNCHANGED: it keeps the high-savings good under the TopN cull")
+}

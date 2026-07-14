@@ -58,6 +58,25 @@ type marketAskFinder interface {
 	FindCheapestMarketSelling(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.CheapestMarketResult, error)
 }
 
+// CandidateRankMode selects how Mine ranks candidates before the TopN cull. The ranking is
+// load-bearing precisely because TopN TRUNCATES the ranked list — a good sorted below the cut
+// never reaches the consumer's knapsack — so the ranking must match what the CONSUMER values.
+type CandidateRankMode int
+
+const (
+	// RankBySavings (the zero value) is the SOURCE-side stocker ordering: stock-eligible goods
+	// first, then by total projected buy-leg savings. It is the default so every existing caller —
+	// the source warehouse, the stocker coordinator, the tour deposit sink, the CLI — is
+	// unaffected: they pass no rank mode and keep the exact savings ordering.
+	RankBySavings CandidateRankMode = iota
+	// RankByContractReward is the DESTINATION-side depot receipt ordering (sp-wxf2): by total
+	// CONTRACT-REWARD value (ContractCount × ContractRewardPerUnit). The depot buffer's receipt
+	// knapsack (PlanReceiptCaps) values received goods by contract reward, so its candidate feed
+	// must be culled by reward too — otherwise the savings cull drops high-reward/low-savings goods
+	// (MEDICINE/CLOTHING-like) BEFORE the reward knapsack ever weighs them.
+	RankByContractReward
+)
+
 // DemandMinerOptions parametrizes the miner (RULINGS #5). Zero values fall back to
 // the package defaults.
 type DemandMinerOptions struct {
@@ -69,6 +88,11 @@ type DemandMinerOptions struct {
 	// differential 0) still clears the "savings > 0" guard. <=0 =>
 	// DefaultBuyLegSavingsPerUnit (fail OPEN for the in-system case).
 	BuyLegSavingsPerUnit int
+	// RankBy selects the ranking the TopN cull truncates against. The zero value (RankBySavings)
+	// preserves the source-side stocker ordering byte-identically; the DEPOT receipt path sets
+	// RankByContractReward so a high-reward/low-savings good is not culled before the reward
+	// knapsack (sp-wxf2).
+	RankBy CandidateRankMode
 }
 
 // DemandCandidate is one ranked pre-positioning row: a recurrently-contracted good
@@ -153,8 +177,9 @@ func NewDemandMinerWithSources(demand contractDemandSource, markets marketAskFin
 // Pipeline: home-scoped demand -> minRecurrence filter -> per good, cheapest SOURCE ask
 // ANYWHERE (home OR foreign — sp-layd) [required, else drop: no source = nothing to
 // pre-position] + home ask [optional, prices the contract-source alternative] -> per-unit
-// savings = (home ask + buy-leg) − source ask -> rank (stock-eligible first, then by total
-// projected savings) -> TopN.
+// savings = (home ask + buy-leg) − source ask -> rank (opts.RankBy: RankBySavings, the default —
+// stock-eligible first, then total projected savings; or RankByContractReward for the depot
+// receipt path — total contract-reward value, sp-wxf2) -> TopN.
 func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int, eraID *int, opts DemandMinerOptions) ([]DemandCandidate, error) {
 	if homeSystem == "" {
 		return nil, fmt.Errorf("home system is required (no default anchor — design §5 Q1)")
@@ -236,26 +261,64 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 		candidates = append(candidates, c)
 	}
 
-	sort.SliceStable(candidates, func(i, j int) bool {
-		a, b := candidates[i], candidates[j]
-		if a.StockEligible != b.StockEligible {
-			return a.StockEligible // stock-eligible rows rank first
-		}
-		aTotal := a.ProjectedSavingsPerUnit * a.DemandUnits
-		bTotal := b.ProjectedSavingsPerUnit * b.DemandUnits
-		if aTotal != bTotal {
-			return aTotal > bTotal // then by total projected savings desc
-		}
-		if a.ContractCount != b.ContractCount {
-			return a.ContractCount > b.ContractCount // then by recurrence desc
-		}
-		return a.Good < b.Good // stable tiebreak
-	})
+	sort.SliceStable(candidates, candidateRankLess(candidates, opts.RankBy))
 
 	if len(candidates) > topN {
 		candidates = candidates[:topN]
 	}
 	return candidates, nil
+}
+
+// candidateRankLess picks the ordering the TopN cull truncates against. RankBySavings (the zero
+// value) is the SOURCE-side stocker ordering, left byte-identical so every source / stocker / tour
+// / CLI caller is unaffected. RankByContractReward is the DESTINATION-side depot receipt ordering
+// (sp-wxf2). The comparator is chosen ONCE here, never per-comparison, so the sort stays stable.
+func candidateRankLess(candidates []DemandCandidate, mode CandidateRankMode) func(i, j int) bool {
+	if mode == RankByContractReward {
+		return func(i, j int) bool {
+			return lessByContractReward(candidates[i], candidates[j])
+		}
+	}
+	return func(i, j int) bool {
+		return lessBySavings(candidates[i], candidates[j])
+	}
+}
+
+// lessBySavings is the SOURCE-side stocker ranking (UNCHANGED — this is the exact comparator the
+// miner has always used): stock-eligible rows first, then by total projected buy-leg savings
+// (per-unit × demand) desc, then recurrence desc, then good symbol for a stable tiebreak.
+func lessBySavings(a, b DemandCandidate) bool {
+	if a.StockEligible != b.StockEligible {
+		return a.StockEligible // stock-eligible rows rank first
+	}
+	aTotal := a.ProjectedSavingsPerUnit * a.DemandUnits
+	bTotal := b.ProjectedSavingsPerUnit * b.DemandUnits
+	if aTotal != bTotal {
+		return aTotal > bTotal // then by total projected savings desc
+	}
+	if a.ContractCount != b.ContractCount {
+		return a.ContractCount > b.ContractCount // then by recurrence desc
+	}
+	return a.Good < b.Good // stable tiebreak
+}
+
+// lessByContractReward is the DESTINATION-side depot receipt ranking (sp-wxf2): by total
+// CONTRACT-REWARD value (ContractCount × ContractRewardPerUnit) desc — the same value axis the
+// receipt knapsack (PlanReceiptCaps) itself optimizes — so a high-reward/low-savings good is NOT
+// culled by the savings sort + TopN before the knapsack weighs it. It deliberately does NOT gate
+// on StockEligible: that is a buy-leg-savings concept irrelevant to receipt demand, and gating on
+// it is the very defect that sank the high-reward goods below every eligible filler. Ties fall to
+// recurrence then good symbol for a stable ordering.
+func lessByContractReward(a, b DemandCandidate) bool {
+	aValue := a.ContractRewardPerUnit * float64(a.ContractCount)
+	bValue := b.ContractRewardPerUnit * float64(b.ContractCount)
+	if aValue != bValue {
+		return aValue > bValue // by total contract-reward value desc
+	}
+	if a.ContractCount != b.ContractCount {
+		return a.ContractCount > b.ContractCount // then by recurrence desc
+	}
+	return a.Good < b.Good // stable tiebreak
 }
 
 // cheapestSourceMarket returns the cheapest market selling good ANYWHERE — home system OR
