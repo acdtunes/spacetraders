@@ -498,14 +498,31 @@ func (h *RunWorkerRebalancerCoordinatorHandler) reclaimEndedFerries(
 		}
 
 		reason := ferryEndReason(ferriesByID, containerID)
-		ship.ForceRelease("worker_ferry_"+reason, h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim ferried hull %s from ended ferry %s: %v", ship.ShipSymbol(), containerID, err), nil)
+		shipSymbol := ship.ShipSymbol()
+		// Reclaim under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+		// so a concurrent writer's cargo/nav update on the same hull survives instead
+		// of being last-write-wins clobbered by the FindAllByPlayer snapshot. Skip
+		// unless the hull is still on THIS ended ferry (a concurrent release or a fresh
+		// re-claim -> changed=false), so a hull that moved on is never reclaimed out
+		// from under its new owner (RULINGS #7).
+		_, changed, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != containerID {
+					return false, nil
+				}
+				sh.ForceRelease("worker_ferry_"+reason, h.clock)
+				return true, nil
+			})
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim ferried hull %s from ended ferry %s: %v", shipSymbol, containerID, err), nil)
 			continue
 		}
-		logger.Log("INFO", fmt.Sprintf("Reclaimed ferried hull %s from %s ferry %s — %s", ship.ShipSymbol(), reason, containerID, reclaimNote(reason)), map[string]interface{}{
+		if !changed {
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Reclaimed ferried hull %s from %s ferry %s — %s", shipSymbol, reason, containerID, reclaimNote(reason)), map[string]interface{}{
 			"action":       "worker_ferry_reclaim",
-			"ship_symbol":  ship.ShipSymbol(),
+			"ship_symbol":  shipSymbol,
 			"container_id": containerID,
 			"reason":       reason,
 		})
@@ -875,16 +892,18 @@ func (h *RunWorkerRebalancerCoordinatorHandler) inFlightFerriesToSystem(ferries 
 // releaseHull frees a specific hull by symbol (ferry start-failure rollback). Best-effort.
 func (h *RunWorkerRebalancerCoordinatorHandler) releaseHull(ctx context.Context, cmd *RunWorkerRebalancerCoordinatorCommand, hull, reason string) {
 	logger := common.LoggerFromContext(ctx)
-	ship, err := h.shipRepo.FindBySymbol(ctx, hull, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to load hull %s to release (%s): %v", hull, reason, err), nil)
-		return
-	}
-	if !ship.IsAssigned() {
-		return
-	}
-	ship.ForceRelease(reason, h.clock)
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
+	// Release under CAS-retry (sp-wa7c): the closure re-applies ForceRelease on the
+	// FRESH row so a concurrent writer's cargo/nav update on the same hull survives
+	// instead of being last-write-wins clobbered, and skips the write when the hull
+	// is already idle (changed=false, no spurious version bump).
+	if _, _, err := h.shipRepo.SaveWithRetry(ctx, hull, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() {
+				return false, nil
+			}
+			sh.ForceRelease(reason, h.clock)
+			return true, nil
+		}); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to release hull %s (%s): %v", hull, reason, err), nil)
 	}
 }

@@ -73,9 +73,17 @@ func (h *JettisonCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, err
 	}
 
-	// Update ship cargo and persist to DB
-	_ = ship.RemoveCargo(cmd.GoodSymbol, cmd.Units)
-	_ = h.shipRepo.Save(ctx, ship)
+	// Persist the jettison's cargo removal onto the FRESH ship row under CAS-retry
+	// (sp-wa7c): the API already jettisoned the units, so the closure re-applies ONLY
+	// this good's removal on the fresh row, letting a concurrent writer's nav/fuel/
+	// other-cargo update on the same hull survive instead of being last-write-wins
+	// clobbered. Best-effort (unchanged): the API is authoritative and the daemon
+	// cache reconciles from it on the next sync.
+	_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			_ = sh.RemoveCargo(cmd.GoodSymbol, cmd.Units)
+			return true, nil
+		})
 
 	return &JettisonCargoResponse{
 		UnitsJettisoned: cmd.Units,

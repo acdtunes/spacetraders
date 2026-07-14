@@ -808,14 +808,31 @@ func (h *RunScoutPostCoordinatorHandler) sweepOrphanedScoutHulls(ctx context.Con
 			continue // RUNNING / INTERRUPTED / STOPPING — live or recoverable, never reap
 		}
 
-		ship.ForceRelease(releaseReasonScoutOrphanSwept, h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Scout orphan sweep freed %s but failed to persist the release: %v", ship.ShipSymbol(), err), nil)
+		shipSymbol := ship.ShipSymbol()
+		// Release under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+		// so a concurrent writer's cargo/nav update on the same hull survives instead
+		// of being last-write-wins clobbered by the FindActiveByPlayer snapshot. Skip
+		// unless the hull is still on THIS orphaned container (a concurrent release or
+		// re-claim -> changed=false), so a hull that moved on is never swept out from
+		// under its new owner (RULINGS #7).
+		_, changed, saveErr := h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != containerID {
+					return false, nil
+				}
+				sh.ForceRelease(releaseReasonScoutOrphanSwept, h.clock)
+				return true, nil
+			})
+		if saveErr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Scout orphan sweep freed %s but failed to persist the release: %v", shipSymbol, saveErr), nil)
 			continue
 		}
-		logger.Log("INFO", fmt.Sprintf("Scout orphan swept: %s freed from orphaned container %s — returning to the idle pool for in-system re-seat", ship.ShipSymbol(), containerID), map[string]interface{}{
+		if !changed {
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Scout orphan swept: %s freed from orphaned container %s — returning to the idle pool for in-system re-seat", shipSymbol, containerID), map[string]interface{}{
 			"action":             "scout_orphan_swept",
-			"ship_symbol":        ship.ShipSymbol(),
+			"ship_symbol":        shipSymbol,
 			"orphaned_container": containerID,
 			"container_status":   status,
 		})
@@ -2249,12 +2266,29 @@ func (h *RunScoutPostCoordinatorHandler) reclaimHullFromContainer(ctx context.Co
 		if !ship.IsAssigned() {
 			continue
 		}
-		ship.ForceRelease(reason, h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim hull %s from container %s: %v", ship.ShipSymbol(), containerID, err), nil)
+		shipSymbol := ship.ShipSymbol()
+		// Reclaim under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row so
+		// a concurrent writer's cargo/nav update on the same hull survives instead of
+		// being last-write-wins clobbered by the FindByContainer snapshot. Skip unless
+		// the hull is still on THIS container (a concurrent release or re-claim ->
+		// changed=false), so a hull that moved on is never reclaimed out from under its
+		// new owner (RULINGS #7).
+		_, changed, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != containerID {
+					return false, nil
+				}
+				sh.ForceRelease(reason, h.clock)
+				return true, nil
+			})
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim hull %s from container %s: %v", shipSymbol, containerID, err), nil)
 			continue
 		}
-		logger.Log("INFO", fmt.Sprintf("Reclaimed hull %s from container %s", ship.ShipSymbol(), containerID), nil)
+		if !changed {
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Reclaimed hull %s from container %s", shipSymbol, containerID), nil)
 	}
 }
 
@@ -2265,16 +2299,18 @@ func (h *RunScoutPostCoordinatorHandler) releaseHull(ctx context.Context, cmd *R
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
-	ship, err := h.shipRepo.FindBySymbol(ctx, hullSymbol, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to load hull %s to release (%s): %v", hullSymbol, reason, err), nil)
-		return
-	}
-	if !ship.IsAssigned() {
-		return
-	}
-	ship.ForceRelease(reason, h.clock)
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
+	// Release under CAS-retry (sp-wa7c): the closure re-applies ForceRelease on the
+	// FRESH row so a concurrent writer's cargo/nav update on the same hull survives
+	// instead of being last-write-wins clobbered, and skips the write when the hull
+	// is already idle (changed=false, no spurious version bump).
+	if _, _, err := h.shipRepo.SaveWithRetry(ctx, hullSymbol, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() {
+				return false, nil
+			}
+			sh.ForceRelease(reason, h.clock)
+			return true, nil
+		}); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to release hull %s (%s): %v", hullSymbol, reason, err), nil)
 	}
 }

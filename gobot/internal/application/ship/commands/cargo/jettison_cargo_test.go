@@ -46,6 +46,27 @@ func (r *jettisonFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) 
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated jettison persist (sp-wa7c) exercises its production closure
+// while still routing through Save's tracking.
+func (r *jettisonFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 func (r *jettisonFakeShipRepo) Orbit(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
 	r.orbited = true
 	return r.orbitErr

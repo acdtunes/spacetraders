@@ -46,6 +46,27 @@ func (r *liquidationE2EShipRepo) ClaimShip(_ context.Context, symbol, containerI
 }
 func (r *liquidationE2EShipRepo) Save(_ context.Context, _ *navigation.Ship) error { return nil }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so a migrated fleet-coordinator persist (sp-wa7c) exercises its production
+// closure against this fake without hitting the embedded nil interface.
+func (r *liquidationE2EShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 // liquidationE2EMarket answers the best in-system bid for the strand good.
 type liquidationE2EMarket struct {
 	market.MarketRepository

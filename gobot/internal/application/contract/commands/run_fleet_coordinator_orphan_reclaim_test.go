@@ -49,6 +49,34 @@ func (r *multiOrphanFakeShipRepo) Save(_ context.Context, ship *navigation.Ship)
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find the tracked
+// hull by symbol → mutate → save) so the migrated interrupted-worker reclaim
+// (sp-wa7c) exercises its production closure while still routing through Save's
+// snapshot tracking.
+func (r *multiOrphanFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	var target *navigation.Ship
+	for _, ship := range r.ships {
+		if ship.ShipSymbol() == symbol {
+			target = ship
+			break
+		}
+	}
+	if target == nil {
+		return nil, false, errors.New("ship not found: " + symbol)
+	}
+	changed, err := mutate(target)
+	if err != nil {
+		return target, false, err
+	}
+	if !changed {
+		return target, false, nil
+	}
+	if err := r.Save(ctx, target); err != nil {
+		return target, false, err
+	}
+	return target, true, nil
+}
+
 // alwaysErrContractRepo makes ContractMarketService.NegotiateContract fail
 // immediately on FindActiveContracts, before it ever touches the mediator.
 // This scenario's handler is built without a fleetPoolManager/mediator (like

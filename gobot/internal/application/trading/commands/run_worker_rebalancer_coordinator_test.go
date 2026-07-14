@@ -82,6 +82,27 @@ func (r *fakeRebalancerShipRepo) Save(_ context.Context, ship *navigation.Ship) 
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated ferry reclaim / release-hull sites (sp-wa7c) exercise their
+// production closures while still routing through Save's released-hull tracking.
+func (r *fakeRebalancerShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 // erroringShipRepo fails FindAllByPlayer — the fail-closed ship-read guard.
 type erroringShipRepo struct{ navigation.ShipRepository }
 

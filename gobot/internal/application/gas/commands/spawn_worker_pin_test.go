@@ -51,6 +51,28 @@ func (r *spawnFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated gas pre-claim release (sp-wa7c) exercises its production
+// closure while still honoring findErr/saveErr and routing through Save's snapshot
+// tracking.
+func (r *spawnFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 // ClaimShip records the atomic operation-checked claim at the port boundary
 // (sp-l7h2 Phase 2). Guard logic itself lives in the real repository and is
 // covered by ship_repository_claim_dedication_test.go; rejections here are

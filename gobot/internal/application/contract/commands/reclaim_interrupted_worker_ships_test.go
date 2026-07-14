@@ -38,6 +38,25 @@ func (r *reclaimFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (mutate the tracked
+// hull → save) so the migrated interrupted-worker reclaim (sp-wa7c) exercises its
+// production closure while still routing through Save's snapshot tracking. This fake
+// holds a single hull, so it applies the mutation to it directly rather than
+// re-finding by symbol.
+func (r *reclaimFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	changed, err := mutate(r.ship)
+	if err != nil {
+		return r.ship, false, err
+	}
+	if !changed {
+		return r.ship, false, nil
+	}
+	if err := r.Save(ctx, r.ship); err != nil {
+		return r.ship, false, err
+	}
+	return r.ship, true, nil
+}
+
 type reclaimFakeContainerRepo struct {
 	byStatus map[string][]persistence.ContainerSummary
 }

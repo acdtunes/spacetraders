@@ -695,11 +695,15 @@ func (h *PurchaseShipHandler) createIdleAssignment(
 	ctx context.Context,
 	ship *navigation.Ship,
 ) error {
-	// Set ship as idle (new ships start without an assignment)
-	ship.SetAssignment(navigation.NewIdleAssignment())
-
-	// Persist to database via ShipRepository
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
+	// Persist the new ship's idle assignment under CAS-retry (sp-wa7c): the closure
+	// sets the idle assignment on the FRESH row so a concurrent writer's cargo/nav
+	// update on the just-synced hull survives instead of being last-write-wins
+	// clobbered. New ships start without an assignment.
+	if _, _, err := h.shipRepo.SaveWithRetry(ctx, ship.ShipSymbol(), ship.PlayerID(),
+		func(sh *navigation.Ship) (bool, error) {
+			sh.SetAssignment(navigation.NewIdleAssignment())
+			return true, nil
+		}); err != nil {
 		return fmt.Errorf("failed to persist ship assignment: %w", err)
 	}
 

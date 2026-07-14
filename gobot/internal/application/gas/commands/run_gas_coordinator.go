@@ -349,22 +349,22 @@ func (h *RunGasCoordinatorHandler) createPoolAssignments(
 	playerID domainShared.PlayerID,
 ) error {
 	for _, shipSymbol := range ships {
-		// Load ship from repository
-		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-		}
-
-		// Release any existing assignment from a previous run's container —
-		// gas ships are explicitly configured, so a stale claim is force-taken
-		// (recovery semantics, unchanged). Only released when actually held by
-		// another container: an idle (or pinned-elsewhere-but-idle) hull gets
-		// no gratuitous release write before the claim verdict below.
-		if ship.IsAssigned() && ship.ContainerID() != containerID {
-			ship.ForceRelease("reassigning to new coordinator", h.clock)
-			if err := h.shipRepo.Save(ctx, ship); err != nil {
-				return fmt.Errorf("failed to save release for %s: %w", shipSymbol, err)
-			}
+		// Release any existing assignment from a previous run's container under
+		// CAS-retry (sp-wa7c) — gas ships are explicitly configured, so a stale claim
+		// held by ANOTHER container is force-taken (recovery semantics, unchanged).
+		// The closure re-applies ForceRelease on the FRESH row so a concurrent writer's
+		// cargo/nav update survives instead of being last-write-wins clobbered; it
+		// skips when the hull is idle or already on this container (changed=false), so
+		// no gratuitous release write happens before the claim verdict below.
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() == containerID {
+					return false, nil
+				}
+				sh.ForceRelease("reassigning to new coordinator", h.clock)
+				return true, nil
+			}); err != nil {
+			return fmt.Errorf("failed to save release for %s: %w", shipSymbol, err)
 		}
 
 		// Atomic claim: assignment + fleet dedication checked in one locked
@@ -389,10 +389,20 @@ func (h *RunGasCoordinatorHandler) releasePoolAssignments(
 		return err
 	}
 
-	// Release each ship and save
+	// Release each ship under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH
+	// row so a concurrent writer's cargo/nav update survives instead of being
+	// last-write-wins clobbered by the FindByContainer snapshot. Skip unless the hull
+	// is still on THIS container (a concurrent release or re-claim -> changed=false).
 	for _, ship := range ships {
-		ship.ForceRelease("coordinator shutdown", h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
+		shipSymbol := ship.ShipSymbol()
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != containerID {
+					return false, nil
+				}
+				sh.ForceRelease("coordinator shutdown", h.clock)
+				return true, nil
+			}); err != nil {
 			// Log but continue with other ships
 			continue
 		}
@@ -452,16 +462,23 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 		// hull pinned to a foreign fleet is rejected inside the locked
 		// transaction, not clobbered.
 		//
-		// A stale claim from a previous run's container is still force-taken
-		// first (config-listed hull, recovery semantics unchanged) — but only
-		// when actually held, so an idle hull gets no gratuitous release write
-		// before the claim verdict.
-		if ship.IsAssigned() && ship.ContainerID() != workerContainerID {
-			ship.ForceRelease(spec.preReleaseReason, h.clock)
-			if err := h.shipRepo.Save(ctx, ship); err != nil {
-				_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-				return "", fmt.Errorf("failed to save pre-claim release: %w", err)
-			}
+		// A stale claim from a previous run's container is still force-taken first
+		// (config-listed hull, recovery semantics unchanged) under CAS-retry (sp-wa7c):
+		// the closure re-applies ForceRelease on the FRESH row so a concurrent writer's
+		// cargo/nav update survives instead of being last-write-wins clobbered, and
+		// skips when the hull is idle or already on this worker container (changed=
+		// false), so an idle hull gets no gratuitous release write before the claim
+		// verdict.
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() == workerContainerID {
+					return false, nil
+				}
+				sh.ForceRelease(spec.preReleaseReason, h.clock)
+				return true, nil
+			}); err != nil {
+			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			return "", fmt.Errorf("failed to save pre-claim release: %w", err)
 		}
 		if err := h.shipRepo.ClaimShip(ctx, shipSymbol, workerContainerID, playerID, operationGas); err != nil {
 			_ = h.daemonClient.StopContainer(ctx, workerContainerID)

@@ -167,12 +167,29 @@ func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
 			if !ship.IsAssigned() {
 				continue
 			}
-			ship.ForceRelease("worker_interrupted", clock)
-			if err := m.shipRepo.Save(ctx, ship); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to save reclaimed ship %s from container %s: %v", ship.ShipSymbol(), worker.ID, err), nil)
+			shipSymbol := ship.ShipSymbol()
+			// Reclaim under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+			// so a concurrent writer's cargo/nav update on the same hull survives instead
+			// of being last-write-wins clobbered by the FindByContainer snapshot. Skip
+			// unless the hull is still claimed to THIS dead worker (a concurrent release
+			// or a fresh re-claim by another container -> changed=false), so a hull that
+			// moved on is never released out from under its new owner (RULINGS #7).
+			_, changed, err := m.shipRepo.SaveWithRetry(ctx, shipSymbol, shared.MustNewPlayerID(playerID),
+				func(sh *navigation.Ship) (bool, error) {
+					if !sh.IsAssigned() || sh.ContainerID() != worker.ID {
+						return false, nil
+					}
+					sh.ForceRelease("worker_interrupted", clock)
+					return true, nil
+				})
+			if err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to save reclaimed ship %s from container %s: %v", shipSymbol, worker.ID, err), nil)
 				continue
 			}
-			logger.Log("INFO", fmt.Sprintf("Reclaimed ship %s from interrupted worker %s", ship.ShipSymbol(), worker.ID), nil)
+			if !changed {
+				continue
+			}
+			logger.Log("INFO", fmt.Sprintf("Reclaimed ship %s from interrupted worker %s", shipSymbol, worker.ID), nil)
 			reclaimed++
 		}
 	}

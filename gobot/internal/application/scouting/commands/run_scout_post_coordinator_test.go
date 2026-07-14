@@ -182,6 +182,27 @@ func (r *fakeScoutShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
+// save) so the migrated scout reclaim/release sites (sp-wa7c) exercise their
+// production closures while still routing through Save's released-hull tracking.
+func (r *fakeScoutShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	sh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(sh)
+	if err != nil {
+		return sh, false, err
+	}
+	if !changed {
+		return sh, false, nil
+	}
+	if err := r.Save(ctx, sh); err != nil {
+		return sh, false, err
+	}
+	return sh, true, nil
+}
+
 // fakeScoutDaemonClient records the worker lifecycle calls the coordinator makes.
 type fakeScoutDaemonClient struct {
 	daemon.DaemonClient

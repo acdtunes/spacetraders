@@ -1173,8 +1173,19 @@ func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
 	// Detach from the dead worker container so spawnContractWorker can re-assign
 	// the ship to the fresh one. Mirrors ReclaimShipsFromInterruptedWorkers' own
 	// detach, but here we immediately re-adopt instead of returning to discovery.
-	ship.ForceRelease("worker_readopt", h.clock)
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
+	// Under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row so a
+	// concurrent writer's cargo/nav update on the same hull survives instead of
+	// being last-write-wins clobbered, and skip unless the hull is still on its
+	// dead worker (already released / re-claimed elsewhere -> changed=false).
+	deadWorkerContainer := ship.ContainerID()
+	if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() || sh.ContainerID() != deadWorkerContainer {
+				return false, nil
+			}
+			sh.ForceRelease("worker_readopt", h.clock)
+			return true, nil
+		}); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to release ship %s for re-adoption (falling back to reclaim/discovery): %v", shipSymbol, err), nil)
 		return ""
 	}
@@ -1283,8 +1294,19 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 
 	logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
 	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindContractWorkflow, workerContainerID); err != nil {
-		ship.ForceRelease("worker_start_failed", h.clock)
-		_ = h.shipRepo.Save(ctx, ship)
+		// Release the just-claimed hull under CAS-retry (sp-wa7c): re-apply
+		// ForceRelease on the FRESH row so a concurrent writer's cargo/nav update
+		// survives instead of being last-write-wins clobbered, and skip unless the
+		// hull is still this worker's claim (RULINGS #7 — never release out from
+		// under a new owner).
+		_, _, _ = h.shipRepo.SaveWithRetry(ctx, selectedShip, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != workerContainerID {
+					return false, nil
+				}
+				sh.ForceRelease("worker_start_failed", h.clock)
+				return true, nil
+			})
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("Failed to start worker container: %v", err)
 	}
@@ -1392,8 +1414,18 @@ func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
 	}
 
 	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindCargoLiquidation, workerContainerID); err != nil {
-		ship.ForceRelease("liquidation_start_failed", h.clock)
-		_ = h.shipRepo.Save(ctx, ship)
+		// Release the just-claimed hull under CAS-retry (sp-wa7c): re-apply
+		// ForceRelease on the FRESH row so a concurrent writer's cargo/nav update
+		// survives instead of being last-write-wins clobbered, and skip unless the
+		// hull is still this worker's claim (RULINGS #7).
+		_, _, _ = h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != workerContainerID {
+					return false, nil
+				}
+				sh.ForceRelease("liquidation_start_failed", h.clock)
+				return true, nil
+			})
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("failed to start liquidation worker: %w", err)
 	}

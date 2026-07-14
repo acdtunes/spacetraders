@@ -1925,12 +1925,24 @@ func (h *RunFactoryCoordinatorHandler) releaseAllShipAssignments(
 		return err
 	}
 
-	// Release each ship using Ship aggregate pattern
+	// Release each ship using Ship aggregate pattern under CAS-retry (sp-wa7c):
+	// re-apply ForceRelease on the FRESH row so a concurrent writer's cargo/nav
+	// update on the same hull survives instead of being last-write-wins clobbered by
+	// the FindByContainer snapshot. Skip unless the hull is still on THIS container
+	// (a concurrent release or re-claim -> changed=false), so a hull that moved on is
+	// never released out from under its new owner (RULINGS #7).
 	for _, ship := range assignedShips {
-		ship.ForceRelease(reason, h.clock)
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
+		shipSymbol := ship.ShipSymbol()
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerIDValue,
+			func(sh *navigation.Ship) (bool, error) {
+				if !sh.IsAssigned() || sh.ContainerID() != containerID {
+					return false, nil
+				}
+				sh.ForceRelease(reason, h.clock)
+				return true, nil
+			}); err != nil {
 			logger.Log("WARNING", "Failed to release ship assignment", map[string]interface{}{
-				"ship_symbol":  ship.ShipSymbol(),
+				"ship_symbol":  shipSymbol,
 				"container_id": containerID,
 				"error":        err.Error(),
 			})

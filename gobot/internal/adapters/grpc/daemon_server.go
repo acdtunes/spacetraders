@@ -1370,9 +1370,22 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 		fmt.Printf("Warning: Failed to find ships for container %s: %v\n", containerModel.ID, err)
 	} else {
 		for _, ship := range assignedShips {
-			ship.ForceRelease(reason, s.clock)
-			if err := s.shipRepo.Save(ctx, ship); err != nil {
-				fmt.Printf("Warning: Failed to release ship %s for container %s: %v\n", ship.ShipSymbol(), containerModel.ID, err)
+			shipSymbol := ship.ShipSymbol()
+			// Release under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+			// so a concurrent writer's cargo/nav update survives instead of being
+			// last-write-wins clobbered by the FindByContainer snapshot. Skip unless the
+			// hull is still on THIS failed container (a concurrent release or re-claim ->
+			// changed=false), so a hull that moved on is not released out from under its
+			// new owner.
+			if _, _, err := s.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+				func(sh *navigation.Ship) (bool, error) {
+					if !sh.IsAssigned() || sh.ContainerID() != containerModel.ID {
+						return false, nil
+					}
+					sh.ForceRelease(reason, s.clock)
+					return true, nil
+				}); err != nil {
+				fmt.Printf("Warning: Failed to release ship %s for container %s: %v\n", shipSymbol, containerModel.ID, err)
 			}
 		}
 	}
