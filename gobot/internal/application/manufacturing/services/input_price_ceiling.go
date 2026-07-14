@@ -127,6 +127,16 @@ func inputPriceCeilingConfigFromContext(ctx context.Context) inputPriceCeilingCo
 func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoint, good, systemSymbol string, playerID, ask int) bool {
 	logger := common.LoggerFromContext(ctx)
 
+	// sp-vh1s: gate-fill runs are MARGIN-BLIND (Admiral §9 sign-off 2026-07-14). The per-tranche
+	// ladder-chase ceiling is a LOCAL per-material margin optimization the gate deliberately drops —
+	// the gate is a finite, affordable (~1.3-2.6M remaining bill vs ~4M treasury), enormous-ROI
+	// investment, so margin-gating it stalls the unlock to save pennies. It is bounded instead by
+	// the 9aoc solvency floor (in buyGood, untouched here) plus throughput-pacing (lane A). Off gate
+	// mode this is byte-identical to the sp-a5j7/hzz5 cross-market backstop.
+	if IsUnifiedGateNode(ctx) {
+		return false
+	}
+
 	cfg := inputPriceCeilingConfigFromContext(ctx)
 	if cfg.disabled {
 		return false
@@ -198,6 +208,15 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 // fleet-killer. The narrow, money-safe job of THIS gate is the priceable-but-underwater case.
 func (e *ProductionExecutor) inputRoundMarginParked(ctx context.Context, node *goods.SupplyChainNode, systemSymbol string, playerID int) bool {
 	logger := common.LoggerFromContext(ctx)
+
+	// sp-vh1s: gate-fill drops the chain-margin round-park too (Admiral §9) — same margin-blind
+	// rationale as the per-tranche ceiling. A gate is a fixed, affordable investment, not a
+	// per-cycle profit factory, so a structurally-underwater LOCAL round is acceptable when it fills
+	// the gate; the 9aoc solvency floor (in buyGood) still bounds spend. Off gate mode this is
+	// byte-identical.
+	if IsUnifiedGateNode(ctx) {
+		return false
+	}
 
 	sink, err := e.marketLocator.FindImportMarket(ctx, node.Good, systemSymbol, playerID)
 	if err != nil || sink == nil {

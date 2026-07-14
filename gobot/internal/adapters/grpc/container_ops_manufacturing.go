@@ -32,6 +32,16 @@ var manufacturingConfigKeys = []string{
 	"anti_cycle_disabled",
 	"rest_window_minutes",
 	"rest_signal_disabled",
+	// sp-vh1s: the unified gate-fill master toggle + the gate output-buy throughput-pacing knobs.
+	// Cleared+reinjected from config.yaml on every build (sp-ts82) so flipping the toggle off reverts a
+	// recovered coordinator rather than shadowing it with a stale persisted copy. NOTE the per-launch
+	// construction_site_waypoint key is deliberately NOT listed — like good_gating_overrides it is set
+	// per-launch (a gate-fill factory launch names its site), not a global config.yaml knob, so it must
+	// survive a rebuild untouched.
+	"unified_gate_fill",
+	"gate_output_buy_rate_multiple",
+	"gate_output_per_lot_multiple",
+	"gate_output_pacing_disabled",
 	// sp-ev0n: the GLOBAL worker-cap default derived from [manufacturing.siting]
 	// workers_per_chain. Cleared+reinjected from config.yaml on every build (sp-ts82) so a
 	// retune reaches a recovered coordinator. NOTE the per-op live override key `worker_cap`
@@ -147,6 +157,26 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	if s.manufacturingConfig.RestSignalDisabled {
 		config["rest_signal_disabled"] = true
 	}
+	// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill master toggle + gate output-buy
+	// throughput-pacing knobs. The toggle and the pacing-disabled flag are written only when true, the
+	// pacing coefficients only when non-zero — so an absent [manufacturing] section is byte-identical to
+	// today: the toggle stays OFF (the whole feature dark, IsUnifiedGateNode false), and the coefficients
+	// resolve to their 2.0/1.0 defaults downstream but are only ever consulted for a gate node, so an
+	// OFF/profit factory never sees them. The clear in resolveManufacturingConfig makes flipping the
+	// toggle back off take effect on a recovered coordinator (sp-ts82). construction_site_waypoint is a
+	// per-launch key, not a global knob, so it is NOT injected here (see manufacturingConfigKeys).
+	if s.manufacturingConfig.UnifiedGateFill {
+		config["unified_gate_fill"] = true
+	}
+	if s.manufacturingConfig.GateOutputBuyRateMultiple != 0 {
+		config["gate_output_buy_rate_multiple"] = s.manufacturingConfig.GateOutputBuyRateMultiple
+	}
+	if s.manufacturingConfig.GateOutputPerLotMultiple != 0 {
+		config["gate_output_per_lot_multiple"] = s.manufacturingConfig.GateOutputPerLotMultiple
+	}
+	if s.manufacturingConfig.GateOutputPacingDisabled {
+		config["gate_output_pacing_disabled"] = true
+	}
 	// sp-jav2 / FACTORY_DOCTRINE X1: the fabricate depth cap. Only written when the captain set a
 	// non-zero depth — an unset key defers to the resolver's depth-3 default (sp-yfzi; the cap runs
 	// ON in production without the captain naming it, a protective default that only redirects an
@@ -177,5 +207,20 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	// is written separately by the RPC and takes precedence in resolveFactoryWorkerCap.
 	if wpc := s.manufacturingConfig.Siting.WorkersPerChain; wpc > 0 {
 		config["factory_worker_cap_default"] = int(math.Round(wpc))
+	}
+}
+
+// resolveConstructionUnifiedGateFill threads the SAME [manufacturing] unified_gate_fill toggle into
+// the construction-supply drain (sp-vh1s): the drain's RunConstructionCoordinatorCommand carries only
+// UnifiedGateFill (it derives its own construction site per-task, and its pacing/terminal live on the
+// factory command it delegates to), so this deliberately injects ONLY that one key rather than running
+// the full resolveManufacturingConfig — which would clear+reinject the drain's launch-config
+// production_strategy (a construction behavior change unrelated to this bead). Cleared then reinjected
+// so config.yaml is the single live source of truth (sp-ts82): dropping the toggle reverts a recovered
+// drain to OFF. Absent/false injects nothing → byte-identical to today.
+func (s *DaemonServer) resolveConstructionUnifiedGateFill(config map[string]interface{}) {
+	delete(config, "unified_gate_fill")
+	if s.manufacturingConfig.UnifiedGateFill {
+		config["unified_gate_fill"] = true
 	}
 }

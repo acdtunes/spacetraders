@@ -491,6 +491,13 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "goods_factory_coordinator" {
 		s.resolveManufacturingConfig(config)
 	}
+	// sp-vh1s: the construction-supply drain gets the SAME [manufacturing] unified_gate_fill toggle,
+	// resolved fresh on every build so a config edit + restart flips a recovered drain — but via a
+	// surgical resolver that injects ONLY the toggle, leaving the drain's launch-config production_strategy
+	// untouched (the full resolveManufacturingConfig would override it).
+	if commandType == "construction_coordinator" {
+		s.resolveConstructionUnifiedGateFill(config)
+	}
 	// sp-vdld: same live-config discipline for the siting coordinator. Its
 	// [manufacturing.siting] knobs are cleared and re-injected from the boot-loaded
 	// config.yaml on every build — creation and recovery alike — so a config edit +
@@ -907,6 +914,12 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		// intermediates recursively without the captain naming it; a per-launch production_strategy
 		// override or the pipeline's per-good overrides dial it back (RULINGS #5).
 		ProductionStrategy: resolveProductionStrategy(cfg.OptionalString("production_strategy")),
+		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle, from [manufacturing] via
+		// resolveConstructionUnifiedGateFill. absent/false → the drain honors the planner's frozen
+		// buy-vs-fabricate decision per material (byte-identical to today); ON drives the resolver's full
+		// scarcity-gated tree for every gate material and marks the run a gate node (the drain stamps
+		// WithUnifiedGateFill + a construction-site DeliveryTarget derived from the task's own site).
+		UnifiedGateFill: cfg.OptionalBool("unified_gate_fill"),
 	}
 }
 
@@ -975,6 +988,19 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// is the RULINGS #5 emergency off-switch.
 		RestWindowMinutes:  cfg.OptionalInt("rest_window_minutes", 0),
 		RestSignalDisabled: cfg.OptionalBool("rest_signal_disabled"),
+		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle + gate output-buy
+		// throughput-pacing, from [manufacturing] via injectManufacturingConfig. absent/false/0 → the
+		// whole feature dark (IsUnifiedGateNode needs BOTH the toggle AND a construction-site target) and
+		// the pacing coefficients resolve to their 2.0/1.0 defaults at the point of use — but the pacing
+		// is only ever consulted for a gate node, so an OFF/profit factory is byte-identical. The disable
+		// flag is the RULINGS #5 emergency off-switch. ConstructionSiteWaypoint is a PER-LAUNCH key (like
+		// good_gating_overrides): a gate-fill factory launch names the jump-gate site the root output is
+		// DELIVERED to; empty (every profit factory) leaves the run selling at a resale sink.
+		UnifiedGateFill:           cfg.OptionalBool("unified_gate_fill"),
+		ConstructionSiteWaypoint:  cfg.OptionalString("construction_site_waypoint"),
+		GateOutputBuyRateMultiple: cfg.OptionalFloat("gate_output_buy_rate_multiple", 0),
+		GateOutputPerLotMultiple:  cfg.OptionalFloat("gate_output_per_lot_multiple", 0),
+		GateOutputPacingDisabled:  cfg.OptionalBool("gate_output_pacing_disabled"),
 		// sp-ev0n: the live-tunable concurrent-hull cap. worker_cap is the PER-OP override the
 		// `goods factory workers` RPC writes live; it is NOT among the config.yaml-reinjected
 		// manufacturingConfigKeys, so a live value persists verbatim across a restart (RULINGS
