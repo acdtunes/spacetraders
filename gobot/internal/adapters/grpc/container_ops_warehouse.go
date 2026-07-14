@@ -77,13 +77,6 @@ func (s *DaemonServer) StartWarehouse(
 		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - warehouse only takes idle hulls", shipSymbol, ship.ContainerID())
 	}
 
-	containerID := utils.GenerateContainerID("warehouse", shipSymbol)
-
-	supportedGoodsInterface := make([]interface{}, len(supportedGoods))
-	for i, g := range supportedGoods {
-		supportedGoodsInterface[i] = g
-	}
-
 	// Auto-cap knapsack (sp-5n7v): compute per-good target_units from live contract demand ×
 	// residual-buy-leg over the REAL hull cargo_capacity (never assume-80) and persist them in
 	// the config, so the caps survive + reload with the container (RULINGS #2) and the captain
@@ -96,6 +89,31 @@ func (s *DaemonServer) StartWarehouse(
 		miner = persistence.NewDemandMiner(s.db)
 	}
 	targetUnits := warehouseTargetUnits(ctx, miner, ship.CargoCapacity(), shared.ExtractSystemSymbol(waypointSymbol), waypointSymbol, s.waypointCoords(ctx), playerID, nil)
+
+	return s.persistAndRunWarehouse(ctx, shipSymbol, waypointSymbol, supportedGoods, targetUnits, playerID)
+}
+
+// persistAndRunWarehouse builds the recovery-visible warehouse container from precomputed
+// per-good caps, persists it, and starts the claiming runner. Extracted (sp-cftm) so the
+// source-side StartWarehouse and the destination-side cluster launch share ONE container
+// lifecycle: the caps come from different selectors (source-side PlanWarehouseCaps vs
+// destination-receipt PlanReceiptCaps) but the persistence / claim / recovery path is
+// identical — no parallel channel.
+func (s *DaemonServer) persistAndRunWarehouse(
+	ctx context.Context,
+	shipSymbol string,
+	waypointSymbol string,
+	supportedGoods []string,
+	targetUnits map[string]int,
+	playerID int,
+) (*WarehouseOperationResult, error) {
+	containerID := utils.GenerateContainerID("warehouse", shipSymbol)
+
+	supportedGoodsInterface := make([]interface{}, len(supportedGoods))
+	for i, g := range supportedGoods {
+		supportedGoodsInterface[i] = g
+	}
+
 	targetUnitsInterface := make(map[string]interface{}, len(targetUnits))
 	for g, u := range targetUnits {
 		targetUnitsInterface[g] = u

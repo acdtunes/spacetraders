@@ -134,11 +134,13 @@ func (s *DaemonServer) LoadClusterRegistry(ctx context.Context, playerID int) (*
 }
 
 // reloadClusterRegistryAtBoot re-derives the player's cluster registry from the durable
-// repository at daemon startup and logs a one-line summary — the boot-time reload that
-// makes RULINGS #2 visible (persisted clusters reload on restart). It is a pure read,
-// safely re-runnable every boot, and fail-open: a load error is logged and swallowed so a
-// transient DB hiccup never blocks startup. It routes through the same LoadClusterRegistry
-// seam the contract engine consumes, so the boot log reflects exactly what routing will see.
+// repository at daemon startup, logs a one-line summary, and LAUNCHES each cluster's
+// destination-side coordinators (sp-cftm) — the boot-time reload that makes RULINGS #2 visible
+// (persisted clusters reload on restart) AND fills the cluster warehouse so routing's
+// withdrawal-source preference has something to prefer. It is fail-open: a load error is logged
+// and swallowed so a transient DB hiccup never blocks startup. It routes through the same
+// LoadClusterRegistry seam the contract engine consumes, so the boot log reflects exactly what
+// routing will see.
 func (s *DaemonServer) reloadClusterRegistryAtBoot(ctx context.Context, playerID int) {
 	reg, err := s.LoadClusterRegistry(ctx, playerID)
 	if err != nil {
@@ -150,6 +152,16 @@ func (s *DaemonServer) reloadClusterRegistryAtBoot(ctx context.Context, playerID
 		return
 	}
 	fmt.Printf("Reloaded %d contract cluster(s) for player %d from durable store (restart-safe registry)\n", len(clusters), playerID)
+
+	// sp-cftm: launch the destination-side STOCKING half — a warehouse + stocker coordinator per
+	// declared, crewed cluster element, pointed at the cluster's destination warehouse. This is
+	// what FILLS the cluster warehouse so RouteContract's withdrawal-source preference stops
+	// falling through to the byte-identical fresh-source fallback (the sp-u9xa gap). Fail-open +
+	// idempotent (the launch path's idle-gap discipline refuses a double-launch), so it is safe
+	// to run here after container recovery: a coordinator just re-adopted by recovery is not idle
+	// and is left alone; only a genuinely idle cluster hull (freshly-applied topology, or a
+	// previously-stopped coordinator) is (re)started.
+	launchClusterCoordinators(ctx, reg, playerID, s)
 }
 
 // toDomain converts a boundary ClusterSpec into a validated domain cluster (the
