@@ -41,7 +41,12 @@ func NewSitingCoordinatorHandler(
 	guard := goodsServices.NewChainMarginGuard(locator, marketReader)
 	h := goodsCmd.NewRunSitingCoordinatorHandler(
 		scanner,
-		&sitingChainProjector{resolver: resolver, guard: guard},
+		&sitingChainProjector{
+			resolver:        resolver,
+			guard:           guard,
+			unifiedGateFill: server.manufacturingConfig.UnifiedGateFill,
+			gateMaterials:   gateMaterialSet(server),
+		},
 		&sitingChainController{server: server},
 		nil, // nil = use RealClock
 	)
@@ -208,9 +213,42 @@ func (s *sitingEligibleInputSource) Source(ctx context.Context, good, systemSymb
 type sitingChainProjector struct {
 	resolver *goodsServices.SupplyChainResolver
 	guard    *goodsServices.ChainMarginGuard
+	// sp-vh1s §5.3 — under the unified gate-fill toggle, gate materials are owned by the construction
+	// gate run, so the general-economy siting portfolio must EXCLUDE them (never launch a competing
+	// harvesting chain — the §4 sibling-harvester collision). gateMaterials is the configured gate set
+	// (empty/nil OFF, so no good is ever excluded and the portfolio is byte-identical to today).
+	unifiedGateFill bool
+	gateMaterials   map[string]bool
+}
+
+// gateMaterialExcludedFromSiting is the pure SCORE-time exclusion decision (sp-vh1s): a good is
+// excluded from the siting profit portfolio iff the unified gate-fill toggle is ON *and* the good is a
+// configured gate material. OFF, or a non-gate good, is never excluded (byte-identical to today).
+func gateMaterialExcludedFromSiting(good string, gateMaterials map[string]bool, unifiedGateFill bool) bool {
+	return unifiedGateFill && gateMaterials[good]
+}
+
+// gateMaterialSet is the set of goods the construction gate run owns — derived from the configured
+// gate-source materials ([bootstrap] gate_source_feeders, the same list that enumerates the gate's
+// buy-direct source materials). Under the unified gate-fill toggle the siting portfolio excludes this
+// set. A blank good is skipped. Empty when nothing is configured (no exclusion).
+func gateMaterialSet(server *DaemonServer) map[string]bool {
+	set := make(map[string]bool)
+	for _, f := range server.bootstrapConfig.GateSourceFeeders {
+		if f.Good != "" {
+			set[f.Good] = true
+		}
+	}
+	return set
 }
 
 func (p *sitingChainProjector) Project(ctx context.Context, good, system string, playerID int) (goodsCmd.ChainProjection, error) {
+	// sp-vh1s: veto a gate material outright — the construction gate run owns it, so the profit
+	// portfolio drops it at SCORE time (zero cost, resolver/guard never consulted) rather than
+	// launching a harvester that would compete with the gate as a buyer of the same output.
+	if gateMaterialExcludedFromSiting(good, p.gateMaterials, p.unifiedGateFill) {
+		return goodsCmd.ChainProjection{Proceed: false, Reason: "gate material owned by unified construction (sp-vh1s)"}, nil
+	}
 	root, err := p.resolver.BuildDependencyTree(ctx, good, system, playerID)
 	if err != nil || root == nil {
 		// Unbuildable in-system → fail-closed veto (never launch what cannot be priced/resolved).

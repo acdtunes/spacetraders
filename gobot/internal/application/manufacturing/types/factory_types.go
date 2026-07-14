@@ -151,6 +151,28 @@ type RunFactoryCoordinatorCommand struct {
 	// key that persists in the container config and reloads on restart, RULINGS #2). Absent/nil
 	// leaves every good on the global gates — byte-identical to today.
 	GoodGatingOverrides manufacturing.GoodGatingOverrides
+	// UnifiedGateFill turns THIS factory run into a gate fill (sp-vh1s, Admiral sign-off 2026-07-14):
+	// stamped onto ctx (WithUnifiedGateFill) so IsUnifiedGateNode is true for every node in the tree
+	// when a construction-site target is also set. Fed from ManufacturingConfig.UnifiedGateFill.
+	// Absent/false is byte-identical to a profit-factory run.
+	UnifiedGateFill bool
+	// ConstructionSiteWaypoint, when non-empty AND UnifiedGateFill is on, is the jump-gate construction
+	// site the fabricated ROOT output is DELIVERED to (via DeliverToConstructionSite) instead of sold at
+	// a resale sink (sp-vh1s §5.1). Stamped onto ctx (WithDeliveryTarget → ConstructionSiteTarget) so
+	// produceNodeOnly's terminal switches Sink↔ConstructionSite. Empty leaves the run selling at a sink.
+	ConstructionSiteWaypoint string
+	// GateOutputBuyRateMultiple is k in the gate output-buy THROUGHPUT-PACING (sp-vh1s): the trailing-
+	// hour output-buy ceiling as a multiple of the source factory's export trade volume (k × tv/hr).
+	// 0/absent resolves to the 2.0 analyst default at the point of use. Only ever consulted for a gate
+	// node (IsUnifiedGateNode); a profit factory is never paced. Fed from gate_output_buy_rate_multiple.
+	GateOutputBuyRateMultiple float64
+	// GateOutputPerLotMultiple caps a single gate output-buy lot at this multiple of tv (0/absent → 1.0,
+	// i.e. per-lot ≤ tv). The named per-lot pacing knob (sp-vh1s). Fed from gate_output_per_lot_multiple.
+	GateOutputPerLotMultiple float64
+	// GateOutputPacingDisabled is the emergency off-switch for the gate output-buy throughput pacing
+	// (RULINGS #5): true reverts a gate output-buy to the plain min(cargo space, tv) cap. Fed from
+	// gate_output_pacing_disabled.
+	GateOutputPacingDisabled bool
 	// WorkerCap bounds how many hulls this chain runs CONCURRENTLY per production pass
 	// (sp-ev0n): the coordinator never fans out more than WorkerCap node workers at once,
 	// so a captain caps a factory's hull draw live without a daemon restart. This is the

@@ -17,6 +17,7 @@ import (
 	// the identical reason.
 	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -243,6 +244,16 @@ func (h *RunFactoryCoordinatorHandler) SetPriceHistoryReader(reader mfgServices.
 	h.productionExecutor.SetPriceHistoryReader(reader)
 }
 
+// SetConstructionRepo wires the construction supply API into the production executor so a
+// UNIFIED GATE-FILL run's terminal can DELIVER the fabricated root output to a jump-gate site
+// instead of selling it at a resale sink (sp-vh1s §5.1). The daemon calls this when it builds
+// the coordinator for a gate run (the same setter-injection pattern as SetSpendLedger); left
+// unset (every profit-factory build, and the OFF path) the delivery terminal is simply never
+// reached, so a non-gate run is unaffected.
+func (h *RunFactoryCoordinatorHandler) SetConstructionRepo(repo manufacturing.ConstructionSiteRepository) {
+	h.productionExecutor.SetConstructionRepo(repo)
+}
+
 // SetWorkerCapProvider wires the live per-op worker-cap reader (sp-ev0n) so the
 // coordinator re-reads its concurrent-hull cap from its own container config each
 // pass — the factory mirror of SetStandbyStationProvider (sp-jcke). The daemon
@@ -447,6 +458,21 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// reasoning as the depth cap above. Empty (a directly-built command) is a no-op — the resolver
 	// keeps prefer-buy, byte-identical to today; the goods_factory launch build defaults it to smart.
 	ctx = mfgServices.WithProductionStrategy(ctx, cmd.ProductionStrategy)
+
+	// sp-vh1s — the ONE gate-fill stamp. When this run is a unified gate fill (toggle on AND a
+	// construction-site target), stamp the run context ONCE here so — because ctx threads BY VALUE
+	// through the whole recursive production chain — every node reads it: IsUnifiedGateNode is true
+	// tree-wide (lane B's per-node gates go MARGIN-BLIND, Admiral sign-off), the root terminal delivers
+	// the output to the gate instead of a resale sink, and the output-buy is throughput-paced (k×tv/hr,
+	// the dropped price ceiling's replacement). It is also a construction-supply run, so the
+	// resale-margin guards are scoped out (the gate delivers, never resells). ALL of this is gated on
+	// the toggle: an OFF run (or a profit factory) stamps nothing new and is byte-identical to today.
+	if cmd.UnifiedGateFill && cmd.ConstructionSiteWaypoint != "" {
+		ctx = mfgServices.WithUnifiedGateFill(ctx, true)
+		ctx = mfgServices.WithDeliveryTarget(ctx, mfgServices.ConstructionSiteTarget(cmd.ConstructionSiteWaypoint))
+		ctx = mfgServices.WithThroughputPacing(ctx, cmd.GateOutputBuyRateMultiple, cmd.GateOutputPerLotMultiple, cmd.GateOutputPacingDisabled)
+		ctx = shared.WithConstructionSupply(ctx)
+	}
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,
@@ -1654,6 +1680,32 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	// inputs-only leaves output in factory stock, so both skip this leg. A sink below
 	// the floor (or none) HOLDS the output onboard rather than dumping it.
 	if isRootLevel && !inputsOnly {
+		// sp-vh1s §5.1 — the TERMINAL SWITCH (the one swap). A unified gate-fill run DELIVERS the
+		// harvested root output to its construction site instead of selling it at a resale sink:
+		// feeding is inherent (the child nodes already fed this factory), and this leg hands the
+		// finished good to the gate. Keyed on IsUnifiedGateNode (toggle on + a construction-site
+		// target), so a profit factory — and the whole OFF path — falls straight through to the
+		// unchanged planner-stock/resale-sink terminal below (byte-identical). The gate delivery is
+		// margin-blind by design (Admiral sign-off): the throughput pacing on the output BUY above,
+		// plus the sp-9aoc solvency floor, are the money bounds — never a resale-margin gate.
+		if mfgServices.IsUnifiedGateNode(ctx) {
+			site := mfgServices.DeliveryTargetFromContext(ctx).SiteWaypoint()
+			delivered, deliverErr := h.productionExecutor.DeliverToConstructionSite(
+				ctx, updatedShip.ShipSymbol(), node.Good, site, playerIDValue,
+			)
+			if deliverErr != nil {
+				return nil, fmt.Errorf("failed to deliver fabricated %s to construction site %s: %w", node.Good, site, deliverErr)
+			}
+			logger.Log("INFO", fmt.Sprintf("Delivered %d fabricated %s to construction site %s (unified gate-fill terminal)", delivered, node.Good, site), map[string]interface{}{
+				"good": node.Good, "units": delivered, "construction_site": site, "action": "gate_output_delivered",
+			})
+			return &mfgServices.ProductionResult{
+				QuantityAcquired: quantity,
+				TotalCost:        totalCost,
+				WaypointSymbol:   exportMarket.WaypointSymbol,
+			}, nil
+		}
+
 		// C1 (sp-64je): planner-visible stock, LIVE BY DEFAULT. Unless the escape hatch
 		// is set (and when wired), deposit the harvested output into a co-located
 		// warehouse at cost basis (exportMarket.Price, the factory ask we paid to harvest)

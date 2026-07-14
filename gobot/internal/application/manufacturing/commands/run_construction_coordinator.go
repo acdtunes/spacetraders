@@ -399,6 +399,14 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	// gate, never resold. INPUT buys still pass the full money-guard stack (RULINGS #4). The
 	// hull-fill target stamped above rides on ctx, so produceCtx carries both (sp-2me2 + sp-qmp8).
 	produceCtx := shared.WithConstructionSupply(ctx)
+	// sp-vh1s — under unified gate-fill, mark this run a UNIFIED GATE NODE carrying the gate waypoint.
+	// IsUnifiedGateNode is then true through the whole tree (ctx threads by value), so the source
+	// factory's output-buy is THROUGHPUT-PACED (k×tv/hr — the dropped price ceiling's replacement) and
+	// lane B's per-node gates go MARGIN-BLIND (Admiral sign-off). OFF stamps nothing (byte-identical).
+	if cmd.UnifiedGateFill {
+		produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
+		produceCtx = mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))
+	}
 	result, err := h.producer.ProduceGood(produceCtx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
 	if err != nil {
 		// A hard sourcing error on the remainder must not nuke on-hand progress already recorded:
@@ -538,6 +546,18 @@ func onHandUnits(ship *navigation.Ship, good string) int {
 // fabricates a raw good) falls back to a BUY so the engine attempts a market source rather than
 // polling forever on a childless fabricate.
 func (h *RunConstructionCoordinatorHandler) constructionSourcingNode(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask, systemSymbol string, playerID int) *goods.SupplyChainNode {
+	// sp-vh1s — unified gate-fill short-circuits the bespoke buy-vs-fabricate planner path. Feeding is
+	// INHERENT in the tree, so ALWAYS resolve the full scarcity-gated tree, ignoring the planner's
+	// frozen decision (the pure-BUY it froze at plan time fed NOTHING — the bug: FAB/ADV bought the
+	// output cold, depleted the source, tripped the ceiling). A gate material whose good HAS a source
+	// factory now fabricates+feeds instead of buying it cold; the resolver itself decides buy-vs-fabricate
+	// per node by live supply. Falls through to the frozen decision below if the resolver cannot build
+	// (unwired/stale market data) — never dies, never worse than today (RULING #1).
+	if cmd.UnifiedGateFill {
+		if tree := h.resolveFabricationTree(ctx, cmd, task, systemSymbol, playerID); tree != nil {
+			return tree
+		}
+	}
 	if task.FactorySymbol() == "" {
 		return &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
 	}

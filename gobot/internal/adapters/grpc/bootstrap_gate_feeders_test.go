@@ -21,12 +21,22 @@ import (
 func TestPlanGateSourceFeeders_LaunchesConfiguredMaterialsAsInputsOnlyInfinite(t *testing.T) {
 	configured := []config.GateSourceFeeder{{Good: "FAB_MATS"}, {Good: "ADVANCED_CIRCUITRY"}}
 
-	launches := planGateSourceFeeders(configured, "X1-HOME", map[string]bool{})
+	launches := planGateSourceFeeders(configured, "X1-HOME", map[string]bool{}, false)
 
 	require.Equal(t, []gateSourceFeederLaunch{
 		{Good: "FAB_MATS", System: "X1-HOME", InputsOnly: true, Iterations: -1},
 		{Good: "ADVANCED_CIRCUITRY", System: "X1-HOME", InputsOnly: true, Iterations: -1},
 	}, launches)
+}
+
+// sp-vh1s: under the unified gate-fill toggle the standing InputsOnly feeders are DELETED — feeding is
+// now INHERENT in the gate run's recursive tree, so the separate sidecar feeder (the buggy collision
+// this bead removes) must never launch. The plan returns NOTHING regardless of the configured set or
+// which feeders are already running.
+func TestPlanGateSourceFeeders_UnifiedGateFill_LaunchesNothing(t *testing.T) {
+	configured := []config.GateSourceFeeder{{Good: "FAB_MATS"}, {Good: "ADVANCED_CIRCUITRY"}}
+	require.Empty(t, planGateSourceFeeders(configured, "X1-HOME", map[string]bool{}, true),
+		"unified gate-fill must launch NO standing feeders — feeding is inherent in the gate run")
 }
 
 // An empty System resolves to the home system; an explicit System overrides it (feed a source factory
@@ -37,7 +47,7 @@ func TestPlanGateSourceFeeders_ExplicitSystemOverridesHomeSystem(t *testing.T) {
 		{Good: "ADVANCED_CIRCUITRY", System: "X1-OTHER"}, // explicit → wins
 	}
 
-	launches := planGateSourceFeeders(configured, "X1-HOME", map[string]bool{})
+	launches := planGateSourceFeeders(configured, "X1-HOME", map[string]bool{}, false)
 
 	require.Equal(t, "X1-HOME", launches[0].System)
 	require.Equal(t, "X1-OTHER", launches[1].System)
@@ -46,8 +56,8 @@ func TestPlanGateSourceFeeders_ExplicitSystemOverridesHomeSystem(t *testing.T) {
 // The feeder set is DERIVED from config, never hardcoded: an empty (or nil) configured set launches
 // NOTHING and does not panic (regression guard — the mechanism must not invent a material).
 func TestPlanGateSourceFeeders_EmptyConfigLaunchesNothing(t *testing.T) {
-	require.Empty(t, planGateSourceFeeders(nil, "X1-HOME", map[string]bool{}))
-	require.Empty(t, planGateSourceFeeders([]config.GateSourceFeeder{}, "X1-HOME", map[string]bool{}))
+	require.Empty(t, planGateSourceFeeders(nil, "X1-HOME", map[string]bool{}, false))
+	require.Empty(t, planGateSourceFeeders([]config.GateSourceFeeder{}, "X1-HOME", map[string]bool{}, false))
 }
 
 // Restart-resilience (RULINGS #2): the feeders are goods_factory coordinators re-adopted by
@@ -61,10 +71,10 @@ func TestPlanGateSourceFeeders_SkipsAlreadyRunning_RestartResilientIdempotent(t 
 	// Both already running (post-restart, recovery re-adopted them) → launch nothing.
 	require.Empty(t, planGateSourceFeeders(configured, "X1-HOME", map[string]bool{
 		"FAB_MATS": true, "ADVANCED_CIRCUITRY": true,
-	}))
+	}, false))
 
 	// Only FAB_MATS survived → relaunch just the missing ADVANCED_CIRCUITRY feeder.
-	launches := planGateSourceFeeders(configured, "X1-HOME", map[string]bool{"FAB_MATS": true})
+	launches := planGateSourceFeeders(configured, "X1-HOME", map[string]bool{"FAB_MATS": true}, false)
 	require.Len(t, launches, 1)
 	require.Equal(t, "ADVANCED_CIRCUITRY", launches[0].Good)
 }
@@ -72,11 +82,11 @@ func TestPlanGateSourceFeeders_SkipsAlreadyRunning_RestartResilientIdempotent(t 
 // Fail-safe: a blank good, or an empty-System feeder with no resolvable home system, is SKIPPED
 // rather than launched with a bad target (never spin up a factory that cannot find its export market).
 func TestPlanGateSourceFeeders_SkipsBlankGoodAndUnresolvableSystem(t *testing.T) {
-	require.Empty(t, planGateSourceFeeders([]config.GateSourceFeeder{{Good: ""}}, "X1-HOME", map[string]bool{}))
+	require.Empty(t, planGateSourceFeeders([]config.GateSourceFeeder{{Good: ""}}, "X1-HOME", map[string]bool{}, false))
 	// Empty configured System AND empty home system → unresolvable → skip.
-	require.Empty(t, planGateSourceFeeders([]config.GateSourceFeeder{{Good: "FAB_MATS"}}, "", map[string]bool{}))
+	require.Empty(t, planGateSourceFeeders([]config.GateSourceFeeder{{Good: "FAB_MATS"}}, "", map[string]bool{}, false))
 	// But an explicit System still launches even with no home system resolved.
-	launches := planGateSourceFeeders([]config.GateSourceFeeder{{Good: "FAB_MATS", System: "X1-X"}}, "", map[string]bool{})
+	launches := planGateSourceFeeders([]config.GateSourceFeeder{{Good: "FAB_MATS", System: "X1-X"}}, "", map[string]bool{}, false)
 	require.Len(t, launches, 1)
 	require.Equal(t, "X1-X", launches[0].System)
 }
@@ -88,7 +98,7 @@ func TestPlanGateSourceFeeders_AllLaunchesAreInputsOnly(t *testing.T) {
 	configured := []config.GateSourceFeeder{
 		{Good: "FAB_MATS"}, {Good: "ADVANCED_CIRCUITRY"}, {Good: "ELECTRONICS", System: "X1-E"},
 	}
-	for _, l := range planGateSourceFeeders(configured, "X1-HOME", map[string]bool{}) {
+	for _, l := range planGateSourceFeeders(configured, "X1-HOME", map[string]bool{}, false) {
 		require.True(t, l.InputsOnly, "feeder %s must be InputsOnly so the drain stays sole output-buyer", l.Good)
 		require.Equal(t, -1, l.Iterations, "feeder %s must be standing/infinite", l.Good)
 	}

@@ -28,6 +28,14 @@ type RunConstructionCoordinatorCommand struct {
 	// (resolveProductionStrategy). Fed from production_strategy. Only consulted on the FABRICATE
 	// branch — a buy-final material (no factory) never touches the resolver.
 	ProductionStrategy string
+	// UnifiedGateFill turns the drain into a UNIFIED GATE-FILL wrapper (sp-vh1s, Admiral sign-off
+	// 2026-07-14). OFF (default): the drain honors the planner's frozen buy-vs-fabricate decision per
+	// material — byte-identical to today. ON: it IGNORES that frozen decision and drives the resolver's
+	// FULL scarcity-gated tree for every gate material (feeding inherent — the fix for the zero-feeding
+	// pure-BUY bug), and marks the run a gate node (WithUnifiedGateFill + a construction-site
+	// DeliveryTarget) so the output-buy is throughput-paced and lane B's per-node gates go margin-blind.
+	// Fed from ManufacturingConfig.UnifiedGateFill.
+	UnifiedGateFill bool
 }
 
 // RunConstructionCoordinatorResponse reports the outcome of the last drain tick.

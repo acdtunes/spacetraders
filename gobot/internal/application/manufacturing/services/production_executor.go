@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -246,6 +247,25 @@ type ProductionExecutor struct {
 	// the real API-backed repo via SetConstructionRepo, and only the construction-supply drain
 	// ever calls the terminal, so every other caller is unaffected.
 	constructionRepo manufacturing.ConstructionSiteRepository
+
+	// pacerMu guards the gate output-buy throughput-pacing ledger below (sp-vh1s). The executor is a
+	// boot SINGLETON shared across concurrent gate fills for different goods, so the trailing-hour
+	// buy ledger is per-(good@waypoint) and lock-guarded. This is the ONE piece of executor state that
+	// is inherently stateful (a rate limiter must remember recent buys); every other per-run knob
+	// rides ctx. It is in-memory only — a restart resets the window, which is safe for a pacing
+	// heuristic (the window is an hour; a restart at worst allows one extra early lot).
+	pacerMu sync.Mutex
+	// pacedOutputBuys records, per source factory (good@waypoint), the timestamped gate output-buy
+	// lots inside the trailing throughputPacingWindow. recentPacedUnits prunes it on every read, so it
+	// never grows unbounded. nil until the first gate output-buy (lazily initialised).
+	pacedOutputBuys map[string][]pacedOutputBuy
+}
+
+// pacedOutputBuy is one throughput-paced gate output-buy lot: when it happened and how many units it
+// bought, for the trailing-hour k×tv rate ceiling (sp-vh1s).
+type pacedOutputBuy struct {
+	at    time.Time
+	units int
 }
 
 // SetSpendLedger wires the cross-container concurrent spend cap (sp-w3he). The daemon calls
@@ -1009,13 +1029,14 @@ func (e *ProductionExecutor) PollForProduction(
 			// all - that's normal for goods with no direct resale market, not a signal
 			// to stop production.
 			//
-			// sp-qmp8: a construction-supply harvest delivers its output to the jump-gate
-			// site, NOT to a resale sink, so this resale-margin guard does not apply — skip
-			// straight to the harvest. The construction pipeline's own economics govern the
-			// gate fill (the Admiral's primary objective), and the INPUT buys already passed
-			// the full money-guard stack (RULINGS #4). Without this a market that happens to
-			// import the gate material at a crushed bid would wrongly park the gate fill.
-			if !shared.ConstructionSupplyFromContext(ctx) {
+			// sp-qmp8 / sp-vh1s: a construction-supply OR unified gate-fill harvest delivers its
+			// output to the jump-gate site, NOT to a resale sink, so this resale-margin guard does
+			// not apply — skip straight to the harvest. The construction pipeline's own economics
+			// govern the gate fill (the Admiral's primary objective — gate nodes are MARGIN-BLIND),
+			// and the INPUT buys already passed the full money-guard stack (RULINGS #4). Without this
+			// a market that happens to import the gate material at a crushed bid would wrongly park
+			// the gate fill.
+			if !shared.ConstructionSupplyFromContext(ctx) && !IsUnifiedGateNode(ctx) {
 				if sink, sinkErr := e.marketLocator.FindImportMarket(ctx, good, systemSymbol, playerID.Value()); sinkErr == nil && sink != nil {
 					harvestCost := tradeGood.SellPrice()
 					if sink.Price < harvestCost {
@@ -1088,6 +1109,70 @@ func (e *ProductionExecutor) PollForProduction(
 	}
 }
 
+// throughputPacedOutputQty returns the most units of a gate factory's OUTPUT that may be bought THIS
+// lot without out-running the factory's physical production (sp-vh1s): the lesser of the per-lot cap
+// (perLotMultiple × tv) and the remaining trailing-hour budget (k × tv − units already bought this
+// window). 0 means paced out — the hourly k×tv budget is spent, so the caller skips the harvest and
+// lets the factory keep producing rather than re-depleting its supply. Only consulted for a gate node.
+func (e *ProductionExecutor) throughputPacedOutputQty(ctx context.Context, good, waypoint string, tradeVolume int) int {
+	cfg := throughputPacingConfigFromContext(ctx)
+	if cfg.disabled {
+		return tradeVolume // pacing off (RULINGS #5 escape hatch) → the plain per-tranche cap, unchanged
+	}
+	perLotCap := int(cfg.perLotMultiple * float64(tradeVolume))
+	if perLotCap < 1 {
+		perLotCap = 1 // never round a live tv down to a zero lot — always allow forward progress
+	}
+	budget := int(cfg.buyRateMultiple*float64(tradeVolume)) - e.recentPacedOutputUnits(good, waypoint)
+	if budget <= 0 {
+		return 0
+	}
+	if perLotCap < budget {
+		return perLotCap
+	}
+	return budget
+}
+
+// recentPacedOutputUnits sums the gate output-buy units bought for good@waypoint inside the trailing
+// throughputPacingWindow, pruning expired lots as it reads so the ledger never grows unbounded
+// (sp-vh1s). Uses the injected clock so the window is deterministic under a mock clock.
+func (e *ProductionExecutor) recentPacedOutputUnits(good, waypoint string) int {
+	key := good + "@" + waypoint
+	cutoff := e.clock.Now().Add(-throughputPacingWindow)
+	e.pacerMu.Lock()
+	defer e.pacerMu.Unlock()
+	buys := e.pacedOutputBuys[key]
+	kept := buys[:0]
+	total := 0
+	for _, b := range buys {
+		if b.at.After(cutoff) {
+			kept = append(kept, b)
+			total += b.units
+		}
+	}
+	if e.pacedOutputBuys != nil {
+		e.pacedOutputBuys[key] = kept
+	}
+	return total
+}
+
+// recordPacedOutputBuy stamps a completed gate output-buy lot into the trailing-hour ledger (sp-vh1s),
+// so the next lot sees the reduced budget. A mild read-then-record race between concurrent workers on
+// the SAME gate good is accepted: pacing is a throughput heuristic (the analyst tunes the coefficient
+// live), not a money guard — the sp-9aoc solvency floor, unchanged, remains the hard money bound.
+func (e *ProductionExecutor) recordPacedOutputBuy(good, waypoint string, units int) {
+	if units <= 0 {
+		return
+	}
+	key := good + "@" + waypoint
+	e.pacerMu.Lock()
+	defer e.pacerMu.Unlock()
+	if e.pacedOutputBuys == nil {
+		e.pacedOutputBuys = make(map[string][]pacedOutputBuy)
+	}
+	e.pacedOutputBuys[key] = append(e.pacedOutputBuys[key], pacedOutputBuy{at: e.clock.Now(), units: units})
+}
+
 func (e *ProductionExecutor) purchaseFabricatedOutput(
 	ctx context.Context,
 	good string,
@@ -1136,7 +1221,24 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		}
 	}
 
-	purchaseQty := min(availableSpace, tradeVolume)
+	// sp-vh1s THROUGHPUT-PACING: a gate output-buy (the margin-blind fill) is paced to the factory's
+	// production throughput — buy-rate ≤ k×tv/hr, per-lot ≤ tv — so it never out-runs production and
+	// re-depletes the source (the dropped price ceiling's replacement). A non-gate harvest keeps the
+	// plain per-tranche cap, byte-identical. When the trailing-hour budget is spent the lot is skipped
+	// (output left in export stock, picked up next pass); a skipped output harvest loses nothing.
+	perTrancheCap := tradeVolume
+	if IsUnifiedGateNode(ctx) {
+		perTrancheCap = e.throughputPacedOutputQty(ctx, good, waypointSymbol, tradeVolume)
+		if perTrancheCap <= 0 {
+			logger.Log("INFO", fmt.Sprintf("Pacing gate output-buy of %s at %s — trailing-hour throughput budget (k×tv=%d) reached; skipping this lot so the factory keeps producing (sp-vh1s)", good, waypointSymbol, int(throughputPacingConfigFromContext(ctx).buyRateMultiple*float64(tradeVolume))), map[string]interface{}{
+				"good": good, "waypoint": waypointSymbol, "trade_volume": tradeVolume,
+				"action": "gate_output_paced", "reason": "throughput_pacing",
+			})
+			return 0, 0, nil
+		}
+	}
+
+	purchaseQty := min(availableSpace, perTrancheCap)
 	if purchaseQty <= 0 {
 		return 0, 0, fmt.Errorf("trade volume is zero for %s", good)
 	}
@@ -1163,6 +1265,12 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		"total_cost": response.TotalCost,
 		"waypoint":   waypointSymbol,
 	})
+
+	// sp-vh1s: charge the just-bought lot against the trailing-hour throughput budget so the next
+	// lot sees the reduced headroom. Gate nodes only — a profit-factory harvest is never paced.
+	if IsUnifiedGateNode(ctx) {
+		e.recordPacedOutputBuy(good, waypointSymbol, response.UnitsAdded)
+	}
 
 	return response.UnitsAdded, response.TotalCost, nil
 }

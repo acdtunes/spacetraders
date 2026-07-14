@@ -56,7 +56,14 @@ type gateSourceFeederLaunch struct {
 //   - An empty System resolves to homeSystem (single-system, RULINGS #14); an explicit System wins.
 //   - A blank Good, or an empty-System feeder with no resolvable home system, is skipped rather than
 //     launched with a target that cannot find its export market (fail-safe).
-func planGateSourceFeeders(configured []config.GateSourceFeeder, homeSystem string, runningFeederGoods map[string]bool) []gateSourceFeederLaunch {
+//   - sp-vh1s: under the unified gate-fill toggle the standing InputsOnly feeders are DELETED — feeding
+//     is now INHERENT in the gate run's recursive tree (it buys the output AND feeds the source factory
+//     as one op), so the separate sidecar feeder that collided with it (§4 bug) never launches. Returns
+//     nothing regardless of config, so an ON fleet runs no feeders; OFF is byte-identical.
+func planGateSourceFeeders(configured []config.GateSourceFeeder, homeSystem string, runningFeederGoods map[string]bool, unifiedGateFill bool) []gateSourceFeederLaunch {
+	if unifiedGateFill {
+		return nil
+	}
 	var launches []gateSourceFeederLaunch
 	for _, f := range configured {
 		if f.Good == "" || runningFeederGoods[f.Good] {
@@ -112,6 +119,12 @@ func parseFeederConfig(configJSON string) (good string, inputsOnly bool) {
 // the same resilience shape as the construction drain's boot-standing EnsureRunning). Every failure is
 // logged and non-fatal — feeder launch must never block daemon startup.
 func (s *DaemonServer) ensureGateSourceFeeders(ctx context.Context, playerID int) {
+	// sp-vh1s: under the unified gate-fill toggle the standing InputsOnly feeders are retired outright —
+	// feeding is inherent in the gate run — so skip the whole pass (incl. every DB/ship read). OFF keeps
+	// the sp-hoc6 feeder launch exactly as before.
+	if s.manufacturingConfig.UnifiedGateFill {
+		return
+	}
 	configured := s.bootstrapConfig.GateSourceFeeders
 	if len(configured) == 0 {
 		return
@@ -131,7 +144,7 @@ func (s *DaemonServer) ensureGateSourceFeeders(ctx context.Context, playerID int
 	// Resolve the home system for feeders whose System is left to default (single-system, RULINGS #14).
 	homeSystem := s.deriveHomeSystemFromShips(ctx, playerID)
 
-	for _, l := range planGateSourceFeeders(configured, homeSystem, running) {
+	for _, l := range planGateSourceFeeders(configured, homeSystem, running, s.manufacturingConfig.UnifiedGateFill) {
 		if _, err := s.StartGoodsFactory(ctx, l.Good, l.System, playerID, l.Iterations, l.InputsOnly); err != nil {
 			fmt.Printf("Warning: failed to launch gate-source InputsOnly feeder for %s in %s: %v\n", l.Good, l.System, err)
 		}
