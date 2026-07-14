@@ -95,14 +95,14 @@ func (h *EvaluateContractProfitabilityHandler) fetchShip(ctx context.Context, sh
 }
 
 // buildMarketPricesMap prices each unfulfilled delivery at the market
-// PlanSourcing would choose (sp-1z2h): cheapest WORKER-REACHABLE market.
+// PlanSourcing would choose (sp-1z2h): cheapest HOME-system market.
 // Routing the worker's evaluation through the same selection keeps the
 // projector and the executor pointed at the same market — the executor
 // navigates to CheapestMarketWaypoint, so a divergent pick here would send the
-// hull to a market the coordinator never costed. nil reachability = in-system
-// only, matching the executor's zero-jump navigation (sp-9hu8): pricing at a
-// cross-system market the worker cannot fly would both mis-project profit and
-// point the hull at an unreachable waypoint.
+// hull to a market the coordinator never costed. Contract sourcing is HOME-system
+// only (RULINGS #14), matching the executor's zero-jump navigation (sp-9hu8):
+// pricing at a cross-system market the worker cannot fly would both mis-project
+// profit and point the hull at an unreachable waypoint.
 func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.Context, query *EvaluateContractProfitabilityQuery) (map[string]int, string, error) {
 	marketPrices := make(map[string]int)
 	var cheapestMarketWaypoint string
@@ -113,7 +113,7 @@ func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.
 			continue
 		}
 
-		plan, err := appContract.PlanDeliverySourcing(ctx, delivery, h.marketRepo, query.PlayerID.Value(), nil)
+		plan, err := appContract.PlanDeliverySourcing(ctx, delivery, h.marketRepo, query.PlayerID.Value())
 		if err != nil {
 			return nil, "", err
 		}

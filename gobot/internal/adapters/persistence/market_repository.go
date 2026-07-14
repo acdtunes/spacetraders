@@ -222,12 +222,12 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 }
 
 // FindCheapestMarketsSellingAllSystems returns up to limit markets selling the
-// good across ALL systems with scanned data, cheapest first (sp-1z2h sourcing
-// cost-optimizer: cross-gate candidates). Scouts only scan systems the fleet
-// can fly, so "has market data" doubles as the reachability filter. Implements
-// contract.CrossSystemMarketFinder as an optional repository upgrade — it is
-// deliberately NOT on the MarketRepository interface so existing fakes keep
-// compiling and fall back to in-system sourcing.
+// good across ALL systems with scanned data, cheapest first. Scouts only scan
+// systems the fleet can fly, so "has market data" doubles as the reachability
+// filter. Used by the trade engine's demand miner (its local marketAskFinder
+// port) to price cross-system SOURCE asks — NOT by contract sourcing, which is
+// HOME-system only (RULINGS #14). Deliberately NOT on the MarketRepository
+// interface so existing fakes keep compiling.
 func (r *MarketRepositoryGORM) FindCheapestMarketsSellingAllSystems(
 	ctx context.Context,
 	goodSymbol string,

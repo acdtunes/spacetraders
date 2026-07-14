@@ -61,11 +61,11 @@ func (a *MarketRepositoryAdapter) FindFactoryForGood(ctx context.Context, goodSy
 }
 
 // FindCheapestMarketsSellingAllSystems passes through to the underlying
-// repository so the adapter satisfies contract.CrossSystemMarketFinder — the
-// optional upgrade the sourcing cost-optimizer (sp-1z2h) type-asserts for.
-// Without this pass-through the production wiring (which hands coordinators
-// THIS adapter, not the GORM repo) would silently fall back to in-system-only
-// sourcing.
+// repository so the adapter satisfies the trade engine's all-systems cheapest-ask
+// scan (the demand miner's marketAskFinder port). Contract sourcing does NOT use
+// this — it is HOME-system only (RULINGS #14). Kept on the adapter so production
+// wiring (which hands the trade engine THIS adapter, not the GORM repo) reaches
+// the cross-system scan the demand miner needs.
 func (a *MarketRepositoryAdapter) FindCheapestMarketsSellingAllSystems(ctx context.Context, goodSymbol string, playerID int, limit int) ([]market.CheapestMarketResult, error) {
 	return a.marketRepo.FindCheapestMarketsSellingAllSystems(ctx, goodSymbol, playerID, limit)
 }

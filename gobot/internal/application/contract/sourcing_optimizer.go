@@ -11,48 +11,28 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Sourcing cost-optimizer (sp-1z2h). Contracts previously sourced at whatever
-// market FindPurchaseMarket picked inside the delivery system, with zero margin
-// awareness — one ELECTRONICS contract laddered a post-crush SCARCE ask into a
-// −891,812 NET fill. Two defenses, both decision-time only (no new persisted
-// state — every pass recomputes from the live contract + market cache, so a
-// daemon restart re-derives the same decision, RULINGS #2):
+// Sourcing cost-optimizer (sp-1z2h). Contract sourcing is HOME-SYSTEM ONLY by
+// standing ruling (RULINGS #14, origin sp-9hu8): a contract's goods are sourced
+// exclusively within the delivery's HOME system. The serial one-active-contract
+// worker flies in-system NavigateAndDock/NavigateRouteCommand with zero jump
+// capability, so a source in ANY other system is unreachable and must be
+// UNSELECTABLE — never dispatched-then-crashed ('waypoint not found in cache').
+// Cross-system logistics belongs to the parallel trade engine, never the contract
+// worker. Every pass recomputes from the live contract + market cache — no new
+// persisted state — so a daemon restart re-derives the same decision (RULINGS #2).
 //
-//   1. Cheapest REACHABLE market: cross-gate export markets are candidates ONLY
-//      when the caller proves the consumer can route there (the
-//      SystemReachability predicate). Contract sourcing is SINGLE-SYSTEM by
-//      standing ruling (RULINGS #14, origin sp-9hu8: the serial one-active-
-//      contract clock can't afford cross-gate round trips — cross-system
-//      logistics belongs to the parallel trade engine, not the contract worker),
-//      so both contract call sites pass in-system-only and a cross-gate source
-//      can never be selected for a contract — an unreachable source is
-//      UNSELECTABLE, not dispatched then crashed ('waypoint not found in cache').
-//      Weighting is documented on CrossGateSourcingPenalty below.
-//   2. Negative-margin sourcing (formerly DEFER-while-negative): when a
-//      sourcing run's projected net is worse than −SourcingDeferThresholdPct of
-//      the payout, the contract path now SOURCES ANYWAY and logs the loss (the
-//      Overridden decision) — it NEVER parks. RULINGS #1 never-skip governs the
-//      contract path over the profit guard (explicit Admiral override, sp-x8ck);
-//      the old park-until-asks-revert behavior deadlocked the serial one-active-
-//      contract pipeline for the whole deadline window whenever a contract good
-//      had no in-system source at a profit (live: 6 ANTIMATTER, sole in-system
-//      market an IMPORT priced above payout). The SourcingDeferSafetyWindow /
-//      SourcingDeferRecheckInterval / DeferMessage machinery below is retained
-//      but inert on the contract path (the sole caller); safe to prune later.
+// Negative-margin sourcing (formerly DEFER-while-negative): when a sourcing run's
+// projected net is worse than −SourcingDeferThresholdPct of the payout, the
+// contract path now SOURCES ANYWAY and logs the loss (the Overridden decision) —
+// it NEVER parks. RULINGS #1 never-skip governs the contract path over the profit
+// guard (explicit Admiral override, sp-x8ck); the old park-until-asks-revert
+// behavior deadlocked the serial one-active-contract pipeline for the whole
+// deadline window whenever a contract good had no in-system source at a profit
+// (live: 6 ANTIMATTER, sole in-system market an IMPORT priced above payout). The
+// SourcingDeferSafetyWindow / SourcingDeferRecheckInterval / DeferMessage
+// machinery below is retained but inert on the contract path (the sole caller);
+// safe to prune later.
 const (
-	// CrossGateSourcingPenalty is the flat credit penalty charged to a sourcing
-	// candidate in a DIFFERENT system than the delivery destination. It prices
-	// the jump-gate round trip: gate fuel/antimatter, jump cooldown, and the
-	// extra wall-clock the hull spends off-lane. A flat constant (rather than a
-	// distance model) is deliberate: the ask deltas this optimizer exists to
-	// arbitrate are 100k–3M (evidence on sp-5bmq: GQ92-F44 ELECTRONICS at 2,367
-	// vs home's laddered 6k+ ≈ 2.9M on 804 units), so the only structurally
-	// meaningful travel term is "does this cross a gate at all". In-system
-	// distance differences are noise at contract scale and are priced at zero.
-	// A cross-gate candidate therefore wins only when its total-goods saving
-	// exceeds this penalty — it can never win on a few hundred credits.
-	CrossGateSourcingPenalty = 25_000
-
 	// SourcingDeferThresholdPct is the bead's defer line (sp-1z2h acceptance):
 	// a sourcing run may not EXECUTE at projected net worse than −20% of the
 	// contract payout without a logged defer/override decision. Percent of
@@ -81,52 +61,17 @@ const (
 	SourcingLadderCapDenom = 2
 )
 
-// CrossSystemMarketFinder is the optional repository upgrade that unlocks
-// cross-gate sourcing candidates. Kept as a separate narrow interface (not a
-// MarketRepository method) so the many existing MarketRepository fakes keep
-// compiling; a repository that doesn't implement it simply scopes sourcing to
-// the delivery system, exactly as before.
-type CrossSystemMarketFinder interface {
-	// FindCheapestMarketsSellingAllSystems returns up to limit markets selling
-	// goodSymbol across ALL scanned systems, cheapest first. Market data only
-	// exists for systems scouts have flown, which is this engine's working
-	// definition of "reachable".
-	FindCheapestMarketsSellingAllSystems(ctx context.Context, goodSymbol string, playerID int, limit int) ([]market.CheapestMarketResult, error)
-}
-
-// crossSystemCandidateLimit bounds the all-systems scan; the reduce below keeps
-// only the cheapest market per system, and a handful of systems have data.
-const crossSystemCandidateLimit = 25
-
-// SystemReachability reports whether a candidate source SYSTEM can be reached by
-// the consumer of the plan. Only CROSS-system candidates are gated by it — the
-// in-system candidate (the delivery system, which the consumer must reach to
-// deliver at all) is always kept. A nil SystemReachability means IN-SYSTEM ONLY:
-// the cross-system scan is skipped entirely and no cross-gate source can be
-// selected. That is the contract worker's mode (sp-9hu8) — its trip is in-system
-// NavigateAndDock/NavigateRouteCommand with zero jump capability, so a
-// cross-system source is unreachable and must be UNSELECTABLE, not
-// dispatched-then-crashed ('waypoint not found in cache'). Contract sourcing is
-// single-system by standing ruling (RULINGS #14), so both contract call sites
-// pass nil permanently; the predicate parameter exists so a jump-capable,
-// non-contract consumer could gate cross-system candidates by GateGraph
-// routability (fail closed on unknown systems). nil also fails closed: a caller
-// that forgets to pass a predicate gets in-system-only, never an unreachable
-// pick.
-type SystemReachability func(system string) bool
-
 // SourcingPlan is the chosen sourcing decision for a contract's first
 // unfulfilled delivery: where to buy, at what cached ask, and what the run is
-// projected to cost including the travel penalty term.
+// projected to cost. Contract sourcing is HOME-system only (RULINGS #14), so the
+// chosen market is always inside the delivery's HOME system.
 type SourcingPlan struct {
 	Good           string
 	Market         string // waypoint symbol of the chosen source (market OR storage waypoint for INVENTORY)
 	UnitAsk        int    // cached ask at the chosen market; 0 for INVENTORY (sunk cost)
 	UnitsRemaining int    // units still to source for the delivery
 	GoodsCost      int    // UnitAsk × UnitsRemaining; 0 for INVENTORY
-	TravelPenalty  int    // 0 in-system; CrossGateSourcingPenalty cross-gate
-	EffectiveCost  int    // GoodsCost + TravelPenalty — the defer projection basis
-	CrossSystem    bool   // true when the chosen market is outside the delivery system
+	EffectiveCost  int    // the defer projection basis; equals GoodsCost (home-system only, no travel term)
 
 	// Source distinguishes a MARKET buy from an INVENTORY withdrawal (sp-dchv
 	// Lane D). Defaults to SourceMarket, so every pre-existing plan is a market
@@ -140,51 +85,41 @@ type SourcingPlan struct {
 	StorageOperationID string
 }
 
-// PlanSourcing picks the cheapest REACHABLE market for the contract's first
-// unfulfilled delivery and returns the costed plan. Candidates are the cheapest
-// market inside the delivery system plus, when the caller supplies a
-// SystemReachability predicate AND the repository supports the wider scan, the
-// cheapest reachable market in each other scanned system; each candidate is
-// weighed as
-//
-//	effective cost = units × ask + travel penalty
-//
-// (see CrossGateSourcingPenalty for why the penalty is flat). Ties go to the
-// in-system candidate. A nil reachable scopes selection to the delivery system —
-// contract sourcing is single-system by ruling (RULINGS #14, origin sp-9hu8). An
-// error means no REACHABLE market sells the good yet — callers treat that exactly
-// like the old FindPurchaseMarket miss (wait for scouts / re-project next pass),
-// never a skip (RULINGS #1).
+// PlanSourcing picks the cheapest market in the delivery's HOME system for the
+// contract's first unfulfilled delivery and returns the costed plan. Contract
+// sourcing is single-system by ruling (RULINGS #14, origin sp-9hu8): only markets
+// in the delivery system are candidates, so a cross-system source can never be
+// selected. An error means no market in the home system sells the good yet —
+// callers treat that exactly like the old FindPurchaseMarket miss (wait for
+// scouts / re-project next pass), never a skip (RULINGS #1).
 func PlanSourcing(
 	ctx context.Context,
 	contract *domainContract.Contract,
 	marketRepo market.MarketRepository,
 	playerID int,
-	reachable SystemReachability,
 	opts ...SourcingOption,
 ) (*SourcingPlan, error) {
 	for _, delivery := range contract.Terms().Deliveries {
 		if delivery.UnitsRequired-delivery.UnitsFulfilled == 0 {
 			continue
 		}
-		return PlanDeliverySourcing(ctx, delivery, marketRepo, playerID, reachable, opts...)
+		return PlanDeliverySourcing(ctx, delivery, marketRepo, playerID, opts...)
 	}
 
 	return nil, fmt.Errorf("no unfulfilled deliveries found in contract")
 }
 
-// PlanDeliverySourcing costs and picks the cheapest reachable market for ONE
-// delivery (see PlanSourcing for the weighting). Exposed separately so the
-// worker's profitability evaluation can price each delivery of a multi-delivery
-// contract at its own chosen market. A nil reachable scopes candidates to the
-// delivery system — the worker's in-system-only reality (sp-9hu8) — so the
-// projection here matches what the executor can actually fly.
+// PlanDeliverySourcing costs and picks the cheapest HOME-system market for ONE
+// delivery (see PlanSourcing). Exposed separately so the worker's profitability
+// evaluation can price each delivery of a multi-delivery contract at its own
+// chosen market. Candidates are scoped to the delivery system — the worker's
+// zero-jump reality (sp-9hu8) — so the projection here matches what the executor
+// can actually fly.
 func PlanDeliverySourcing(
 	ctx context.Context,
 	delivery domainContract.Delivery,
 	marketRepo market.MarketRepository,
 	playerID int,
-	reachable SystemReachability,
 	opts ...SourcingOption,
 ) (*SourcingPlan, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -212,9 +147,7 @@ func PlanDeliverySourcing(
 				UnitAsk:            0,
 				UnitsRemaining:     unitsRemaining,
 				GoodsCost:          0,
-				TravelPenalty:      0,
 				EffectiveCost:      0,
-				CrossSystem:        false,
 				Source:             SourceInventory,
 				StorageOperationID: src.OperationID,
 			}
@@ -236,57 +169,24 @@ func PlanDeliverySourcing(
 		}
 	}
 
-	// In-system candidate: always reachable (the consumer must reach the
-	// delivery system to deliver at all), so it is never gated by reachable.
+	// HOME-system market: contract sourcing only ever considers the delivery's
+	// HOME system (RULINGS #14). A source in any other system is unreachable by
+	// the in-system worker and must be UNSELECTABLE (sp-9hu8) — never
+	// dispatched-then-crashed ('waypoint not found in cache for system ...').
 	inSystem, err := marketRepo.FindCheapestMarketSelling(ctx, delivery.TradeSymbol, deliverySystem, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find market for %s: %w", delivery.TradeSymbol, err)
 	}
 
-	best := candidateOrNil(inSystem, unitsRemaining, deliverySystem)
-
-	// Cross-gate candidates, only when the caller proves the consumer can route
-	// cross-system (nil reachable ⇒ in-system only: the worker cannot jump yet,
-	// sp-9hu8) AND the repository supports the wider scan. An unreachable source
-	// is never considered — it must be UNSELECTABLE, not dispatched then crashed
-	// ('waypoint not found in cache for system ...').
-	if reachable != nil {
-		if finder, ok := marketRepo.(CrossSystemMarketFinder); ok {
-			all, err := finder.FindCheapestMarketsSellingAllSystems(ctx, delivery.TradeSymbol, playerID, crossSystemCandidateLimit)
-			if err != nil {
-				// The wider scan failing must not break sourcing — fall back to
-				// the in-system candidate and say so.
-				logger.Log("WARNING", fmt.Sprintf(
-					"Cross-system market scan for %s failed - sourcing candidates limited to delivery system %s: %v",
-					delivery.TradeSymbol, deliverySystem, err), nil)
-			} else {
-				seenSystems := map[string]bool{deliverySystem: true}
-				for i := range all {
-					sys := shared.ExtractSystemSymbol(all[i].WaypointSymbol)
-					if seenSystems[sys] {
-						continue // rows are cheapest-first; first row per system wins
-					}
-					seenSystems[sys] = true
-					if !reachable(sys) {
-						continue // unreachable source — never selectable (sp-9hu8)
-					}
-					c := candidateOrNil(&all[i], unitsRemaining, deliverySystem)
-					if c != nil && (best == nil || c.EffectiveCost < best.EffectiveCost) {
-						best = c
-					}
-				}
-			}
-		}
-	}
-
+	best := candidateOrNil(inSystem, unitsRemaining)
 	if best == nil {
 		return nil, fmt.Errorf("no market found selling %s in system %s", delivery.TradeSymbol, deliverySystem)
 	}
 
 	logger.Log("INFO", fmt.Sprintf(
-		"Sourcing plan for %s: %d units @ %d ask at %s (goods %d + travel %d = effective %d, cross-system=%v)",
+		"Sourcing plan for %s: %d units @ %d ask at %s (goods %d = effective %d, home system %s)",
 		best.Good, best.UnitsRemaining, best.UnitAsk, best.Market,
-		best.GoodsCost, best.TravelPenalty, best.EffectiveCost, best.CrossSystem,
+		best.GoodsCost, best.EffectiveCost, deliverySystem,
 	), map[string]interface{}{
 		"action":         "plan_sourcing",
 		"trade_symbol":   best.Good,
@@ -294,22 +194,16 @@ func PlanDeliverySourcing(
 		"unit_ask":       best.UnitAsk,
 		"units":          best.UnitsRemaining,
 		"effective_cost": best.EffectiveCost,
-		"cross_system":   best.CrossSystem,
 	})
 
 	return best, nil
 }
 
-// candidateOrNil costs one market candidate into a SourcingPlan, or nil for a
-// nil market.
-func candidateOrNil(m *market.CheapestMarketResult, units int, deliverySystem string) *SourcingPlan {
+// candidateOrNil costs one HOME-system market candidate into a SourcingPlan, or
+// nil for a nil market.
+func candidateOrNil(m *market.CheapestMarketResult, units int) *SourcingPlan {
 	if m == nil {
 		return nil
-	}
-	cross := shared.ExtractSystemSymbol(m.WaypointSymbol) != deliverySystem
-	penalty := 0
-	if cross {
-		penalty = CrossGateSourcingPenalty
 	}
 	goods := m.SellPrice * units
 	return &SourcingPlan{
@@ -318,9 +212,7 @@ func candidateOrNil(m *market.CheapestMarketResult, units int, deliverySystem st
 		UnitAsk:        m.SellPrice,
 		UnitsRemaining: units,
 		GoodsCost:      goods,
-		TravelPenalty:  penalty,
-		EffectiveCost:  goods + penalty,
-		CrossSystem:    cross,
+		EffectiveCost:  goods,
 		Source:         SourceMarket,
 	}
 }
@@ -391,9 +283,9 @@ func EvaluateSourcingDefer(plan *SourcingPlan, contract *domainContract.Contract
 // not only in structured fields (sp-1z2h acceptance).
 func (d SourcingDeferDecision) DeferMessage(plan *SourcingPlan) string {
 	return fmt.Sprintf(
-		"Sourcing deferred: projected net %d worse than %d (-%d%% of payout %d) - %d units of %s @ best ask %d at %s (travel penalty %d) - parking until asks revert, re-projecting every pass (deadline %s, runway %s; never-skip stands)",
+		"Sourcing deferred: projected net %d worse than %d (-%d%% of payout %d) - %d units of %s @ best ask %d at %s - parking until asks revert, re-projecting every pass (deadline %s, runway %s; never-skip stands)",
 		d.ProjectedNet, d.Threshold, SourcingDeferThresholdPct, d.Payout,
-		plan.UnitsRemaining, plan.Good, plan.UnitAsk, plan.Market, plan.TravelPenalty,
+		plan.UnitsRemaining, plan.Good, plan.UnitAsk, plan.Market,
 		d.Deadline.Format(time.RFC3339), d.Runway.Round(time.Minute),
 	)
 }

@@ -75,6 +75,21 @@ func (m *factoryFakeMediator) Send(ctx context.Context, request common.Request) 
 	}
 }
 
+// soldUnitsOf sums units sold of a good at the driven-port boundary. (Re-homed here
+// after the C1 planner-stock reversal (sp-u9xa) deleted the file that originally
+// defined it; the sp-vh1s gate-terminal test still asserts resale-sink sales with it.)
+func (m *factoryFakeMediator) soldUnitsOf(good string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := 0
+	for _, s := range m.sells {
+		if s.GoodSymbol == good {
+			total += s.Units
+		}
+	}
+	return total
+}
+
 func (m *factoryFakeMediator) Register(requestType reflect.Type, handler common.RequestHandler) error {
 	return nil
 }

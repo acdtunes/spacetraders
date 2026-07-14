@@ -81,6 +81,17 @@ type RunFleetCoordinatorHandler struct {
 	absorptionLedger          absorption.Ledger
 	absorptionConsultOff      bool
 	absorptionPlannedTTLSlack time.Duration
+
+	// clusterRegistryProvider (sp-u9xa, the final seam) resolves the LIVE contract-
+	// cluster routing registry each pass, so an active contract whose destination is
+	// owned by a configured cluster is delivered via that cluster's config-assigned,
+	// co-located delivery hull (withdraw-local + deliver-local) instead of the default
+	// distance-based pool selection + cheapest-market sourcing. Nil (tests / feature
+	// off) or an empty/unavailable registry degrades to the default long-haul path
+	// BYTE-IDENTICALLY — the natural off-switch, no config flag. The daemon injects a
+	// store-backed provider via SetClusterRegistryProvider, mirroring the invFinder /
+	// standbyProvider optional-injection idiom.
+	clusterRegistryProvider appContract.ClusterRegistryProvider
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -169,6 +180,17 @@ func (h *RunFleetCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledge
 // and nil-safe: without it the coordinator plans market-only, exactly as before.
 func (h *RunFleetCoordinatorHandler) SetInventoryFinder(finder appContract.InventorySourceFinder) {
 	h.invFinder = finder
+}
+
+// SetClusterRegistryProvider wires the live contract-cluster routing registry source
+// (sp-u9xa, the final seam) so an active contract whose destination is owned by a
+// configured cluster routes to that cluster's config-assigned delivery hull and prefers
+// its co-located destination warehouse as the withdrawal source. Optional and nil-safe:
+// without it — or with an empty/unavailable registry — the coordinator runs its default
+// long-haul routing byte-identically (empty registry == today's behavior). Mirrors the
+// SetInventoryFinder / SetStandbyStationProvider optional-injection idiom.
+func (h *RunFleetCoordinatorHandler) SetClusterRegistryProvider(provider appContract.ClusterRegistryProvider) {
+	h.clusterRegistryProvider = provider
 }
 
 // Handle executes the fleet coordinator command
@@ -495,14 +517,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// Find the cheapest WORKER-REACHABLE purchase market for the contract
-		// (sp-1z2h sourcing cost-optimizer). nil reachability = in-system only:
-		// contract sourcing is single-system by ruling (RULINGS #14), and the
-		// worker's trip is in-system NavigateAndDock with zero jump capability, so
-		// a cross-system source it can't reach must be excluded, not
-		// selected-then-crashed ('waypoint not found in cache' — sp-9hu8).
-		logger.Log("INFO", "Planning sourcing (cheapest in-system market)...", nil)
-		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value(), nil, appContract.WithInventoryFinder(h.invFinder))
+		// Find the cheapest HOME-system purchase market for the contract (sp-1z2h
+		// sourcing cost-optimizer). Contract sourcing is HOME-system only by ruling
+		// (RULINGS #14): the worker's trip is in-system NavigateAndDock with zero
+		// jump capability, so a cross-system source it can't reach is never a
+		// candidate — no selected-then-crashed ('waypoint not found in cache' —
+		// sp-9hu8).
+		logger.Log("INFO", "Planning sourcing (cheapest home-system market)...", nil)
+		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value(), appContract.WithInventoryFinder(h.invFinder))
 		if err != nil {
 			// Market data not yet available - this is expected while scouts are scanning
 			logger.Log("INFO", "Purchase market not yet available - waiting for scouts to scan market data", map[string]interface{}{
@@ -656,30 +678,62 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// Select closest ship to purchase market (prioritizes ships with required cargo)
-		logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
-		selectedShip, distance, err := appContract.SelectClosestShip(
-			ctx,
-			spawnableShips,
-			h.shipRepo,
-			h.graphProvider,
-			h.converter,
-			purchaseMarket,
-			requiredCargo,
-			unitsNeeded,
-			cmd.PlayerID.Value(),
-		)
-		if err != nil {
-			errMsg := fmt.Sprintf("Failed to select ship: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			if streak, crossed := errMon.Note("select_closest_ship", err.Error()); crossed {
-				h.recordErrorLoopEvent(ctx, cmd, "select_closest_ship", err, streak)
+		// sp-u9xa cluster routing seam (the FINAL integration): BEFORE the default
+		// distance-based hull selection, consult the LIVE cluster registry (resolved
+		// fail-safe each pass from the boot-loaded durable store). An owning cluster with
+		// a config-assigned delivery hull diverts THIS contract onto that pinned,
+		// co-located hull (withdraw-local + deliver-local) — the good is already
+		// pre-staged in the cluster's destination warehouse, which the inventory-first
+		// sourcing above (PlanSourcing + invFinder) already prefers as the zero-ask
+		// source, so purchaseMarket is that warehouse. A nil/empty/unavailable registry,
+		// or a destination no cluster owns, returns ok=false and the default
+		// SelectClosestShip path in the else runs BYTE-IDENTICALLY — the natural
+		// off-switch (no config flag; empty registry == today's behavior).
+		var selectedShip string
+		var distance float64
+		if route, ok := routeContractViaCluster(
+			appContract.ResolveClusterRegistry(ctx, logger, h.clusterRegistryProvider, cmd.PlayerID.Value()),
+			contract,
+		); ok {
+			selectedShip = route.DeliveryHull
+			logger.Log("INFO", fmt.Sprintf(
+				"Contract %s destination owned by cluster %s - routing to config-assigned delivery hull %s (prefer warehouse %s; withdraw-local+deliver-local via source %s)",
+				contract.ContractID(), route.ClusterID, route.DeliveryHull, route.Warehouse, purchaseMarket),
+				map[string]interface{}{
+					"action":        "cluster_route_contract",
+					"contract_id":   contract.ContractID(),
+					"cluster_id":    route.ClusterID,
+					"delivery_hull": route.DeliveryHull,
+					"warehouse":     route.Warehouse,
+					"source":        purchaseMarket,
+				})
+		} else {
+			// DEFAULT PATH (byte-identical to pre-sp-u9xa): select closest ship to
+			// purchase market (prioritizes ships with required cargo).
+			logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
+			selectedShip, distance, err = appContract.SelectClosestShip(
+				ctx,
+				spawnableShips,
+				h.shipRepo,
+				h.graphProvider,
+				h.converter,
+				purchaseMarket,
+				requiredCargo,
+				unitsNeeded,
+				cmd.PlayerID.Value(),
+			)
+			if err != nil {
+				errMsg := fmt.Sprintf("Failed to select ship: %v", err)
+				logger.Log("ERROR", errMsg, nil)
+				result.Errors = append(result.Errors, errMsg)
+				if streak, crossed := errMon.Note("select_closest_ship", err.Error()); crossed {
+					h.recordErrorLoopEvent(ctx, cmd, "select_closest_ship", err, streak)
+				}
+				h.clock.Sleep(10 * time.Second)
+				continue
 			}
-			h.clock.Sleep(10 * time.Second)
-			continue
+			errMon.Note("select_closest_ship", "")
 		}
-		errMon.Note("select_closest_ship", "")
 
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 

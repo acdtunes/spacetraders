@@ -192,6 +192,50 @@ func DefaultColdStartCaps() []GoodCap {
 // — a waypoint legitimately at the origin resolves ok=true with (0,0).
 type WaypointCoordsLookup func(waypointSymbol string) (x, y float64, ok bool)
 
+// residualKnobs holds the residual-buy-leg ramp params with every default substituted and
+// the RULING #14 ceiling clamp applied. Extracted so the source-side (PlanWarehouseCaps)
+// and destination-receipt (PlanReceiptCaps, sp-u9xa) adapters resolve the ramp identically
+// and can never drift.
+type residualKnobs struct {
+	inResidual    float64
+	crossResidual float64
+	floor         float64
+	ceiling       float64
+	saturation    float64
+}
+
+func (params WarehouseCapParams) residualKnobs() residualKnobs {
+	k := residualKnobs{
+		inResidual:    params.InSystemResidual,
+		crossResidual: params.CrossSystemResidual,
+		floor:         params.DistanceResidualFloor,
+		ceiling:       params.DistanceResidualCeiling,
+		saturation:    params.DistanceSaturation,
+	}
+	if k.inResidual <= 0 {
+		k.inResidual = DefaultInSystemResidual
+	}
+	if k.crossResidual <= 0 {
+		k.crossResidual = DefaultCrossSystemResidual
+	}
+	if k.floor <= 0 {
+		k.floor = DefaultDistanceResidualFloor
+	}
+	if k.ceiling <= 0 {
+		k.ceiling = DefaultDistanceResidualCeiling
+	}
+	// RULING #14: a cross-system source (which the single-system worker can never chase) must
+	// out-rank ANY in-system good, so the distance ramp's ceiling can never exceed the
+	// cross-system residual — a far in-system good approaches, but never passes, the cross max.
+	if k.ceiling > k.crossResidual {
+		k.ceiling = k.crossResidual
+	}
+	if k.saturation <= 0 {
+		k.saturation = DefaultDistanceSaturation
+	}
+	return k
+}
+
 // PlanWarehouseCaps is the live-state adapter over ComputeWarehouseCaps: it builds the
 // per-good GoodDemand from mined contract-demand candidates (the shared sp-dchv Lane A
 // demand model this bead consumes, sibling of sp-q2zq) and solves the knapsack over the real
@@ -230,32 +274,12 @@ func PlanWarehouseCaps(
 	current map[string]int,
 	params WarehouseCapParams,
 ) WarehouseCapResult {
-	inResidual := params.InSystemResidual
-	if inResidual <= 0 {
-		inResidual = DefaultInSystemResidual
-	}
-	crossResidual := params.CrossSystemResidual
-	if crossResidual <= 0 {
-		crossResidual = DefaultCrossSystemResidual
-	}
-	floor := params.DistanceResidualFloor
-	if floor <= 0 {
-		floor = DefaultDistanceResidualFloor
-	}
-	ceiling := params.DistanceResidualCeiling
-	if ceiling <= 0 {
-		ceiling = DefaultDistanceResidualCeiling
-	}
-	// RULING #14: a cross-system source (which the single-system worker can never chase) must
-	// out-rank ANY in-system good, so the distance ramp's ceiling can never exceed the
-	// cross-system residual — a far in-system good approaches, but never passes, the cross max.
-	if ceiling > crossResidual {
-		ceiling = crossResidual
-	}
-	saturation := params.DistanceSaturation
-	if saturation <= 0 {
-		saturation = DefaultDistanceSaturation
-	}
+	k := params.residualKnobs()
+	inResidual := k.inResidual
+	crossResidual := k.crossResidual
+	floor := k.floor
+	ceiling := k.ceiling
+	saturation := k.saturation
 
 	// Resolve the warehouse's own position ONCE. When it (or the whole lookup) is unavailable, no
 	// in-system distance can be computed and every in-system good FAILS OPEN to the coarse constant

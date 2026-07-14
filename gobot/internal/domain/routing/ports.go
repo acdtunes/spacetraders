@@ -20,7 +20,7 @@ type RoutingClient interface {
 	// the solver nets out of available tranche capacity (sp-78ai L3, empty → full depth).
 	// Returns a TourPlan whose Feasible=false carries a structured reason so the executor
 	// can fail open to single-lane trading.
-	OptimizeTradeTour(ctx context.Context, snapshot []TourGoodSnapshot, waypoints []TourWaypoint, ship TourShipState, cons TourConstraints, deposits []TourDepositCandidate, absorption []TourMarketAbsorption, stockSources []TourStockSource) (*TourPlan, error)
+	OptimizeTradeTour(ctx context.Context, snapshot []TourGoodSnapshot, waypoints []TourWaypoint, ship TourShipState, cons TourConstraints, deposits []TourDepositCandidate, absorption []TourMarketAbsorption) (*TourPlan, error)
 }
 
 // DTOs for routing operations

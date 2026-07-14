@@ -347,11 +347,6 @@ type RunTourCoordinatorHandler struct {
 	demandMiner        tradingsvc.DepositDemandMiner
 	prePositioning     tradingsvc.DepositCandidateConfig
 	depositCeilingPct  int
-	// stockReservations nets outstanding cross-tour claims on warehouse stock out of
-	// the planner-visible-stock offers (C1, sp-64je) so parallel tours don't
-	// double-claim. nil (the default) means no netting — the physical TryReserveCargo
-	// at withdrawal is the execution-time backstop.
-	stockReservations tradingsvc.StockReservationReader
 
 	// depositParked de-dups the pre-positioning parked/dormant verdict so a hull whose
 	// deposits are parked — no ceiling configured, treasury at/below the reserve, or an
@@ -1169,14 +1164,6 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 		return h.executeDeposit(ctx, cmd, leg, legIdx, trade, response, netBought)
 	}
 
-	// C1 (sp-64je): an is_stock tranche WITHDRAWS factory output from warehouse stock
-	// at its recorded basis, not a market buy — there is no live market ask to
-	// re-verify (its price is the basis). Route it straight to the withdrawal path,
-	// bypassing the live-price observe + tolerance gate the market trades below run.
-	if trade.IsStock {
-		return h.executeStockWithdrawal(ctx, cmd, leg, legIdx, trade, response, netBought)
-	}
-
 	live, oerr := h.legs.observeGood(ctx, leg.Waypoint, trade.Good, cmd.PlayerID)
 	if oerr != nil {
 		logger.Log("WARNING", fmt.Sprintf("No live price for %s at %s - skipping (will re-plan): %v", trade.Good, leg.Waypoint, oerr), map[string]interface{}{
@@ -1504,137 +1491,6 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 	return true, nil
 }
 
-// executeStockWithdrawal draws factory output from warehouse stock at its recorded
-// cost basis (C1, sp-64je) — the buy-side mirror of executeDeposit and the tour-side
-// analog of the contract inventory withdrawal. The ship is already at leg.Waypoint
-// (the solver routed it to the storage waypoint), so no navigation is needed: reserve
-// on the storage hull, ship-to-ship transfer, confirm. Fails SAFE — any missing
-// warehouse / drained stock / transfer failure returns (false, ...) so the tour
-// re-plans and falls back to a market buy (the never-skip contract).
-func (h *RunTourCoordinatorHandler) executeStockWithdrawal(
-	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
-	leg routing.TourLeg,
-	legIdx int,
-	trade routing.TourTrade,
-	response *RunTourCoordinatorResponse,
-	netBought map[string]int,
-) (bool, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	if h.storageCoordinator == nil || h.warehouseFinder == nil || h.apiClient == nil {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: stock withdrawal of %s planned but storage subsystem unwired - degrading to re-plan", legIdx, trade.Good), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
-		})
-		return false, nil
-	}
-
-	group := h.warehousesAt(ctx, cmd.PlayerID, leg.Waypoint)
-	if len(group) == 0 {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no running warehouse at %s for %s withdrawal - degrading to re-plan", legIdx, leg.Waypoint, trade.Good), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
-		})
-		return false, nil
-	}
-
-	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return false, err
-	}
-	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
-	if availableSpace <= 0 {
-		return false, nil // no hold room — re-plan
-	}
-	want := trade.Units
-	if want > availableSpace {
-		want = availableSpace
-	}
-	if want <= 0 {
-		return false, nil
-	}
-
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		return false, fmt.Errorf("no player token for stock withdrawal: %w", err)
-	}
-	playerID := shared.MustNewPlayerID(cmd.PlayerID)
-
-	// Reserve from a storage hull in the co-located group holding the good. A drain
-	// between plan and here yields no reservation → fall through (fail-open, market).
-	storageShip, reserved := h.reserveStockFromGroup(group, trade.Good)
-	if storageShip == nil || reserved <= 0 {
-		return false, nil
-	}
-	toMove := reserved
-	if toMove > want {
-		toMove = want
-	}
-
-	// WITHDRAWAL: the warehouse hull is the stationary source, the tour hull the visitor.
-	if _, _, terr := common.AlignAndTransferCargo(ctx, h.apiClient, storageShip.ShipSymbol(), cmd.ShipSymbol, storageShip.ShipSymbol(), trade.Good, toMove, token); terr != nil {
-		if cancelErr := storageShip.CancelReservation(trade.Good, reserved); cancelErr != nil {
-			logger.Log("ERROR", "Stock withdrawal: failed to cancel reservation after transfer error", map[string]interface{}{
-				"storage_ship": storageShip.ShipSymbol(), "error": cancelErr.Error(),
-			})
-		}
-		return false, fmt.Errorf("stock withdrawal transfer of %d %s from warehouse hull %s: %w", toMove, trade.Good, storageShip.ShipSymbol(), terr)
-	}
-	if err := storageShip.ConfirmTransfer(trade.Good, toMove); err != nil {
-		logger.Log("ERROR", "Stock withdrawal: confirm transfer failed (cargo already moved)", map[string]interface{}{
-			"storage_ship": storageShip.ShipSymbol(), "error": err.Error(),
-		})
-	}
-	if excess := reserved - toMove; excess > 0 {
-		if err := storageShip.CancelReservation(trade.Good, excess); err != nil {
-			logger.Log("WARN", "Stock withdrawal: failed to release over-reservation", map[string]interface{}{
-				"storage_ship": storageShip.ShipSymbol(), "excess": excess, "error": err.Error(),
-			})
-		}
-	}
-
-	// Persist both hulls' cargo (mirror manufacturing/contract), so the later sell leg
-	// sees the withdrawn goods aboard.
-	if _, err := h.legs.shipRepo.SyncShipFromAPI(ctx, storageShip.ShipSymbol(), playerID); err != nil {
-		logger.Log("WARN", "Stock withdrawal: failed to sync storage ship after transfer", map[string]interface{}{
-			"storage_ship": storageShip.ShipSymbol(), "error": err.Error(),
-		})
-	}
-	if _, err := h.legs.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, playerID); err != nil {
-		return false, fmt.Errorf("sync hull after stock withdrawal: %w", err)
-	}
-
-	// T2 telemetry (sp-64je): the tour acquired a factory good from stock AT BASIS —
-	// the acceptance series that must track the rested ask, not the ladder.
-	metrics.SetTourFactoryGoodAcquisitionCost(cmd.PlayerID, trade.Good, "stock", float64(trade.ExpectedUnitPrice))
-
-	netBought[trade.Good] += toMove
-	response.TradesExecuted++
-	logger.Log("INFO", fmt.Sprintf("Tour leg %d: withdrew %d %s from warehouse %s at basis %d (planner-visible stock)", legIdx, toMove, trade.Good, storageShip.ShipSymbol(), trade.ExpectedUnitPrice), map[string]interface{}{
-		"leg": legIdx, "good": trade.Good, "units": toMove, "basis": trade.ExpectedUnitPrice,
-		"storage_ship": storageShip.ShipSymbol(), "operation_type": "stock_withdrawal",
-	})
-	return true, nil
-}
-
-// reserveStockFromGroup reserves unreserved units of good on the first storage hull
-// in the co-located group that holds any (C1, sp-64je). The physical TryReserveCargo
-// is the execution-time backstop against parallel tours double-claiming the same
-// units — the caller MUST ConfirmTransfer the moved units and CancelReservation any
-// remainder.
-func (h *RunTourCoordinatorHandler) reserveStockFromGroup(group []*storage.StorageOperation, good string) (*storage.StorageShip, int) {
-	for _, op := range group {
-		for _, s := range h.storageCoordinator.GetStorageShipsForOperation(op.ID()) {
-			if s == nil {
-				continue
-			}
-			if reserved, err := s.TryReserveCargo(good, 1); err == nil && reserved > 0 {
-				return s, reserved
-			}
-		}
-	}
-	return nil, 0
-}
-
 // warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the
 // co-located additive-capacity group (sp-5q2c: e.g. light-12 + heavy-4B at E42, whose
 // slots sum). Empty when none is running there or the finder is unwired (fail closed —
@@ -1710,12 +1566,6 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// when the ledger is unwired / the consult is killed / the read fails (fail-OPEN —
 	// the conditional Reserve is the hard backstop), leaving the plan against full depth.
 	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID)
-	// C1 (sp-64je): offer warehouse stock (factory output at recorded cost basis) as
-	// zero-ask-at-basis withdrawal sources so the solver draws from stock at basis
-	// instead of buying our own output at laddered asks. Empty when no warehouse in the
-	// tour graph holds a good with a recorded basis (fail closed) — the tour then plans
-	// against market buys, unchanged.
-	stockSources := h.stockSources(ctx, cmd, allowedSystems)
 	// sp-4hl5: the solver's money guard is spend_cap = max(0, max_spend −
 	// working_capital_reserve) (tour_solver.py, score_sequence) — a CASH contract:
 	// max_spend is the cash the caller lets the tour touch, the reserve a keep-back.
@@ -1742,7 +1592,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
 	}
-	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView, stockSources)
+	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1956,24 +1806,6 @@ func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, cmd *
 		ctx, h.demandMiner, h.warehouseFinder, h.storageCoordinator,
 		allowedSystems, cmd.PlayerID, ceiling, known, h.prePositioning,
 	)
-}
-
-// stockSources assembles the planner-visible-stock withdrawal offers (C1, sp-64je)
-// for the tour graph: warehouse stock with a recorded cost basis, offered to the
-// solver at basis so it withdraws instead of buying our own output at laddered asks.
-// Naturally inert when nothing has a recorded basis (no factory has stocked), so it
-// needs no separate enable — the presence of factory basis IS the enable. Empty when
-// the storage coordinator does not support cost basis (test mocks) or no warehouse is
-// wired. h.stockReservations (nil until wired) nets outstanding cross-tour claims.
-func (h *RunTourCoordinatorHandler) stockSources(ctx context.Context, cmd *RunTourCoordinatorCommand, allowedSystems []string) []routing.TourStockSource {
-	if h.warehouseFinder == nil {
-		return nil
-	}
-	reader, ok := h.storageCoordinator.(tradingsvc.StockSourceReader)
-	if !ok {
-		return nil // coordinator without cost-basis support — no stock sources (safe)
-	}
-	return tradingsvc.BuildStockSources(ctx, h.warehouseFinder, reader, h.stockReservations, allowedSystems, cmd.PlayerID)
 }
 
 // recordDepositParked emits a pre-positioning parked/dormant verdict for a container at

@@ -80,6 +80,13 @@ const (
 	DaemonService_GetConstructionStatus_FullMethodName        = "/daemon.DaemonService/GetConstructionStatus"
 	DaemonService_StopConstructionPipeline_FullMethodName     = "/daemon.DaemonService/StopConstructionPipeline"
 	DaemonService_ConstructionGoodOverride_FullMethodName     = "/daemon.DaemonService/ConstructionGoodOverride"
+	DaemonService_ApplyClusterTopology_FullMethodName         = "/daemon.DaemonService/ApplyClusterTopology"
+	DaemonService_AddCluster_FullMethodName                   = "/daemon.DaemonService/AddCluster"
+	DaemonService_RemoveCluster_FullMethodName                = "/daemon.DaemonService/RemoveCluster"
+	DaemonService_AddClusterElement_FullMethodName            = "/daemon.DaemonService/AddClusterElement"
+	DaemonService_RemoveClusterElement_FullMethodName         = "/daemon.DaemonService/RemoveClusterElement"
+	DaemonService_PlaceClusterElement_FullMethodName          = "/daemon.DaemonService/PlaceClusterElement"
+	DaemonService_ListClusters_FullMethodName                 = "/daemon.DaemonService/ListClusters"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -254,6 +261,18 @@ type DaemonServiceClient interface {
 	// override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
 	// coordinator / task activator re-read the persisted overrides on their next discovery pass.
 	ConstructionGoodOverride(ctx context.Context, in *ConstructionGoodOverrideRequest, opts ...grpc.CallOption) (*ConstructionGoodOverrideResponse, error)
+	// --- Contract cluster management (sp-u9xa) ---
+	// The daemon is the single writer of contract-cluster topology; every mutation is durable
+	// the instant it returns (through the application Store into the DB), so a granular edit
+	// needs no restart to take effect. ApplyClusterTopology is the declarative bulk apply; the
+	// rest are granular live ops.
+	ApplyClusterTopology(ctx context.Context, in *ApplyClusterTopologyRequest, opts ...grpc.CallOption) (*ApplyClusterTopologyResponse, error)
+	AddCluster(ctx context.Context, in *AddClusterRequest, opts ...grpc.CallOption) (*AddClusterResponse, error)
+	RemoveCluster(ctx context.Context, in *RemoveClusterRequest, opts ...grpc.CallOption) (*RemoveClusterResponse, error)
+	AddClusterElement(ctx context.Context, in *AddClusterElementRequest, opts ...grpc.CallOption) (*ClusterElementResponse, error)
+	RemoveClusterElement(ctx context.Context, in *RemoveClusterElementRequest, opts ...grpc.CallOption) (*ClusterElementResponse, error)
+	PlaceClusterElement(ctx context.Context, in *PlaceClusterElementRequest, opts ...grpc.CallOption) (*ClusterElementResponse, error)
+	ListClusters(ctx context.Context, in *ListClustersRequest, opts ...grpc.CallOption) (*ListClustersResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -874,6 +893,76 @@ func (c *daemonServiceClient) ConstructionGoodOverride(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *daemonServiceClient) ApplyClusterTopology(ctx context.Context, in *ApplyClusterTopologyRequest, opts ...grpc.CallOption) (*ApplyClusterTopologyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyClusterTopologyResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ApplyClusterTopology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) AddCluster(ctx context.Context, in *AddClusterRequest, opts ...grpc.CallOption) (*AddClusterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddClusterResponse)
+	err := c.cc.Invoke(ctx, DaemonService_AddCluster_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RemoveCluster(ctx context.Context, in *RemoveClusterRequest, opts ...grpc.CallOption) (*RemoveClusterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveClusterResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RemoveCluster_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) AddClusterElement(ctx context.Context, in *AddClusterElementRequest, opts ...grpc.CallOption) (*ClusterElementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterElementResponse)
+	err := c.cc.Invoke(ctx, DaemonService_AddClusterElement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RemoveClusterElement(ctx context.Context, in *RemoveClusterElementRequest, opts ...grpc.CallOption) (*ClusterElementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterElementResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RemoveClusterElement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) PlaceClusterElement(ctx context.Context, in *PlaceClusterElementRequest, opts ...grpc.CallOption) (*ClusterElementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterElementResponse)
+	err := c.cc.Invoke(ctx, DaemonService_PlaceClusterElement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListClusters(ctx context.Context, in *ListClustersRequest, opts ...grpc.CallOption) (*ListClustersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListClustersResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListClusters_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -1046,6 +1135,18 @@ type DaemonServiceServer interface {
 	// override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
 	// coordinator / task activator re-read the persisted overrides on their next discovery pass.
 	ConstructionGoodOverride(context.Context, *ConstructionGoodOverrideRequest) (*ConstructionGoodOverrideResponse, error)
+	// --- Contract cluster management (sp-u9xa) ---
+	// The daemon is the single writer of contract-cluster topology; every mutation is durable
+	// the instant it returns (through the application Store into the DB), so a granular edit
+	// needs no restart to take effect. ApplyClusterTopology is the declarative bulk apply; the
+	// rest are granular live ops.
+	ApplyClusterTopology(context.Context, *ApplyClusterTopologyRequest) (*ApplyClusterTopologyResponse, error)
+	AddCluster(context.Context, *AddClusterRequest) (*AddClusterResponse, error)
+	RemoveCluster(context.Context, *RemoveClusterRequest) (*RemoveClusterResponse, error)
+	AddClusterElement(context.Context, *AddClusterElementRequest) (*ClusterElementResponse, error)
+	RemoveClusterElement(context.Context, *RemoveClusterElementRequest) (*ClusterElementResponse, error)
+	PlaceClusterElement(context.Context, *PlaceClusterElementRequest) (*ClusterElementResponse, error)
+	ListClusters(context.Context, *ListClustersRequest) (*ListClustersResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -1238,6 +1339,27 @@ func (UnimplementedDaemonServiceServer) StopConstructionPipeline(context.Context
 }
 func (UnimplementedDaemonServiceServer) ConstructionGoodOverride(context.Context, *ConstructionGoodOverrideRequest) (*ConstructionGoodOverrideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConstructionGoodOverride not implemented")
+}
+func (UnimplementedDaemonServiceServer) ApplyClusterTopology(context.Context, *ApplyClusterTopologyRequest) (*ApplyClusterTopologyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyClusterTopology not implemented")
+}
+func (UnimplementedDaemonServiceServer) AddCluster(context.Context, *AddClusterRequest) (*AddClusterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddCluster not implemented")
+}
+func (UnimplementedDaemonServiceServer) RemoveCluster(context.Context, *RemoveClusterRequest) (*RemoveClusterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveCluster not implemented")
+}
+func (UnimplementedDaemonServiceServer) AddClusterElement(context.Context, *AddClusterElementRequest) (*ClusterElementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddClusterElement not implemented")
+}
+func (UnimplementedDaemonServiceServer) RemoveClusterElement(context.Context, *RemoveClusterElementRequest) (*ClusterElementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveClusterElement not implemented")
+}
+func (UnimplementedDaemonServiceServer) PlaceClusterElement(context.Context, *PlaceClusterElementRequest) (*ClusterElementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlaceClusterElement not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListClusters(context.Context, *ListClustersRequest) (*ListClustersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListClusters not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -2358,6 +2480,132 @@ func _DaemonService_ConstructionGoodOverride_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ApplyClusterTopology_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyClusterTopologyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ApplyClusterTopology(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ApplyClusterTopology_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ApplyClusterTopology(ctx, req.(*ApplyClusterTopologyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_AddCluster_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddClusterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).AddCluster(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_AddCluster_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).AddCluster(ctx, req.(*AddClusterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RemoveCluster_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveClusterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RemoveCluster(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RemoveCluster_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RemoveCluster(ctx, req.(*RemoveClusterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_AddClusterElement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddClusterElementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).AddClusterElement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_AddClusterElement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).AddClusterElement(ctx, req.(*AddClusterElementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RemoveClusterElement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveClusterElementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RemoveClusterElement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RemoveClusterElement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RemoveClusterElement(ctx, req.(*RemoveClusterElementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_PlaceClusterElement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlaceClusterElementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).PlaceClusterElement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_PlaceClusterElement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).PlaceClusterElement(ctx, req.(*PlaceClusterElementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListClusters_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListClustersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListClusters(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListClusters_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListClusters(ctx, req.(*ListClustersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2608,6 +2856,34 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConstructionGoodOverride",
 			Handler:    _DaemonService_ConstructionGoodOverride_Handler,
+		},
+		{
+			MethodName: "ApplyClusterTopology",
+			Handler:    _DaemonService_ApplyClusterTopology_Handler,
+		},
+		{
+			MethodName: "AddCluster",
+			Handler:    _DaemonService_AddCluster_Handler,
+		},
+		{
+			MethodName: "RemoveCluster",
+			Handler:    _DaemonService_RemoveCluster_Handler,
+		},
+		{
+			MethodName: "AddClusterElement",
+			Handler:    _DaemonService_AddClusterElement_Handler,
+		},
+		{
+			MethodName: "RemoveClusterElement",
+			Handler:    _DaemonService_RemoveClusterElement_Handler,
+		},
+		{
+			MethodName: "PlaceClusterElement",
+			Handler:    _DaemonService_PlaceClusterElement_Handler,
+		},
+		{
+			MethodName: "ListClusters",
+			Handler:    _DaemonService_ListClusters_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

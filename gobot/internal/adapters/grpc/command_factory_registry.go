@@ -937,10 +937,6 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", 1),
 		InputsOnly:    cfg.OptionalBool("inputs_only"),
-		// C1 (sp-64je): planner-visible stock is LIVE BY DEFAULT (Admiral: no dark-shipping).
-		// planner_stock_disabled is the emergency escape hatch — absent/false = ACTIVE. Fed
-		// from [manufacturing] planner_stock_disabled via injectManufacturingConfig.
-		PlannerStockDisabled: cfg.OptionalBool("planner_stock_disabled"),
 		// sp-agzj: unify the factory input floor with the fleet reserve. 0/absent → the
 		// coordinator's immutable 50k lower bound; a set value (the fleet's 1M) raises it.
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),

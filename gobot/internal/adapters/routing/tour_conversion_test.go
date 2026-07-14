@@ -40,9 +40,6 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 			{Waypoint: "X1-NK36-D39", Good: "MEDICINE", Side: "sell", PlannedUnits: 20, RecoveringUnits: 12.5},
 			{Waypoint: "X1-NK36-D39", Good: "FABRICS", Side: "buy", PlannedUnits: 40, RecoveringUnits: 0},
 		},
-		[]domainRouting.TourStockSource{
-			{Good: "CLOTHING", UnitsAvailable: 80, UnitAsk: 3200, StorageWaypoint: "X1-NK36-H1", StorageSystem: "X1-NK36"},
-		},
 	)
 
 	if len(req.Snapshot) != 1 {
@@ -105,15 +102,6 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 	if a := req.Absorption[1]; a.WaypointSymbol != "X1-NK36-D39" || a.GoodSymbol != "MEDICINE" ||
 		a.Side != "sell" || a.UnitsPlanned != 20 || a.UnitsRecovering != 12.5 {
 		t.Fatalf("absorption[1] mapping wrong: %+v", a)
-	}
-
-	// Stock sources (C1, sp-64je): warehouse stock offered at basis marshals through.
-	if len(req.StockSources) != 1 {
-		t.Fatalf("expected 1 stock source, got %d", len(req.StockSources))
-	}
-	if s := req.StockSources[0]; s.GoodSymbol != "CLOTHING" || s.UnitsAvailable != 80 || s.UnitAsk != 3200 ||
-		s.StorageWaypoint != "X1-NK36-H1" || s.StorageSystem != "X1-NK36" {
-		t.Fatalf("stock source mapping wrong: %+v", s)
 	}
 }
 
@@ -181,7 +169,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 // phantom trade.
 func TestMockRoutingClient_OptimizeTradeTour_Configurable(t *testing.T) {
 	mock := NewMockRoutingClient()
-	plan, err := mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil, nil, nil)
+	plan, err := mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +178,7 @@ func TestMockRoutingClient_OptimizeTradeTour_Configurable(t *testing.T) {
 	}
 
 	mock.CannedTourPlan = &domainRouting.TourPlan{Feasible: true, ProjectedProfit: 999}
-	plan, err = mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil, nil, nil)
+	plan, err = mock.OptimizeTradeTour(t.Context(), nil, nil, domainRouting.TourShipState{}, domainRouting.TourConstraints{}, nil, nil)
 	if err != nil || !plan.Feasible || plan.ProjectedProfit != 999 {
 		t.Fatalf("canned plan not returned: plan=%+v err=%v", plan, err)
 	}

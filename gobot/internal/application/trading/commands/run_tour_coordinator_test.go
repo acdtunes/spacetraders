@@ -361,19 +361,14 @@ type tourFakeRoutingClient struct {
 	// each call (sp-78ai L3): a netting integration test asserts the tour nets the ledger's
 	// outstanding depth into its plan request.
 	absorptions [][]routing.TourMarketAbsorption
-	// stockSources captures the planner-visible-stock sources the coordinator assembled and
-	// passed on each call (C1, sp-64je): an integration test asserts the tour offers warehouse
-	// stock at basis to the solver.
-	stockSources [][]routing.TourStockSource
 }
 
-func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption, stockSources []routing.TourStockSource) (*routing.TourPlan, error) {
+func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
 	c.absorptions = append(c.absorptions, absorption)
-	c.stockSources = append(c.stockSources, stockSources)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {
 		held[g] = u

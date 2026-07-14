@@ -32,7 +32,7 @@ func TestPlanSourcing_InventoryFirst_PreferredOverMarket(t *testing.T) {
 	finder := &fakeInventoryFinder{src: &InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 200}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil, WithInventoryFinder(finder))
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, WithInventoryFinder(finder))
 	require.NoError(t, err)
 	require.Equal(t, SourceInventory, plan.Source)
 	require.Equal(t, "X1-HOME-WH9", plan.Market, "inventory plan points at the storage waypoint")
@@ -41,7 +41,6 @@ func TestPlanSourcing_InventoryFirst_PreferredOverMarket(t *testing.T) {
 	require.Equal(t, 0, plan.EffectiveCost, "sunk cost — zero-ask projection")
 	require.Equal(t, "wh-1", plan.StorageOperationID)
 	require.Equal(t, 100, plan.UnitsRemaining)
-	require.False(t, plan.CrossSystem)
 }
 
 func TestPlanSourcing_InventoryFirst_PartialStock_StillInventoryPlan(t *testing.T) {
@@ -53,7 +52,7 @@ func TestPlanSourcing_InventoryFirst_PartialStock_StillInventoryPlan(t *testing.
 	finder := &fakeInventoryFinder{src: &InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 40}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil, WithInventoryFinder(finder))
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, WithInventoryFinder(finder))
 	require.NoError(t, err)
 	require.Equal(t, SourceInventory, plan.Source)
 	require.Equal(t, 100, plan.UnitsRemaining)
@@ -66,7 +65,7 @@ func TestPlanSourcing_NoInventory_FallsThroughToMarketByteIdentical(t *testing.T
 	finder := &fakeInventoryFinder{src: nil}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil, WithInventoryFinder(finder))
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, WithInventoryFinder(finder))
 	require.NoError(t, err)
 	require.Equal(t, SourceMarket, plan.Source)
 	require.Equal(t, "X1-HOME-H51", plan.Market)
@@ -80,7 +79,7 @@ func TestPlanSourcing_NilInventoryFinder_MarketPath(t *testing.T) {
 	repo := &fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{"X1-HOME": homeAsk(2500)}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil, WithInventoryFinder(nil))
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, WithInventoryFinder(nil))
 	require.NoError(t, err)
 	require.Equal(t, SourceMarket, plan.Source)
 	require.Equal(t, "X1-HOME-H51", plan.Market)
@@ -95,7 +94,7 @@ func TestPlanSourcing_InventoryWhenNoMarketSells_StillSources(t *testing.T) {
 	finder := &fakeInventoryFinder{src: &InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 200}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
 
-	plan, err := PlanSourcing(context.Background(), c, repo, 1, nil, WithInventoryFinder(finder))
+	plan, err := PlanSourcing(context.Background(), c, repo, 1, WithInventoryFinder(finder))
 	require.NoError(t, err)
 	require.Equal(t, SourceInventory, plan.Source)
 	require.Equal(t, "X1-HOME-WH9", plan.Market)

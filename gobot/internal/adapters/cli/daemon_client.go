@@ -2049,3 +2049,160 @@ func (c *DaemonClient) ConstructionGoodOverride(ctx context.Context, req *pb.Con
 	}
 	return resp, nil
 }
+
+// --- Contract cluster management (sp-u9xa) ---
+
+// ClusterElementDTO mirrors the protobuf ClusterElement for CLI display and spec parsing.
+// ShipSymbol may be empty (a declared-but-uncrewed slot). The json tags define the
+// operator spec-file format the `cluster apply` verb reads.
+type ClusterElementDTO struct {
+	Waypoint   string `json:"waypoint"`
+	ShipSymbol string `json:"ship_symbol"`
+}
+
+// ClusterDTO mirrors the protobuf ClusterSpec for CLI display and spec parsing.
+type ClusterDTO struct {
+	ID            string              `json:"id"`
+	Warehouses    []ClusterElementDTO `json:"warehouses"`
+	Stockers      []ClusterElementDTO `json:"stockers"`
+	DeliveryHulls []ClusterElementDTO `json:"delivery_hulls"`
+	SourceHubs    []ClusterElementDTO `json:"source_hubs"`
+}
+
+// ApplyClusterTopology sends the whole-topology DECLARATIVE bulk apply. Returns the
+// number of clusters the daemon persisted.
+func (c *DaemonClient) ApplyClusterTopology(ctx context.Context, playerID int, agentSymbol string, clusters []ClusterDTO) (int, error) {
+	req := &pb.ApplyClusterTopologyRequest{PlayerId: int32(playerID), Clusters: clusterDTOsToProto(clusters)}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.ApplyClusterTopology(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf(grpcCallFailed, err)
+	}
+	return int(resp.ClusterCount), nil
+}
+
+// AddCluster adds one cluster (granular).
+func (c *DaemonClient) AddCluster(ctx context.Context, playerID int, agentSymbol string, cluster ClusterDTO) error {
+	req := &pb.AddClusterRequest{PlayerId: int32(playerID), Cluster: clusterDTOToProto(cluster)}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	if _, err := c.client.AddCluster(ctx, req); err != nil {
+		return fmt.Errorf(grpcCallFailed, err)
+	}
+	return nil
+}
+
+// RemoveCluster removes one cluster by id (granular).
+func (c *DaemonClient) RemoveCluster(ctx context.Context, playerID int, agentSymbol, clusterID string) error {
+	req := &pb.RemoveClusterRequest{PlayerId: int32(playerID), ClusterId: clusterID}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	if _, err := c.client.RemoveCluster(ctx, req); err != nil {
+		return fmt.Errorf(grpcCallFailed, err)
+	}
+	return nil
+}
+
+// AddClusterElement adds one element to a cluster role (granular).
+func (c *DaemonClient) AddClusterElement(ctx context.Context, playerID int, agentSymbol, clusterID, role, waypoint, shipSymbol string) error {
+	req := &pb.AddClusterElementRequest{PlayerId: int32(playerID), ClusterId: clusterID, Role: role, Waypoint: waypoint, ShipSymbol: shipSymbol}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	if _, err := c.client.AddClusterElement(ctx, req); err != nil {
+		return fmt.Errorf(grpcCallFailed, err)
+	}
+	return nil
+}
+
+// RemoveClusterElement removes the element crewed by shipSymbol from a role (granular).
+func (c *DaemonClient) RemoveClusterElement(ctx context.Context, playerID int, agentSymbol, clusterID, role, shipSymbol string) error {
+	req := &pb.RemoveClusterElementRequest{PlayerId: int32(playerID), ClusterId: clusterID, Role: role, ShipSymbol: shipSymbol}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	if _, err := c.client.RemoveClusterElement(ctx, req); err != nil {
+		return fmt.Errorf(grpcCallFailed, err)
+	}
+	return nil
+}
+
+// PlaceClusterElement repositions the element crewed by shipSymbol to a waypoint (granular).
+func (c *DaemonClient) PlaceClusterElement(ctx context.Context, playerID int, agentSymbol, clusterID, role, shipSymbol, waypoint string) error {
+	req := &pb.PlaceClusterElementRequest{PlayerId: int32(playerID), ClusterId: clusterID, Role: role, ShipSymbol: shipSymbol, Waypoint: waypoint}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	if _, err := c.client.PlaceClusterElement(ctx, req); err != nil {
+		return fmt.Errorf(grpcCallFailed, err)
+	}
+	return nil
+}
+
+// ListClusters returns the player's persisted clusters for CLI display.
+func (c *DaemonClient) ListClusters(ctx context.Context, playerID int, agentSymbol string) ([]*ClusterDTO, error) {
+	req := &pb.ListClustersRequest{PlayerId: int32(playerID)}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.ListClusters(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+	out := make([]*ClusterDTO, 0, len(resp.Clusters))
+	for _, pc := range resp.Clusters {
+		out = append(out, protoToClusterDTO(pc))
+	}
+	return out, nil
+}
+
+func clusterDTOsToProto(clusters []ClusterDTO) []*pb.ClusterSpec {
+	out := make([]*pb.ClusterSpec, 0, len(clusters))
+	for _, c := range clusters {
+		out = append(out, clusterDTOToProto(c))
+	}
+	return out
+}
+
+func clusterDTOToProto(c ClusterDTO) *pb.ClusterSpec {
+	return &pb.ClusterSpec{
+		Id:            c.ID,
+		Warehouses:    clusterElementDTOsToProto(c.Warehouses),
+		Stockers:      clusterElementDTOsToProto(c.Stockers),
+		DeliveryHulls: clusterElementDTOsToProto(c.DeliveryHulls),
+		SourceHubs:    clusterElementDTOsToProto(c.SourceHubs),
+	}
+}
+
+func clusterElementDTOsToProto(es []ClusterElementDTO) []*pb.ClusterElement {
+	if len(es) == 0 {
+		return nil
+	}
+	out := make([]*pb.ClusterElement, 0, len(es))
+	for _, e := range es {
+		out = append(out, &pb.ClusterElement{Waypoint: e.Waypoint, ShipSymbol: e.ShipSymbol})
+	}
+	return out
+}
+
+func protoToClusterDTO(pc *pb.ClusterSpec) *ClusterDTO {
+	return &ClusterDTO{
+		ID:            pc.Id,
+		Warehouses:    protoToClusterElementDTOs(pc.Warehouses),
+		Stockers:      protoToClusterElementDTOs(pc.Stockers),
+		DeliveryHulls: protoToClusterElementDTOs(pc.DeliveryHulls),
+		SourceHubs:    protoToClusterElementDTOs(pc.SourceHubs),
+	}
+}
+
+func protoToClusterElementDTOs(pes []*pb.ClusterElement) []ClusterElementDTO {
+	out := make([]ClusterElementDTO, 0, len(pes))
+	for _, pe := range pes {
+		out = append(out, ClusterElementDTO{Waypoint: pe.Waypoint, ShipSymbol: pe.ShipSymbol})
+	}
+	return out
+}

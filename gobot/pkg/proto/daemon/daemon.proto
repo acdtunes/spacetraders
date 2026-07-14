@@ -232,6 +232,19 @@ service DaemonService {
   // override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
   // coordinator / task activator re-read the persisted overrides on their next discovery pass.
   rpc ConstructionGoodOverride(ConstructionGoodOverrideRequest) returns (ConstructionGoodOverrideResponse);
+
+  // --- Contract cluster management (sp-u9xa) ---
+  // The daemon is the single writer of contract-cluster topology; every mutation is durable
+  // the instant it returns (through the application Store into the DB), so a granular edit
+  // needs no restart to take effect. ApplyClusterTopology is the declarative bulk apply; the
+  // rest are granular live ops.
+  rpc ApplyClusterTopology(ApplyClusterTopologyRequest) returns (ApplyClusterTopologyResponse);
+  rpc AddCluster(AddClusterRequest) returns (AddClusterResponse);
+  rpc RemoveCluster(RemoveClusterRequest) returns (RemoveClusterResponse);
+  rpc AddClusterElement(AddClusterElementRequest) returns (ClusterElementResponse);
+  rpc RemoveClusterElement(RemoveClusterElementRequest) returns (ClusterElementResponse);
+  rpc PlaceClusterElement(PlaceClusterElementRequest) returns (ClusterElementResponse);
+  rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -1562,4 +1575,105 @@ message ConstructionGoodOverrideResponse {
   string strategy = 5;
   double price_ceiling_mult = 6;
   string min_supply = 7;
+}
+
+// --- Contract cluster management messages (sp-u9xa) ---
+
+// ClusterElement is one placed cluster member: a {waypoint, ship} pair. ship_symbol may
+// be empty for a declared-but-uncrewed slot. Nothing here is hardcoded — the whole
+// topology is operator data.
+message ClusterElement {
+  string waypoint = 1;
+  string ship_symbol = 2;
+}
+
+// ClusterSpec is one whole cluster: its id and its four element classes (destination
+// warehouses — the routing anchor, at least one — background stockers, pinned delivery
+// hulls, and source hubs).
+message ClusterSpec {
+  string id = 1;
+  repeated ClusterElement warehouses = 2;
+  repeated ClusterElement stockers = 3;
+  repeated ClusterElement delivery_hulls = 4;
+  repeated ClusterElement source_hubs = 5;
+}
+
+// ApplyClusterTopologyRequest is the DECLARATIVE bulk apply: it makes the player's
+// persisted set EXACTLY these clusters (upsert each, delete any not named).
+message ApplyClusterTopologyRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  repeated ClusterSpec clusters = 3;
+}
+
+message ApplyClusterTopologyResponse {
+  string status = 1;
+  int32 cluster_count = 2;
+}
+
+// AddClusterRequest adds ONE cluster without disturbing the rest (granular create).
+message AddClusterRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  ClusterSpec cluster = 3;
+}
+
+message AddClusterResponse {
+  string status = 1;
+}
+
+// RemoveClusterRequest deletes ONE cluster by id (granular, idempotent).
+message RemoveClusterRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string cluster_id = 3;
+}
+
+message RemoveClusterResponse {
+  string status = 1;
+}
+
+// AddClusterElementRequest adds one element to a cluster's named role (warehouse |
+// stocker | delivery-hull | source-hub).
+message AddClusterElementRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string cluster_id = 3;
+  string role = 4;
+  string waypoint = 5;
+  string ship_symbol = 6;
+}
+
+// RemoveClusterElementRequest drops the element crewed by ship_symbol from a role.
+message RemoveClusterElementRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string cluster_id = 3;
+  string role = 4;
+  string ship_symbol = 5;
+}
+
+// PlaceClusterElementRequest repositions the element crewed by ship_symbol in a role to
+// waypoint (the parametrized co-location op).
+message PlaceClusterElementRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string cluster_id = 3;
+  string role = 4;
+  string ship_symbol = 5;
+  string waypoint = 6;
+}
+
+// ClusterElementResponse is the shared reply for the granular element ops.
+message ClusterElementResponse {
+  string status = 1;
+}
+
+message ListClustersRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message ListClustersResponse {
+  repeated ClusterSpec clusters = 1;
 }

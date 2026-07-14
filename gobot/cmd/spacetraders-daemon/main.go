@@ -573,6 +573,13 @@ func run(cfg *config.Config) error {
 	// sp-78ai L2: wire the absorption ledger into the idle-arb dispatcher (consult +
 	// record), with the analyst-ruled knobs.
 	contractFleetCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.IdleArbConsultDisabled, cfg.Absorption.PlannedTTLSlack)
+	// sp-u9xa (the final seam): consume the boot-loaded contract-cluster routing
+	// registry. The daemon server already re-derives the LIVE registry per player from
+	// the durable store (LoadClusterRegistry), so a `cluster add|remove` on the running
+	// daemon is honored the next pass with no restart. Fail-safe: with no clusters
+	// configured the registry is empty and contract routing is byte-identical to today
+	// (the natural off-switch). Mirrors SetIdleArbLauncher(daemonServer) above.
+	contractFleetCoordinatorHandler.SetClusterRegistryProvider(daemonServer)
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}
@@ -1033,22 +1040,10 @@ func run(cfg *config.Config) error {
 	// Create storage coordinator for STORAGE_ACQUIRE_DELIVER tasks
 	// This enables manufacturing pipelines to acquire cargo from storage ships
 	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
-	// C1 (sp-64je): durable cost-basis persistence for planner-visible stock. The
-	// storage operation repo persists per-good basis out-of-band and reloads it on
-	// recovery (RULINGS #2); nil-safe if omitted.
+	// Durable cost-basis persistence for warehouse stock (storage infra): the storage
+	// operation repo persists per-good basis out-of-band and reloads it on recovery
+	// (RULINGS #2); nil-safe if omitted.
 	storageCoordinator.SetCostBasisStore(storageOperationRepo)
-	// C1 (sp-64je): wire the factory planner-visible-stock deposit path — LIVE BY
-	// DEFAULT (Admiral: no dark-shipping). Wired UNCONDITIONALLY; harvested root output
-	// deposits into a co-located warehouse at cost basis instead of selling at market
-	// unless the [manufacturing] planner_stock_disabled escape hatch is set. The capital
-	// ceiling reuses contract.pre_positioning.capital_ceiling_pct. The factory handler
-	// was constructed earlier (before the storage coordinator existed), so it is wired here.
-	factoryCoordinatorHandler.SetPlannerStockDepositor(
-		goodsServices.NewPlannerStockDepositor(
-			storageCoordinator, storageOperationRepo, med, apiClient,
-			cfg.Contract.PrePositioning.CapitalCeilingPct,
-		),
-	)
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
 	gasCoordinatorHandler := gasCmd.NewRunGasCoordinatorHandler(

@@ -682,6 +682,14 @@ func (s *DaemonServer) Start() error {
 		// call above is left alone; only a genuinely-never-launched (or previously-stopped)
 		// standing coordinator is started here.
 		s.ensureBootStandingCoordinators(recoveryCtx, s.primaryPlayerID(recoveryCtx))
+
+		// sp-u9xa: reload the contract-cluster routing registry from the durable store on
+		// boot (RULINGS #2). The Store owns no in-memory authority, so this re-derives the
+		// registry entirely from persisted rows — a restart reconstructs the identical
+		// routing the contract engine consults via LoadClusterRegistry. Pure read,
+		// fail-open, safely re-runnable every boot; runs here (after recovery) so the boot
+		// log reflects the same registry a re-adopted contract coordinator will route on.
+		s.reloadClusterRegistryAtBoot(recoveryCtx, s.primaryPlayerID(recoveryCtx))
 	})
 
 	// Start shutdown handler

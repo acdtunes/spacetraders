@@ -10402,6 +10402,854 @@ func (x *ConstructionGoodOverrideResponse) GetMinSupply() string {
 	return ""
 }
 
+// ClusterElement is one placed cluster member: a {waypoint, ship} pair. ship_symbol may
+// be empty for a declared-but-uncrewed slot. Nothing here is hardcoded — the whole
+// topology is operator data.
+type ClusterElement struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Waypoint      string                 `protobuf:"bytes,1,opt,name=waypoint,proto3" json:"waypoint,omitempty"`
+	ShipSymbol    string                 `protobuf:"bytes,2,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterElement) Reset() {
+	*x = ClusterElement{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[143]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterElement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterElement) ProtoMessage() {}
+
+func (x *ClusterElement) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[143]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterElement.ProtoReflect.Descriptor instead.
+func (*ClusterElement) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{143}
+}
+
+func (x *ClusterElement) GetWaypoint() string {
+	if x != nil {
+		return x.Waypoint
+	}
+	return ""
+}
+
+func (x *ClusterElement) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+// ClusterSpec is one whole cluster: its id and its four element classes (destination
+// warehouses — the routing anchor, at least one — background stockers, pinned delivery
+// hulls, and source hubs).
+type ClusterSpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Warehouses    []*ClusterElement      `protobuf:"bytes,2,rep,name=warehouses,proto3" json:"warehouses,omitempty"`
+	Stockers      []*ClusterElement      `protobuf:"bytes,3,rep,name=stockers,proto3" json:"stockers,omitempty"`
+	DeliveryHulls []*ClusterElement      `protobuf:"bytes,4,rep,name=delivery_hulls,json=deliveryHulls,proto3" json:"delivery_hulls,omitempty"`
+	SourceHubs    []*ClusterElement      `protobuf:"bytes,5,rep,name=source_hubs,json=sourceHubs,proto3" json:"source_hubs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterSpec) Reset() {
+	*x = ClusterSpec{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[144]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterSpec) ProtoMessage() {}
+
+func (x *ClusterSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[144]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterSpec.ProtoReflect.Descriptor instead.
+func (*ClusterSpec) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{144}
+}
+
+func (x *ClusterSpec) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ClusterSpec) GetWarehouses() []*ClusterElement {
+	if x != nil {
+		return x.Warehouses
+	}
+	return nil
+}
+
+func (x *ClusterSpec) GetStockers() []*ClusterElement {
+	if x != nil {
+		return x.Stockers
+	}
+	return nil
+}
+
+func (x *ClusterSpec) GetDeliveryHulls() []*ClusterElement {
+	if x != nil {
+		return x.DeliveryHulls
+	}
+	return nil
+}
+
+func (x *ClusterSpec) GetSourceHubs() []*ClusterElement {
+	if x != nil {
+		return x.SourceHubs
+	}
+	return nil
+}
+
+// ApplyClusterTopologyRequest is the DECLARATIVE bulk apply: it makes the player's
+// persisted set EXACTLY these clusters (upsert each, delete any not named).
+type ApplyClusterTopologyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	Clusters      []*ClusterSpec         `protobuf:"bytes,3,rep,name=clusters,proto3" json:"clusters,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyClusterTopologyRequest) Reset() {
+	*x = ApplyClusterTopologyRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[145]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyClusterTopologyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyClusterTopologyRequest) ProtoMessage() {}
+
+func (x *ApplyClusterTopologyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[145]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyClusterTopologyRequest.ProtoReflect.Descriptor instead.
+func (*ApplyClusterTopologyRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{145}
+}
+
+func (x *ApplyClusterTopologyRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *ApplyClusterTopologyRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *ApplyClusterTopologyRequest) GetClusters() []*ClusterSpec {
+	if x != nil {
+		return x.Clusters
+	}
+	return nil
+}
+
+type ApplyClusterTopologyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	ClusterCount  int32                  `protobuf:"varint,2,opt,name=cluster_count,json=clusterCount,proto3" json:"cluster_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyClusterTopologyResponse) Reset() {
+	*x = ApplyClusterTopologyResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[146]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyClusterTopologyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyClusterTopologyResponse) ProtoMessage() {}
+
+func (x *ApplyClusterTopologyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[146]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyClusterTopologyResponse.ProtoReflect.Descriptor instead.
+func (*ApplyClusterTopologyResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{146}
+}
+
+func (x *ApplyClusterTopologyResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ApplyClusterTopologyResponse) GetClusterCount() int32 {
+	if x != nil {
+		return x.ClusterCount
+	}
+	return 0
+}
+
+// AddClusterRequest adds ONE cluster without disturbing the rest (granular create).
+type AddClusterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	Cluster       *ClusterSpec           `protobuf:"bytes,3,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddClusterRequest) Reset() {
+	*x = AddClusterRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[147]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddClusterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddClusterRequest) ProtoMessage() {}
+
+func (x *AddClusterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[147]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddClusterRequest.ProtoReflect.Descriptor instead.
+func (*AddClusterRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{147}
+}
+
+func (x *AddClusterRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *AddClusterRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *AddClusterRequest) GetCluster() *ClusterSpec {
+	if x != nil {
+		return x.Cluster
+	}
+	return nil
+}
+
+type AddClusterResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddClusterResponse) Reset() {
+	*x = AddClusterResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[148]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddClusterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddClusterResponse) ProtoMessage() {}
+
+func (x *AddClusterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[148]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddClusterResponse.ProtoReflect.Descriptor instead.
+func (*AddClusterResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{148}
+}
+
+func (x *AddClusterResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+// RemoveClusterRequest deletes ONE cluster by id (granular, idempotent).
+type RemoveClusterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	ClusterId     string                 `protobuf:"bytes,3,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveClusterRequest) Reset() {
+	*x = RemoveClusterRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[149]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveClusterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveClusterRequest) ProtoMessage() {}
+
+func (x *RemoveClusterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[149]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveClusterRequest.ProtoReflect.Descriptor instead.
+func (*RemoveClusterRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{149}
+}
+
+func (x *RemoveClusterRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *RemoveClusterRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *RemoveClusterRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+type RemoveClusterResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveClusterResponse) Reset() {
+	*x = RemoveClusterResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[150]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveClusterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveClusterResponse) ProtoMessage() {}
+
+func (x *RemoveClusterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[150]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveClusterResponse.ProtoReflect.Descriptor instead.
+func (*RemoveClusterResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{150}
+}
+
+func (x *RemoveClusterResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+// AddClusterElementRequest adds one element to a cluster's named role (warehouse |
+// stocker | delivery-hull | source-hub).
+type AddClusterElementRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	ClusterId     string                 `protobuf:"bytes,3,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	Waypoint      string                 `protobuf:"bytes,5,opt,name=waypoint,proto3" json:"waypoint,omitempty"`
+	ShipSymbol    string                 `protobuf:"bytes,6,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddClusterElementRequest) Reset() {
+	*x = AddClusterElementRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[151]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddClusterElementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddClusterElementRequest) ProtoMessage() {}
+
+func (x *AddClusterElementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[151]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddClusterElementRequest.ProtoReflect.Descriptor instead.
+func (*AddClusterElementRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{151}
+}
+
+func (x *AddClusterElementRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *AddClusterElementRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *AddClusterElementRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *AddClusterElementRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *AddClusterElementRequest) GetWaypoint() string {
+	if x != nil {
+		return x.Waypoint
+	}
+	return ""
+}
+
+func (x *AddClusterElementRequest) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+// RemoveClusterElementRequest drops the element crewed by ship_symbol from a role.
+type RemoveClusterElementRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	ClusterId     string                 `protobuf:"bytes,3,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	ShipSymbol    string                 `protobuf:"bytes,5,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveClusterElementRequest) Reset() {
+	*x = RemoveClusterElementRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[152]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveClusterElementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveClusterElementRequest) ProtoMessage() {}
+
+func (x *RemoveClusterElementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[152]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveClusterElementRequest.ProtoReflect.Descriptor instead.
+func (*RemoveClusterElementRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{152}
+}
+
+func (x *RemoveClusterElementRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *RemoveClusterElementRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *RemoveClusterElementRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *RemoveClusterElementRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *RemoveClusterElementRequest) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+// PlaceClusterElementRequest repositions the element crewed by ship_symbol in a role to
+// waypoint (the parametrized co-location op).
+type PlaceClusterElementRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	ClusterId     string                 `protobuf:"bytes,3,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	ShipSymbol    string                 `protobuf:"bytes,5,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	Waypoint      string                 `protobuf:"bytes,6,opt,name=waypoint,proto3" json:"waypoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlaceClusterElementRequest) Reset() {
+	*x = PlaceClusterElementRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[153]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlaceClusterElementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlaceClusterElementRequest) ProtoMessage() {}
+
+func (x *PlaceClusterElementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[153]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlaceClusterElementRequest.ProtoReflect.Descriptor instead.
+func (*PlaceClusterElementRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{153}
+}
+
+func (x *PlaceClusterElementRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *PlaceClusterElementRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *PlaceClusterElementRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *PlaceClusterElementRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *PlaceClusterElementRequest) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+func (x *PlaceClusterElementRequest) GetWaypoint() string {
+	if x != nil {
+		return x.Waypoint
+	}
+	return ""
+}
+
+// ClusterElementResponse is the shared reply for the granular element ops.
+type ClusterElementResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterElementResponse) Reset() {
+	*x = ClusterElementResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[154]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterElementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterElementResponse) ProtoMessage() {}
+
+func (x *ClusterElementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[154]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterElementResponse.ProtoReflect.Descriptor instead.
+func (*ClusterElementResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{154}
+}
+
+func (x *ClusterElementResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+type ListClustersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListClustersRequest) Reset() {
+	*x = ListClustersRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[155]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListClustersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListClustersRequest) ProtoMessage() {}
+
+func (x *ListClustersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[155]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListClustersRequest.ProtoReflect.Descriptor instead.
+func (*ListClustersRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{155}
+}
+
+func (x *ListClustersRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *ListClustersRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+type ListClustersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Clusters      []*ClusterSpec         `protobuf:"bytes,1,rep,name=clusters,proto3" json:"clusters,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListClustersResponse) Reset() {
+	*x = ListClustersResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[156]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListClustersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListClustersResponse) ProtoMessage() {}
+
+func (x *ListClustersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[156]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListClustersResponse.ProtoReflect.Descriptor instead.
+func (*ListClustersResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{156}
+}
+
+func (x *ListClustersResponse) GetClusters() []*ClusterSpec {
+	if x != nil {
+		return x.Clusters
+	}
+	return nil
+}
+
 var File_pkg_proto_daemon_daemon_proto protoreflect.FileDescriptor
 
 const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
@@ -11447,7 +12295,80 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\bstrategy\x18\x05 \x01(\tR\bstrategy\x12,\n" +
 	"\x12price_ceiling_mult\x18\x06 \x01(\x01R\x10priceCeilingMult\x12\x1d\n" +
 	"\n" +
-	"min_supply\x18\a \x01(\tR\tminSupply2\xd8(\n" +
+	"min_supply\x18\a \x01(\tR\tminSupply\"M\n" +
+	"\x0eClusterElement\x12\x1a\n" +
+	"\bwaypoint\x18\x01 \x01(\tR\bwaypoint\x12\x1f\n" +
+	"\vship_symbol\x18\x02 \x01(\tR\n" +
+	"shipSymbol\"\x81\x02\n" +
+	"\vClusterSpec\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x126\n" +
+	"\n" +
+	"warehouses\x18\x02 \x03(\v2\x16.daemon.ClusterElementR\n" +
+	"warehouses\x122\n" +
+	"\bstockers\x18\x03 \x03(\v2\x16.daemon.ClusterElementR\bstockers\x12=\n" +
+	"\x0edelivery_hulls\x18\x04 \x03(\v2\x16.daemon.ClusterElementR\rdeliveryHulls\x127\n" +
+	"\vsource_hubs\x18\x05 \x03(\v2\x16.daemon.ClusterElementR\n" +
+	"sourceHubs\"\xa4\x01\n" +
+	"\x1bApplyClusterTopologyRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12/\n" +
+	"\bclusters\x18\x03 \x03(\v2\x13.daemon.ClusterSpecR\bclustersB\x0f\n" +
+	"\r_agent_symbol\"[\n" +
+	"\x1cApplyClusterTopologyResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12#\n" +
+	"\rcluster_count\x18\x02 \x01(\x05R\fclusterCount\"\x98\x01\n" +
+	"\x11AddClusterRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12-\n" +
+	"\acluster\x18\x03 \x01(\v2\x13.daemon.ClusterSpecR\aclusterB\x0f\n" +
+	"\r_agent_symbol\",\n" +
+	"\x12AddClusterResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"\x8b\x01\n" +
+	"\x14RemoveClusterRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x03 \x01(\tR\tclusterIdB\x0f\n" +
+	"\r_agent_symbol\"/\n" +
+	"\x15RemoveClusterResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"\xe0\x01\n" +
+	"\x18AddClusterElementRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x03 \x01(\tR\tclusterId\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1a\n" +
+	"\bwaypoint\x18\x05 \x01(\tR\bwaypoint\x12\x1f\n" +
+	"\vship_symbol\x18\x06 \x01(\tR\n" +
+	"shipSymbolB\x0f\n" +
+	"\r_agent_symbol\"\xc7\x01\n" +
+	"\x1bRemoveClusterElementRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x03 \x01(\tR\tclusterId\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1f\n" +
+	"\vship_symbol\x18\x05 \x01(\tR\n" +
+	"shipSymbolB\x0f\n" +
+	"\r_agent_symbol\"\xe2\x01\n" +
+	"\x1aPlaceClusterElementRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x03 \x01(\tR\tclusterId\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1f\n" +
+	"\vship_symbol\x18\x05 \x01(\tR\n" +
+	"shipSymbol\x12\x1a\n" +
+	"\bwaypoint\x18\x06 \x01(\tR\bwaypointB\x0f\n" +
+	"\r_agent_symbol\"0\n" +
+	"\x16ClusterElementResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"k\n" +
+	"\x13ListClustersRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
+	"\r_agent_symbol\"G\n" +
+	"\x14ListClustersResponse\x12/\n" +
+	"\bclusters\x18\x01 \x03(\v2\x13.daemon.ClusterSpecR\bclusters2\xa8-\n" +
 	"\rDaemonService\x12I\n" +
 	"\fNavigateShip\x12\x1b.daemon.NavigateShipRequest\x1a\x1c.daemon.NavigateShipResponse\x12@\n" +
 	"\tRouteShip\x12\x18.daemon.RouteShipRequest\x1a\x19.daemon.RouteShipResponse\x12=\n" +
@@ -11511,7 +12432,15 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x19StartConstructionPipeline\x12(.daemon.StartConstructionPipelineRequest\x1a).daemon.StartConstructionPipelineResponse\x12d\n" +
 	"\x15GetConstructionStatus\x12$.daemon.GetConstructionStatusRequest\x1a%.daemon.GetConstructionStatusResponse\x12m\n" +
 	"\x18StopConstructionPipeline\x12'.daemon.StopConstructionPipelineRequest\x1a(.daemon.StopConstructionPipelineResponse\x12m\n" +
-	"\x18ConstructionGoodOverride\x12'.daemon.ConstructionGoodOverrideRequest\x1a(.daemon.ConstructionGoodOverrideResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
+	"\x18ConstructionGoodOverride\x12'.daemon.ConstructionGoodOverrideRequest\x1a(.daemon.ConstructionGoodOverrideResponse\x12a\n" +
+	"\x14ApplyClusterTopology\x12#.daemon.ApplyClusterTopologyRequest\x1a$.daemon.ApplyClusterTopologyResponse\x12C\n" +
+	"\n" +
+	"AddCluster\x12\x19.daemon.AddClusterRequest\x1a\x1a.daemon.AddClusterResponse\x12L\n" +
+	"\rRemoveCluster\x12\x1c.daemon.RemoveClusterRequest\x1a\x1d.daemon.RemoveClusterResponse\x12U\n" +
+	"\x11AddClusterElement\x12 .daemon.AddClusterElementRequest\x1a\x1e.daemon.ClusterElementResponse\x12[\n" +
+	"\x14RemoveClusterElement\x12#.daemon.RemoveClusterElementRequest\x1a\x1e.daemon.ClusterElementResponse\x12Y\n" +
+	"\x13PlaceClusterElement\x12\".daemon.PlaceClusterElementRequest\x1a\x1e.daemon.ClusterElementResponse\x12I\n" +
+	"\fListClusters\x12\x1b.daemon.ListClustersRequest\x1a\x1c.daemon.ListClustersResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
 
 var (
 	file_pkg_proto_daemon_daemon_proto_rawDescOnce sync.Once
@@ -11525,7 +12454,7 @@ func file_pkg_proto_daemon_daemon_proto_rawDescGZIP() []byte {
 	return file_pkg_proto_daemon_daemon_proto_rawDescData
 }
 
-var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 146)
+var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 160)
 var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*NavigateShipRequest)(nil),                  // 0: daemon.NavigateShipRequest
 	(*NavigateShipResponse)(nil),                 // 1: daemon.NavigateShipResponse
@@ -11670,9 +12599,23 @@ var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*StopConstructionPipelineResponse)(nil),     // 140: daemon.StopConstructionPipelineResponse
 	(*ConstructionGoodOverrideRequest)(nil),      // 141: daemon.ConstructionGoodOverrideRequest
 	(*ConstructionGoodOverrideResponse)(nil),     // 142: daemon.ConstructionGoodOverrideResponse
-	nil,                                          // 143: daemon.ScoutMarketsResponse.AssignmentsEntry
-	nil,                                          // 144: daemon.APIBudgetReport.PurposeCountsEntry
-	nil,                                          // 145: daemon.APIBudgetReport.PurposeSharePctEntry
+	(*ClusterElement)(nil),                       // 143: daemon.ClusterElement
+	(*ClusterSpec)(nil),                          // 144: daemon.ClusterSpec
+	(*ApplyClusterTopologyRequest)(nil),          // 145: daemon.ApplyClusterTopologyRequest
+	(*ApplyClusterTopologyResponse)(nil),         // 146: daemon.ApplyClusterTopologyResponse
+	(*AddClusterRequest)(nil),                    // 147: daemon.AddClusterRequest
+	(*AddClusterResponse)(nil),                   // 148: daemon.AddClusterResponse
+	(*RemoveClusterRequest)(nil),                 // 149: daemon.RemoveClusterRequest
+	(*RemoveClusterResponse)(nil),                // 150: daemon.RemoveClusterResponse
+	(*AddClusterElementRequest)(nil),             // 151: daemon.AddClusterElementRequest
+	(*RemoveClusterElementRequest)(nil),          // 152: daemon.RemoveClusterElementRequest
+	(*PlaceClusterElementRequest)(nil),           // 153: daemon.PlaceClusterElementRequest
+	(*ClusterElementResponse)(nil),               // 154: daemon.ClusterElementResponse
+	(*ListClustersRequest)(nil),                  // 155: daemon.ListClustersRequest
+	(*ListClustersResponse)(nil),                 // 156: daemon.ListClustersResponse
+	nil,                                          // 157: daemon.ScoutMarketsResponse.AssignmentsEntry
+	nil,                                          // 158: daemon.APIBudgetReport.PurposeCountsEntry
+	nil,                                          // 159: daemon.APIBudgetReport.PurposeSharePctEntry
 }
 var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	12,  // 0: daemon.InstallModuleResponse.modules:type_name -> daemon.ShipModuleInfo
@@ -11681,12 +12624,12 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	13,  // 3: daemon.ListShipModulesResponse.feasibility:type_name -> daemon.ModuleFeasibility
 	26,  // 4: daemon.ScoutPostResponse.post:type_name -> daemon.ScoutPost
 	26,  // 5: daemon.ListScoutPostsResponse.posts:type_name -> daemon.ScoutPost
-	143, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
+	157, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
 	54,  // 7: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
 	54,  // 8: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
 	61,  // 9: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
-	144, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
-	145, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
+	158, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
+	159, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
 	65,  // 12: daemon.APIBudgetReport.per_hull:type_name -> daemon.APIBudgetHullStats
 	67,  // 13: daemon.DutyCycleReport.hulls:type_name -> daemon.DutyCycleHullStats
 	66,  // 14: daemon.GetAPIBudgetResponse.current:type_name -> daemon.APIBudgetReport
@@ -11706,134 +12649,155 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	106, // 28: daemon.GasExtractionOperationResponse.ship_routes:type_name -> daemon.ShipRoute
 	136, // 29: daemon.StartConstructionPipelineResponse.materials:type_name -> daemon.ConstructionMaterial
 	136, // 30: daemon.GetConstructionStatusResponse.materials:type_name -> daemon.ConstructionMaterial
-	49,  // 31: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
-	0,   // 32: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
-	2,   // 33: daemon.DaemonService.RouteShip:input_type -> daemon.RouteShipRequest
-	4,   // 34: daemon.DaemonService.DockShip:input_type -> daemon.DockShipRequest
-	6,   // 35: daemon.DaemonService.OrbitShip:input_type -> daemon.OrbitShipRequest
-	8,   // 36: daemon.DaemonService.RefuelShip:input_type -> daemon.RefuelShipRequest
-	10,  // 37: daemon.DaemonService.JumpShip:input_type -> daemon.JumpShipRequest
-	14,  // 38: daemon.DaemonService.InstallModule:input_type -> daemon.InstallModuleRequest
-	16,  // 39: daemon.DaemonService.RemoveModule:input_type -> daemon.RemoveModuleRequest
-	18,  // 40: daemon.DaemonService.ListShipModules:input_type -> daemon.ListShipModulesRequest
-	20,  // 41: daemon.DaemonService.BatchContractWorkflow:input_type -> daemon.BatchContractWorkflowRequest
-	22,  // 42: daemon.DaemonService.ContractFleetCoordinator:input_type -> daemon.ContractFleetCoordinatorRequest
-	24,  // 43: daemon.DaemonService.ScoutTour:input_type -> daemon.ScoutTourRequest
-	47,  // 44: daemon.DaemonService.ScoutMarkets:input_type -> daemon.ScoutMarketsRequest
-	50,  // 45: daemon.DaemonService.AssignScoutingFleet:input_type -> daemon.AssignScoutingFleetRequest
-	27,  // 46: daemon.DaemonService.ScoutPostCoordinator:input_type -> daemon.ScoutPostCoordinatorRequest
-	29,  // 47: daemon.DaemonService.TradeFleetCoordinator:input_type -> daemon.TradeFleetCoordinatorRequest
-	31,  // 48: daemon.DaemonService.SitingCoordinator:input_type -> daemon.SitingCoordinatorRequest
-	33,  // 49: daemon.DaemonService.FleetAutosizerCoordinator:input_type -> daemon.FleetAutosizerCoordinatorRequest
-	35,  // 50: daemon.DaemonService.BootstrapCoordinator:input_type -> daemon.BootstrapCoordinatorRequest
-	37,  // 51: daemon.DaemonService.FrontierExpansionCoordinator:input_type -> daemon.FrontierExpansionCoordinatorRequest
-	39,  // 52: daemon.DaemonService.WorkerRebalancerCoordinator:input_type -> daemon.WorkerRebalancerCoordinatorRequest
-	41,  // 53: daemon.DaemonService.AddScoutPost:input_type -> daemon.AddScoutPostRequest
-	43,  // 54: daemon.DaemonService.RemoveScoutPost:input_type -> daemon.RemoveScoutPostRequest
-	45,  // 55: daemon.DaemonService.ListScoutPosts:input_type -> daemon.ListScoutPostsRequest
-	52,  // 56: daemon.DaemonService.ListContainers:input_type -> daemon.ListContainersRequest
-	55,  // 57: daemon.DaemonService.GetContainer:input_type -> daemon.GetContainerRequest
-	57,  // 58: daemon.DaemonService.StopContainer:input_type -> daemon.StopContainerRequest
-	59,  // 59: daemon.DaemonService.GetContainerLogs:input_type -> daemon.GetContainerLogsRequest
-	62,  // 60: daemon.DaemonService.HealthCheck:input_type -> daemon.HealthCheckRequest
-	64,  // 61: daemon.DaemonService.GetAPIBudget:input_type -> daemon.GetAPIBudgetRequest
-	70,  // 62: daemon.DaemonService.ListShips:input_type -> daemon.ListShipsRequest
-	73,  // 63: daemon.DaemonService.GetShip:input_type -> daemon.GetShipRequest
-	75,  // 64: daemon.DaemonService.RefreshShip:input_type -> daemon.RefreshShipRequest
-	77,  // 65: daemon.DaemonService.ReserveShip:input_type -> daemon.ReserveShipRequest
-	79,  // 66: daemon.DaemonService.ReleaseShip:input_type -> daemon.ReleaseShipRequest
-	81,  // 67: daemon.DaemonService.AssignShipFleet:input_type -> daemon.AssignShipFleetRequest
-	85,  // 68: daemon.DaemonService.UnassignShipFleet:input_type -> daemon.UnassignShipFleetRequest
-	87,  // 69: daemon.DaemonService.ListFleets:input_type -> daemon.ListFleetsRequest
-	83,  // 70: daemon.DaemonService.FleetHub:input_type -> daemon.FleetHubRequest
-	91,  // 71: daemon.DaemonService.ListWaypoints:input_type -> daemon.ListWaypointsRequest
-	93,  // 72: daemon.DaemonService.GetWaypoint:input_type -> daemon.GetWaypointRequest
-	97,  // 73: daemon.DaemonService.PurchaseShip:input_type -> daemon.PurchaseShipRequest
-	99,  // 74: daemon.DaemonService.BatchPurchaseShips:input_type -> daemon.BatchPurchaseShipsRequest
-	101, // 75: daemon.DaemonService.GetShipyardListings:input_type -> daemon.GetShipyardListingsRequest
-	107, // 76: daemon.DaemonService.StartGoodsFactory:input_type -> daemon.StartGoodsFactoryRequest
-	109, // 77: daemon.DaemonService.StopGoodsFactory:input_type -> daemon.StopGoodsFactoryRequest
-	111, // 78: daemon.DaemonService.FactoryWorkerCap:input_type -> daemon.FactoryWorkerCapRequest
-	113, // 79: daemon.DaemonService.GetFactoryStatus:input_type -> daemon.GetFactoryStatusRequest
-	115, // 80: daemon.DaemonService.ScanArbitrageOpportunities:input_type -> daemon.ScanArbitrageOpportunitiesRequest
-	118, // 81: daemon.DaemonService.StartArbitrageCoordinator:input_type -> daemon.StartArbitrageCoordinatorRequest
-	120, // 82: daemon.DaemonService.JettisonCargo:input_type -> daemon.JettisonCargoRequest
-	132, // 83: daemon.DaemonService.GasExtractionOperation:input_type -> daemon.GasExtractionOperationRequest
-	122, // 84: daemon.DaemonService.StartTradeRoute:input_type -> daemon.StartTradeRouteRequest
-	124, // 85: daemon.DaemonService.StartWarehouse:input_type -> daemon.StartWarehouseRequest
-	126, // 86: daemon.DaemonService.StartArbRun:input_type -> daemon.StartArbRunRequest
-	128, // 87: daemon.DaemonService.StartTourRun:input_type -> daemon.StartTourRunRequest
-	130, // 88: daemon.DaemonService.StartStocker:input_type -> daemon.StartStockerRequest
-	134, // 89: daemon.DaemonService.StartConstructionPipeline:input_type -> daemon.StartConstructionPipelineRequest
-	137, // 90: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
-	139, // 91: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
-	141, // 92: daemon.DaemonService.ConstructionGoodOverride:input_type -> daemon.ConstructionGoodOverrideRequest
-	1,   // 93: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
-	3,   // 94: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
-	5,   // 95: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
-	7,   // 96: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
-	9,   // 97: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
-	11,  // 98: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
-	15,  // 99: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
-	17,  // 100: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
-	19,  // 101: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
-	21,  // 102: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
-	23,  // 103: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
-	25,  // 104: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
-	48,  // 105: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
-	51,  // 106: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
-	28,  // 107: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
-	30,  // 108: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
-	32,  // 109: daemon.DaemonService.SitingCoordinator:output_type -> daemon.SitingCoordinatorResponse
-	34,  // 110: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
-	36,  // 111: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
-	38,  // 112: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
-	40,  // 113: daemon.DaemonService.WorkerRebalancerCoordinator:output_type -> daemon.WorkerRebalancerCoordinatorResponse
-	42,  // 114: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
-	44,  // 115: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
-	46,  // 116: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
-	53,  // 117: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
-	56,  // 118: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
-	58,  // 119: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
-	60,  // 120: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
-	63,  // 121: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
-	69,  // 122: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
-	71,  // 123: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
-	74,  // 124: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
-	76,  // 125: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
-	78,  // 126: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
-	80,  // 127: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
-	82,  // 128: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
-	86,  // 129: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
-	90,  // 130: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
-	84,  // 131: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
-	92,  // 132: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
-	94,  // 133: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
-	98,  // 134: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
-	100, // 135: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
-	102, // 136: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
-	108, // 137: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
-	110, // 138: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
-	112, // 139: daemon.DaemonService.FactoryWorkerCap:output_type -> daemon.FactoryWorkerCapResponse
-	114, // 140: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
-	117, // 141: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
-	119, // 142: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
-	121, // 143: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
-	133, // 144: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
-	123, // 145: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
-	125, // 146: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
-	127, // 147: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
-	129, // 148: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
-	131, // 149: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
-	135, // 150: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
-	138, // 151: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
-	140, // 152: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
-	142, // 153: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
-	93,  // [93:154] is the sub-list for method output_type
-	32,  // [32:93] is the sub-list for method input_type
-	32,  // [32:32] is the sub-list for extension type_name
-	32,  // [32:32] is the sub-list for extension extendee
-	0,   // [0:32] is the sub-list for field type_name
+	143, // 31: daemon.ClusterSpec.warehouses:type_name -> daemon.ClusterElement
+	143, // 32: daemon.ClusterSpec.stockers:type_name -> daemon.ClusterElement
+	143, // 33: daemon.ClusterSpec.delivery_hulls:type_name -> daemon.ClusterElement
+	143, // 34: daemon.ClusterSpec.source_hubs:type_name -> daemon.ClusterElement
+	144, // 35: daemon.ApplyClusterTopologyRequest.clusters:type_name -> daemon.ClusterSpec
+	144, // 36: daemon.AddClusterRequest.cluster:type_name -> daemon.ClusterSpec
+	144, // 37: daemon.ListClustersResponse.clusters:type_name -> daemon.ClusterSpec
+	49,  // 38: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
+	0,   // 39: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
+	2,   // 40: daemon.DaemonService.RouteShip:input_type -> daemon.RouteShipRequest
+	4,   // 41: daemon.DaemonService.DockShip:input_type -> daemon.DockShipRequest
+	6,   // 42: daemon.DaemonService.OrbitShip:input_type -> daemon.OrbitShipRequest
+	8,   // 43: daemon.DaemonService.RefuelShip:input_type -> daemon.RefuelShipRequest
+	10,  // 44: daemon.DaemonService.JumpShip:input_type -> daemon.JumpShipRequest
+	14,  // 45: daemon.DaemonService.InstallModule:input_type -> daemon.InstallModuleRequest
+	16,  // 46: daemon.DaemonService.RemoveModule:input_type -> daemon.RemoveModuleRequest
+	18,  // 47: daemon.DaemonService.ListShipModules:input_type -> daemon.ListShipModulesRequest
+	20,  // 48: daemon.DaemonService.BatchContractWorkflow:input_type -> daemon.BatchContractWorkflowRequest
+	22,  // 49: daemon.DaemonService.ContractFleetCoordinator:input_type -> daemon.ContractFleetCoordinatorRequest
+	24,  // 50: daemon.DaemonService.ScoutTour:input_type -> daemon.ScoutTourRequest
+	47,  // 51: daemon.DaemonService.ScoutMarkets:input_type -> daemon.ScoutMarketsRequest
+	50,  // 52: daemon.DaemonService.AssignScoutingFleet:input_type -> daemon.AssignScoutingFleetRequest
+	27,  // 53: daemon.DaemonService.ScoutPostCoordinator:input_type -> daemon.ScoutPostCoordinatorRequest
+	29,  // 54: daemon.DaemonService.TradeFleetCoordinator:input_type -> daemon.TradeFleetCoordinatorRequest
+	31,  // 55: daemon.DaemonService.SitingCoordinator:input_type -> daemon.SitingCoordinatorRequest
+	33,  // 56: daemon.DaemonService.FleetAutosizerCoordinator:input_type -> daemon.FleetAutosizerCoordinatorRequest
+	35,  // 57: daemon.DaemonService.BootstrapCoordinator:input_type -> daemon.BootstrapCoordinatorRequest
+	37,  // 58: daemon.DaemonService.FrontierExpansionCoordinator:input_type -> daemon.FrontierExpansionCoordinatorRequest
+	39,  // 59: daemon.DaemonService.WorkerRebalancerCoordinator:input_type -> daemon.WorkerRebalancerCoordinatorRequest
+	41,  // 60: daemon.DaemonService.AddScoutPost:input_type -> daemon.AddScoutPostRequest
+	43,  // 61: daemon.DaemonService.RemoveScoutPost:input_type -> daemon.RemoveScoutPostRequest
+	45,  // 62: daemon.DaemonService.ListScoutPosts:input_type -> daemon.ListScoutPostsRequest
+	52,  // 63: daemon.DaemonService.ListContainers:input_type -> daemon.ListContainersRequest
+	55,  // 64: daemon.DaemonService.GetContainer:input_type -> daemon.GetContainerRequest
+	57,  // 65: daemon.DaemonService.StopContainer:input_type -> daemon.StopContainerRequest
+	59,  // 66: daemon.DaemonService.GetContainerLogs:input_type -> daemon.GetContainerLogsRequest
+	62,  // 67: daemon.DaemonService.HealthCheck:input_type -> daemon.HealthCheckRequest
+	64,  // 68: daemon.DaemonService.GetAPIBudget:input_type -> daemon.GetAPIBudgetRequest
+	70,  // 69: daemon.DaemonService.ListShips:input_type -> daemon.ListShipsRequest
+	73,  // 70: daemon.DaemonService.GetShip:input_type -> daemon.GetShipRequest
+	75,  // 71: daemon.DaemonService.RefreshShip:input_type -> daemon.RefreshShipRequest
+	77,  // 72: daemon.DaemonService.ReserveShip:input_type -> daemon.ReserveShipRequest
+	79,  // 73: daemon.DaemonService.ReleaseShip:input_type -> daemon.ReleaseShipRequest
+	81,  // 74: daemon.DaemonService.AssignShipFleet:input_type -> daemon.AssignShipFleetRequest
+	85,  // 75: daemon.DaemonService.UnassignShipFleet:input_type -> daemon.UnassignShipFleetRequest
+	87,  // 76: daemon.DaemonService.ListFleets:input_type -> daemon.ListFleetsRequest
+	83,  // 77: daemon.DaemonService.FleetHub:input_type -> daemon.FleetHubRequest
+	91,  // 78: daemon.DaemonService.ListWaypoints:input_type -> daemon.ListWaypointsRequest
+	93,  // 79: daemon.DaemonService.GetWaypoint:input_type -> daemon.GetWaypointRequest
+	97,  // 80: daemon.DaemonService.PurchaseShip:input_type -> daemon.PurchaseShipRequest
+	99,  // 81: daemon.DaemonService.BatchPurchaseShips:input_type -> daemon.BatchPurchaseShipsRequest
+	101, // 82: daemon.DaemonService.GetShipyardListings:input_type -> daemon.GetShipyardListingsRequest
+	107, // 83: daemon.DaemonService.StartGoodsFactory:input_type -> daemon.StartGoodsFactoryRequest
+	109, // 84: daemon.DaemonService.StopGoodsFactory:input_type -> daemon.StopGoodsFactoryRequest
+	111, // 85: daemon.DaemonService.FactoryWorkerCap:input_type -> daemon.FactoryWorkerCapRequest
+	113, // 86: daemon.DaemonService.GetFactoryStatus:input_type -> daemon.GetFactoryStatusRequest
+	115, // 87: daemon.DaemonService.ScanArbitrageOpportunities:input_type -> daemon.ScanArbitrageOpportunitiesRequest
+	118, // 88: daemon.DaemonService.StartArbitrageCoordinator:input_type -> daemon.StartArbitrageCoordinatorRequest
+	120, // 89: daemon.DaemonService.JettisonCargo:input_type -> daemon.JettisonCargoRequest
+	132, // 90: daemon.DaemonService.GasExtractionOperation:input_type -> daemon.GasExtractionOperationRequest
+	122, // 91: daemon.DaemonService.StartTradeRoute:input_type -> daemon.StartTradeRouteRequest
+	124, // 92: daemon.DaemonService.StartWarehouse:input_type -> daemon.StartWarehouseRequest
+	126, // 93: daemon.DaemonService.StartArbRun:input_type -> daemon.StartArbRunRequest
+	128, // 94: daemon.DaemonService.StartTourRun:input_type -> daemon.StartTourRunRequest
+	130, // 95: daemon.DaemonService.StartStocker:input_type -> daemon.StartStockerRequest
+	134, // 96: daemon.DaemonService.StartConstructionPipeline:input_type -> daemon.StartConstructionPipelineRequest
+	137, // 97: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
+	139, // 98: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
+	141, // 99: daemon.DaemonService.ConstructionGoodOverride:input_type -> daemon.ConstructionGoodOverrideRequest
+	145, // 100: daemon.DaemonService.ApplyClusterTopology:input_type -> daemon.ApplyClusterTopologyRequest
+	147, // 101: daemon.DaemonService.AddCluster:input_type -> daemon.AddClusterRequest
+	149, // 102: daemon.DaemonService.RemoveCluster:input_type -> daemon.RemoveClusterRequest
+	151, // 103: daemon.DaemonService.AddClusterElement:input_type -> daemon.AddClusterElementRequest
+	152, // 104: daemon.DaemonService.RemoveClusterElement:input_type -> daemon.RemoveClusterElementRequest
+	153, // 105: daemon.DaemonService.PlaceClusterElement:input_type -> daemon.PlaceClusterElementRequest
+	155, // 106: daemon.DaemonService.ListClusters:input_type -> daemon.ListClustersRequest
+	1,   // 107: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
+	3,   // 108: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
+	5,   // 109: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
+	7,   // 110: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
+	9,   // 111: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
+	11,  // 112: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
+	15,  // 113: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
+	17,  // 114: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
+	19,  // 115: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
+	21,  // 116: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
+	23,  // 117: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
+	25,  // 118: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
+	48,  // 119: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
+	51,  // 120: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
+	28,  // 121: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
+	30,  // 122: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
+	32,  // 123: daemon.DaemonService.SitingCoordinator:output_type -> daemon.SitingCoordinatorResponse
+	34,  // 124: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
+	36,  // 125: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
+	38,  // 126: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
+	40,  // 127: daemon.DaemonService.WorkerRebalancerCoordinator:output_type -> daemon.WorkerRebalancerCoordinatorResponse
+	42,  // 128: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
+	44,  // 129: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
+	46,  // 130: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
+	53,  // 131: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
+	56,  // 132: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
+	58,  // 133: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
+	60,  // 134: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
+	63,  // 135: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
+	69,  // 136: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
+	71,  // 137: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
+	74,  // 138: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
+	76,  // 139: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
+	78,  // 140: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
+	80,  // 141: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
+	82,  // 142: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
+	86,  // 143: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
+	90,  // 144: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
+	84,  // 145: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
+	92,  // 146: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
+	94,  // 147: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
+	98,  // 148: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
+	100, // 149: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
+	102, // 150: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
+	108, // 151: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
+	110, // 152: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
+	112, // 153: daemon.DaemonService.FactoryWorkerCap:output_type -> daemon.FactoryWorkerCapResponse
+	114, // 154: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
+	117, // 155: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
+	119, // 156: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
+	121, // 157: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
+	133, // 158: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
+	123, // 159: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
+	125, // 160: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
+	127, // 161: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
+	129, // 162: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
+	131, // 163: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
+	135, // 164: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
+	138, // 165: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
+	140, // 166: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
+	142, // 167: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
+	146, // 168: daemon.DaemonService.ApplyClusterTopology:output_type -> daemon.ApplyClusterTopologyResponse
+	148, // 169: daemon.DaemonService.AddCluster:output_type -> daemon.AddClusterResponse
+	150, // 170: daemon.DaemonService.RemoveCluster:output_type -> daemon.RemoveClusterResponse
+	154, // 171: daemon.DaemonService.AddClusterElement:output_type -> daemon.ClusterElementResponse
+	154, // 172: daemon.DaemonService.RemoveClusterElement:output_type -> daemon.ClusterElementResponse
+	154, // 173: daemon.DaemonService.PlaceClusterElement:output_type -> daemon.ClusterElementResponse
+	156, // 174: daemon.DaemonService.ListClusters:output_type -> daemon.ListClustersResponse
+	107, // [107:175] is the sub-list for method output_type
+	39,  // [39:107] is the sub-list for method input_type
+	39,  // [39:39] is the sub-list for extension type_name
+	39,  // [39:39] is the sub-list for extension extendee
+	0,   // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_pkg_proto_daemon_daemon_proto_init() }
@@ -11896,13 +12860,20 @@ func file_pkg_proto_daemon_daemon_proto_init() {
 	file_pkg_proto_daemon_daemon_proto_msgTypes[138].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[139].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[141].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[145].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[147].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[149].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[151].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[152].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[153].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[155].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_daemon_daemon_proto_rawDesc), len(file_pkg_proto_daemon_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   146,
+			NumMessages:   160,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

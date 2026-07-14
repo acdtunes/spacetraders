@@ -89,7 +89,7 @@ func TestProduceNodeOnly_GateNode_DeliversRootOutputToConstructionSite_NotSink(t
 	ctx := mfgServices.WithUnifiedGateFill(context.Background(), true)
 	ctx = mfgServices.WithDeliveryTarget(ctx, mfgServices.ConstructionSiteTarget(gateTerminalSiteWP))
 
-	_, err := handler.produceNodeOnly(ctx, hull, rootFabricateNode(), testSystem, 1, "", nil, false, true, false)
+	_, err := handler.produceNodeOnly(ctx, hull, rootFabricateNode(), testSystem, 1, "", nil, false, true)
 	if err != nil {
 		t.Fatalf("gate-node root production must succeed, got %v", err)
 	}
@@ -112,7 +112,7 @@ func TestProduceNodeOnly_ToggleOff_SellsRootOutput_NoConstructionDelivery(t *tes
 	handler, mediator, construction, hull := newGateTerminalFixture(t, "CRAFTY-SINK", 20)
 
 	// No gate stamp: a plain profit-factory run.
-	_, err := handler.produceNodeOnly(context.Background(), hull, rootFabricateNode(), testSystem, 1, "", nil, false, true, false)
+	_, err := handler.produceNodeOnly(context.Background(), hull, rootFabricateNode(), testSystem, 1, "", nil, false, true)
 	if err != nil {
 		t.Fatalf("profit-factory root production must succeed, got %v", err)
 	}

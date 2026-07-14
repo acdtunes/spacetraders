@@ -82,10 +82,6 @@ type TourTrade struct {
 	ExpectedUnitPrice int
 	IsBuy             bool
 	IsDeposit         bool
-	// IsStock marks a BUY tranche that WITHDRAWS factory output from warehouse stock
-	// at cost basis (C1, sp-64je) rather than buying at market. ExpectedUnitPrice is
-	// the recorded basis; the executor withdraws instead of purchasing.
-	IsStock bool
 }
 
 // TourDepositCandidate is one home-warehouse pre-positioning offer the daemon
@@ -100,20 +96,6 @@ type TourDepositCandidate struct {
 	Good            string
 	UnitsWanted     int
 	SyntheticBid    int
-	StorageWaypoint string
-	StorageSystem   string
-}
-
-// TourStockSource is one planner-visible-stock withdrawal offer (C1, sp-64je):
-// factory output stocked in a warehouse at a recorded cost basis that the tour may
-// WITHDRAW at basis instead of buying our own output at the laddered market ask.
-// The buy-side mirror of TourDepositCandidate. UnitsAvailable is the reservable
-// on-hand stock (net of outstanding cross-tour reservations); UnitAsk is the
-// weighted-average cost basis (the flat source price).
-type TourStockSource struct {
-	Good            string
-	UnitsAvailable  int
-	UnitAsk         int
 	StorageWaypoint string
 	StorageSystem   string
 }

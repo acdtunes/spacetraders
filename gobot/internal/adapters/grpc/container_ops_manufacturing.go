@@ -27,7 +27,6 @@ var manufacturingConfigKeys = []string{
 	"chain_pnl_kill_threshold_per_hour",
 	"chain_pnl_window_hours",
 	"chain_pnl_kill_disabled",
-	"planner_stock_disabled",
 	"input_recovery_reattempt_minutes",
 	"anti_cycle_disabled",
 	"rest_window_minutes",
@@ -137,9 +136,6 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	}
 	if s.manufacturingConfig.ChainPnLKillDisabled {
 		config["chain_pnl_kill_disabled"] = true
-	}
-	if s.manufacturingConfig.PlannerStockDisabled {
-		config["planner_stock_disabled"] = true
 	}
 	// sp-r5a6: the input-poison anti-cycle. Only written when the captain set a non-zero recovery
 	// half-life — an unset key defers to the goods_factory build's 194min default (the anti-cycle

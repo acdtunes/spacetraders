@@ -120,13 +120,6 @@ type RunFactoryCoordinatorHandler struct {
 	exportRestMu    sync.Mutex
 	exportRestState map[string]*exportRestEntry
 
-	// plannerStock deposits harvested root output into a co-located warehouse at
-	// cost basis instead of selling it at market (C1, sp-64je). LIVE BY DEFAULT:
-	// the daemon wires it unconditionally and it runs unless the run's
-	// planner_stock_disabled escape hatch is set. nil only in tests / a build that
-	// omits the wiring, in which case output sells as before.
-	plannerStock plannerStockDepositor
-
 	// workerCapProvider resolves the LIVE per-op worker/hull cap from this
 	// container's OWN config each pass (sp-ev0n) — the store the `goods factory
 	// workers` daemon RPC mutates. It is the factory analogue of the contract
@@ -152,12 +145,6 @@ type FactoryWorkerCapProvider interface {
 	// live override is currently set. ok=false (absent, non-positive, or an
 	// unreadable key) tells the caller to keep the launch-resolved cap.
 	WorkerCap(ctx context.Context, containerID string, playerID int) (cap int, ok bool, err error)
-}
-
-// plannerStockDepositor is the factory's view of the planner-visible-stock
-// deposit path (C1, sp-64je). Satisfied by *mfgServices.PlannerStockDepositor.
-type plannerStockDepositor interface {
-	DepositOutput(ctx context.Context, playerID int, shipSymbol, waypoint, good string, units, unitBasis int) (bool, error)
 }
 
 // noWorkTracker remembers one container's last-logged no-work reason and
@@ -225,15 +212,6 @@ func NewRunFactoryCoordinatorHandler(
 // unset the cap is fail-open, which is exactly what every test caller wants.
 func (h *RunFactoryCoordinatorHandler) SetSpendLedger(ledger mfgServices.SpendReservationLedger) {
 	h.productionExecutor.SetSpendLedger(ledger)
-}
-
-// SetPlannerStockDepositor wires the planner-visible-stock deposit path (C1,
-// sp-64je): harvested root output deposits into a co-located warehouse at cost
-// basis instead of selling at market. The feature is LIVE BY DEFAULT — the daemon
-// calls this unconditionally and it runs unless a run's planner_stock_disabled
-// escape hatch is set. Left unset (tests) the output sells at the resale sink.
-func (h *RunFactoryCoordinatorHandler) SetPlannerStockDepositor(dep plannerStockDepositor) {
-	h.plannerStock = dep
 }
 
 // SetPriceHistoryReader wires the trailing-median source for the factory input price
@@ -1599,7 +1577,7 @@ func (h *RunFactoryCoordinatorHandler) runNodeWorker(
 	if hasNeededCargo && deliveryDest != "" {
 		return h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, exec.cmd.PlayerID)
 	}
-	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly, exec.isRootLevel, exec.cmd.PlannerStockDisabled)
+	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly, exec.isRootLevel)
 }
 
 func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n *goods.SupplyChainNode, ship *navigation.Ship) bool {
@@ -1725,7 +1703,6 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	opContext *shared.OperationContext, // Operation context for transaction linking
 	inputsOnly bool, // when true (root level only), the fabricated output is left in factory stock
 	isRootLevel bool, // when true, the terminal product's output is sold at the guard's resale sink (sp-rqwm)
-	plannerStockDisabled bool, // C1 (sp-64je) escape hatch: when true, force the pre-C1 sell-at-market path; LIVE (deposit) by default
 ) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1841,7 +1818,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 		// feeding is inherent (the child nodes already fed this factory), and this leg hands the
 		// finished good to the gate. Keyed on IsUnifiedGateNode (toggle on + a construction-site
 		// target), so a profit factory — and the whole OFF path — falls straight through to the
-		// unchanged planner-stock/resale-sink terminal below (byte-identical). The gate delivery is
+		// unchanged resale-sink terminal below (byte-identical). The gate delivery is
 		// margin-blind by design (Admiral sign-off): the throughput pacing on the output BUY above,
 		// plus the sp-9aoc solvency floor, are the money bounds — never a resale-margin gate.
 		if mfgServices.IsUnifiedGateNode(ctx) {
@@ -1862,32 +1839,9 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 			}, nil
 		}
 
-		// C1 (sp-64je): planner-visible stock, LIVE BY DEFAULT. Unless the escape hatch
-		// is set (and when wired), deposit the harvested output into a co-located
-		// warehouse at cost basis (exportMarket.Price, the factory ask we paid to harvest)
-		// so the tour solver withdraws it at basis instead of buying our own output at
-		// laddered asks. Fails SAFE — any decline or error falls through to the resale
-		// sell below (unchanged behavior).
-		if !plannerStockDisabled && h.plannerStock != nil {
-			deposited, depErr := h.plannerStock.DepositOutput(
-				ctx, playerID, updatedShip.ShipSymbol(), exportMarket.WaypointSymbol, node.Good, quantity, exportMarket.Price,
-			)
-			if depErr != nil {
-				logger.Log("WARN", fmt.Sprintf("planner-stock deposit of %s failed, selling at resale sink instead: %v", node.Good, depErr), map[string]interface{}{
-					"good": node.Good, "quantity": quantity, "basis": exportMarket.Price,
-				})
-			} else if deposited {
-				// Stocked at basis: capital is carried as stock (no market sale), realized
-				// later when a tour withdraws. totalCost keeps the harvest cost (no revenue
-				// offset), so chain P&L still sees the outlay.
-				return &mfgServices.ProductionResult{
-					QuantityAcquired: quantity,
-					TotalCost:        totalCost,
-					WaypointSymbol:   exportMarket.WaypointSymbol,
-				}, nil
-			}
-		}
-
+		// sp-u9xa: warehouses are CONTRACT-ONLY — the C1 (sp-64je) planner-stock deposit is
+		// removed. Fabricated profit-factory output is SOLD at its resale sink (below); it is
+		// never deposited into a warehouse. Gate output is delivered above (unified gate-fill).
 		revenue, sellErr := h.productionExecutor.SellFabricatedOutputAtSink(
 			ctx, updatedShip.ShipSymbol(), node.Good, exportMarket.Price, systemSymbol, playerIDValue, opContext,
 		)
