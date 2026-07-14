@@ -54,6 +54,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -666,7 +667,13 @@ func run(cfg *config.Config) error {
 	// The delivery TERMINAL rides the shared engine: ProduceGood sources the material into the
 	// hauler, DeliverToConstructionSite (wired here via the construction supply API) flies it to
 	// the site and supplies it — no duplicate sourcing/nav logic in the drain.
-	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, nil, apiClient)
+	// Wire an EXPLICIT real clock (sp-vh1s): sp-vh1s made PollForProduction and the gate output-buy
+	// throughput-pacing window clock-driven. Unlike the goods-factory path (which defaults nil→RealClock
+	// inside NewRunFactoryCoordinatorHandler before building its executor), the construction drain builds
+	// its producer directly here, so it must supply the clock itself — otherwise the unified gate-fill
+	// nil-panicked on every construction tick at e.clock.Now(). The constructor also defaults a nil clock
+	// (defense in depth), but the pacing needs a real, monotonic clock wired on the live gate path.
+	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, shared.NewRealClock(), apiClient)
 	constructionExecutor.SetConstructionRepo(api.NewConstructionSiteRepository(apiClient, playerRepo))
 	// The activator is the SURVIVING SupplyMonitor (sp-jav2 kept the subpackage): NO new
 	// activation logic. Built per-player because it bakes in the playerID; the poll-loop-only

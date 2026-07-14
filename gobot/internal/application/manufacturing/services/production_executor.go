@@ -313,6 +313,16 @@ func NewProductionExecutorWithConfig(
 	pollingIntervals []time.Duration,
 	apiClient domainPorts.APIClient,
 ) *ProductionExecutor {
+	// Defense in depth (sp-vh1s): sp-vh1s made PollForProduction and the throughput-pacing window
+	// clock-driven (e.clock.Now() at :984/:1141/:1173). The construction daemon builds this executor
+	// directly with a nil clock (main.go), unlike the factory path which defaults nil→RealClock
+	// upstream in NewRunFactoryCoordinatorHandler. Default it here so NO construction path can
+	// nil-panic on the first e.clock.Now(). The default applies ONLY when nil, so an injected mock
+	// clock (the pacing tests) is always honored and pacing stays deterministic. Mirrors the same
+	// nil-guard precedent in shared.NewLifecycleStateMachine and NewRunConstructionCoordinatorHandler.
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &ProductionExecutor{
 		mediator:         mediator,
 		shipRepo:         shipRepo,
