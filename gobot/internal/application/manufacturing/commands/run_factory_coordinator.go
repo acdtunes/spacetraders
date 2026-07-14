@@ -649,6 +649,15 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"ship_symbols": idleShipSymbols,
 	})
 
+	// Step 3.5: RECLAIM + REDIRECT stray feed cargo (sp-b3ou). An idle hull left holding a
+	// gate-chain INTERMEDIATE — a non-root input anywhere in this run's tree, stranded by an
+	// interrupted feed/supply run — is redirected to DELIVER that good to its consuming factory
+	// as a feed, freeing the hull AND advancing the gate, instead of being left to wedge a fresh
+	// node buy it can never make room for. Only the hulls left for normal production continue
+	// below; the reclaimed ones fed the gate this pass and are released idle at run end. Gate-only
+	// (an OFF run and every profit factory pass straight through, byte-identical to today).
+	idleShips = h.reclaimStrayFeedCargo(ctx, cmd, dependencyTree, idleShips)
+
 	// Step 4: Analyze dependencies for parallel execution
 	parallelLevels := h.dependencyAnalyzer.IdentifyParallelLevels(dependencyTree)
 	speedup := h.dependencyAnalyzer.EstimateParallelSpeedup(parallelLevels)
@@ -674,11 +683,18 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		})
 	}
 
-	// Step 5: Execute production in parallel levels
-	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, relatedGoods, workerCap); err != nil {
-		// Release all ship assignments on error
-		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
-		return fmt.Errorf("parallel production failed: %w", err)
+	// Step 5: Execute production in parallel levels. If every idle hull was reclaimed as stray
+	// feed above (sp-b3ou), there is no clean hull to pool this pass — skip production (the feed
+	// deliveries were the useful work) rather than block a zero-capacity pool forever. The
+	// reclaimed hulls are released idle at run end and produce on the next tick.
+	if len(idleShips) > 0 {
+		if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, relatedGoods, workerCap); err != nil {
+			// Release all ship assignments on error
+			h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
+			return fmt.Errorf("parallel production failed: %w", err)
+		}
+	} else {
+		response.NoWorkReason = "all idle hulls reclaimed as stray feed this pass; freed for retry next tick"
 	}
 
 	// sp-2q2o: executeLevelParallel's sp-vsfn catch-all parks (excludes from
@@ -687,7 +703,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// nothing free. If EVERY node parked this way, the run just completed
 	// clean, fast, and having done nothing; flag it so Handle can back off
 	// instead of the runner re-invoking instantly.
-	if response.NodesTotal > 0 && response.NodesCompleted == 0 {
+	if response.NoWorkReason == "" && response.NodesTotal > 0 && response.NodesCompleted == 0 {
 		response.NoWorkReason = "no nodes completed - every claimable node parked (no claimable in-system hull or worker failure)"
 	}
 
@@ -801,6 +817,136 @@ func unrelatedCargoItems(cargo *shared.Cargo, related map[string]bool) []string 
 		}
 	}
 	return held
+}
+
+// buildFeedConsumerMap walks the run's resolved supply tree and maps every NON-ROOT INPUT good
+// to the good of the node that CONSUMES it (its parent fabricate node). It is the "is this good
+// a reclaimable feed ANYWHERE in the active supply tree" test the reclaim step (sp-b3ou) keys
+// on: a hull holding any key here is holding a gate-chain intermediate the run needs, and can be
+// redirected to that key's consuming factory as a feed. The ROOT output is never a key (it is
+// only ever a parent, never a child), so a hull holding the run's own finished output is not a
+// feed and is left to the gate/sink terminal. A good reachable under two parents keeps the first
+// (recipes are single-consumer within a tree; the guard only makes the walk order-stable).
+func buildFeedConsumerMap(root *goods.SupplyChainNode) map[string]string {
+	consumers := make(map[string]string)
+	if root == nil {
+		return consumers
+	}
+	var walk func(node *goods.SupplyChainNode)
+	walk = func(node *goods.SupplyChainNode) {
+		for _, child := range node.Children {
+			if _, seen := consumers[child.Good]; !seen {
+				consumers[child.Good] = node.Good
+			}
+			walk(child)
+		}
+	}
+	walk(root)
+	return consumers
+}
+
+// firstHeldFeedGood returns the first cargo good the hull holds that is a reclaimable feed — a
+// non-root input present in consumers (so somewhere in the run's tree) other than the run's own
+// target output — together with the good that consumes it. Returns ("", "") when the hull is
+// empty or holds only the root output / goods absent from the tree.
+func firstHeldFeedGood(ship *navigation.Ship, consumers map[string]string, targetGood string) (string, string) {
+	cargo := ship.Cargo()
+	if cargo == nil {
+		return "", ""
+	}
+	for _, item := range cargo.Inventory {
+		if item.Units <= 0 || item.Symbol == targetGood {
+			continue
+		}
+		if consumerGood, ok := consumers[item.Symbol]; ok {
+			return item.Symbol, consumerGood
+		}
+	}
+	return "", ""
+}
+
+// reclaimStrayFeedCargo RECLAIMS + REDIRECTS any idle hull left stranded holding a gate-chain
+// INTERMEDIATE — a non-root input good ANYWHERE in this run's supply tree (e.g. MICROPROCESSORS
+// in an ADVANCED_CIRCUITRY tree), left aboard by an interrupted feed/supply run (daemon restart,
+// container stop, pipeline swap). filterUnrelatedCargo already refuses to skip such a hull (the
+// good IS in the tree), but assigned to a fresh node BUY it only wedges (a full hold it can never
+// free), so the units sit stranded — not fed, not sold, not freed — starving the drain (sp-b3ou).
+//
+// For each such hull it DELIVERS the held intermediate to its consuming factory (the parent
+// node's export/import market, resolved the same way the normal feed legs are — FindExportMarket
+// on the consuming good), which BOTH frees the hull AND advances the gate (no waste, no re-buy).
+// The hull is claimed atomically first (RULINGS #7) and released with the rest of the container's
+// hulls at run end, so it is idle again next tick. Reclaimed hulls are dropped from the returned
+// slice (they fed the gate this pass); a hull holding the ROOT output, or nothing, is returned
+// for normal production, and a good absent from the tree was already skipped upstream by
+// filterUnrelatedCargo (its skip/liquidation path is untouched).
+//
+// Scoped to the unified gate fill: an OFF run and every profit factory stamp nothing and are
+// byte-identical to today. Fails SAFE — a hull whose consuming factory cannot be resolved this
+// pass, or whose claim is lost, is left for the normal path rather than stranded here (never
+// worse than today, RULINGS #1/#4).
+func (h *RunFactoryCoordinatorHandler) reclaimStrayFeedCargo(
+	ctx context.Context,
+	cmd *RunFactoryCoordinatorCommand,
+	root *goods.SupplyChainNode,
+	idleShips []*navigation.Ship,
+) []*navigation.Ship {
+	if !cmd.UnifiedGateFill || len(idleShips) == 0 {
+		return idleShips
+	}
+	consumers := buildFeedConsumerMap(root)
+	if len(consumers) == 0 {
+		return idleShips
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	// A disposable claim ledger for this pass; the strays are released with the rest of the
+	// container's hulls at run end (releaseAllShipAssignments), so nothing here persists.
+	var claimMutex sync.Mutex
+	claimed := make(map[string]bool)
+
+	remaining := make([]*navigation.Ship, 0, len(idleShips))
+	for _, ship := range idleShips {
+		held, consumerGood := firstHeldFeedGood(ship, consumers, cmd.TargetGood)
+		if held == "" {
+			remaining = append(remaining, ship) // empty / root-output hull → normal production
+			continue
+		}
+
+		exportMarket, err := h.marketLocator.FindExportMarket(ctx, consumerGood, cmd.SystemSymbol, cmd.PlayerID)
+		if err != nil || exportMarket == nil || exportMarket.WaypointSymbol == "" {
+			// Cannot resolve the consuming factory this pass (stale/absent market data): leave the
+			// hull for the normal path rather than stranding it here (fail-safe, RULINGS #1).
+			logger.Log("WARNING", fmt.Sprintf("Could not resolve consuming factory for held feed %s (consumer %s) on hull %s - leaving for normal path", held, consumerGood, ship.ShipSymbol()), map[string]interface{}{
+				"ship": ship.ShipSymbol(), "held_good": held, "consumer_good": consumerGood,
+			})
+			remaining = append(remaining, ship)
+			continue
+		}
+
+		if !h.claimShipForFactory(ctx, cmd.ContainerID, ship, claimed, &claimMutex) {
+			// Grabbed by another coordinator since discovery — skip cleanly, retried next tick.
+			continue
+		}
+
+		logger.Log("INFO", fmt.Sprintf(
+			"Reclaiming idle hull holding gate-chain intermediate - redirecting as feed: ship=%s held=%s -> consuming factory for %s at %s reason=reclaim_feed_cargo",
+			ship.ShipSymbol(), held, consumerGood, exportMarket.WaypointSymbol,
+		), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "held_good": held, "consumer_good": consumerGood,
+			"destination": exportMarket.WaypointSymbol, "reason": "reclaim_feed_cargo",
+		})
+
+		if _, err := h.deliverExistingCargo(ctx, ship, held, exportMarket.WaypointSymbol, cmd.PlayerID); err != nil {
+			// Delivery failed (nav/market transient): the hull stays claimed and is released at run
+			// end, so the next tick re-discovers it and retries — never failed, never stranded here.
+			logger.Log("WARNING", fmt.Sprintf("Reclaim-redirect of %s via %s failed (hull freed at run end, retried next tick): %v", held, ship.ShipSymbol(), err), map[string]interface{}{
+				"ship": ship.ShipSymbol(), "held_good": held, "error": err.Error(),
+			})
+		}
+		// Redirected (fed) this pass; excluded from node production. Released idle at run end.
+	}
+	return remaining
 }
 
 // waitForIdleHaulers polls for idle light haulers, blocking until at least one
