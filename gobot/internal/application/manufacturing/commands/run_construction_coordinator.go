@@ -407,6 +407,13 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
 		produceCtx = mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))
 	}
+	// sp-to2v — the fabrication-efficiency feeding policy for the drain's per-material production
+	// (balanced-to-limiting input feeding, saturation-capped tranches, taproot-first, feed-responsive-
+	// only). Same executor delivery policy a goods factory runs; OFF (the default) stamps nothing →
+	// greedy byte-identical feeding.
+	if cmd.FabricationEfficiency {
+		produceCtx = mfgServices.WithFeedingPolicy(produceCtx, cmd.FeedSaturationMaxUnits, cmd.FeedSaturationMinUnits, cmd.FeedNonResponsiveGoods, false)
+	}
 	result, err := h.producer.ProduceGood(produceCtx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
 	if err != nil {
 		// A hard sourcing error on the remainder must not nuke on-hand progress already recorded:

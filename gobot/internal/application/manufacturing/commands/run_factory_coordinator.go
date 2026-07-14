@@ -459,6 +459,16 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// keeps prefer-buy, byte-identical to today; the goods_factory launch build defaults it to smart.
 	ctx = mfgServices.WithProductionStrategy(ctx, cmd.ProductionStrategy)
 
+	// sp-to2v — the fabrication-efficiency feeding policy (balanced-to-limiting input feeding,
+	// saturation-capped delivery tranches, taproot-first ordering, feed-responsive-only). It is executor
+	// DELIVERY policy applied wherever fabricateGood feeds a node's inputs, so it is stamped in the COMMON
+	// path — it governs both profit factories AND the factory-launched gate fill below. Same
+	// ctx-not-struct-field singleton-executor race reasoning as the sibling configs. OFF (the default)
+	// stamps nothing → greedy byte-identical feeding for every node.
+	if cmd.FabricationEfficiency {
+		ctx = mfgServices.WithFeedingPolicy(ctx, cmd.FeedSaturationMaxUnits, cmd.FeedSaturationMinUnits, cmd.FeedNonResponsiveGoods, false)
+	}
+
 	// sp-vh1s — the ONE gate-fill stamp. When this run is a unified gate fill (toggle on AND a
 	// construction-site target), stamp the run context ONCE here so — because ctx threads BY VALUE
 	// through the whole recursive production chain — every node reads it: IsUnifiedGateNode is true

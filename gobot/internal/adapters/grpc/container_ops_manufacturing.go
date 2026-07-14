@@ -42,6 +42,12 @@ var manufacturingConfigKeys = []string{
 	"gate_output_buy_rate_multiple",
 	"gate_output_per_lot_multiple",
 	"gate_output_pacing_disabled",
+	// sp-to2v: the fabrication-efficiency feeding policy toggle + coefficients. Cleared+reinjected from
+	// config.yaml on every build (sp-ts82) so flipping the toggle off reverts a recovered coordinator.
+	"fabrication_efficiency",
+	"feed_saturation_max_units",
+	"feed_saturation_min_units",
+	"feed_non_responsive_goods",
 	// sp-ev0n: the GLOBAL worker-cap default derived from [manufacturing.siting]
 	// workers_per_chain. Cleared+reinjected from config.yaml on every build (sp-ts82) so a
 	// retune reaches a recovered coordinator. NOTE the per-op live override key `worker_cap`
@@ -177,6 +183,24 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	if s.manufacturingConfig.GateOutputPacingDisabled {
 		config["gate_output_pacing_disabled"] = true
 	}
+	// sp-to2v: the fabrication-efficiency feeding policy. The toggle is written only when true, so
+	// absent/false keeps the greedy byte-identical feeding; the coefficients and the non-responsive
+	// override are written only when the captain set them (an unset key defers to the executor's
+	// 200/25 saturation-window and the verified default non-responsive set, RULINGS #5). The clear in
+	// resolveManufacturingConfig makes flipping the toggle back off take effect on a recovered
+	// coordinator (sp-ts82).
+	if s.manufacturingConfig.FabricationEfficiency {
+		config["fabrication_efficiency"] = true
+	}
+	if s.manufacturingConfig.FeedSaturationMaxUnits != 0 {
+		config["feed_saturation_max_units"] = s.manufacturingConfig.FeedSaturationMaxUnits
+	}
+	if s.manufacturingConfig.FeedSaturationMinUnits != 0 {
+		config["feed_saturation_min_units"] = s.manufacturingConfig.FeedSaturationMinUnits
+	}
+	if len(s.manufacturingConfig.FeedNonResponsiveGoods) > 0 {
+		config["feed_non_responsive_goods"] = s.manufacturingConfig.FeedNonResponsiveGoods
+	}
 	// sp-jav2 / FACTORY_DOCTRINE X1: the fabricate depth cap. Only written when the captain set a
 	// non-zero depth — an unset key defers to the resolver's depth-3 default (sp-yfzi; the cap runs
 	// ON in production without the captain naming it, a protective default that only redirects an
@@ -220,7 +244,27 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 // drain to OFF. Absent/false injects nothing → byte-identical to today.
 func (s *DaemonServer) resolveConstructionUnifiedGateFill(config map[string]interface{}) {
 	delete(config, "unified_gate_fill")
+	delete(config, "fabrication_efficiency")
+	delete(config, "feed_saturation_max_units")
+	delete(config, "feed_saturation_min_units")
+	delete(config, "feed_non_responsive_goods")
 	if s.manufacturingConfig.UnifiedGateFill {
 		config["unified_gate_fill"] = true
+	}
+	// sp-to2v: the drain sources gate materials directly on the shared executor, so it gets the SAME
+	// [manufacturing] feeding-efficiency policy (toggle + saturation coefficients + non-responsive set)
+	// as a goods factory, resolved fresh each build so a config edit + restart flips a recovered drain
+	// (sp-ts82). Absent/false/0 injects nothing → the greedy byte-identical feeding.
+	if s.manufacturingConfig.FabricationEfficiency {
+		config["fabrication_efficiency"] = true
+	}
+	if s.manufacturingConfig.FeedSaturationMaxUnits != 0 {
+		config["feed_saturation_max_units"] = s.manufacturingConfig.FeedSaturationMaxUnits
+	}
+	if s.manufacturingConfig.FeedSaturationMinUnits != 0 {
+		config["feed_saturation_min_units"] = s.manufacturingConfig.FeedSaturationMinUnits
+	}
+	if len(s.manufacturingConfig.FeedNonResponsiveGoods) > 0 {
+		config["feed_non_responsive_goods"] = s.manufacturingConfig.FeedNonResponsiveGoods
 	}
 }

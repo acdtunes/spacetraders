@@ -36,6 +36,18 @@ type RunConstructionCoordinatorCommand struct {
 	// DeliveryTarget) so the output-buy is throughput-paced and lane B's per-node gates go margin-blind.
 	// Fed from ManufacturingConfig.UnifiedGateFill.
 	UnifiedGateFill bool
+	// FabricationEfficiency turns on the sp-to2v feeding-efficiency policy for the drain's per-material
+	// production (balanced-to-limiting input feeding, saturation-capped tranches, taproot-first, and
+	// buy-or-skip for non-responsive goods), stamped on the produce ctx (WithFeedingPolicy). OFF (the
+	// default) leaves the greedy byte-identical feeding. Fed from fabrication_efficiency.
+	FabricationEfficiency bool
+	// FeedSaturationMaxUnits / FeedSaturationMinUnits / FeedNonResponsiveGoods are the sp-to2v feeding
+	// knobs: the saturation-window bounds (0/absent → 200/25) and the non-responsive OUTPUT-good set
+	// that is BUY-OR-SKIPed (nil/empty → the verified {EQUIPMENT,LAB_INSTRUMENTS,FOOD,MEDICINE}). Fed
+	// from feed_saturation_max_units / feed_saturation_min_units / feed_non_responsive_goods.
+	FeedSaturationMaxUnits int
+	FeedSaturationMinUnits int
+	FeedNonResponsiveGoods []string
 }
 
 // RunConstructionCoordinatorResponse reports the outcome of the last drain tick.

@@ -920,6 +920,12 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		// scarcity-gated tree for every gate material and marks the run a gate node (the drain stamps
 		// WithUnifiedGateFill + a construction-site DeliveryTarget derived from the task's own site).
 		UnifiedGateFill: cfg.OptionalBool("unified_gate_fill"),
+		// sp-to2v: the SAME feeding-efficiency policy the goods factory runs, threaded into the drain via
+		// resolveConstructionUnifiedGateFill. absent/false/0 → greedy byte-identical feeding.
+		FabricationEfficiency:  cfg.OptionalBool("fabrication_efficiency"),
+		FeedSaturationMaxUnits: cfg.OptionalInt("feed_saturation_max_units", 0),
+		FeedSaturationMinUnits: cfg.OptionalInt("feed_saturation_min_units", 0),
+		FeedNonResponsiveGoods: cfg.OptionalStringSlice("feed_non_responsive_goods"),
 	}
 }
 
@@ -1001,6 +1007,13 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		GateOutputBuyRateMultiple: cfg.OptionalFloat("gate_output_buy_rate_multiple", 0),
 		GateOutputPerLotMultiple:  cfg.OptionalFloat("gate_output_per_lot_multiple", 0),
 		GateOutputPacingDisabled:  cfg.OptionalBool("gate_output_pacing_disabled"),
+		// sp-to2v: the fabrication-efficiency feeding policy (toggle + saturation-window coefficients +
+		// the non-responsive-goods override). absent/false/0 → the whole layer dark and the coefficients
+		// resolve to their 200/25 defaults + the verified default non-responsive set at the point of use.
+		FabricationEfficiency:  cfg.OptionalBool("fabrication_efficiency"),
+		FeedSaturationMaxUnits: cfg.OptionalInt("feed_saturation_max_units", 0),
+		FeedSaturationMinUnits: cfg.OptionalInt("feed_saturation_min_units", 0),
+		FeedNonResponsiveGoods: cfg.OptionalStringSlice("feed_non_responsive_goods"),
 		// sp-ev0n: the live-tunable concurrent-hull cap. worker_cap is the PER-OP override the
 		// `goods factory workers` RPC writes live; it is NOT among the config.yaml-reinjected
 		// manufacturingConfigKeys, so a live value persists verbatim across a restart (RULINGS

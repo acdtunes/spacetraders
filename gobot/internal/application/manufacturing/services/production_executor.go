@@ -506,6 +506,7 @@ func (e *ProductionExecutor) buyGood(
 
 	// tripTarget = the max units of node.Good to acquire THIS trip.
 	tripTarget := marketResult.TradeVolume // single-tranche default (factory input path)
+	loopFill := fillMode                   // buy multiple tranches up to tripTarget (vs exactly one)
 	if fillMode {
 		if fraction <= 0 {
 			fraction = defaultHullFillFraction
@@ -514,6 +515,20 @@ func (e *ProductionExecutor) buyGood(
 		if billRemaining > 0 && billRemaining < tripTarget {
 			tripTarget = billRemaining // never over-buy past the outstanding bill
 		}
+	}
+
+	// sp-to2v — balanced+saturation FEED CAP. When the fabrication-efficiency feeding planner has
+	// sized this input's delivery to the limiting (scarcest) input's flow — capped at the saturation
+	// window — it stamps that cap on ctx. It only ever LOWERS the target (an ample input is pulled
+	// down toward the scarce one's flow, never past saturation), and it turns the multi-tranche loop
+	// ON so a small market trade volume still accumulates up to the balanced tranche rather than
+	// stopping at one ~tv slice. Every non-feeding caller (the OFF fleet, every pre-bead test) leaves
+	// it unstamped → loopFill/tripTarget are byte-identical to today.
+	if feedCap, capped := inputFeedCapFromContext(ctx); capped {
+		if feedCap < tripTarget {
+			tripTarget = feedCap
+		}
+		loopFill = true
 	}
 
 	acquired := 0
@@ -538,7 +553,7 @@ func (e *ProductionExecutor) buyGood(
 		// tranche-by-tranche (sp-2me2). An unreadable live ask fails CLOSED — stop the loop and
 		// deliver what is aboard, never buy blind (RULINGS #4).
 		ask := marketResult.Price
-		if fillMode {
+		if loopFill {
 			liveAsk, ok := e.liveAsk(ctx, marketResult.WaypointSymbol, node.Good, playerID)
 			if !ok {
 				logger.Log("WARNING", fmt.Sprintf("Stopping hull-fill of %s at %s after %d units — could not re-read the live ask for the per-tranche price check (fail-closed); delivering what is aboard", node.Good, marketResult.WaypointSymbol, acquired), map[string]interface{}{
@@ -630,7 +645,7 @@ func (e *ProductionExecutor) buyGood(
 			"market":     marketResult.WaypointSymbol,
 		})
 
-		if !fillMode {
+		if !loopFill {
 			break // single-tranche (goods-factory input) path: exactly one buy, unchanged
 		}
 		if response.UnitsAdded <= 0 {
@@ -845,16 +860,50 @@ func (e *ProductionExecutor) fabricateGood(
 		}, nil
 	}
 
+	// sp-to2v — FABRICATION EFFICIENCY feeding policy. Two decisions layer in here when the policy is
+	// engaged; unstamped/OFF the greedy byte-identical loop below runs unchanged.
+	//   #4b FEED-RESPONSIVE-ONLY: if this node's output good does not respond to feeding
+	//       (EQUIPMENT/LAB_INSTRUMENTS/FOOD/MEDICINE — verified), hauling inputs to feed it is wasted
+	//       hull-hours, so BUY-OR-SKIP. Step 0 already bought it if the factory was abundantly stocked;
+	//       reaching here means not-stocked, so skip (zero-spend) rather than feed a non-responder.
+	//   #2/#3/#4a BALANCED-TO-LIMITING, SATURATION-CAPPED, TAPROOT-FIRST: order the inputs scarcest
+	//       (taproot) first and cap each delivery at the balanced tranche sized to the limiting input,
+	//       so an ample input is not greedily piled on while the scarce one starves (the ~4x lever).
+	feedCfg, feedEngaged := feedingPolicyEngaged(ctx)
+	if feedEngaged && len(node.Children) > 0 && !feedCfg.isFeedResponsive(node.Good) {
+		logger.Log("INFO", fmt.Sprintf("Feed-responsive gate: %s does not respond to feeding — buy-or-skip, not hauling inputs (sp-to2v)", node.Good), map[string]interface{}{
+			"good": node.Good, "factory": factoryMarket.WaypointSymbol,
+			"action": "feed_skipped", "reason": "non_responsive_good",
+		})
+		return &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: factoryMarket.WaypointSymbol}, nil
+	}
+
 	// Step 1: Recursively produce all required inputs
 	logger.Log("INFO", fmt.Sprintf("Starting fabrication of %s (requires %d inputs)", node.Good, len(node.Children)), map[string]interface{}{
 		"good":        node.Good,
 		"input_count": len(node.Children),
 	})
 
-	for _, child := range node.Children {
+	// Taproot-first order + the balanced+saturation per-input feed cap when the policy is engaged.
+	// OFF: childOrder is node.Children in declared order and feedCap is 0 → the loop below is
+	// byte-identical to today (childCtx == ctx, no cap).
+	childOrder := node.Children
+	feedCap := 0
+	if feedEngaged && len(node.Children) > 0 {
+		childOrder, feedCap = e.planBalancedFeed(ctx, node, systemSymbol, playerID, feedCfg)
+	}
+
+	for _, child := range childOrder {
 		// Children are inputs that must be harvested and delivered to THIS factory —
 		// inputs-only never suppresses their acquisition, so force it off here.
-		result, err := e.ProduceGood(ctx, ship, child, systemSymbol, playerID, opContext, false)
+		childCtx := ctx
+		if feedCap > 0 {
+			// A FRESH per-child stamp: the cap applies to THIS child's sourcing/harvest only; the
+			// child's own feeding planner re-stamps a fresh cap for its subtree, so a parent's cap
+			// never leaks onto a grandchild (sp-to2v).
+			childCtx = WithInputFeedCap(ctx, feedCap)
+		}
+		result, err := e.ProduceGood(childCtx, ship, child, systemSymbol, playerID, opContext, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to produce input %s: %w", child.Good, err)
 		}
@@ -1246,6 +1295,15 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 			})
 			return 0, 0, nil
 		}
+	}
+
+	// sp-to2v: a fabricated INPUT harvested to FEED a parent factory is capped to the balanced tranche
+	// the parent's feeding planner sized — the same limiting-input balance a raw input buy honors, so
+	// an ample intermediate is not over-harvested past the scarce sibling's flow. The ROOT output (no
+	// parent stamps a feed cap) is never feed-capped. Additive with the gate throughput-pace above:
+	// both are upper bounds, the lesser binds.
+	if feedCap, capped := inputFeedCapFromContext(ctx); capped && feedCap < perTrancheCap {
+		perTrancheCap = feedCap
 	}
 
 	purchaseQty := min(availableSpace, perTrancheCap)

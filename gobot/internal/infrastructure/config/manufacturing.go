@@ -175,6 +175,25 @@ type ManufacturingConfig struct {
 	// keeps the pacing on at its default coefficient.
 	GateOutputPacingDisabled bool `mapstructure:"gate_output_pacing_disabled"`
 
+	// FabricationEfficiency is the sp-to2v master toggle for the executor feeding-efficiency policy —
+	// balanced-to-limiting input feeding (the ~4x lever), saturation-capped delivery tranches,
+	// taproot-first ordering, and buy-or-skip for feed-unresponsive goods. It is executor DELIVERY
+	// policy, so ON it applies to profit factories AND gate fills alike; absent/false leaves the greedy
+	// byte-identical feeding (the whole layer dark). Threaded into both the factory and construction
+	// coordinators. HIGH confidence on the mechanics, MEDIUM on the coefficients (tuned live).
+	FabricationEfficiency bool `mapstructure:"fabrication_efficiency"`
+
+	// FeedSaturationMaxUnits / FeedSaturationMinUnits are the sp-to2v per-input delivery saturation
+	// window: a tranche is capped at max (Δactivity rolls off past ~200u) and never sized below min
+	// (<25u moves activity nothing). 0/absent → 200 / 25 at the point of use (RULINGS #5).
+	FeedSaturationMaxUnits int `mapstructure:"feed_saturation_max_units"`
+	FeedSaturationMinUnits int `mapstructure:"feed_saturation_min_units"`
+
+	// FeedNonResponsiveGoods REPLACES the default set of OUTPUT goods whose activity does not respond to
+	// feeding and are therefore BUY-OR-SKIPed (sp-to2v #4). Nil/empty keeps the verified default
+	// {EQUIPMENT,LAB_INSTRUMENTS,FOOD,MEDICINE}; a list lets the analyst retune it live.
+	FeedNonResponsiveGoods []string `mapstructure:"feed_non_responsive_goods"`
+
 	// Siting nests the factory SITING coordinator's knobs (sp-vdld) under
 	// [manufacturing.siting] — the standing brain that scans/scores/sizes/launches
 	// factory chains. Injected into the siting_coordinator container's launch config

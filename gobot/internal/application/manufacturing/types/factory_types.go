@@ -173,6 +173,23 @@ type RunFactoryCoordinatorCommand struct {
 	// (RULINGS #5): true reverts a gate output-buy to the plain min(cargo space, tv) cap. Fed from
 	// gate_output_pacing_disabled.
 	GateOutputPacingDisabled bool
+	// FabricationEfficiency turns on the sp-to2v feeding-efficiency policy for THIS run: balanced-to-
+	// limiting input feeding, saturation-capped delivery tranches, taproot-first ordering, and
+	// buy-or-skip for feed-unresponsive goods (WithFeedingPolicy, stamped in executeCoordination). It
+	// is executor DELIVERY policy, so it applies to profit factories AND gate fills alike. 0/false
+	// leaves the greedy byte-identical feeding — the whole layer dark. Fed from fabrication_efficiency.
+	FabricationEfficiency bool
+	// FeedSaturationMaxUnits caps a single per-input delivery tranche this window (sp-to2v #3):
+	// Δactivity rolls off past ~200u. 0/absent → the 200 default at the point of use. Fed from
+	// feed_saturation_max_units.
+	FeedSaturationMaxUnits int
+	// FeedSaturationMinUnits is the min-effective per-input delivery (<25u moves activity nothing), so a
+	// balanced tranche is never sized below it. 0/absent → 25 default. Fed from feed_saturation_min_units.
+	FeedSaturationMinUnits int
+	// FeedNonResponsiveGoods REPLACES the default set of OUTPUT goods that do NOT respond to feeding and
+	// are therefore BUY-OR-SKIPed (sp-to2v #4). Nil/empty keeps the verified default
+	// {EQUIPMENT,LAB_INSTRUMENTS,FOOD,MEDICINE}. Fed from feed_non_responsive_goods.
+	FeedNonResponsiveGoods []string
 	// WorkerCap bounds how many hulls this chain runs CONCURRENTLY per production pass
 	// (sp-ev0n): the coordinator never fans out more than WorkerCap node workers at once,
 	// so a captain caps a factory's hull draw live without a daemon restart. This is the
