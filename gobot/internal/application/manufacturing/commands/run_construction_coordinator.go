@@ -967,8 +967,20 @@ func (h *RunConstructionCoordinatorHandler) enqueueReplenishmentIfNeeded(ctx con
 		logger.Log("WARNING", fmt.Sprintf("Construction refill: could not ready replenishment task for %s: %v", task.Good(), err), nil)
 		return
 	}
-	if err := h.taskRepo.Create(ctx, next); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Construction refill: could not enqueue replenishment task for %s: %v", task.Good(), err), nil)
+	// Fresh context, not the passed ctx: ctx is the supply task's (cancelled when the delivery ends);
+	// the replenishment must outlive it or a timed-out create silently kills the material's task chain.
+	var createErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		createCtx, createCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		createErr = h.taskRepo.Create(createCtx, next)
+		createCancel()
+		if createErr == nil {
+			break
+		}
+		logger.Log("WARNING", fmt.Sprintf("Construction refill: enqueue replenishment for %s attempt %d/3 failed: %v", task.Good(), attempt, createErr), nil)
+	}
+	if createErr != nil {
+		logger.Log("ERROR", fmt.Sprintf("Construction refill: could not enqueue replenishment task for %s after 3 attempts — chain stalled until re-plan: %v", task.Good(), createErr), nil)
 		return
 	}
 	logger.Log("INFO", fmt.Sprintf("Construction refill: queued next %s delivery (%d remaining)", task.Good(), remaining), map[string]interface{}{
