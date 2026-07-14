@@ -93,6 +93,13 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 	// repo as the daemon's shared goodsResolver, so the planner and drain agree on feasibility.
 	planner.SetTreeResolver(services.NewSupplyChainResolver(goods.ExportToImportMap, marketRepo))
 
+	// sp-yexq: thread the SAME [manufacturing] unified_gate_fill toggle the construction coordinator
+	// carries (cmd.UnifiedGateFill) into the pipeline's ADMISSION floor. When on, a pipeline with no
+	// explicit operator --min-supply defaults its floor to SCARCE, so a gate material whose only source
+	// is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) is admitted+promoted automatically — no manual flag. OFF
+	// (or an explicit --min-supply / per-good override) is byte-identical to before.
+	planner.SetUnifiedGateFill(s.manufacturingConfig.UnifiedGateFill)
+
 	// Start or resume pipeline
 	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol, minSupply, goodOverrides)
 	if err != nil {

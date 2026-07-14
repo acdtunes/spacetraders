@@ -42,6 +42,14 @@ type ConstructionPipelinePlanner struct {
 	// SupplyChainResolver the drain runs (sp-yfzi). Optional (wired by SetTreeResolver); nil falls
 	// back to the pre-sp-3bza "every immediate input buyable at MODERATE+" gate.
 	treeResolver FabricationTreeResolver
+	// unifiedGateFill is the sp-yexq admission-floor toggle (wired by SetUnifiedGateFill, fed from
+	// ManufacturingConfig.UnifiedGateFill — the SAME toggle the construction coordinator carries as
+	// cmd.UnifiedGateFill). When true, a pipeline with NO explicit operator --min-supply defaults its
+	// EXPORT admission floor to SCARCE (margin-blind admission), so a gate material whose only source
+	// is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) is admitted+promoted automatically — no manual flag. The
+	// zero value (false — a planner built without the setter, and every in-package test that never
+	// calls it) keeps the MODERATE default, byte-identical to before the toggle.
+	unifiedGateFill bool
 }
 
 // NewConstructionPipelinePlanner creates a new construction pipeline planner.
@@ -78,6 +86,32 @@ func NewConstructionPipelinePlanner(
 // constructor and its in-package tests unchanged (nil → fallback → byte-identical).
 func (p *ConstructionPipelinePlanner) SetTreeResolver(resolver FabricationTreeResolver) {
 	p.treeResolver = resolver
+}
+
+// SetUnifiedGateFill wires the sp-yexq unified gate-fill admission-floor toggle (fed from
+// ManufacturingConfig.UnifiedGateFill via the daemon — the SAME toggle the construction coordinator
+// carries as cmd.UnifiedGateFill). When enabled, a pipeline with no explicit operator --min-supply
+// defaults its EXPORT admission floor to SCARCE, so scarce gate materials are admitted and promoted
+// automatically (no manual flag); an explicit --min-supply / per-good override still wins. A setter
+// (not a constructor arg) keeps the existing planner constructor and its in-package tests unchanged
+// (unset → false → MODERATE default → byte-identical to before the toggle).
+func (p *ConstructionPipelinePlanner) SetUnifiedGateFill(enabled bool) {
+	p.unifiedGateFill = enabled
+}
+
+// admissionFloor resolves the pipeline's EXPORT admission floor (sp-yexq). Under unified gate-fill a
+// pipeline with NO explicit operator floor (empty minSupply) defaults to SCARCE — margin-blind
+// admission — so a gate material whose only source is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) is
+// admitted and promoted automatically, no manual --min-supply. An explicit floor (non-empty
+// minSupply) always wins, and OFF (the zero value) returns minSupply unchanged → the MODERATE default
+// FindConstructionSource applies is byte-identical to before the toggle. This floor is persisted on
+// the pipeline, so the deferred-material recovery loop (task_activator.pipelineMinSupply) reads the
+// SAME SCARCE default — one source of truth for planning AND activation.
+func (p *ConstructionPipelinePlanner) admissionFloor(minSupply string) string {
+	if minSupply == "" && p.unifiedGateFill {
+		return string(manufacturing.SupplyLevelScarce)
+	}
+	return minSupply
 }
 
 // StartOrResumeResult contains the result of starting or resuming a pipeline.
@@ -154,6 +188,17 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 			needsUpdate := false
 			if minSupply != "" && minSupply != existingPipeline.MinSupply() {
 				existingPipeline.SetMinSupply(minSupply)
+				needsUpdate = true
+			}
+			// sp-yexq: under unified gate-fill, a resumed pipeline that STILL has no explicit floor
+			// (empty — the MODERATE default; e.g. a gate pipeline created before this fix, now stuck
+			// with its SCARCE material deferred) is upgraded to the SCARCE admission default so the
+			// deferred-material recovery loop promotes it automatically, no manual --min-supply. Only
+			// FILLS an empty floor: an explicit operator floor (set this call above, or persisted
+			// earlier) is never clobbered, so an explicit override still wins on resume. OFF (the zero
+			// value) never fires → byte-identical resume.
+			if p.unifiedGateFill && existingPipeline.MinSupply() == "" {
+				existingPipeline.SetMinSupply(string(manufacturing.SupplyLevelScarce))
 				needsUpdate = true
 			}
 			// sp-sdyo: a resumed launch that supplies per-good overrides updates the persisted map
@@ -236,10 +281,14 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 
 	// 4. Create pipeline
 	pipeline := manufacturing.NewConstructionPipeline(constructionSite, playerID, supplyChainDepth, maxWorkers)
+	// sp-yexq: resolve the admission floor ONCE — unified gate-fill defaults an unset floor to SCARCE
+	// so scarce gate materials are admitted (and, once persisted, promoted) automatically; explicit
+	// and OFF are unchanged (admissionFloor is a no-op for both).
+	effectiveMinSupply := p.admissionFloor(minSupply)
 	// Persist the floor on the entity itself (sp-j2hq), not just pass it
 	// transiently to planMaterial below - a material that defers during THIS
 	// pass is recovered later by reading the floor back off the pipeline row.
-	pipeline.SetMinSupply(minSupply)
+	pipeline.SetMinSupply(effectiveMinSupply)
 	// sp-sdyo: persist the per-good override map on the entity too, so a per-good sourcing-floor
 	// override survives a restart and is re-read by the deferred-material recovery loop, not just
 	// consumed during this initial planning pass (RULINGS #2).
@@ -273,8 +322,10 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	for _, mat := range unfulfilledMaterials {
 		// sp-sdyo: resolve the EXPORT sourcing floor per material — a per-good override loosens the
 		// floor for a single bottleneck (e.g. down to SCARCE) while every other material keeps the
-		// pipeline's global floor unchanged.
-		matMinSupply := goodOverrides.MinSupplyFor(mat.TradeSymbol(), minSupply)
+		// pipeline's global floor unchanged. sp-yexq: the base is the toggle-resolved effectiveMinSupply
+		// (SCARCE under unified gate-fill), so an unset floor admits scarce materials; a per-good
+		// override still wins over it.
+		matMinSupply := goodOverrides.MinSupplyFor(mat.TradeSymbol(), effectiveMinSupply)
 		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, matMinSupply, goodOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
