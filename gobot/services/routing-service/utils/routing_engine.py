@@ -906,7 +906,18 @@ class ORToolsRoutingEngine:
         # Solve
         solution = routing.SolveWithParameters(search_parameters)
         if not solution:
-            return {ship: [] for ship in ships}
+            # The VRP found no solution at all. A single-ship scout keeps ALL its
+            # markets (it bypasses the VRP entirely); a 2+ ship partition must keep
+            # parity rather than collapse to an empty partition of 0 tours (sp-t73c).
+            # Degrade to a deterministic balanced partition instead of returning empty.
+            logger.warning(
+                "VRP returned no solution for %d ship(s) over %d market(s); "
+                "falling back to a balanced round-robin partition",
+                len(ships), len(markets),
+            )
+            fallback: Dict[str, List[str]] = {ship: [] for ship in ships}
+            self._distribute_evenly(list(markets), fallback)
+            return fallback
 
         # Extract assignments
         assignments: Dict[str, List[str]] = {ship: [] for ship in ships}
@@ -944,12 +955,44 @@ class ORToolsRoutingEngine:
 
                 index = solution.Value(routing.NextVar(index))
 
-        # Verify all markets were assigned
-        dropped_markets = set(markets) - assigned_waypoints
-        if dropped_markets:
-            logger.warning(f"VRP dropped {len(dropped_markets)} markets: {dropped_markets}")
+        # Any market the VRP could not place — an unreachable outlier, a symbol
+        # missing from the system graph (the sp-8k9m cache-scope miss), or a drop
+        # under a tight solve budget — is distributed across the ships rather than
+        # silently omitted. Single-ship scouting keeps every market, so a 2+ ship
+        # partition must too: never shrink the book or collapse to an empty partition
+        # of 0 tours (sp-t73c). The VRP has already optimised the placement of
+        # everything it could route; this only tops up the remainder, preserving
+        # input order for determinism.
+        unplaced_markets = [m for m in markets if m not in assigned_waypoints]
+        if unplaced_markets:
+            logger.warning(
+                "VRP left %d of %d market(s) unplaced (unreachable/ungraphed outliers); "
+                "distributing them across ships to keep parity with single-ship "
+                "scouting: %s",
+                len(unplaced_markets), len(markets), unplaced_markets,
+            )
+            self._distribute_evenly(unplaced_markets, assignments)
 
         return assignments
+
+    def _distribute_evenly(
+        self,
+        markets_to_place: List[str],
+        assignments: Dict[str, List[str]],
+    ) -> None:
+        """Assign each market to the currently least-loaded ship, in place.
+
+        A deterministic safety net that keeps a fleet partition non-empty and
+        balanced when the VRP cannot place every market (an unreachable/ungraphed
+        outlier) or returns no solution at all. Ships are compared by current market
+        count with a stable tie-break on fleet order, so the result is reproducible.
+        """
+        if not assignments:
+            return
+        ships = list(assignments.keys())
+        for market in markets_to_place:
+            least_loaded = min(ships, key=lambda ship: len(assignments[ship]))
+            assignments[least_loaded].append(market)
 
     def _build_distance_matrix_for_vrp(
         self,
