@@ -99,6 +99,13 @@ type DemandCandidate struct {
 	HomeAsk      int  `json:"home_ask"` // 0 when the home system does not sell the good
 	HomeAskKnown bool `json:"home_ask_known"`
 
+	// ContractRewardPerUnit is the per-unit CONTRACT REWARD for the good in the mined
+	// (delivery) system — what the destination's contracts actually PAY for a delivered unit,
+	// carried through from ContractGoodDemand.RewardPerUnit (sp-64se). It is the TRUE value
+	// signal a destination-side depot buffer ranks by; a market ask (HomeAsk/ForeignAsk) is a
+	// RESALE proxy that mis-ranks import-only goods. 0 when no contract payment is known.
+	ContractRewardPerUnit float64 `json:"contract_reward_per_unit"`
+
 	// ProjectedSavingsPerUnit is the per-unit saving vs the CONTRACT-SOURCE ALTERNATIVE:
 	// (HomeAsk + buy-leg) − ForeignAsk when the home ask is known, else 0. The buy-leg
 	// term is what makes an in-system-sourceable good (ForeignAsk == HomeAsk) show a
@@ -180,14 +187,15 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 		}
 
 		c := DemandCandidate{
-			Good:                 d.Good,
-			ContractCount:        d.ContractCount,
-			DemandUnits:          d.UnitsRequired,
-			MaxContractUnits:     d.MaxContractUnits,
-			RecurrenceWindowDays: windowDays(d.FirstSeen, d.LastSeen),
-			ForeignMarket:        source.WaypointSymbol,
-			ForeignSystem:        shared.ExtractSystemSymbol(source.WaypointSymbol),
-			ForeignAsk:           source.SellPrice,
+			Good:                  d.Good,
+			ContractCount:         d.ContractCount,
+			DemandUnits:           d.UnitsRequired,
+			MaxContractUnits:      d.MaxContractUnits,
+			RecurrenceWindowDays:  windowDays(d.FirstSeen, d.LastSeen),
+			ContractRewardPerUnit: d.RewardPerUnit, // true contract-reward signal (sp-64se), carried for the depot buffer
+			ForeignMarket:         source.WaypointSymbol,
+			ForeignSystem:         shared.ExtractSystemSymbol(source.WaypointSymbol),
+			ForeignAsk:            source.SellPrice,
 		}
 
 		home, err := m.markets.FindCheapestMarketSelling(ctx, d.Good, homeSystem, playerID)

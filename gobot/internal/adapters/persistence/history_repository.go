@@ -65,12 +65,18 @@ type ContractsEraStat struct {
 // (the quantity signal the economics guard needs) plus the observation window that
 // makes "recurrence" measurable rather than a raw count.
 type ContractGoodDemand struct {
-	Good             string    `json:"good"`
-	ContractCount    int       `json:"contract_count"`     // distinct contracts requiring the good
-	UnitsRequired    int       `json:"units_required"`     // summed UnitsRequired across matching deliveries
-	MaxContractUnits int       `json:"max_contract_units"` // largest SINGLE-contract units (the s_G the warehouse buffers fully, sp-5n7v)
-	FirstSeen        time.Time `json:"first_seen"`         // earliest contributing contract observation
-	LastSeen         time.Time `json:"last_seen"`          // latest contributing contract observation
+	Good             string `json:"good"`
+	ContractCount    int    `json:"contract_count"`     // distinct contracts requiring the good
+	UnitsRequired    int    `json:"units_required"`     // summed UnitsRequired across matching deliveries
+	MaxContractUnits int    `json:"max_contract_units"` // largest SINGLE-contract units (the s_G the warehouse buffers fully, sp-5n7v)
+	// RewardPerUnit is the per-unit CONTRACT REWARD for the good, scoped to the delivery
+	// system: Σ (contract payment attributed to this good, proportional to its units) ÷ Σ
+	// units, across the matching contracts (sp-64se). It is the TRUE value the destination's
+	// contracts PAY for the good — the ranking signal a destination-side depot buffer needs,
+	// distinct from a market ask (what the good RESELLS for). 0 when no payment is known.
+	RewardPerUnit float64   `json:"reward_per_unit"`
+	FirstSeen     time.Time `json:"first_seen"` // earliest contributing contract observation
+	LastSeen      time.Time `json:"last_seen"`  // latest contributing contract observation
 }
 
 type PnLBucket struct {
@@ -408,6 +414,7 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 	type demandAgg struct {
 		unitsByContract map[string]int // per-contract summed units (len => ContractCount; max => MaxContractUnits)
 		unitsRequired   int
+		rewardSum       float64 // Σ contract payment attributed to the good (sp-64se); ÷ unitsRequired => RewardPerUnit
 		firstSeen       time.Time
 		lastSeen        time.Time
 	}
@@ -423,6 +430,19 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 			observed, tsOK = t, true
 		}
 
+		// The contract's whole reward is spread across the units it delivers into scope, so a
+		// good's per-unit reward is the payment-per-delivered-unit (sp-64se). Sum the in-scope
+		// units first (the attribution denominator), then credit each good its unit-proportional
+		// share — full payment for a single-good contract, split by units for a multi-good one.
+		payment := float64(row.PaymentOnAccepted + row.PaymentOnFulfilled)
+		contractScopedUnits := 0
+		for _, d := range deliveries {
+			if deliverySystem != nil && shared.ExtractSystemSymbol(d.DestinationSymbol) != *deliverySystem {
+				continue
+			}
+			contractScopedUnits += d.UnitsRequired
+		}
+
 		for _, d := range deliveries {
 			if deliverySystem != nil && shared.ExtractSystemSymbol(d.DestinationSymbol) != *deliverySystem {
 				continue
@@ -434,6 +454,9 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 			}
 			a.unitsByContract[row.ID] += d.UnitsRequired
 			a.unitsRequired += d.UnitsRequired
+			if contractScopedUnits > 0 {
+				a.rewardSum += payment * float64(d.UnitsRequired) / float64(contractScopedUnits)
+			}
 			if tsOK {
 				if a.firstSeen.IsZero() || observed.Before(a.firstSeen) {
 					a.firstSeen = observed
@@ -460,11 +483,16 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 				maxUnits = u
 			}
 		}
+		rewardPerUnit := 0.0
+		if a.unitsRequired > 0 {
+			rewardPerUnit = a.rewardSum / float64(a.unitsRequired)
+		}
 		out = append(out, ContractGoodDemand{
 			Good:             g,
 			ContractCount:    len(a.unitsByContract),
 			UnitsRequired:    a.unitsRequired,
 			MaxContractUnits: maxUnits,
+			RewardPerUnit:    rewardPerUnit,
 			FirstSeen:        a.firstSeen,
 			LastSeen:         a.lastSeen,
 		})

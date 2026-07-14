@@ -38,6 +38,13 @@ type depotLaunchIntent struct {
 	// warehouseWaypoint is where the coordinator points: a warehouse parks at its OWN waypoint;
 	// a stocker deposits into the depot's destination warehouse ANCHOR (warehouses[0]).
 	warehouseWaypoint string
+	// coLocatedWarehouseShips is the CO-LOCATED warehouse group this warehouse belongs to: every
+	// crewed warehouse hull of the SAME depot parked at the SAME waypoint, including this one
+	// (sp-5q2c/sp-64se). The receipt knapsack solves over the group's AGGREGATE cargo capacity
+	// (Σ hull capacity) so the shared buffer spreads across the whitelist breadth, instead of
+	// each hull independently deep-filling the same top goods over its own single-hull capacity.
+	// Empty/nil for a stocker intent (only warehouses carry a co-located group).
+	coLocatedWarehouseShips []string
 }
 
 // planDepotLaunches reads a registry and returns the coordinators to start: one warehouse
@@ -58,15 +65,27 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 			continue // NewContractDepot guarantees >=1, but never trust a mutated registry
 		}
 		anchor := warehouses[0].Waypoint // the routing anchor + shared deposit target
+		// Co-located warehouse groups (sp-64se/sp-5q2c): every crewed warehouse hull sharing a
+		// waypoint is one logical buffer whose receipt knapsack solves over their AGGREGATE
+		// capacity. Group by waypoint so a warehouse carries its whole same-waypoint group;
+		// warehouses at different waypoints stay separate (co-location is by waypoint).
+		coLocatedByWaypoint := map[string][]string{}
+		for _, w := range warehouses {
+			if w.ShipSymbol == "" {
+				continue
+			}
+			coLocatedByWaypoint[w.Waypoint] = append(coLocatedByWaypoint[w.Waypoint], w.ShipSymbol)
+		}
 		for _, w := range warehouses {
 			if w.ShipSymbol == "" {
 				continue // declared-but-uncrewed slot: no hull to fly yet
 			}
 			intents = append(intents, depotLaunchIntent{
-				depotID:           c.ID(),
-				role:              depot.RoleWarehouse,
-				shipSymbol:        w.ShipSymbol,
-				warehouseWaypoint: w.Waypoint, // a warehouse parks at its own waypoint
+				depotID:                 c.ID(),
+				role:                    depot.RoleWarehouse,
+				shipSymbol:              w.ShipSymbol,
+				warehouseWaypoint:       w.Waypoint, // a warehouse parks at its own waypoint
+				coLocatedWarehouseShips: coLocatedByWaypoint[w.Waypoint],
 			})
 		}
 		for _, st := range c.Stockers() {
@@ -90,7 +109,7 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 // narrow + injectable so the orchestration is unit-tested against a spy without spawning
 // container goroutines or requiring idle hulls in a DB.
 type depotCoordinatorSink interface {
-	launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
+	launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, coLocatedWarehouseShips []string, playerID int) error
 	launchDepotStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
 }
 
@@ -105,7 +124,7 @@ func launchDepotCoordinators(ctx context.Context, reg *depot.Registry, playerID 
 		var err error
 		switch intent.role {
 		case depot.RoleWarehouse:
-			err = sink.launchDepotWarehouse(ctx, intent.shipSymbol, intent.warehouseWaypoint, playerID)
+			err = sink.launchDepotWarehouse(ctx, intent.shipSymbol, intent.warehouseWaypoint, intent.coLocatedWarehouseShips, playerID)
 		case depot.RoleStocker:
 			err = sink.launchDepotStocker(ctx, intent.shipSymbol, intent.warehouseWaypoint, playerID)
 		default:
@@ -171,16 +190,50 @@ func depotWarehouseTargetUnits(
 	return tradingsvc.PlanReceiptCaps(receipts, capacity, destinationSystem, warehouseWaypoint, coords, nil, nil, p).Targets
 }
 
-// depotReceiptPayment is the per-unit value signal for a received good in the receipt-demand
-// knapsack. It uses the good's market value — the home (destination) ask when known, else the
-// source ask — so a good the destination IMPORTS (and therefore does not itself sell, no home
-// ask) still carries a non-zero value rather than being dropped. A follow-on can thread the
-// true contract reward here once the demand miner surfaces it.
-func depotReceiptPayment(c persistence.DemandCandidate) float64 {
-	if c.HomeAsk > 0 {
-		return float64(c.HomeAsk)
+// depotColocatedWarehouseTargets computes a co-located warehouse GROUP's shared receipt-demand
+// caps over the group's AGGREGATE cargo capacity (bead sp-64se / sp-5q2c) — Σ CargoCapacity
+// across every co-located warehouse hull, resolved through capacityOf. Solving the receipt
+// knapsack once over the aggregate (e.g. 2×80 = 160) rather than once per hull over a single
+// 80 is what lets the shared buffer COVER THE WHITELIST BREADTH: at 160 the 0/1-at-one-contract
+// knapsack fits four ~40-unit goods instead of deep-filling the same top-two over 80. A single
+// warehouse depot has a one-hull group, so its capacity is unchanged (no regression). capacityOf
+// resolves each hull's real cargo capacity (never assume-80 — a heavy frame or cargo module
+// simply raises the aggregate); an unresolvable hull contributes 0, so the group is at least
+// this warehouse's own capacity (fail-open).
+func depotColocatedWarehouseTargets(
+	ctx context.Context,
+	miner tradingsvc.DepositDemandMiner,
+	coLocatedWarehouseShips []string,
+	capacityOf func(shipSymbol string) int,
+	destinationSystem string,
+	warehouseWaypoint string,
+	coords tradingsvc.WaypointCoordsLookup,
+	playerID int,
+	params *tradingsvc.WarehouseCapParams,
+) map[string]int {
+	capacity := 0
+	for _, shipSymbol := range coLocatedWarehouseShips {
+		capacity += capacityOf(shipSymbol)
 	}
-	return float64(c.ForeignAsk)
+	return depotWarehouseTargetUnits(ctx, miner, capacity, destinationSystem, warehouseWaypoint, coords, playerID, params)
+}
+
+// depotReceiptPayment is the per-unit value signal for a received good in the receipt-demand
+// knapsack (sp-64se). It ranks by the good's TRUE CONTRACT REWARD — what the destination's
+// contracts actually PAY per delivered unit (ContractRewardPerUnit) — so the buffer pre-stages
+// the high-contract-value goods, NOT the ones that merely resell dear. A market ask is only a
+// RESALE proxy and MIS-RANKS import-only goods (a destination imports a good precisely because
+// it does not produce it, yet may resell it high); it is kept solely as a FALLBACK for when no
+// contract reward is known — the home ask first, else the source ask — so such a good still
+// carries a non-zero value rather than being dropped.
+func depotReceiptPayment(c persistence.DemandCandidate) float64 {
+	if c.ContractRewardPerUnit > 0 {
+		return c.ContractRewardPerUnit
+	}
+	if c.HomeAsk > 0 {
+		return float64(c.HomeAsk) // fallback: resale proxy when contract reward is unavailable
+	}
+	return float64(c.ForeignAsk) // last-resort fallback: source ask keeps an import-only good rankable
 }
 
 // sortedGoods returns the goods in a caps map in deterministic order — the depot warehouse's
@@ -201,7 +254,7 @@ func sortedGoods(targetUnits map[string]int) []string {
 // is already flying its coordinator — a benign already-launched skip (nil), never an error, so
 // the boot re-run is quiet. It reuses persistAndRunWarehouse, so the container's persistence /
 // claim / recovery path is byte-identical to a captain-launched warehouse.
-func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error {
+func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, coLocatedWarehouseShips []string, playerID int) error {
 	if shipSymbol == "" || warehouseWaypoint == "" {
 		return fmt.Errorf("depot warehouse launch requires a ship symbol and warehouse waypoint")
 	}
@@ -220,8 +273,26 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 	if s.db != nil {
 		miner = persistence.NewDemandMiner(s.db)
 	}
-	targetUnits := depotWarehouseTargetUnits(
-		ctx, miner, ship.CargoCapacity(),
+	// Solve the receipt knapsack over the co-located warehouse GROUP's aggregate capacity
+	// (sp-64se). capacityOf reads this already-loaded hull directly (no re-fetch) and resolves
+	// any sibling hull's real cargo capacity through the ship repo; an unresolvable sibling
+	// contributes 0, so the aggregate is at least this hull's own capacity (fail-open).
+	group := coLocatedWarehouseShips
+	if len(group) == 0 {
+		group = []string{shipSymbol}
+	}
+	capacityOf := func(sym string) int {
+		if sym == shipSymbol {
+			return ship.CargoCapacity()
+		}
+		sibling, ferr := s.shipRepo.FindBySymbol(ctx, sym, shared.MustNewPlayerID(playerID))
+		if ferr != nil || sibling == nil {
+			return 0
+		}
+		return sibling.CargoCapacity()
+	}
+	targetUnits := depotColocatedWarehouseTargets(
+		ctx, miner, group, capacityOf,
 		shared.ExtractSystemSymbol(warehouseWaypoint), warehouseWaypoint,
 		s.waypointCoords(ctx), playerID, nil,
 	)

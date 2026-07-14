@@ -61,6 +61,28 @@ func TestDemandMiner_CarriesMaxContractUnits(t *testing.T) {
 	require.Equal(t, 90, got[0].DemandUnits, "summed demand is unchanged")
 }
 
+// TestDemandMiner_CarriesContractRewardPerUnit (sp-64se): the per-good CONTRACT REWARD that
+// ContractGoodDemand derives from the contracts' payments (RewardPerUnit) must flow through the
+// miner onto the candidate (ContractRewardPerUnit), so a destination-side depot buffer can rank
+// by contract reward instead of the market ask the miner also carries. Without this the reward
+// is stranded in the demand row and the depot falls back to the (mis-ranking) market ask.
+func TestDemandMiner_CarriesContractRewardPerUnit(t *testing.T) {
+	now := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	row := ContractGoodDemand{Good: "CLOTHING", ContractCount: 3, UnitsRequired: 60, MaxContractUnits: 30, RewardPerUnit: 250, FirstSeen: now.Add(-24 * time.Hour), LastSeen: now}
+	src := &fakeDemandSource{rows: []ContractGoodDemand{row}}
+	markets := &fakeMarketAsks{
+		crossByGood: map[string][]market.CheapestMarketResult{"CLOTHING": {{WaypointSymbol: "X1-J58-SRC", SellPrice: 300}}},
+		homeByGood:  map[string]*market.CheapestMarketResult{"CLOTHING": {WaypointSymbol: "X1-VB74-M", SellPrice: 500}},
+	}
+	miner := &DemandMiner{demand: src, markets: markets}
+
+	got, err := miner.Mine(context.Background(), "X1-VB74", 7, nil, DemandMinerOptions{MinRecurrence: 2})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.InDelta(t, 250.0, got[0].ContractRewardPerUnit, 0.001,
+		"the per-good contract reward must reach the mined candidate for reward-ranked buffering")
+}
+
 // TestDemandMiner_SingleSystem_IncludesHomeExport is the sp-layd defect pin. Post-weekly-
 // reset the home system is the ONLY scanned system (0 foreign markets), so the old
 // foreign-only miner dropped EVERY good and returned zero rows — the stocker then refused
@@ -258,7 +280,7 @@ func TestDemandMiner_RanksEligibleFirstThenBySavings(t *testing.T) {
 			"PLATINUM": {{WaypointSymbol: "X1-FOREIGN-P1", SellPrice: 20}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90}, // savings (90+5)-40=55 ×200
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90},     // savings (90+5)-40=55 ×200
 			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}, // savings 5 ×50
 		},
 	}

@@ -244,6 +244,60 @@ func TestContractGoodDemandHomeScopesUnitsCountsAndWindow(t *testing.T) {
 	require.Equal(t, 15, byGood["GOLD"].UnitsRequired)
 }
 
+// TestContractGoodDemandDerivesPerUnitContractReward (sp-64se) pins the destination-side value
+// signal: each good's RewardPerUnit is the CONTRACT REWARD per delivered unit — the contracts'
+// payment (on-accepted + on-fulfilled) attributed to the good proportional to its units and
+// scoped to the delivery system — NOT a market ask. A good delivered by several contracts is a
+// units-weighted average; a foreign-system delivery is excluded from the destination's reward.
+func TestContractGoodDemandDerivesPerUnitContractReward(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	registered := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	seedPlayer(t, db, 1, "TORWIND")
+	require.NoError(t, db.Create(&persistence.EraModel{
+		Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, RegisteredAt: &registered,
+	}).Error)
+
+	// CLOTHING -> X1-DEST: cr-1 pays 9000 for 30u (300/u); cr-3 pays 3000 for 30u (100/u) =>
+	// units-weighted 12000/60 = 200/u. cr-4's 99999 CLOTHING is FOREIGN (X1-OTHER) and excluded.
+	// EQUIPMENT -> X1-DEST: cr-2 pays 4000 for 40u => 100/u. The true reward ranks CLOTHING
+	// above EQUIPMENT even though a resale ask would not.
+	contracts := []struct {
+		id, deliveries      string
+		accepted, fulfilled int
+	}{
+		{"cr-1", `[{"TradeSymbol":"CLOTHING","DestinationSymbol":"X1-DEST-A1","UnitsRequired":30,"UnitsFulfilled":30}]`, 1000, 8000},
+		{"cr-2", `[{"TradeSymbol":"EQUIPMENT","DestinationSymbol":"X1-DEST-A1","UnitsRequired":40,"UnitsFulfilled":40}]`, 0, 4000},
+		{"cr-3", `[{"TradeSymbol":"CLOTHING","DestinationSymbol":"X1-DEST-A2","UnitsRequired":30,"UnitsFulfilled":30}]`, 0, 3000},
+		{"cr-4", `[{"TradeSymbol":"CLOTHING","DestinationSymbol":"X1-OTHER-Z9","UnitsRequired":999,"UnitsFulfilled":0}]`, 90000, 9999},
+	}
+	for _, c := range contracts {
+		require.NoError(t, db.Create(&persistence.ContractModel{
+			ID: c.id, PlayerID: 1, FactionSymbol: "COSMIC", Type: "PROCUREMENT",
+			Accepted: true, Fulfilled: false,
+			DeadlineToAccept: "2026-05-01T00:00:00Z", Deadline: "2026-05-10T00:00:00Z",
+			PaymentOnAccepted: c.accepted, PaymentOnFulfilled: c.fulfilled,
+			DeliveriesJSON: c.deliveries, LastUpdated: "2026-05-02T00:00:00Z",
+		}).Error)
+	}
+
+	repo := persistence.NewHistoryRepository(db)
+	dest := "X1-DEST"
+	rows, err := repo.ContractGoodDemand(context.Background(), nil, &dest)
+	require.NoError(t, err)
+
+	byGood := map[string]persistence.ContractGoodDemand{}
+	for _, r := range rows {
+		byGood[r.Good] = r
+	}
+	require.InDelta(t, 200.0, byGood["CLOTHING"].RewardPerUnit, 0.001,
+		"CLOTHING reward is the units-weighted per-unit contract payment (foreign delivery excluded)")
+	require.InDelta(t, 100.0, byGood["EQUIPMENT"].RewardPerUnit, 0.001,
+		"EQUIPMENT reward is its contract payment per delivered unit")
+	require.Greater(t, byGood["CLOTHING"].RewardPerUnit, byGood["EQUIPMENT"].RewardPerUnit,
+		"the true contract reward ranks CLOTHING above EQUIPMENT — the ranking a resale ask inverts")
+}
+
 func TestContractGoodDemandUnscopedIncludesForeignDeliveries(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

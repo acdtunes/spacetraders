@@ -19,13 +19,14 @@ type spyDepotSink struct {
 }
 
 type depotLaunchRecord struct {
-	ship     string
-	waypoint string
-	playerID int
+	ship      string
+	waypoint  string
+	coLocated []string
+	playerID  int
 }
 
-func (s *spyDepotSink) launchDepotWarehouse(_ context.Context, shipSymbol, warehouseWaypoint string, playerID int) error {
-	s.warehouses = append(s.warehouses, depotLaunchRecord{ship: shipSymbol, waypoint: warehouseWaypoint, playerID: playerID})
+func (s *spyDepotSink) launchDepotWarehouse(_ context.Context, shipSymbol, warehouseWaypoint string, coLocatedWarehouseShips []string, playerID int) error {
+	s.warehouses = append(s.warehouses, depotLaunchRecord{ship: shipSymbol, waypoint: warehouseWaypoint, coLocated: coLocatedWarehouseShips, playerID: playerID})
 	return nil
 }
 
@@ -169,4 +170,108 @@ func TestDepotWarehouseTargetUnits_GatesOnReceiptDemandPreferringFarSource(t *te
 		"under tight capacity the near-sourced good is dropped (little haul saved)")
 	require.Equal(t, "X1", miner.queriedSystem,
 		"depot-warehouse caps are keyed on what the DESTINATION system RECEIVES")
+}
+
+// sp-64se root cause #1: the depot buffer must rank received goods by CONTRACT REWARD (what
+// the destination's contracts PAY for the good) — NOT by market ask (what it RESELLS for). A
+// good with a high market ask but a low contract reward (the live EQUIPMENT case) must LOSE to
+// a good with a low ask but a high contract reward (the live CLOTHING/ASSAULT_RIFLES case).
+// Here the two goods are identical in every knapsack input (recurrence, size, source distance)
+// EXCEPT that their market ask and contract reward are INVERTED; under a capacity that fits one,
+// the reward-ranked buffer keeps the high-reward/low-ask good and drops the high-ask/low-reward
+// one. This fails while the payment signal is the market ask (HomeAsk).
+func TestDepotWarehouseTargetUnits_RanksByContractRewardNotMarketAsk(t *testing.T) {
+	const warehouseWaypoint = "X1-J58-WH"
+	coords := func(w string) (float64, float64, bool) {
+		switch w {
+		case warehouseWaypoint:
+			return 0, 0, true
+		case "X1-SRC": // one shared source: both goods sit at the SAME haul distance
+			return 100, 0, true
+		}
+		return 0, 0, false
+	}
+	miner := &fakeReceiptMiner{rows: []persistence.DemandCandidate{
+		// High market ask, LOW contract reward — the EQUIPMENT trap (resells dear, contracts pay little).
+		{Good: "HIGH_ASK_LOW_REWARD", ContractCount: 5, MaxContractUnits: 40,
+			ForeignMarket: "X1-SRC", ForeignSystem: "X1", ForeignAsk: 8000,
+			HomeAsk: 8000, HomeAskKnown: true, ContractRewardPerUnit: 1000},
+		// Low market ask, HIGH contract reward — the CLOTHING/ASSAULT_RIFLES case the buffer should serve.
+		{Good: "LOW_ASK_HIGH_REWARD", ContractCount: 5, MaxContractUnits: 40,
+			ForeignMarket: "X1-SRC", ForeignSystem: "X1", ForeignAsk: 500,
+			HomeAsk: 500, HomeAskKnown: true, ContractRewardPerUnit: 5000},
+	}}
+
+	// Capacity 40 fits exactly ONE 40-unit good, forcing the value ranking to decide.
+	targets := depotWarehouseTargetUnits(context.Background(), miner, 40, "X1", warehouseWaypoint, coords, 7, nil)
+
+	require.Contains(t, targets, "LOW_ASK_HIGH_REWARD",
+		"the buffer ranks by CONTRACT REWARD, so the high-reward (low-ask) good is bought")
+	require.NotContains(t, targets, "HIGH_ASK_LOW_REWARD",
+		"a high market ask must NOT win a buffer slot when the good's contract reward is low")
+}
+
+// sp-64se root cause #2: a co-located warehouse GROUP solves the receipt knapsack over its
+// AGGREGATE capacity (Σ hull capacity), so the shared buffer COVERS THE WHITELIST BREADTH
+// instead of each hull deep-filling the same top goods over a single 80. Four equally-valued
+// ~40-unit goods: a one-hull group (80) fits only two; the co-located pair (160) fits all four.
+// This fails while the group's capacity is a single hull's rather than the summed aggregate.
+func TestDepotColocatedWarehouseTargets_AggregateCapacityCoversWhitelistBreadth(t *testing.T) {
+	const warehouseWaypoint = "X1-J58-WH"
+	coords := func(w string) (float64, float64, bool) {
+		if w == warehouseWaypoint {
+			return 0, 0, true
+		}
+		return 0, 0, false // cross-system sources: residual short-circuits to the cross maximum
+	}
+	// Four received goods, identical value, each one contract wide (40 units), cross-system sourced.
+	miner := &fakeReceiptMiner{rows: []persistence.DemandCandidate{
+		{Good: "GOOD_A", ContractCount: 5, MaxContractUnits: 40, ForeignMarket: "X2-S1", ForeignSystem: "X2", ForeignAsk: 1000, ContractRewardPerUnit: 1000},
+		{Good: "GOOD_B", ContractCount: 5, MaxContractUnits: 40, ForeignMarket: "X2-S2", ForeignSystem: "X2", ForeignAsk: 1000, ContractRewardPerUnit: 1000},
+		{Good: "GOOD_C", ContractCount: 5, MaxContractUnits: 40, ForeignMarket: "X2-S3", ForeignSystem: "X2", ForeignAsk: 1000, ContractRewardPerUnit: 1000},
+		{Good: "GOOD_D", ContractCount: 5, MaxContractUnits: 40, ForeignMarket: "X2-S4", ForeignSystem: "X2", ForeignAsk: 1000, ContractRewardPerUnit: 1000},
+	}}
+	capacityOf := func(string) int { return 80 } // every warehouse hull is a standard 80-cargo frame
+
+	single := depotColocatedWarehouseTargets(context.Background(), miner,
+		[]string{"WH-1"}, capacityOf, "X1", warehouseWaypoint, coords, 7, nil)
+	require.Len(t, single, 2, "a single 80-cargo hull covers only two one-contract-wide goods")
+
+	aggregate := depotColocatedWarehouseTargets(context.Background(), miner,
+		[]string{"WH-1", "WH-2"}, capacityOf, "X1", warehouseWaypoint, coords, 7, nil)
+	require.Len(t, aggregate, 4,
+		"the co-located pair's AGGREGATE 160 capacity covers the full whitelist breadth (all four goods)")
+}
+
+// sp-64se root cause #2 (planning half): planDepotLaunches groups CO-LOCATED warehouses — every
+// crewed warehouse hull of the same depot at the SAME waypoint — into each warehouse intent, so
+// the launch can solve the receipt knapsack over their aggregate capacity. Warehouses at
+// DIFFERENT waypoints are separate groups (co-location is by waypoint, not "all depot hulls").
+func TestPlanDepotLaunches_GroupsCoLocatedWarehousesForAggregateCapacity(t *testing.T) {
+	c, err := depot.NewContractDepot(
+		"j58",
+		[]depot.Element{
+			{Waypoint: "X1-J58-WH", ShipSymbol: "WH-1"},  // co-located pair at the anchor
+			{Waypoint: "X1-J58-WH", ShipSymbol: "WH-2"},  //
+			{Waypoint: "X1-J58-WH2", ShipSymbol: "WH-3"}, // a separate warehouse at its own waypoint
+		},
+		[]depot.Element{{Waypoint: "X1-SRC-1", ShipSymbol: "ST-1"}},
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	reg := depot.NewRegistry([]*depot.ContractDepot{c})
+
+	byShip := map[string][]string{}
+	for _, intent := range planDepotLaunches(reg) {
+		if intent.role == depot.RoleWarehouse {
+			byShip[intent.shipSymbol] = intent.coLocatedWarehouseShips
+		}
+	}
+
+	require.ElementsMatch(t, []string{"WH-1", "WH-2"}, byShip["WH-1"],
+		"a co-located warehouse carries its whole same-waypoint group (for the aggregate-capacity solve)")
+	require.ElementsMatch(t, []string{"WH-1", "WH-2"}, byShip["WH-2"])
+	require.ElementsMatch(t, []string{"WH-3"}, byShip["WH-3"],
+		"a warehouse at its own waypoint is its own group — co-location is by waypoint, not whole-depot")
 }
