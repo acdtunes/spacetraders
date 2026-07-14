@@ -1095,8 +1095,13 @@ func run(cfg *config.Config) error {
 	// DaemonServer.Start AFTER container recovery; idempotent + fail-open.
 	daemonServer.SetStorageRecovery(storageApp.NewStorageRecoveryService(storageOperationRepo, apiClient, storageCoordinator))
 
+	// sp-kqxe: emit a structured event on each warehouse→hauler buffer draw so
+	// warehouse ROI (buffer hit-rate, served-from-buffer, contract-leg-avoided) is
+	// measurable. The GORM recorder persists to warehouse_withdrawals; nil clock =
+	// RealClock. Additive/fail-open — a record error never fails the draw.
 	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil,
-		contractCmd.WithInventorySourcing(contractInventoryFinder, storageCoordinator, apiClient))
+		contractCmd.WithInventorySourcing(contractInventoryFinder, storageCoordinator, apiClient),
+		contractCmd.WithWithdrawalRecording(persistence.NewWithdrawalEventRepository(db), nil))
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
 		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
 	}

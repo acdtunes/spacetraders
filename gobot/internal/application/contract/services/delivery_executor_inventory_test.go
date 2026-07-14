@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -196,7 +197,7 @@ func TestTrySourceFromInventory_CappedWithdrawal_TransfersNeedReleasesExcess(t *
 	profit := &contractQueries.ProfitabilityResult{MarketPrices: map[string]int{"IRON_ORE": 100}}
 
 	// Contract needs only 10 units; the hold has room for 40; the warehouse holds 200.
-	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, profit)
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, profit, "ct-inv")
 
 	require.NoError(t, err)
 	require.True(t, withdrew)
@@ -224,7 +225,7 @@ func TestTrySourceFromInventory_WarehouseDocked_DocksVisitorBeforeTransfer(t *te
 	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo), WithInventorySource(finder, coord, api))
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
 
-	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil)
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil, "ct-inv")
 
 	require.NoError(t, err)
 	require.True(t, withdrew)
@@ -243,7 +244,7 @@ func TestTrySourceFromInventory_DrainedMidFlight_FallsThroughToMarket(t *testing
 	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo), WithInventorySource(finder, coord, api))
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
 
-	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil)
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil, "ct-inv")
 
 	require.NoError(t, err, "a drained warehouse is not an error — it is a fall-through")
 	require.False(t, withdrew)
@@ -261,7 +262,7 @@ func TestTrySourceFromInventory_TransferError_FailsOpenAndReleasesReservation(t 
 	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo), WithInventorySource(finder, coord, api))
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
 
-	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil)
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil, "ct-inv")
 
 	require.Error(t, err, "a transfer failure surfaces so the caller logs it and falls through")
 	require.False(t, withdrew)
@@ -275,7 +276,7 @@ func TestTrySourceFromInventory_NotWired_UsesMarketPath(t *testing.T) {
 	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo)) // no inventory option
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
 
-	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil)
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil, "ct-inv")
 
 	require.NoError(t, err)
 	require.False(t, withdrew, "with no finder wired the executor uses the market path")
@@ -344,4 +345,88 @@ func contractWithFulfilled(t *testing.T, required, fulfilled int) *domainContrac
 	c, err := domainContract.NewContract("ct-inv", shared.MustNewPlayerID(1), "COSMIC", "PROCUREMENT", terms, nil)
 	require.NoError(t, err)
 	return c
+}
+
+// --- withdrawal event emission (sp-kqxe) ---------------------------------
+
+// recordingWithdrawalRecorder is a spy test double for the storage.WithdrawalRecorder
+// driven port: it captures every event the executor emits. It is a double AT the
+// hexagon boundary (a driven port), never an internal collaborator.
+type recordingWithdrawalRecorder struct {
+	events []storage.WithdrawalEvent
+}
+
+func (r *recordingWithdrawalRecorder) Record(_ context.Context, event storage.WithdrawalEvent) error {
+	r.events = append(r.events, event)
+	return nil
+}
+
+func (r *recordingWithdrawalRecorder) ListByPlayer(_ context.Context, _ int, _ time.Time) ([]storage.WithdrawalEvent, error) {
+	return r.events, nil
+}
+
+// A contract delivery sourced from the warehouse buffer emits exactly one
+// structured withdrawal event carrying the good, units, warehouse waypoint,
+// hauler, contract id, player and timestamp — the record downstream warehouse-ROI
+// analysis reads (buffer hit-rate, served-from-buffer, contract-leg-avoided).
+func TestProcessSingleDelivery_SuccessfulWithdrawal_RecordsWithdrawalEvent(t *testing.T) {
+	moved := false
+	empty := buildShipWithIronOre(t, 0)   // capacity 40, empty before withdrawal
+	loaded := buildShipWithIronOre(t, 40) // 40 IRON_ORE aboard after withdrawal
+	storageShip := storageShipWith(t, 40)
+
+	shipRepo := &movingShipRepo{empty: empty, loaded: loaded, moved: &moved}
+	api := &invFakeAPI{moved: &moved}
+	med := &invFakeMediator{navShip: loaded, deliverContract: contractWithFulfilled(t, 40, 40)}
+	finder := &invFakeFinder{src: &appContract.InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 40}}
+	coord := &invFakeCoordinator{ships: map[string][]*storage.StorageShip{"wh-1": {storageShip}}}
+	recorder := &recordingWithdrawalRecorder{}
+	drawnAt := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo),
+		WithInventorySource(finder, coord, api),
+		WithWithdrawalRecorder(recorder, &shared.MockClock{CurrentTime: drawnAt}),
+	)
+
+	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
+	profit := &contractQueries.ProfitabilityResult{MarketPrices: map[string]int{"IRON_ORE": 100}, CheapestMarketWaypoint: "X1-MARKET-M1"}
+	initial := contractWithFulfilled(t, 40, 0) // contract id "ct-inv"
+
+	_, err := executor.ProcessSingleDelivery(ctx, "TORWIND-1", shared.MustNewPlayerID(1), initial, ironDelivery(40), profit, &RunWorkflowResponse{}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, recorder.events, 1, "exactly one withdrawal event per successful buffer draw")
+	event := recorder.events[0]
+	require.Equal(t, "IRON_ORE", event.Good)
+	require.Equal(t, 40, event.Units, "the units actually drawn from the buffer")
+	require.Equal(t, "X1-HOME-WH9", event.Waypoint, "the warehouse the goods were drawn from, not the delivery destination")
+	require.Equal(t, "TORWIND-1", event.Ship, "the withdrawing hauler")
+	require.Equal(t, "ct-inv", event.ContractID, "the contract the draw is serving")
+	require.Equal(t, 1, event.PlayerID)
+	require.True(t, event.WithdrawnAt.Equal(drawnAt), "event stamped with the withdrawal time")
+}
+
+// The event fires on the ACTUAL successful draw, never on intent: a warehouse
+// drained between the finder read and the reservation falls through to the market
+// path and must record nothing.
+func TestTrySourceFromInventory_NoDraw_RecordsNoWithdrawalEvent(t *testing.T) {
+	hauler := buildShipWithIronOre(t, 0)
+	drained := storageShipWith(t, 0) // finder snapshot was stale; nothing left to draw
+	shipRepo := &reconcileFakeShipRepo{cached: hauler, server: hauler}
+	med := &invFakeMediator{navShip: hauler}
+	api := &invFakeAPI{}
+	finder := &invFakeFinder{src: &appContract.InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 200}}
+	coord := &invFakeCoordinator{ships: map[string][]*storage.StorageShip{"wh-1": {drained}}}
+	recorder := &recordingWithdrawalRecorder{}
+	executor := NewDeliveryExecutor(med, shipRepo, NewCargoManager(med, shipRepo),
+		WithInventorySource(finder, coord, api),
+		WithWithdrawalRecorder(recorder, &shared.MockClock{CurrentTime: time.Now()}),
+	)
+	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "tok"), &capturingLogger{})
+
+	withdrew, _, err := executor.trySourceFromInventory(ctx, "TORWIND-1", shared.MustNewPlayerID(1), hauler, ironDelivery(10), 10, nil, "ct-inv")
+
+	require.NoError(t, err)
+	require.False(t, withdrew)
+	require.Empty(t, recorder.events, "no draw happened → no event (emit on withdrawal, not intent)")
+	require.Equal(t, 0, api.transferCalls, "no transfer, so nothing to record")
 }

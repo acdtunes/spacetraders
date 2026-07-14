@@ -40,6 +40,16 @@ type DeliveryExecutor struct {
 	invFinder          appContract.InventorySourceFinder
 	storageCoordinator storage.StorageCoordinator
 	apiClient          domainPorts.APIClient
+
+	// Withdrawal instrumentation (sp-kqxe): a driven port that records each
+	// warehouse→hauler buffer draw as a structured economic event so downstream
+	// analysis can measure warehouse ROI (buffer hit-rate, served-from-buffer,
+	// contract-leg-avoided). Optional — a nil recorder disables emission so existing
+	// tests and any caller that has not wired it are byte-identical, mirroring the
+	// fail-open inventory-first wiring above. withdrawalClock stamps the event's
+	// timestamp; WithWithdrawalRecorder defaults it to a RealClock.
+	withdrawalRecorder storage.WithdrawalRecorder
+	withdrawalClock    shared.Clock
 }
 
 // DeliveryExecutorOption configures optional collaborators without breaking the
@@ -55,6 +65,22 @@ func WithInventorySource(finder appContract.InventorySourceFinder, coordinator s
 		e.invFinder = finder
 		e.storageCoordinator = coordinator
 		e.apiClient = apiClient
+	}
+}
+
+// WithWithdrawalRecorder wires the warehouse-withdrawal event recorder (sp-kqxe):
+// on each successful warehouse→hauler buffer draw the executor emits a structured
+// storage.WithdrawalEvent (good, units, waypoint, hauler, contract id, timestamp)
+// so downstream analysis can measure warehouse ROI. A nil recorder is a no-op, so
+// callers may forward the wiring unconditionally. The clock stamps the event's
+// WithdrawnAt; a nil clock defaults to shared.RealClock.
+func WithWithdrawalRecorder(recorder storage.WithdrawalRecorder, clock shared.Clock) DeliveryExecutorOption {
+	return func(e *DeliveryExecutor) {
+		e.withdrawalRecorder = recorder
+		if clock == nil {
+			clock = shared.NewRealClock()
+		}
+		e.withdrawalClock = clock
 	}
 }
 
@@ -200,7 +226,15 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 			// and re-sources the remainder (inventory again until drained, then
 			// market) — the sp-2ei3 two-phase, re-entered by re-consulting the
 			// warehouse each trip.
-			withdrew, invShip, invErr := e.trySourceFromInventory(ctx, shipSymbol, playerID, ship, currentDelivery, unitsToPurchase, profitabilityResp)
+			// contract is nil on some caller paths (e.g. the insufficient-credits and
+			// ladder-breach flows drive the loop without a contract aggregate), so the
+			// id is read nil-safely — a draw with no contract emits an empty (nullable)
+			// contract id, matching the event schema.
+			contractID := ""
+			if contract != nil {
+				contractID = contract.ContractID()
+			}
+			withdrew, invShip, invErr := e.trySourceFromInventory(ctx, shipSymbol, playerID, ship, currentDelivery, unitsToPurchase, profitabilityResp, contractID)
 			if invErr != nil {
 				logger.Log("WARNING", fmt.Sprintf(
 					"Inventory-first sourcing for %s errored (%v); falling through to the market path (never-skip, RULINGS #1)",
@@ -655,6 +689,7 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 	delivery domainContract.Delivery,
 	unitsToPurchase int,
 	profitabilityResp common.Response,
+	contractID string,
 ) (bool, *navigation.Ship, error) {
 	// Not wired (existing tests / feature off) -> market path, no error.
 	if e.invFinder == nil || e.storageCoordinator == nil || e.apiClient == nil {
@@ -740,6 +775,20 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 		}
 	}
 
+	// Emit the withdrawal as a structured economic event (sp-kqxe) now that the
+	// draw has physically moved (TransferCargo) and committed (ConfirmTransfer) —
+	// on the ACTUAL successful draw, never on intent. This is the record downstream
+	// warehouse-ROI analysis reads (buffer hit-rate, served-from-buffer,
+	// contract-leg-avoided).
+	e.recordWithdrawal(ctx, storage.WithdrawalEvent{
+		Good:       good,
+		Units:      toMove,
+		Waypoint:   src.StorageWaypoint,
+		Ship:       shipSymbol,
+		ContractID: contractID,
+		PlayerID:   playerID.Value(),
+	})
+
 	// Persist both ships' cargo state (mirror manufacturing).
 	if _, err := e.shipRepo.SyncShipFromAPI(ctx, storageShip.ShipSymbol(), playerID); err != nil {
 		logger.Log("WARN", "Inventory withdrawal: failed to sync storage ship after transfer", map[string]interface{}{
@@ -771,6 +820,27 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 	})
 
 	return true, reloaded, nil
+}
+
+// recordWithdrawal emits one warehouse→hauler withdrawal event (sp-kqxe) on the
+// actual successful draw, stamping it with the executor's clock. It is additive
+// instrumentation: a nil recorder is a no-op, and a persistence error is logged
+// and swallowed so telemetry can never fail a draw whose goods are already aboard
+// (fail-open, RULINGS #1). withdrawalClock is guaranteed non-nil whenever the
+// recorder is wired (WithWithdrawalRecorder sets both).
+func (e *DeliveryExecutor) recordWithdrawal(ctx context.Context, event storage.WithdrawalEvent) {
+	if e.withdrawalRecorder == nil {
+		return
+	}
+	event.WithdrawnAt = e.withdrawalClock.Now()
+	if err := e.withdrawalRecorder.Record(ctx, event); err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", "Withdrawal event record failed (draw succeeded; telemetry only)", map[string]interface{}{
+			"ship_symbol":  event.Ship,
+			"trade_symbol": event.Good,
+			"units":        event.Units,
+			"error":        err.Error(),
+		})
+	}
 }
 
 // reserveFromWarehouse reserves all unreserved units of good on the first

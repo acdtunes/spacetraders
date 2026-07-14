@@ -763,6 +763,29 @@ func (ContractClusterModel) TableName() string {
 	return "contract_clusters"
 }
 
+// WarehouseWithdrawalModel represents the warehouse_withdrawals table (sp-kqxe):
+// one row per warehouse→hauler buffer draw. A withdrawal is a NON-monetary cargo
+// transfer (zero credits — the goods' basis is sunk at deposit), so it is its own
+// economic event rather than a financial-ledger Transaction (a zero-amount
+// Transaction violates the ledger's balance invariant). Downstream analysis reads
+// this table to measure warehouse ROI (buffer hit-rate, served-from-buffer,
+// contract-leg-avoided). Born from AutoMigrate (no CREATE TABLE migration), like
+// tour_leg_telemetry.
+type WarehouseWithdrawalModel struct {
+	ID          uint      `gorm:"column:id;primaryKey;autoIncrement"`
+	Good        string    `gorm:"column:good;not null;index:idx_warehouse_withdrawals_good"`
+	Units       int       `gorm:"column:units;not null"`
+	Waypoint    string    `gorm:"column:waypoint;not null"`
+	ShipSymbol  string    `gorm:"column:ship_symbol;not null"`
+	ContractID  string    `gorm:"column:contract_id;index:idx_warehouse_withdrawals_contract"` // "" when the draw serves no contract
+	PlayerID    int       `gorm:"column:player_id;not null;index:idx_warehouse_withdrawals_player"`
+	WithdrawnAt time.Time `gorm:"column:withdrawn_at;not null"`
+}
+
+func (WarehouseWithdrawalModel) TableName() string {
+	return "warehouse_withdrawals"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -794,5 +817,6 @@ func AllModels() []any {
 		&ScoutPostModel{},
 		&MarketAbsorptionLedgerModel{},
 		&ContractClusterModel{},
+		&WarehouseWithdrawalModel{},
 	}
 }

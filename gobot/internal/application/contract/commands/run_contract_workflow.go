@@ -68,6 +68,17 @@ func WithInventorySourcing(finder appContract.InventorySourceFinder, coordinator
 	}
 }
 
+// WithWithdrawalRecording wires the warehouse-withdrawal event recorder (sp-kqxe)
+// onto the delivery executor: each successful warehouse→hauler buffer draw emits a
+// structured event (good, units, waypoint, hauler, contract id, timestamp) so
+// downstream analysis can measure warehouse ROI. A nil recorder is a no-op and a
+// nil clock defaults to RealClock, so callers may forward the wiring unconditionally.
+func WithWithdrawalRecording(recorder storage.WithdrawalRecorder, clock shared.Clock) RunWorkflowOption {
+	return func(c *runWorkflowConfig) {
+		c.deliveryOpts = append(c.deliveryOpts, contractServices.WithWithdrawalRecorder(recorder, clock))
+	}
+}
+
 // NewRunWorkflowHandler creates a new contract workflow handler
 func NewRunWorkflowHandler(
 	mediator common.Mediator,
