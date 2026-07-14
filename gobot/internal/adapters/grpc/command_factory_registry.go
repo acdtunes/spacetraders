@@ -926,6 +926,9 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		FeedSaturationMaxUnits: cfg.OptionalInt("feed_saturation_max_units", 0),
 		FeedSaturationMinUnits: cfg.OptionalInt("feed_saturation_min_units", 0),
 		FeedNonResponsiveGoods: cfg.OptionalStringSlice("feed_non_responsive_goods"),
+		// sp-ubwi: the per-supplyTask timeout, from [manufacturing] via resolveConstructionUnifiedGateFill.
+		// 0/absent → the drain's raised 30m default (the old hardcoded 10m abandoned legit long hauls).
+		SupplyTaskTimeoutSeconds: cfg.OptionalInt("construction_supply_task_timeout_seconds", 0),
 	}
 }
 

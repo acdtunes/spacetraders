@@ -51,7 +51,20 @@ const (
 	// by a daemon bounce. Generous enough never to cut a legitimate in-system source+deliver round trip
 	// (construction legs are single-system, RULINGS #14); firm enough to convert an "indefinite hang"
 	// into a logged, retried tick. A named default (RULINGS #5), tunable via the handler's taskTimeout.
-	constructionSupplyTaskDefaultTimeout = 10 * time.Minute
+	//
+	// sp-ubwi: RAISED 10m→30m. The 10m wrapped the ENTIRE supplyTask (claim→source→route-to-gate-with-
+	// refuel-hops→dock→supply→record); a legit multi-hop light-hauler round trip exceeds 10m, so healthy
+	// long hauls were abandoned AT the finish line and the retry grabbed a FRESH empty hull and re-bought,
+	// stranding the laden hull out of the pool. 30m clears an in-system multi-hop haul while still
+	// converting a genuine indefinite hang into a logged, retried tick. Overridable per-launch via
+	// SupplyTaskTimeoutSeconds ([manufacturing].construction_supply_task_timeout_seconds).
+	constructionSupplyTaskDefaultTimeout = 30 * time.Minute
+
+	// defaultConstructionLotUnits is the fallback per-lot hull-load used to size the fan-out (sp-ubwi)
+	// when an idle hull exposes no cargo capacity — a light hauler's hold. The fan-out prefers each
+	// idle hull's ACTUAL capacity (representativeLotUnits); this named default (RULINGS #5) only backstops
+	// a capacity-less hull so ceil(remaining/lotUnits) never divides by zero.
+	defaultConstructionLotUnits = 40
 )
 
 // ConstructionProducer is the narrow slice of the shared ProductionExecutor the drain
@@ -237,44 +250,48 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	// reusable next tick (ship claims also auto-release on restart via ReleaseAllActive).
 	defer h.releaseClaims(ctx, cmd.ContainerID, playerID)
 
-	// Pair each ready task with an idle hauler 1:1 by index, up to the smaller pool. Extra tasks
-	// are retried next tick (more haulers may free up); surplus haulers stay idle this tick.
-	pairs := len(tasks)
-	if len(idleShips) < pairs {
-		pairs = len(idleShips)
+	// Fan the ready materials into concurrent lot-tasks and pair each with an idle hauler (sp-ubwi).
+	// The pipeline stages exactly ONE task per material, so pairing 1:1 capped throughput at
+	// #materials-remaining — making --max-workers dead (2 materials => only 2 haulers ever worked,
+	// regardless of the cap). planDispatchLots fans each material into ceil(remaining/hull-load)
+	// concurrent lot-tasks — BOUNDED by max_workers and by the material's own remaining requirement (so
+	// concurrent lots never buy past what the gate needs) — so len(lots) scales to the hauler pool and
+	// the already-wired errgroup dispatches all of them.
+	workerCap := h.resolveWorkerCap(ctx, tasks)
+	lots := h.planDispatchLots(ctx, tasks, idleShips, workerCap)
+	if len(lots) == 0 {
+		// Every ready material's bill is already met (a met/racing-replenishment leftover) — nothing to
+		// buy without over-supplying. Report a clean no-drain tick rather than dispatch an empty haul.
+		return &RunConstructionCoordinatorResponse{TasksDrained: 0}, nil
 	}
 
-	// Dispatch the paired supplyTasks CONCURRENTLY (sp-01eh regression-restore): one goroutine per
-	// hull, each claiming + sourcing + delivering its OWN task in parallel — replacing the serial
-	// loop that left every other idle hull waiting while a single hull navigated/sourced/delivered.
-	// The pipeline's max_workers — until now vestigial (stored, read by no dispatcher) — is WIRED
-	// here as the concurrency bound via errgroup.SetLimit, so throughput scales with the idle pool
-	// (capped) instead of one-hull-at-a-time. No worker-container machinery is revived (Admiral
-	// veto): this stays the thin drain, just no longer serialized.
-	workerCap := h.resolveWorkerCap(ctx, tasks[:pairs])
+	// Dispatch the lot-tasks CONCURRENTLY (sp-01eh regression-restore): one goroutine per hull, each
+	// claiming + sourcing + delivering its OWN lot in parallel. The pipeline's max_workers is WIRED as
+	// the concurrency bound via errgroup.SetLimit, so throughput scales with the idle pool (capped)
+	// instead of one-hull-at-a-time. No worker-container machinery is revived (Admiral veto): this stays
+	// the thin drain, now fanned out past #materials.
 	// Per-tick summary (sp-6zkg observability): a drain tick can no longer be silent — it always
 	// announces how much work it is about to dispatch, so a stall is visible against this line.
-	logger.Log("INFO", fmt.Sprintf("Construction drain: dispatching %d/%d ready task(s) across %d idle hauler(s) (worker cap %d)", pairs, len(tasks), len(idleShips), workerCap), map[string]interface{}{
-		"ready_tasks": len(tasks), "idle_haulers": len(idleShips), "pairs": pairs, "worker_cap": workerCap,
+	logger.Log("INFO", fmt.Sprintf("Construction drain: dispatching %d lot-task(s) across %d idle hauler(s) for %d ready material-task(s) (worker cap %d)", len(lots), len(idleShips), len(tasks), workerCap), map[string]interface{}{
+		"lot_tasks": len(lots), "ready_tasks": len(tasks), "idle_haulers": len(idleShips), "worker_cap": workerCap,
 	})
 	var drained atomic.Int64
 	var group errgroup.Group
 	group.SetLimit(workerCap)
-	for i := 0; i < pairs; i++ {
-		task := tasks[i]
-		ship := idleShips[i]
+	for i := range lots {
+		lot := lots[i]
 		group.Go(func() error {
-			// Atomic claim under the shared "manufacturing" identity (RULINGS #7): a hull pinned
-			// to another fleet, or grabbed since discovery, is rejected at the DB, not clobbered.
-			// The claim tx is the concurrency guard — each worker claims its OWN distinct hull, so
-			// there is no double-claim and no poaching of another operation's pinned hull.
-			if err := h.shipRepo.ClaimShip(ctx, ship.ShipSymbol(), cmd.ContainerID, playerID, operationManufacturing); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", ship.ShipSymbol(), err), nil)
-				return nil // task stays READY; retried next tick
+			// Atomic claim under the shared "manufacturing" identity (RULINGS #7): a hull pinned to
+			// another fleet, or grabbed since discovery, is rejected at the DB, not clobbered. The claim
+			// tx is the concurrency guard — each worker claims its OWN distinct hull, so there is no
+			// double-claim and no poaching of another operation's pinned hull.
+			if err := h.shipRepo.ClaimShip(ctx, lot.ship.ShipSymbol(), cmd.ContainerID, playerID, operationManufacturing); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", lot.ship.ShipSymbol(), err), nil)
+				return nil // lot stays undispatched; the material's task is retried next tick
 			}
 			// supplyTaskBounded (sp-6zkg): a per-task deadline so a single wedged task can never
 			// hold group.Wait() — and thus this whole tick / the coordinator goroutine — forever.
-			if h.supplyTaskBounded(ctx, cmd, systemSymbol, task, ship, playerID) {
+			if h.supplyTaskBounded(ctx, cmd, systemSymbol, lot, playerID) {
 				drained.Add(1)
 			}
 			// Task-level failures are recorded per worker (fail/defer); never propagated, so one
@@ -285,6 +302,179 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	_ = group.Wait() // workers always return nil; Wait joins them before the tick reports
 
 	return &RunConstructionCoordinatorResponse{TasksDrained: int(drained.Load())}, nil
+}
+
+// constructionLot is one hull's unit of work this tick (sp-ubwi): a DELIVER_TO_CONSTRUCTION task paired
+// with an idle hull, plus the fan-out bookkeeping. A material's SINGLE ready task becomes one non-ephemeral
+// lot; the fan-out adds EPHEMERAL clone lots so several hulls work the same material concurrently.
+type constructionLot struct {
+	task *manufacturing.ManufacturingTask
+	ship *navigation.Ship
+	// fillCap bounds this lot's PHASE-2 buy so concurrent lots of the same material do not collectively
+	// buy past its remaining requirement (the over-supply guard). 0 = NO cap: the sole lot for a material
+	// fills toward the full outstanding bill (sp-2me2 preserved); >0 = a per-lot slice of the remaining
+	// requirement, sized to a hull-load, so the slices across a material's lots sum to its remaining.
+	fillCap int
+	// ephemeral marks a fan-out CLONE (not one of the pipeline's persisted ready tasks): it does the real
+	// source+deliver+record work but skips task-status persistence AND replenishment — the material's
+	// original ready task (always dispatched alongside a clone) owns those, so the ready queue stays at
+	// the planner's one-task-per-material and the fan-out re-derives parallelism from live hulls each tick.
+	ephemeral bool
+}
+
+// planDispatchLots fans the ready material-tasks into per-hull lot-tasks (sp-ubwi), the fix for the
+// #materials concurrency ceiling. It (1) dispatches each existing ready task once (preserving today's
+// per-task behavior), skipping a material whose bill is already met; then (2) fans spare idle hulls onto
+// materials that still want more concurrent lots — bounded per material by ceil(remaining/hull-load) so a
+// material is never over-dispatched, and globally by max_workers (so a burst never stages far more lots
+// than can run) and the idle hull pool. Finally it assigns each lot a buy cap so concurrent same-material
+// lots never buy past the material's remaining requirement. The returned lots are index-paired to distinct
+// idle hulls (lots[i].ship == idleShips[i]).
+func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context, tasks []*manufacturing.ManufacturingTask, idleShips []*navigation.Ship, workerCap int) []constructionLot {
+	if len(idleShips) == 0 {
+		return nil
+	}
+	lotUnits := representativeLotUnits(idleShips)
+
+	// Per-material outstanding budget (units we may still BUY this tick, read once) + a representative
+	// task to clone for fan-out, in first-seen order for deterministic distribution.
+	order := make([]string, 0, len(tasks))
+	remaining := make(map[string]int)
+	repTask := make(map[string]*manufacturing.ManufacturingTask)
+	for _, task := range tasks {
+		key := materialKey(task)
+		if _, seen := remaining[key]; !seen {
+			remaining[key] = h.remainingBill(ctx, task)
+			repTask[key] = task
+			order = append(order, key)
+		}
+	}
+
+	// Global lot ceiling: never more lots than idle hulls, and never far more than max_workers can run —
+	// but always at least enough to dispatch every existing ready task (so the fan-out only ADDS work).
+	lotCeiling := len(idleShips)
+	if headroom := maxInt(len(tasks), workerCap); headroom < lotCeiling {
+		lotCeiling = headroom
+	}
+
+	lots := make([]constructionLot, 0, lotCeiling)
+	assigned := make(map[string]int)
+
+	// Pass 1: one lot per existing ready task, in order, skipping a material whose bill is already met
+	// (remaining<=0: a met/racing-replenishment leftover — dispatching it would buy against no demand) or
+	// whose per-material lot budget is already full (ceil(remaining/hull-load) — defends the over-supply
+	// guard even if the queue somehow over-staged a material).
+	for _, task := range tasks {
+		if len(lots) >= lotCeiling {
+			break
+		}
+		key := materialKey(task)
+		if remaining[key] <= 0 || assigned[key] >= ceilDiv(remaining[key], lotUnits) {
+			continue
+		}
+		lots = append(lots, constructionLot{task: task, ship: idleShips[len(lots)]})
+		assigned[key]++
+	}
+
+	// Pass 2: fan spare hulls onto the materials that still want more concurrent lots (ephemeral clones),
+	// picking the neediest each time so multiple materials share the pool fairly.
+	for len(lots) < lotCeiling {
+		key := neediestMaterial(order, remaining, assigned, lotUnits)
+		if key == "" {
+			break // no material wants another lot (every remaining requirement is covered)
+		}
+		clone := nextConstructionDeliveryTask(repTask[key])
+		if err := clone.MarkReady(); err != nil {
+			break // cannot stage a clone lot-task; stop fanning (all originals are already dispatched)
+		}
+		lots = append(lots, constructionLot{task: clone, ship: idleShips[len(lots)], ephemeral: true})
+		assigned[key]++
+	}
+
+	assignFillCaps(lots, remaining, lotUnits)
+	return lots
+}
+
+// neediestMaterial returns the material with the greatest unmet lot need (desired − assigned), where
+// desired = ceil(remaining/hull-load); "" when every material's lot budget is already filled. Ties break
+// by first-seen order for determinism.
+func neediestMaterial(order []string, remaining, assigned map[string]int, lotUnits int) string {
+	best := ""
+	bestNeed := 0
+	for _, key := range order {
+		need := ceilDiv(remaining[key], lotUnits) - assigned[key]
+		if need > bestNeed {
+			bestNeed = need
+			best = key
+		}
+	}
+	return best
+}
+
+// assignFillCaps sets each lot's buy cap so concurrent same-material lots never buy past the material's
+// remaining requirement (the sp-ubwi over-supply guard). A material with a SINGLE lot gets cap 0 (no cap:
+// fill toward the full outstanding bill, sp-2me2 preserved). A material with MULTIPLE lots has its
+// remaining requirement sliced into hull-load caps that sum to the remaining, so the concurrent lots
+// together buy at most what the gate still needs.
+func assignFillCaps(lots []constructionLot, remaining map[string]int, lotUnits int) {
+	counts := make(map[string]int)
+	for i := range lots {
+		counts[materialKey(lots[i].task)]++
+	}
+	budget := make(map[string]int, len(remaining))
+	for key, rem := range remaining {
+		budget[key] = rem
+	}
+	for i := range lots {
+		key := materialKey(lots[i].task)
+		if counts[key] <= 1 {
+			lots[i].fillCap = 0 // sole lot: fill toward the full outstanding bill (no per-lot cap)
+			continue
+		}
+		slice := lotUnits
+		if budget[key] < slice {
+			slice = budget[key]
+		}
+		if slice < 0 {
+			slice = 0
+		}
+		lots[i].fillCap = slice
+		budget[key] -= slice
+	}
+}
+
+// materialKey identifies a construction material by its pipeline + good, so two goods on one gate (and
+// the same good on two gates) are budgeted independently for the fan-out.
+func materialKey(task *manufacturing.ManufacturingTask) string {
+	return task.PipelineID() + "\x00" + task.Good()
+}
+
+// representativeLotUnits is the per-lot hull-load the fan-out sizes against — the cargo capacity of the
+// idle haulers (uniform light haulers in practice). Falls back to defaultConstructionLotUnits for a hull
+// exposing no capacity, so ceil(remaining/lotUnits) never divides by zero.
+func representativeLotUnits(ships []*navigation.Ship) int {
+	for _, ship := range ships {
+		if cargo := ship.Cargo(); cargo != nil && cargo.Capacity > 0 {
+			return cargo.Capacity
+		}
+	}
+	return defaultConstructionLotUnits
+}
+
+// ceilDiv is ceil(units/per) for positive inputs, 0 when there is nothing to divide (remaining<=0) or no
+// divisor — so a met bill yields a desired-lot count of 0 (no lot).
+func ceilDiv(units, per int) int {
+	if units <= 0 || per <= 0 {
+		return 0
+	}
+	return (units + per - 1) / per
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // resolveWorkerCap is the concurrency bound for this tick's dispatch: the largest max_workers
@@ -333,8 +523,10 @@ func (h *RunConstructionCoordinatorHandler) resolveWorkerCap(ctx context.Context
 // is deferred (parked PENDING, source cleared) rather than failed (RULINGS #1) — but on-hand cargo
 // that was already delivered is never stranded: such a task advances (completed; the outstanding
 // remainder re-stages via replenishment).
-func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, task *manufacturing.ManufacturingTask, ship *navigation.Ship, playerID shared.PlayerID) bool {
+func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, lot constructionLot, playerID shared.PlayerID) bool {
 	logger := common.LoggerFromContext(ctx)
+	task := lot.task
+	ship := lot.ship
 
 	if err := task.AssignShip(ship.ShipSymbol()); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not assign hauler to construction task %s: %v", task.ID(), err), nil)
@@ -356,9 +548,11 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 			// A 4219 'ship has 0 units' means the on-hand cargo was PHANTOM (the cache was never
 			// decremented after an earlier supply, sp-v5d1): resync the hull + defer, never fail/loop.
 			if isPhantomCargoSupplyError(err) {
-				return h.handlePhantomCargo(ctx, task, nil, ship, playerID, 0)
+				return h.handlePhantomCargo(ctx, task, nil, ship, playerID, 0, lot.ephemeral)
 			}
-			h.failTask(ctx, task, fmt.Sprintf("delivering on-hand %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
+			if !lot.ephemeral {
+				h.failTask(ctx, task, fmt.Sprintf("delivering on-hand %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
+			}
 			return false
 		}
 		if delivered > 0 {
@@ -366,7 +560,7 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 			pipeline = h.recordDelivery(ctx, task, delivered)
 			// The on-hand load met the site's remaining bill: complete now — never buy past demand.
 			if h.remainingForGoodLocked(pipeline, task.Good()) <= 0 {
-				return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+				return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, lot.ephemeral)
 			}
 			// Otherwise fall through to source the still-outstanding remainder.
 		}
@@ -381,7 +575,16 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	// executor; the fraction is the RULINGS #5 seam a per-run config can later tighten. A 0 bill
 	// (pipeline/material unreadable) leaves the executor to fill to full capacity — a supply is never
 	// harmful.
-	ctx = mfgServices.WithHullFillTarget(ctx, h.remainingBill(ctx, task), 0)
+	//
+	// sp-ubwi: when this lot is one of SEVERAL fanned onto the same material this tick, its buy is
+	// capped to a hull-load SLICE (lot.fillCap) so the concurrent lots together never buy past the
+	// material's remaining requirement (the over-supply guard). The SOLE lot for a material carries
+	// fillCap 0 and fills toward the full outstanding bill exactly as before (sp-2me2).
+	fillTarget := h.remainingBill(ctx, task)
+	if lot.fillCap > 0 && lot.fillCap < fillTarget {
+		fillTarget = lot.fillCap
+	}
+	ctx = mfgServices.WithHullFillTarget(ctx, fillTarget, 0)
 
 	// Source the material INTO the hauler on the shared engine, honoring the planner's
 	// already-made buy-vs-produce decision recorded on the task: a direct BUY of the final good
@@ -420,20 +623,26 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		// if the hull delivered its on-hand load this tick, complete the task (it advanced the gate)
 		// and let replenishment re-stage the remainder. Only a task that delivered NOTHING fails.
 		if deliveredOnHand > 0 {
-			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, lot.ephemeral)
 		}
-		h.failTask(ctx, task, fmt.Sprintf("sourcing %s failed: %v", task.Good(), err))
+		if !lot.ephemeral {
+			h.failTask(ctx, task, fmt.Sprintf("sourcing %s failed: %v", task.Good(), err))
+		}
 		return false
 	}
 	if result == nil || result.QuantityAcquired == 0 {
 		// Dry / no eligible source (the sp-a5j7 fail-closed park, UNCHANGED). If on-hand cargo was
 		// already delivered this tick, NEVER strand it: the task advanced, so complete it and let
 		// replenishment re-stage the unsourceable remainder for the SupplyMonitor to re-source. Only
-		// an empty-of-the-material hull defers here (RULINGS #1 never-skip) — the incident's fix.
+		// an empty-of-the-material hull defers here (RULINGS #1 never-skip) — the incident's fix. A
+		// fan-out CLONE never defers: its material's original ready task (dispatched alongside) owns the
+		// defer, so the clone just abandons its empty trip.
 		if deliveredOnHand > 0 {
-			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, lot.ephemeral)
 		}
-		h.deferTask(ctx, task)
+		if !lot.ephemeral {
+			h.deferTask(ctx, task)
+		}
 		return false
 	}
 
@@ -442,17 +651,19 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		// A 4219 on the sourced load is the same phantom-cargo signal: resync + recover without failing.
 		// On-hand progress already recorded this tick is preserved by handlePhantomCargo (never stranded).
 		if isPhantomCargoSupplyError(err) {
-			return h.handlePhantomCargo(ctx, task, pipeline, ship, playerID, deliveredOnHand)
+			return h.handlePhantomCargo(ctx, task, pipeline, ship, playerID, deliveredOnHand, lot.ephemeral)
 		}
 		if deliveredOnHand > 0 {
-			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, lot.ephemeral)
 		}
-		h.failTask(ctx, task, fmt.Sprintf("delivering %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
+		if !lot.ephemeral {
+			h.failTask(ctx, task, fmt.Sprintf("delivering %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
+		}
 		return false
 	}
 
 	pipeline = h.recordDelivery(ctx, task, delivered)
-	return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand+delivered)
+	return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand+delivered, lot.ephemeral)
 }
 
 // supplyTaskTimeout is the per-task deadline (sp-6zkg), defaulting to constructionSupplyTaskDefaultTimeout.
@@ -461,6 +672,17 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskTimeout() time.Duration {
 		return h.taskTimeout
 	}
 	return constructionSupplyTaskDefaultTimeout
+}
+
+// effectiveSupplyTaskTimeout resolves the per-supplyTask deadline for this run (sp-ubwi): a per-launch
+// SupplyTaskTimeoutSeconds ([manufacturing].construction_supply_task_timeout_seconds) wins, else the
+// handler default (supplyTaskTimeout — the raised 30m, or a test override). This is the seam that made
+// the timeout CONFIGURABLE instead of the hardcoded 10m that abandoned healthy long hauls at the gate.
+func (h *RunConstructionCoordinatorHandler) effectiveSupplyTaskTimeout(cmd *RunConstructionCoordinatorCommand) time.Duration {
+	if cmd != nil && cmd.SupplyTaskTimeoutSeconds > 0 {
+		return time.Duration(cmd.SupplyTaskTimeoutSeconds) * time.Second
+	}
+	return h.supplyTaskTimeout()
 }
 
 // supplyTaskBounded runs supplyTask under a per-task deadline so a single wedged task can NEVER hold
@@ -472,9 +694,11 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskTimeout() time.Duration {
 // later while the drain keeps ticking, and because taskCtx is cancelled the money paths abort rather
 // than spend (RULINGS #4). done is buffered so a late finish never blocks a possibly-orphaned child.
 // Per-step enter/exit logging makes a slow/wedged task diagnosable rather than an undiagnosable hang.
-func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, task *manufacturing.ManufacturingTask, ship *navigation.Ship, playerID shared.PlayerID) bool {
+func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, lot constructionLot, playerID shared.PlayerID) bool {
 	logger := common.LoggerFromContext(ctx)
-	timeout := h.supplyTaskTimeout()
+	task := lot.task
+	ship := lot.ship
+	timeout := h.effectiveSupplyTaskTimeout(cmd)
 	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -483,7 +707,7 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Contex
 	})
 
 	done := make(chan bool, 1)
-	go func() { done <- h.supplyTask(taskCtx, cmd, systemSymbol, task, ship, playerID) }()
+	go func() { done <- h.supplyTask(taskCtx, cmd, systemSymbol, lot, playerID) }()
 
 	select {
 	case drained := <-done:
@@ -503,21 +727,29 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Contex
 // next single-load replenishment when the site's bill is not yet met (PHASE-5 continuous refill,
 // sp-utjr), and log the supply. Returns true (the task drained). Shared by the deliver-on-hand path
 // and the source-then-deliver path (sp-9ptm) so the completion/refill logic cannot drift.
-func (h *RunConstructionCoordinatorHandler) completeSupply(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline, ship *navigation.Ship, delivered int) bool {
+func (h *RunConstructionCoordinatorHandler) completeSupply(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline, ship *navigation.Ship, delivered int, ephemeral bool) bool {
 	logger := common.LoggerFromContext(ctx)
-	if err := task.Complete(); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not complete construction task %s: %v", task.ID(), err), nil)
+	// A fan-out CLONE (sp-ubwi) has ALREADY done the real work — sourced, delivered, and recorded the
+	// pipeline progress (recordDelivery, above) — so it must NOT persist a task status or enqueue a
+	// replenishment: the material's ORIGINAL ready task (dispatched alongside every clone) owns the
+	// task lifecycle and the single-per-material re-staging. Skipping both keeps the ready queue at the
+	// planner's one-task-per-material and lets the fan-out re-derive parallelism from live hulls each
+	// tick, with no clone-created task rows to orphan.
+	if !ephemeral {
+		if err := task.Complete(); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Could not complete construction task %s: %v", task.ID(), err), nil)
+		}
+		if err := h.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Could not persist completed construction task %s: %v", task.ID(), err), nil)
+		}
+		// One supplyTask delivers a single hauler load. If the site's bill for this material is not yet
+		// met, enqueue the next delivery so the gate keeps filling without a manual re-plan — the drain
+		// self-re-stages until each material's full bill is met, instead of stalling on the planner's
+		// single per-material task.
+		h.enqueueReplenishmentIfNeeded(ctx, task, pipeline)
 	}
-	if err := h.taskRepo.Update(ctx, task); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not persist completed construction task %s: %v", task.ID(), err), nil)
-	}
-	// One supplyTask delivers a single hauler load. If the site's bill for this material is not yet
-	// met, enqueue the next delivery so the gate keeps filling without a manual re-plan — the drain
-	// self-re-stages until each material's full bill is met, instead of stalling on the planner's
-	// single per-material task.
-	h.enqueueReplenishmentIfNeeded(ctx, task, pipeline)
 	logger.Log("INFO", fmt.Sprintf("Supplied %d %s to construction site %s", delivered, task.Good(), task.ConstructionSite()), map[string]interface{}{
-		"good": task.Good(), "units": delivered, "construction_site": task.ConstructionSite(), "ship": ship.ShipSymbol(),
+		"good": task.Good(), "units": delivered, "construction_site": task.ConstructionSite(), "ship": ship.ShipSymbol(), "ephemeral": ephemeral,
 	})
 	return true
 }
@@ -829,7 +1061,7 @@ func isPhantomCargoSupplyError(err error) bool {
 // strand delivered units); otherwise DEFER the task for re-sourcing, so the NEXT tick sources into a
 // hull with REAL cargo rather than re-routing this empty one to re-deliver. Returns whether the task
 // counts as drained this tick.
-func (h *RunConstructionCoordinatorHandler) handlePhantomCargo(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline, ship *navigation.Ship, playerID shared.PlayerID, deliveredOnHand int) bool {
+func (h *RunConstructionCoordinatorHandler) handlePhantomCargo(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline, ship *navigation.Ship, playerID shared.PlayerID, deliveredOnHand int, ephemeral bool) bool {
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("WARNING", fmt.Sprintf("Construction drain: hauler %s supply of %s rejected as PHANTOM cargo (API 4219, ship has 0 units) — resyncing hull and recovering the task (never re-routing/hanging) [sp-6zkg/sp-j09q]", ship.ShipSymbol(), task.Good()), map[string]interface{}{
 		"ship": ship.ShipSymbol(), "good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(),
@@ -837,9 +1069,13 @@ func (h *RunConstructionCoordinatorHandler) handlePhantomCargo(ctx context.Conte
 	h.resyncShipCargo(ctx, ship.ShipSymbol(), playerID)
 	if deliveredOnHand > 0 {
 		// On-hand units already delivered + recorded this tick — complete (never strand them).
-		return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand)
+		return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, ephemeral)
 	}
-	h.deferTask(ctx, task)
+	// A fan-out CLONE never defers (its material's original ready task owns the defer); only a real task
+	// parks for re-sourcing.
+	if !ephemeral {
+		h.deferTask(ctx, task)
+	}
 	return false
 }
 

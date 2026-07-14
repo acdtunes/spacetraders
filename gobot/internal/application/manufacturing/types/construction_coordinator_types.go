@@ -48,6 +48,14 @@ type RunConstructionCoordinatorCommand struct {
 	FeedSaturationMaxUnits int
 	FeedSaturationMinUnits int
 	FeedNonResponsiveGoods []string
+
+	// SupplyTaskTimeoutSeconds bounds a SINGLE supplyTask (claim→source→route-with-refuel→supply→record)
+	// before the drain abandons it and retries next tick (sp-ubwi). 0/absent → the coordinator's raised
+	// 30m default; a legit multi-hop light-hauler round trip exceeds the old hardcoded 10m, which
+	// abandoned healthy long hauls at the finish line (and the retry re-bought on a fresh empty hull,
+	// stranding the laden one). Fed from [manufacturing].construction_supply_task_timeout_seconds so a
+	// captain retunes it live (RULINGS #5); a per-launch config value overrides the handler default.
+	SupplyTaskTimeoutSeconds int
 }
 
 // RunConstructionCoordinatorResponse reports the outcome of the last drain tick.

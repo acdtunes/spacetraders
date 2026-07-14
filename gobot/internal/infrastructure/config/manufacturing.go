@@ -186,6 +186,15 @@ type ManufacturingConfig struct {
 	// {EQUIPMENT,LAB_INSTRUMENTS,FOOD,MEDICINE}; a list lets the analyst retune it live.
 	FeedNonResponsiveGoods []string `mapstructure:"feed_non_responsive_goods"`
 
+	// ConstructionSupplyTaskTimeoutSeconds bounds a SINGLE construction supplyTask (claim→source→route-
+	// to-gate-with-refuel-hops→dock→supply→record) before the drain abandons it and retries next tick
+	// (sp-ubwi). 0/absent → the drain's raised 30m default; the old hardcoded 10m abandoned legit
+	// multi-hop light-hauler hauls at the finish line (and the retry re-bought on a fresh empty hull,
+	// stranding the laden one). Threaded into the construction_coordinator command
+	// (RunConstructionCoordinatorCommand.SupplyTaskTimeoutSeconds) so a captain retunes it live by
+	// editing config.yaml and restarting (sp-ts82 / RULINGS #5).
+	ConstructionSupplyTaskTimeoutSeconds int `mapstructure:"construction_supply_task_timeout_seconds"`
+
 	// Siting nests the factory SITING coordinator's knobs (sp-vdld) under
 	// [manufacturing.siting] — the standing brain that scans/scores/sizes/launches
 	// factory chains. Injected into the siting_coordinator container's launch config
