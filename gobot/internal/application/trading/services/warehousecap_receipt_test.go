@@ -2,7 +2,7 @@ package services
 
 import "testing"
 
-// A DESTINATION-side cluster warehouse gates its buffer on RECEIPT demand (bead
+// A DESTINATION-side depot warehouse gates its buffer on RECEIPT demand (bead
 // sp-u9xa): among the goods a destination receives via contract deliveries, the
 // knapsack pre-stages the ones whose SOURCE is FAR (a long haul-leg the buffer moves
 // off the serialized contract path onto parallel stockers) over the ones whose source

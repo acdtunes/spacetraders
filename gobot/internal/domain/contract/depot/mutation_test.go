@@ -1,4 +1,4 @@
-package cluster
+package depot
 
 import "testing"
 
@@ -6,27 +6,27 @@ import "testing"
 // sp-u9xa). They are PARAMETRIZED BY ROLE — the caller names which element class
 // (warehouse / stocker / delivery hull / source hub) to touch, and no role, waypoint,
 // or count is hardcoded. Every operation is an IMMUTABLE functional update: it returns
-// a NEW cluster and leaves the receiver untouched, so a durable store can apply an op,
+// a NEW depot and leaves the receiver untouched, so a durable store can apply an op,
 // persist the result, and never corrupt the in-memory registry the contract engine is
 // concurrently reading.
 
-func mutBase(t *testing.T) *ContractCluster {
+func mutBase(t *testing.T) *ContractDepot {
 	t.Helper()
-	c, err := NewContractCluster("cluster-mut",
+	c, err := NewContractDepot("depot-mut",
 		[]Element{{Waypoint: "X1-D-W1", ShipSymbol: "WH-1"}},
 		[]Element{{Waypoint: "X1-S-1", ShipSymbol: "ST-1"}},
 		[]Element{{Waypoint: "X1-D-W1", ShipSymbol: "DH-1"}},
 		[]Element{{Waypoint: "X1-S-1", ShipSymbol: "HUB-1"}},
 	)
 	if err != nil {
-		t.Fatalf("build base cluster: %v", err)
+		t.Fatalf("build base depot: %v", err)
 	}
 	return c
 }
 
-// roleElements reads the slice for a role off a cluster, so the table tests can assert
+// roleElements reads the slice for a role off a depot, so the table tests can assert
 // against the class they mutated without duplicating the accessor switch.
-func roleElements(c *ContractCluster, role Role) []Element {
+func roleElements(c *ContractDepot, role Role) []Element {
 	switch role {
 	case RoleWarehouse:
 		return c.Warehouses()
@@ -40,7 +40,7 @@ func roleElements(c *ContractCluster, role Role) []Element {
 	return nil
 }
 
-func TestContractCluster_WithElementAdded_ParametrizedByRole(t *testing.T) {
+func TestContractDepot_WithElementAdded_ParametrizedByRole(t *testing.T) {
 	// Each role gets a new element appended; the receiver is never mutated.
 	for _, role := range []Role{RoleWarehouse, RoleStocker, RoleDeliveryHull, RoleSourceHub} {
 		t.Run(role.String(), func(t *testing.T) {
@@ -67,7 +67,7 @@ func TestContractCluster_WithElementAdded_ParametrizedByRole(t *testing.T) {
 	}
 }
 
-func TestContractCluster_WithElementRemoved_ByShipSymbol(t *testing.T) {
+func TestContractDepot_WithElementRemoved_ByShipSymbol(t *testing.T) {
 	base := mutBase(t)
 
 	got, err := base.WithElementRemoved(RoleStocker, "ST-1")
@@ -82,19 +82,19 @@ func TestContractCluster_WithElementRemoved_ByShipSymbol(t *testing.T) {
 	}
 }
 
-func TestContractCluster_WithElementRemoved_UnknownShipErrors(t *testing.T) {
+func TestContractDepot_WithElementRemoved_UnknownShipErrors(t *testing.T) {
 	base := mutBase(t)
 	if _, err := base.WithElementRemoved(RoleStocker, "NOPE"); err == nil {
 		t.Fatalf("removing an absent ship must error so the CLI reports it")
 	}
 }
 
-// Removing the LAST warehouse would leave a cluster that localizes nothing — the one
-// structural invariant. The mutation must refuse it rather than produce an illegal cluster.
-func TestContractCluster_WithElementRemoved_LastWarehouseRefused(t *testing.T) {
+// Removing the LAST warehouse would leave a depot that localizes nothing — the one
+// structural invariant. The mutation must refuse it rather than produce an illegal depot.
+func TestContractDepot_WithElementRemoved_LastWarehouseRefused(t *testing.T) {
 	base := mutBase(t)
 	if _, err := base.WithElementRemoved(RoleWarehouse, "WH-1"); err == nil {
-		t.Fatalf("removing the last warehouse must be refused (cluster would own no destination)")
+		t.Fatalf("removing the last warehouse must be refused (depot would own no destination)")
 	}
 }
 
@@ -102,7 +102,7 @@ func TestContractCluster_WithElementRemoved_LastWarehouseRefused(t *testing.T) {
 // op — e.g. parking a delivery hull at its warehouse per the analyst's co-location
 // policy). It preserves identity + order and never invents co-location: the caller
 // supplies the waypoint.
-func TestContractCluster_WithElementPlaced_RepositionsExistingElement(t *testing.T) {
+func TestContractDepot_WithElementPlaced_RepositionsExistingElement(t *testing.T) {
 	base := mutBase(t)
 
 	got, err := base.WithElementPlaced(RoleDeliveryHull, "DH-1", "X1-MOVED-7")
@@ -118,7 +118,7 @@ func TestContractCluster_WithElementPlaced_RepositionsExistingElement(t *testing
 	}
 }
 
-func TestContractCluster_WithElementPlaced_UnknownShipErrors(t *testing.T) {
+func TestContractDepot_WithElementPlaced_UnknownShipErrors(t *testing.T) {
 	base := mutBase(t)
 	if _, err := base.WithElementPlaced(RoleDeliveryHull, "NOPE", "X1-MOVED-7"); err == nil {
 		t.Fatalf("placing an absent ship must error (place repositions an existing element)")

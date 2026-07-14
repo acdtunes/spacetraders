@@ -1,7 +1,7 @@
 package services
 
 // ReceiptCandidate is one good a DESTINATION receives via contract deliveries — the
-// receipt-demand signal for a destination-side (contract cluster) warehouse's auto-cap
+// receipt-demand signal for a destination-side (contract depot) warehouse's auto-cap
 // knapsack (bead sp-u9xa). It is the sibling of the source-side
 // persistence.DemandCandidate: the SAME 0/1 knapsack, but the value is keyed on what the
 // destination RECEIVES (recurrence × payment) times the residual HAUL-LEG the buffer
@@ -26,7 +26,7 @@ type ReceiptCandidate struct {
 	DemandUnits      int
 }
 
-// PlanReceiptCaps solves the warehouse auto-cap knapsack for a DESTINATION-side cluster
+// PlanReceiptCaps solves the warehouse auto-cap knapsack for a DESTINATION-side depot
 // warehouse, keyed on RECEIPT demand (bead sp-u9xa). It is the sibling of PlanWarehouseCaps
 // (which stays keyed on the SOURCE buy-leg — that behavior is untouched): the same pure
 // ComputeWarehouseCaps knapsack and the same distance→residual ramp, but the demand is what

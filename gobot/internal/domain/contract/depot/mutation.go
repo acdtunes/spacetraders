@@ -1,8 +1,8 @@
-package cluster
+package depot
 
 import "fmt"
 
-// Role names one of a cluster's four element classes. It is the parameter the CLI's
+// Role names one of a depot's four element classes. It is the parameter the CLI's
 // granular add / remove / place operations take so no element class is hardcoded at a
 // call site: a caller names the role, and the mutation touches exactly that slice.
 type Role int
@@ -39,13 +39,13 @@ func ParseRole(name string) (Role, error) {
 			return role, nil
 		}
 	}
-	return 0, fmt.Errorf("unknown cluster element role %q (want one of warehouse, stocker, delivery-hull, source-hub)", name)
+	return 0, fmt.Errorf("unknown depot element role %q (want one of warehouse, stocker, delivery-hull, source-hub)", name)
 }
 
-// WithElementAdded returns a NEW cluster with e appended to the named role's elements,
+// WithElementAdded returns a NEW depot with e appended to the named role's elements,
 // leaving the receiver untouched (immutable functional update). The reconstruction runs
-// through NewContractCluster so the cluster invariants hold for the result.
-func (c *ContractCluster) WithElementAdded(role Role, e Element) (*ContractCluster, error) {
+// through NewContractDepot so the depot invariants hold for the result.
+func (c *ContractDepot) WithElementAdded(role Role, e Element) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
 	switch role {
 	case RoleWarehouse:
@@ -57,17 +57,17 @@ func (c *ContractCluster) WithElementAdded(role Role, e Element) (*ContractClust
 	case RoleSourceHub:
 		h = append(h, e)
 	default:
-		return nil, fmt.Errorf("unknown cluster element role %q", role)
+		return nil, fmt.Errorf("unknown depot element role %q", role)
 	}
-	return NewContractCluster(c.id, w, s, d, h)
+	return NewContractDepot(c.id, w, s, d, h)
 }
 
-// WithElementRemoved returns a NEW cluster with the element crewed by shipSymbol dropped
+// WithElementRemoved returns a NEW depot with the element crewed by shipSymbol dropped
 // from the named role, leaving the receiver untouched. It errors when no element in that
 // role is crewed by shipSymbol (so the CLI can report "nothing to remove"), and — via
-// NewContractCluster — when the removal would leave the cluster with no destination
+// NewContractDepot — when the removal would leave the depot with no destination
 // warehouse (the one structural invariant).
-func (c *ContractCluster) WithElementRemoved(role Role, shipSymbol string) (*ContractCluster, error) {
+func (c *ContractDepot) WithElementRemoved(role Role, shipSymbol string) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
 	var target *[]Element
 	switch role {
@@ -80,23 +80,23 @@ func (c *ContractCluster) WithElementRemoved(role Role, shipSymbol string) (*Con
 	case RoleSourceHub:
 		target = &h
 	default:
-		return nil, fmt.Errorf("unknown cluster element role %q", role)
+		return nil, fmt.Errorf("unknown depot element role %q", role)
 	}
 	filtered, found := removeByShip(*target, shipSymbol)
 	if !found {
-		return nil, fmt.Errorf("no %s element crewed by ship %q in cluster %q", role, shipSymbol, c.id)
+		return nil, fmt.Errorf("no %s element crewed by ship %q in depot %q", role, shipSymbol, c.id)
 	}
 	*target = filtered
-	return NewContractCluster(c.id, w, s, d, h)
+	return NewContractDepot(c.id, w, s, d, h)
 }
 
-// WithElementPlaced returns a NEW cluster with the element crewed by shipSymbol in the
+// WithElementPlaced returns a NEW depot with the element crewed by shipSymbol in the
 // named role repositioned to waypoint, preserving its identity and slice order. It is
 // the parametrized positioning op (e.g. parking a delivery hull at its warehouse per the
 // analyst's co-location policy) — it invents no placement, the caller supplies the
 // waypoint. It errors when no such element exists (place repositions an existing member,
 // use WithElementAdded to introduce one).
-func (c *ContractCluster) WithElementPlaced(role Role, shipSymbol, waypoint string) (*ContractCluster, error) {
+func (c *ContractDepot) WithElementPlaced(role Role, shipSymbol, waypoint string) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
 	var target *[]Element
 	switch role {
@@ -109,7 +109,7 @@ func (c *ContractCluster) WithElementPlaced(role Role, shipSymbol, waypoint stri
 	case RoleSourceHub:
 		target = &h
 	default:
-		return nil, fmt.Errorf("unknown cluster element role %q", role)
+		return nil, fmt.Errorf("unknown depot element role %q", role)
 	}
 	placed := false
 	for i := range *target {
@@ -120,9 +120,9 @@ func (c *ContractCluster) WithElementPlaced(role Role, shipSymbol, waypoint stri
 		}
 	}
 	if !placed {
-		return nil, fmt.Errorf("no %s element crewed by ship %q in cluster %q to place", role, shipSymbol, c.id)
+		return nil, fmt.Errorf("no %s element crewed by ship %q in depot %q to place", role, shipSymbol, c.id)
 	}
-	return NewContractCluster(c.id, w, s, d, h)
+	return NewContractDepot(c.id, w, s, d, h)
 }
 
 // removeByShip returns src without the first element crewed by shipSymbol and whether one

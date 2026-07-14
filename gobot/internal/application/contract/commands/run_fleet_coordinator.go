@@ -82,16 +82,16 @@ type RunFleetCoordinatorHandler struct {
 	absorptionConsultOff      bool
 	absorptionPlannedTTLSlack time.Duration
 
-	// clusterRegistryProvider (sp-u9xa, the final seam) resolves the LIVE contract-
-	// cluster routing registry each pass, so an active contract whose destination is
-	// owned by a configured cluster is delivered via that cluster's config-assigned,
+	// depotRegistryProvider (sp-u9xa, the final seam) resolves the LIVE contract-
+	// depot routing registry each pass, so an active contract whose destination is
+	// owned by a configured depot is delivered via that depot's config-assigned,
 	// co-located delivery hull (withdraw-local + deliver-local) instead of the default
 	// distance-based pool selection + cheapest-market sourcing. Nil (tests / feature
 	// off) or an empty/unavailable registry degrades to the default long-haul path
 	// BYTE-IDENTICALLY — the natural off-switch, no config flag. The daemon injects a
-	// store-backed provider via SetClusterRegistryProvider, mirroring the invFinder /
+	// store-backed provider via SetDepotRegistryProvider, mirroring the invFinder /
 	// standbyProvider optional-injection idiom.
-	clusterRegistryProvider appContract.ClusterRegistryProvider
+	depotRegistryProvider appContract.DepotRegistryProvider
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -182,15 +182,15 @@ func (h *RunFleetCoordinatorHandler) SetInventoryFinder(finder appContract.Inven
 	h.invFinder = finder
 }
 
-// SetClusterRegistryProvider wires the live contract-cluster routing registry source
+// SetDepotRegistryProvider wires the live contract-depot routing registry source
 // (sp-u9xa, the final seam) so an active contract whose destination is owned by a
-// configured cluster routes to that cluster's config-assigned delivery hull and prefers
+// configured depot routes to that depot's config-assigned delivery hull and prefers
 // its co-located destination warehouse as the withdrawal source. Optional and nil-safe:
 // without it — or with an empty/unavailable registry — the coordinator runs its default
 // long-haul routing byte-identically (empty registry == today's behavior). Mirrors the
 // SetInventoryFinder / SetStandbyStationProvider optional-injection idiom.
-func (h *RunFleetCoordinatorHandler) SetClusterRegistryProvider(provider appContract.ClusterRegistryProvider) {
-	h.clusterRegistryProvider = provider
+func (h *RunFleetCoordinatorHandler) SetDepotRegistryProvider(provider appContract.DepotRegistryProvider) {
+	h.depotRegistryProvider = provider
 }
 
 // Handle executes the fleet coordinator command
@@ -678,31 +678,31 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// sp-u9xa cluster routing seam (the FINAL integration): BEFORE the default
-		// distance-based hull selection, consult the LIVE cluster registry (resolved
-		// fail-safe each pass from the boot-loaded durable store). An owning cluster with
+		// sp-u9xa depot routing seam (the FINAL integration): BEFORE the default
+		// distance-based hull selection, consult the LIVE depot registry (resolved
+		// fail-safe each pass from the boot-loaded durable store). An owning depot with
 		// a config-assigned delivery hull diverts THIS contract onto that pinned,
 		// co-located hull (withdraw-local + deliver-local) — the good is already
-		// pre-staged in the cluster's destination warehouse, which the inventory-first
+		// pre-staged in the depot's destination warehouse, which the inventory-first
 		// sourcing above (PlanSourcing + invFinder) already prefers as the zero-ask
 		// source, so purchaseMarket is that warehouse. A nil/empty/unavailable registry,
-		// or a destination no cluster owns, returns ok=false and the default
+		// or a destination no depot owns, returns ok=false and the default
 		// SelectClosestShip path in the else runs BYTE-IDENTICALLY — the natural
 		// off-switch (no config flag; empty registry == today's behavior).
 		var selectedShip string
 		var distance float64
-		if route, ok := routeContractViaCluster(
-			appContract.ResolveClusterRegistry(ctx, logger, h.clusterRegistryProvider, cmd.PlayerID.Value()),
+		if route, ok := routeContractViaDepot(
+			appContract.ResolveDepotRegistry(ctx, logger, h.depotRegistryProvider, cmd.PlayerID.Value()),
 			contract,
 		); ok {
 			selectedShip = route.DeliveryHull
 			logger.Log("INFO", fmt.Sprintf(
-				"Contract %s destination owned by cluster %s - routing to config-assigned delivery hull %s (prefer warehouse %s; withdraw-local+deliver-local via source %s)",
-				contract.ContractID(), route.ClusterID, route.DeliveryHull, route.Warehouse, purchaseMarket),
+				"Contract %s destination owned by depot %s - routing to config-assigned delivery hull %s (prefer warehouse %s; withdraw-local+deliver-local via source %s)",
+				contract.ContractID(), route.DepotID, route.DeliveryHull, route.Warehouse, purchaseMarket),
 				map[string]interface{}{
-					"action":        "cluster_route_contract",
+					"action":        "depot_route_contract",
 					"contract_id":   contract.ContractID(),
-					"cluster_id":    route.ClusterID,
+					"depot_id":      route.DepotID,
 					"delivery_hull": route.DeliveryHull,
 					"warehouse":     route.Warehouse,
 					"source":        purchaseMarket,

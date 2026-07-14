@@ -343,6 +343,8 @@ Examples:
 	cmd.AddCommand(newContractListCommand())
 	cmd.AddCommand(newContractGetCommand())
 	cmd.AddCommand(newContractDemandCommand())
+	// Contract depots live under the contract group (sp-38xc): `contract depot ...`.
+	cmd.AddCommand(NewDepotCommand())
 
 	return cmd
 }

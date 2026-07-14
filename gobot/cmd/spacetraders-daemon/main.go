@@ -573,13 +573,13 @@ func run(cfg *config.Config) error {
 	// sp-78ai L2: wire the absorption ledger into the idle-arb dispatcher (consult +
 	// record), with the analyst-ruled knobs.
 	contractFleetCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.IdleArbConsultDisabled, cfg.Absorption.PlannedTTLSlack)
-	// sp-u9xa (the final seam): consume the boot-loaded contract-cluster routing
+	// sp-u9xa (the final seam): consume the boot-loaded contract-depot routing
 	// registry. The daemon server already re-derives the LIVE registry per player from
-	// the durable store (LoadClusterRegistry), so a `cluster add|remove` on the running
-	// daemon is honored the next pass with no restart. Fail-safe: with no clusters
+	// the durable store (LoadDepotRegistry), so a `depot add|remove` on the running
+	// daemon is honored the next pass with no restart. Fail-safe: with no depots
 	// configured the registry is empty and contract routing is byte-identical to today
 	// (the natural off-switch). Mirrors SetIdleArbLauncher(daemonServer) above.
-	contractFleetCoordinatorHandler.SetClusterRegistryProvider(daemonServer)
+	contractFleetCoordinatorHandler.SetDepotRegistryProvider(daemonServer)
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}

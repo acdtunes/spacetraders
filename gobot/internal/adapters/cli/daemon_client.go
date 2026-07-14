@@ -2050,159 +2050,187 @@ func (c *DaemonClient) ConstructionGoodOverride(ctx context.Context, req *pb.Con
 	return resp, nil
 }
 
-// --- Contract cluster management (sp-u9xa) ---
+// --- Contract depot management (sp-u9xa) ---
 
-// ClusterElementDTO mirrors the protobuf ClusterElement for CLI display and spec parsing.
+// DepotElementDTO mirrors the protobuf DepotElement for CLI display and spec parsing.
 // ShipSymbol may be empty (a declared-but-uncrewed slot). The json tags define the
-// operator spec-file format the `cluster apply` verb reads.
-type ClusterElementDTO struct {
+// operator spec-file format the `depot apply` verb reads.
+type DepotElementDTO struct {
 	Waypoint   string `json:"waypoint"`
 	ShipSymbol string `json:"ship_symbol"`
 }
 
-// ClusterDTO mirrors the protobuf ClusterSpec for CLI display and spec parsing.
-type ClusterDTO struct {
-	ID            string              `json:"id"`
-	Warehouses    []ClusterElementDTO `json:"warehouses"`
-	Stockers      []ClusterElementDTO `json:"stockers"`
-	DeliveryHulls []ClusterElementDTO `json:"delivery_hulls"`
-	SourceHubs    []ClusterElementDTO `json:"source_hubs"`
+// DepotDTO mirrors the protobuf DepotSpec for CLI display and spec parsing.
+type DepotDTO struct {
+	ID            string            `json:"id"`
+	Warehouses    []DepotElementDTO `json:"warehouses"`
+	Stockers      []DepotElementDTO `json:"stockers"`
+	DeliveryHulls []DepotElementDTO `json:"delivery_hulls"`
+	SourceHubs    []DepotElementDTO `json:"source_hubs"`
 }
 
-// ApplyClusterTopology sends the whole-topology DECLARATIVE bulk apply. Returns the
-// number of clusters the daemon persisted.
-func (c *DaemonClient) ApplyClusterTopology(ctx context.Context, playerID int, agentSymbol string, clusters []ClusterDTO) (int, error) {
-	req := &pb.ApplyClusterTopologyRequest{PlayerId: int32(playerID), Clusters: clusterDTOsToProto(clusters)}
+// ApplyDepotTopology sends the whole-topology DECLARATIVE bulk apply. Returns the
+// number of depots the daemon persisted.
+func (c *DaemonClient) ApplyDepotTopology(ctx context.Context, playerID int, agentSymbol string, depots []DepotDTO) (int, error) {
+	req := &pb.ApplyDepotTopologyRequest{PlayerId: int32(playerID), Depots: depotDTOsToProto(depots)}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	resp, err := c.client.ApplyClusterTopology(ctx, req)
+	resp, err := c.client.ApplyDepotTopology(ctx, req)
 	if err != nil {
 		return 0, fmt.Errorf(grpcCallFailed, err)
 	}
-	return int(resp.ClusterCount), nil
+	return int(resp.DepotCount), nil
 }
 
-// AddCluster adds one cluster (granular).
-func (c *DaemonClient) AddCluster(ctx context.Context, playerID int, agentSymbol string, cluster ClusterDTO) error {
-	req := &pb.AddClusterRequest{PlayerId: int32(playerID), Cluster: clusterDTOToProto(cluster)}
+// AddDepot adds one depot (granular).
+func (c *DaemonClient) AddDepot(ctx context.Context, playerID int, agentSymbol string, depot DepotDTO) error {
+	req := &pb.AddDepotRequest{PlayerId: int32(playerID), Depot: depotDTOToProto(depot)}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	if _, err := c.client.AddCluster(ctx, req); err != nil {
+	if _, err := c.client.AddDepot(ctx, req); err != nil {
 		return fmt.Errorf(grpcCallFailed, err)
 	}
 	return nil
 }
 
-// RemoveCluster removes one cluster by id (granular).
-func (c *DaemonClient) RemoveCluster(ctx context.Context, playerID int, agentSymbol, clusterID string) error {
-	req := &pb.RemoveClusterRequest{PlayerId: int32(playerID), ClusterId: clusterID}
+// RemoveDepot removes one depot by id (granular).
+func (c *DaemonClient) RemoveDepot(ctx context.Context, playerID int, agentSymbol, depotID string) error {
+	req := &pb.RemoveDepotRequest{PlayerId: int32(playerID), DepotId: depotID}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	if _, err := c.client.RemoveCluster(ctx, req); err != nil {
+	if _, err := c.client.RemoveDepot(ctx, req); err != nil {
 		return fmt.Errorf(grpcCallFailed, err)
 	}
 	return nil
 }
 
-// AddClusterElement adds one element to a cluster role (granular).
-func (c *DaemonClient) AddClusterElement(ctx context.Context, playerID int, agentSymbol, clusterID, role, waypoint, shipSymbol string) error {
-	req := &pb.AddClusterElementRequest{PlayerId: int32(playerID), ClusterId: clusterID, Role: role, Waypoint: waypoint, ShipSymbol: shipSymbol}
+// AddDepotElement adds one element to a depot role (granular).
+func (c *DaemonClient) AddDepotElement(ctx context.Context, playerID int, agentSymbol, depotID, role, waypoint, shipSymbol string) error {
+	req := &pb.AddDepotElementRequest{PlayerId: int32(playerID), DepotId: depotID, Role: role, Waypoint: waypoint, ShipSymbol: shipSymbol}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	if _, err := c.client.AddClusterElement(ctx, req); err != nil {
+	if _, err := c.client.AddDepotElement(ctx, req); err != nil {
 		return fmt.Errorf(grpcCallFailed, err)
 	}
 	return nil
 }
 
-// RemoveClusterElement removes the element crewed by shipSymbol from a role (granular).
-func (c *DaemonClient) RemoveClusterElement(ctx context.Context, playerID int, agentSymbol, clusterID, role, shipSymbol string) error {
-	req := &pb.RemoveClusterElementRequest{PlayerId: int32(playerID), ClusterId: clusterID, Role: role, ShipSymbol: shipSymbol}
+// RemoveDepotElement removes the element crewed by shipSymbol from a role (granular).
+func (c *DaemonClient) RemoveDepotElement(ctx context.Context, playerID int, agentSymbol, depotID, role, shipSymbol string) error {
+	req := &pb.RemoveDepotElementRequest{PlayerId: int32(playerID), DepotId: depotID, Role: role, ShipSymbol: shipSymbol}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	if _, err := c.client.RemoveClusterElement(ctx, req); err != nil {
+	if _, err := c.client.RemoveDepotElement(ctx, req); err != nil {
 		return fmt.Errorf(grpcCallFailed, err)
 	}
 	return nil
 }
 
-// PlaceClusterElement repositions the element crewed by shipSymbol to a waypoint (granular).
-func (c *DaemonClient) PlaceClusterElement(ctx context.Context, playerID int, agentSymbol, clusterID, role, shipSymbol, waypoint string) error {
-	req := &pb.PlaceClusterElementRequest{PlayerId: int32(playerID), ClusterId: clusterID, Role: role, ShipSymbol: shipSymbol, Waypoint: waypoint}
+// PlaceDepotElement repositions the element crewed by shipSymbol to a waypoint (granular).
+func (c *DaemonClient) PlaceDepotElement(ctx context.Context, playerID int, agentSymbol, depotID, role, shipSymbol, waypoint string) error {
+	req := &pb.PlaceDepotElementRequest{PlayerId: int32(playerID), DepotId: depotID, Role: role, ShipSymbol: shipSymbol, Waypoint: waypoint}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	if _, err := c.client.PlaceClusterElement(ctx, req); err != nil {
+	if _, err := c.client.PlaceDepotElement(ctx, req); err != nil {
 		return fmt.Errorf(grpcCallFailed, err)
 	}
 	return nil
 }
 
-// ListClusters returns the player's persisted clusters for CLI display.
-func (c *DaemonClient) ListClusters(ctx context.Context, playerID int, agentSymbol string) ([]*ClusterDTO, error) {
-	req := &pb.ListClustersRequest{PlayerId: int32(playerID)}
+// ListDepots returns the player's persisted depots for CLI display.
+func (c *DaemonClient) ListDepots(ctx context.Context, playerID int, agentSymbol string) ([]*DepotDTO, error) {
+	req := &pb.ListDepotsRequest{PlayerId: int32(playerID)}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol
 	}
-	resp, err := c.client.ListClusters(ctx, req)
+	resp, err := c.client.ListDepots(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
-	out := make([]*ClusterDTO, 0, len(resp.Clusters))
-	for _, pc := range resp.Clusters {
-		out = append(out, protoToClusterDTO(pc))
+	out := make([]*DepotDTO, 0, len(resp.Depots))
+	for _, pc := range resp.Depots {
+		out = append(out, protoToDepotDTO(pc))
 	}
 	return out, nil
 }
 
-func clusterDTOsToProto(clusters []ClusterDTO) []*pb.ClusterSpec {
-	out := make([]*pb.ClusterSpec, 0, len(clusters))
-	for _, c := range clusters {
-		out = append(out, clusterDTOToProto(c))
+// StartDepot persists one depot's topology and launches its coordinators in one shot
+// (sp-38xc). Returns the number of coordinators launched.
+func (c *DaemonClient) StartDepot(ctx context.Context, playerID int, agentSymbol string, depot DepotDTO) (int, error) {
+	req := &pb.StartDepotRequest{PlayerId: int32(playerID), Depot: depotDTOToProto(depot)}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.StartDepot(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf(grpcCallFailed, err)
+	}
+	return int(resp.Launched), nil
+}
+
+// StopDepot tears down the named depot's running coordinators (sp-38xc). Returns the
+// number of containers stopped.
+func (c *DaemonClient) StopDepot(ctx context.Context, playerID int, agentSymbol, depotID string) (int, error) {
+	req := &pb.StopDepotRequest{PlayerId: int32(playerID), DepotId: depotID}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.StopDepot(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf(grpcCallFailed, err)
+	}
+	return int(resp.Stopped), nil
+}
+
+func depotDTOsToProto(depots []DepotDTO) []*pb.DepotSpec {
+	out := make([]*pb.DepotSpec, 0, len(depots))
+	for _, c := range depots {
+		out = append(out, depotDTOToProto(c))
 	}
 	return out
 }
 
-func clusterDTOToProto(c ClusterDTO) *pb.ClusterSpec {
-	return &pb.ClusterSpec{
+func depotDTOToProto(c DepotDTO) *pb.DepotSpec {
+	return &pb.DepotSpec{
 		Id:            c.ID,
-		Warehouses:    clusterElementDTOsToProto(c.Warehouses),
-		Stockers:      clusterElementDTOsToProto(c.Stockers),
-		DeliveryHulls: clusterElementDTOsToProto(c.DeliveryHulls),
-		SourceHubs:    clusterElementDTOsToProto(c.SourceHubs),
+		Warehouses:    depotElementDTOsToProto(c.Warehouses),
+		Stockers:      depotElementDTOsToProto(c.Stockers),
+		DeliveryHulls: depotElementDTOsToProto(c.DeliveryHulls),
+		SourceHubs:    depotElementDTOsToProto(c.SourceHubs),
 	}
 }
 
-func clusterElementDTOsToProto(es []ClusterElementDTO) []*pb.ClusterElement {
+func depotElementDTOsToProto(es []DepotElementDTO) []*pb.DepotElement {
 	if len(es) == 0 {
 		return nil
 	}
-	out := make([]*pb.ClusterElement, 0, len(es))
+	out := make([]*pb.DepotElement, 0, len(es))
 	for _, e := range es {
-		out = append(out, &pb.ClusterElement{Waypoint: e.Waypoint, ShipSymbol: e.ShipSymbol})
+		out = append(out, &pb.DepotElement{Waypoint: e.Waypoint, ShipSymbol: e.ShipSymbol})
 	}
 	return out
 }
 
-func protoToClusterDTO(pc *pb.ClusterSpec) *ClusterDTO {
-	return &ClusterDTO{
+func protoToDepotDTO(pc *pb.DepotSpec) *DepotDTO {
+	return &DepotDTO{
 		ID:            pc.Id,
-		Warehouses:    protoToClusterElementDTOs(pc.Warehouses),
-		Stockers:      protoToClusterElementDTOs(pc.Stockers),
-		DeliveryHulls: protoToClusterElementDTOs(pc.DeliveryHulls),
-		SourceHubs:    protoToClusterElementDTOs(pc.SourceHubs),
+		Warehouses:    protoToDepotElementDTOs(pc.Warehouses),
+		Stockers:      protoToDepotElementDTOs(pc.Stockers),
+		DeliveryHulls: protoToDepotElementDTOs(pc.DeliveryHulls),
+		SourceHubs:    protoToDepotElementDTOs(pc.SourceHubs),
 	}
 }
 
-func protoToClusterElementDTOs(pes []*pb.ClusterElement) []ClusterElementDTO {
-	out := make([]ClusterElementDTO, 0, len(pes))
+func protoToDepotElementDTOs(pes []*pb.DepotElement) []DepotElementDTO {
+	out := make([]DepotElementDTO, 0, len(pes))
 	for _, pe := range pes {
-		out = append(out, ClusterElementDTO{Waypoint: pe.Waypoint, ShipSymbol: pe.ShipSymbol})
+		out = append(out, DepotElementDTO{Waypoint: pe.Waypoint, ShipSymbol: pe.ShipSymbol})
 	}
 	return out
 }

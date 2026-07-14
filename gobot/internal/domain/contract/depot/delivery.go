@@ -1,6 +1,6 @@
-package cluster
+package depot
 
-// SelectDeliveryHull returns the pinned delivery hull the cluster uses to fulfil a
+// SelectDeliveryHull returns the pinned delivery hull the depot uses to fulfil a
 // contract delivering to destinationSymbol. Selection is PURE CONFIGURATION: the
 // mechanism returns the config-assigned delivery hull (the first configured, in
 // config order) and does NOT prefer, favor, or special-case a hull that happens to
@@ -15,9 +15,9 @@ package cluster
 // destination assignment) can slot in without a signature change — never to
 // reintroduce a co-location preference.
 //
-// Returns ok=false only when the cluster has no delivery hull at all — then no local
+// Returns ok=false only when the depot has no delivery hull at all — then no local
 // delivery is possible and the caller keeps the legacy long haul.
-func (c *ContractCluster) SelectDeliveryHull(destinationSymbol string) (Element, bool) {
+func (c *ContractDepot) SelectDeliveryHull(destinationSymbol string) (Element, bool) {
 	if len(c.deliveryHulls) == 0 {
 		return Element{}, false
 	}

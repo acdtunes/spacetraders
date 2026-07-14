@@ -95,7 +95,7 @@ func (s *DaemonServer) StartWarehouse(
 
 // persistAndRunWarehouse builds the recovery-visible warehouse container from precomputed
 // per-good caps, persists it, and starts the claiming runner. Extracted (sp-cftm) so the
-// source-side StartWarehouse and the destination-side cluster launch share ONE container
+// source-side StartWarehouse and the destination-side depot launch share ONE container
 // lifecycle: the caps come from different selectors (source-side PlanWarehouseCaps vs
 // destination-receipt PlanReceiptCaps) but the persistence / claim / recovery path is
 // identical — no parallel channel.

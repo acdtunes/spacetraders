@@ -739,28 +739,28 @@ func (MarketAbsorptionLedgerModel) TableName() string {
 	return "market_absorption_ledger"
 }
 
-// ContractClusterModel represents the contract_clusters table (bead sp-u9xa): one
-// row per contract cluster, scoped to a player by the composite (id, player_id)
+// ContractDepotModel represents the contract_depots table (bead sp-u9xa): one
+// row per contract depot, scoped to a player by the composite (id, player_id)
 // primary key exactly like gas_operations / storage_operations. The four element
 // classes (destination warehouses, background stockers, pinned delivery hulls, source
 // hubs) are each a JSON-encoded array of {Waypoint, ShipSymbol} — the same JSON-array
-// idiom StorageOperationModel uses for its ship lists — so a whole cluster topology
+// idiom StorageOperationModel uses for its ship lists — so a whole depot topology
 // is one durable row the restart-safe registry rebuild re-derives from. Born from
 // AutoMigrate (no CREATE TABLE migration), like scout_posts.
-type ContractClusterModel struct {
+type ContractDepotModel struct {
 	ID            string       `gorm:"column:id;primaryKey;not null"`
 	PlayerID      int          `gorm:"column:player_id;primaryKey;not null"`
 	Player        *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	Warehouses    string       `gorm:"column:warehouses;type:text"`     // JSON array of cluster.Element (the routing anchor: >=1)
-	Stockers      string       `gorm:"column:stockers;type:text"`       // JSON array of cluster.Element
-	DeliveryHulls string       `gorm:"column:delivery_hulls;type:text"` // JSON array of cluster.Element
-	SourceHubs    string       `gorm:"column:source_hubs;type:text"`    // JSON array of cluster.Element
+	Warehouses    string       `gorm:"column:warehouses;type:text"`     // JSON array of depot.Element (the routing anchor: >=1)
+	Stockers      string       `gorm:"column:stockers;type:text"`       // JSON array of depot.Element
+	DeliveryHulls string       `gorm:"column:delivery_hulls;type:text"` // JSON array of depot.Element
+	SourceHubs    string       `gorm:"column:source_hubs;type:text"`    // JSON array of depot.Element
 	CreatedAt     time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt     time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
 }
 
-func (ContractClusterModel) TableName() string {
-	return "contract_clusters"
+func (ContractDepotModel) TableName() string {
+	return "contract_depots"
 }
 
 // WarehouseWithdrawalModel represents the warehouse_withdrawals table (sp-kqxe):
@@ -816,7 +816,7 @@ func AllModels() []any {
 		&TourLegTelemetryModel{},
 		&ScoutPostModel{},
 		&MarketAbsorptionLedgerModel{},
-		&ContractClusterModel{},
+		&ContractDepotModel{},
 		&WarehouseWithdrawalModel{},
 	}
 }

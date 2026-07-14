@@ -233,18 +233,23 @@ service DaemonService {
   // coordinator / task activator re-read the persisted overrides on their next discovery pass.
   rpc ConstructionGoodOverride(ConstructionGoodOverrideRequest) returns (ConstructionGoodOverrideResponse);
 
-  // --- Contract cluster management (sp-u9xa) ---
-  // The daemon is the single writer of contract-cluster topology; every mutation is durable
+  // --- Contract depot management (sp-u9xa) ---
+  // The daemon is the single writer of contract-depot topology; every mutation is durable
   // the instant it returns (through the application Store into the DB), so a granular edit
-  // needs no restart to take effect. ApplyClusterTopology is the declarative bulk apply; the
+  // needs no restart to take effect. ApplyDepotTopology is the declarative bulk apply; the
   // rest are granular live ops.
-  rpc ApplyClusterTopology(ApplyClusterTopologyRequest) returns (ApplyClusterTopologyResponse);
-  rpc AddCluster(AddClusterRequest) returns (AddClusterResponse);
-  rpc RemoveCluster(RemoveClusterRequest) returns (RemoveClusterResponse);
-  rpc AddClusterElement(AddClusterElementRequest) returns (ClusterElementResponse);
-  rpc RemoveClusterElement(RemoveClusterElementRequest) returns (ClusterElementResponse);
-  rpc PlaceClusterElement(PlaceClusterElementRequest) returns (ClusterElementResponse);
-  rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+  rpc ApplyDepotTopology(ApplyDepotTopologyRequest) returns (ApplyDepotTopologyResponse);
+  rpc AddDepot(AddDepotRequest) returns (AddDepotResponse);
+  rpc RemoveDepot(RemoveDepotRequest) returns (RemoveDepotResponse);
+  rpc AddDepotElement(AddDepotElementRequest) returns (DepotElementResponse);
+  rpc RemoveDepotElement(RemoveDepotElementRequest) returns (DepotElementResponse);
+  rpc PlaceDepotElement(PlaceDepotElementRequest) returns (DepotElementResponse);
+  rpc ListDepots(ListDepotsRequest) returns (ListDepotsResponse);
+  // Lifecycle (sp-38xc): StartDepot persists ONE depot's topology AND launches its
+  // coordinators in one shot (live activation, no restart; idle-idempotent so a re-run
+  // never double-launches). StopDepot tears down that depot's running coordinators.
+  rpc StartDepot(StartDepotRequest) returns (StartDepotResponse);
+  rpc StopDepot(StopDepotRequest) returns (StopDepotResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -1577,103 +1582,127 @@ message ConstructionGoodOverrideResponse {
   string min_supply = 7;
 }
 
-// --- Contract cluster management messages (sp-u9xa) ---
+// --- Contract depot management messages (sp-u9xa) ---
 
-// ClusterElement is one placed cluster member: a {waypoint, ship} pair. ship_symbol may
+// DepotElement is one placed depot member: a {waypoint, ship} pair. ship_symbol may
 // be empty for a declared-but-uncrewed slot. Nothing here is hardcoded — the whole
 // topology is operator data.
-message ClusterElement {
+message DepotElement {
   string waypoint = 1;
   string ship_symbol = 2;
 }
 
-// ClusterSpec is one whole cluster: its id and its four element classes (destination
+// DepotSpec is one whole depot: its id and its four element classes (destination
 // warehouses — the routing anchor, at least one — background stockers, pinned delivery
 // hulls, and source hubs).
-message ClusterSpec {
+message DepotSpec {
   string id = 1;
-  repeated ClusterElement warehouses = 2;
-  repeated ClusterElement stockers = 3;
-  repeated ClusterElement delivery_hulls = 4;
-  repeated ClusterElement source_hubs = 5;
+  repeated DepotElement warehouses = 2;
+  repeated DepotElement stockers = 3;
+  repeated DepotElement delivery_hulls = 4;
+  repeated DepotElement source_hubs = 5;
 }
 
-// ApplyClusterTopologyRequest is the DECLARATIVE bulk apply: it makes the player's
-// persisted set EXACTLY these clusters (upsert each, delete any not named).
-message ApplyClusterTopologyRequest {
+// ApplyDepotTopologyRequest is the DECLARATIVE bulk apply: it makes the player's
+// persisted set EXACTLY these depots (upsert each, delete any not named).
+message ApplyDepotTopologyRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
-  repeated ClusterSpec clusters = 3;
+  repeated DepotSpec depots = 3;
 }
 
-message ApplyClusterTopologyResponse {
+message ApplyDepotTopologyResponse {
   string status = 1;
-  int32 cluster_count = 2;
+  int32 depot_count = 2;
 }
 
-// AddClusterRequest adds ONE cluster without disturbing the rest (granular create).
-message AddClusterRequest {
+// AddDepotRequest adds ONE depot without disturbing the rest (granular create).
+message AddDepotRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
-  ClusterSpec cluster = 3;
+  DepotSpec depot = 3;
 }
 
-message AddClusterResponse {
-  string status = 1;
-}
-
-// RemoveClusterRequest deletes ONE cluster by id (granular, idempotent).
-message RemoveClusterRequest {
-  int32 player_id = 1;
-  optional string agent_symbol = 2;
-  string cluster_id = 3;
-}
-
-message RemoveClusterResponse {
+message AddDepotResponse {
   string status = 1;
 }
 
-// AddClusterElementRequest adds one element to a cluster's named role (warehouse |
+// RemoveDepotRequest deletes ONE depot by id (granular, idempotent).
+message RemoveDepotRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string depot_id = 3;
+}
+
+message RemoveDepotResponse {
+  string status = 1;
+}
+
+// AddDepotElementRequest adds one element to a depot's named role (warehouse |
 // stocker | delivery-hull | source-hub).
-message AddClusterElementRequest {
+message AddDepotElementRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
-  string cluster_id = 3;
+  string depot_id = 3;
   string role = 4;
   string waypoint = 5;
   string ship_symbol = 6;
 }
 
-// RemoveClusterElementRequest drops the element crewed by ship_symbol from a role.
-message RemoveClusterElementRequest {
+// RemoveDepotElementRequest drops the element crewed by ship_symbol from a role.
+message RemoveDepotElementRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
-  string cluster_id = 3;
+  string depot_id = 3;
   string role = 4;
   string ship_symbol = 5;
 }
 
-// PlaceClusterElementRequest repositions the element crewed by ship_symbol in a role to
+// PlaceDepotElementRequest repositions the element crewed by ship_symbol in a role to
 // waypoint (the parametrized co-location op).
-message PlaceClusterElementRequest {
+message PlaceDepotElementRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
-  string cluster_id = 3;
+  string depot_id = 3;
   string role = 4;
   string ship_symbol = 5;
   string waypoint = 6;
 }
 
-// ClusterElementResponse is the shared reply for the granular element ops.
-message ClusterElementResponse {
+// DepotElementResponse is the shared reply for the granular element ops.
+message DepotElementResponse {
   string status = 1;
 }
 
-message ListClustersRequest {
+message ListDepotsRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
 }
 
-message ListClustersResponse {
-  repeated ClusterSpec clusters = 1;
+message ListDepotsResponse {
+  repeated DepotSpec depots = 1;
+}
+
+// StartDepotRequest persists ONE depot's topology and launches its coordinators (sp-38xc).
+message StartDepotRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  DepotSpec depot = 3;
+}
+
+message StartDepotResponse {
+  string status = 1;
+  int32 launched = 2; // coordinators (warehouses + stockers) launched
+}
+
+// StopDepotRequest tears down the named depot's running coordinators (sp-38xc).
+message StopDepotRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  string depot_id = 3;
+}
+
+message StopDepotResponse {
+  string status = 1;
+  int32 stopped = 2; // containers stopped
 }

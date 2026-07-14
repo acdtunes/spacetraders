@@ -1,8 +1,8 @@
-package cluster
+package depot
 
 import "testing"
 
-// The load-bearing element: a cluster fulfils a routed contract with its PINNED
+// The load-bearing element: a depot fulfils a routed contract with its PINNED
 // delivery hull, chosen by PURE CONFIGURATION (the config-assigned hull — first in
 // config order). The mechanism does NOT prefer, favor, or special-case a hull that
 // happens to be co-located at the destination: co-location is whatever the config
@@ -12,7 +12,7 @@ import "testing"
 // hull. No delivery hull -> no local delivery available (ok=false) and the caller
 // keeps the long haul. The delivered outcome (co-located or not) is observable via
 // the returned hull's waypoint.
-func TestContractCluster_SelectsDeliveryHullPurelyByConfig(t *testing.T) {
+func TestContractDepot_SelectsDeliveryHullPurelyByConfig(t *testing.T) {
 	const dest = "X1-FAR-58"
 
 	cases := []struct {
@@ -65,9 +65,9 @@ func TestContractCluster_SelectsDeliveryHullPurelyByConfig(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := NewContractCluster("cluster-far", warehousesAt(dest), nil, tc.deliveryHulls, nil)
+			c, err := NewContractDepot("depot-far", warehousesAt(dest), nil, tc.deliveryHulls, nil)
 			if err != nil {
-				t.Fatalf("build cluster: %v", err)
+				t.Fatalf("build depot: %v", err)
 			}
 			hull, ok := c.SelectDeliveryHull(dest)
 			if ok != tc.wantOk {

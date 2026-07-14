@@ -64,7 +64,6 @@ Examples:
 	rootCmd.AddCommand(NewMarketCommand())
 	rootCmd.AddCommand(NewContractCommand())
 	rootCmd.AddCommand(NewScoutCommand())
-	rootCmd.AddCommand(NewClusterCommand())
 	rootCmd.AddCommand(NewFrontierCommand())
 	rootCmd.AddCommand(NewGoodsCommand())
 	rootCmd.AddCommand(NewLedgerCommand())

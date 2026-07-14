@@ -1,14 +1,14 @@
-package cluster
+package depot
 
 import "testing"
 
-// A contract cluster is a FULLY-PARAMETRIZED topology: EVERY waypoint and EVERY
-// count is a parameter (bead sp-u9xa). Instantiating a cluster at a different
+// A contract depot is a FULLY-PARAMETRIZED topology: EVERY waypoint and EVERY
+// count is a parameter (bead sp-u9xa). Instantiating a depot at a different
 // waypoint, or with a different number of warehouses / stockers / delivery hulls /
 // source hubs, must require ZERO code change. So the SAME constructor, driven by two
 // totally different parameter sets, yields exactly the topology asked for — no "J58",
 // no fixed counts, nothing baked in.
-func TestContractCluster_ReflectsArbitraryParametrizedTopology(t *testing.T) {
+func TestContractDepot_ReflectsArbitraryParametrizedTopology(t *testing.T) {
 	cases := []struct {
 		name          string
 		id            string
@@ -19,7 +19,7 @@ func TestContractCluster_ReflectsArbitraryParametrizedTopology(t *testing.T) {
 	}{
 		{
 			name:          "single co-located unit at one waypoint",
-			id:            "cluster-A",
+			id:            "depot-A",
 			warehouses:    []Element{{Waypoint: "X1-AA-W1", ShipSymbol: "WH-1"}},
 			stockers:      []Element{{Waypoint: "X1-SRC-1", ShipSymbol: "ST-1"}},
 			deliveryHulls: []Element{{Waypoint: "X1-AA-W1", ShipSymbol: "DH-1"}},
@@ -27,7 +27,7 @@ func TestContractCluster_ReflectsArbitraryParametrizedTopology(t *testing.T) {
 		},
 		{
 			name: "different waypoint, 3 warehouses / 5 stockers / 2 hulls — zero code change",
-			id:   "cluster-Z",
+			id:   "depot-Z",
 			warehouses: []Element{
 				{Waypoint: "X9-ZZ-9", ShipSymbol: "WA"},
 				{Waypoint: "X9-ZZ-9", ShipSymbol: "WB"},
@@ -50,9 +50,9 @@ func TestContractCluster_ReflectsArbitraryParametrizedTopology(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := NewContractCluster(tc.id, tc.warehouses, tc.stockers, tc.deliveryHulls, tc.sourceHubs)
+			c, err := NewContractDepot(tc.id, tc.warehouses, tc.stockers, tc.deliveryHulls, tc.sourceHubs)
 			if err != nil {
-				t.Fatalf("NewContractCluster: %v", err)
+				t.Fatalf("NewContractDepot: %v", err)
 			}
 			if c.ID() != tc.id {
 				t.Errorf("ID = %q, want %q", c.ID(), tc.id)
@@ -65,13 +65,13 @@ func TestContractCluster_ReflectsArbitraryParametrizedTopology(t *testing.T) {
 	}
 }
 
-// A cluster with no destination warehouse localizes nothing — it can own no
+// A depot with no destination warehouse localizes nothing — it can own no
 // contract's destination geometry — so it is rejected at construction, the single
 // structural invariant in an otherwise arbitrary topology.
-func TestContractCluster_RejectsClusterWithoutDestinationWarehouse(t *testing.T) {
-	_, err := NewContractCluster("cluster-empty", nil, nil, nil, nil)
+func TestContractDepot_RejectsDepotWithoutDestinationWarehouse(t *testing.T) {
+	_, err := NewContractDepot("depot-empty", nil, nil, nil, nil)
 	if err == nil {
-		t.Fatalf("expected error for a cluster with no destination warehouse, got nil")
+		t.Fatalf("expected error for a depot with no destination warehouse, got nil")
 	}
 }
 
