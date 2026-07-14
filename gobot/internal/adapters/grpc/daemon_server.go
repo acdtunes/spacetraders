@@ -22,6 +22,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -68,6 +69,13 @@ type DaemonServer struct {
 	// coordinator + operation-repo singletons are built after NewDaemonServer runs.
 	// nil disables recovery (fail-open — boot never depends on it).
 	storageRecovery *storageApp.StorageRecoveryService
+
+	// depotReceiptMinerOverride, when non-nil, replaces the DB-backed receipt-demand miner
+	// the depot warehouse cap (re-)solve uses (sp-94du). Nil in production →
+	// persistence.NewDemandMiner(s.db); injected in tests to drive the reward-ranked
+	// re-solve from a fixed candidate set without a live demand history. Same
+	// post-construction test-seam convention as storageRecovery.
+	depotReceiptMinerOverride tradingsvc.DepositDemandMiner
 
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler

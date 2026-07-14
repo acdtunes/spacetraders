@@ -9,6 +9,7 @@ import (
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 // This file is the destination-side STOCKING half of contract-depot warehousing (bead
@@ -247,6 +248,20 @@ func sortedGoods(targetUnits map[string]int) []string {
 	return goods
 }
 
+// depotReceiptMiner resolves the receipt-demand miner the depot warehouse cap (re-)solve
+// runs on: the DB-backed miner in production, or a test override when one is injected
+// (sp-94du). A nil DB (degraded/test) yields a nil miner, which PlanReceiptCaps degrades to
+// the static cold-start caps clipped to capacity — the same fail-open as before.
+func (s *DaemonServer) depotReceiptMiner() tradingsvc.DepositDemandMiner {
+	if s.depotReceiptMinerOverride != nil {
+		return s.depotReceiptMinerOverride
+	}
+	if s.db != nil {
+		return persistence.NewDemandMiner(s.db)
+	}
+	return nil
+}
+
 // launchDepotWarehouse (depotCoordinatorSink) starts a destination-side depot warehouse
 // on shipSymbol parked at warehouseWaypoint, with its cold-start cargo caps gated on RECEIPT
 // demand (depotWarehouseTargetUnits -> PlanReceiptCaps) rather than the source-side
@@ -265,14 +280,13 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 	if ship == nil {
 		return fmt.Errorf("depot warehouse hull %s not found", shipSymbol)
 	}
-	if !ship.IsIdle() {
-		return nil // already flying its coordinator — benign already-launched skip
-	}
-
-	var miner tradingsvc.DepositDemandMiner
-	if s.db != nil {
-		miner = persistence.NewDemandMiner(s.db)
-	}
+	// Re-solve the receipt caps with the CURRENT selector on EVERY reload (sp-94du) — BEFORE the
+	// idle gate, so the gate governs only the coordinator LAUNCH, never the cap re-solve. A
+	// redeployed selector must reach the buffer whether the hull is idle (fresh launch below) or
+	// already flying its coordinator (running warehouse, refreshed in place). The prior code
+	// returned here for a non-idle hull, so a cap change never reached a running warehouse: on
+	// boot the hull is re-adopted by recovery (non-idle) and this recompute was skipped.
+	miner := s.depotReceiptMiner()
 	// Solve the receipt knapsack over the co-located warehouse GROUP's aggregate capacity
 	// (sp-64se). capacityOf reads this already-loaded hull directly (no re-fetch) and resolves
 	// any sibling hull's real cargo capacity through the ship repo; an unresolvable sibling
@@ -301,8 +315,64 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 		return fmt.Errorf("depot warehouse %s at %s: no receipt-demand goods to stock", shipSymbol, warehouseWaypoint)
 	}
 
+	if !ship.IsIdle() {
+		// Already flying its coordinator: DON'T double-launch — re-apply the freshly recomputed
+		// whitelist to the running warehouse's persisted row instead, so the redeployed selector
+		// reaches it (the stocker re-reads supported_goods from the store each pass). The IsIdle
+		// gate still refuses a second coordinator LAUNCH; only the cap re-solve is ungated.
+		return s.refreshRunningDepotWarehouseCaps(ctx, shipSymbol, warehouseWaypoint, supportedGoods, playerID)
+	}
+
 	_, err = s.persistAndRunWarehouse(ctx, shipSymbol, warehouseWaypoint, supportedGoods, targetUnits, playerID)
 	return err
+}
+
+// refreshRunningDepotWarehouseCaps re-applies a freshly-recomputed receipt whitelist to an
+// ALREADY-RUNNING depot warehouse (sp-94du) WITHOUT launching a second coordinator. On boot,
+// container recovery re-adopts the warehouse hull (now non-idle) and RESUMES its persisted
+// storage_operations row with whatever whitelist it last carried; launchDepotWarehouse's idle
+// gate then skips the (re)launch. But a redeployed cap selector must still reach the running
+// buffer — and the stocker re-reads each warehouse's supported_goods from the store every pass
+// (warehousesAt -> FindRunning), so persisting the fresh whitelist onto that row makes the
+// redeploy live on the stocker's next tick, no container restart needed. It matches the running
+// warehouse operation by waypoint + crewing hull (the container id carries a random UUID and is
+// not reconstructible) and updates ONLY the supported_goods column, so the live status / ship
+// registration are untouched. A hull with no running warehouse row yet (recovery still in
+// flight) is a benign no-op — the next reload catches it. Fail-open on a nil DB (degraded/test):
+// the idle skip simply stands.
+func (s *DaemonServer) refreshRunningDepotWarehouseCaps(ctx context.Context, shipSymbol, warehouseWaypoint string, supportedGoods []string, playerID int) error {
+	if s.db == nil {
+		return nil
+	}
+	repo := persistence.NewStorageOperationRepository(s.db, s.clock)
+	ops, err := repo.FindAllRunningByWaypoint(ctx, playerID, warehouseWaypoint)
+	if err != nil {
+		return fmt.Errorf("depot warehouse %s at %s: failed to load running warehouse for cap refresh: %w", shipSymbol, warehouseWaypoint, err)
+	}
+	for _, op := range ops {
+		if op.OperationType() != storage.OperationTypeWarehouse {
+			continue
+		}
+		if !hullCrewsOperation(op.StorageShips(), shipSymbol) {
+			continue
+		}
+		if err := repo.UpdateSupportedGoods(ctx, op.ID(), supportedGoods); err != nil {
+			return fmt.Errorf("depot warehouse %s at %s: failed to persist recomputed caps: %w", shipSymbol, warehouseWaypoint, err)
+		}
+		return nil
+	}
+	return nil // no running warehouse row for this hull yet — recovery in flight; the next reload catches it
+}
+
+// hullCrewsOperation reports whether shipSymbol is one of a warehouse operation's storage hulls
+// — the join that pairs a reload intent's hull to its running storage_operations row.
+func hullCrewsOperation(storageShips []string, shipSymbol string) bool {
+	for _, s := range storageShips {
+		if s == shipSymbol {
+			return true
+		}
+	}
+	return false
 }
 
 // launchDepotStocker (depotCoordinatorSink) starts a STANDING, continuous stocker on

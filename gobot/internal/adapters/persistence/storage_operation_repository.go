@@ -78,6 +78,34 @@ func (r *StorageOperationRepository) SaveOperationBasis(ctx context.Context, ope
 	return nil
 }
 
+// UpdateSupportedGoods overwrites ONLY the supported_goods whitelist of a storage
+// operation via a targeted column update (sp-94du), mirroring SaveOperationBasis. It is how a
+// redeployed cap selector re-applies a freshly-recomputed receipt whitelist to an
+// ALREADY-RUNNING warehouse whose hull is non-idle: a full-row Save (Update) would rebuild the
+// row from a domain entity and clobber the live status / storage-ship registration, whereas
+// this touches one column. The stocker re-reads supported_goods from the store every pass
+// (warehousesAt -> FindRunning), so the new whitelist goes live on its next tick without a
+// container restart. Empty goods is rejected — a warehouse with no whitelist would strand
+// every deposit (fail closed); callers hold the >=1-good invariant.
+func (r *StorageOperationRepository) UpdateSupportedGoods(ctx context.Context, operationID string, goods []string) error {
+	if len(goods) == 0 {
+		return fmt.Errorf("supported goods cannot be empty")
+	}
+	payload, err := json.Marshal(goods)
+	if err != nil {
+		return fmt.Errorf("failed to marshal supported goods: %w", err)
+	}
+
+	if err := r.db.WithContext(ctx).
+		Model(&StorageOperationModel{}).
+		Where("id = ?", operationID).
+		Update("supported_goods", string(payload)).Error; err != nil {
+		return fmt.Errorf("failed to update supported goods: %w", err)
+	}
+
+	return nil
+}
+
 // LoadOperationBasis reads the persisted per-good cost basis for a storage
 // operation, used to seed the in-memory coordinator on recovery (RULINGS #2).
 // Returns an empty map when none is stored or the operation is gone.
