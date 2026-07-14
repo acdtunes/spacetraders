@@ -158,6 +158,24 @@ func (r *HistoryRepository) eraPlayerIDs(ctx context.Context, eraID *int) ([]int
 	return ids, playerToEra, nil
 }
 
+// CurrentEraID resolves the era a player belongs to — the CURRENT universe when playerID is the
+// running agent. It is how a RUNTIME demand mine confines a delivery-system scope to the current
+// universe (sp-fo0d): SpaceTraders regenerates the universe on each weekly reset and REUSES
+// system symbols, so a system symbol alone does NOT identify a universe — a nil (all-eras) scope
+// joined to a system filter aggregates every past universe that reused that symbol. Returns nil
+// when the player has no era row (fail-open: the caller then scopes to all eras, the prior
+// behavior). Each era row carries a single player_id, so a player maps to exactly one era.
+func (r *HistoryRepository) CurrentEraID(ctx context.Context, playerID int) (*int, error) {
+	var eras []EraModel
+	if err := r.db.WithContext(ctx).Where("player_id = ?", playerID).Limit(1).Find(&eras).Error; err != nil {
+		return nil, fmt.Errorf("failed to resolve current era for player %d: %w", playerID, err)
+	}
+	if len(eras) == 0 {
+		return nil, nil
+	}
+	return &eras[0].EraID, nil
+}
+
 func (r *HistoryRepository) eraNames(ctx context.Context) (map[int]string, error) {
 	var eras []EraModel
 	if err := r.db.WithContext(ctx).Find(&eras).Error; err != nil {

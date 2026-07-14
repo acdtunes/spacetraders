@@ -40,6 +40,11 @@ const (
 // the miner ranks. Satisfied by *HistoryRepository.
 type contractDemandSource interface {
 	ContractGoodDemand(ctx context.Context, eraID *int, deliverySystem *string) ([]ContractGoodDemand, error)
+	// CurrentEraID resolves the era (universe) a player belongs to, so a runtime mine can confine
+	// its delivery-system scope to the CURRENT universe (sp-fo0d): system symbols are reused across
+	// weekly resets, so a nil era would otherwise aggregate homonymous systems from every past
+	// universe. Returns nil when unknown (fail-open to all-eras).
+	CurrentEraID(ctx context.Context, playerID int) (*int, error)
 }
 
 // marketAskFinder is the pair of cheapest-ask lookups the miner joins against: the
@@ -165,6 +170,20 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 	buyLeg := opts.BuyLegSavingsPerUnit
 	if buyLeg <= 0 {
 		buyLeg = DefaultBuyLegSavingsPerUnit
+	}
+
+	// A nil era at a RUNTIME call site means "the current universe", NOT "all universes": resolve
+	// the current player's era so the delivery-system scope below cannot aggregate a past
+	// universe's contracts reached via a REUSED system symbol (sp-fo0d). SpaceTraders regenerates
+	// the universe each weekly reset and reuses system symbols, so homeSystem alone does not pin a
+	// universe. An explicit era (the CLI history-analysis path) is honored as-is; an unresolved era
+	// fails open to all-eras (the prior behavior).
+	if eraID == nil {
+		resolved, err := m.demand.CurrentEraID(ctx, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve current era for player %d: %w", playerID, err)
+		}
+		eraID = resolved
 	}
 
 	rows, err := m.demand.ContractGoodDemand(ctx, eraID, &homeSystem)

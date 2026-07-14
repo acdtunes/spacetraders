@@ -20,6 +20,12 @@ func (f *fakeDemandSource) ContractGoodDemand(ctx context.Context, eraID *int, d
 	return f.rows, nil
 }
 
+// CurrentEraID is era-agnostic here: nil keeps Mine's all-eras behavior for these fake-source unit
+// tests (the current-universe scoping is exercised end to end over a real DB elsewhere — sp-fo0d).
+func (f *fakeDemandSource) CurrentEraID(ctx context.Context, playerID int) (*int, error) {
+	return nil, nil
+}
+
 type fakeMarketAsks struct {
 	// crossByGood entries must be cheapest-first, mirroring the real SQL (sell_price ASC).
 	// The cross scan spans ALL systems INCLUDING the home system — the miner treats the

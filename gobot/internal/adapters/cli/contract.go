@@ -472,7 +472,7 @@ Examples:
 	cmd.Flags().IntVar(&minRecurrence, "min-recurrence", persistence.DefaultMinRecurrence, "Minimum distinct contracts demanding a good before it counts as recurring")
 	cmd.Flags().IntVar(&topN, "top", persistence.DefaultTopN, "Cap on ranked candidate rows")
 	cmd.Flags().IntVar(&buyLeg, "buy-leg", persistence.DefaultBuyLegSavingsPerUnit, "Per-unit value of the source→central buy-leg the contract worker skips (makes in-system pre-positioning worthwhile)")
-	cmd.Flags().StringVar(&eraFlag, "era", "", "Era ID (default: all eras; the home-system filter already confines to the current universe)")
+	cmd.Flags().StringVar(&eraFlag, "era", "", "Era ID (default: the current universe — the era of the default player. System symbols are REUSED across weekly resets, so the system filter alone does NOT confine to one universe; sp-fo0d)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 
 	return cmd

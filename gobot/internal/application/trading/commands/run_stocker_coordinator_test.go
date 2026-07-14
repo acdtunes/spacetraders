@@ -183,6 +183,12 @@ func (f *stkFakeContractDemand) ContractGoodDemand(ctx context.Context, eraID *i
 	return f.rows, nil
 }
 
+// CurrentEraID is era-agnostic here: nil keeps the real miner's all-eras behavior for this fake
+// (the sp-fo0d current-universe scoping is covered by a real-DB test in the persistence adapter).
+func (f *stkFakeContractDemand) CurrentEraID(ctx context.Context, playerID int) (*int, error) {
+	return nil, nil
+}
+
 type stkFakeMarketAsks struct {
 	cross map[string][]market.CheapestMarketResult // cheapest-first, ALL systems incl home
 	home  map[string]*market.CheapestMarketResult
