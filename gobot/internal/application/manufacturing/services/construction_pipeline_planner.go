@@ -12,6 +12,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// FabricationTreeResolver builds the scarcity-gated supply-chain dependency tree for a candidate
+// fabrication material — the SAME engine (*SupplyChainResolver) the construction drain executes
+// (sp-yfzi). planFabrication uses it as its per-input FEASIBILITY oracle (sp-3bza): a material is
+// feasible to fabricate iff the resolver can build a COMPLETE tree for it within the depth ceiling
+// — every scarce intermediate that has a factory recurses, and every leaf resolves to a buyable
+// market. It is an OPTIONAL collaborator wired by SetTreeResolver: left unset (nil), planFabrication
+// falls back to the pre-sp-3bza gate (every IMMEDIATE input must be buyable at MODERATE+ now), so a
+// planner built without it is byte-identical to before. *SupplyChainResolver satisfies it via
+// BuildDependencyTree.
+type FabricationTreeResolver interface {
+	BuildDependencyTree(ctx context.Context, targetGood, systemSymbol string, playerID int) (*goods.SupplyChainNode, error)
+}
+
 // ConstructionPipelinePlanner creates and manages construction pipelines.
 // It handles:
 //   - Idempotent creation (checks for existing pipeline)
@@ -25,6 +38,10 @@ type ConstructionPipelinePlanner struct {
 	marketLocator    *MarketLocator
 	shipRepo         navigation.ShipRepository
 	clock            shared.Clock
+	// treeResolver is the sp-3bza fabrication FEASIBILITY oracle — the SAME scarcity-gated
+	// SupplyChainResolver the drain runs (sp-yfzi). Optional (wired by SetTreeResolver); nil falls
+	// back to the pre-sp-3bza "every immediate input buyable at MODERATE+" gate.
+	treeResolver FabricationTreeResolver
 }
 
 // NewConstructionPipelinePlanner creates a new construction pipeline planner.
@@ -50,6 +67,17 @@ func NewConstructionPipelinePlanner(
 		shipRepo:         shipRepo,
 		clock:            clock,
 	}
+}
+
+// SetTreeResolver wires the scarcity-gated supply-chain resolver (sp-3bza) so planFabrication gates
+// a material's feasibility on "SOURCEABLE within the depth ceiling" (buyable OR producible) — the
+// SAME verdict the sp-yfzi recursive drain reaches — instead of the stale "every immediate input
+// buyable at MODERATE+ now" gate that deferred a whole material when a deep input was scarce but
+// producible. Optional — the daemon injects the shared SupplyChainResolver singleton; left unset the
+// planner uses the pre-sp-3bza fallback. A setter (not a constructor arg) keeps the existing planner
+// constructor and its in-package tests unchanged (nil → fallback → byte-identical).
+func (p *ConstructionPipelinePlanner) SetTreeResolver(resolver FabricationTreeResolver) {
+	p.treeResolver = resolver
 }
 
 // StartOrResumeResult contains the result of starting or resuming a pipeline.
@@ -247,7 +275,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		// floor for a single bottleneck (e.g. down to SCARCE) while every other material keeps the
 		// pipeline's global floor unchanged.
 		matMinSupply := goodOverrides.MinSupplyFor(mat.TradeSymbol(), minSupply)
-		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, matMinSupply)
+		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, matMinSupply, goodOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
 		}
@@ -420,7 +448,8 @@ func (p *ConstructionPipelinePlanner) releaseShip(ctx context.Context, shipSymbo
 //     MODERATE+, or - via FindConstructionSource - an IMPORT/EXCHANGE holding
 //     ABUNDANT/HIGH accumulated stock). This is preferred: one hop, no chain.
 //  2. Otherwise FABRICATE within the depth ceiling (only when depth < 3, the good
-//     is not raw, and every input is itself sourceable).
+//     is not raw, and every input is SOURCEABLE within that ceiling — buyable now OR
+//     itself producible from sourceable inputs, sp-3bza).
 //  3. Otherwise DEFER: stage a PENDING DELIVER_TO_CONSTRUCTION with no source
 //     that the SupplyMonitor re-sources when supply regenerates.
 //
@@ -435,6 +464,7 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 	supplyChainDepth int,
 	playerID int,
 	minSupply string,
+	goodOverrides manufacturing.GoodGatingOverrides,
 ) (staged []*manufacturing.ManufacturingTask, deferred bool, err error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -464,7 +494,7 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 	// 2. Not buyable. Fabricate within the depth ceiling when permitted.
 	//    depth >= 3 is a "buy final only" ceiling; raw materials cannot be made.
 	if supplyChainDepth < 3 && !goods.IsRawMaterial(targetGood) {
-		fabTasks, ok, ferr := p.planFabrication(ctx, pipelineID, targetGood, systemSymbol, constructionSite, supplyChainDepth, playerID)
+		fabTasks, ok, ferr := p.planFabrication(ctx, pipelineID, targetGood, systemSymbol, constructionSite, supplyChainDepth, playerID, goodOverrides)
 		if ferr != nil {
 			return nil, false, ferr
 		}
@@ -492,16 +522,24 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 
 // planFabrication stages the fabrication of targetGood as a SINGLE dependency-free
 // DELIVER_TO_CONSTRUCTION task carrying the factory (sp-qmp8). ok=false (with a nil error) means
-// a factory or an input is not sourceable right now, so the whole material should be deferred
-// rather than partially planned. Only infrastructure failures are returned as errors.
+// a factory or an input is not sourceable within the depth ceiling, so the whole material should be
+// deferred rather than partially planned. Only infrastructure failures are returned as errors.
 //
 // It does NOT stage separate ACQUIRE_DELIVER input legs. The construction drain executes the
-// delivery task by driving ProduceGood(Fabricate) on the shared engine, which buys the inputs,
-// feeds the factory, and harvests the output itself — one engine (the sp-jav2 regression restore).
-// Staging input legs here would only create a dependency the thin drain never satisfies, blocking
-// the delivery task forever (the exact orphaned-legs state this bead fixes). The buy-vs-produce
-// DECISION is unchanged: planMaterial still fabricates only a non-buyable good within the depth
-// ceiling; this method only stops decomposing that decision into legs.
+// delivery task by driving ProduceGood(Fabricate) on the shared engine, which sources the inputs
+// (buying OR recursively producing them, sp-yfzi), feeds the factory, and harvests the output
+// itself — one engine (the sp-jav2 regression restore). Staging input legs here would only create a
+// dependency the thin drain never satisfies, blocking the delivery task forever (the exact
+// orphaned-legs state sp-qmp8 fixed). The buy-vs-produce DECISION is unchanged: planMaterial still
+// fabricates only a non-buyable good within the depth ceiling; this method only stops decomposing
+// that decision into legs.
+//
+// sp-3bza: the FEASIBILITY gate that decides stage-vs-defer is now "every input is SOURCEABLE
+// within the depth ceiling" (buyable OR producible), not the stale "every immediate input buyable
+// at MODERATE+ now". The old gate deferred a whole material whenever a deep input was scarce — even
+// when the sp-yfzi recursive drain could PRODUCE that input (e.g. ADVANCED_CIRCUITRY deferred
+// because ELECTRONICS is SCARCE, though ELECTRONICS is fabricable from buyable SILICON+COPPER),
+// stalling the gate leg. fabricationInputsSourceable defers only a TRULY unsourceable input.
 func (p *ConstructionPipelinePlanner) planFabrication(
 	ctx context.Context,
 	pipelineID string,
@@ -510,6 +548,7 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 	constructionSite string,
 	supplyChainDepth int,
 	playerID int,
+	goodOverrides manufacturing.GoodGatingOverrides,
 ) (staged []*manufacturing.ManufacturingTask, ok bool, err error) {
 	inputs := goods.GetRequiredInputs(targetGood)
 	if len(inputs) == 0 {
@@ -523,17 +562,11 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 		return nil, false, nil
 	}
 
-	// Every immediate input must be buyable NOW, or the drain cannot feed the factory this
-	// pass — defer the whole material (the SupplyMonitor re-sources it when supply regenerates).
-	// This mirrors the sourceability gate the old per-input staging enforced, minus the task
-	// creation: the drain's ProduceGood(Fabricate) buys these inputs directly (one-level
-	// fabrication), so verifying the immediate inputs is the feasibility check that matches how
-	// the drain executes.
-	for _, input := range inputs {
-		src, serr := p.marketLocator.FindExportMarketBySupplyPriority(ctx, input, systemSymbol, playerID)
-		if serr != nil || src == nil {
-			return nil, false, nil // an input is unsourceable - defer whole material
-		}
+	// FEASIBILITY (sp-3bza): defer the whole material only when an input is TRULY unsourceable
+	// within the depth ceiling — no market AND no producible path. A scarce-but-producible input
+	// (the gate-critical ELECTRONICS case) is FEASIBLE, because the sp-yfzi drain will produce it.
+	if !p.fabricationInputsSourceable(ctx, targetGood, systemSymbol, supplyChainDepth, playerID, goodOverrides, inputs) {
+		return nil, false, nil // an input is unsourceable within depth - defer whole material
 	}
 
 	// A single dependency-free DELIVER_TO_CONSTRUCTION task carrying the factory: the drain
@@ -547,6 +580,58 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 		nil, // no input-leg dependencies — ProduceGood(Fabricate) sources the inputs
 	)
 	return []*manufacturing.ManufacturingTask{deliverTask}, true, nil
+}
+
+// fabricationInputsSourceable reports whether every input of targetGood can be SOURCED — bought OR
+// produced — within the depth ceiling, the sp-3bza feasibility gate that decides stage-vs-defer.
+//
+// When a tree resolver is wired (the daemon injects the shared SupplyChainResolver — the SAME
+// engine the construction drain runs, sp-yfzi), it asks the resolver to build the full
+// scarcity-gated dependency tree for targetGood under the drain's EXACT settings: the smart
+// production strategy (a scarce intermediate that has a factory recurses; an abundant one is
+// bought), the pipeline's SupplyChainDepth as the fabricate depth cap (WithFabricateDepthCap —
+// resolveFabricationTree in the drain passes the identical value), and the pipeline's per-good
+// overrides. A tree that builds without error means every scarce intermediate with a factory
+// recurses and every leaf resolves to a buyable market, so the drain WILL be able to source each
+// input — FEASIBLE. The resolver errors only when an input is genuinely unsourceable within depth
+// (no market AND no producible path), which is the one case we still DEFER (RULINGS #1: a deferred
+// material stays a visible PENDING task the SupplyMonitor re-sources; the pipeline never fails).
+// Reusing the resolver (not a hand-rolled MODERATE+ check) is what keeps the planner's verdict
+// aligned with what the drain will actually execute — the drain buys leaves at ANY supply tier via
+// FindBestMarketForBuying, so a MODERATE+-only immediate-input check would wrongly defer a material
+// whose deep raws are only LIMITED/SCARCE but still buyable.
+//
+// When no resolver is wired (nil — a planner built without SetTreeResolver, and the in-package
+// tests that never inject one), it falls back to the original pre-sp-3bza gate: every IMMEDIATE
+// input must be buyable at MODERATE+ now. Byte-identical to pre-sp-3bza for those callers.
+func (p *ConstructionPipelinePlanner) fabricationInputsSourceable(
+	ctx context.Context,
+	targetGood string,
+	systemSymbol string,
+	supplyChainDepth int,
+	playerID int,
+	goodOverrides manufacturing.GoodGatingOverrides,
+	immediateInputs []string,
+) bool {
+	if p.treeResolver != nil {
+		// Stamp the drain's exact tree-build settings (mirrors run_construction_coordinator.go's
+		// resolveFabricationTree) so the planner's feasibility verdict equals the drain's execution.
+		buildCtx := WithProductionStrategy(ctx, DefaultProductionStrategy)
+		buildCtx = WithFabricateDepthCap(buildCtx, supplyChainDepth, false)
+		buildCtx = WithGoodGatingOverrides(buildCtx, goodOverrides)
+		tree, terr := p.treeResolver.BuildDependencyTree(buildCtx, targetGood, systemSymbol, playerID)
+		return terr == nil && tree != nil
+	}
+
+	// Fallback (no resolver wired): the pre-sp-3bza gate — every immediate input buyable at
+	// MODERATE+ now, or the material defers.
+	for _, input := range immediateInputs {
+		src, serr := p.marketLocator.FindExportMarketBySupplyPriority(ctx, input, systemSymbol, playerID)
+		if serr != nil || src == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // extractSystemSymbol extracts system from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5").

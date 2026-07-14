@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
@@ -870,5 +871,265 @@ func TestStartOrResume_NewPipeline_PersistsAndStartsTasks(t *testing.T) {
 		if task.Status() != manufacturing.TaskStatusReady {
 			t.Errorf("expected dependency-free construction task %s to be READY, got %s", task.Good(), task.Status())
 		}
+	}
+}
+
+// --- sp-3bza: fabrication FEASIBILITY = SOURCEABLE-within-depth (buyable OR producible) ----------
+
+// fakeFabResolver is a boundary stub for FabricationTreeResolver: it returns a fixed
+// (node, err) verdict and records whether BuildDependencyTree was consulted. Planner tests drive
+// the stage-vs-defer decision through this stub without standing up the full SupplyChainResolver
+// and its market graph - the resolver's own tree-building correctness is covered by
+// supply_chain_resolver_*_test.go. The planner's contract under test is only: a resolver that
+// builds a tree => STAGE (single DELIVER task); a resolver that errors => DEFER.
+type fakeFabResolver struct {
+	node   *goods.SupplyChainNode
+	err    error
+	called bool
+}
+
+func (f *fakeFabResolver) BuildDependencyTree(_ context.Context, _, _ string, _ int) (*goods.SupplyChainNode, error) {
+	f.called = true
+	return f.node, f.err
+}
+
+// newFabricationFactoryMarket builds a factory market that EXPORTS outputGood at SCARCE (so it is
+// not a MODERATE+ buy-final source - planMaterial falls through to the fabrication path) and
+// IMPORTS every input (so FindFactoryForProduction accepts it as the fabrication factory).
+func newFabricationFactoryMarket(t *testing.T, waypointSymbol, outputGood string, inputGoods ...string) *market.Market {
+	t.Helper()
+	tradeGoods := make([]market.TradeGood, 0, len(inputGoods)+1)
+	export, err := market.NewTradeGood(outputGood, strptr("SCARCE"), strptr("RESTRICTED"), 6000, 5900, 20, market.TradeTypeExport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(%s export): %v", outputGood, err)
+	}
+	tradeGoods = append(tradeGoods, *export)
+	for _, in := range inputGoods {
+		imp, err := market.NewTradeGood(in, strptr("MODERATE"), strptr("WEAK"), 210, 180, 40, market.TradeTypeImport)
+		if err != nil {
+			t.Fatalf("NewTradeGood(%s import): %v", in, err)
+		}
+		tradeGoods = append(tradeGoods, *imp)
+	}
+	m, err := market.NewMarket(waypointSymbol, tradeGoods, time.Now())
+	if err != nil {
+		t.Fatalf("NewMarket(%s): %v", waypointSymbol, err)
+	}
+	return m
+}
+
+// scarceProducibleCircuitryRepo models the gate-critical sp-3bza scenario: ADVANCED_CIRCUITRY is
+// produced at a factory (D42) that imports its inputs, and ELECTRONICS + MICROPROCESSORS exist only
+// as SCARCE exporters (below the MODERATE+ buy floor). The OLD planFabrication gate deferred the
+// whole material because its immediate inputs are not MODERATE+ buyable - even though the sp-yfzi
+// drain can PRODUCE them - which is exactly the stall this bead fixes.
+func scarceProducibleCircuitryRepo(t *testing.T) *plannerStubMarketRepo {
+	t.Helper()
+	const factoryWp = "X1-PZ28-D42"
+	const elecScarce = "X1-PZ28-F48"
+	const microScarce = "X1-PZ28-F49"
+	return &plannerStubMarketRepo{
+		marketWaypoints: []string{factoryWp, elecScarce, microScarce},
+		markets: map[string]*market.Market{
+			factoryWp:   newFabricationFactoryMarket(t, factoryWp, "ADVANCED_CIRCUITRY", "ELECTRONICS", "MICROPROCESSORS"),
+			elecScarce:  newTradeTypeMarket(t, elecScarce, "ELECTRONICS", "SCARCE", "RESTRICTED", market.TradeTypeExport, 900),
+			microScarce: newTradeTypeMarket(t, microScarce, "MICROPROCESSORS", "SCARCE", "RESTRICTED", market.TradeTypeExport, 900),
+		},
+	}
+}
+
+// INCIDENT REPRO (sp-3bza): ADVANCED_CIRCUITRY whose immediate input ELECTRONICS is SCARCE (not
+// MODERATE+ buyable) but PRODUCIBLE. With the scarcity-gated resolver wired (as the daemon wires
+// it), planFabrication must judge the material FEASIBLE and STAGE it - a single dependency-free
+// DELIVER_TO_CONSTRUCTION task carrying the factory, no input legs, READY, not deferred. This is
+// GREEN with the fix; the paired test below shows it was DEFERRED without it.
+func TestStartOrResume_ScarceButProducibleInput_StagedViaResolver(t *testing.T) {
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, scarceProducibleCircuitryRepo(t), singleMaterialSite("ADVANCED_CIRCUITRY", 280))
+	// A resolver that builds a complete tree => the drain can source every input => FEASIBLE.
+	planner.SetTreeResolver(&fakeFabResolver{node: goods.NewSupplyChainNode("ADVANCED_CIRCUITRY", goods.AcquisitionFabricate)})
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if len(result.DeferredMaterials) != 0 {
+		t.Errorf("expected a scarce-but-producible material to be staged, not deferred; got deferred %v", result.DeferredMaterials)
+	}
+	if got := result.Pipeline.TaskCount(); got != 1 {
+		t.Fatalf("expected exactly 1 DELIVER_TO_CONSTRUCTION task (no input legs), got %d", got)
+	}
+	circ := findTaskByGood(result.Pipeline, "ADVANCED_CIRCUITRY")
+	if circ == nil || circ.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+		t.Fatalf("expected a DELIVER_TO_CONSTRUCTION task for ADVANCED_CIRCUITRY, got %+v", circ)
+	}
+	if circ.IsDeferredConstruction() {
+		t.Error("expected ADVANCED_CIRCUITRY staged (feasible via the resolver), got a deferred task")
+	}
+	if circ.FactorySymbol() != "X1-PZ28-D42" {
+		t.Errorf("expected the fabricate task to carry the factory X1-PZ28-D42, got %q", circ.FactorySymbol())
+	}
+	if circ.SourceMarket() != "" {
+		t.Errorf("a fabricate task must carry no source market (produced, not bought), got %q", circ.SourceMarket())
+	}
+	// sp-qmp8 orphaned-legs guard: the single DELIVER task must have no input-leg dependencies and
+	// must be READY the moment the pipeline starts (the drain sources inputs itself).
+	if len(circ.DependsOn()) != 0 {
+		t.Errorf("the fabricate task must have no input-leg dependencies, got %v", circ.DependsOn())
+	}
+	if circ.Status() != manufacturing.TaskStatusReady {
+		t.Errorf("a dependency-free fabricate task must be READY after Start(), got %s", circ.Status())
+	}
+	for _, tk := range result.Pipeline.Tasks() {
+		if tk.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			t.Errorf("fabrication must NOT stage separate ACQUIRE_DELIVER input legs, got one for %s", tk.Good())
+		}
+	}
+}
+
+// The RED half of the incident (sp-3bza): the SAME scarce-but-producible scenario, but with NO
+// resolver wired, falls back to the pre-sp-3bza gate (every immediate input buyable at MODERATE+),
+// which DEFERS the whole material because ELECTRONICS/MICROPROCESSORS are only SCARCE. This both
+// reproduces the original bug and proves the nil-resolver fallback is byte-identical to before.
+func TestStartOrResume_ScarceProducibleInput_DeferredWithoutResolver(t *testing.T) {
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, scarceProducibleCircuitryRepo(t), singleMaterialSite("ADVANCED_CIRCUITRY", 280))
+	// No SetTreeResolver: the fallback MODERATE+ immediate-input gate applies.
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume must defer (not error) when an input is not MODERATE+ buyable: %v", err)
+	}
+
+	circ := findTaskByGood(result.Pipeline, "ADVANCED_CIRCUITRY")
+	if circ == nil {
+		t.Fatal("expected a deferred ADVANCED_CIRCUITRY task to still be staged (visible, not dropped)")
+	}
+	if !circ.IsDeferredConstruction() {
+		t.Errorf("expected ADVANCED_CIRCUITRY DEFERRED without a resolver (scarce inputs), got source=%q factory=%q",
+			circ.SourceMarket(), circ.FactorySymbol())
+	}
+	if len(result.DeferredMaterials) != 1 || result.DeferredMaterials[0] != "ADVANCED_CIRCUITRY" {
+		t.Errorf("expected DeferredMaterials [ADVANCED_CIRCUITRY], got %v", result.DeferredMaterials)
+	}
+}
+
+// RULINGS #1 / sp-3bza: a TRULY unsourceable input (the resolver cannot build a complete tree -
+// no market AND no producible path within depth, surfaced as an error) must still DEFER the whole
+// material, never fail. The target's own factory exists (so the factory check passes and the defer
+// decision comes from the feasibility gate erroring, not the factory lookup).
+func TestStartOrResume_TrulyUnsourceableInput_DefersWhenResolverErrors(t *testing.T) {
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, scarceProducibleCircuitryRepo(t), singleMaterialSite("ADVANCED_CIRCUITRY", 280))
+	// The resolver errors - the tree cannot be completed because an input is genuinely unsourceable.
+	planner.SetTreeResolver(&fakeFabResolver{err: &goods.ErrUnknownGood{Good: "ELECTRONICS"}})
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume must defer (not error) a truly-unsourceable material: %v", err)
+	}
+
+	circ := findTaskByGood(result.Pipeline, "ADVANCED_CIRCUITRY")
+	if circ == nil {
+		t.Fatal("expected a deferred ADVANCED_CIRCUITRY task")
+	}
+	if !circ.IsDeferredConstruction() {
+		t.Errorf("expected ADVANCED_CIRCUITRY DEFERRED when the resolver reports it unsourceable, got source=%q factory=%q",
+			circ.SourceMarket(), circ.FactorySymbol())
+	}
+	if len(result.DeferredMaterials) != 1 || result.DeferredMaterials[0] != "ADVANCED_CIRCUITRY" {
+		t.Errorf("expected DeferredMaterials [ADVANCED_CIRCUITRY], got %v", result.DeferredMaterials)
+	}
+}
+
+// Regression (sp-3bza): a fabricable material whose inputs are all buyable must still be STAGED
+// through the resolver path - the new feasibility gate must not defer the common all-buyable case.
+// MACHINERY (LIMITED export -> not buy-final) fabricated from IRON (ABUNDANT).
+func TestStartOrResume_AllInputsBuyable_StagedViaResolver(t *testing.T) {
+	const factoryWp = "X1-PZ28-FAC"
+	const ironWp = "X1-PZ28-IRN"
+	machineryExport, err := market.NewTradeGood("MACHINERY", strptr("LIMITED"), strptr("RESTRICTED"), 110, 100, 40, market.TradeTypeExport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(MACHINERY): %v", err)
+	}
+	ironImport, err := market.NewTradeGood("IRON", strptr("MODERATE"), strptr("WEAK"), 60, 50, 40, market.TradeTypeImport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(IRON import): %v", err)
+	}
+	factoryMarket, err := market.NewMarket(factoryWp, []market.TradeGood{*machineryExport, *ironImport}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMarket(factory): %v", err)
+	}
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{factoryWp, ironWp},
+		markets: map[string]*market.Market{
+			factoryWp: factoryMarket,
+			ironWp:    newTradeTypeMarket(t, ironWp, "IRON", "ABUNDANT", "WEAK", market.TradeTypeExport, 45),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
+	planner.SetTreeResolver(&fakeFabResolver{node: goods.NewSupplyChainNode("MACHINERY", goods.AcquisitionFabricate)})
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if len(result.DeferredMaterials) != 0 {
+		t.Errorf("an all-inputs-buyable material must be staged, not deferred; got %v", result.DeferredMaterials)
+	}
+	machinery := findTaskByGood(result.Pipeline, "MACHINERY")
+	if machinery == nil || machinery.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+		t.Fatalf("expected a DELIVER_TO_CONSTRUCTION task for MACHINERY, got %+v", machinery)
+	}
+	if machinery.FactorySymbol() != factoryWp {
+		t.Errorf("expected MACHINERY fabricated at %s, got %s", factoryWp, machinery.FactorySymbol())
+	}
+	if machinery.IsDeferredConstruction() {
+		t.Error("all-inputs-buyable fabricable material must not be deferred")
+	}
+}
+
+// depth>=3 is "buy final only" (sp-r900): planMaterial buys a buyable material directly and never
+// enters the fabrication path, so the resolver must NOT be consulted at all - byte-identical to the
+// pre-sp-3bza buy-final behavior.
+func TestStartOrResume_BuyableFinalDepth3_BypassesResolver(t *testing.T) {
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket},
+		markets: map[string]*market.Market{
+			plannerTestMarket: newTradeTypeMarket(t, plannerTestMarket, "ADVANCED_CIRCUITRY", "ABUNDANT", "STRONG", market.TradeTypeExport, 5900),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("ADVANCED_CIRCUITRY", 280))
+	resolver := &fakeFabResolver{err: &goods.ErrUnknownGood{Good: "should-not-be-consulted"}}
+	planner.SetTreeResolver(resolver)
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume at depth 3 must buy a buyable material: %v", err)
+	}
+
+	if resolver.called {
+		t.Error("depth 3 (buy-final) must not consult the fabrication resolver at all")
+	}
+	circ := findTaskByGood(result.Pipeline, "ADVANCED_CIRCUITRY")
+	if circ == nil || circ.SourceMarket() != plannerTestMarket {
+		t.Fatalf("expected ADVANCED_CIRCUITRY bought directly from %s at depth 3, got %+v", plannerTestMarket, circ)
+	}
+	if circ.FactorySymbol() != "" {
+		t.Errorf("a buy-final task must carry no factory, got %q", circ.FactorySymbol())
+	}
+	if circ.IsDeferredConstruction() {
+		t.Error("a buyable-final material must not be deferred at depth 3")
 	}
 }

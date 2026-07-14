@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -66,8 +67,9 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		s.playerRepo,
 	)
 	apiClient := s.getAPIClient()
+	marketRepo := persistence.NewMarketRepository(s.db)
 	marketLocator := services.NewMarketLocator(
-		persistence.NewMarketRepository(s.db),
+		marketRepo,
 		s.waypointRepo,
 		s.playerRepo,
 		apiClient,
@@ -82,6 +84,14 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		s.shipRepo,
 		s.clock,
 	)
+
+	// sp-3bza: DI the SAME scarcity-gated resolver the construction drain runs (sp-yfzi) so the
+	// planner gates a fabrication material's feasibility on "SOURCEABLE within the depth ceiling"
+	// (buyable OR producible) - the drain's actual verdict - instead of the stale "every immediate
+	// input buyable at MODERATE+" gate that deferred a whole material when a deep input was scarce
+	// but producible (the gate ADV_CIRC leg stall). Built from the same supply-chain map + market
+	// repo as the daemon's shared goodsResolver, so the planner and drain agree on feasibility.
+	planner.SetTreeResolver(services.NewSupplyChainResolver(goods.ExportToImportMap, marketRepo))
 
 	// Start or resume pipeline
 	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol, minSupply, goodOverrides)
