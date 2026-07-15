@@ -64,7 +64,7 @@ const (
 	defaultMaxProbesPerSystem  = 8      // per-system hull cap (bounds a runaway feedback raise)
 	defaultReleaseSlackPercent = 60     // release a feedback probe only below this % of the SLA (hysteresis)
 	defaultSizerMaxProbeFleet  = 40     // total satellite cap
-	defaultSizerMaxSpend       = 100000 // max probe spend within the trailing spend window
+	defaultSizerMaxSpend       = 500000 // max probe spend within the trailing spend window (Admiral 2026-07-15: ~17 probes/hr ramp; 25%-treasury + fleet cap still bind)
 	defaultSizerCooldown       = 1 * time.Minute // Admiral 2026-07-15: fast ramp; spend window + treasury/fleet caps still bound total buys
 	defaultSizerSpendWindow    = 1 * time.Hour
 )
