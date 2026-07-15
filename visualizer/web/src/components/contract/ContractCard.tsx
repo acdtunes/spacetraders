@@ -1,9 +1,62 @@
+import { useEffect, useRef, useState } from 'react';
 import { NOIR, noirAlpha } from '../../theme/noir';
 import type { ContractOpsLive, ContractPhase } from '../../types/contractOps';
 
 const PHASES: ContractPhase[] = ['NEGOTIATE', 'ACCEPT', 'SOURCE', 'DELIVER', 'FULFILL'];
 
 const cr = (n: number) => `${n.toLocaleString()} cr`;
+
+// Ease a displayed number toward its target so money movements read as motion,
+// not teleportation.
+function useAnimatedNumber(target: number | null): number | null {
+  const [display, setDisplay] = useState<number | null>(target);
+  const fromRef = useRef<number | null>(target);
+  useEffect(() => {
+    const from = fromRef.current;
+    if (target == null || from == null || from === target) {
+      fromRef.current = target;
+      setDisplay(target);
+      return;
+    }
+    const t0 = performance.now();
+    const DUR = 450;
+    let raf = 0;
+    const tick = (t: number) => {
+      const u = Math.min(1, (t - t0) / DUR);
+      setDisplay(Math.round(from + (target - from) * (1 - Math.pow(1 - u, 3))));
+      if (u < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+  return display;
+}
+
+// Contracts fulfilled per hour over the trailing six — oldest on the left.
+function ThroughputBars({ fulfillments, nowMs }: { fulfillments: string[]; nowMs: number }) {
+  const buckets = new Array(6).fill(0) as number[];
+  for (const iso of fulfillments) {
+    const ageH = (nowMs - Date.parse(iso)) / 3_600_000;
+    if (ageH >= 0 && ageH < 6) buckets[5 - Math.floor(ageH)] += 1;
+  }
+  const max = Math.max(1, ...buckets);
+  return (
+    <div className="flex items-end gap-1 h-6">
+      {buckets.map((n, i) => (
+        <div
+          key={i}
+          className="flex-1 rounded-sm"
+          title={`${n} fulfilled · ${5 - i}–${6 - i}h ago`}
+          style={{
+            height: `${n > 0 ? Math.max(18, (n / max) * 100) : 8}%`,
+            background: n > 0 ? noirAlpha(NOIR.accent, 0.45 + 0.55 * (n / max)) : noirAlpha(NOIR.dim, 0.25),
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
 function heartbeatColor(heartbeatAt: string | undefined, nowMs: number): string {
   if (!heartbeatAt) return NOIR.dim;
@@ -26,6 +79,7 @@ export function ContractCard({ live, nowMs }: { live: ContractOpsLive | null; no
   const activeIdx = PHASES.indexOf(phase as (typeof PHASES)[number]);
   const projected =
     contract && pl ? contract.paymentOnFulfilled + pl.revenue - pl.cost : null;
+  const projectedDisplay = useAnimatedNumber(projected);
 
   return (
     <div
@@ -106,7 +160,7 @@ export function ContractCard({ live, nowMs }: { live: ContractOpsLive | null; no
             <div>
               <div style={{ color: NOIR.dim }}>PROJECTED</div>
               <div style={{ color: projected != null && projected >= 0 ? NOIR.good : NOIR.bad }}>
-                {projected != null ? cr(projected) : '—'}
+                {projectedDisplay != null ? cr(projectedDisplay) : '—'}
               </div>
             </div>
           </div>
@@ -122,6 +176,16 @@ export function ContractCard({ live, nowMs }: { live: ContractOpsLive | null; no
               last fulfilled +{lastFulfilled.payment.toLocaleString()} cr · {relTime(lastFulfilled.at, nowMs)}
             </div>
           )}
+        </div>
+      )}
+
+      {live.recentFulfillments.length > 0 && (
+        <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${noirAlpha(NOIR.dim, 0.2)}` }}>
+          <div className="flex justify-between text-[9px] font-mono mb-1 tracking-wider" style={{ color: NOIR.dim }}>
+            <span>THROUGHPUT · LAST 6H</span>
+            <span>hourly, oldest → newest</span>
+          </div>
+          <ThroughputBars fulfillments={live.recentFulfillments} nowMs={nowMs} />
         </div>
       )}
 

@@ -324,6 +324,7 @@ router.get('/live', async (_req, res) => {
       })),
       pl: plRows ? { revenue: Number(plRows.rows[0].revenue), cost: Number(plRows.rows[0].cost) } : null,
       events,
+      recentFulfillments: contracts.filter((c) => c.fulfilled).slice(0, 30).map((c) => c.lastUpdated),
     });
   } catch (error: any) {
     console.error('contract-ops live failed:', error?.message ?? error);
@@ -348,6 +349,7 @@ function emptyLivePayload() {
     destinations: [],
     pl: null,
     events: [],
+    recentFulfillments: [],
   };
 }
 

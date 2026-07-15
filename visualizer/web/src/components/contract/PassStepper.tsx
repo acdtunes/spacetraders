@@ -11,6 +11,8 @@ const HINTS = [
 export function PassStepper() {
   const pass = useContractOpsStore((s) => s.pass);
   const setPass = useContractOpsStore((s) => s.setPass);
+  const follow = useContractOpsStore((s) => s.follow);
+  const setFollow = useContractOpsStore((s) => s.setFollow);
 
   return (
     <div className="absolute bottom-4 left-4 rounded p-1 flex items-center gap-1" style={{ background: noirAlpha(NOIR.panel, 0.94) }}>
@@ -31,6 +33,18 @@ export function PassStepper() {
           {i} {name}
         </button>
       ))}
+      <span aria-hidden="true" className="self-stretch w-px mx-1" style={{ background: noirAlpha(NOIR.dim, 0.35) }} />
+      <button
+        onClick={() => setFollow(!follow)}
+        title="Camera glides after the worker ship; drag the map to break off"
+        className="px-2.5 py-1 text-[10px] font-mono rounded tracking-wide"
+        style={{
+          background: follow ? NOIR.warn : 'transparent',
+          color: follow ? NOIR.bg0 : NOIR.muted,
+        }}
+      >
+        ◆ FOLLOW
+      </button>
     </div>
   );
 }

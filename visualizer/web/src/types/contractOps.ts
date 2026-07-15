@@ -99,4 +99,5 @@ export interface ContractOpsLive {
   destinations: Array<{ symbol: string; system: string; x: number; y: number }>;
   pl: { revenue: number; cost: number } | null;
   events: OpsEvent[];
+  recentFulfillments: string[]; // fulfillment timestamps, newest first (throughput chart)
 }

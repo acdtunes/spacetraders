@@ -7,6 +7,9 @@ import { CANVAS_CONSTANTS } from '../../constants/canvas';
 import { NOIR, noirAlpha } from '../../theme/noir';
 import { positionShip } from '../../utils/transitMemory';
 import { selectWaypointAsset, selectShipAssetByRole, waypointVisualRadius } from '../../utils/spriteAssets';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
+import { hashString } from '../../utils/hash';
+import type { OpsFxKind } from '../../utils/opsFx';
 import { WaypointSprite } from '../WaypointSprite';
 import { ShipSprite } from '../ShipSprite';
 import type { OpsShip, OpsShipRole } from '../../types/contractOps';
@@ -26,6 +29,13 @@ export const ROLE_COLORS: Record<OpsShipRole, string> = {
 // carried by the label, never by color alone.
 const RING_SHADES = [NOIR.accent, NOIR.good, NOIR.warn, NOIR.accentSoft];
 
+const FX_COLORS: Record<OpsFxKind, string> = {
+  stocking: NOIR.good,
+  withdrawal: NOIR.accent,
+  delivery: NOIR.warn,
+  fulfillment: NOIR.star,
+};
+
 const shortName = (symbol: string) => symbol.replace(/^[A-Z0-9]+-/, '');
 const systemOf = (waypoint: string) => waypoint.split('-').slice(0, 2).join('-');
 
@@ -36,10 +46,14 @@ export default function ContractOpsScene() {
   const pass = useContractOpsStore((s) => s.pass);
   const selectedShip = useContractOpsStore((s) => s.selectedShip);
   const selectShip = useContractOpsStore((s) => s.selectShip);
+  const fx = useContractOpsStore((s) => s.fx);
+  const follow = useContractOpsStore((s) => s.follow);
+  const setFollow = useContractOpsStore((s) => s.setFollow);
 
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(2.2);
   const nowMs = useRafClock();
+  const reducedMotion = usePrefersReducedMotion();
   const centeredRef = useRef<string | null>(null);
 
   const width = window.innerWidth;
@@ -74,7 +88,8 @@ export default function ContractOpsScene() {
     return { ...p, x: p.x + dx, y: p.y, mem };
   };
 
-  // Center once per topology (mirrors FlowGalaxyScene's guard).
+  // Center once per topology (mirrors FlowGalaxyScene's guard) — with a short
+  // cinematic ease-in from wide on first load, unless the user prefers reduced motion.
   useEffect(() => {
     if (!stageRef.current || !topology || topology.waypoints.length === 0) return;
     const key = topology.systems.join(',');
@@ -87,11 +102,44 @@ export default function ContractOpsScene() {
     }
     const avgX = sx / topology.waypoints.length;
     const avgY = sy / topology.waypoints.length;
-    const initial = 2.2;
-    setScale(initial);
-    stageRef.current.scale({ x: initial, y: initial });
-    stageRef.current.position({ x: width / 2 - avgX * initial, y: height / 2 - avgY * initial });
-  }, [topology, systemOffset, width, height]);
+    const stage = stageRef.current;
+    const target = 2.2;
+    const apply = (s: number) => {
+      stage.scale({ x: s, y: s });
+      stage.position({ x: width / 2 - avgX * s, y: height / 2 - avgY * s });
+      setScale(s);
+    };
+    if (reducedMotion) {
+      apply(target);
+      return;
+    }
+    const start = target * 0.5;
+    const t0 = performance.now();
+    const DUR = 1100;
+    let raf = 0;
+    const tick = (t: number) => {
+      const u = Math.min(1, (t - t0) / DUR);
+      apply(start + (target - start) * (1 - Math.pow(1 - u, 3)));
+      if (u < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [topology, systemOffset, width, height, reducedMotion]);
+
+  // Follow-the-worker camera: glide the stage so the worker stays centered.
+  // Any manual pan (Stage onDragStart) switches it off.
+  useEffect(() => {
+    if (!follow || !stageRef.current || !live?.worker?.shipSymbol) return;
+    const worker = live.ships.find((s) => s.symbol === live.worker?.shipSymbol);
+    if (!worker) return;
+    const p = shipPos(worker);
+    const stage = stageRef.current;
+    const s = stage.scaleX();
+    const target = { x: width / 2 - p.x * s, y: height / 2 - p.y * s };
+    const cur = stage.position();
+    stage.position({ x: cur.x + (target.x - cur.x) * 0.1, y: cur.y + (target.y - cur.y) * 0.1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nowMs, follow, live, width, height]);
 
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
@@ -195,6 +243,29 @@ export default function ContractOpsScene() {
     return layout;
   }, [ships]);
 
+  // Ambient starfield behind the system — deterministic (hash-seeded) so it is
+  // stable across polls and hot reloads.
+  const stars = useMemo(() => {
+    if (!topology || topology.waypoints.length === 0) return [];
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const w of topology.waypoints) {
+      const p = wpPos.get(w.symbol)!;
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    }
+    const pad = 90;
+    const spanX = maxX - minX + pad * 2;
+    const spanY = maxY - minY + pad * 2;
+    return Array.from({ length: 220 }, (_, i) => ({
+      x: minX - pad + ((hashString(`star-x-${i}`) % 10000) / 10000) * spanX,
+      y: minY - pad + ((hashString(`star-y-${i}`) % 10000) / 10000) * spanY,
+      r: 0.12 + ((hashString(`star-r-${i}`) % 100) / 100) * 0.3,
+      a: 0.14 + ((hashString(`star-a-${i}`) % 100) / 100) * 0.38,
+      tw: 0.4 + ((hashString(`star-t-${i}`) % 100) / 100) * 1.2,
+      warm: hashString(`star-w-${i}`) % 6 === 0,
+    }));
+  }, [topology, wpPos]);
+
   const hair = (w: number) => Math.max(0.15, w / scale);
   // Labels and their offsets are SCREEN-sized (constant px at any zoom).
   // World-sized text with a floor turns into billboards when zoomed in.
@@ -210,10 +281,26 @@ export default function ContractOpsScene() {
         draggable
         onWheel={handleWheel}
         onClick={(e) => { if (e.target === e.target.getStage()) selectShip(null); }}
+        onDragStart={() => setFollow(false)}
       >
         <Layer>
           {topology && (
             <>
+              {/* Ambient starfield */}
+              <Group listening={false}>
+                {stars.map((s, i) => (
+                  <Circle
+                    key={`st-${i}`}
+                    x={s.x}
+                    y={s.y}
+                    radius={s.r}
+                    fill={s.warm ? NOIR.star : NOIR.accentSoft}
+                    opacity={reducedMotion ? s.a : s.a * (0.7 + 0.3 * Math.sin(nowMs / 900 * s.tw + i))}
+                    perfectDrawEnabled={false}
+                  />
+                ))}
+              </Group>
+
               {/* Backdrop: every waypoint in the involved systems */}
               <Group listening={false}>
                 {topology.waypoints.map((w) => {
@@ -286,7 +373,7 @@ export default function ContractOpsScene() {
                   {/* cluster service territories + serving link */}
                   {deliveryHubs.map((hub) => (
                     <Group key={`hub-${hub.depotId}-${hub.waypoint}-${hub.shipSymbol}`} x={hub.x} y={hub.y}>
-                      <Circle radius={hub.radius} stroke={noirAlpha(NOIR.good, 0.28)} strokeWidth={hair(0.8)} dash={[hair(4), hair(6)]} />
+                      <Circle radius={hub.radius} fill={noirAlpha(NOIR.good, 0.045)} stroke={noirAlpha(NOIR.good, 0.28)} strokeWidth={hair(0.8)} dash={[hair(4), hair(6)]} />
                       <Circle radius={2.1} stroke={noirAlpha(NOIR.good, 0.85)} strokeWidth={hair(1)} />
                     </Group>
                   ))}
@@ -384,6 +471,37 @@ export default function ContractOpsScene() {
                 </Group>
               )}
 
+              {/* Pass 2+ · reconstructed flight paths (solid behind, dashed ahead) */}
+              {pass >= 2 && (
+                <Group listening={false}>
+                  {ships.map((ship) => {
+                    if (ship.navStatus !== 'IN_TRANSIT') return null;
+                    const p = shipPos(ship);
+                    if (p.mode !== 'exact') return null;
+                    const transit = memory.get(ship.symbol)?.transit;
+                    if (!transit) return null;
+                    const dx = systemOffset.get(ship.system) ?? 0;
+                    const c = ROLE_COLORS[ship.role];
+                    const isWorker = ship.role === 'worker';
+                    return (
+                      <Group key={`route-${ship.symbol}`}>
+                        <Line
+                          points={[transit.originX + dx, transit.originY, p.x, p.y]}
+                          stroke={noirAlpha(c, isWorker ? 0.35 : 0.16)}
+                          strokeWidth={hair(1)}
+                        />
+                        <Line
+                          points={[p.x, p.y, ship.x + dx, ship.y]}
+                          stroke={noirAlpha(c, isWorker ? 0.7 : 0.32)}
+                          strokeWidth={hair(1)}
+                          dash={[hair(3), hair(4)]}
+                        />
+                      </Group>
+                    );
+                  })}
+                </Group>
+              )}
+
               {/* Pass 2+ · the fleet */}
               {pass >= 2 && (
                 <Group>
@@ -477,6 +595,44 @@ export default function ContractOpsScene() {
                   })}
                 </Group>
               )}
+
+              {/* Live event FX: stock ripples, delivery bursts, fulfillment flashes */}
+              <Group listening={false}>
+                {fx.map((f) => {
+                  if (!f.waypoint) return null;
+                  const base = wpPos.get(f.waypoint);
+                  if (!base) return null;
+                  const DUR = f.kind === 'fulfillment' ? 4200 : 2600;
+                  const age = nowMs - f.createdAtMs;
+                  if (age < 0 || age > DUR) return null;
+                  const t = age / DUR;
+                  const fade = 1 - t;
+                  const c = FX_COLORS[f.kind];
+                  return (
+                    <Group key={f.id} x={base.x} y={base.y}>
+                      <Circle
+                        radius={2 + t * (f.kind === 'fulfillment' ? 26 : 13)}
+                        stroke={noirAlpha(c, 0.7 * fade)}
+                        strokeWidth={hair(1.2)}
+                      />
+                      {f.kind === 'fulfillment' && (
+                        <Circle radius={2 + t * 17} stroke={noirAlpha(NOIR.star, 0.5 * fade)} strokeWidth={hair(1)} />
+                      )}
+                      <Text
+                        text={f.text}
+                        fontSize={font(f.kind === 'fulfillment' ? 13 : 10.5)}
+                        fill={noirAlpha(c, Math.min(1, fade * 1.4))}
+                        fontFamily="monospace"
+                        x={sp(10)}
+                        y={-sp(14) - t * sp(16)}
+                        shadowColor={NOIR.bg0}
+                        shadowBlur={sp(4)}
+                        shadowOpacity={0.9}
+                      />
+                    </Group>
+                  );
+                })}
+              </Group>
             </>
           )}
         </Layer>
