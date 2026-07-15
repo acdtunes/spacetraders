@@ -37,6 +37,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -59,15 +60,20 @@ const (
 	// Config defaults (RULINGS #5: every operational value is a flag/config key, filled
 	// here only when the launch config leaves it unset).
 	defaultSizerTickSeconds    = 60
-	defaultSLASeconds          = 3600            // 1h freshness SLA
-	defaultSeedCycleSeconds    = 180             // seeded per-market cycle until telemetry exists
-	defaultMinCycleSamples     = 3               // min consecutive-interval samples to trust a measured cycle
-	defaultMaxProbesPerSystem  = 8               // per-system hull cap (bounds a runaway feedback raise)
-	defaultReleaseSlackPercent = 60              // release a feedback probe only below this % of the SLA (hysteresis)
-	defaultSizerMaxProbeFleet  = 40              // total satellite cap
-	defaultSizerMaxSpend       = 500000          // max probe spend within the trailing spend window (Admiral 2026-07-15: ~17 probes/hr ramp; 25%-treasury + fleet cap still bind)
-	defaultSizerCooldown       = 1 * time.Minute // Admiral 2026-07-15: fast ramp; spend window + treasury/fleet caps still bound total buys
-	defaultSizerSpendWindow    = 1 * time.Hour
+	defaultSLASeconds          = 3600 // 1h freshness SLA
+	defaultSeedCycleSeconds    = 180  // seeded per-market cycle until telemetry exists
+	defaultMinCycleSamples     = 3    // min consecutive-interval samples to trust a measured cycle
+	defaultMaxProbesPerSystem  = 8    // per-system hull cap (bounds a runaway feedback raise)
+	defaultReleaseSlackPercent = 60   // release a feedback probe only below this % of the SLA (hysteresis)
+	// defaultReleaseStableWindowSecs is how long a WARM post's measured surplus (desired <
+	// current, under the SLA but past the slack line) must hold before one probe is shed to
+	// the pool (sp-iupr bug 2). It debounces the shed so a one-cycle demand dip never releases
+	// a hull the next tick re-buys; the buy cooldown is the second half of that anti-thrash.
+	defaultReleaseStableWindowSecs = 300
+	defaultSizerMaxProbeFleet      = 40              // total satellite cap
+	defaultSizerMaxSpend           = 500000          // max probe spend within the trailing spend window (Admiral 2026-07-15: ~17 probes/hr ramp; 25%-treasury + fleet cap still bind)
+	defaultSizerCooldown           = 1 * time.Minute // Admiral 2026-07-15: fast ramp; spend window + treasury/fleet caps still bound total buys
+	defaultSizerSpendWindow        = 1 * time.Hour
 )
 
 // FleetReader is the narrow slice of the ship repository the sizer reads: the whole fleet,
@@ -100,12 +106,13 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	// buys no probe (the captain watches a cycle before arming it).
 	DryRun bool
 
-	SLASeconds          int            // default freshness SLA in seconds
-	SystemSLAOverrides  map[string]int // per-system SLA override (seconds)
-	SeedCycleSeconds    int            // seeded per-market cycle until telemetry exists
-	MinCycleSamples     int            // min samples to trust a measured cycle
-	MaxProbesPerSystem  int            // per-system hull cap
-	ReleaseSlackPercent int            // release hysteresis: shed a probe only below this % of the SLA
+	SLASeconds              int            // default freshness SLA in seconds
+	SystemSLAOverrides      map[string]int // per-system SLA override (seconds)
+	SeedCycleSeconds        int            // seeded per-market cycle until telemetry exists
+	MinCycleSamples         int            // min samples to trust a measured cycle
+	MaxProbesPerSystem      int            // per-system hull cap
+	ReleaseSlackPercent     int            // release hysteresis: shed a probe only below this % of the SLA
+	ReleaseStableWindowSecs int            // a warm surplus must hold this long before one probe is shed (sp-iupr)
 
 	MaxProbeFleet        int // total satellite cap
 	MaxSpendPerCycle     int // max probe spend within the trailing spend window
@@ -122,8 +129,12 @@ type RunMarketFreshnessSizerCoordinatorResponse struct {
 
 // RunMarketFreshnessSizerCoordinatorHandler reconciles freshness demand against probe
 // supply every tick. It is a registered singleton (one instance serves every player's
-// ticks) holding no per-player mutable state — every decision is derived fresh from the
-// injected ports each pass (RULINGS #2).
+// ticks). Sizing, declaring, buying, and retiring are all derived FRESH from the injected
+// ports each pass (RULINGS #2) — the sole in-memory state is releasePendingSince, the
+// stable-window debounce that paces warm-surplus RELEASES (sp-iupr bug 2). That state is
+// restart-CONSERVATIVE: a restart forgets the pending windows, so release is merely
+// re-debounced (delayed), never double-applied — it can never over-release, only re-earn
+// the window. It mirrors the scout reconciler's driftPendingSince idiom.
 type RunMarketFreshnessSizerCoordinatorHandler struct {
 	freshnessReader domainScouting.SystemFreshnessReader
 	postRepo        domainScouting.ScoutPostRepository
@@ -149,6 +160,14 @@ type RunMarketFreshnessSizerCoordinatorHandler struct {
 	// effect on the NEXT tick with no restart. Optional-injection: nil keeps the
 	// launch-frozen behavior byte-identical.
 	liveConfig liveconfig.Reader
+
+	// releaseMu guards releasePendingSince against the singleton-handler concurrency (many
+	// players' ticks share one handler) — the same reason the scout reconciler guards
+	// driftPendingSince. releasePendingSince records, per player|system, the first tick a
+	// WARM post's measured surplus was seen, so the shed only fires once it has held for the
+	// stable window (sp-iupr bug 2). A key is cleared the moment the surplus resolves.
+	releaseMu           sync.Mutex
+	releasePendingSince map[string]time.Time
 }
 
 // NewRunMarketFreshnessSizerCoordinatorHandler wires the coordinator. clock defaults to the
@@ -165,11 +184,12 @@ func NewRunMarketFreshnessSizerCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 	return &RunMarketFreshnessSizerCoordinatorHandler{
-		freshnessReader: freshnessReader,
-		postRepo:        postRepo,
-		fleetRepo:       fleetRepo,
-		ledgerRepo:      ledgerRepo,
-		clock:           clock,
+		freshnessReader:     freshnessReader,
+		postRepo:            postRepo,
+		fleetRepo:           fleetRepo,
+		ledgerRepo:          ledgerRepo,
+		clock:               clock,
+		releasePendingSince: make(map[string]time.Time),
 	}
 }
 
@@ -270,13 +290,14 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) noteReconcile(ctx context.Co
 // KEY SET is also the contract for which keys resolveSizerConfig live-overlays.
 func SizerTunableDefaults() map[string]int {
 	return map[string]int{
-		"max_spend_per_cycle":    defaultSizerMaxSpend,
-		"purchase_cooldown_secs": int(defaultSizerCooldown / time.Second),
-		"spend_window_secs":      int(defaultSizerSpendWindow / time.Second),
-		"max_probe_fleet":        defaultSizerMaxProbeFleet,
-		"max_probes_per_system":  defaultMaxProbesPerSystem,
-		"sla_seconds":            defaultSLASeconds,
-		"release_slack_percent":  defaultReleaseSlackPercent,
+		"max_spend_per_cycle":        defaultSizerMaxSpend,
+		"purchase_cooldown_secs":     int(defaultSizerCooldown / time.Second),
+		"spend_window_secs":          int(defaultSizerSpendWindow / time.Second),
+		"max_probe_fleet":            defaultSizerMaxProbeFleet,
+		"max_probes_per_system":      defaultMaxProbesPerSystem,
+		"sla_seconds":                defaultSLASeconds,
+		"release_slack_percent":      defaultReleaseSlackPercent,
+		"release_stable_window_secs": defaultReleaseStableWindowSecs,
 	}
 }
 
@@ -288,6 +309,7 @@ type sizerConfig struct {
 	MinCycleSamples     int
 	MaxProbesPerSystem  int
 	ReleaseSlackPercent int
+	ReleaseStableWindow time.Duration
 	Buy                 probebuy.Config
 }
 
@@ -306,6 +328,7 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		MinCycleSamples:     cmd.MinCycleSamples,
 		MaxProbesPerSystem:  cmd.MaxProbesPerSystem,
 		ReleaseSlackPercent: cmd.ReleaseSlackPercent,
+		ReleaseStableWindow: time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
 		Buy: probebuy.Config{
 			MaxProbeFleet:    cmd.MaxProbeFleet,
 			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
@@ -317,6 +340,7 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		c.DefaultSLA = time.Duration(live.PositiveIntOrZero("sla_seconds")) * time.Second
 		c.MaxProbesPerSystem = live.PositiveIntOrZero("max_probes_per_system")
 		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
+		c.ReleaseStableWindow = time.Duration(live.PositiveIntOrZero("release_stable_window_secs")) * time.Second
 		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.Buy.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.Buy.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
@@ -336,6 +360,9 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 	}
 	if c.ReleaseSlackPercent <= 0 {
 		c.ReleaseSlackPercent = defaultReleaseSlackPercent
+	}
+	if c.ReleaseStableWindow <= 0 {
+		c.ReleaseStableWindow = defaultReleaseStableWindowSecs * time.Second
 	}
 	if c.Buy.MaxProbeFleet <= 0 {
 		c.Buy.MaxProbeFleet = defaultSizerMaxProbeFleet
@@ -415,7 +442,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		if existing != nil {
 			current = existing.HullBudget()
 		}
-		desired := computeDesiredHulls(current, snap, sla, cycle, cfg)
+		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, snap, sla, cycle, cfg)
 		totalDemand += desired
 		if !cmd.DryRun {
 			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, desired, sla)
@@ -454,35 +481,124 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	return nil
 }
 
-// computeDesiredHulls is the per-system sizing decision: the static circuit model corrected
-// by the empirical age (FreshnessRequiredHulls), capped, then PACED. A raise or a fresh
-// declaration is applied immediately (freshness is the priority); a RELEASE is gated by
-// hysteresis — a probe is shed only when the system is COMFORTABLY under its SLA, one step
-// at a time, never below the static model floor — so the fleet does not flap at the SLA line.
-func computeDesiredHulls(current int, snap domainScouting.SystemFreshnessSnapshot, sla time.Duration, cycle time.Duration, cfg sizerConfig) int {
-	age := time.Duration(snap.OldestAgeSeconds * float64(time.Second))
-	target := domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
+// computeTarget is the per-system SIZE the sizer aims a post at, before release pacing. A
+// TRUSTED system (its own scan telemetry has cleared the sample floor) uses the closed-loop
+// model corrected by the empirical worst-case age (FreshnessRequiredHulls). A TELEMETRY-
+// STARVED system — one whose probes have not produced MinCycleSamples scan intervals — has
+// an age that reflects a MANNING failure (its probe is in transit, blocked, or relayed away
+// so its markets never re-scan), NOT a capacity shortfall; raising demand off that age only
+// strands MORE probes on a post that cannot use them (the sp-iupr pathology: a 3-market
+// system pinned at the per-system cap forever, higher than a healthy 12-market one). It is
+// sized to the static MARKET-COUNT model instead (RequiredHulls at the resolved cycle),
+// which scales monotonically with market count — so a 3-market system never seeds higher
+// than a 12-market one. Both are floored at 1 (a market-bearing system always keeps a probe)
+// and capped at the per-system ceiling (bounded).
+func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) (target int, starved bool) {
+	starved = snap.CycleSamples < cfg.MinCycleSamples
+	if starved {
+		target = domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
+	} else {
+		age := time.Duration(snap.OldestAgeSeconds * float64(time.Second))
+		target = domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
+	}
 	if target < 1 {
-		target = 1 // a market-bearing system always keeps at least one probe.
+		target = 1
 	}
 	if target > cfg.MaxProbesPerSystem {
 		target = cfg.MaxProbesPerSystem
 	}
+	return target, starved
+}
+
+// desiredHulls applies release PACING on top of computeTarget so the fleet neither flaps at
+// the SLA line nor thrashes the shared satellite pool. A raise or a fresh declaration lands
+// immediately (freshness is the priority). Shedding a surplus (target < current) is tiered:
+//   - a TELEMETRY-STARVED oversized post, or a TRUSTED post COMFORTABLY under its SLA (age
+//     below the release-slack line), sheds ONE probe immediately — the starved post's age
+//     cannot hold it (sp-iupr bug 1), the comfortable post has the margin to spare (the
+//     original sp-orgp hysteresis);
+//   - a TRUSTED post in the WARM band (under the SLA but past the slack line) whose measured
+//     requirement fell below its budget sheds one probe only once the surplus has been STABLE
+//     for the release window (sp-iupr bug 2) — a one-cycle demand dip clears the pending
+//     window and sheds nothing, so the sizer never releases a hull the next tick re-buys.
+//
+// Every shed is one step, floored at the measured requirement (never below what the post
+// needs), and lands as a resize-DOWN the scout reconciler un-mans — returning the hull to the
+// shared pool where the frontier coordinator can claim it, never sold or retired.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) desiredHulls(key string, current int, snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) int {
+	target, starved := computeTarget(snap, sla, cycle, cfg)
 
 	if current == 0 || target >= current {
-		return target // declare, raise, or hold — apply immediately.
+		h.clearReleasePending(key) // declaring, raising, or holding — no surplus to debounce.
+		return target
 	}
 
-	// target < current → release candidate. Only shed when comfortably under the SLA.
+	// Surplus (target < current). Comfortably-fresh trusted posts and starved posts shed now.
 	slackSeconds := sla.Seconds() * float64(cfg.ReleaseSlackPercent) / 100
-	if snap.OldestAgeSeconds > slackSeconds {
-		return current // under the SLA but not yet comfortable — hold (hysteresis).
+	if starved || snap.OldestAgeSeconds < slackSeconds {
+		h.clearReleasePending(key)
+		return stepDownToward(current, target)
 	}
+
+	// Warm surplus: shed one probe only after it has held for the stable window (debounced).
+	if h.releasePendingElapsed(key) < cfg.ReleaseStableWindow {
+		return current // pending, not yet stable — hold this tick.
+	}
+	h.markReleasePending(key) // reset the window so warm sheds pace at one probe per window.
+	return stepDownToward(current, target)
+}
+
+// stepDownToward sheds exactly one probe, never below the target (the measured requirement).
+func stepDownToward(current, target int) int {
 	stepDown := current - 1
 	if stepDown < target {
 		stepDown = target
 	}
 	return stepDown
+}
+
+// releaseKey scopes the warm-surplus debounce per player and system (matching the scout
+// reconciler's driftKey shape) so the singleton handler tracks each post independently.
+func releaseKey(playerID int, system string) string {
+	return fmt.Sprintf("%d|%s", playerID, system)
+}
+
+// releasePendingElapsed records the FIRST tick a warm post's surplus was seen and returns how
+// long it has been pending. A key already tracked keeps its original timestamp — the window
+// accumulates across ticks until the shed fires or the surplus resolves (clearReleasePending).
+func (h *RunMarketFreshnessSizerCoordinatorHandler) releasePendingElapsed(key string) time.Duration {
+	h.releaseMu.Lock()
+	defer h.releaseMu.Unlock()
+	if h.releasePendingSince == nil {
+		h.releasePendingSince = make(map[string]time.Time)
+	}
+	now := h.clock.Now()
+	since, ok := h.releasePendingSince[key]
+	if !ok {
+		h.releasePendingSince[key] = now
+		return 0
+	}
+	return now.Sub(since)
+}
+
+// markReleasePending (re)starts a post's stable window at now — called right after a warm
+// shed so the next shed must re-earn the full window (paces releases at one probe per window).
+func (h *RunMarketFreshnessSizerCoordinatorHandler) markReleasePending(key string) {
+	h.releaseMu.Lock()
+	defer h.releaseMu.Unlock()
+	if h.releasePendingSince == nil {
+		h.releasePendingSince = make(map[string]time.Time)
+	}
+	h.releasePendingSince[key] = h.clock.Now()
+}
+
+// clearReleasePending forgets a post's pending window — called the moment its surplus
+// resolves (target rose back to the budget, or it shed by the immediate path), so a later
+// dip below the budget starts a FRESH window rather than inheriting a stale one.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) clearReleasePending(key string) {
+	h.releaseMu.Lock()
+	defer h.releaseMu.Unlock()
+	delete(h.releasePendingSince, key)
 }
 
 // applyPost reconciles the desired-state post for one market-bearing system: declare (new),

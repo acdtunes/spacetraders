@@ -730,19 +730,20 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 // knobs the common single-SLA case needs.
 func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand{
-		PlayerID:             shared.MustNewPlayerID(playerID),
-		ContainerID:          cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:     cfg.OptionalInt("tick_interval_secs", 0),
-		DryRun:               cfg.OptionalBool("dry_run"),
-		SLASeconds:           cfg.OptionalInt("sla_seconds", 0),
-		SeedCycleSeconds:     cfg.OptionalInt("seed_cycle_seconds", 0),
-		MinCycleSamples:      cfg.OptionalInt("min_cycle_samples", 0),
-		MaxProbesPerSystem:   cfg.OptionalInt("max_probes_per_system", 0),
-		ReleaseSlackPercent:  cfg.OptionalInt("release_slack_percent", 0),
-		MaxProbeFleet:        cfg.OptionalInt("max_probe_fleet", 0),
-		MaxSpendPerCycle:     cfg.OptionalInt("max_spend_per_cycle", 0),
-		PurchaseCooldownSecs: cfg.OptionalInt("purchase_cooldown_secs", 0),
-		SpendWindowSecs:      cfg.OptionalInt("spend_window_secs", 0),
+		PlayerID:                shared.MustNewPlayerID(playerID),
+		ContainerID:             cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:        cfg.OptionalInt("tick_interval_secs", 0),
+		DryRun:                  cfg.OptionalBool("dry_run"),
+		SLASeconds:              cfg.OptionalInt("sla_seconds", 0),
+		SeedCycleSeconds:        cfg.OptionalInt("seed_cycle_seconds", 0),
+		MinCycleSamples:         cfg.OptionalInt("min_cycle_samples", 0),
+		MaxProbesPerSystem:      cfg.OptionalInt("max_probes_per_system", 0),
+		ReleaseSlackPercent:     cfg.OptionalInt("release_slack_percent", 0),
+		ReleaseStableWindowSecs: cfg.OptionalInt("release_stable_window_secs", 0),
+		MaxProbeFleet:           cfg.OptionalInt("max_probe_fleet", 0),
+		MaxSpendPerCycle:        cfg.OptionalInt("max_spend_per_cycle", 0),
+		PurchaseCooldownSecs:    cfg.OptionalInt("purchase_cooldown_secs", 0),
+		SpendWindowSecs:         cfg.OptionalInt("spend_window_secs", 0),
 	}
 }
 

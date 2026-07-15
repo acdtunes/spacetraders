@@ -70,13 +70,14 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	frontier := expansionCmd.FrontierTunableDefaults()
 	return map[string]map[string]TuneBound{
 		string(container.ContainerTypeMarketFreshnessSizer): {
-			"max_spend_per_cycle":    {Type: "int", Min: 0, Max: 5_000_000, Default: sizer["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
-			"purchase_cooldown_secs": {Type: "int", Min: 10, Max: 86_400, Default: sizer["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
-			"spend_window_secs":      {Type: "int", Min: 10, Max: 86_400, Default: sizer["spend_window_secs"], Unit: "seconds", Description: "trailing window the spend cap sums over"},
-			"max_probe_fleet":        {Type: "int", Min: 0, Max: 200, Default: sizer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
-			"max_probes_per_system":  {Type: "int", Min: 0, Max: 200, Default: sizer["max_probes_per_system"], Unit: "hulls", Description: "per-system hull cap"},
-			"sla_seconds":            {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds"], Unit: "seconds", Description: "freshness SLA the sizer sizes against"},
-			"release_slack_percent":  {Type: "int", Min: 1, Max: 100, Default: sizer["release_slack_percent"], Unit: "percent", Description: "release hysteresis as a percent of the SLA"},
+			"max_spend_per_cycle":        {Type: "int", Min: 0, Max: 5_000_000, Default: sizer["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
+			"purchase_cooldown_secs":     {Type: "int", Min: 10, Max: 86_400, Default: sizer["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
+			"spend_window_secs":          {Type: "int", Min: 10, Max: 86_400, Default: sizer["spend_window_secs"], Unit: "seconds", Description: "trailing window the spend cap sums over"},
+			"max_probe_fleet":            {Type: "int", Min: 0, Max: 200, Default: sizer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
+			"max_probes_per_system":      {Type: "int", Min: 0, Max: 200, Default: sizer["max_probes_per_system"], Unit: "hulls", Description: "per-system hull cap"},
+			"sla_seconds":                {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds"], Unit: "seconds", Description: "freshness SLA the sizer sizes against"},
+			"release_slack_percent":      {Type: "int", Min: 1, Max: 100, Default: sizer["release_slack_percent"], Unit: "percent", Description: "release hysteresis as a percent of the SLA"},
+			"release_stable_window_secs": {Type: "int", Min: 10, Max: 86_400, Default: sizer["release_stable_window_secs"], Unit: "seconds", Description: "how long a warm surplus must hold before a probe is shed"},
 		},
 		string(container.ContainerTypeFrontierExpansion): {
 			"max_spend_per_cycle":    {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},

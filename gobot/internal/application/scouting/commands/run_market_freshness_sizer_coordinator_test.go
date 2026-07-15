@@ -163,6 +163,18 @@ func snap(system string, markets int, oldestAgeSecs, cycleSecs float64, samples 
 	}
 }
 
+// newSizerWithClock is newSizer's multi-tick sibling: it hands back the MockClock so a
+// test can ADVANCE wall time between ReconcileOnce passes (the stable-window release
+// debounce is measured against this clock).
+func newSizerWithClock(fr *fakeFreshnessReader, pr *fakeSizerPostRepo, fl *fakeSizerFleetRepo) (*RunMarketFreshnessSizerCoordinatorHandler, *shared.MockClock) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	h := NewRunMarketFreshnessSizerCoordinatorHandler(fr, pr, fl, &fakeLedger{}, clock)
+	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
+	h.SetProbePurchaser(&fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"})
+	h.SetHullUpdater(pr)
+	return h, clock
+}
+
 // ---- tests -----------------------------------------------------------------
 
 // A market-rich, fresh system is sized to the static circuit model and DECLARED as a
@@ -387,4 +399,157 @@ func TestSizer_HonorsPerSystemSLAOverride(t *testing.T) {
 	require.Len(t, pr.upserts, 1)
 	require.Equal(t, 4, pr.upserts[0].Hulls, "ceil(60×120/1800)=4 under the 30min override")
 	require.Equal(t, 30*time.Minute, pr.upserts[0].FreshnessTarget)
+}
+
+// ---- sp-iupr: telemetry-starved over-provisioning + slack release --------------
+
+// BUG 1 (sp-iupr): a system whose probes never complete scan cycles produces NO cycle
+// telemetry, so its markets go stale and OldestAgeSeconds grows without bound. The
+// closed-loop age raise then pins its post at the per-system cap (8) regardless of how
+// FEW markets it has — a 3-market system stuck at 8 forever, higher than a healthy
+// 12-market one. A telemetry-starved system's age is a MANNING signal, not a capacity
+// one, so the seed/no-telemetry sizing must scale with MARKET COUNT alone (bounded),
+// never inflate off the age. Here a 3-market and a 12-market starved+breaching system
+// both seed to 1 (3 never higher than 12), and an 80-market one to 4 — seed scales with
+// markets, and none is pinned at the cap.
+func TestSizer_SeedsTelemetryStarvedSystemByMarketCountNotAge(t *testing.T) {
+	cases := []struct {
+		name      string
+		markets   int
+		wantHulls int
+	}{
+		{"3-market starved seeds small, not the cap", 3, 1},
+		{"12-market starved is never below the 3-market one", 12, 1},
+		{"80-market starved scales up with market count", 80, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				// 8h stale (breaching) with ZERO cycle samples: probes are not cycling.
+				snap("X1-ZY16", tc.markets, 28800, 0, 0),
+			}}
+			pr := newSizerPostRepo() // no existing post → declare path
+			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+			h := newSizer(fr, pr, fl)
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+			require.Len(t, pr.upserts, 1, "one standing post declared")
+			require.Equal(t, tc.wantHulls, pr.upserts[0].Hulls,
+				"telemetry-starved sizing is market-count based (ceil(markets×180s/3600s)), never the age-raised cap")
+		})
+	}
+}
+
+// BUG 1 (sp-iupr) release half: a post ALREADY pinned oversized (8) by the old age raise,
+// still telemetry-starved, must WALK DOWN to the market-count floor instead of parking at
+// the seed/cap forever — its age cannot hold it (age is not a capacity signal when the
+// probes aren't cycling). And once it reaches that market-count floor it HOLDS there, never
+// released below its own requirement.
+func TestSizer_TelemetryStarvedOversizedPostConvergesToMarketCountFloor(t *testing.T) {
+	t.Run("pinned-at-cap starved post steps down toward the floor", func(t *testing.T) {
+		fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+			snap("X1-ZY16", 3, 28800 /*breaching*/, 0, 0 /*starved*/),
+		}}
+		pr := newSizerPostRepo(standingSizerPost("X1-ZY16", 8, "PROBE-MANNED"))
+		fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+		h := newSizer(fr, pr, fl)
+
+		require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+		require.Equal(t, 7, pr.hullUpdates["X1-ZY16"],
+			"a starved oversized post steps down toward the market-count floor, not pinned at the cap")
+	})
+
+	t.Run("at the market-count floor a starved post holds", func(t *testing.T) {
+		fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+			snap("X1-ZY16", 3, 28800, 0, 0),
+		}}
+		pr := newSizerPostRepo(standingSizerPost("X1-ZY16", 1, "PROBE-MANNED"))
+		fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+		h := newSizer(fr, pr, fl)
+
+		require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+		_, resized := pr.hullUpdates["X1-ZY16"]
+		require.False(t, resized, "a starved post at its market-count floor holds — never raised off the stale age, never released below the floor")
+	})
+}
+
+// BUG 2 (sp-iupr): a post whose measured requirement has fallen below its current budget,
+// sitting UNDER its SLA but not yet comfortably fresh (the warm band the old code held
+// forever), releases its surplus once the slack has been STABLE for the release window —
+// so aggregate supply stops outrunning demand. The release is paced (the freed probe
+// returns to the shared pool for the frontier) and floored at the measured requirement.
+func TestSizer_ReleasesStableWarmSurplusAfterWindow(t *testing.T) {
+	// 26 markets × 120s = 3120s < 3600s SLA → measured requirement 1; the post carries 3
+	// (feedback probes). Age 3000s is UNDER the 3600s SLA but past the 60% (2160s) comfort
+	// line — the warm band.
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-DF86", 26, 3000, 120, 25),
+	}}
+	pr := newSizerPostRepo(standingSizerPost("X1-DF86", 3, "PROBE-MANNED"))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h, clock := newSizerWithClock(fr, pr, fl)
+
+	// First observation of the surplus: hold (the window has not elapsed) — proving a
+	// warm surplus is not shed on sight.
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+	_, resized := pr.hullUpdates["X1-DF86"]
+	require.False(t, resized, "warm surplus is not released on the first tick")
+
+	// The slack stays stable across the release window → shed one probe to the pool.
+	clock.Advance(301 * time.Second) // default release_stable_window_secs is 300
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+	require.Equal(t, 2, pr.hullUpdates["X1-DF86"],
+		"a warm surplus stable across the release window sheds one probe toward the measured requirement")
+}
+
+// BUG 2 (sp-iupr) hysteresis: a ONE-CYCLE dip in demand (a single tick where desired drops
+// below current, then recovers) must NOT release — otherwise the sizer sheds a probe the
+// next tick's rebound re-buys, thrashing against the shared pool. Only a slack that stays
+// stable across the whole window releases.
+func TestSizer_WarmSurplusOneCycleDipDoesNotRelease(t *testing.T) {
+	// markets=90 → measured requirement 3 == current 3 (no surplus); markets=26 → requirement
+	// 1 < current 3 (surplus). We flip to 26 for a SINGLE tick, then back.
+	steady := snap("X1-DF86", 90, 3000, 120, 25) // requirement 3 == current 3
+	dip := snap("X1-DF86", 26, 3000, 120, 25)    // requirement 1 < current 3 (one cycle only)
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{steady}}
+	pr := newSizerPostRepo(standingSizerPost("X1-DF86", 3, "PROBE-MANNED"))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h, clock := newSizerWithClock(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd())) // t0: no surplus
+	clock.Advance(100 * time.Second)
+	fr.snapshots = []domainScouting.SystemFreshnessSnapshot{dip}
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd())) // one cycle of surplus
+	clock.Advance(100 * time.Second)
+	fr.snapshots = []domainScouting.SystemFreshnessSnapshot{steady}
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd())) // surplus gone again
+	clock.Advance(400 * time.Second)                                      // > a full window since t0
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Empty(t, pr.hullUpdates, "a one-cycle demand dip never accrues a stable window — no probe is shed")
+}
+
+// BUG 2 (sp-iupr) frontier coordination: releasing surplus must return the probe to the
+// SHARED idle pool (a resize-DOWN the scout reconciler un-mans, landing the hull undedicated
+// where the frontier expansion coordinator (sp-8w89) can claim it), NEVER retire the post or
+// sell the hull. No-churn: the post keeps its measured-requirement probes and the sizer does
+// not turn around and re-buy the hull it just freed.
+func TestSizer_ReleasedSurplusReturnsToSharedPoolNotDestroyed(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-ZY16", 3, 28800, 0, 0), // starved, oversized — an immediate release candidate
+	}}
+	pr := newSizerPostRepo(standingSizerPost("X1-ZY16", 8, "PROBE-MANNED"))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)} // supply covers the stepped-down demand → no rebuy
+	h := newSizer(fr, pr, fl)
+	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+	h.SetProbePurchaser(pu)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 7, pr.hullUpdates["X1-ZY16"], "surplus is freed by resizing the post DOWN (returns the hull to the pool)")
+	require.Empty(t, pr.removed, "release never RETIRES the post — the frontier can claim the freed hull from the shared pool")
+	require.Equal(t, 0, pu.buyCalls, "no-churn: the sizer does not re-buy a hull it just released")
 }
