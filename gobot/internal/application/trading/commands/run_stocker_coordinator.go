@@ -383,10 +383,16 @@ func (h *RunStockerCoordinatorHandler) execute(ctx context.Context, cmd *RunStoc
 		return fmt.Errorf("stocker subsystem unwired (storageCoordinator/warehouseFinder/demandMiner)")
 	}
 
-	// Stamp every ledger row this run's buy legs write with operation_type "stocker" so
-	// pre-positioning spend lands under the stocker op, not the default trade baseline
-	// (mirrors how the tour tags its writes at the boundary).
-	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "stocker"))
+	// Stamp every ledger row this run's buy legs write with operation_type "contract" (via the
+	// contract coordinator's own "contract_workflow" raw type — shared.NormalizedOperationType
+	// maps it to "contract", identically to delivery_executor.go:119) so pre-positioning spend
+	// lands in the SAME bucket as the contract REVENUE it enables. Contract Profit (panel 109,
+	// filtering operation_type='contract') then NETS the pre-stock input cost against contract
+	// revenue instead of overstating it while a standalone 'stocker' line shows as pure loss
+	// (sp-a0y4). This is the ledger-attribution tag ONLY; it is DISTINCT from the stocker's
+	// fleet-dedication / ClaimShip identity (container_ops_stocker.go operationStocker="stocker"),
+	// which stays "stocker" so hull ownership survives restarts.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "contract_workflow"))
 
 	reserve := cmd.WorkingCapitalReserve
 	if reserve == 0 {

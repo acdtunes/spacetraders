@@ -38,6 +38,12 @@ type stkFixture struct {
 	buyUnits  int
 	transfers int
 	navs      []string
+	// buyOpTypes records the normalized operation_type each buy leg dispatched under
+	// (read off the ctx's operation context at the PurchaseCargoCommand boundary, exactly
+	// as the real cargo-transaction recorder stamps the ledger row). Lets a test assert the
+	// stocker's pre-buys attribute to operation_type='contract' (sp-a0y4), mirroring the
+	// tour fake's buyOpTypes.
+	buyOpTypes []string
 }
 
 func (fx *stkFixture) buildShip(t *testing.T, symbol string) *navigation.Ship {
@@ -99,6 +105,9 @@ func (m *stkFakeMediator) Send(ctx context.Context, request common.Request) (com
 		m.fx.cargo[cmd.GoodSymbol] += units
 		m.fx.buys++
 		m.fx.buyUnits += units
+		// Capture the ledger operation_type this buy would record (the real recorder does
+		// recordCmd.OperationType = opCtx.NormalizedOperationType(), cargo_transaction.go).
+		m.fx.buyOpTypes = append(m.fx.buyOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
 		return &shipCargo.PurchaseCargoResponse{UnitsAdded: units, TotalCost: units * liveAsk, TransactionCount: 1}, nil
 	case *gasCmd.TransferCargoCommand:
 		// A deposit transfer: the good LEAVES the hull into the warehouse hull.
@@ -1305,5 +1314,39 @@ func TestStocker_Deposit_StockingRecordFailure_IsFailOpen(t *testing.T) {
 	}
 	if r.CargoStranded {
 		t.Fatalf("a clean round-trip must not strand: %s", r.CargoStrandedReason)
+	}
+}
+
+// The contract depot's stocker pre-buys goods to fulfill contracts fast; those PURCHASE_CARGO
+// legs must land in the ledger under operation_type='contract' — the SAME bucket contract
+// REVENUE uses and the Contract Profit panel filters on — so the pre-stock input cost NETS
+// against contract revenue instead of overstating profit while the stocker shows as pure loss
+// (sp-a0y4). It attributes exactly as the contract coordinator does: the "contract_workflow" raw
+// type normalizes to "contract" (shared.NormalizedOperationType, delivery_executor.go:119). This
+// asserts at the buy-dispatch boundary, where the recorder reads opCtx.NormalizedOperationType().
+//
+// The 'stocker' FLEET-DEDICATION / ClaimShip tag (container_ops_stocker.go operationStocker) is a
+// DISTINCT use of the word and is deliberately UNCHANGED — that string is the hull-ownership
+// identity; TestStartStocker_IdleShip_PersistsRecoveryVisibleContainer guards it still reads
+// "stocker" so stocker hull claiming survives restarts.
+func TestStocker_TagsBuyWritesAsContractOperationType(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 1000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	if _, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STOCKER-1", PlayerID: 1, ContainerID: "ctr-1", WarehouseWaypoint: "X1-S1-H"}); err != nil {
+		t.Fatalf("stocker returned error: %v", err)
+	}
+
+	if len(fx.buyOpTypes) == 0 {
+		t.Fatalf("expected at least one stocker buy dispatch to attribute, got none")
+	}
+	for i, got := range fx.buyOpTypes {
+		if got != "contract" {
+			t.Errorf("stocker buy #%d recorded under operation_type %q, want \"contract\" (was the misattributed \"stocker\", sp-a0y4)", i, got)
+		}
 	}
 }
