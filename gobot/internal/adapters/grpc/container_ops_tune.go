@@ -76,6 +76,8 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"max_probe_fleet":            {Type: "int", Min: 0, Max: 200, Default: sizer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
 			"max_probes_per_system":      {Type: "int", Min: 0, Max: 200, Default: sizer["max_probes_per_system"], Unit: "hulls", Description: "per-system hull cap"},
 			"sla_seconds":                {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds"], Unit: "seconds", Description: "freshness SLA the sizer sizes against"},
+			"worst_cycle_seconds":        {Type: "int", Min: 60, Max: 86_400, Default: sizer["worst_cycle_seconds"], Unit: "seconds", Description: "worst-plausible per-market cycle bounding the market-count clamp ceiling"},
+			"cycle_dampening_percent":    {Type: "int", Min: 1, Max: 100, Default: sizer["cycle_dampening_percent"], Unit: "percent", Description: "shrinkage of a system's own noisy per-market cycle toward the fleet median"},
 			"release_slack_percent":      {Type: "int", Min: 1, Max: 100, Default: sizer["release_slack_percent"], Unit: "percent", Description: "release hysteresis as a percent of the SLA"},
 			"release_stable_window_secs": {Type: "int", Min: 10, Max: 86_400, Default: sizer["release_stable_window_secs"], Unit: "seconds", Description: "how long a warm surplus must hold before a probe is shed"},
 		},

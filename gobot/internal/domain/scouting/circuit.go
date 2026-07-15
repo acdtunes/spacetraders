@@ -35,6 +35,46 @@ func RequiredHulls(markets int, avgHop, freshness time.Duration) int {
 	return r
 }
 
+// ClampToMarketCount bounds a proposed probe target to what `markets` markets can justify at
+// the worst-plausible per-market cycle — the sp-iupr issue-3 NOISE CEILING. Per-market cycle
+// telemetry is noisy, and a noisy-HIGH reading can size a small-market system far above what
+// its market count could ever need (the ZY16 pathology: 3 markets read as needing 6 probes).
+// The ceiling is RequiredHulls(markets, worstCycle, sla): the static model at a conservative
+// upper-bound cycle. Because RequiredHulls is monotone non-decreasing in markets, so is the
+// ceiling — clamping every system to it enforces "a smaller-market system is never sized above
+// a larger-market one on cycle noise alone". The clamp only CAPS (never raises), and a
+// degenerate ceiling (0, "cannot assess": no markets or a non-positive cycle/sla) never
+// clamps. The empirical-age sanity floor at the call site is deliberately applied AFTER this
+// and MAY exceed the ceiling — measured staleness is ground truth, this bounds only the model.
+func ClampToMarketCount(target, markets int, worstCycle, sla time.Duration) int {
+	ceiling := RequiredHulls(markets, worstCycle, sla)
+	if ceiling > 0 && target > ceiling {
+		return ceiling
+	}
+	return target
+}
+
+// DampenedCycleSeconds shrinks a system's OWN measured per-market cycle toward the fleet-wide
+// robust median by dampeningPercent — the sp-iupr issue-3 NOISE DAMPENER. Per-system cycle
+// measurements are noisy estimates of a partly-shared underlying travel pace (probes across
+// systems pay similar per-hop navigation + scan costs), so systems with equal market counts
+// and noisy-but-similar true cycles otherwise diverge into different probe targets purely on
+// noise. This is a classic shrinkage estimator: the pooled fleet median is a lower-variance
+// prior, and pulling each noisy per-system estimate toward it trades a little bias for a large
+// variance reduction, so equal-market systems converge. dampeningPercent is clamped to
+// [0,100]; 0 (or no fleet anchor — a single trusted system whose median IS its own cycle)
+// returns the own cycle unchanged, the pre-dampening behavior.
+func DampenedCycleSeconds(own, fleetMedian float64, dampeningPercent int) float64 {
+	if fleetMedian <= 0 || dampeningPercent <= 0 {
+		return own
+	}
+	weight := float64(dampeningPercent) / 100
+	if weight > 1 {
+		weight = 1
+	}
+	return own*(1-weight) + fleetMedian*weight
+}
+
 // MedianScanIntervalSeconds MEASURES the empirical per-market cycle — the seconds a
 // probe spends moving to and scanning the next market — as the MEDIAN of the intervals
 // between consecutive market-scan events (sp-orgp). It is the freshness sizer's

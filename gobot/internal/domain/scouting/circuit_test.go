@@ -145,6 +145,80 @@ func TestFreshnessRequiredHulls(t *testing.T) {
 	}
 }
 
+// ClampToMarketCount is the sp-iupr issue-3 noise ceiling: a small-market system that a
+// noisy-HIGH per-market cycle over-sized is bounded to what its market count could ever
+// justify at the worst plausible cycle. The clamp only CAPS (never raises), is monotone in
+// market count (small-market ceiling ≤ large-market ceiling), and a degenerate ceiling
+// ("cannot assess") never clamps.
+func TestClampToMarketCount(t *testing.T) {
+	min := time.Minute
+	cases := []struct {
+		name       string
+		target     int
+		markets    int
+		worstCycle time.Duration
+		sla        time.Duration
+		want       int
+	}{
+		// The ZY16 pathology: a 3-market system a noisy cycle sized at 6 is clamped to what 3
+		// markets need at the worst plausible 30min/market cycle: ceil(3×30/60) = 2.
+		{"noisy small-market target clamped to the market-count ceiling", 6, 3, 30 * min, 60 * min, 2},
+		// The clamp only caps — a target within the ceiling is untouched.
+		{"target within the ceiling is unchanged", 1, 3, 30 * min, 60 * min, 1},
+		{"target exactly at the ceiling is unchanged", 2, 3, 30 * min, 60 * min, 2},
+		// A market-rich system's legitimate target sits under its own (much higher) ceiling.
+		{"large-market target under its ceiling is unchanged", 8, 26, 30 * min, 60 * min, 8},
+		// Monotone: the 3-market ceiling (2) can never exceed the 26-market ceiling (13), so
+		// clamping every system enforces small-market ≤ large-market on noise alone.
+		{"small-market ceiling caps hard", 99, 3, 30 * min, 60 * min, 2},
+		{"large-market ceiling admits more", 99, 26, 30 * min, 60 * min, 13},
+		// Degenerate ceiling ("cannot assess" → 0) never clamps.
+		{"no markets cannot assess — unchanged", 5, 0, 30 * min, 60 * min, 5},
+		{"no worst cycle cannot assess — unchanged", 5, 3, 0, 60 * min, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClampToMarketCount(tc.target, tc.markets, tc.worstCycle, tc.sla); got != tc.want {
+				t.Errorf("ClampToMarketCount(%d, %d, %s, %s) = %d, want %d", tc.target, tc.markets, tc.worstCycle, tc.sla, got, tc.want)
+			}
+		})
+	}
+}
+
+// DampenedCycleSeconds is the sp-iupr issue-3 noise dampener: it shrinks a system's own noisy
+// per-market cycle toward the fleet-wide robust median so equal-market-count systems converge
+// on similar targets instead of diverging on measurement noise. A low reading is pulled up and
+// a high one pulled down; no fleet anchor or 0% is the pre-dampening pass-through.
+func TestDampenedCycleSeconds(t *testing.T) {
+	cases := []struct {
+		name        string
+		own         float64
+		fleetMedian float64
+		percent     int
+		want        float64
+	}{
+		// No fleet anchor (a single trusted system): own cycle used unchanged.
+		{"no fleet anchor returns own", 600, 0, 50, 600},
+		// 0% is the pre-dampening behavior: own unchanged.
+		{"zero percent returns own", 600, 900, 0, 600},
+		// 50% shrinks halfway toward the fleet median: a low reading is pulled UP...
+		{"half dampening pulls a low reading toward the median", 600, 900, 50, 750},
+		// ...and a high reading DOWN, so two noisy-but-similar systems converge.
+		{"half dampening pulls a high reading toward the median", 1200, 900, 50, 1050},
+		// 100% pools fully to the fleet median (own signal discarded).
+		{"full dampening pools to the fleet median", 600, 900, 100, 900},
+		// Over-100% is clamped to full pooling (defensive).
+		{"over-100 percent clamps to full pooling", 600, 900, 150, 900},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DampenedCycleSeconds(tc.own, tc.fleetMedian, tc.percent); got != tc.want {
+				t.Errorf("DampenedCycleSeconds(%v, %v, %d) = %v, want %v", tc.own, tc.fleetMedian, tc.percent, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCircuitDuration(t *testing.T) {
 	min := time.Minute
 	// 22 markets on 1 probe at 3min/hop = 66min.

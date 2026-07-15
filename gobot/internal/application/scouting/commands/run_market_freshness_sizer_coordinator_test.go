@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
@@ -138,6 +139,20 @@ func standingSizerPost(system string, hulls int, hull string) *domainScouting.Sc
 		PlayerID: 1, SystemSymbol: system, Kind: domainScouting.PostKindStanding,
 		Hulls: hulls, AssignedHull: hull, FreshnessTarget: time.Hour,
 	}
+}
+
+// fullyMannedSizerPost builds a standing post whose EVERY slot (primary + hulls-1 extras)
+// carries a hull, so IsFullyManned() is true — the precondition the sp-iupr issue-3 sanity
+// floor gates on (a fully-manned, telemetried, breaching post is genuinely under capacity).
+func fullyMannedSizerPost(system string, hulls int) *domainScouting.ScoutPost {
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: system, Kind: domainScouting.PostKindStanding,
+		Hulls: hulls, AssignedHull: "PROBE-P0", FreshnessTarget: time.Hour,
+	}
+	for i := 1; i < hulls; i++ {
+		post.ExtraSlots = append(post.ExtraSlots, domainScouting.ScoutPostSlot{AssignedHull: "PROBE-P" + string(rune('0'+i))})
+	}
+	return post
 }
 
 func sizerCmd() *RunMarketFreshnessSizerCoordinatorCommand {
@@ -552,4 +567,116 @@ func TestSizer_ReleasedSurplusReturnsToSharedPoolNotDestroyed(t *testing.T) {
 	require.Equal(t, 7, pr.hullUpdates["X1-ZY16"], "surplus is freed by resizing the post DOWN (returns the hull to the pool)")
 	require.Empty(t, pr.removed, "release never RETIRES the post — the frontier can claim the freed hull from the shared pool")
 	require.Equal(t, 0, pu.buyCalls, "no-churn: the sizer does not re-buy a hull it just released")
+}
+
+// ---- sp-iupr issue 3: bidirectional per-system miscalibration -----------------
+
+// ISSUE 3a — SANITY FLOOR vs the issue-1 STARVED branch (they must never collide). A post
+// that is FULLY MANNED and has TRUSTWORTHY telemetry yet whose oldest scan still BREACHES the
+// SLA is genuinely under capacity — the closed-loop model, anchored on a noisy-low cycle,
+// under-sized it — so its target is BUMPED one probe past its budget (empirical age is ground
+// truth). The SAME post, same breaching age, but TELEMETRY-STARVED takes the OPPOSITE path:
+// its age is a manning signal, not a capacity one (issue 1), so it stays on the static
+// market-count model and is shed toward its floor, never raised off the age. Same inputs,
+// opposite outcomes, selected purely by trusted-vs-starved — proving the two branches are
+// disjoint (the sanity floor is gated on !starved).
+func TestSizer_BumpsFullyMannedBreachingPostAboveModel_DisjointFromStarved(t *testing.T) {
+	cases := []struct {
+		name      string
+		cycleSecs float64
+		samples   int
+		wantHulls int
+	}{
+		// Trusted (25 samples): the closed-loop model anchored on the measured 900s cycle only
+		// reaches 2 = the current budget (a noisy-low cycle left it STUCK, breaching forever) —
+		// so the sanity floor bumps it to 3 (current+1).
+		{"trusted fully-manned breaching post is bumped above the stuck model", 900, 25, 3},
+		// Starved (0 samples): NOT age-raised (issue 1). Seeded by market count
+		// (ceil(4×180/3600)=1) and shed toward that floor — the breach is a manning signal here.
+		{"starved fully-manned breaching post is NOT bumped — stays on the market-count model", 0, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				// NM33: 4 markets, oldest scan 69min (4140s) > the 60min SLA — breaching.
+				snap("X1-NM33", 4, 4140, tc.cycleSecs, tc.samples),
+			}}
+			pr := newSizerPostRepo(fullyMannedSizerPost("X1-NM33", 2)) // sized 2, manned 2/2
+			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+			h := newSizer(fr, pr, fl)
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+			require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-NM33"],
+				"trusted+manned+breaching bumps above the stuck model; starved holds the market-count model")
+		})
+	}
+}
+
+// ISSUE 3b — MARKET-COUNT CLAMP under the live noise pattern. Feeding the incident's inversion
+// (a 3-market system read on a noisy-HIGH cycle, a 26-market system on a noisy-LOW one) the
+// sizer must NOT size the 3-market system above the 26-market one. The clamp bounds the small-
+// market system to its market-count ceiling (ceil(3×30min/60min)=2) regardless of the noise,
+// restoring the monotone-ish order small-market ≤ large-market (the NM33-vs-ZY16 smoking gun).
+func TestSizer_ClampsSmallMarketSystemBelowLargeMarketSystem(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-ZY16", 3, 100 /*fresh*/, 6000 /*noisy-high cycle*/, 25),
+		snap("X1-VB74", 26, 100 /*fresh*/, 200 /*noisy-low cycle*/, 25),
+	}}
+	pr := newSizerPostRepo() // no existing posts → declare path
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	bySystem := map[string]int{}
+	for _, u := range pr.upserts {
+		bySystem[u.SystemSymbol] = u.Hulls
+	}
+	require.Equal(t, 2, bySystem["X1-ZY16"],
+		"the 3-market system is clamped to its market-count ceiling, not the noise-inflated target")
+	require.LessOrEqual(t, bySystem["X1-ZY16"], bySystem["X1-VB74"],
+		"a 3-market system is never sized above a 26-market one under the same cycle noise")
+}
+
+// ISSUE 3c — CYCLE-NOISE DAMPENING. Two systems with EQUAL market counts and noisy-but-similar
+// underlying cycles (600s and 1200s around a ~900s truth) must converge on the SAME probe
+// target. Before dampening they diverge (ceil(10×600/3600)=2 vs ceil(10×1200/3600)=4);
+// shrinking each toward the fleet median (900s) lands both at ceil(10×900/3600)=3.
+func TestSizer_EqualMarketNoisyCyclesConvergeToSameTarget(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-EQ1", 10, 100, 600 /*noisy-low*/, 25),
+		snap("X1-EQ2", 10, 100, 1200 /*noisy-high*/, 25),
+	}}
+	pr := newSizerPostRepo() // declare path
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	bySystem := map[string]int{}
+	for _, u := range pr.upserts {
+		bySystem[u.SystemSymbol] = u.Hulls
+	}
+	require.Equal(t, bySystem["X1-EQ1"], bySystem["X1-EQ2"],
+		"equal-market systems with noisy-but-similar cycles converge to the same target")
+	require.Equal(t, 3, bySystem["X1-EQ1"],
+		"both converge to the fleet-median-anchored target ceil(10×900/3600)=3")
+}
+
+// ISSUE 3 config wiring: the two new knobs are live-tunable. resolveSizerConfig reads
+// worst_cycle_seconds and cycle_dampening_percent from the tick's live-config snapshot and
+// falls back to their documented defaults with no snapshot — guarding against the
+// registry↔overlay drift that would leave a registered knob silently ineffective.
+func TestResolveSizerConfig_ReadsIssue3KnobsLiveWithDefaultFallback(t *testing.T) {
+	def := resolveSizerConfig(sizerCmd(), nil)
+	require.Equal(t, time.Duration(defaultWorstCycleSeconds)*time.Second, def.WorstCycle,
+		"no snapshot → documented worst-cycle default")
+	require.Equal(t, defaultCycleDampeningPercent, def.CycleDampeningPercent,
+		"no snapshot → documented dampening default")
+
+	live := liveconfig.Snapshot{"worst_cycle_seconds": 1200, "cycle_dampening_percent": 80}
+	got := resolveSizerConfig(sizerCmd(), live)
+	require.Equal(t, 1200*time.Second, got.WorstCycle, "live snapshot overrides worst cycle next tick")
+	require.Equal(t, 80, got.CycleDampeningPercent, "live snapshot overrides dampening next tick")
 }

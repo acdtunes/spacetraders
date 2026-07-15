@@ -59,12 +59,22 @@ const (
 
 	// Config defaults (RULINGS #5: every operational value is a flag/config key, filled
 	// here only when the launch config leaves it unset).
-	defaultSizerTickSeconds    = 60
-	defaultSLASeconds          = 3600 // 1h freshness SLA
-	defaultSeedCycleSeconds    = 180  // seeded per-market cycle until telemetry exists
-	defaultMinCycleSamples     = 3    // min consecutive-interval samples to trust a measured cycle
-	defaultMaxProbesPerSystem  = 8    // per-system hull cap (bounds a runaway feedback raise)
-	defaultReleaseSlackPercent = 60   // release a feedback probe only below this % of the SLA (hysteresis)
+	defaultSizerTickSeconds = 60
+	defaultSLASeconds       = 3600 // 1h freshness SLA
+	defaultSeedCycleSeconds = 180  // seeded per-market cycle until telemetry exists
+	defaultMinCycleSamples  = 3    // min consecutive-interval samples to trust a measured cycle
+	// defaultWorstCycleSeconds is the worst-plausible per-market cycle bounding the market-count
+	// CLAMP ceiling (sp-iupr issue 3b): a system can never be sized above RequiredHulls(markets,
+	// this, sla), so a noisy-HIGH per-market reading cannot over-size a small-market system
+	// (the ZY16 3-markets-sized-6 pathology). 30min is well above any real per-market hop yet
+	// far below the noise readings, so it clamps only the noise, never a legitimate target.
+	defaultWorstCycleSeconds = 1800
+	// defaultCycleDampeningPercent shrinks a system's OWN noisy per-market cycle toward the
+	// fleet-wide median (sp-iupr issue 3c) so equal-market systems converge instead of diverging
+	// on measurement noise. 0 disables (pre-issue-3 pass-through); 100 pools fully to the median.
+	defaultCycleDampeningPercent = 50
+	defaultMaxProbesPerSystem    = 8  // per-system hull cap (bounds a runaway feedback raise)
+	defaultReleaseSlackPercent   = 60 // release a feedback probe only below this % of the SLA (hysteresis)
 	// defaultReleaseStableWindowSecs is how long a WARM post's measured surplus (desired <
 	// current, under the SLA but past the slack line) must hold before one probe is shed to
 	// the pool (sp-iupr bug 2). It debounces the shed so a one-cycle demand dip never releases
@@ -110,6 +120,8 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	SystemSLAOverrides      map[string]int // per-system SLA override (seconds)
 	SeedCycleSeconds        int            // seeded per-market cycle until telemetry exists
 	MinCycleSamples         int            // min samples to trust a measured cycle
+	WorstCycleSeconds       int            // worst-plausible per-market cycle bounding the market-count clamp (sp-iupr issue 3b)
+	CycleDampeningPercent   int            // shrinkage % of a system's own cycle toward the fleet median (sp-iupr issue 3c)
 	MaxProbesPerSystem      int            // per-system hull cap
 	ReleaseSlackPercent     int            // release hysteresis: shed a probe only below this % of the SLA
 	ReleaseStableWindowSecs int            // a warm surplus must hold this long before one probe is shed (sp-iupr)
@@ -296,6 +308,8 @@ func SizerTunableDefaults() map[string]int {
 		"max_probe_fleet":            defaultSizerMaxProbeFleet,
 		"max_probes_per_system":      defaultMaxProbesPerSystem,
 		"sla_seconds":                defaultSLASeconds,
+		"worst_cycle_seconds":        defaultWorstCycleSeconds,
+		"cycle_dampening_percent":    defaultCycleDampeningPercent,
 		"release_slack_percent":      defaultReleaseSlackPercent,
 		"release_stable_window_secs": defaultReleaseStableWindowSecs,
 	}
@@ -303,14 +317,16 @@ func SizerTunableDefaults() map[string]int {
 
 // sizerConfig is the launch command with every default resolved.
 type sizerConfig struct {
-	DefaultSLA          time.Duration
-	Overrides           map[string]time.Duration
-	SeedCycle           time.Duration
-	MinCycleSamples     int
-	MaxProbesPerSystem  int
-	ReleaseSlackPercent int
-	ReleaseStableWindow time.Duration
-	Buy                 probebuy.Config
+	DefaultSLA            time.Duration
+	Overrides             map[string]time.Duration
+	SeedCycle             time.Duration
+	MinCycleSamples       int
+	WorstCycle            time.Duration
+	CycleDampeningPercent int
+	MaxProbesPerSystem    int
+	ReleaseSlackPercent   int
+	ReleaseStableWindow   time.Duration
+	Buy                   probebuy.Config
 }
 
 // resolveSizerConfig resolves one tick's effective config. live is the tick-start
@@ -323,12 +339,14 @@ type sizerConfig struct {
 // non-tunable knobs always resolve from the launch command, unchanged.
 func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liveconfig.Snapshot) sizerConfig {
 	c := sizerConfig{
-		DefaultSLA:          time.Duration(cmd.SLASeconds) * time.Second,
-		SeedCycle:           time.Duration(cmd.SeedCycleSeconds) * time.Second,
-		MinCycleSamples:     cmd.MinCycleSamples,
-		MaxProbesPerSystem:  cmd.MaxProbesPerSystem,
-		ReleaseSlackPercent: cmd.ReleaseSlackPercent,
-		ReleaseStableWindow: time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
+		DefaultSLA:            time.Duration(cmd.SLASeconds) * time.Second,
+		SeedCycle:             time.Duration(cmd.SeedCycleSeconds) * time.Second,
+		MinCycleSamples:       cmd.MinCycleSamples,
+		WorstCycle:            time.Duration(cmd.WorstCycleSeconds) * time.Second,
+		CycleDampeningPercent: cmd.CycleDampeningPercent,
+		MaxProbesPerSystem:    cmd.MaxProbesPerSystem,
+		ReleaseSlackPercent:   cmd.ReleaseSlackPercent,
+		ReleaseStableWindow:   time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
 		Buy: probebuy.Config{
 			MaxProbeFleet:    cmd.MaxProbeFleet,
 			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
@@ -338,6 +356,8 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 	}
 	if live != nil {
 		c.DefaultSLA = time.Duration(live.PositiveIntOrZero("sla_seconds")) * time.Second
+		c.WorstCycle = time.Duration(live.PositiveIntOrZero("worst_cycle_seconds")) * time.Second
+		c.CycleDampeningPercent = live.PositiveIntOrZero("cycle_dampening_percent")
 		c.MaxProbesPerSystem = live.PositiveIntOrZero("max_probes_per_system")
 		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
 		c.ReleaseStableWindow = time.Duration(live.PositiveIntOrZero("release_stable_window_secs")) * time.Second
@@ -354,6 +374,12 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 	}
 	if c.MinCycleSamples <= 0 {
 		c.MinCycleSamples = defaultMinCycleSamples
+	}
+	if c.WorstCycle <= 0 {
+		c.WorstCycle = defaultWorstCycleSeconds * time.Second
+	}
+	if c.CycleDampeningPercent <= 0 {
+		c.CycleDampeningPercent = defaultCycleDampeningPercent
 	}
 	if c.MaxProbesPerSystem <= 0 {
 		c.MaxProbesPerSystem = defaultMaxProbesPerSystem
@@ -439,10 +465,12 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		cycle := resolveCycleSeconds(snap, globalCycle, cfg)
 		existing := postBySystem[snap.SystemSymbol]
 		current := 0
+		fullyManned := false
 		if existing != nil {
 			current = existing.HullBudget()
+			fullyManned = existing.IsFullyManned() // sp-iupr issue 3a: gates the empirical-age sanity floor.
 		}
-		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, snap, sla, cycle, cfg)
+		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, fullyManned, snap, sla, cycle, cfg)
 		totalDemand += desired
 		if !cmd.DryRun {
 			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, desired, sla)
@@ -481,26 +509,42 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	return nil
 }
 
-// computeTarget is the per-system SIZE the sizer aims a post at, before release pacing. A
-// TRUSTED system (its own scan telemetry has cleared the sample floor) uses the closed-loop
-// model corrected by the empirical worst-case age (FreshnessRequiredHulls). A TELEMETRY-
-// STARVED system — one whose probes have not produced MinCycleSamples scan intervals — has
-// an age that reflects a MANNING failure (its probe is in transit, blocked, or relayed away
-// so its markets never re-scan), NOT a capacity shortfall; raising demand off that age only
-// strands MORE probes on a post that cannot use them (the sp-iupr pathology: a 3-market
-// system pinned at the per-system cap forever, higher than a healthy 12-market one). It is
-// sized to the static MARKET-COUNT model instead (RequiredHulls at the resolved cycle),
-// which scales monotonically with market count — so a 3-market system never seeds higher
-// than a 12-market one. Both are floored at 1 (a market-bearing system always keeps a probe)
-// and capped at the per-system ceiling (bounded).
-func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) (target int, starved bool) {
+// computeTarget is the per-system SIZE the sizer aims a post at, before release pacing. It runs
+// an ordered pipeline: (1) the cycle-driven MODEL, where telemetry noise enters; (2) the
+// sp-iupr issue-3b market-count CLAMP that bounds the noise; (3) the sp-iupr issue-3a empirical-
+// age SANITY FLOOR that overrides an under-sized model; then the floor-of-1 and per-system cap.
+//
+// The two age-driven branches are deliberately DISJOINT (they must never collide):
+//   - a TELEMETRY-STARVED system (its probes have not produced MinCycleSamples scan intervals)
+//     has an age that reflects a MANNING failure, NOT a capacity shortfall — raising demand off
+//     it only strands more probes (the issue-1 pathology). It stays on the static MARKET-COUNT
+//     model (modelTarget) and is NEVER raised off the age;
+//   - a TRUSTED, FULLY MANNED system still BREACHING the SLA is the OPPOSITE case: the empirical
+//     age proves it is genuinely under capacity, so the sanity floor bumps it past the model.
+//     Gated on !starved, so it can never fire for the starved case above.
+func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig, current int, fullyManned bool) (target int, starved bool) {
 	starved = snap.CycleSamples < cfg.MinCycleSamples
-	if starved {
-		target = domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
-	} else {
-		age := time.Duration(snap.OldestAgeSeconds * float64(time.Second))
-		target = domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
+
+	// 1. MODEL — the cycle-driven estimate (starved: static market-count; trusted: sp-orgp
+	//    closed loop corrected by empirical age).
+	target = modelTarget(snap, sla, cycle, starved)
+
+	// 2. MARKET-COUNT CLAMP (sp-iupr issue 3b) — bound the noise-driven model to what this
+	//    market count could justify at the worst plausible cycle, capping a small-market system a
+	//    noisy-high cycle over-sized (ZY16: 3 markets read as 6). The sanity floor below is
+	//    ground truth and is applied AFTER, so it may exceed this ceiling.
+	target = domainScouting.ClampToMarketCount(target, snap.MarketCount, cfg.WorstCycle, sla)
+
+	// 3. SANITY FLOOR (sp-iupr issue 3a) — a TRUSTED, FULLY MANNED post whose oldest scan still
+	//    BREACHES the SLA is genuinely under capacity: the model (anchored on a noisy-low cycle)
+	//    under-sized it to AT OR BELOW its current budget (the NM33 stuck fixpoint). Bump one
+	//    probe past the budget so it escapes. DISJOINT from the starved branch by !starved; the
+	//    fullyManned gate PACES the growth — the added slot must be manned before the next bump,
+	//    so the lagging age can never wind it up.
+	if !starved && fullyManned && breachesSLA(snap, sla) && target <= current {
+		target = current + 1
 	}
+
 	if target < 1 {
 		target = 1
 	}
@@ -508,6 +552,25 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 		target = cfg.MaxProbesPerSystem
 	}
 	return target, starved
+}
+
+// modelTarget is the cycle-driven size estimate before the issue-3 clamp and sanity floor. A
+// telemetry-starved system uses the static market-count model (RequiredHulls) and is NOT age-
+// raised (issue 1: its age is a manning signal); a trusted system uses the sp-orgp closed loop
+// corrected by its empirical worst-case age.
+func modelTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, starved bool) int {
+	if starved {
+		return domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
+	}
+	age := time.Duration(snap.OldestAgeSeconds * float64(time.Second))
+	return domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
+}
+
+// breachesSLA reports whether a system's oldest market scan has aged past its SLA — the
+// empirical ground-truth signal that a fully-manned, telemetried post is genuinely under
+// capacity (sp-iupr issue 3a). A non-positive SLA ("cannot assess") never breaches.
+func breachesSLA(snap domainScouting.SystemFreshnessSnapshot, sla time.Duration) bool {
+	return sla > 0 && snap.OldestAgeSeconds > sla.Seconds()
 }
 
 // desiredHulls applies release PACING on top of computeTarget so the fleet neither flaps at
@@ -525,8 +588,8 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 // Every shed is one step, floored at the measured requirement (never below what the post
 // needs), and lands as a resize-DOWN the scout reconciler un-mans — returning the hull to the
 // shared pool where the frontier coordinator can claim it, never sold or retired.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) desiredHulls(key string, current int, snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) int {
-	target, starved := computeTarget(snap, sla, cycle, cfg)
+func (h *RunMarketFreshnessSizerCoordinatorHandler) desiredHulls(key string, current int, fullyManned bool, snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) int {
+	target, starved := computeTarget(snap, sla, cycle, cfg, current, fullyManned)
 
 	if current == 0 || target >= current {
 		h.clearReleasePending(key) // declaring, raising, or holding — no surplus to debounce.
@@ -723,12 +786,16 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) scoutSupply(ctx context.Cont
 // resolveCycleSeconds picks the per-market cycle for a system: its own MEASURED cycle when
 // it has cleared the sample floor, else the fleet-wide median of trusted measurements, else
 // the seed default. This keeps the cycle EMPIRICAL (never a bare constant) while degrading
-// gracefully before telemetry exists.
+// gracefully before telemetry exists. A system's own measurement is DAMPENED toward the fleet-
+// wide median (sp-iupr issue 3c): per-system cycle telemetry is noisy, so shrinking each
+// reading toward the pooled robust estimate makes equal-market systems converge on the same
+// target instead of diverging on noise. A single trusted system (median == own) or a 0%
+// dampening is a no-op, so this never perturbs the single-system or launch-frozen paths.
 func resolveCycleSeconds(snap domainScouting.SystemFreshnessSnapshot, globalCycleSeconds float64, cfg sizerConfig) time.Duration {
 	seconds := cfg.SeedCycle.Seconds()
 	switch {
 	case snap.CycleSamples >= cfg.MinCycleSamples && snap.MeasuredCycleSeconds > 0:
-		seconds = snap.MeasuredCycleSeconds
+		seconds = domainScouting.DampenedCycleSeconds(snap.MeasuredCycleSeconds, globalCycleSeconds, cfg.CycleDampeningPercent)
 	case globalCycleSeconds > 0:
 		seconds = globalCycleSeconds
 	}
