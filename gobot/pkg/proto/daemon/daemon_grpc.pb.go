@@ -41,6 +41,7 @@ const (
 	DaemonService_CapacityReconcilerCoordinator_FullMethodName = "/daemon.DaemonService/CapacityReconcilerCoordinator"
 	DaemonService_AutoOutfitCoordinator_FullMethodName         = "/daemon.DaemonService/AutoOutfitCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName  = "/daemon.DaemonService/FrontierExpansionCoordinator"
+	DaemonService_ShipyardBackfillCoordinator_FullMethodName   = "/daemon.DaemonService/ShipyardBackfillCoordinator"
 	DaemonService_WorkerRebalancerCoordinator_FullMethodName   = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                  = "/daemon.DaemonService/AddScoutPost"
 	DaemonService_RemoveScoutPost_FullMethodName               = "/daemon.DaemonService/RemoveScoutPost"
@@ -170,6 +171,11 @@ type DaemonServiceClient interface {
 	AutoOutfitCoordinator(ctx context.Context, in *AutoOutfitCoordinatorRequest, opts ...grpc.CallOption) (*AutoOutfitCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
+	// ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek — the
+	// launch verb for the sp-rhju engine): each tick it backfills the charted-but-unscanned
+	// shipyard systems (the blind spots), deeper-first, bounded by a per-cycle dispatch cap and
+	// idle probe supply. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+	ShipyardBackfillCoordinator(ctx context.Context, in *ShipyardBackfillCoordinatorRequest, opts ...grpc.CallOption) (*ShipyardBackfillCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
 	// ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
 	// lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
@@ -531,6 +537,16 @@ func (c *daemonServiceClient) FrontierExpansionCoordinator(ctx context.Context, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FrontierExpansionCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_FrontierExpansionCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ShipyardBackfillCoordinator(ctx context.Context, in *ShipyardBackfillCoordinatorRequest, opts ...grpc.CallOption) (*ShipyardBackfillCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ShipyardBackfillCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ShipyardBackfillCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1132,6 +1148,11 @@ type DaemonServiceServer interface {
 	AutoOutfitCoordinator(context.Context, *AutoOutfitCoordinatorRequest) (*AutoOutfitCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
+	// ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek — the
+	// launch verb for the sp-rhju engine): each tick it backfills the charted-but-unscanned
+	// shipyard systems (the blind spots), deeper-first, bounded by a per-cycle dispatch cap and
+	// idle probe supply. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+	ShipyardBackfillCoordinator(context.Context, *ShipyardBackfillCoordinatorRequest) (*ShipyardBackfillCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
 	// ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
 	// lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
@@ -1344,6 +1365,9 @@ func (UnimplementedDaemonServiceServer) AutoOutfitCoordinator(context.Context, *
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) ShipyardBackfillCoordinator(context.Context, *ShipyardBackfillCoordinatorRequest) (*ShipyardBackfillCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ShipyardBackfillCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) WorkerRebalancerCoordinator(context.Context, *WorkerRebalancerCoordinatorRequest) (*WorkerRebalancerCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method WorkerRebalancerCoordinator not implemented")
@@ -1914,6 +1938,24 @@ func _DaemonService_FrontierExpansionCoordinator_Handler(srv interface{}, ctx co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).FrontierExpansionCoordinator(ctx, req.(*FrontierExpansionCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ShipyardBackfillCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ShipyardBackfillCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ShipyardBackfillCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ShipyardBackfillCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ShipyardBackfillCoordinator(ctx, req.(*ShipyardBackfillCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2948,6 +2990,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FrontierExpansionCoordinator",
 			Handler:    _DaemonService_FrontierExpansionCoordinator_Handler,
+		},
+		{
+			MethodName: "ShipyardBackfillCoordinator",
+			Handler:    _DaemonService_ShipyardBackfillCoordinator_Handler,
 		},
 		{
 			MethodName: "WorkerRebalancerCoordinator",

@@ -637,6 +637,27 @@ func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, re
 	return &pb.FrontierExpansionCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek — the launch
+// verb for the sp-rhju engine). EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+func (s *daemonServiceImpl) ShipyardBackfillCoordinator(ctx context.Context, req *pb.ShipyardBackfillCoordinatorRequest) (*pb.ShipyardBackfillCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.ShipyardBackfillCoordinator(
+		ctx,
+		playerID,
+		int(req.TickIntervalSecs),
+		int(req.MaxDispatchesPerCycle),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start shipyard backfill coordinator: %w", err)
+	}
+
+	return &pb.ShipyardBackfillCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
 // it ferries idle undedicated light-haulers cross-system to worker-starved factory systems.
 // All tuning lives in config.yaml [worker_rebalancer] (resolved live on every build); this

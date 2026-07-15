@@ -97,6 +97,12 @@ service DaemonService {
   // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
   rpc FrontierExpansionCoordinator(FrontierExpansionCoordinatorRequest) returns (FrontierExpansionCoordinatorResponse);
 
+  // ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek — the
+  // launch verb for the sp-rhju engine): each tick it backfills the charted-but-unscanned
+  // shipyard systems (the blind spots), deeper-first, bounded by a per-cycle dispatch cap and
+  // idle probe supply. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+  rpc ShipyardBackfillCoordinator(ShipyardBackfillCoordinatorRequest) returns (ShipyardBackfillCoordinatorResponse);
+
   // WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
   // ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
   // lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
@@ -708,6 +714,20 @@ message FrontierExpansionCoordinatorRequest {
   int32 expansion_max_hops = 8;      // gate-graph reach for the queue; 0 = default
 }
 message FrontierExpansionCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// ShipyardBackfillCoordinator launch knobs (sp-s1ek). All optional; a 0 value uses the
+// coordinator's documented default (RULINGS #5). The engine has no dry-run mode, so there
+// is no dry_run field.
+message ShipyardBackfillCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  int32 tick_interval_secs = 3;        // reconcile cadence; 0 = default
+  int32 max_dispatches_per_cycle = 4;  // per-cycle sweep-once declaration cap; 0 = default
+}
+message ShipyardBackfillCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

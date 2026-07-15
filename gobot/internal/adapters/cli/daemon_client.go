@@ -1438,6 +1438,31 @@ func (c *DaemonClient) FrontierExpansionCoordinator(ctx context.Context, playerI
 	return resp.ContainerId, nil
 }
 
+// ShipyardBackfillCoordinatorParams carries the launch knobs for the shipyard-backfill
+// sweep (sp-s1ek). All are optional; a 0 value uses the coordinator's documented default
+// (RULINGS #5). The engine has no dry-run mode.
+type ShipyardBackfillCoordinatorParams struct {
+	TickIntervalSecs      int
+	MaxDispatchesPerCycle int
+}
+
+// ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek).
+func (c *DaemonClient) ShipyardBackfillCoordinator(ctx context.Context, playerID int, agentSymbol string, p ShipyardBackfillCoordinatorParams) (string, error) {
+	req := &pb.ShipyardBackfillCoordinatorRequest{
+		PlayerId:              int32(playerID),
+		TickIntervalSecs:      int32(p.TickIntervalSecs),
+		MaxDispatchesPerCycle: int32(p.MaxDispatchesPerCycle),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.ShipyardBackfillCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq). hulls is the
 // probe budget N (sp-enry); 0 defaults to single-hull.
 func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string, hulls int) (*ScoutPost, error) {
