@@ -80,6 +80,12 @@ type DaemonServer struct {
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 
+	// Ship resync scheduler (sp-p1ci): periodic full-fleet re-sync of ship
+	// state from the API into the DB, so local state cannot drift vs live API
+	// truth between the event-driven updates. Launched under supervision in
+	// Start; halted by runCtx cancellation on shutdown.
+	shipResyncScheduler *ShipResyncScheduler
+
 	// Duty-cycle KPI sampler (sp-51ti captain amendment): ship-hours
 	// EARNING/day per hull.
 	dutyCycleSampler *metrics.DutyCycleSampler
@@ -205,6 +211,7 @@ func NewDaemonServer(
 	scoutingConfig config.ScoutingConfig,
 	fleetAutosizerConfig config.FleetAutosizerConfig,
 	bootstrapConfig config.BootstrapConfig,
+	resyncConfig config.ResyncConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -271,6 +278,16 @@ func NewDaemonServer(
 		shutdownChan:           make(chan os.Signal, 1),
 		done:                   make(chan struct{}),
 	}
+
+	// Periodic full-fleet ship resync (sp-p1ci): re-syncs every player's ships
+	// from the API into the DB on a jittered ~hourly cadence, reusing the same
+	// syncAllShips core the startup sync runs. Config-driven with sane defaults
+	// (1h +/-10min); launched under supervision in Start.
+	server.shipResyncScheduler = NewShipResyncScheduler(
+		server.syncAllShips,
+		resyncConfig.ResolvedInterval(),
+		resyncConfig.ResolvedJitter(),
+	)
 
 	// Create container info getter function. Hoisted above the
 	// metricsConfig.Enabled block (sp-51ti) because the duty-cycle sampler
@@ -625,6 +642,14 @@ func (s *DaemonServer) Start() error {
 		s.sup.Go(s.runCtx, "ship-state-sweeper", s.shipStateScheduler.RunSweeper)
 	}
 
+	// Start the periodic full-fleet ship resync under supervision (sp-p1ci):
+	// keeps DB ship state from drifting vs the live API between the
+	// event-driven updates. Like the sweeper, it restarts with backoff on
+	// crash and winds down on runCtx cancellation at shutdown.
+	if s.shipResyncScheduler != nil {
+		s.sup.Go(s.runCtx, "ship-resync", s.shipResyncScheduler.Run)
+	}
+
 	// Start the duty-cycle KPI sampler (sp-51ti). Unconditional, like the
 	// ship state scheduler above — not gated behind metricsConfig.Enabled.
 	if s.dutyCycleSampler != nil {
@@ -862,14 +887,26 @@ func (s *DaemonServer) primaryPlayerID(ctx context.Context) int {
 	return 0
 }
 
-// syncAllShipsOnStartup syncs all ships from API to database for all players.
-// After this sync, the database becomes the source of truth for ship state.
+// syncAllShipsOnStartup syncs all ships from API to database for all players
+// at daemon boot. After this sync, the database becomes the source of truth for
+// ship state. Thin wrapper over the shared syncAllShips core (sp-p1ci), which
+// the periodic ShipResyncScheduler also drives.
 func (s *DaemonServer) syncAllShipsOnStartup() error {
+	return s.syncAllShips(context.Background())
+}
+
+// syncAllShips re-syncs every player's ships from the API into the DB. It is
+// the shared core called at startup AND on every periodic resync tick (sp-p1ci).
+// The write path (SyncAllFromAPI) preserves the daemon-owned dedicated_fleet
+// tag per ship (sp-bi75/sp-90a3), so a repeated hourly resync cannot clobber a
+// `fleet assign` pin. The parent ctx bounds the whole sync (canceled at
+// shutdown) under a 60s per-pass timeout.
+func (s *DaemonServer) syncAllShips(parent context.Context) error {
 	if s.shipRepo == nil || s.playerRepo == nil {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 
 	players, err := s.playerRepo.ListAll(ctx)
@@ -893,7 +930,7 @@ func (s *DaemonServer) syncAllShipsOnStartup() error {
 		fmt.Printf("Synced %d ship(s) for player %s\n", count, p.AgentSymbol)
 	}
 
-	fmt.Printf("Ship startup sync complete: %d total ship(s) synced across %d player(s)\n", totalSynced, len(players))
+	fmt.Printf("Ship sync complete: %d total ship(s) synced across %d player(s)\n", totalSynced, len(players))
 	return nil
 }
 

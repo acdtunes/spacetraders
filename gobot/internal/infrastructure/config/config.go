@@ -46,6 +46,10 @@ type Config struct {
 	// the bootstrap coordinator container on every build (creation + recovery), so a captain
 	// retunes the cold-start behaviour by editing config.yaml and restarting.
 	Bootstrap BootstrapConfig `mapstructure:"bootstrap"`
+	// ShipResync holds the periodic full-fleet ship-resync cadence knobs (sp-p1ci) — base
+	// interval + jitter — consumed by the daemon's ShipResyncScheduler. Zero defers to the
+	// documented defaults (1h +/-10min).
+	ShipResync ResyncConfig `mapstructure:"ship_resync"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:
