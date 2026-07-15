@@ -1118,7 +1118,15 @@ func run(cfg *config.Config) error {
 		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient)), capacity.NewHeuristicPlanner()), // st-7ee SENSE + st-hlw PLAN
 		capacity.NewLadderDiffer(), // st-zr0 DIFF — cheapest-lever-first gap closure
 		capacity.NoOpGovernor{},
-		capacity.NoOpActuator{},
+		// st-5ig CONVERGE actuator (cheap tiers 1-3): each verb drives its EXISTING
+		// primitive; ExecuteCapital is fail-closed (st-0h8 owns the capital path).
+		capacityAdapters.NewActuator(
+			capacityAdapters.NewMediatorReassigner(med),                                        // tier-1 reassign -> fleet-assign command
+			capacityAdapters.NewMediatorRepositioner(med),                                      // tier-2 reposition -> navigate command
+			capacityAdapters.NewWorkerRebalanceEnsurer(containerRepo, daemonServer, playerRepo), // tier-2 workers -> ensure the sp-f5pr rebalancer runs
+			capacityAdapters.NewWarehouseBufferConfigurator(db, shared.NewRealClock()),          // tier-3 buffer -> depot supported-goods whitelist writer
+			capacityAdapters.NewTokenPlayerResolver(apiClient, playerRepo),                      // reconciling player from the ambient auth token
+		),
 		capacity.NoOpProposalChannel{},
 		watchkeeper.NewWorkspace(cfg.Captain.WorkspaceDir),
 		nil, // nil = use RealClock
