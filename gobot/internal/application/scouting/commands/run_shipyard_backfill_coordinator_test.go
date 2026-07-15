@@ -21,19 +21,46 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // --- doubles at the port boundaries ---------------------------------------
 
+// fakeChartedEnumerator faithfully simulates the production enumerator: it returns only the
+// charted shipyards WITHIN the caller-supplied reach (Hops <= maxHops, the real bfsHops bound),
+// and records the reach it was asked for — so a test can prove BOTH that the coordinator passes
+// the resolved backfill_max_hops AND that a wider reach surfaces the deeper in-graph yards.
 type fakeChartedEnumerator struct {
-	systems []ChartedShipyardSystem
-	err     error
+	systems    []ChartedShipyardSystem
+	err        error
+	gotMaxHops int
 }
 
-func (f *fakeChartedEnumerator) ChartedShipyardSystems(context.Context, int) ([]ChartedShipyardSystem, error) {
-	return f.systems, f.err
+func (f *fakeChartedEnumerator) ChartedShipyardSystems(_ context.Context, _ int, maxHops int) ([]ChartedShipyardSystem, error) {
+	f.gotMaxHops = maxHops
+	if f.err != nil {
+		return nil, f.err
+	}
+	within := make([]ChartedShipyardSystem, 0, len(f.systems))
+	for _, s := range f.systems {
+		if s.Hops <= maxHops {
+			within = append(within, s)
+		}
+	}
+	return within, nil
+}
+
+// fakeBackfillLiveConfig is the per-tick live-config snapshot source — the seam the tune verb
+// writes and the coordinator re-reads each tick.
+type fakeBackfillLiveConfig struct {
+	snap liveconfig.Snapshot
+	err  error
+}
+
+func (f *fakeBackfillLiveConfig) Snapshot(context.Context, string, int) (liveconfig.Snapshot, error) {
+	return f.snap, f.err
 }
 
 type fakeScannedReader struct {
@@ -239,4 +266,87 @@ func TestShipyardBackfill_SkipsSystemsThatAlreadyHaveAPost(t *testing.T) {
 
 	require.Equal(t, []string{"X1-FRESH"}, postRepo.declaredSystems(),
 		"a system that already has an active post must not be re-declared; only the fresh blind-spot system is dispatched")
+}
+
+// --- sp-b8lf: enumeration REACH (backfill_max_hops) -------------------------
+
+// The enumeration reach the coordinator passes resolves live > launch > full-graph default,
+// mirroring the max_dispatches_per_cycle knob. The launch value and the live column are the
+// SAME persisted store (buildShipyardBackfillCoordinatorCommand reads what the tune verb wrote),
+// so a live reader subsumes the launch value; the launch tier applies only with no live reader.
+func TestShipyardBackfill_ReachKnobResolvesLiveOverLaunchOverDefault(t *testing.T) {
+	cases := []struct {
+		name       string
+		launchHops int
+		live       liveconfig.Reader
+		wantReach  int
+	}{
+		{"neither set → full-graph default", 0, nil, backfillDefaultMaxHops},
+		{"launch value governs when no live reader is wired", 7, nil, 7},
+		{"live value wins over the launch value", 7, &fakeBackfillLiveConfig{snap: liveconfig.Snapshot{"backfill_max_hops": 9}}, 9},
+		{"live reader present but key unset → default (shared store)", 7, &fakeBackfillLiveConfig{snap: liveconfig.Snapshot{}}, backfillDefaultMaxHops},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			enum := &fakeChartedEnumerator{}
+			h := newBackfillHandler(enum, &fakeScannedReader{}, &fakeIdleProbeCounter{count: 0}, &fakeBackfillPostRepo{})
+			if tc.live != nil {
+				h.SetLiveConfigReader(tc.live)
+			}
+
+			require.NoError(t, h.ReconcileOnce(backfillCtx(), &RunShipyardBackfillCoordinatorCommand{
+				PlayerID: shared.MustNewPlayerID(1),
+				MaxHops:  tc.launchHops,
+			}))
+
+			require.Equal(t, tc.wantReach, enum.gotMaxHops,
+				"the reach passed to the enumerator resolves live > launch > full-graph default")
+		})
+	}
+}
+
+// THE sp-b8lf ACCEPTANCE: with the full-graph default reach the sweep enumerates ALL the
+// in-graph unscanned charted shipyards — the "43, not ~18" case. 57 in-graph charted shipyards
+// (43 unscanned sitting DEEP, past the old ~12 reposition bound, + 14 already-scanned shallow
+// ones); the sweep must target exactly the 43 deep unscanned yards and none of the 14 scanned.
+//
+// MUTATION: reverting backfillDefaultMaxHops from the full-graph horizon to the old shallow
+// bound (12 or 3) drops every deep yard — the reach never reaches hop 20 — so declared collapses
+// from 43 to 0 and this test fails. That is the exact sp-b8lf regression this widening cures.
+func TestShipyardBackfill_WideDefaultReachEnumeratesAllInGraphUnscannedShipyards(t *testing.T) {
+	blind := chartedSystems("X1-BLIND-", 43, 20) // 43 unscanned, DEEP (hop 20)
+	scanned := chartedSystems("X1-SCAN-", 14, 2) // 14 already-scanned, shallow
+	charted := append(append([]ChartedShipyardSystem{}, blind...), scanned...)
+	scannedSystems := make([]string, 0, len(scanned))
+	for _, c := range scanned {
+		scannedSystems = append(scannedSystems, c.SystemSymbol)
+	}
+
+	postRepo := &fakeBackfillPostRepo{}
+	h := newBackfillHandler(
+		&fakeChartedEnumerator{systems: charted},
+		&fakeScannedReader{systems: scannedSystems},
+		&fakeIdleProbeCounter{count: 100},
+		postRepo,
+	)
+
+	// No live reader, no launch reach → the full-graph default reach resolves and must reach
+	// the deep yards.
+	require.NoError(t, h.ReconcileOnce(backfillCtx(), &RunShipyardBackfillCoordinatorCommand{
+		PlayerID:              shared.MustNewPlayerID(1),
+		MaxDispatchesPerCycle: 100,
+	}))
+
+	declared := postRepo.declaredSystems()
+	require.Len(t, declared, 43,
+		"the full-graph default reach must surface ALL 43 in-graph unscanned charted shipyards (sp-b8lf: 43, not ~18)")
+	declaredSet := map[string]bool{}
+	for _, s := range declared {
+		declaredSet[s] = true
+	}
+	require.True(t, declaredSet["X1-BLIND-AA"],
+		"a DEEP (hop-20) in-graph charted shipyard must be a backfill target under the full-graph reach")
+	for _, s := range scannedSystems {
+		require.False(t, declaredSet[s], "an already-scanned shipyard %s is never re-swept", s)
+	}
 }

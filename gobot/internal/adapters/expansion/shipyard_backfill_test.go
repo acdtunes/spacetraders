@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -50,10 +51,9 @@ func TestChartedShipyardEnumerator_IntersectsReachableWithShipyardTrait(t *testi
 	enum := NewChartedShipyardEnumerator(
 		&fakeCandidateLister{candidates: candidates},
 		&fakeShipyardWaypointLister{waypoints: waypoints},
-		12,
 	)
 
-	got, err := enum.ChartedShipyardSystems(context.Background(), 1)
+	got, err := enum.ChartedShipyardSystems(context.Background(), 1, 12)
 	require.NoError(t, err)
 
 	bySystem := map[string]int{}
@@ -81,11 +81,54 @@ func TestChartedShipyardEnumerator_OneRepresentativeYardPerSystem(t *testing.T) 
 	enum := NewChartedShipyardEnumerator(
 		&fakeCandidateLister{candidates: []expansionCmd.ExpansionCandidate{{SystemSymbol: "X1-MULTI", Hops: 4}}},
 		&fakeShipyardWaypointLister{waypoints: waypoints},
-		12,
 	)
 
-	got, err := enum.ChartedShipyardSystems(context.Background(), 1)
+	got, err := enum.ChartedShipyardSystems(context.Background(), 1, 12)
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a system with several shipyards is one backfill target")
 	require.Equal(t, "X1-MULTI-Y1", got[0].ShipyardWaypoint, "the deterministic representative is the smallest waypoint symbol")
+}
+
+// sp-b8lf: the enumerator honors the caller-supplied REACH — it does not bake in a shallow
+// bound. A CHARTED shipyard sitting DEEP in the gate graph (hop depth 5-20, past the old ~3
+// reposition bound) is in-graph + relay-reachable, so a WIDE reach must enumerate it; a shallow
+// reach drops it. This is the exact blind spot: the deep in-graph charted yards were invisible
+// because the reach was too small, not because they were unreachable.
+func TestChartedShipyardEnumerator_HonorsCallerReach_DeepInGraphYardsAtWideReachOnly(t *testing.T) {
+	waypoints := []*shared.Waypoint{
+		yardWaypoint("X1-SHALLOW-Y1"),
+		yardWaypoint("X1-DEEP5-Y1"),
+		yardWaypoint("X1-DEEP8-Y1"),
+		yardWaypoint("X1-DEEP20-Y1"),
+	}
+	candidates := []expansionCmd.ExpansionCandidate{
+		{SystemSymbol: "X1-SHALLOW", Hops: 2},
+		{SystemSymbol: "X1-DEEP5", Hops: 5},
+		{SystemSymbol: "X1-DEEP8", Hops: 8},
+		{SystemSymbol: "X1-DEEP20", Hops: 20},
+	}
+	scanner := &fakeCandidateLister{candidates: candidates}
+	enum := NewChartedShipyardEnumerator(scanner, &fakeShipyardWaypointLister{waypoints: waypoints})
+
+	// WIDE reach (full-graph default): every in-graph charted shipyard, however deep, enumerated.
+	wide, err := enum.ChartedShipyardSystems(context.Background(), 1, 1000)
+	require.NoError(t, err)
+	require.Equal(t, 1000, scanner.gotMaxHops, "the caller's reach is passed straight through to the frontier scanner")
+	require.ElementsMatch(t,
+		[]string{"X1-SHALLOW", "X1-DEEP5", "X1-DEEP8", "X1-DEEP20"}, enumeratedSystems(wide),
+		"a wide reach enumerates every in-graph charted shipyard, including the deep ones")
+
+	// SHALLOW reach (the old ~3 bound): the deep in-graph yards are dropped — the sp-b8lf blind spot.
+	shallow, err := enum.ChartedShipyardSystems(context.Background(), 1, 3)
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-SHALLOW"}, enumeratedSystems(shallow),
+		"a shallow reach drops the deep in-graph charted shipyards — the reach, not reachability, was the gap")
+}
+
+func enumeratedSystems(systems []scoutingCmd.ChartedShipyardSystem) []string {
+	out := make([]string, 0, len(systems))
+	for _, s := range systems {
+		out = append(out, s.SystemSymbol)
+	}
+	return out
 }

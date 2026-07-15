@@ -782,6 +782,7 @@ func buildShipyardBackfillCoordinatorCommand(cfg *configReader, playerID int, co
 		ContainerID:           cfg.RequiredNonEmptyString("container_id"),
 		TickIntervalSecs:      cfg.OptionalInt("tick_interval_secs", 0),
 		MaxDispatchesPerCycle: cfg.OptionalInt("max_dispatches_per_cycle", 0),
+		MaxHops:               cfg.OptionalInt("backfill_max_hops", 0),
 	}
 }
 

@@ -172,11 +172,12 @@ func tuneProbeTxn(t *testing.T, playerID int, ts time.Time, price int) *ledger.T
 }
 
 const (
-	tuneSizerContainerID    = "market_freshness_sizer_coordinator-player-tune-test"
-	tuneFrontierContainerID = "frontier_expansion_coordinator-player-tune-test"
-	sizerContainerType      = "MARKET_FRESHNESS_SIZER_COORDINATOR"
-	frontierContainerType   = "FRONTIER_EXPANSION_COORDINATOR"
-	scoutPostContainerType  = "SCOUT_POST_COORDINATOR"
+	tuneSizerContainerID          = "market_freshness_sizer_coordinator-player-tune-test"
+	tuneFrontierContainerID       = "frontier_expansion_coordinator-player-tune-test"
+	sizerContainerType            = "MARKET_FRESHNESS_SIZER_COORDINATOR"
+	frontierContainerType         = "FRONTIER_EXPANSION_COORDINATOR"
+	scoutPostContainerType        = "SCOUT_POST_COORDINATOR"
+	shipyardBackfillContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 )
 
 // newTunedSizer wires a real freshness-sizer handler whose live-config reader reads
@@ -477,6 +478,7 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 		{sizerContainerType, scoutingCmd.SizerTunableDefaults()},
 		{frontierContainerType, expansionCmd.FrontierTunableDefaults()},
 		{scoutPostContainerType, scoutingCmd.ScoutPostTunableDefaults()},
+		{shipyardBackfillContainerType, scoutingCmd.ShipyardBackfillTunableDefaults()},
 	}
 	for _, engine := range engines {
 		knobs, ok := registry[engine.containerType]

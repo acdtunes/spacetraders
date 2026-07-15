@@ -27,34 +27,39 @@ type shipyardWaypointLister interface {
 //     hop depth), which supplies the deeper-first ordering key AND filters any dead-universe
 //     or presently-unreachable symbol a relay could never actually reach.
 //
-// A charted shipyard that is not currently gate-reachable within the hop bound is omitted:
-// the backfill can only dispatch a sweep-once post the reconciler can man, so an unreachable
-// yard is not a target this cycle. maxHops bounds the reach to the relay horizon.
+// The reach (maxHops) is supplied PER CALL by the coordinator (the live-tunable
+// backfill_max_hops knob), NOT baked into the adapter: a CHARTED shipyard is by definition in
+// the gate graph and relay-reachable (the scout relay crosses many hops), so the coordinator
+// passes a large FULL-GRAPH horizon and a deep in-graph charted yard is enumerated rather than
+// dropped as "unreachable" merely for sitting past a shallow bound (sp-b8lf: 43 in-graph
+// unscanned, only ~18 within the old shallow reach). A symbol the BFS still cannot reach within
+// the (large) bound is omitted — a relay can only man a gate-connected post.
 type ChartedShipyardEnumerator struct {
 	scanner   candidateLister
 	waypoints shipyardWaypointLister
-	maxHops   int
 }
 
 // NewChartedShipyardEnumerator wires the enumerator over the frontier scanner (hops +
-// reachability) and the waypoint trait lister (the charted-shipyard set). maxHops bounds the
-// reach — set to the relay horizon so no unreachable yard is enumerated.
-func NewChartedShipyardEnumerator(scanner candidateLister, waypoints shipyardWaypointLister, maxHops int) *ChartedShipyardEnumerator {
-	return &ChartedShipyardEnumerator{scanner: scanner, waypoints: waypoints, maxHops: maxHops}
+// reachability) and the waypoint trait lister (the charted-shipyard set). The reach is passed
+// PER CALL by the coordinator, so the one enumerator honors a live-tuned backfill_max_hops with
+// no reconstruction.
+func NewChartedShipyardEnumerator(scanner candidateLister, waypoints shipyardWaypointLister) *ChartedShipyardEnumerator {
+	return &ChartedShipyardEnumerator{scanner: scanner, waypoints: waypoints}
 }
 
-// ChartedShipyardSystems returns every currently-reachable known-shipyard system annotated
+// ChartedShipyardSystems returns every known-shipyard system reachable within maxHops, annotated
 // with a representative shipyard waypoint and its gate-hop depth, for the backfill to order
-// deeper-first and dispatch. A read failure on either source surfaces as an error (the caller
-// fails the pass rather than declaring against a partial/empty view).
-func (e *ChartedShipyardEnumerator) ChartedShipyardSystems(ctx context.Context, playerID int) ([]scoutingCmd.ChartedShipyardSystem, error) {
+// deeper-first and dispatch. maxHops is the coordinator's resolved reach (full gate graph by
+// default). A read failure on either source surfaces as an error (the caller fails the pass
+// rather than declaring against a partial/empty view).
+func (e *ChartedShipyardEnumerator) ChartedShipyardSystems(ctx context.Context, playerID int, maxHops int) ([]scoutingCmd.ChartedShipyardSystem, error) {
 	waypoints, err := e.waypoints.ListWithTrait(ctx, "SHIPYARD")
 	if err != nil {
 		return nil, err
 	}
 	yardBySystem := representativeYardBySystem(waypoints)
 
-	candidates, err := e.scanner.ExpansionCandidates(ctx, playerID, e.maxHops)
+	candidates, err := e.scanner.ExpansionCandidates(ctx, playerID, maxHops)
 	if err != nil {
 		return nil, err
 	}

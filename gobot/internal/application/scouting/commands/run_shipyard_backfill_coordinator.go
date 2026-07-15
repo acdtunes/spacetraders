@@ -46,6 +46,18 @@ const (
 	// all at once" guard. Live-tunable (ShipyardBackfillTunableDefaults).
 	backfillDefaultMaxDispatchesPerCycle = 5
 
+	// backfillDefaultMaxHops is the enumeration REACH default (the backfill_max_hops knob):
+	// how deep into the gate graph the sweep hunts charted-but-unscanned shipyards. A CHARTED
+	// shipyard is BY DEFINITION already in the gate graph and relay-reachable (the scout relay
+	// crosses many hops), so the default is a large FULL-GRAPH horizon — deliberately NOT the
+	// shallow frontier-expansion bound (~3) nor the expendable-probe reposition horizon (12)
+	// that left the ~39 deeper in-graph charted yards invisible to the sweep (sp-b8lf: 43
+	// in-graph unscanned, only ~18 within the old bound). It is BOUNDED (never unbounded) so it
+	// can never runaway — the BFS terminates at the finite charted graph long before this cap —
+	// and live-tunable DOWN to cap the per-cycle enumeration cost. Live-tunable
+	// (ShipyardBackfillTunableDefaults); resolved live > launch > default per tick.
+	backfillDefaultMaxHops = 1000
+
 	// backfillFreshnessTarget is the sweep-once post's freshness target — irrelevant to
 	// a one-pass sweep (it retires after the sweep) but required by the post shape;
 	// mirrors the frontier coordinator's declared-post default.
@@ -64,8 +76,14 @@ type ChartedShipyardSystem struct {
 // ChartedShipyardEnumerator lists every system known (from swept waypoint traits) to hold
 // a shipyard — the CHARTED-shipyard set. Read-only driven port; the production adapter
 // reads the waypoints table (traits carry SHIPYARD) and annotates each with its gate depth.
+//
+// maxHops is the enumeration REACH supplied per call by the coordinator (the live-tunable
+// backfill_max_hops knob), NOT baked into the adapter: a CHARTED shipyard is by definition
+// in the gate graph and relay-reachable, so the coordinator passes a large full-graph horizon
+// and a deep in-graph charted yard is enumerated rather than dropped as "unreachable" merely
+// for sitting past a shallow bound (sp-b8lf).
 type ChartedShipyardEnumerator interface {
-	ChartedShipyardSystems(ctx context.Context, playerID int) ([]ChartedShipyardSystem, error)
+	ChartedShipyardSystems(ctx context.Context, playerID int, maxHops int) ([]ChartedShipyardSystem, error)
 }
 
 // ScannedShipyardReader lists the systems already present in the shipyard-inventory store —
@@ -91,6 +109,12 @@ type RunShipyardBackfillCoordinatorCommand struct {
 
 	// MaxDispatchesPerCycle is the per-cycle declaration cap (rate limit). <= 0 → default.
 	MaxDispatchesPerCycle int
+
+	// MaxHops is the enumeration REACH (the backfill_max_hops knob): how deep into the gate
+	// graph the sweep looks for charted-but-unscanned shipyards. <= 0 → default (full gate
+	// graph). A charted shipyard is by definition in-graph + relay-reachable, so the default
+	// reaches the whole graph, NOT the shallow frontier-expansion horizon (sp-b8lf).
+	MaxHops int
 }
 
 // RunShipyardBackfillCoordinatorResponse reports reconcile progress (observed only on
@@ -149,6 +173,7 @@ func (h *RunShipyardBackfillCoordinatorHandler) SetLiveConfigReader(r liveconfig
 func ShipyardBackfillTunableDefaults() map[string]int {
 	return map[string]int{
 		"max_dispatches_per_cycle": backfillDefaultMaxDispatchesPerCycle,
+		"backfill_max_hops":        backfillDefaultMaxHops,
 	}
 }
 
@@ -211,7 +236,7 @@ func (h *RunShipyardBackfillCoordinatorHandler) ReconcileOnce(ctx context.Contex
 	logger := common.LoggerFromContext(ctx)
 	playerID := cmd.PlayerID.Value()
 
-	charted, err := h.enumerator.ChartedShipyardSystems(ctx, playerID)
+	charted, err := h.enumerator.ChartedShipyardSystems(ctx, playerID, h.resolveMaxHops(ctx, cmd))
 	if err != nil {
 		return fmt.Errorf("failed to enumerate charted shipyards: %w", err)
 	}
@@ -366,6 +391,26 @@ func (h *RunShipyardBackfillCoordinatorHandler) resolveMaxDispatches(ctx context
 	}
 	if value <= 0 {
 		value = backfillDefaultMaxDispatchesPerCycle
+	}
+	return value
+}
+
+// resolveMaxHops resolves the effective enumeration REACH from the tick's live-config snapshot
+// (authoritative when present) or the launch command, falling back to the full-graph default.
+// Mirrors resolveMaxDispatches: the launch value and the live column are the SAME store (the
+// persisted config the tune verb writes and buildShipyardBackfillCoordinatorCommand reads), so
+// a live reader subsumes the launch value; the launch tier applies only when no live reader is
+// wired. A charted shipyard is in-graph + relay-reachable, so an unset knob resolves to the full
+// gate graph — never the shallow frontier bound that left the deep charted yards invisible.
+func (h *RunShipyardBackfillCoordinatorHandler) resolveMaxHops(ctx context.Context, cmd *RunShipyardBackfillCoordinatorCommand) int {
+	value := cmd.MaxHops
+	if h.liveConfig != nil {
+		if snap, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID.Value()); err == nil && snap != nil {
+			value = snap.PositiveIntOrZero("backfill_max_hops")
+		}
+	}
+	if value <= 0 {
+		value = backfillDefaultMaxHops
 	}
 	return value
 }

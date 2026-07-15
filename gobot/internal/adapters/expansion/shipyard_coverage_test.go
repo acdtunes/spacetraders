@@ -11,14 +11,28 @@ import (
 )
 
 // fakeCandidateLister serves the gate-reachable frontier candidates (with their Scanned
-// flags) the coverage reader derives shipyard-scan-exhaustion from.
+// flags) the coverage reader derives shipyard-scan-exhaustion from. It faithfully honors the
+// caller's maxHops the way the real ExpansionScanner's bfsHops does — a candidate deeper than
+// the bound is NOT returned — so a test can prove the reach the caller passes actually gates
+// enumeration (sp-b8lf). It also records the last maxHops it was asked for.
 type fakeCandidateLister struct {
 	candidates []expansionCmd.ExpansionCandidate
 	err        error
+	gotMaxHops int
 }
 
-func (f *fakeCandidateLister) ExpansionCandidates(context.Context, int, int) ([]expansionCmd.ExpansionCandidate, error) {
-	return f.candidates, f.err
+func (f *fakeCandidateLister) ExpansionCandidates(_ context.Context, _ int, maxHops int) ([]expansionCmd.ExpansionCandidate, error) {
+	f.gotMaxHops = maxHops
+	if f.err != nil {
+		return nil, f.err
+	}
+	within := make([]expansionCmd.ExpansionCandidate, 0, len(f.candidates))
+	for _, c := range f.candidates {
+		if c.Hops <= maxHops {
+			within = append(within, c)
+		}
+	}
+	return within, nil
 }
 
 // TestGateShipyardCoverage_ExhaustedOnlyWhenEveryReachableSystemSwept pins the sp-k645

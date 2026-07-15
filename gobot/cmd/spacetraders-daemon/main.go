@@ -1102,7 +1102,9 @@ func run(cfg *config.Config) error {
 		expansionAdapters.NewChartedShipyardEnumerator(
 			expansionAdapters.NewExpansionScanner(gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo),
 			waypointRepo,
-			12, // reach bound = the expendable-probe reposition horizon (max_reposition_jumps default) so no unreachable yard is enumerated
+			// reach is passed PER TICK by the coordinator (the live-tunable backfill_max_hops
+			// knob, full gate graph by default) — a charted shipyard is in-graph + relay-reachable,
+			// so the sweep must reach the DEEP in-graph yards, not just the shallow frontier (sp-b8lf).
 		),
 		shipyardInventoryRepo,
 		expansionAdapters.NewIdleProbeCounter(shipRepo),
