@@ -16,6 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
+	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	capacityCmd "github.com/andrescamacho/spacetraders-go/internal/application/capacity/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -33,7 +34,6 @@ import (
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
-	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -831,11 +831,23 @@ func run(cfg *config.Config) error {
 	// sp-42ow: the ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
+	// st-x00 (re-scoped by st-5le): the capacity reconciler's CAPITAL tier emits its
+	// tier-4 contract-delivery hull demand into sp-1txd's SINGLE guarded buy path via
+	// this bridge — NOT a second guard/budget stack. One object: the reconciler's
+	// GOVERN emitter writes it (capacity.CapitalDemandSink, wired below), the autosizer
+	// reads it as a registered demand provider. DORMANT — sp-1txd's classDisabled skips
+	// the unknown contract_delivery class ("unknown class: never act") until an arming
+	// lane wires it in — so registering it changes no live behaviour and nothing
+	// auto-buys. sp-1txd's absolute fleet ceiling + per-tick cap stay authoritative over
+	// the COMBINED post-buy fleet count across every provider, this one included.
+	contractDeliveryDemand := capacityAdapters.NewContractDeliveryDemandBridge()
+
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo, goodsMarketLocator,
 		marketRepo, persistence.NewTourTelemetryRepository(db),
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 	)
+	fleetAutosizerHandler.AddDemandProvider(contractDeliveryDemand) // st-x00: contract-delivery capital demand → sp-1txd buy path (dormant until armed)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
 	}
@@ -1116,8 +1128,8 @@ func run(cfg *config.Config) error {
 	// the supervisor polls, re-read at the top of every tick.
 	capacityReconcilerHandler := capacityCmd.NewRunCapacityReconcilerCoordinatorHandler(
 		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient)), capacity.NewHeuristicPlanner()), // st-7ee SENSE + st-hlw PLAN
-		capacity.NewLadderDiffer(), // st-zr0 DIFF — cheapest-lever-first gap closure
-		capacity.NoOpGovernor{},
+		capacity.NewLadderDiffer(),                       // st-zr0 DIFF — cheapest-lever-first gap closure
+		capacity.NewCapexEmitter(contractDeliveryDemand), // st-x00 GOVERN — thin emitter: cheap tiers → Approved, capital tier → sp-1txd demand path (no second guard stack)
 		// st-5ig CONVERGE actuator (cheap tiers 1-3): each verb drives its EXISTING
 		// primitive; ExecuteCapital is fail-closed (st-0h8 owns the capital path).
 		capacityAdapters.NewActuator(
