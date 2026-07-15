@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	capacityAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/capacity"
 	expansionAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/expansion"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
@@ -1075,7 +1076,7 @@ func run(cfg *config.Config) error {
 	// captain/DISABLED kill switch is the watchkeeper Workspace over the SAME workspace dir
 	// the supervisor polls, re-read at the top of every tick.
 	capacityReconcilerHandler := capacityCmd.NewRunCapacityReconcilerCoordinatorHandler(
-		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacity.NoOpSensor{}, capacity.NoOpPlanner{}),
+		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient)), capacity.NoOpPlanner{}),
 		capacity.NoOpDiffer{},
 		capacity.NoOpGovernor{},
 		capacity.NoOpActuator{},
