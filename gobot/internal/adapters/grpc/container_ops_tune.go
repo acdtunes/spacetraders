@@ -86,9 +86,10 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"release_stable_window_secs": {Type: "int", Min: 10, Max: 86_400, Default: sizer["release_stable_window_secs"], Unit: "seconds", Description: "how long a warm surplus must hold before a probe is shed"},
 		},
 		string(container.ContainerTypeFrontierExpansion): {
-			"max_spend_per_cycle":    {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
-			"purchase_cooldown_secs": {Type: "int", Min: 10, Max: 86_400, Default: frontier["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
-			"max_probe_fleet":        {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
+			"max_spend_per_cycle":       {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
+			"purchase_cooldown_secs":    {Type: "int", Min: 10, Max: 86_400, Default: frontier["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
+			"max_probe_fleet":           {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
+			"proximal_yard_hop_penalty": {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["proximal_yard_hop_penalty"], Unit: "credits", Description: "price premium accepted per gate-hop closer to the target post when picking the probe yard (sp-hej4); 0 = cheapest reachable yard"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},

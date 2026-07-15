@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
@@ -111,16 +112,19 @@ type fakePurchaser struct {
 	quoteCalls int
 	buyCalls   int
 	lastBudget int
+	lastTarget probebuy.ProbeTarget
 }
 
-func (f *fakePurchaser) QuoteProbe(_ context.Context, _ shared.PlayerID) (int, string, error) {
+func (f *fakePurchaser) QuoteProbe(_ context.Context, _ shared.PlayerID, target probebuy.ProbeTarget) (int, string, error) {
 	f.quoteCalls++
+	f.lastTarget = target
 	return f.quotePrice, f.quoteYard, f.quoteErr
 }
 
-func (f *fakePurchaser) BuyProbe(_ context.Context, _ shared.PlayerID, maxBudget int) (int, string, error) {
+func (f *fakePurchaser) BuyProbe(_ context.Context, _ shared.PlayerID, maxBudget int, target probebuy.ProbeTarget) (int, string, error) {
 	f.buyCalls++
 	f.lastBudget = maxBudget
+	f.lastTarget = target
 	if f.buyErr != nil {
 		return 0, "", f.buyErr
 	}
@@ -575,6 +579,10 @@ func TestFrontier_BuysProbeWhenShortAndGuardsPass(t *testing.T) {
 	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Equal(t, 1, buyer.buyCalls, "one probe bought")
 	require.Equal(t, 100000, buyer.lastBudget, "budget is 25% of the 400000 treasury")
+	// sp-hej4: the buy carries the demand-proximal target — the unmanned-slot post's system, with
+	// the default per-hop penalty knob (testCmd sets none → the documented default).
+	require.Equal(t, "X1-A", buyer.lastTarget.System, "the target is the post whose unmanned slot the probe serves")
+	require.Equal(t, defaultProximalYardHopPenalty, buyer.lastTarget.HopPenaltyCredits, "the default proximal-yard penalty is applied when untuned")
 }
 
 // "coordinator claims no hulls": across a full buy cycle it never mutates a ship — the

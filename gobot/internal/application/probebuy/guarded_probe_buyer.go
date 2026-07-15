@@ -40,12 +40,37 @@ type TreasuryReader interface {
 	LiveCredits(ctx context.Context, playerID shared.PlayerID) (int, error)
 }
 
+// ProbeTarget threads the demand-proximal purchase hint from a coordinator that knows which
+// system the bought probe will serve (sp-hej4). System is the post's system; the EMPTY string
+// is the NO-TARGET path — buy at the home/anchor yard exactly as before this seam existed, for
+// callers with no single target (the freshness sizer's aggregate demand can still name its
+// neediest system, but any caller may leave it empty). HopPenaltyCredits is the price/distance
+// tradeoff knob: the credits of price premium the buyer accepts to spawn the probe ONE gate-hop
+// closer to System, so a nearer-but-pricier yard beats a far-but-cheaper one iff the per-hop
+// saving clears the penalty (a yard's effective cost is PurchasePrice + Hops*HopPenaltyCredits;
+// the lowest wins). It is a SIGNAL only: the fail-closed money guards (25% treasury, spend cap,
+// cooldown, fleet cap) are unchanged and still gate every buy on the yard the target selected.
+type ProbeTarget struct {
+	System            string
+	HopPenaltyCredits int
+}
+
+// DefaultHopPenaltyCredits is the demand-proximal tradeoff a caller applies when it resolves a
+// target but carries no tuned per-hop penalty of its own (the freshness sizer, whose knob set is
+// separate from the frontier coordinator's). ~one probe's price, so proximity dominates the
+// typical yard price spread by default — the bead's "buy NEAREST the post" policy — while the
+// frontier coordinator's live proximal_yard_hop_penalty knob can raise it toward absolute
+// proximity or lower it toward the cheapest reachable yard.
+const DefaultHopPenaltyCredits = 50_000
+
 // ProbePurchaser prices and buys ONE probe through the existing purchase_ship machinery.
 // A nil purchaser or any error fails the buy CLOSED. Structurally satisfied by the same
-// mediator-backed purchaser the frontier coordinator wires (expansion.ProbePurchaser).
+// mediator-backed purchaser the frontier coordinator wires (expansion.ProbePurchaser). The
+// target carries the demand-proximal yard hint (sp-hej4); an empty ProbeTarget is the home-yard
+// path — yard SELECTION only, the guard stack is unchanged.
 type ProbePurchaser interface {
-	QuoteProbe(ctx context.Context, playerID shared.PlayerID) (price int, yard string, err error)
-	BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int) (price int, shipSymbol string, err error)
+	QuoteProbe(ctx context.Context, playerID shared.PlayerID, target ProbeTarget) (price int, yard string, err error)
+	BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int, target ProbeTarget) (price int, shipSymbol string, err error)
 }
 
 // Config carries the four spendable ceilings (RULINGS #5 — every operational value is a
@@ -89,7 +114,7 @@ func NewGuardedProbeBuyer(treasury TreasuryReader, purchaser ProbePurchaser, led
 // dryRun, reports what it WOULD do without spending). The gate ORDER is cheapest-first: the
 // no-I/O checks (demand, fleet cap) precede the ledger/treasury/API reads, so a no-purchase
 // cycle rarely touches the network.
-func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.PlayerID, demand, supply int, dryRun bool) Outcome {
+func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.PlayerID, demand, supply int, dryRun bool, target ProbeTarget) Outcome {
 	// Fleet short? If supply already covers demand, an existing probe serves it — buying
 	// would over-provision (the sp-njwy over-buy: supply counts idle + in-flight + manning).
 	if supply >= demand {
@@ -126,7 +151,7 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 	if b.purchaser == nil {
 		return Outcome{Reason: "no purchase: no purchaser wired (fail-closed)"}
 	}
-	price, yard, err := b.purchaser.QuoteProbe(ctx, playerID)
+	price, yard, err := b.purchaser.QuoteProbe(ctx, playerID, target)
 	if err != nil {
 		return Outcome{Reason: fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", err)}
 	}
@@ -153,7 +178,7 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 		return Outcome{Reason: fmt.Sprintf("would buy probe at %s for ~%d (dry-run)", yard, price), Price: price, Yard: yard}
 	}
 
-	paid, sym, err := b.purchaser.BuyProbe(ctx, playerID, treasuryCap)
+	paid, sym, err := b.purchaser.BuyProbe(ctx, playerID, treasuryCap, target)
 	if err != nil {
 		return Outcome{Reason: fmt.Sprintf("no purchase: buy failed (fail-closed): %v", err)}
 	}

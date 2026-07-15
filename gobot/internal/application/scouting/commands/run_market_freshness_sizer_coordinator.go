@@ -456,6 +456,13 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 
 	totalDemand := 0
 	marketBearing := make(map[string]bool, len(snapshots))
+	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
+	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
+	// undedicated probe for the reconciler to relay; naming the neediest system lets the purchaser
+	// spawn it at the probe-yard NEAREST that system instead of the home yard. Empty (no positive
+	// gap) is the no-target home-yard path.
+	neediestSystem := ""
+	neediestGap := 0
 	for _, snap := range snapshots {
 		if snap.MarketCount <= 0 {
 			continue
@@ -472,6 +479,10 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		}
 		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, fullyManned, snap, sla, cycle, cfg)
 		totalDemand += desired
+		if gap := desired - current; gap > neediestGap {
+			neediestGap = gap
+			neediestSystem = snap.SystemSymbol
+		}
 		if !cmd.DryRun {
 			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, desired, sla)
 		}
@@ -487,7 +498,11 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		return err
 	}
 	buyer := probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg.Buy)
-	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, totalDemand, supply, cmd.DryRun)
+	// Demand-proximal buy hint (sp-hej4): spawn the probe at the yard nearest the neediest system.
+	// The sizer has no per-hop tuning knob of its own, so it applies the shared default penalty
+	// (proximity-first). An empty neediestSystem is the home-yard path — unchanged.
+	target := probebuy.ProbeTarget{System: neediestSystem, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits}
+	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, totalDemand, supply, cmd.DryRun, target)
 
 	logger.Log("INFO", fmt.Sprintf("Freshness sizer cycle: %d market-bearing systems, aggregate demand %d probes, supply %d, %d retired — %s", len(marketBearing), totalDemand, supply, retired, outcome.Reason), map[string]interface{}{
 		"action":           "freshness_sizer_cycle",

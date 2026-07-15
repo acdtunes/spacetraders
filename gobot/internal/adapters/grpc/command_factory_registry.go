@@ -719,6 +719,7 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 		WeightKnownMarket:        cfg.OptionalInt("weight_known_market", 0),
 		WeightHopPenalty:         cfg.OptionalInt("weight_hop_penalty", 0),
 		WeightVirginBonus:        cfg.OptionalInt("weight_virgin_bonus", 0),
+		ProximalYardHopPenalty:   cfg.OptionalInt("proximal_yard_hop_penalty", 0),
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
+	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	"gorm.io/gorm"
@@ -131,10 +132,10 @@ type tuneFakePurchaser struct {
 	buyCalls   int
 }
 
-func (f *tuneFakePurchaser) QuoteProbe(_ context.Context, _ shared.PlayerID) (int, string, error) {
+func (f *tuneFakePurchaser) QuoteProbe(_ context.Context, _ shared.PlayerID, _ probebuy.ProbeTarget) (int, string, error) {
 	return f.quotePrice, "X1-HOME-YARD", nil
 }
-func (f *tuneFakePurchaser) BuyProbe(_ context.Context, _ shared.PlayerID, _ int) (int, string, error) {
+func (f *tuneFakePurchaser) BuyProbe(_ context.Context, _ shared.PlayerID, _ int, _ probebuy.ProbeTarget) (int, string, error) {
 	f.buyCalls++
 	return f.quotePrice, "PROBE-NEW", nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
@@ -79,13 +80,16 @@ type fakePurchaser struct {
 	quotePrice int
 	buySymbol  string
 	buyCalls   int
+	lastTarget probebuy.ProbeTarget
 }
 
-func (f *fakePurchaser) QuoteProbe(_ context.Context, _ shared.PlayerID) (int, string, error) {
+func (f *fakePurchaser) QuoteProbe(_ context.Context, _ shared.PlayerID, target probebuy.ProbeTarget) (int, string, error) {
+	f.lastTarget = target
 	return f.quotePrice, "X1-HQ-YARD", nil
 }
-func (f *fakePurchaser) BuyProbe(_ context.Context, _ shared.PlayerID, _ int) (int, string, error) {
+func (f *fakePurchaser) BuyProbe(_ context.Context, _ shared.PlayerID, _ int, target probebuy.ProbeTarget) (int, string, error) {
 	f.buyCalls++
+	f.lastTarget = target
 	return f.quotePrice, f.buySymbol, nil
 }
 
@@ -263,6 +267,11 @@ func TestSizer_BuysWhenAggregateDemandExceedsSupply(t *testing.T) {
 	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, 1, pu.buyCalls, "one probe bought to close the freshness capacity gap")
+	// sp-hej4: the aggregate buy names its NEEDIEST system (largest desired−current gap; X1-A and
+	// X1-B both need 2 from 0, first wins) as the demand-proximal target, with the shared default
+	// per-hop penalty, so the probe spawns at the yard nearest the shortfall — fail-open otherwise.
+	require.Equal(t, "X1-A", pu.lastTarget.System, "the neediest market-bearing system is the buy target")
+	require.Equal(t, probebuy.DefaultHopPenaltyCredits, pu.lastTarget.HopPenaltyCredits, "the sizer applies the shared default proximal penalty")
 }
 
 // Supply already covers aggregate demand → no purchase (the sp-njwy over-buy guard: idle +

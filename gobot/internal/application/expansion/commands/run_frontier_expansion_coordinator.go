@@ -30,6 +30,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -74,6 +75,15 @@ const (
 	defaultWeightHopPenalty  = 5
 	defaultWeightVirginBonus = 15
 
+	// defaultProximalYardHopPenalty is the price/distance tradeoff for demand-proximal probe
+	// buying (sp-hej4): the credits of price premium the buyer accepts to spawn the probe ONE
+	// gate-hop closer to the target post, so a nearer-but-pricier probe-yard beats a far-cheaper
+	// one iff the per-hop saving clears this. ~one probe's price (probes run ~25–55k), so
+	// proximity dominates the typical yard spread by default — the "buy NEAREST the post" policy;
+	// raise it toward absolute proximity or lower it toward the cheapest reachable yard. Mirrors
+	// probebuy.DefaultHopPenaltyCredits (the freshness sizer's untuned value).
+	defaultProximalYardHopPenalty = probebuy.DefaultHopPenaltyCredits
+
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
 	rankingLogLimit = 10
@@ -97,12 +107,13 @@ type TreasuryReader interface {
 // in the pool; the coordinator claims nothing (RULINGS #7). A nil purchaser or any
 // error fails closed.
 type ProbePurchaser interface {
-	// QuoteProbe returns the price of the cheapest reachable probe and the yard that
-	// sells it. An error (no yard, unpriceable) fails the purchase closed.
-	QuoteProbe(ctx context.Context, playerID shared.PlayerID) (price int, yard string, err error)
-	// BuyProbe purchases one probe, refusing any fill whose price exceeds maxBudget.
-	// It returns the actual price paid and the new hull's symbol.
-	BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int) (price int, shipSymbol string, err error)
+	// QuoteProbe returns the price of the demand-proximal reachable probe and the yard that
+	// sells it (sp-hej4: the yard nearest target, or the home yard when target is empty). An
+	// error (no yard, unpriceable) fails the purchase closed.
+	QuoteProbe(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget) (price int, yard string, err error)
+	// BuyProbe purchases one probe at the target-selected yard, refusing any fill whose price
+	// exceeds maxBudget. It returns the actual price paid and the new hull's symbol.
+	BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int, target probebuy.ProbeTarget) (price int, shipSymbol string, err error)
 }
 
 // ExpansionCandidate is one gate-reachable system the scanner surfaces for the queue:
@@ -174,6 +185,10 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	WeightKnownMarket int
 	WeightHopPenalty  int
 	WeightVirginBonus int
+
+	// ProximalYardHopPenalty is the demand-proximal probe-buy tradeoff (sp-hej4): credits of
+	// price premium accepted per gate-hop closer to the target post's system. <= 0 → default.
+	ProximalYardHopPenalty int
 }
 
 // RunFrontierExpansionCoordinatorResponse reports reconcile progress. Because the loop
@@ -329,9 +344,10 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 // resolveConfig live-overlays.
 func FrontierTunableDefaults() map[string]int {
 	return map[string]int{
-		"max_spend_per_cycle":    defaultMaxSpendPerCycle,
-		"purchase_cooldown_secs": int(defaultPurchaseCooldown / time.Second),
-		"max_probe_fleet":        defaultMaxProbeFleet,
+		"max_spend_per_cycle":       defaultMaxSpendPerCycle,
+		"purchase_cooldown_secs":    int(defaultPurchaseCooldown / time.Second),
+		"max_probe_fleet":           defaultMaxProbeFleet,
+		"proximal_yard_hop_penalty": defaultProximalYardHopPenalty,
 	}
 }
 
@@ -348,6 +364,7 @@ type frontierConfig struct {
 	WeightKnownMarket        int
 	WeightHopPenalty         int
 	WeightVirginBonus        int
+	ProximalYardHopPenalty   int
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -370,11 +387,13 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		WeightKnownMarket:        cmd.WeightKnownMarket,
 		WeightHopPenalty:         cmd.WeightHopPenalty,
 		WeightVirginBonus:        cmd.WeightVirginBonus,
+		ProximalYardHopPenalty:   cmd.ProximalYardHopPenalty,
 	}
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
+		c.ProximalYardHopPenalty = live.PositiveIntOrZero("proximal_yard_hop_penalty")
 	}
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
@@ -405,6 +424,9 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	}
 	if c.WeightVirginBonus <= 0 {
 		c.WeightVirginBonus = defaultWeightVirginBonus
+	}
+	if c.ProximalYardHopPenalty <= 0 {
+		c.ProximalYardHopPenalty = defaultProximalYardHopPenalty
 	}
 	return c
 }
@@ -517,8 +539,16 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 	}
 
 	// PURCHASE: buy one probe iff the fleet is short of the open manning demand and every
-	// guard passes. decideAndMaybeBuy returns the human reason for the per-cycle summary.
-	purchaseReason := h.decideAndMaybeBuy(ctx, cmd, cfg, openSlots, availableCount)
+	// guard passes. decideAndMaybeBuy returns the human reason for the per-cycle summary. The
+	// demand-proximal TARGET (sp-hej4) is the system the probe will serve: the just-declared
+	// frontier post if one was declared this cycle, else the first pre-existing post with an
+	// unmanned slot. Empty (nothing to serve) is the home-yard path — but the buy is gated on a
+	// slot existing anyway, so a real buy always carries a target.
+	target := declared
+	if target == "" {
+		target = firstUnmannedSlotSystem(posts)
+	}
+	purchaseReason := h.decideAndMaybeBuy(ctx, cmd, cfg, openSlots, availableCount, target)
 
 	action := purchaseReason
 	if declared != "" {
@@ -547,8 +577,12 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	cmd *RunFrontierExpansionCoordinatorCommand,
 	cfg frontierConfig,
 	openSlots, availableCount int,
+	targetSystem string,
 ) string {
 	logger := common.LoggerFromContext(ctx)
+	// The demand-proximal yard hint handed to the quote+buy (sp-hej4). SELECTION only — every
+	// guard below is unchanged and gates the buy on the quoted price of the selected yard.
+	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty}
 
 	// A named target must exist: an unmanned slot on a declared post. The expansion
 	// queue only becomes a target once declared into a post (above), so gating on
@@ -598,7 +632,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	if h.purchaser == nil {
 		return "no purchase: no purchaser wired (fail-closed)"
 	}
-	price, yard, err := h.purchaser.QuoteProbe(ctx, cmd.PlayerID)
+	price, yard, err := h.purchaser.QuoteProbe(ctx, cmd.PlayerID, target)
 	if err != nil {
 		return fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", err)
 	}
@@ -635,7 +669,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		return fmt.Sprintf("would buy probe at %s for ~%d (dry-run)", yard, price)
 	}
 
-	paid, sym, err := h.purchaser.BuyProbe(ctx, cmd.PlayerID, treasuryCap)
+	paid, sym, err := h.purchaser.BuyProbe(ctx, cmd.PlayerID, treasuryCap, target)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Frontier probe purchase failed at %s (budget %d): %v", yard, treasuryCap, err), map[string]interface{}{
 			"action": "frontier_purchase_failed",
@@ -893,6 +927,20 @@ func countUnmannedSlots(posts []*domainScouting.ScoutPost) int {
 		}
 	}
 	return n
+}
+
+// firstUnmannedSlotSystem returns the system of the first post carrying an OPEN slot (no hull,
+// no relay in flight) — the demand-proximal buy target when no fresh post was declared this cycle
+// (sp-hej4). It mirrors countUnmannedSlots' open-slot predicate; "" when every slot is served.
+func firstUnmannedSlotSystem(posts []*domainScouting.ScoutPost) string {
+	for _, post := range posts {
+		for _, slot := range post.Slots() {
+			if slot.AssignedHull() == "" && slot.RepositionContainerID() == "" {
+				return post.SystemSymbol
+			}
+		}
+	}
+	return ""
 }
 
 // countSweepOncePosts counts outstanding frontier (sweep-once) posts — the in-flight

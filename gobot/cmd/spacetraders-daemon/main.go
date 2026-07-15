@@ -992,10 +992,16 @@ func run(cfg *config.Config) error {
 	)
 	// Live treasury for the 25% guard (RULINGS #6) — nil would fail-close every buy.
 	frontierExpansionHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
-	// Price-and-buy over the existing purchase_ship machinery (RULINGS #3): it buys only
-	// through an idle ship already stationed at a probe-selling shipyard (movement-free,
-	// no poach), and lands the probe undedicated for the reconciler to relay.
-	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo))
+	// Price-and-buy over the existing purchase_ship machinery (RULINGS #3): DEMAND-PROXIMAL
+	// (sp-hej4) — given the target post's system it spawns the probe at the scout-scanned
+	// probe-yard NEAREST that system (fewest gate hops, arbitrated against price by the live
+	// proximal_yard_hop_penalty knob) instead of always at the home yard, so the reconciler's
+	// relay is short. The probeYardFinder reads the SAME sp-42ow shipyard-inventory scans + stored
+	// gate graph the heavy-yard fallback uses; a sparse/empty scan store fails OPEN to the home
+	// yard. Lands the probe undedicated for the reconciler to relay. Shared with the freshness
+	// sizer below (same purchaser, same fail-open selection).
+	probeYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
+	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder))
 	// The expansion queue's frontier enumerator: one BFS over the SAME persisted gate graph
 	// the trade circuit and scout relays share, annotated with market-data counts and a
 	// swept/never-scanned flag from the waypoint catalog (sp-gb7h — so a genuinely-barren
@@ -1031,8 +1037,10 @@ func run(cfg *config.Config) error {
 	// coordinator's api-backed reader (same seam, same guard).
 	freshnessSizerHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
 	// Price-and-buy over the existing purchase_ship machinery, landing the probe undedicated
-	// for the reconciler to relay — the SAME purchaser the frontier coordinator uses.
-	freshnessSizerHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo))
+	// for the reconciler to relay — the SAME demand-proximal purchaser the frontier coordinator
+	// uses (sp-hej4): the sizer names its neediest system as the target so the probe spawns at the
+	// nearest scanned probe-yard, fail-open to the home yard on sparse scan data.
+	freshnessSizerHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder))
 	// The narrow, manning-preserving resize seam: UpdateHulls touches only the hull column so
 	// a resize cannot clobber the manning the scout reconciler wrote to the same row.
 	freshnessSizerHandler.SetHullUpdater(scoutPostRepo)
