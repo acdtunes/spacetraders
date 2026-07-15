@@ -189,6 +189,20 @@ const (
 	// (alertname, summary, severity) so the wake mail explains WHY without a
 	// Grafana round-trip (see describePrometheusAlert in wake.go).
 	EventPrometheusAlertFiring EventType = "prometheus.alert_firing"
+
+	// EventSupervisorGagged (sp-q9s7) is the edge-triggered audit record of the
+	// running supervisor entering or exiting its dynamic GAG stand-down — the
+	// soft, runtime-togglable pause (distinct from the captain/DISABLED hard
+	// halt) that stands the supervisor down from ALL wake-eval actions (spawns no
+	// captain session, takes no corrective action) while keeping its process,
+	// heartbeat, and the universe-reset safety rail live. Recorded ONCE per
+	// transition (never per tick — sp-6g96 event-spam doctrine), so the captain
+	// and Admiral can see WHEN and WHY the supervisor stood down or resumed.
+	// DEFERRED class (NOT in DefaultInterruptTypes): while gagged no wake fires
+	// at all, and the resume rides the next natural wake — the gag event must
+	// never itself force one. The payload carries the new state ("gagged" or
+	// "ungagged") and the operator's reason.
+	EventSupervisorGagged EventType = "captain.supervisor_gagged"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force

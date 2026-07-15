@@ -95,6 +95,13 @@ type Supervisor struct {
 	eras              openEraSource
 	lastUniverseCheck time.Time
 
+	// gagged is the in-memory previous state of the live GAG switch (sp-q9s7),
+	// used purely for edge-triggered enter/exit logging + audit. The AUTHORITY
+	// is the on-disk GagPolicy re-read every tick; this only detects the
+	// transition. Never persisted: it starts false so a process booting into an
+	// already-gagged config announces the stand-down once on its first tick.
+	gagged bool
+
 	lastSurveyorNudge time.Time
 
 	// sessionDownAlerted throttles the Admiral alert for a standing session
@@ -207,6 +214,17 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		if s.ws.Disabled() {
 			return false, nil
 		}
+	}
+	// Dynamic GAG (sp-q9s7): the soft, live-toggled stand-down. Re-read fresh
+	// each tick so `captain gag on|off` takes effect on the next poll with no
+	// restart. Deliberately AFTER the universe-reset rail above (a reset still
+	// hard-halts even while gagged) and BEFORE every action below: while gagged
+	// the supervisor spawns no session and takes no corrective action, yet the
+	// Run loop keeps ticking, so the process and heartbeat stay live and it
+	// resumes the instant the gag clears. Removing this one check is exactly the
+	// mutation TestGaggedTickTakesNoActionButStaysLive catches.
+	if s.standDownIfGagged(ctx) {
+		return false, nil
 	}
 	if s.gw != nil {
 		s.ensureCaptainAlive(ctx, now)

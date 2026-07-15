@@ -72,18 +72,46 @@ type RegimePolicy struct {
 	Tripwires []RegimeTripwire `json:"tripwires,omitempty"`
 }
 
+// GagPolicy is the operator-declared dynamic stand-down switch for the running
+// supervisor (sp-q9s7). When Gagged is true the supervisor keeps its process,
+// liveness, heartbeat, and the universe-reset safety rail, but stands down from
+// ALL wake-eval actions: it spawns no captain session and takes no corrective
+// action, resuming the instant Gagged clears.
+//
+// It is the SOFT, dynamic complement to the captain/DISABLED hard halt:
+// DISABLED is a sentinel FILE (also written by the universe-reset detector,
+// cleared by the Admiral alone) that halts the tick before anything runs; the
+// gag is a live config VALUE toggled freely at runtime via
+// `spacetraders captain gag on|off`, re-read fresh by the supervisor at the top
+// of every Tick — so a toggle takes effect on the very next poll without a
+// restart — and it NEVER touches the DISABLED sentinel. The zero value
+// (Gagged=false) means "run normally", so a missing/never-declared policy is
+// simply ungagged.
+//
+// Its JSON keys are deliberately gag-prefixed (gagged/gag_reason/
+// gag_declared_at) so none collides with a co-embedded policy's field at the
+// same depth in supervisorState — notably WakePolicy.declared_at, which an
+// unprefixed declared_at here would render ambiguous and silently drop from
+// BOTH.
+type GagPolicy struct {
+	Gagged        bool      `json:"gagged,omitempty"`
+	GagReason     string    `json:"gag_reason,omitempty"`
+	GagDeclaredAt time.Time `json:"gag_declared_at,omitempty"`
+}
+
 // supervisorState is the durable subset of Supervisor's scheduling
 // bookkeeping. Everything here must survive a process restart so a fresh
 // process never re-treats an already-armed cadence as immediately due: a
 // restart must never fire an immediate wake or survey nudge.
 //
-// The struct has four independent owners sharing one file: the supervisor
+// The struct has five independent owners sharing one file: the supervisor
 // writes the cadence fields (LastSession, LastSurveyorNudge, Renudges,
 // Escalated, LastCredits) via saveCadenceState, the captain CLI writes the
 // embedded WakePolicy via SaveWakePolicy, the captain CLI separately writes
-// the embedded RegimePolicy via SaveRegimePolicy, and the supervisor+CLI
-// share the embedded WatchPolicy via SaveWatchPolicy (sp-oyer one-shot
-// watches). Each writer reads the current file, mutates only its own fields,
+// the embedded RegimePolicy via SaveRegimePolicy, the supervisor+CLI share the
+// embedded WatchPolicy via SaveWatchPolicy (sp-oyer one-shot watches), and the
+// gag CLI writes the embedded GagPolicy via SaveGagPolicy (sp-q9s7 dynamic
+// stand-down). Each writer reads the current file, mutates only its own fields,
 // and writes back atomically, so no writer clobbers another's most recent
 // write.
 type supervisorState struct {
@@ -108,6 +136,7 @@ type supervisorState struct {
 	WakePolicy
 	RegimePolicy
 	WatchPolicy
+	GagPolicy
 }
 
 // StatePath returns where the supervisor's durable scheduling state lives
@@ -271,4 +300,26 @@ func LoadWatchPolicy(path string) (WatchPolicy, error) {
 		return WatchPolicy{}, err
 	}
 	return st.WatchPolicy, nil
+}
+
+// SaveGagPolicy updates only the operator-owned gag fields (sp-q9s7),
+// preserving the supervisor's cadence bookkeeping and the independently
+// declared WakePolicy/RegimePolicy/WatchPolicy untouched. This is what
+// `spacetraders captain gag on|off` calls.
+func SaveGagPolicy(path string, policy GagPolicy) error {
+	return atomicUpdateState(path, func(st *supervisorState) {
+		st.GagPolicy = policy
+	})
+}
+
+// LoadGagPolicy returns the operator-declared gag switch, or the zero value
+// (Gagged=false — the supervisor runs normally) if none has been declared yet.
+// This is what `spacetraders captain gag status` calls, and what the supervisor
+// re-reads at the top of every Tick to decide whether to stand down.
+func LoadGagPolicy(path string) (GagPolicy, error) {
+	st, err := loadSupervisorState(path)
+	if err != nil {
+		return GagPolicy{}, err
+	}
+	return st.GagPolicy, nil
 }

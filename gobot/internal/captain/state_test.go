@@ -320,3 +320,72 @@ func TestSaveWakePolicyPreservesRegimePolicy(t *testing.T) {
 	require.NotNil(t, gotWake.CreditsAbove)
 	require.Equal(t, above, *gotWake.CreditsAbove)
 }
+
+// --- sp-q9s7: dynamic runtime GAG (soft stand-down) persistence ---
+
+func TestLoadGagPolicyMissingFileReturnsUngagged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	got, err := LoadGagPolicy(path)
+	require.NoError(t, err, "a missing state file is not an error — it means ungagged")
+	require.False(t, got.Gagged, "no config means the supervisor runs normally")
+}
+
+func TestGagPolicyRoundTripsThroughSaveAndLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	declaredAt := time.Date(2026, 7, 15, 9, 0, 0, 0, time.UTC)
+
+	require.NoError(t, SaveGagPolicy(path, GagPolicy{
+		Gagged: true, GagReason: "admiral halt", GagDeclaredAt: declaredAt,
+	}))
+
+	got, err := LoadGagPolicy(path)
+	require.NoError(t, err)
+	require.True(t, got.Gagged)
+	require.Equal(t, "admiral halt", got.GagReason)
+	require.True(t, got.GagDeclaredAt.Equal(declaredAt))
+}
+
+// The gag is a SEPARATE embedded writer sharing the one state file with the
+// wake/regime/cadence policies. A gag toggle must never clobber a co-resident
+// policy — and, specifically, GagPolicy's own timestamp must not collide with
+// WakePolicy.declared_at at the same embedding depth (which would silently drop
+// BOTH from the JSON). This asserts all three writers coexist intact.
+func TestSaveGagPolicyPreservesWakeAndRegimePolicies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	below := 1000
+	wakeDeclaredAt := time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC)
+	require.NoError(t, SaveWakePolicy(path, WakePolicy{CreditsBelow: &below, DeclaredAt: wakeDeclaredAt}))
+	threshold := 200
+	require.NoError(t, SaveRegimePolicy(path, RegimePolicy{
+		Tripwires: []RegimeTripwire{{Good: "ORE", Direction: "bid-above", Threshold: &threshold, Window: 30 * time.Minute}},
+	}))
+
+	require.NoError(t, SaveGagPolicy(path, GagPolicy{Gagged: true, GagReason: "deploy freeze"}))
+
+	gotGag, err := LoadGagPolicy(path)
+	require.NoError(t, err)
+	require.True(t, gotGag.Gagged)
+
+	gotWake, err := LoadWakePolicy(path)
+	require.NoError(t, err)
+	require.NotNil(t, gotWake.CreditsBelow, "a gag write must not clobber the declared wake policy")
+	require.Equal(t, below, *gotWake.CreditsBelow)
+	require.True(t, gotWake.DeclaredAt.Equal(wakeDeclaredAt),
+		"wake declared_at must survive a gag write (no JSON-tag collision)")
+
+	gotRegime, err := LoadRegimePolicy(path)
+	require.NoError(t, err)
+	require.Len(t, gotRegime.Tripwires, 1, "a gag write must not clobber the declared regime policy")
+}
+
+// Clearing the gag (gag off) must land Gagged=false through Save/Load, not leave
+// a stale true behind — the falling edge the supervisor resumes on.
+func TestSaveGagPolicyOffClearsPriorGag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "supervisor-state.json")
+	require.NoError(t, SaveGagPolicy(path, GagPolicy{Gagged: true, GagReason: "x"}))
+	require.NoError(t, SaveGagPolicy(path, GagPolicy{Gagged: false}))
+
+	got, err := LoadGagPolicy(path)
+	require.NoError(t, err)
+	require.False(t, got.Gagged, "gag off must persist as ungagged")
+}

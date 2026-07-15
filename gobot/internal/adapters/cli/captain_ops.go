@@ -304,6 +304,7 @@ Examples:
 	cmd.AddCommand(newCaptainTokensCommand())
 	cmd.AddCommand(newCaptainWakeCommand())
 	cmd.AddCommand(newCaptainRegimeCommand())
+	cmd.AddCommand(newCaptainGagCommand())
 
 	return cmd
 }
