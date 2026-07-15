@@ -113,17 +113,17 @@ func (f *fakeEventRecorder) Record(_ context.Context, e *captain.Event) error {
 	return nil
 }
 
-// fakeWaypointTraits serves cached waypoints keyed by symbol.
+// fakeWaypointTraits answers the immutable-trait check keyed by symbol.
 type fakeWaypointTraits struct {
 	waypoints map[string]*shared.Waypoint
 }
 
-func (f *fakeWaypointTraits) FindBySymbol(_ context.Context, symbol, _ string) (*shared.Waypoint, error) {
-	wp, ok := f.waypoints[symbol]
+func (f *fakeWaypointTraits) HasWaypointTrait(_ context.Context, waypointSymbol, trait string) (bool, error) {
+	wp, ok := f.waypoints[waypointSymbol]
 	if !ok {
-		return nil, errors.New("waypoint not found: " + symbol)
+		return false, nil
 	}
-	return wp, nil
+	return wp.HasTrait(trait), nil
 }
 
 // --- fixture ----------------------------------------------------------------------

@@ -47,6 +47,42 @@ func (r *GormWaypointRepository) FindBySymbol(ctx context.Context, symbol, syste
 	return nil, fmt.Errorf("waypoint cache expired: %s", symbol)
 }
 
+// HasWaypointTrait reports whether the waypoint bears the given trait, reading it
+// as the IMMUTABLE physical fact it is: era-AGNOSTIC and TTL-AGNOSTIC. A waypoint's
+// traits (SHIPYARD, MARKETPLACE, ...) and type are invariant across universe eras
+// and never go stale — so, unlike FindBySymbol whose era-scope and 24h TTL are
+// correct only for VOLATILE price/nav data, the cached row for the symbol is
+// authoritative no matter which era stamped it or how long ago it was synced.
+// This is the dedicated immutable-trait path (sp-42ow): FindBySymbol's gates were
+// silently filtering out ~97 of 108 real SHIPYARD waypoints (prior-era and/or
+// >24h stale), so the scout's shipyard scan no-op'd at virtually every yard.
+//
+// waypoint_symbol is the table's sole primary key, so at most one row exists per
+// symbol; the era_id DESC order is defensive (prefer the newest-era row) and, since
+// traits are immutable, the pick is behaviorally irrelevant either way. A missing
+// row reads as (false, nil) — not an error — meaning the waypoint is simply not
+// cached yet, so the caller retries once the cache is warm. A cheap local read: no
+// API budget is spent probing the trait.
+func (r *GormWaypointRepository) HasWaypointTrait(ctx context.Context, waypointSymbol, trait string) (bool, error) {
+	var model WaypointModel
+	result := r.db.WithContext(ctx).
+		Where("waypoint_symbol = ?", waypointSymbol).
+		Order("era_id DESC").
+		First(&model)
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to read waypoint trait for %s: %w", waypointSymbol, result.Error)
+	}
+
+	waypoint, err := r.modelToWaypoint(&model)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode waypoint %s: %w", waypointSymbol, err)
+	}
+	return waypoint.HasTrait(trait), nil
+}
+
 // ListBySystem retrieves all waypoints in a system scoped to the open era.
 // Rows carrying the open era's era_id and rows with a NULL era_id (pre-close
 // transition, not yet backfilled) are considered live; closed-era rows are inert.

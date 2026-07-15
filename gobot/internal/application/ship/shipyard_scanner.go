@@ -20,11 +20,13 @@ type shipyardAPI interface {
 	GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.ShipyardData, error)
 }
 
-// waypointTraitReader resolves a cached waypoint so the scanner can check the
-// SHIPYARD trait WITHOUT an API call. Satisfied by
-// *persistence.GormWaypointRepository.
+// waypointTraitReader checks a waypoint's IMMUTABLE trait (SHIPYARD) from the
+// local cache WITHOUT an API call. It deliberately reads era-agnostic and
+// TTL-agnostic: a physical trait never changes across eras and never goes stale,
+// so a prior-era or long-unsynced row is still authoritative (sp-42ow). Satisfied
+// by *persistence.GormWaypointRepository.HasWaypointTrait.
 type waypointTraitReader interface {
-	FindBySymbol(ctx context.Context, symbol, systemSymbol string) (*shared.Waypoint, error)
+	HasWaypointTrait(ctx context.Context, waypointSymbol, trait string) (bool, error)
 }
 
 // ShipyardScanner piggybacks shipyard scans on scout market visits (sp-42ow):
@@ -107,17 +109,19 @@ func (s *ShipyardScanner) ScanAndSaveShipyard(ctx context.Context, playerID uint
 }
 
 // isShipyardWaypoint reports whether the cached waypoint bears the SHIPYARD
-// trait. An uncached/expired waypoint reads as "not a shipyard" — the scan
-// simply retries on the next visit once the cache is warm; never an API probe.
+// trait, read as an immutable fact (era-agnostic, TTL-agnostic — see
+// waypointTraitReader). An uncached waypoint or a read error reads as "not a
+// shipyard" — the scan simply retries on the next visit once the cache is warm;
+// never an API probe.
 func (s *ShipyardScanner) isShipyardWaypoint(ctx context.Context, waypointSymbol string) bool {
 	if s.waypointRepo == nil {
 		return false
 	}
-	waypoint, err := s.waypointRepo.FindBySymbol(ctx, waypointSymbol, shared.ExtractSystemSymbol(waypointSymbol))
-	if err != nil || waypoint == nil {
+	hasShipyard, err := s.waypointRepo.HasWaypointTrait(ctx, waypointSymbol, "SHIPYARD")
+	if err != nil {
 		return false
 	}
-	return waypoint.HasTrait("SHIPYARD")
+	return hasShipyard
 }
 
 // availabilitiesFromScan flattens a live shipyard read into one row per listed

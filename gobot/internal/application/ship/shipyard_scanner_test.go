@@ -73,12 +73,15 @@ type fakeTraits struct {
 	waypoints map[string]*shared.Waypoint
 }
 
-func (f *fakeTraits) FindBySymbol(_ context.Context, symbol, _ string) (*shared.Waypoint, error) {
-	wp, ok := f.waypoints[symbol]
+// HasWaypointTrait mirrors the immutable-trait read (era/TTL-agnostic): a symbol
+// present in the fixture answers from its traits, an absent one is (false, nil)
+// — "not cached yet", which the scanner treats as "not a shipyard".
+func (f *fakeTraits) HasWaypointTrait(_ context.Context, waypointSymbol, trait string) (bool, error) {
+	wp, ok := f.waypoints[waypointSymbol]
 	if !ok {
-		return nil, errors.New("waypoint not cached: " + symbol)
+		return false, nil
 	}
-	return wp, nil
+	return wp.HasTrait(trait), nil
 }
 
 func waypointWithTraits(t *testing.T, symbol string, traits ...string) *shared.Waypoint {
