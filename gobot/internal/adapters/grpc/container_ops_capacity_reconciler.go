@@ -34,7 +34,7 @@ import (
 // topology toward the computed desired topology (SENSE → PLAN → DIFF → GOVERN → CONVERGE),
 // capex-paced and kill-switch-gated. The foundation wiring carries the NoOp planner chain —
 // started, it provably emits ZERO actions until the intelligence lanes land.
-func (s *DaemonServer) CapacityReconcilerCoordinator(ctx context.Context, playerID int) (string, error) {
+func (s *DaemonServer) CapacityReconcilerCoordinator(ctx context.Context, playerID int, dryRun bool) (string, error) {
 	// Double-launch guard: ONE standing reconciler per player. A twin loop
 	// would double-execute tier-1..3 actions and double-file proposals once
 	// the actuation lanes land (Proposal.ID's "stable across re-files" dedupe
@@ -53,9 +53,16 @@ func (s *DaemonServer) CapacityReconcilerCoordinator(ctx context.Context, player
 
 	// Identity only — the [capacity_reconciler] knobs are injected by
 	// resolveCapacityReconcilerConfig inside buildCommandForType, the single injection point
-	// shared by creation and recovery.
+	// shared by creation and recovery. capacity_launch_dry_run is an IDENTITY flag: the
+	// launch-time --dry-run decision, persisted so a recovered container stays observe-only
+	// until it is stopped and relaunched (deliberately NOT a live-config key — mirrors
+	// bootstrap_launch_dry_run). config.yaml [capacity_reconciler] dry_run provides the
+	// default when the flag is absent; either source arms observe-only.
 	config := map[string]interface{}{
 		"container_id": containerID,
+	}
+	if dryRun {
+		config["capacity_launch_dry_run"] = true
 	}
 
 	cmd, err := s.buildCommandForType("capacity_reconciler_coordinator", config, playerID, containerID)
@@ -94,8 +101,11 @@ func (s *DaemonServer) CapacityReconcilerCoordinator(ctx context.Context, player
 // values, so a stale persisted copy from a prior boot can never shadow the current config.yaml
 // (the sp-ts82 live-config discipline). Keep in lockstep with
 // injectCapacityReconcilerConfig and buildCapacityReconcilerCoordinatorCommand's reads.
-// container_id is IDENTITY (set once at creation) and deliberately NOT in this list.
+// container_id and capacity_launch_dry_run are IDENTITY (set once at creation) and are
+// deliberately NOT in this list — they must SURVIVE a rebuild (the CLI --dry-run decision
+// stays sticky across a daemon restart, mirroring bootstrap_launch_dry_run).
 var capacityReconcilerConfigKeys = []string{
+	"capacity_dry_run",
 	"capacity_reserve_floor",
 	"capacity_surplus_fraction",
 	"capacity_per_decision_cap_pct",
@@ -126,6 +136,9 @@ func (s *DaemonServer) resolveCapacityReconcilerConfig(config map[string]interfa
 // documented default (RULINGS #5 — the daemon never hardcodes the operational values).
 func (s *DaemonServer) injectCapacityReconcilerConfig(config map[string]interface{}) {
 	cr := s.capacityReconcilerConfig
+	if cr.DryRun {
+		config["capacity_dry_run"] = true
+	}
 	if cr.ReserveFloor != 0 {
 		config["capacity_reserve_floor"] = int(cr.ReserveFloor)
 	}
@@ -164,6 +177,11 @@ func buildCapacityReconcilerCoordinatorCommand(cfg *configReader, playerID int, 
 		PlayerID:    shared.MustNewPlayerID(playerID),
 		ContainerID: cfg.RequiredNonEmptyString("container_id"),
 
+		// DryRun ORs the live config.yaml knob (capacity_dry_run, re-injected each
+		// build) with the persisted launch-time --dry-run flag (capacity_launch_dry_run,
+		// preserved across restart) — either source arms observe-only, and a dry-run
+		// launch stays dry-run through recovery (mirrors buildBootstrapCommand).
+		DryRun:           cfg.OptionalBool("capacity_dry_run") || cfg.OptionalBool("capacity_launch_dry_run"),
 		TickIntervalSecs: cfg.OptionalInt("capacity_tick_interval_secs", 0),
 		// Money floor reads with PresentOrFail semantics (sp-ggk2 doctrine):
 		// a PRESENT-but-unparseable reserve floor must fail the build, never

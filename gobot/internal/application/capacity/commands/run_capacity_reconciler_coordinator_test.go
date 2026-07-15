@@ -6,7 +6,9 @@ package commands
 // driven-port spies (actuator, proposal channel), and the injected clock.
 // Nothing here reaches into loop internals.
 //
-// Test budget: 18 distinct behaviors × 2 = 36 max; 19 test functions below.
+// Test budget: 19 distinct behaviors × 2 = 38 max; 20 test functions below
+// (the 19th behavior — DryRun observe-only CONVERGE — is one parametrized test
+// with an observe case and its armed regression counterpart).
 
 import (
 	"context"
@@ -604,6 +606,65 @@ func TestCapacityReconciler_ConvergeDispatchesApprovedByTierAndFilesProposals(t 
 	require.Equal(t, []capacity.Action{reuse, rebalance, buffer}, outcomes[0].ActionsExecuted)
 	require.Equal(t, []capacity.Proposal{proposal}, outcomes[0].ProposalsFiled,
 		"an already-attributed proposal passes verbatim (PlayerID untouched)")
+}
+
+// Behavior: DryRun makes CONVERGE observe-only. The SAME scenario that, armed,
+// executes tiers 1-3 and files a tier-4 proposal instead touches NO actuator
+// verb and NEVER calls ProposalChannel.Submit — yet the outcome still exposes
+// the FULL planned set (WouldExecute / WouldFile) so a captain can watch what
+// the engine WOULD do before arming it. The armed case is the byte-identical
+// regression proof in the other direction: dry-run adds observability, it does
+// not change what an armed engine does.
+func TestCapacityReconciler_DryRunObservesWithoutActuatingElseArmsFully(t *testing.T) {
+	reuse := capacity.Action{Tier: capacity.TierReuseIdle, Verb: capacity.VerbReassignHull, ShipSymbol: "SHIP-1"}
+	rebalance := capacity.Action{Tier: capacity.TierRebalance, Verb: capacity.VerbRepositionHull, ShipSymbol: "SHIP-2", TargetWaypoint: "X1-HUB-A"}
+	buffer := capacity.Action{Tier: capacity.TierBufferAdjust, Verb: capacity.VerbAdjustBufferCap, HubSymbol: "X1-HUB-A", Good: "IRON", UnitsCap: 80}
+	capital := capacity.Action{Tier: capacity.TierCapital, Verb: capacity.VerbBuyHull, HubSymbol: "X1-HUB-B", EstimatedCostCredits: 120000}
+	proposal := capacity.Proposal{ID: "prop-1", PlayerID: 1, Action: capital}
+	governed := capacity.GovernResult{
+		Approved:  []capacity.Action{reuse, rebalance, buffer},
+		Proposals: []capacity.Proposal{proposal},
+	}
+
+	t.Run("dry run observes the whole plan but actuates nothing", func(t *testing.T) {
+		f := newLoopFixture()
+		f.governor.result = governed
+		cmd := reconcilerCmd()
+		cmd.DryRun = true
+
+		outcomes := runTicks(t, f.handler(), cmd, 1, nil)
+
+		// Not one side effect escaped the process.
+		require.Zero(t, f.actuator.totalCalls(), "DryRun must invoke NO actuator verb — for ANY tier")
+		require.Empty(t, f.proposals.all(), "DryRun must NEVER call ProposalChannel.Submit")
+		require.Empty(t, outcomes[0].ActionsExecuted, "DryRun executes nothing")
+		require.Empty(t, outcomes[0].ProposalsFiled, "DryRun files nothing")
+		require.Empty(t, outcomes[0].FailedPhase, "observing is not failing")
+		// ...but the observer sees exactly what it WOULD have done.
+		require.Equal(t, []capacity.Action{reuse, rebalance, buffer}, outcomes[0].WouldExecute,
+			"the observer must see every approved action the engine WOULD have executed")
+		require.Equal(t, []capacity.Proposal{proposal}, outcomes[0].WouldFile,
+			"the observer must see every proposal the engine WOULD have filed")
+	})
+
+	t.Run("armed executes tiers 1-3 and files the proposal (regression)", func(t *testing.T) {
+		f := newLoopFixture()
+		f.governor.result = governed
+		cmd := reconcilerCmd()
+		cmd.DryRun = false
+
+		outcomes := runTicks(t, f.handler(), cmd, 1, nil)
+
+		require.Equal(t, []capacity.Action{reuse}, f.actuator.calls(capacity.VerbReassignHull))
+		require.Equal(t, []capacity.Action{rebalance}, f.actuator.calls(capacity.VerbRepositionHull))
+		require.Equal(t, []capacity.Action{buffer}, f.actuator.calls(capacity.VerbAdjustBufferCap))
+		require.Equal(t, []capacity.Proposal{proposal}, f.proposals.all())
+		require.Equal(t, []capacity.Action{reuse, rebalance, buffer}, outcomes[0].ActionsExecuted)
+		require.Equal(t, []capacity.Proposal{proposal}, outcomes[0].ProposalsFiled)
+		// The armed engine never populates the observe-only fields.
+		require.Empty(t, outcomes[0].WouldExecute, "an armed tick executes — it does not merely 'would'")
+		require.Empty(t, outcomes[0].WouldFile)
+	})
 }
 
 // Behavior (safety invariant 4, structural backstop): an Approved tier-4

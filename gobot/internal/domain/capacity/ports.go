@@ -130,9 +130,20 @@ type TickOutcome struct {
 	// Error is the failing phase's error text (or the converge failures).
 	Error string
 	// ActionsExecuted lists the actions the actuator completed this tick.
+	// In DryRun (observe-only) mode NOTHING is actuated, so this stays empty —
+	// see WouldExecute for the planned set.
 	ActionsExecuted []Action
-	// ProposalsFiled lists the capital proposals submitted this tick.
+	// ProposalsFiled lists the capital proposals submitted this tick. Empty in
+	// DryRun mode (nothing is filed) — see WouldFile for the planned set.
 	ProposalsFiled []Proposal
+	// WouldExecute lists the approved actions a DryRun tick WOULD have executed
+	// (it invoked no actuator verb). Always empty when the engine is armed
+	// (DryRun=false) — the two sets are mutually exclusive, so an observer reads
+	// "planned but not executed" from here and "executed" from ActionsExecuted.
+	WouldExecute []Action
+	// WouldFile lists the capital proposals a DryRun tick WOULD have filed (it
+	// called ProposalChannel.Submit for none). Always empty when armed.
+	WouldFile []Proposal
 }
 
 // TickObserver receives every tick's outcome. Optional seam for the

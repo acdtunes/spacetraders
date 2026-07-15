@@ -1333,10 +1333,12 @@ func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID i
 // CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk): drives the
 // contract-delivery machine's actual capacity topology toward the computed desired topology,
 // capex-paced. Identity-only launch — all [capacity_reconciler] calibration resolves live from
-// config.yaml. Explicit start only; a fresh deploy never arms it.
-func (c *DaemonClient) CapacityReconcilerCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+// config.yaml. Explicit start only; a fresh deploy never arms it. dryRun (the CLI --dry-run)
+// launches it observe-only: it evaluates + logs every decision but actuates nothing.
+func (c *DaemonClient) CapacityReconcilerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
 	req := &pb.CapacityReconcilerCoordinatorRequest{
 		PlayerId: int32(playerID),
+		DryRun:   dryRun,
 	}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol

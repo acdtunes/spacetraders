@@ -589,7 +589,7 @@ func (s *daemonServiceImpl) CapacityReconcilerCoordinator(ctx context.Context, r
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	containerID, err := s.daemon.CapacityReconcilerCoordinator(ctx, playerID)
+	containerID, err := s.daemon.CapacityReconcilerCoordinator(ctx, playerID, req.DryRun)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start capacity reconciler coordinator: %w", err)
 	}

@@ -581,6 +581,14 @@ bootstrap:
 # Honors captain/DISABLED at the top of EVERY tick. Every knob 0/absent => the documented
 # protective default; out-of-range explicit values fail the launch loudly.
 capacity_reconciler:
+  # Posture. dry_run launches the engine OBSERVE-ONLY: SENSE/PLAN/DIFF/GOVERN run as normal but
+  # CONVERGE actuates nothing (no reuse/rebalance/buffer change) and files NO proposal — it LOGS
+  # what it WOULD do every tick (the recommended first-start posture: watch a live cycle before
+  # arming). Also settable per-launch via the CLI --dry-run flag; either source arms observe-only,
+  # absent/false = ARMED. Resolved live on daemon restart; a --dry-run launch stays sticky across
+  # restart until the container is stopped and relaunched.
+  # dry_run: false
+
   # Capex governor. reserve_floor is the HARD treasury floor in credits — never spend below it
   # (0 => 50000, the immutable floor). surplus_fraction is f in the per-cycle deployable budget
   # f × (treasury − floor) (0 => 0.25). per_decision_cap_pct caps ONE capital decision at this

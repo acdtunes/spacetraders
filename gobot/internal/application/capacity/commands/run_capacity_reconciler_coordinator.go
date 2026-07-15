@@ -51,6 +51,14 @@ type RunCapacityReconcilerCoordinatorCommand struct {
 	// TickIntervalSecs is the reconcile cadence. 0 → 300s.
 	TickIntervalSecs int
 
+	// DryRun runs the loop observe-only: SENSE/PLAN/DIFF/GOVERN execute exactly
+	// as normal (all read-only), but CONVERGE actuates NOTHING — it calls no
+	// actuator verb and files no proposal. Instead it LOGS what it WOULD do and
+	// records the planned set on each TickOutcome (WouldExecute / WouldFile), so
+	// a captain can watch a live cycle before arming the engine. NOT
+	// dark-shipping: every skipped decision is logged loudly per tick.
+	DryRun bool
+
 	// Calibration params (spec: Calibration section). 0 → documented default.
 	ReserveFloorCredits      int64   // hard treasury floor; 0 → 50000
 	SurplusFraction          float64 // f in deployable = f × (treasury − floor); 0 → 0.25
@@ -261,7 +269,7 @@ func (h *RunCapacityReconcilerCoordinatorHandler) reconcileTick(ctx context.Cont
 	if err != nil {
 		return failTick(outcome, capacity.PhaseGovern, err)
 	}
-	h.converge(ctx, cmd.PlayerID.Value(), cal, governed, &outcome)
+	h.converge(ctx, cmd.PlayerID.Value(), cal, governed, cmd.DryRun, &outcome)
 	return outcome
 }
 
@@ -276,6 +284,11 @@ func failTick(outcome capacity.TickOutcome, phase capacity.Phase, err error) cap
 // collected and reported but never abort the rest — statelessness means a
 // failed item reappears as gap next tick and is re-converged.
 //
+// DryRun short-circuits to observeConverge: SENSE/PLAN/DIFF/GOVERN already ran
+// (all read-only), but here NOTHING is actuated and NO proposal is filed — the
+// observer logs what it WOULD do and records the planned set on the outcome
+// instead. The armed path below is byte-identical when DryRun is off.
+//
 // Two structural backstops live here, independent of the governor's
 // correctness (safety invariant 4 must never rest on a single component):
 //
@@ -287,10 +300,14 @@ func failTick(outcome capacity.TickOutcome, phase capacity.Phase, err error) cap
 //   - A proposal the governor left unattributed (PlayerID zero — its Govern
 //     inputs carry no player identity) is stamped with the reconciling
 //     player's ID before Submit; a non-zero PlayerID passes verbatim.
-func (h *RunCapacityReconcilerCoordinatorHandler) converge(ctx context.Context, playerID int, cal capacity.Calibration, governed capacity.GovernResult, outcome *capacity.TickOutcome) {
+func (h *RunCapacityReconcilerCoordinatorHandler) converge(ctx context.Context, playerID int, cal capacity.Calibration, governed capacity.GovernResult, dryRun bool, outcome *capacity.TickOutcome) {
+	if dryRun {
+		h.observeConverge(ctx, playerID, cal, governed, outcome)
+		return
+	}
 	failures := []string{}
 	for _, action := range governed.Approved {
-		if action.Tier == capacity.TierCapital && action.EstimatedCostCredits >= cal.ApprovalThresholdCredits {
+		if exceedsApprovalGate(action, cal) {
 			failures = append(failures, fmt.Sprintf(
 				"unapproved capital refused: %s %s cost %d >= approval threshold %d (invariant 4: tier-4 executes only via an approved proposal)",
 				action.Tier, action.Verb, action.EstimatedCostCredits, cal.ApprovalThresholdCredits))
@@ -338,13 +355,8 @@ var verbTiers = map[capacity.ActionVerb]capacity.Tier{
 // refused loudly instead of dispatched. Tier 4 reaches ExecuteCapital only
 // past converge's approval-threshold backstop.
 func (h *RunCapacityReconcilerCoordinatorHandler) executeAction(ctx context.Context, action capacity.Action) error {
-	canonical, known := verbTiers[action.Verb]
-	if !known {
-		return fmt.Errorf("unknown action verb %q (tier %s) — refusing dispatch", action.Verb, action.Tier)
-	}
-	if canonical != action.Tier {
-		return fmt.Errorf("verb/tier mismatch: %s is canonically %s but the action claims %s — refused (a mislabeled tier would bypass the capital gate)",
-			action.Verb, canonical, action.Tier)
+	if err := verbTierError(action); err != nil {
+		return err
 	}
 	switch action.Tier {
 	case capacity.TierReuseIdle:
@@ -357,6 +369,124 @@ func (h *RunCapacityReconcilerCoordinatorHandler) executeAction(ctx context.Cont
 		return h.actuator.ExecuteCapital(ctx, action)
 	}
 	return fmt.Errorf("unknown action tier %d (%s)", action.Tier, action.Verb)
+}
+
+// exceedsApprovalGate reports whether an Approved action is a tier-4 capital
+// action at or over the approval threshold — the structural invariant-4 backstop
+// (CONTRACTS safety invariant 4): such an action must NEVER execute from Approved
+// (only via an approved proposal). Shared by armed CONVERGE (which records it as a
+// failure) and the DryRun observer (which flags it as a would-be refusal), so the
+// observed plan can never claim to execute what the engine would refuse.
+func exceedsApprovalGate(action capacity.Action, cal capacity.Calibration) bool {
+	return action.Tier == capacity.TierCapital && action.EstimatedCostCredits >= cal.ApprovalThresholdCredits
+}
+
+// verbTierError validates one action's verb against the canonical verb→tier
+// mapping (verbTiers): an unknown verb, or a verb labeled with the wrong tier, is
+// refused so tier mislabeling cannot smuggle a capital action past the escalation
+// ladder as a "free" cheap one. nil ⇒ the pairing is canonical. Shared by the
+// armed dispatch (executeAction) and the DryRun observer so both judge the verb
+// identically.
+func verbTierError(action capacity.Action) error {
+	canonical, known := verbTiers[action.Verb]
+	if !known {
+		return fmt.Errorf("unknown action verb %q (tier %s) — refusing dispatch", action.Verb, action.Tier)
+	}
+	if canonical != action.Tier {
+		return fmt.Errorf("verb/tier mismatch: %s is canonically %s but the action claims %s — refused (a mislabeled tier would bypass the capital gate)",
+			action.Verb, canonical, action.Tier)
+	}
+	return nil
+}
+
+// observeConverge is CONVERGE's DryRun twin. It makes every decision armed
+// CONVERGE would — the invariant-4 capital backstop (exceedsApprovalGate) and the
+// canonical verb/tier check (verbTierError) still judge each approved action, so
+// the observed WouldExecute set never claims the engine would execute what it
+// would in fact refuse — but instead of calling an actuator verb or
+// ProposalChannel.Submit it LOGS the decision and records the planned set on the
+// outcome (WouldExecute / WouldFile). NOT dark-shipping: every decision is logged
+// loudly (a would-be refusal is a WARNING). No side effect leaves the process and
+// FailedPhase stays clear — observing is not failing.
+func (h *RunCapacityReconcilerCoordinatorHandler) observeConverge(ctx context.Context, playerID int, cal capacity.Calibration, governed capacity.GovernResult, outcome *capacity.TickOutcome) {
+	for _, action := range governed.Approved {
+		if exceedsApprovalGate(action, cal) {
+			h.logWouldRefuse(ctx, action, outcome, fmt.Sprintf("unapproved capital (cost %d >= approval threshold %d)", action.EstimatedCostCredits, cal.ApprovalThresholdCredits))
+			continue
+		}
+		if err := verbTierError(action); err != nil {
+			h.logWouldRefuse(ctx, action, outcome, err.Error())
+			continue
+		}
+		h.logWouldExecute(ctx, action, outcome)
+	}
+	for _, proposal := range governed.Proposals {
+		// Stamp the reconciling player exactly as the armed path would, so the
+		// observed proposal is what WOULD actually be filed (Submit never sees a
+		// zero player).
+		if proposal.PlayerID == 0 {
+			proposal.PlayerID = playerID
+		}
+		h.logWouldFile(ctx, proposal, outcome)
+	}
+}
+
+// logWouldExecute records — on the outcome and in the log — one approved action a
+// DryRun tick WOULD have executed, in the canonical shape
+// "DRY-RUN would <tier> <verb> <hub/ship/good> (est cost <n>)".
+func (h *RunCapacityReconcilerCoordinatorHandler) logWouldExecute(ctx context.Context, action capacity.Action, outcome *capacity.TickOutcome) {
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("DRY-RUN would %s %s %s (est cost %d)",
+		action.Tier, action.Verb, actionTarget(action), action.EstimatedCostCredits), map[string]interface{}{
+		"action": "capacity_reconciler_dry_run_would_execute", "tick": outcome.Sequence,
+		"tier": action.Tier.String(), "verb": string(action.Verb), "target": actionTarget(action),
+	})
+	outcome.WouldExecute = append(outcome.WouldExecute, action)
+}
+
+// logWouldFile records one capital proposal a DryRun tick WOULD have filed, with
+// its ROI evidence, in the shape
+// "DRY-RUN would file proposal <verb> <hub/ship/good> (ROI evidence: ...)".
+func (h *RunCapacityReconcilerCoordinatorHandler) logWouldFile(ctx context.Context, proposal capacity.Proposal, outcome *capacity.TickOutcome) {
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("DRY-RUN would file proposal %s %s (ROI evidence: cost %d, +%.0f cr/hr, payback %s; %s)",
+		proposal.Action.Verb, actionTarget(proposal.Action),
+		proposal.Evidence.CostCredits, proposal.Evidence.ProjectedGainPerHour, proposal.Evidence.PaybackHorizon, proposal.Evidence.Narrative), map[string]interface{}{
+		"action": "capacity_reconciler_dry_run_would_file", "tick": outcome.Sequence,
+		"proposal_id": proposal.ID, "verb": string(proposal.Action.Verb),
+	})
+	outcome.WouldFile = append(outcome.WouldFile, proposal)
+}
+
+// logWouldRefuse warns that a DryRun tick WOULD have refused an approved action
+// the governor should never have approved (invariant-4 capital, or a mislabeled
+// verb) — surfacing the would-be refusal to the observer without letting it land
+// in WouldExecute. Deliberately a WARNING: a governor contradicting its own gate
+// is loud even in observe mode.
+func (h *RunCapacityReconcilerCoordinatorHandler) logWouldRefuse(ctx context.Context, action capacity.Action, outcome *capacity.TickOutcome, reason string) {
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("DRY-RUN would REFUSE %s %s %s: %s",
+		action.Tier, action.Verb, actionTarget(action), reason), map[string]interface{}{
+		"action": "capacity_reconciler_dry_run_would_refuse", "tick": outcome.Sequence,
+		"tier": action.Tier.String(), "verb": string(action.Verb),
+	})
+}
+
+// actionTarget renders an action's primary subject — the hub, ship, and/or good
+// it touches — as "hub/ship/good" for the DryRun log (unused fields stay out; a
+// target-less action reads "-").
+func actionTarget(action capacity.Action) string {
+	parts := []string{}
+	if action.HubSymbol != "" {
+		parts = append(parts, action.HubSymbol)
+	}
+	if action.ShipSymbol != "" {
+		parts = append(parts, action.ShipSymbol)
+	}
+	if action.Good != "" {
+		parts = append(parts, action.Good)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, "/")
 }
 
 // noteOutcome logs the tick and records it at the error-streak checkpoint: a
@@ -383,9 +513,14 @@ func (h *RunCapacityReconcilerCoordinatorHandler) noteOutcome(ctx context.Contex
 			"action": "capacity_reconciler_tick_failed", "tick": outcome.Sequence, "phase": string(outcome.FailedPhase),
 		})
 	} else {
-		logger.Log("INFO", fmt.Sprintf("Capacity reconcile tick %d: %d actions executed, %d proposals filed", outcome.Sequence, len(outcome.ActionsExecuted), len(outcome.ProposalsFiled)), map[string]interface{}{
+		msg := fmt.Sprintf("Capacity reconcile tick %d: %d actions executed, %d proposals filed", outcome.Sequence, len(outcome.ActionsExecuted), len(outcome.ProposalsFiled))
+		if len(outcome.WouldExecute) > 0 || len(outcome.WouldFile) > 0 {
+			msg = fmt.Sprintf("Capacity reconcile tick %d [DRY-RUN]: would execute %d actions, would file %d proposals — nothing actuated", outcome.Sequence, len(outcome.WouldExecute), len(outcome.WouldFile))
+		}
+		logger.Log("INFO", msg, map[string]interface{}{
 			"action": "capacity_reconciler_tick", "tick": outcome.Sequence,
 			"actions_executed": len(outcome.ActionsExecuted), "proposals_filed": len(outcome.ProposalsFiled),
+			"would_execute": len(outcome.WouldExecute), "would_file": len(outcome.WouldFile),
 		})
 	}
 	if streak, crossed := errMon.Note("reconcile", outcome.Error); crossed {

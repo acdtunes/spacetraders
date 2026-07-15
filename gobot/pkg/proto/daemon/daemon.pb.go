@@ -2752,11 +2752,12 @@ func (x *BootstrapCoordinatorResponse) GetStatus() string {
 
 // CapacityReconcilerCoordinatorRequest starts the standing capacity reconciler (st-7zk).
 // All calibration lives in config.yaml's [capacity_reconciler] section (resolved live on
-// every build); this request only names the player/agent.
+// every build); this request names the player/agent and an optional dry-run override.
 type CapacityReconcilerCoordinatorRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
 	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	DryRun        bool                   `protobuf:"varint,3,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"` // observe + log every decision, actuate nothing (recommended first-start posture)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2803,6 +2804,13 @@ func (x *CapacityReconcilerCoordinatorRequest) GetAgentSymbol() string {
 		return *x.AgentSymbol
 	}
 	return ""
+}
+
+func (x *CapacityReconcilerCoordinatorRequest) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
 }
 
 type CapacityReconcilerCoordinatorResponse struct {
@@ -12286,10 +12294,11 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\r_agent_symbol\"Y\n" +
 	"\x1cBootstrapCoordinatorResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"|\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x95\x01\n" +
 	"$CapacityReconcilerCoordinatorRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
-	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x17\n" +
+	"\adry_run\x18\x03 \x01(\bR\x06dryRunB\x0f\n" +
 	"\r_agent_symbol\"b\n" +
 	"%CapacityReconcilerCoordinatorResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +

@@ -17,6 +17,15 @@ package config
 // rejected at config load (tags below) AND at coordinator launch
 // (Calibration.Validate) — fail loud, never clamp silently.
 type CapacityReconcilerConfig struct {
+	// DryRun runs the reconciler observe-only: SENSE/PLAN/DIFF/GOVERN execute
+	// normally (all read-only) but CONVERGE actuates nothing and files no
+	// proposal — it LOGS what it WOULD do each tick instead. The recommended
+	// first-start posture (watch a live cycle before arming). Also settable
+	// per-launch via the CLI --dry-run flag; either source arms observe-only.
+	// NOT dark-shipping — every skipped decision is logged loudly. 0/absent →
+	// false (armed). Resolved LIVE on every build like the calibration knobs.
+	DryRun bool `mapstructure:"dry_run"`
+
 	// ReserveFloor is the HARD treasury floor in credits — the capex governor
 	// never spends below it. 0/absent → 50000 (the immutable reserve floor).
 	ReserveFloor int64 `mapstructure:"reserve_floor" validate:"omitempty,min=0"`

@@ -662,10 +662,11 @@ message BootstrapCoordinatorResponse {
 
 // CapacityReconcilerCoordinatorRequest starts the standing capacity reconciler (st-7zk).
 // All calibration lives in config.yaml's [capacity_reconciler] section (resolved live on
-// every build); this request only names the player/agent.
+// every build); this request names the player/agent and an optional dry-run override.
 message CapacityReconcilerCoordinatorRequest {
   int32 player_id = 1;
   optional string agent_symbol = 2;
+  bool dry_run = 3;  // observe + log every decision, actuate nothing (recommended first-start posture)
 }
 
 message CapacityReconcilerCoordinatorResponse {

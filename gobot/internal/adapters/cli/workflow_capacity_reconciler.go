@@ -21,6 +21,7 @@ import (
 // start path — it is deliberately never boot-standing-armed, so a fresh deploy changes nothing
 // until an operator runs this command.
 func newWorkflowCapacityReconcilerCommand() *cobra.Command {
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "capacity-reconciler",
 		Short: "Start the standing capacity reconciler (drives actual contract-delivery topology toward the computed desired topology, capex-paced)",
@@ -40,6 +41,11 @@ Each tick (default 5min) it runs SENSE → PLAN → DIFF → GOVERN → CONVERGE
 
 The loop is stateless per tick (idempotent, restart-safe, self-healing) and honors the
 captain/DISABLED kill switch at the top of EVERY tick.
+
+Pass --dry-run (or set [capacity_reconciler] dry_run=true) to launch OBSERVE-ONLY: SENSE/PLAN/
+DIFF/GOVERN run as normal but CONVERGE actuates nothing and files no proposal — it logs what it
+WOULD do each tick (recommended first-start posture: watch a live cycle before arming). A
+dry-run launch stays dry-run across daemon restarts until stopped and relaunched.
 
 FOUNDATION STATE: the intelligence lanes land incrementally — with the no-op planner wired the
 engine provably emits ZERO actions, so starting it is safe and changes nothing yet.
@@ -69,7 +75,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			containerID, err := client.CapacityReconcilerCoordinator(ctx, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			containerID, err := client.CapacityReconcilerCoordinator(ctx, playerIdent.PlayerID, playerIdent.AgentSymbol, dryRun)
 			if err != nil {
 				return fmt.Errorf("failed to start capacity reconciler: %w", err)
 			}
@@ -77,13 +83,20 @@ Examples:
 			fmt.Println("✓ Capacity reconciler started")
 			fmt.Printf("  Container ID: %s\n", containerID)
 			fmt.Printf("  Agent:        %s (player %d)\n", playerIdent.AgentSymbol, playerIdent.PlayerID)
-			fmt.Println("\n  It reconciles actual contract-delivery topology toward the desired topology every tick,")
-			fmt.Println("  honoring captain/DISABLED each tick; capital spends file proposals (nothing auto-buys in v1).")
+			if dryRun {
+				fmt.Println("\n  DRY-RUN: it evaluates + logs every decision each tick but actuates NOTHING (no reuse/")
+				fmt.Println("  rebalance/buffer change) and files NO proposal — watch a cycle, then relaunch to arm it.")
+			} else {
+				fmt.Println("\n  It reconciles actual contract-delivery topology toward the desired topology every tick,")
+				fmt.Println("  honoring captain/DISABLED each tick; capital spends file proposals (nothing auto-buys in v1).")
+			}
 			fmt.Println("  Tune it in config.yaml [capacity_reconciler] (live on daemon restart).")
 			fmt.Println("  Stop with 'spacetraders container stop " + containerID + "'.")
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Evaluate + log every decision but actuate nothing and file no proposal (observe-only)")
 
 	return cmd
 }

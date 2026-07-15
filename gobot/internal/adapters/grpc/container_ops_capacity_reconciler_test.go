@@ -34,7 +34,7 @@ func TestCapacityReconcilerCoordinatorRefusesDoubleLaunch(t *testing.T) {
 	insertRunningContainer(t, db, "capacity-reconciler-existing", "capacity_reconciler_coordinator",
 		string(container.ContainerTypeCapacityReconciler), `{"container_id":"capacity-reconciler-existing"}`, playerID, nil)
 
-	_, err := s.CapacityReconcilerCoordinator(context.Background(), playerID)
+	_, err := s.CapacityReconcilerCoordinator(context.Background(), playerID, false)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already running")
@@ -125,4 +125,96 @@ func TestCapacityReconcilerConfigUnsetKnobFallsBackToDefault(t *testing.T) {
 	cmd := built.(*capacityCmd.RunCapacityReconcilerCoordinatorCommand)
 	require.Zero(t, cmd.PerDecisionCapPct,
 		"a knob dropped from config.yaml must resolve to zero (= the coordinator's documented default), not the stale persisted 99")
+}
+
+// DryRun default (st-y07): with nothing set — no config.yaml dry_run and no
+// launch --dry-run flag persisted — a rebuilt coordinator is ARMED. Observe-only
+// is strictly opt-in; a fresh deploy never silently freezes the engine.
+func TestCapacityReconcilerDryRunDefaultsOff(t *testing.T) {
+	s := newFactoryTestServer() // zero capacityReconcilerConfig: dry_run unset in config.yaml
+
+	built, err := s.buildCommandForType("capacity_reconciler_coordinator",
+		jsonRoundTrip(t, map[string]interface{}{"container_id": "capacity-reconciler-7"}), 7, "capacity-reconciler-7")
+	require.NoError(t, err)
+
+	cmd := built.(*capacityCmd.RunCapacityReconcilerCoordinatorCommand)
+	require.False(t, cmd.DryRun, "DryRun must default OFF — observe-only is opt-in, never the default posture")
+}
+
+// DryRun from config.yaml (st-y07): setting [capacity_reconciler] dry_run=true
+// arms every rebuild of the coordinator observe-only, resolved LIVE like the
+// calibration knobs — the capacity_dry_run key is cleared and re-injected from
+// the boot-loaded config on every build, so a config edit + daemon restart
+// freezes a recovered coordinator to watch mode.
+func TestCapacityReconcilerDryRunResolvesLiveFromConfigYAML(t *testing.T) {
+	s := newFactoryTestServer()
+	s.capacityReconcilerConfig = config.CapacityReconcilerConfig{DryRun: true}
+
+	built, err := s.buildCommandForType("capacity_reconciler_coordinator",
+		jsonRoundTrip(t, map[string]interface{}{"container_id": "capacity-reconciler-7"}), 7, "capacity-reconciler-7")
+	require.NoError(t, err)
+
+	cmd := built.(*capacityCmd.RunCapacityReconcilerCoordinatorCommand)
+	require.True(t, cmd.DryRun, "[capacity_reconciler] dry_run=true must arm the coordinator observe-only")
+}
+
+// DryRun launch-flag survives recovery (st-y07, mirrors bootstrap's
+// bootstrap_launch_dry_run): a container started with the CLI --dry-run persists
+// capacity_launch_dry_run as an IDENTITY key (NOT a live-config key), so it is
+// preserved verbatim through the buildCommandForType round-trip. A dry-run
+// container therefore STAYS dry-run across a daemon restart even when config.yaml
+// says nothing — a daemon bounce must never silently arm an engine an operator
+// deliberately launched in watch mode.
+func TestCapacityReconcilerDryRunLaunchFlagSurvivesRecovery(t *testing.T) {
+	s := newFactoryTestServer() // config.yaml dry_run absent; only the launch flag is set
+
+	persisted := map[string]interface{}{
+		"container_id":            "capacity-reconciler-7",
+		"capacity_launch_dry_run": true, // the CLI --dry-run decision, persisted at launch
+	}
+
+	built, err := s.buildCommandForType("capacity_reconciler_coordinator", jsonRoundTrip(t, persisted), 7, "capacity-reconciler-7")
+	require.NoError(t, err)
+
+	cmd := built.(*capacityCmd.RunCapacityReconcilerCoordinatorCommand)
+	require.True(t, cmd.DryRun,
+		"a --dry-run launch must survive restart recovery — the persisted launch flag is not a live-config key that gets cleared")
+}
+
+// DryRun launch WRITE side (st-y07): the CLI --dry-run flag, threaded through the
+// RPC into CapacityReconcilerCoordinator, must persist capacity_launch_dry_run on
+// the container so recovery can read it back (the READ side is proven above). An
+// armed launch persists no such key, so it never accidentally freezes on restart.
+func TestCapacityReconcilerCoordinatorPersistsLaunchDryRunFlag(t *testing.T) {
+	cases := []struct {
+		name       string
+		dryRun     bool
+		wantKeySet bool
+	}{
+		{name: "dry-run launch persists the sticky flag", dryRun: true, wantKeySet: true},
+		{name: "armed launch persists no dry-run flag", dryRun: false, wantKeySet: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, playerID := newRecoveryTestServer(t)
+			ctx := context.Background()
+
+			containerID, err := s.CapacityReconcilerCoordinator(ctx, playerID, tc.dryRun)
+			require.NoError(t, err)
+			// Release the blocking launch goroutine so it exits cleanly.
+			if r := s.registeredRunner(containerID); r != nil {
+				r.cancelFunc()
+			}
+
+			model, err := s.containerRepo.Get(ctx, containerID, playerID)
+			require.NoError(t, err)
+			if tc.wantKeySet {
+				require.Contains(t, model.Config, "capacity_launch_dry_run",
+					"a --dry-run launch must persist the sticky flag so recovery keeps it dry-run")
+			} else {
+				require.NotContains(t, model.Config, "capacity_launch_dry_run",
+					"an armed launch must persist NO dry-run flag — restart must not silently freeze it")
+			}
+		})
+	}
 }
