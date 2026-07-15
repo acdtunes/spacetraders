@@ -413,6 +413,15 @@ scouting:
   # so 0/absent => 12. Raising this does NOT relax heavies/trade/arb — they keep MaxJumpPath.
   # max_reposition_jumps: 12
 
+  # heavy_ship_types (sp-42ow) is the set of ship types that count as HEAVY freight for
+  # shipyard discovery. The scout tour's piggybacked shipyard scan emits a one-time-per-era
+  # milestone captain event (shipyard.heavy_yard_discovered) when a yard selling one of
+  # these is first discovered, and the fleet autosizer's nearest-reachable-heavy-yard price
+  # fallback keys on the same scans. Empty/absent => the domain default below.
+  # heavy_ship_types:
+  #   - SHIP_HEAVY_FREIGHTER
+  #   - SHIP_BULK_FREIGHTER
+
 # fleet_autosizer (sp-1txd): the standing fleet capacity autosizer — the buy-side twin of the
 # siting coordinator. It sizes the hull pool to demand each slow tick and AUTO-BUYS hulls when
 # funds clear the full fail-closed money-guard stack. LIVE BY DEFAULT once first-launched

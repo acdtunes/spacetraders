@@ -1153,6 +1153,7 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 				Type          string                   `json:"type"`
 				Name          string                   `json:"name"`
 				Description   string                   `json:"description"`
+				Supply        string                   `json:"supply"`
 				PurchasePrice int                      `json:"purchasePrice"`
 				Frame         map[string]interface{}   `json:"frame"`
 				Reactor       map[string]interface{}   `json:"reactor"`
@@ -1184,6 +1185,7 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 			Type:          ship.Type,
 			Name:          ship.Name,
 			Description:   ship.Description,
+			Supply:        ship.Supply,
 			PurchasePrice: ship.PurchasePrice,
 			Frame:         ship.Frame,
 			Reactor:       ship.Reactor,

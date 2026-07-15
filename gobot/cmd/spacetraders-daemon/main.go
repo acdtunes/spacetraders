@@ -55,6 +55,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	domainShipyard "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -312,8 +313,19 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ListShipModules handler: %w", err)
 	}
 
+	// Shipyard scanner (sp-42ow): piggybacks a shipyard-inventory scan on the scout
+	// tour's market visits — availability + prices persisted per (player, waypoint,
+	// ship_type), era-scoped, with a one-time-per-era heavy-yard milestone event.
+	// heavy_ship_types resolves from [scouting] config; empty defers to the domain
+	// default {SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER}.
+	shipyardInventoryRepo := persistence.NewShipyardInventoryRepository(db)
+	shipyardScanner := ship.NewShipyardScanner(
+		apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
+		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
+	)
+
 	// Market scouting handlers
-	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner, nil) // nil clock = RealClock (sp-zixw)
+	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner, shipyardScanner, nil) // nil clock = RealClock (sp-zixw)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)
 	}
@@ -754,6 +766,25 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ContractHubCoordinator handler: %w", err)
 	}
 
+	// sp-7gr2: the persisted, fetch-through gate-graph resolver. travel() BFS-walks
+	// it to cross a multi-hop gap (KA42→PA3→UQ16→JP61 — the single-edge assumption
+	// that crashed a laden frigate at the home gate), and the arb pre-buy guard
+	// route-checks a cross-system sell leg through it BEFORE spending. Shared by
+	// the trade-route circuit, the one-shot arb, and (sp-42ow) the autosizer's
+	// reachable-yard ranking so they all see one cache/graph. Constructed here,
+	// ahead of the autosizer wiring that consumes it.
+	gateGraphService := gategraph.NewService(
+		persistence.NewGormGateEdgeRepository(db), apiClient, graphService, playerRepo,
+		// sp-ikx1: back off re-probing an unreadable jump gate (5m→30m→2h) instead of
+		// re-fetching it every reconcile tick — the negative-result backoff is persisted
+		// on the gate_edges row so a restart resumes it rather than re-storming the API.
+		gategraph.WithBackoff(gategraph.BackoffSchedule{
+			Initial:    cfg.Routing.GateBackoff.Initial,
+			Multiplier: cfg.Routing.GateBackoff.Multiplier,
+			Max:        cfg.Routing.GateBackoff.Max,
+		}),
+	)
+
 	// Fleet capacity autosizer (sp-1txd): the buy-side twin of the siting coordinator. It sizes the
 	// hull pool to demand and auto-buys hulls behind the fail-closed money-guard stack. LIVE BY
 	// DEFAULT once first-launched (CLI/gRPC), recovery-adopted on restart. All concrete ports —
@@ -768,9 +799,13 @@ func run(cfg *config.Config) error {
 	// sp-3yqa: goodsMarketLocator feeds the warehouse portfolio source (resolves each durable
 	// chain's in-system export waypoint — the warehouse's home). The warehouse class stays dormant
 	// until warehouse_hulls_enabled, so this wiring is safe to land ahead of opt-in.
+	// sp-42ow: the ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
+	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
+	// guard fails closed exactly as before, and every other guard still gates the buy.
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo, goodsMarketLocator,
 		marketRepo, persistence.NewTourTelemetryRepository(db),
+		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
@@ -798,22 +833,6 @@ func run(cfg *config.Config) error {
 	// stale-ask guard (2sam hazard b). DaemonServer.StartTradeRoute launches the container.
 	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
-	)
-	// sp-7gr2: the persisted, fetch-through gate-graph resolver. travel() BFS-walks
-	// it to cross a multi-hop gap (KA42→PA3→UQ16→JP61 — the single-edge assumption
-	// that crashed a laden frigate at the home gate), and the arb pre-buy guard
-	// route-checks a cross-system sell leg through it BEFORE spending. Shared by
-	// both the trade-route circuit and the one-shot arb so they see one cache/graph.
-	gateGraphService := gategraph.NewService(
-		persistence.NewGormGateEdgeRepository(db), apiClient, graphService, playerRepo,
-		// sp-ikx1: back off re-probing an unreadable jump gate (5m→30m→2h) instead of
-		// re-fetching it every reconcile tick — the negative-result backoff is persisted
-		// on the gate_edges row so a restart resumes it rather than re-storming the API.
-		gategraph.WithBackoff(gategraph.BackoffSchedule{
-			Initial:    cfg.Routing.GateBackoff.Initial,
-			Multiplier: cfg.Routing.GateBackoff.Multiplier,
-			Max:        cfg.Routing.GateBackoff.Max,
-		}),
 	)
 	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
 	// sp-3vg8: now that the shared stored-adjacency gate graph exists (built just above), wire

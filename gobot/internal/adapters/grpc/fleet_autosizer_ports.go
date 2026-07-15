@@ -71,6 +71,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	marketLocator *goodsServices.MarketLocator,
 	marketRepo market.MarketRepository,
 	tourTelemetry tourTelemetryReader,
+	scannedYards scannedYardRanker,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
 
@@ -107,7 +108,14 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.SetEraClockReader(&autosizerEraReader{api: apiClient})
 	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{reporter: metrics.GetGlobalAPIBudgetTracker()})
 	h.SetFleetSizeReader(&autosizerFleetSizeReader{shipRepo: shipRepo})
-	h.SetYardPriceReader(&autosizerYardPriceReader{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
+	// The concrete waypoint repo is assigned only when non-nil: a typed-nil
+	// pointer inside the interface field would defeat the reader's nil guard
+	// (fail-closed on an unwired waypoint surface) with a runtime panic instead.
+	yardPriceReader := &autosizerYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
+	if waypointRepo != nil {
+		yardPriceReader.waypointRepo = waypointRepo
+	}
+	h.SetYardPriceReader(yardPriceReader)
 	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
 	h.SetPurchaseNotifier(&autosizerNotifier{store: eventStore})
 	h.SetMetricsSink(&autosizerMetricsSink{})
@@ -197,16 +205,38 @@ func (r *autosizerFleetSizeReader) TotalHulls(ctx context.Context, playerID int)
 
 // --- yard price (cheapest known shipyard ask for the type across the player's systems) ---
 
+// shipyardWaypointLister is the narrow waypoint-repo slice the yard-price walk
+// needs (SHIPYARD-trait waypoints per system). Satisfied by
+// *persistence.GormWaypointRepository; an interface so the reader is testable
+// against fakes at the port boundary.
+type shipyardWaypointLister interface {
+	ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error)
+}
+
+// scannedYardRanker is the nearest-reachable-yard signal off the persisted
+// shipyard-inventory scans (sp-42ow), ranked hops-then-price. Satisfied by
+// *shipyardQueries.ReachableYardFinder.
+type scannedYardRanker interface {
+	NearestYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]shipyardQueries.YardCandidate, error)
+}
+
 type autosizerYardPriceReader struct {
 	med          common.Mediator
 	shipRepo     navigation.ShipRepository
-	waypointRepo *persistence.GormWaypointRepository
+	waypointRepo shipyardWaypointLister
+	// scannedYards is the sp-42ow heavy-yard fallback: when the live in-system
+	// walk finds no priced listing (the branch that has ALWAYS failed closed),
+	// the HEAVY class may open on a scout-scanned, gate-reachable yard. Nil-safe;
+	// nil or an empty scan store keeps the historical fail-closed behavior.
+	scannedYards scannedYardRanker
 }
 
 // PriceFor finds the cheapest priced listing for the ship type at a SHIPYARD-trait waypoint in a
-// system where the player operates. Returns readable=false (price guard fails closed) when no priced
-// listing is found. The demand-proximal preference is a later refinement (banked) — cheapest is
-// returned now.
+// system where the player operates. When that live in-system walk finds nothing, the HEAVY class
+// falls back to the scout-scanned shipyard inventory (sp-42ow): the nearest gate-reachable scanned
+// yard, ranked hops-then-price — the availability signal the fail-closed heavy branch was designed
+// to consume. Returns readable=false (price guard fails closed) when neither surface knows a priced
+// yard. The demand-proximal preference is a later refinement (banked) — cheapest is returned now.
 func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, class fleetCmd.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
 	if r.waypointRepo == nil {
 		return 0, 0, "", false, nil
@@ -219,16 +249,9 @@ func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, c
 	if err != nil {
 		return 0, 0, "", false, nil
 	}
-	// Distinct systems the player has hulls in — the shipyards we can reach.
-	systems := map[string]struct{}{}
-	for _, s := range ships {
-		if loc := s.CurrentLocation(); loc != nil {
-			systems[shared.ExtractSystemSymbol(loc.Symbol)] = struct{}{}
-		}
-	}
 	var cheapest int64
 	var cheapestYard string
-	for system := range systems {
+	for _, system := range distinctShipSystems(ships) {
 		waypoints, werr := r.waypointRepo.ListBySystemWithTrait(ctx, system, "SHIPYARD")
 		if werr != nil {
 			continue
@@ -247,9 +270,37 @@ func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, c
 		}
 	}
 	if cheapestYard == "" {
-		return 0, 0, "", false, nil
+		return r.scannedYardFallback(ctx, playerID, class, shipType, ships)
 	}
 	return cheapest, cheapest, cheapestYard, true, nil
+}
+
+// scannedYardFallback opens the HEAVY price signal from the persisted shipyard
+// scans when the live in-system walk found no priced listing (sp-42ow). Heavy
+// ONLY: heavy hulls are the class whose yards are routinely out-of-system (the
+// branch that has always failed closed for lack of this signal); lights keep
+// buying in-system, so widening them to remote yards would be a buy-policy
+// change this seam deliberately does not make. price = the NEAREST candidate's
+// ask (hops first, then price — the finder's rank), cheapest = the true minimum
+// across reachable candidates so the premium guard judges the proximity premium
+// honestly. No candidates / no ranker wired / rank read failure ⇒ readable=false:
+// exactly the historical fail-closed behavior.
+func (r *autosizerYardPriceReader) scannedYardFallback(ctx context.Context, playerID int, class fleetCmd.HullClass, shipType string, ships []*navigation.Ship) (int64, int64, string, bool, error) {
+	if class != fleetCmd.HullClassHeavy || r.scannedYards == nil {
+		return 0, 0, "", false, nil
+	}
+	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, []string{shipType}, distinctShipSystems(ships))
+	if err != nil || len(candidates) == 0 {
+		return 0, 0, "", false, nil // unreadable or empty scan surface → the price guard stays closed
+	}
+	nearest := candidates[0]
+	cheapest := int64(nearest.PurchasePrice)
+	for _, c := range candidates[1:] {
+		if int64(c.PurchasePrice) < cheapest {
+			cheapest = int64(c.PurchasePrice)
+		}
+	}
+	return int64(nearest.PurchasePrice), cheapest, nearest.WaypointSymbol, true, nil
 }
 
 func (r *autosizerYardPriceReader) priceAtShipyard(ctx context.Context, system, waypoint, shipType string, pid shared.PlayerID) (int64, bool) {

@@ -59,6 +59,14 @@ type ScoutingConfig struct {
 	// set in normal operation.
 	RespawnCapDisabled bool `mapstructure:"respawn_cap_disabled"`
 
+	// HeavyShipTypes is the set of ship types that count as HEAVY freight for
+	// shipyard discovery (sp-42ow): the scout tour's piggybacked shipyard scan
+	// emits a one-time-per-era milestone event when a yard selling one of these
+	// is first discovered, and the fleet autosizer's nearest-reachable-heavy-yard
+	// signal keys on the same classification. Empty/absent defers to the domain
+	// default {SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER} (RULINGS #5).
+	HeavyShipTypes []string `mapstructure:"heavy_ship_types"`
+
 	// CoverageSpreadDisabled turns OFF the sp-6ovd coverage-first manning order in the
 	// standing scout_post_coordinator, reverting to the legacy depth-first order (all of a
 	// post's slots before the next post's). false/absent => LIVE: the reconciler interleaves

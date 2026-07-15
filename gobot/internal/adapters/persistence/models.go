@@ -822,6 +822,40 @@ func (WarehouseStockingModel) TableName() string {
 	return "warehouse_stockings"
 }
 
+// ShipyardInventoryModel is one scanned shipyard listing fact (sp-42ow): at
+// last_scanned, the (player, waypoint) shipyard offered ship_type at
+// purchase_price with the listing's supply tier. Written by the scout tour's
+// piggybacked shipyard scan (ReplaceScan swaps a waypoint's whole row set —
+// the market_data delete-then-insert idiom — so re-scans refresh price and
+// last_scanned without duplicate rows, and a delisted type disappears). Read
+// by the reachable-yard ranking that feeds the fleet autosizer's heavy-hull
+// yard-price signal.
+//
+// EraID mirrors GateEdgeModel/ScoutPostModel: reads are era-scoped
+// (eraScopePredicate) so a universe reset never leaks dead-era yards into a
+// live buy signal; ReplaceScan purges the waypoint's rows across ALL eras
+// before inserting, so dead-era rows self-clean on re-scan. Composite primary
+// key (player_id, waypoint_symbol, ship_type) makes duplicates structurally
+// impossible. PurchasePrice 0 = type listed but unpriced at scan time (proves
+// availability, never feeds a price guard). No players foreign key — like the
+// other operational-state rows, player_id is a plain scoped column. Unlike
+// most cache tables this one IS CREATE'd by migration 041, so the column-drift
+// gate holds its model and migration in lockstep.
+type ShipyardInventoryModel struct {
+	PlayerID       int       `gorm:"column:player_id;primaryKey"`
+	SystemSymbol   string    `gorm:"column:system_symbol;not null;index:idx_shipyard_inventory_system"`
+	WaypointSymbol string    `gorm:"column:waypoint_symbol;primaryKey"`
+	ShipType       string    `gorm:"column:ship_type;primaryKey"`
+	PurchasePrice  int       `gorm:"column:purchase_price;not null;default:0"`
+	Supply         string    `gorm:"column:supply;not null;default:''"`
+	LastScanned    time.Time `gorm:"column:last_scanned;not null"`
+	EraID          *int      `gorm:"column:era_id;index:idx_shipyard_inventory_era"`
+}
+
+func (ShipyardInventoryModel) TableName() string {
+	return "shipyard_inventory"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -855,5 +889,6 @@ func AllModels() []any {
 		&ContractDepotModel{},
 		&WarehouseWithdrawalModel{},
 		&WarehouseStockingModel{},
+		&ShipyardInventoryModel{},
 	}
 }

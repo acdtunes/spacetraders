@@ -158,26 +158,33 @@ type ScoutTourHandler struct {
 	shipRepo      navigation.ShipRepository
 	mediator      common.Mediator
 	marketScanner *ship.MarketScanner
-	clock         shared.Clock
+	// shipyardScanner piggybacks a shipyard scan on the SAME market visit
+	// (sp-42ow): no extra trips, no new tour legs. Nil-safe — a tour without
+	// one (tests, minimal wiring) simply skips shipyard scans.
+	shipyardScanner *ship.ShipyardScanner
+	clock           shared.Clock
 }
 
 // NewScoutTourHandler creates a new scout tour command handler. A nil clock
 // defaults to shared.NewRealClock() (sp-zixw), matching the sibling coordinator
-// handlers' constructor idiom.
+// handlers' constructor idiom. A nil shipyardScanner disables the piggybacked
+// shipyard scan (sp-42ow) without affecting market scanning.
 func NewScoutTourHandler(
 	shipRepo navigation.ShipRepository,
 	mediator common.Mediator,
 	marketScanner *ship.MarketScanner,
+	shipyardScanner *ship.ShipyardScanner,
 	clock shared.Clock,
 ) *ScoutTourHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &ScoutTourHandler{
-		shipRepo:      shipRepo,
-		mediator:      mediator,
-		marketScanner: marketScanner,
-		clock:         clock,
+		shipRepo:        shipRepo,
+		mediator:        mediator,
+		marketScanner:   marketScanner,
+		shipyardScanner: shipyardScanner,
+		clock:           clock,
 	}
 }
 
@@ -341,7 +348,29 @@ func (h *ScoutTourHandler) performInitialScan(
 		return err
 	}
 
+	h.scanShipyardAlongside(ctx, playerID, marketWaypoint, shipSymbol)
+
 	return nil
+}
+
+// scanShipyardAlongside piggybacks a shipyard scan on the SAME market visit
+// (sp-42ow): if the waypoint bears the SHIPYARD trait, its ship-type
+// availability + prices are persisted to the shipyard-inventory store. No
+// extra trips, no new tour legs — the scout is already here. Strictly
+// non-fatal: a shipyard failure is logged and the tour proceeds (the market
+// scan, the tour's primary duty, already succeeded).
+func (h *ScoutTourHandler) scanShipyardAlongside(ctx context.Context, playerID uint, marketWaypoint, shipSymbol string) {
+	if h.shipyardScanner == nil {
+		return
+	}
+	if err := h.shipyardScanner.ScanAndSaveShipyard(ctx, playerID, marketWaypoint); err != nil {
+		common.LoggerFromContext(ctx).Log("ERROR", "Shipyard scan failed (non-fatal to tour)", map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"action":      "scan_shipyard",
+			"waypoint":    marketWaypoint,
+			"error":       err.Error(),
+		})
+	}
 }
 
 // continuousMarketScanning runs a loop that scans the market on cmd.ScanInterval
@@ -389,6 +418,7 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 			})
 		} else {
 			response.MarketsVisited++
+			h.scanShipyardAlongside(ctx, uint(cmd.PlayerID.Value()), marketWaypoint, cmd.ShipSymbol)
 		}
 
 		response.Iterations++

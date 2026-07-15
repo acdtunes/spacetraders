@@ -121,6 +121,17 @@ const (
 	// The payload carries the class, ship type, price, and the demand arithmetic that justified it.
 	EventFleetAutosizerPurchase EventType = "fleet.autosizer_purchase"
 
+	// EventHeavyYardDiscovered fires ONCE per era when the scout tour's
+	// piggybacked shipyard scan (sp-42ow) first discovers a yard selling a
+	// heavy-freight hull ({SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER} by
+	// default, [scouting] heavy_ship_types to override). A fleet-strategy
+	// milestone, not an incident: the fleet autosizer's heavy branch fails
+	// closed for lack of exactly this signal, so its first appearance is news
+	// the captain acts on (arm heavies, size the trade fleet). DEFERRED class —
+	// it rides the next wake, never forces one. The payload carries the
+	// system, waypoint, and the heavy types + prices found.
+	EventHeavyYardDiscovered EventType = "shipyard.heavy_yard_discovered"
+
 	// EventPrometheusAlertFiring (sp-y0f6) fires once per Prometheus alertname
 	// found in the "firing" state on Prometheus's own /api/v1/alerts endpoint —
 	// EarnerDark, BurstSaturation, ApproachCeiling, StarvationWave (see

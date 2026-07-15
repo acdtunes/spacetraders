@@ -278,11 +278,14 @@ type ShipListingData struct {
 	Name          string
 	Description   string
 	PurchasePrice int
-	Frame         map[string]interface{}
-	Reactor       map[string]interface{}
-	Engine        map[string]interface{}
-	Modules       []map[string]interface{}
-	Mounts        []map[string]interface{}
+	// Supply is the listing's supply tier (e.g. HIGH/MODERATE/LOW) as reported
+	// by the shipyard API (sp-42ow) — persisted by the shipyard-inventory scan.
+	Supply  string
+	Frame   map[string]interface{}
+	Reactor map[string]interface{}
+	Engine  map[string]interface{}
+	Modules []map[string]interface{}
+	Mounts  []map[string]interface{}
 }
 
 type ShipPurchaseResult struct {
