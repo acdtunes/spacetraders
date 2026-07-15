@@ -894,6 +894,16 @@ func run(cfg *config.Config) error {
 	// extra DB connection or cache. nil (the pre-dp92 default) leaves the gauge unrecorded;
 	// this is pure OBSERVATION and never affects manning (RULINGS #4).
 	scoutPostCoordinatorHandler.SetMarketFreshnessProvider(marketRepo)
+	// sp-5les manning watchdog: wire the SAME SystemsFreshness census the freshness sizer
+	// (sp-iupr) reconciles against, so the watchdog re-mans a fully-manned-but-silent standing
+	// post the sizer stopped hoarding probes for — detected via the census's worst-case market
+	// age breaching the post's freshness target without advancing. nil disables the watchdog
+	// (pre-5les behavior); it never affects manning when unwired.
+	scoutPostCoordinatorHandler.SetSystemFreshnessReader(marketRepo)
+	// sp-5les: the watchdog's manning_stall_* knobs are live-tunable — snapshot this
+	// container's own persisted config each tick (the SAME reader the freshness sizer uses) so a
+	// `spacetraders tune scoutpost ...` lands on the next tick with no restart.
+	scoutPostCoordinatorHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)

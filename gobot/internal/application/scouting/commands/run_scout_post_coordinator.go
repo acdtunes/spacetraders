@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	shipqueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -119,6 +120,23 @@ const (
 	// heavy-hull cap (gategraph.MaxJumpPath=5) is deliberately NOT raised — only the probe
 	// reposition class, which routes past unreadable frontier gates, reaches this far.
 	defaultMaxRepositionJumps = 12
+
+	// defaultManningStallCycles and defaultManningStallCorrectionCap bound the sp-5les
+	// manning watchdog when the launch/live config leaves them unset (RULINGS #5). The
+	// watchdog re-mans a standing post that reads IsFullyManned() yet has produced no new
+	// scan telemetry — its worst-case market age (the SystemsFreshness census's
+	// OldestAgeSeconds) breaches the post's OWN freshness target WITHOUT improving for this
+	// many CONSECUTIVE reconcile cycles (the tour is wedged: its container may read RUNNING
+	// while its hull no longer scans, invisible to pass 1). 4 cycles (~2 min at the 30s
+	// cadence) debounces a transient census blip above the SLA line from a genuine silent
+	// stall; a smaller value would risk churning a post that is only briefly over its target
+	// between scans. defaultManningStallCorrectionCap bounds how many times the watchdog
+	// re-mans one post before it BACKS OFF (the corrective tear-down is not restoring
+	// telemetry — a genuinely unreachable market — so it stops churning the tour and lets the
+	// persisted captain event carry the post to the operator), mirroring the sp-py4n
+	// respawn-attempt cap's "stop fighting a persistent failure" philosophy.
+	defaultManningStallCycles        = 4
+	defaultManningStallCorrectionCap = 3
 )
 
 // RunScoutPostCoordinatorCommand launches the standing scout-post coordinator for
@@ -201,6 +219,18 @@ type RunScoutPostCoordinatorCommand struct {
 	// the cap is on. RULINGS #5 disable escape so a captain can lift it without a redeploy;
 	// not expected to be set in normal operation.
 	RespawnCapDisabled bool
+
+	// ManningStallCycles and ManningStallCorrectionCap tune the sp-5les manning watchdog
+	// (RULINGS #5, LIVE-tunable via SetLiveConfigReader): the number of CONSECUTIVE reconcile
+	// cycles a fully-manned standing post must breach its freshness target without its
+	// worst-case market age improving before the watchdog re-mans it, and the number of
+	// re-mans of one post before the watchdog backs off (leaving the captain event to carry
+	// it). <= 0 uses the coordinator's own defaults, mirroring TickIntervalSecs. Both are
+	// registered in the daemon tune bounds registry as manning_stall_cycles /
+	// manning_stall_correction_cap and read from the live config snapshot each tick, so a
+	// `spacetraders tune` lands on the NEXT tick with no restart.
+	ManningStallCycles        int
+	ManningStallCorrectionCap int
 }
 
 // RunScoutPostCoordinatorResponse reports reconcile progress. Because the loop is
@@ -372,8 +402,39 @@ type RunScoutPostCoordinatorHandler struct {
 	// and dedups it via HasSince. Optional (SetEventStore): nil leaves the warning off
 	// entirely — every pre-k7q5 caller/test that never wires it behaves exactly as
 	// before, and the coordinator's manning/reconcile behavior is untouched. It is a
-	// pure OBSERVATION seam: a store error never aborts a reconcile pass.
+	// pure OBSERVATION seam: a store error never aborts a reconcile pass. The sp-5les
+	// manning watchdog reuses it for the scout.post_manning_stalled event.
 	eventStore captain.EventStore
+
+	// systemFreshnessReader supplies the sp-5les manning watchdog's per-system census —
+	// OldestAgeSeconds (worst-case market staleness) + MarketCount + CycleSamples — the SAME
+	// SystemsFreshness port the market-freshness sizer (sp-iupr/sp-orgp) reconciles against,
+	// so the watchdog and the sizer judge a post against ONE consistent census. nil disables
+	// the watchdog entirely (optional-injection, like SetGateGraph): every pre-5les
+	// caller/test that never wires it behaves exactly as before.
+	systemFreshnessReader domainScouting.SystemFreshnessReader
+
+	// liveConfig snapshots this container's OWN persisted config at each tick (sp-vwek), so
+	// the sp-5les watchdog's manning_stall_* knobs honor `spacetraders tune` on the NEXT tick
+	// with no restart — the same seam the freshness sizer uses. Optional-injection: nil keeps
+	// those knobs launch-frozen (read straight from the command), so every pre-5les
+	// caller/test is byte-identical.
+	liveConfig liveconfig.Reader
+
+	// stall* back the sp-5les manning watchdog's in-memory, per-post (driftKey shape)
+	// debounce, mirroring driftPendingSince: stallLastAgeSeconds is last tick's
+	// OldestAgeSeconds (to detect an IMPROVEMENT — a re-scan pulling the worst-case age back,
+	// i.e. telemetry advancing — versus a frozen climb); stallCycles is the consecutive
+	// breach-without-improvement count (the N-cycle debounce); stallCorrections is how many
+	// re-mans this post has already had (the K failed-correction backoff). All reset on
+	// restart: a lost baseline only re-earns the debounce, never a spurious teardown — a post
+	// under its SLA never populates these maps — mirroring driftPendingSince's
+	// restart-conservative rationale. Guarded by stallMu for the same singleton-handler
+	// concurrency reason as driftMu.
+	stallMu             sync.Mutex
+	stallLastAgeSeconds map[string]float64
+	stallCycles         map[string]int
+	stallCorrections    map[string]int
 }
 
 // NewRunScoutPostCoordinatorHandler wires the coordinator. clock defaults to the
@@ -405,6 +466,9 @@ func NewRunScoutPostCoordinatorHandler(
 		driftPendingSince:            make(map[string]time.Time),
 		singleHullMarketSnapshot:     make(map[string][]string),
 		singleHullDriftPendingSince:  make(map[string]time.Time),
+		stallLastAgeSeconds:          make(map[string]float64),
+		stallCycles:                  make(map[string]int),
+		stallCorrections:             make(map[string]int),
 	}
 }
 
@@ -452,6 +516,23 @@ func (h *RunScoutPostCoordinatorHandler) SetEventStore(s captain.EventStore) {
 // never wires it behaves exactly as before.
 func (h *RunScoutPostCoordinatorHandler) SetMarketFreshnessProvider(p MarketFreshnessProvider) {
 	h.marketFreshnessProvider = p
+}
+
+// SetSystemFreshnessReader wires the sp-5les manning watchdog's per-system freshness census
+// (SystemsFreshness). The daemon injects the SAME GORM market repository the freshness sizer
+// reconciles against, so the watchdog and the sizer see one consistent census. Optional-injection
+// (like SetGateGraph): nil (the default) disables the watchdog, so every pre-5les caller/test
+// that never wires it behaves exactly as before.
+func (h *RunScoutPostCoordinatorHandler) SetSystemFreshnessReader(r domainScouting.SystemFreshnessReader) {
+	h.systemFreshnessReader = r
+}
+
+// SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek) so the sp-5les
+// watchdog's manning_stall_* knobs honor `spacetraders tune` on the next tick. The daemon injects
+// the SAME container-config-backed reader the freshness sizer uses. Optional-injection: nil (the
+// default) leaves those knobs launch-frozen (read from the command), byte-identical to pre-5les.
+func (h *RunScoutPostCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
+	h.liveConfig = r
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -657,6 +738,13 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.ensurePartitions(ctx, cmd, post)
 		h.ensureSingleHullFreshness(ctx, cmd, post)
 	}
+
+	// sp-5les manning watchdog: re-man a standing post that reads IsFullyManned() yet has gone
+	// silent (its worst-case market age has breached its freshness target without improving for
+	// N consecutive cycles). It runs AFTER the partition / single-hull-freshness teardowns and
+	// BEFORE the manning passes, so a torn-down stalled post is re-manned this SAME tick — the
+	// exact seam ensureSingleHullFreshness uses. A no-op when no census reader is wired.
+	h.remanStalledPosts(ctx, cmd, posts)
 
 	// Pass 1: manned slots.
 	for _, post := range posts {
@@ -935,6 +1023,242 @@ func (h *RunScoutPostCoordinatorHandler) recordScoutFreshness(ctx context.Contex
 		}
 		metrics.RecordScoutFreshness(playerID, post.SystemSymbol, age)
 	}
+}
+
+// ScoutPostTunableDefaults maps every LIVE-tunable scout-post-coordinator knob (sp-5les) to
+// its documented default — the value that applies when neither the live container config nor
+// the launch command carries a positive one. The daemon's tune bounds registry reads THIS map
+// (mirroring SizerTunableDefaults), so the defaults-of-record stay in this file next to the
+// consts they mirror, and the map's KEY SET is the contract for which keys the watchdog
+// live-overlays per tick (resolveManningStallConfig).
+func ScoutPostTunableDefaults() map[string]int {
+	return map[string]int{
+		"manning_stall_cycles":         defaultManningStallCycles,
+		"manning_stall_correction_cap": defaultManningStallCorrectionCap,
+	}
+}
+
+// resolveManningStallConfig resolves the sp-5les watchdog's two knobs for one tick. live is
+// the tick-start snapshot of the container's persisted config (nil when the reader is unwired
+// or the read failed — the tick then runs on the launch command, the fail-safe launch
+// behavior). For these TUNABLE knobs a non-nil snapshot is AUTHORITATIVE (launch values share
+// the same config column, so an untuned knob still reads its launch value here); a
+// zeroed/absent key falls to the documented default — the `tune <key> 0` revert. Mirrors
+// resolveSizerConfig's live-overlay + the <= 0 → default idiom this file uses everywhere.
+func resolveManningStallConfig(cmd *RunScoutPostCoordinatorCommand, live liveconfig.Snapshot) (cycles, correctionCap int) {
+	cycles = cmd.ManningStallCycles
+	correctionCap = cmd.ManningStallCorrectionCap
+	if live != nil {
+		cycles = live.PositiveIntOrZero("manning_stall_cycles")
+		correctionCap = live.PositiveIntOrZero("manning_stall_correction_cap")
+	}
+	if cycles <= 0 {
+		cycles = defaultManningStallCycles
+	}
+	if correctionCap <= 0 {
+		correctionCap = defaultManningStallCorrectionCap
+	}
+	return cycles, correctionCap
+}
+
+// liveConfigSnapshot takes the tick's live-config snapshot for the sp-5les watchdog (sp-vwek).
+// A nil reader (not wired — tests, minimal boots) or a read error yields nil, which
+// resolveManningStallConfig treats as "run this tick on the launch command" — the fail-safe
+// launch behavior, never a half-applied config. The read is logged, not fatal: a transient DB
+// gap must never kill the reconcile loop or churn a tour.
+func (h *RunScoutPostCoordinatorHandler) liveConfigSnapshot(ctx context.Context, cmd *RunScoutPostCoordinatorCommand) liveconfig.Snapshot {
+	if h.liveConfig == nil {
+		return nil
+	}
+	snap, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID.Value())
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Scout post live config unreadable — this tick's watchdog knobs run on launch values: %v", err), nil)
+		return nil
+	}
+	return snap
+}
+
+// remanStalledPosts is the sp-5les manning watchdog: it re-mans a standing post that reads
+// IsFullyManned() yet has produced NO new scan telemetry for N consecutive reconcile cycles —
+// the silent-post gap the freshness sizer (sp-iupr) stopped hoarding probes for but nothing
+// re-manned. The signal is the SystemsFreshness census's OldestAgeSeconds (worst-case market
+// staleness): a fully-manned post whose worst-case age BREACHES its own FreshnessTarget and is
+// NOT improving (no re-scan pulling it back — telemetry is not advancing) for N cycles has a
+// wedged tour whose container may read RUNNING while its hull no longer scans, invisible to
+// pass 1. The FreshnessTarget breach gate is what keeps a healthy, correctly-sized post (whose
+// worst-case age stays within its own contract and improves each per-market scan) OUT of the
+// watchdog's sights, so the short N-cycle debounce is a debounce, not the whole false-positive
+// guard; the improvement check additionally spares a post that is over its SLA but already
+// RECOVERING on its own.
+//
+// The corrective action REUSES tearDownSlots (the sp-tzqv single-hull-freshness teardown): stop
+// the wedged tour, reclaim the hull, clear the slot so THIS SAME tick's passes re-man it fresh —
+// a different idle in-system hull if one is free, else the reclaimed hull on a fresh tour
+// container. It never repositions an in-system hull or reinvents claiming.
+//
+// Anti-thrash: after each re-man the consecutive-cycle counter resets, so the next re-man is at
+// least N cycles away (never every tick); and after ManningStallCorrectionCap re-mans that did
+// not restore telemetry the watchdog BACKS OFF — it keeps emitting the deferred
+// scout.post_manning_stalled event (so the stuck post stays VISIBLE) but stops churning a tour a
+// genuinely unreachable market will only wedge again. Scope: standing, fully-manned posts with a
+// positive freshness target and a census entry; an under-manned/unmanned post is the sizer's /
+// normal manning's job and is explicitly left alone (forgetManningStall).
+//
+// Optional-injection: no census reader wired (nil) makes this a no-op, so every pre-5les
+// caller/test is byte-identical. A census read error is logged and swallowed — a metrics gap
+// must never abort a reconcile or tear down a tour on no evidence.
+func (h *RunScoutPostCoordinatorHandler) remanStalledPosts(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, posts []*domainScouting.ScoutPost) {
+	if h.systemFreshnessReader == nil {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+	snapshots, err := h.systemFreshnessReader.SystemsFreshness(ctx, cmd.PlayerID.Value())
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Manning watchdog: failed to read the freshness census: %v — skipping this tick", err), nil)
+		return
+	}
+	census := make(map[string]domainScouting.SystemFreshnessSnapshot, len(snapshots))
+	for _, snap := range snapshots {
+		census[snap.SystemSymbol] = snap
+	}
+	stallCycles, correctionCap := resolveManningStallConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
+
+	for _, post := range posts {
+		key := driftKey(cmd.PlayerID.Value(), post.SystemSymbol)
+
+		// Scope: only a standing, FULLY-manned post with a freshness contract to breach. An
+		// under-manned/unmanned post (or a sweep-once) is normal manning's / the sizer's job.
+		if post.Kind != domainScouting.PostKindStanding || !post.IsFullyManned() || post.FreshnessTarget <= 0 {
+			h.forgetManningStall(key)
+			continue
+		}
+		snap, ok := census[post.SystemSymbol]
+		if !ok || snap.MarketCount <= 0 {
+			h.forgetManningStall(key) // no census for this system yet — nothing to judge against
+			continue
+		}
+		if !h.manningStallBreaching(key, snap.OldestAgeSeconds, post.FreshnessTarget) {
+			continue // within its freshness contract, or worst-case age is improving (advancing)
+		}
+		if h.noteManningStallCycle(key) < stallCycles {
+			continue // debounce: still below the N consecutive-cycle threshold
+		}
+		h.resetManningStallCycle(key) // rate-limit: the next re-man is another N cycles away
+		attempts := h.manningStallCorrections(key)
+		h.emitManningStalled(ctx, cmd, post, snap, stallCycles, attempts, correctionCap)
+		if attempts >= correctionCap {
+			continue // backed off — the event carries it, no more tour churn on an unreachable market
+		}
+		h.tearDownSlots(ctx, cmd, post)
+		if err := h.postRepo.Upsert(ctx, post); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Manning watchdog re-manned post %s but failed to persist the teardown: %v", post.SystemSymbol, err), nil)
+		}
+		h.bumpManningStallCorrections(key)
+	}
+}
+
+// manningStallBreaching records this tick's worst-case age for a post and reports whether it is
+// a STALL cycle (sp-5les): the age BREACHES the post's freshness target AND did not IMPROVE
+// (drop) since last tick. A within-target or improving age is not a stall — it clears the post's
+// debounce (both the consecutive-cycle count and the correction backoff), so the watchdog only
+// ever fires on a sustained, non-recovering breach. The age baseline is always refreshed so the
+// next tick can detect an improvement; the counters, not the baseline, are cleared on the
+// healthy path (keeping the baseline avoids a first-observation flicker between clear and note).
+func (h *RunScoutPostCoordinatorHandler) manningStallBreaching(key string, ageSeconds float64, target time.Duration) bool {
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	if h.stallLastAgeSeconds == nil {
+		h.stallLastAgeSeconds = make(map[string]float64)
+	}
+	prev, hadPrev := h.stallLastAgeSeconds[key]
+	h.stallLastAgeSeconds[key] = ageSeconds
+	improving := hadPrev && ageSeconds < prev
+	if ageSeconds <= target.Seconds() || improving {
+		delete(h.stallCycles, key)
+		delete(h.stallCorrections, key)
+		return false
+	}
+	return true
+}
+
+// noteManningStallCycle increments and returns a post's consecutive stall-cycle count (sp-5les):
+// the debounce that requires N cycles of unbroken, non-improving SLA breach before a re-man.
+func (h *RunScoutPostCoordinatorHandler) noteManningStallCycle(key string) int {
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	if h.stallCycles == nil {
+		h.stallCycles = make(map[string]int)
+	}
+	h.stallCycles[key]++
+	return h.stallCycles[key]
+}
+
+// resetManningStallCycle clears only a post's consecutive-cycle count after a re-man fires
+// (sp-5les), so the next re-man must re-earn the full N-cycle window — paces corrections at one
+// per window (anti-thrash). The correction count and age baseline are deliberately kept.
+func (h *RunScoutPostCoordinatorHandler) resetManningStallCycle(key string) {
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	delete(h.stallCycles, key)
+}
+
+// manningStallCorrections returns how many times the watchdog has already re-manned a post in
+// the current stall episode (sp-5les) — the failed-correction backoff counter.
+func (h *RunScoutPostCoordinatorHandler) manningStallCorrections(key string) int {
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	return h.stallCorrections[key]
+}
+
+// bumpManningStallCorrections records one more re-man of a post (sp-5les); once this reaches the
+// correction cap the watchdog backs off to the event only.
+func (h *RunScoutPostCoordinatorHandler) bumpManningStallCorrections(key string) {
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	if h.stallCorrections == nil {
+		h.stallCorrections = make(map[string]int)
+	}
+	h.stallCorrections[key]++
+}
+
+// forgetManningStall drops a post's entire stall episode (sp-5les) — its age baseline, cycle
+// count, and correction count — when it falls out of the watchdog's scope (no longer standing,
+// no longer fully manned, or no census). A later re-entry starts a fresh episode.
+func (h *RunScoutPostCoordinatorHandler) forgetManningStall(key string) {
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	delete(h.stallLastAgeSeconds, key)
+	delete(h.stallCycles, key)
+	delete(h.stallCorrections, key)
+}
+
+// emitManningStalled records the DEFERRED scout.post_manning_stalled captain event for a stalled
+// post (sp-5les) and logs it, so a silent fully-manned post is VISIBLE rather than quietly stale
+// — and stays visible after the watchdog has backed off (backedOff carries that state). Mirrors
+// warnUndersizedPosts' event idiom; a nil event store (unwired) is a no-op, so the re-man still
+// happens without observability wired.
+func (h *RunScoutPostCoordinatorHandler) emitManningStalled(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost, snap domainScouting.SystemFreshnessSnapshot, stallCycles, attempts, correctionCap int) {
+	backedOff := attempts >= correctionCap
+	if h.eventStore != nil {
+		_ = h.eventStore.Record(ctx, &captain.Event{
+			Type: captain.EventScoutPostManningStalled, Ship: post.SystemSymbol, PlayerID: cmd.PlayerID.Value(),
+			Payload: fmt.Sprintf(`{"system":%q,"markets":%d,"hulls":%d,"oldest_age_secs":%d,"freshness_secs":%d,"stall_cycles":%d,"cycle_samples":%d,"corrections":%d,"backed_off":%t}`,
+				post.SystemSymbol, snap.MarketCount, post.HullBudget(), int(snap.OldestAgeSeconds), int(post.FreshnessTarget.Seconds()), stallCycles, snap.CycleSamples, attempts, backedOff),
+		})
+	}
+	action := "scout_post_manning_stalled"
+	verb := "re-manning it"
+	if backedOff {
+		verb = "backing off — the tour keeps going silent on a likely-unreachable market; needs operator attention"
+	}
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Scout post %s fully manned but silent: worst-case market age %ds past its %s freshness target, no new telemetry for %d cycles — %s", post.SystemSymbol, int(snap.OldestAgeSeconds), post.FreshnessTarget.Round(time.Second), stallCycles, verb), map[string]interface{}{
+		"action":          action,
+		"system_symbol":   post.SystemSymbol,
+		"oldest_age_secs": int(snap.OldestAgeSeconds),
+		"stall_cycles":    stallCycles,
+		"corrections":     attempts,
+		"backed_off":      backedOff,
+	})
 }
 
 // reconcileMannedSlots runs pass 1 over one post's slots. It returns true when the

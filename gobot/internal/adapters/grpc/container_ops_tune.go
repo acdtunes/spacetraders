@@ -63,11 +63,13 @@ type TuneShowOutcome struct {
 var tuneOperationCoordinatorTypes = map[string]string{
 	"freshsizer": string(container.ContainerTypeMarketFreshnessSizer),
 	"frontier":   string(container.ContainerTypeFrontierExpansion),
+	"scoutpost":  string(container.ContainerTypeScoutPostCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	sizer := scoutingCmd.SizerTunableDefaults()
 	frontier := expansionCmd.FrontierTunableDefaults()
+	scoutPost := scoutingCmd.ScoutPostTunableDefaults()
 	return map[string]map[string]TuneBound{
 		string(container.ContainerTypeMarketFreshnessSizer): {
 			"max_spend_per_cycle":        {Type: "int", Min: 0, Max: 5_000_000, Default: sizer["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
@@ -85,6 +87,10 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"max_spend_per_cycle":    {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
 			"purchase_cooldown_secs": {Type: "int", Min: 10, Max: 86_400, Default: frontier["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
 			"max_probe_fleet":        {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
+		},
+		string(container.ContainerTypeScoutPostCoordinator): {
+			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},
+			"manning_stall_correction_cap": {Type: "int", Min: 1, Max: 100, Default: scoutPost["manning_stall_correction_cap"], Unit: "corrections", Description: "re-mans of one silent post before the watchdog backs off to the captain event"},
 		},
 	}
 }

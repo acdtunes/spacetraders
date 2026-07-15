@@ -116,6 +116,26 @@ const (
 	// so a rich system is not under-provisioned the way XT71/UQ87 were.
 	EventScoutPostProposal EventType = "scout.post_proposal"
 
+	// EventScoutPostManningStalled fires when the scout-post manning watchdog
+	// (sp-5les) finds a standing post that reads IsFullyManned() yet has produced
+	// NO new scan telemetry: its worst-case market age (the SystemsFreshness
+	// census's OldestAgeSeconds) has breached the post's OWN freshness target
+	// without improving for N consecutive reconcile cycles, so its tour is wedged
+	// (the container may read RUNNING while the hull no longer scans — invisible to
+	// the reconciler, whose only health signal is container liveness). It is the
+	// manning-loop complement of the freshness sizer's sp-iupr fix: the sizer
+	// stopped HOARDING probes for such a silent post, and this watchdog RE-MANS it
+	// (tears the wedged tour down so the reconciler re-mans it fresh). Once the
+	// watchdog has re-manned to its correction cap without telemetry recovering it
+	// BACKS OFF — it keeps emitting this event so the stuck post stays visible, but
+	// stops churning a tour a genuinely unreachable market will only wedge again.
+	// DEFERRED class (NOT in DefaultInterruptTypes): a silent post is a "reconsider
+	// next wake" freshness signal, hours-scale, never worth forcing a wake. The
+	// payload carries the market count, worst-case age, freshness target, the
+	// stall-cycle count, the measured cycle-sample count, the corrections taken, and
+	// whether the watchdog has backed off.
+	EventScoutPostManningStalled EventType = "scout.post_manning_stalled"
+
 	// EventFleetAutosizerPurchase fires when the fleet capacity autosizer (sp-1txd) buys a hull —
 	// a purchase is real news (a treasury-moving action the captain must be able to see and audit).
 	// The payload carries the class, ship type, price, and the demand arithmetic that justified it.

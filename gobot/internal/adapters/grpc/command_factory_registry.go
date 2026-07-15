@@ -590,6 +590,8 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		CoverageSpreadDisabled:        cfg.OptionalBool("coverage_spread_disabled"),
 		RespawnAttemptCap:             cfg.OptionalInt("respawn_attempt_cap", 0),
 		RespawnCapDisabled:            cfg.OptionalBool("respawn_cap_disabled"),
+		ManningStallCycles:            cfg.OptionalInt("manning_stall_cycles", 0),
+		ManningStallCorrectionCap:     cfg.OptionalInt("manning_stall_correction_cap", 0),
 	}
 }
 
