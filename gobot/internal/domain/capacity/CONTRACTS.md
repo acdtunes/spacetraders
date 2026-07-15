@@ -58,6 +58,28 @@ CONVERGE backstops (structural, independent of governor correctness):
 - `DesiredTopology{Hubs []DesiredHub}` + `IsEmpty()` — the PLAN output; empty = want nothing.
 - `DesiredHub{HubSymbol, BufferedGoods []DesiredBufferedGood, WarehouseCount, StockerCount, WorkerCount, WarehouseWaypoint, StockerWaypoint, WorkerWaypoint}`; `DesiredBufferedGood{Good, UnitsCap}`. Positions default to the hub when empty; `StockerWaypoint` is the roaming stockers' home/anchor.
 
+**Planner coverage-gate semantics (st-hlw; st-zr0 + st-x00 build to these)**
+- **Keep-vs-add split**: the absorption ceiling (`Economics.FleetPerHullCrHr`) gates only NEW
+  coverage — hubs with no live cluster (≥1 hull) in `TopologySignals`. Hubs ALREADY covered
+  stay in `DesiredTopology` while their marginal hull clears the universal floor
+  (`Calibration.AddThresholdPerHullCrHr`), so a high fleet-wide average (it blends arb/mining
+  hulls) never erases a producing hub — erasure would stop gap-healing and present the hub's
+  capacity to DIFF as surplus for tier-1/2 reassignment. Shrink is intact: a covered hub
+  below the universal floor drops out of desired.
+- **Cold-start floor**: `AddThresholdPerHullCrHr` 0 (the uncalibrated default) resolves to the
+  planner's documented cold-start floor (500 cr/hr, heuristic_planner.go) — same
+  zero-resolves-to-planner-default pattern as the stocker budget — so a fleet with no history
+  plans conservatively instead of covering every paying hub. An explicit non-zero calibration
+  overrides it.
+- **Until = stop**: the ranked ADD walk stops at the FIRST uncovered hub below the add gate
+  (spec: "cover the top hubs until..."); a leaner lower-ranked uncovered hub behind the
+  failure is NOT added even if its own marginal would clear. Covered hubs behind the stop are
+  still keep-gated individually.
+- **Count sanity ceilings**: worker/stocker counts are clamped per hub (12 / 6,
+  heuristic_planner.go) so pathological telemetry (wedged 200h measured cycles, spurious
+  good-frequency) cannot emit an effectively-unbounded desired topology; warehouses are
+  already bounded by the stocker-capacity budget. The coverage gate judges the clamped plan.
+
 **action.go** (differ st-zr0 emits; governor st-x00 + actuator st-5ig consume)
 - `Tier` (int enum): `TierReuseIdle`=1, `TierRebalance`=2, `TierBufferAdjust`=3, `TierCapital`=4; `Autonomous()` (1–3 true), `RequiresApproval()` (4 true), `String()`.
 - `ActionVerb` consts: `VerbReassignHull`(1), `VerbRepositionHull`/`VerbRebalanceWorkers`(2), `VerbAdjustBufferWhitelist`/`VerbAdjustBufferCap`(3), `VerbAddCluster`/`VerbBuyHull`(4).

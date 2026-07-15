@@ -1076,7 +1076,7 @@ func run(cfg *config.Config) error {
 	// captain/DISABLED kill switch is the watchkeeper Workspace over the SAME workspace dir
 	// the supervisor polls, re-read at the top of every tick.
 	capacityReconcilerHandler := capacityCmd.NewRunCapacityReconcilerCoordinatorHandler(
-		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient)), capacity.NoOpPlanner{}),
+		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient)), capacity.NewHeuristicPlanner()), // st-7ee SENSE + st-hlw PLAN
 		capacity.NoOpDiffer{},
 		capacity.NoOpGovernor{},
 		capacity.NoOpActuator{},
