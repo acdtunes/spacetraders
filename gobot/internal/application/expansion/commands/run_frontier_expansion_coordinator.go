@@ -114,6 +114,17 @@ type ExpansionCandidate struct {
 	Hops         int
 	KnownMarkets int
 	Charted      bool
+
+	// Scanned reports whether the system's FULL waypoint set has been SWEPT (persisted),
+	// as distinct from Charted (merely gate-reachable). market_data rows exist ONLY for
+	// systems that HAVE a market, so KnownMarkets==0 alone cannot tell a genuinely-barren
+	// system (swept, no marketplace anywhere) from a never-scanned one (markets simply
+	// undiscovered). Scanned supplies that missing distinction (sp-gb7h): a Scanned system
+	// with KnownMarkets==0 is genuinely marketless and buildExpansionQueue DROPS it (its
+	// markets were looked for and none exist — re-scouting it every cycle is waste); a
+	// !Scanned system stays a scout target. The scanner derives it from the waypoint
+	// catalog — a persisted non-gate waypoint proves a real sweep (adapters.go).
+	Scanned bool
 }
 
 // ExpansionScanner enumerates the frontier the coordinator ranks. It hides the whole
@@ -626,6 +637,20 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildExpansionQueue(
 			// in-system-coverable slot spuriously inflates buy demand (the over-buy). Skip
 			// it: expansion targets systems we do NOT yet occupy, so fresh probes stay idle
 			// and claimable for the gate-jump relay.
+			continue
+		}
+		if c.Scanned && c.KnownMarkets == 0 {
+			// sp-gb7h: a scanned-and-genuinely-marketless system is unserviceable — DROP it.
+			// Its full waypoint set WAS swept (Scanned) and holds no marketplace anywhere
+			// (KnownMarkets==0), so its markets were looked for and none exist. Re-declaring
+			// it only re-scouts a barren system every cycle (declare → sweep-once → no market
+			// found → post retired → re-declare), the waste sp-dc50's gap-2 shortcut left
+			// behind when it removed the charted-marketless skip ENTIRELY. Note this keys on
+			// SWEEP knowledge (Scanned), NOT gate-edge presence (Charted) — the exact
+			// conflation that froze the frontier: a !Scanned system (never swept) below is
+			// still KEPT as a scout target, since a persisted gate edge means we can REACH the
+			// system, not that its markets were ever scanned (sp-dc50 gap 2). A system with
+			// known markets (KnownMarkets>0) is never dropped here regardless of Scanned.
 			continue
 		}
 		virgin := !c.Charted

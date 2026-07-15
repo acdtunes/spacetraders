@@ -942,10 +942,12 @@ func run(cfg *config.Config) error {
 	// no poach), and lands the probe undedicated for the reconciler to relay.
 	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo))
 	// The expansion queue's frontier enumerator: one BFS over the SAME persisted gate graph
-	// the trade circuit and scout relays share, annotated with market-data counts. nil would
-	// leave the coordinator serving only unmanned-slot demand.
+	// the trade circuit and scout relays share, annotated with market-data counts and a
+	// swept/never-scanned flag from the waypoint catalog (sp-gb7h — so a genuinely-barren
+	// scanned system stops being re-scouted). nil would leave the coordinator serving only
+	// unmanned-slot demand.
 	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
-		gateGraphService, marketRepoAdapter, shipRepo, playerRepo,
+		gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo,
 	))
 	frontierExpansionHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {

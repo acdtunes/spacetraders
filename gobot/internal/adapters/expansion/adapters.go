@@ -181,17 +181,28 @@ type GateGraph interface {
 	Connections(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error)
 }
 
+// WaypointCatalog is the narrow slice of system.WaypointRepository the scanner reads to decide
+// whether a system's full waypoint set was SWEPT (sp-gb7h). ListBySystem returns the persisted
+// waypoint rows for a system — non-empty (with real bodies) only after a sweep persisted them
+// via BuildSystemGraph. Narrowing to the one method keeps the port intent-revealing and the
+// scanned-discriminator trivially fakeable.
+type WaypointCatalog interface {
+	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
+}
+
 // ExpansionScanner enumerates the gate-reachable frontier for the coordinator's queue.
 // It runs one multi-source BFS over the persisted gate adjacency from the anchor set
 // (HQ + the systems the fleet currently occupies), bounded by maxHops, and annotates
-// each reached system with its known-market count and a charted flag. Charted-only
-// reachability: virgin systems surface as edge targets of a charted neighbor (a probe
-// relayed there charts it on arrival, nn0y).
+// each reached system with its known-market count, a charted flag, and a scanned flag
+// (whether its full waypoint set was swept — sp-gb7h). Charted-only reachability: virgin
+// systems surface as edge targets of a charted neighbor (a probe relayed there charts it
+// on arrival, nn0y).
 type ExpansionScanner struct {
-	gateGraph  GateGraph
-	marketRepo market.MarketRepository
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
+	gateGraph    GateGraph
+	marketRepo   market.MarketRepository
+	shipRepo     navigation.ShipRepository
+	playerRepo   player.PlayerRepository
+	waypointRepo WaypointCatalog
 }
 
 // NewExpansionScanner wires the frontier enumerator.
@@ -200,12 +211,14 @@ func NewExpansionScanner(
 	marketRepo market.MarketRepository,
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
+	waypointRepo WaypointCatalog,
 ) *ExpansionScanner {
 	return &ExpansionScanner{
-		gateGraph:  gateGraph,
-		marketRepo: marketRepo,
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
+		gateGraph:    gateGraph,
+		marketRepo:   marketRepo,
+		shipRepo:     shipRepo,
+		playerRepo:   playerRepo,
+		waypointRepo: waypointRepo,
 	}
 }
 
@@ -241,6 +254,7 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 			Hops:         h,
 			KnownMarkets: marketCount,
 			Charted:      charted,
+			Scanned:      s.systemScanned(ctx, sys),
 		})
 	}
 	return candidates, nil
@@ -277,6 +291,21 @@ func (s *ExpansionScanner) knownMarketCount(ctx context.Context, playerID int, s
 	return len(markets)
 }
 
+// systemScanned reports whether a system's FULL waypoint set has been SWEPT — the sp-gb7h signal
+// distinct from KnownMarkets (market_data rows exist only for systems that HAVE a market, so it
+// cannot tell a swept-but-barren system from a never-scanned one) and from Charted (a gate edge
+// means reachable, not swept). It reads the persisted waypoint catalog and asks hasNonGateWaypoint
+// whether a real body was recorded (a sweep persists the whole set via BuildSystemGraph; gate
+// charting persists edges, not waypoints). An unreadable catalog fails SAFE to not-scanned: the
+// system stays a scout target rather than being wrongly dropped as barren.
+func (s *ExpansionScanner) systemScanned(ctx context.Context, systemSymbol string) bool {
+	waypoints, err := s.waypointRepo.ListBySystem(ctx, systemSymbol)
+	if err != nil {
+		return false
+	}
+	return hasNonGateWaypoint(waypoints)
+}
+
 // growReachableFrontierGates charts+persists the jump-gate edges of covered frontier systems
 // so the reachability graph grows one ring per cycle (sp-dc50). It supplies growFrontierGraph
 // with the two live collaborators: a charted-predicate (a system a probe has SWEPT has known
@@ -290,6 +319,27 @@ func (s *ExpansionScanner) growReachableFrontierGates(ctx context.Context, playe
 			return s.gateGraph.Connections(ctx, systemSymbol, playerID)
 		},
 	)
+}
+
+// hasNonGateWaypoint reports whether a system's persisted waypoint rows prove its FULL set was
+// actually SWEPT, as opposed to merely gate-charted (sp-gb7h). It is true iff at least one
+// persisted waypoint is NOT a jump gate. The ONLY writer of waypoint rows is BuildSystemGraph
+// (graph_builder.go), which persists a system's ENTIRE paginated waypoint list — planets, moons,
+// asteroids, the gate — the moment a probe sweeps it; gate-charting persists jump-gate EDGES to
+// the gate_edges table (gategraph Service.fetchAndStore → store.Replace), never a waypoints row.
+// So a persisted non-gate waypoint is proof of a real sweep, whereas a never-swept system has no
+// such row. Requiring a NON-gate row (not merely "≥1 row") is deliberate: even if a lone
+// jump-gate row were ever persisted, a gate-only-charted system must still read as NOT scanned so
+// it stays a scout target — the exact discriminator the bead's "full waypoint set was swept, NOT
+// ≥1 row exists" warning demands. It is pure over its input (a resolved waypoint list), so the
+// discriminator is unit-testable with no store, mirroring bfsHops/growFrontierGraph.
+func hasNonGateWaypoint(waypoints []*shared.Waypoint) bool {
+	for _, waypoint := range waypoints {
+		if !waypoint.IsJumpGate() {
+			return true
+		}
+	}
+	return false
 }
 
 // bfsHops runs a multi-source BFS over the gate adjacency from the anchor set, returning

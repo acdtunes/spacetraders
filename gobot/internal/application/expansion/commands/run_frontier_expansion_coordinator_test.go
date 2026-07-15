@@ -264,14 +264,16 @@ func TestFrontier_CoveredSystemExcludedFromQueue(t *testing.T) {
 	require.Equal(t, "X1-MID", pr.upserts[0].SystemSymbol, "the covered X1-HIGH is skipped; next best declared")
 }
 
-// sp-dc50 gap 2: a reachable, uncovered system whose gate we have charted (Charted=true) but
-// whose MARKETS were never scanned (KnownMarkets=0) is an UNSCANNED scout target — NOT "known
-// marketless." The old skip ("charted but marketless — nothing to scan") keyed on gate-edge
-// presence, not on actual market knowledge, so it silently dropped every hop-2+ system the BFS
-// reached over a charted gate but had never scanned — the frontier froze at the pre-charted
-// boundary and the expansion queue emptied. Such a system may well hold markets AND shipyards
-// (including the heavy-freighter yard the expansion is hunting), so it must be scouted to find
-// out, not discarded. Discovery is now driven by market knowledge, not gate-edge presence.
+// sp-dc50 gap 2 / sp-gb7h KEEP side: a reachable, uncovered system whose gate we have charted
+// (Charted=true) but whose full waypoint set was NEVER swept (Scanned=false, KnownMarkets=0) is
+// an UNSCANNED scout target — NOT "known marketless." The old skip ("charted but marketless —
+// nothing to scan") keyed on gate-edge presence, not on actual sweep knowledge, so it silently
+// dropped every hop-2+ system the BFS reached over a charted gate but had never scanned — the
+// frontier froze at the pre-charted boundary and the expansion queue emptied. Such a system may
+// well hold markets AND shipyards (including the heavy-freighter yard the expansion is hunting),
+// so it must be scouted to find out, not discarded. This is the !Scanned half of the sp-gb7h
+// pair; its Scanned=true mirror (TestFrontier_ScannedMarketlessSystemNotDeclared) differs ONLY in
+// the Scanned flag, isolating exactly the scanned/never-scanned discriminator.
 func TestFrontier_ChartedButUnscannedSystemIsScouted(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	pr := &fakePostRepo{}
@@ -279,7 +281,7 @@ func TestFrontier_ChartedButUnscannedSystemIsScouted(t *testing.T) {
 	lr := &fakeLedgerRepo{}
 	h := newHandler(pr, fr, lr, clock)
 	h.SetExpansionScanner(&fakeScanner{candidates: []ExpansionCandidate{
-		{SystemSymbol: "X1-UNSCANNED", Hops: 2, KnownMarkets: 0, Charted: true}, // gate charted, markets never scanned
+		{SystemSymbol: "X1-UNSCANNED", Hops: 2, KnownMarkets: 0, Charted: true, Scanned: false}, // gate charted, waypoints never swept
 	}})
 
 	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
@@ -287,6 +289,31 @@ func TestFrontier_ChartedButUnscannedSystemIsScouted(t *testing.T) {
 	require.Len(t, pr.upserts, 1, "a charted-gate-but-unscanned system is a scout target, not dropped")
 	require.Equal(t, "X1-UNSCANNED", pr.upserts[0].SystemSymbol,
 		"the unscanned system is declared so a probe scouts its markets/shipyards")
+}
+
+// sp-gb7h DROP side: a reachable, uncovered system whose full waypoint set WAS swept
+// (Scanned=true) and holds NO marketplace anywhere (KnownMarkets=0) is genuinely barren — its
+// markets were looked for and none exist. It must be DROPPED from the queue, not re-declared:
+// sp-dc50's gap-2 fix removed the charted-marketless skip entirely, so such a system was
+// re-declared → swept-once → no market found → post retired → re-declared every cycle (a
+// wasteful barren re-scout loop). The candidate here is byte-identical to
+// TestFrontier_ChartedButUnscannedSystemIsScouted's EXCEPT Scanned=true, so the pair pins the
+// exact drop condition: Scanned && KnownMarkets==0. With the sole candidate dropped the queue is
+// empty, so nothing is declared.
+func TestFrontier_ScannedMarketlessSystemNotDeclared(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	pr := &fakePostRepo{}
+	fr := &fakeFleetRepo{idle: []*navigation.Ship{newProbe(t, "P1", "X1-HOME-A1")}} // supply covers → isolate declaration
+	lr := &fakeLedgerRepo{}
+	h := newHandler(pr, fr, lr, clock)
+	h.SetExpansionScanner(&fakeScanner{candidates: []ExpansionCandidate{
+		{SystemSymbol: "X1-BARREN", Hops: 2, KnownMarkets: 0, Charted: true, Scanned: true}, // swept, genuinely marketless
+	}})
+
+	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+
+	require.Empty(t, pr.upserts,
+		"a scanned-and-genuinely-marketless system is dropped, not re-declared every cycle")
 }
 
 // sp-njwy STARVATION: the frontier must NOT auto-declare a post for a system it ALREADY

@@ -6,8 +6,63 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
+
+// wp builds a persisted-waypoint fixture of a given type for the scanned-discriminator
+// cases below (a JUMP_GATE row vs a real body like a PLANET).
+func wp(t *testing.T, symbol, waypointType string) *shared.Waypoint {
+	t.Helper()
+	w, err := shared.NewWaypoint(symbol, 0, 0)
+	require.NoError(t, err)
+	w.Type = waypointType
+	return w
+}
+
+// hasNonGateWaypoint is the sp-gb7h Scanned discriminator: it decides, from a system's
+// PERSISTED waypoint rows, whether the system's FULL waypoint set was actually SWEPT — as
+// opposed to merely gate-charted. The ONLY writer of waypoint rows is BuildSystemGraph
+// (graph_builder.go), which persists a system's ENTIRE paginated waypoint list (planets,
+// moons, asteroids, the gate) when a probe sweeps it; gate-charting instead persists jump-gate
+// EDGES to a separate gate_edges table, never a waypoints row. So a persisted NON-gate waypoint
+// proves a real sweep, whereas a never-swept system has none — and even a lone JUMP_GATE row (the
+// bead's explicit warning: Scanned must NOT mean "≥1 waypoint row exists") must read as NOT
+// scanned so a gate-only-charted system stays a scout target. These are input variations of that
+// single decision (Mandate 5 parametrized).
+func TestHasNonGateWaypoint_SeparatesSweptFromGateOnlyCharted(t *testing.T) {
+	cases := []struct {
+		name      string
+		waypoints []*shared.Waypoint
+		scanned   bool
+	}{
+		{
+			name:      "never scanned: no waypoint rows persisted",
+			waypoints: nil,
+			scanned:   false,
+		},
+		{
+			name:      "gate-only-charted: only the jump-gate row exists",
+			waypoints: []*shared.Waypoint{wp(t, "X1-BARREN-GATE", "JUMP_GATE")},
+			scanned:   false,
+		},
+		{
+			name:      "swept genuinely-marketless: full set of bodies, none a market",
+			waypoints: []*shared.Waypoint{wp(t, "X1-BARREN-A1", "PLANET"), wp(t, "X1-BARREN-A2", "MOON")},
+			scanned:   true,
+		},
+		{
+			name:      "swept: gate row alongside real bodies",
+			waypoints: []*shared.Waypoint{wp(t, "X1-SWEPT-GATE", "JUMP_GATE"), wp(t, "X1-SWEPT-A1", "PLANET")},
+			scanned:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.scanned, hasNonGateWaypoint(tc.waypoints))
+		})
+	}
+}
 
 // bfsHops is the scanner's core reachability algorithm; these cases pin its edge
 // behavior (multi-source, hop bounding, under-construction skip, virgin edge-targets).
