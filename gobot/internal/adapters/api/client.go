@@ -557,6 +557,54 @@ func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, to
 	}, nil
 }
 
+// ListSystems retrieves one page of the universe system list (GET /systems) with
+// pagination — the galaxy-wide roster of systems and their SYSTEM-level coordinates
+// (sp-k645, slice B). It mirrors ListWaypoints exactly (same paginated GET shape), but
+// reads the universe map rather than a single system's waypoints. The off-gate explorer
+// enumerator crawls every page ONCE per era (the list is near-static) and caches it, so
+// this is not a per-tick call. Only the fields the enumerator needs are decoded — symbol,
+// type, and coordinates — leaving the rest of the rich /systems payload untouched.
+func (c *SpaceTradersClient) ListSystems(ctx context.Context, token string, page, limit int) (*system.SystemsListResponse, error) {
+	path := fmt.Sprintf("/systems?page=%d&limit=%d", page, limit)
+
+	var response struct {
+		Data []struct {
+			Symbol string  `json:"symbol"`
+			Type   string  `json:"type"`
+			X      float64 `json:"x"`
+			Y      float64 `json:"y"`
+		} `json:"data"`
+		Meta struct {
+			Total int `json:"total"`
+			Page  int `json:"page"`
+			Limit int `json:"limit"`
+		} `json:"meta"`
+	}
+
+	if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to list systems: %w", err)
+	}
+
+	systems := make([]system.SystemAPIData, len(response.Data))
+	for i, sys := range response.Data {
+		systems[i] = system.SystemAPIData{
+			Symbol: sys.Symbol,
+			Type:   sys.Type,
+			X:      sys.X,
+			Y:      sys.Y,
+		}
+	}
+
+	return &system.SystemsListResponse{
+		Data: systems,
+		Meta: system.PaginationMeta{
+			Total: response.Meta.Total,
+			Page:  response.Meta.Page,
+			Limit: response.Meta.Limit,
+		},
+	}, nil
+}
+
 // NegotiateContract negotiates a new contract for the ship
 // Special handling for error 4511 (agent already has contract)
 func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, token string) (*domainPorts.ContractNegotiationResult, error) {

@@ -107,6 +107,30 @@ const (
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
 	rankingLogLimit = 10
+
+	// --- Off-gate explorer demand + target selection (sp-k645, slice B) -------------------
+	// These knobs drive the OFF-GATE DEMAND SIGNAL and warp TARGET SELECTION only; nothing
+	// here warps or buys (that is slice C). All four are live-tunable (FrontierTunableDefaults)
+	// under the FRONTIER container type. Appended as a self-contained block so the sp-iopd
+	// union-rebase stays trivial.
+	//
+	// defaultOffGateQueueExhaustionCycles is N: how many CONSECUTIVE cycles the gate-reachable
+	// expansion queue must be empty (no new ring opening) before trigger (a) — the "virgin set
+	// exhausted" signal — fires. Debounced so a one-cycle dip (a ring momentarily drained but
+	// about to reopen) never raises demand.
+	defaultOffGateQueueExhaustionCycles = 5
+	// defaultOffGateWarpRangeFuel bounds a single warp leg's fuel: an off-gate system whose
+	// nearest-edge leg costs more than this is out of range and excluded from selection. ~one
+	// explorer tank (CRUISE fuel ≈ inter-system distance); refined in slice C once the explorer
+	// hull's real capacity is known.
+	defaultOffGateWarpRangeFuel = 400
+	// defaultOffGateValueWeight and defaultOffGateFuelWeight weight the target-ranking score
+	// (score = value_weight*explorationValue − fuel_weight*warpFuel): value favors promising-type
+	// unexplored systems, fuel penalizes warp distance from the frontier edge. The default 10-vs-1
+	// makes proximity the tiebreak among equal-value systems while a promising type can still
+	// outrank a nearer barren one.
+	defaultOffGateValueWeight = 10
+	defaultOffGateFuelWeight  = 1
 )
 
 // TreasuryReader live-reads the player's treasury for the 25% money guard (RULINGS
@@ -224,6 +248,12 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	MaxDepthPathfinders    int // cap on concurrent depth posts
 	MaxDepthHops           int // depth scan horizon + per-pathfinder max target depth
 	ObjectiveBiasPercent   int // points added to the depth fraction while the heavy-yard objective is unmet
+
+	// Off-gate explorer demand knobs (sp-k645, slice B), all live-tunable (FrontierTunableDefaults).
+	OffGateQueueExhaustionCycles int // consecutive empty-queue cycles before off-gate demand fires (trigger a)
+	OffGateWarpRangeFuel         int // max warp fuel a single explorer leg may cost (target range bound)
+	OffGateValueWeight           int // weight on exploration value in target ranking
+	OffGateFuelWeight            int // weight on warp fuel (distance) in target ranking
 }
 
 // RunFrontierExpansionCoordinatorResponse reports reconcile progress. Because the loop
@@ -268,6 +298,15 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	// effect on the NEXT tick with no restart. Optional-injection: nil keeps the
 	// launch-frozen behavior byte-identical.
 	liveConfig liveconfig.Reader
+
+	// Off-gate explorer demand signal (sp-k645, slice B). offGateSelector ranks the warp
+	// target; shipyardCoverage guards trigger (b); offGate holds the cross-tick empty-queue
+	// streak + the latest per-player signal slice C reads via OffGateDemand. All optional:
+	// a nil selector makes the whole hook a no-op (byte-identical to pre-slice-B). Wired and
+	// evaluated in off_gate_demand.go.
+	offGateSelector  OffGateTargetSelector
+	shipyardCoverage ShipyardCoverageReader
+	offGate          *offGateDemandTracker
 }
 
 // NewRunFrontierExpansionCoordinatorHandler wires the coordinator. clock defaults to
@@ -392,6 +431,11 @@ func FrontierTunableDefaults() map[string]int {
 		"max_depth_pathfinders":    defaultMaxDepthPathfinders,
 		"max_depth_hops":           defaultMaxDepthHops,
 		"objective_bias_percent":   defaultObjectiveBiasPercent,
+		// Off-gate explorer demand + target selection (sp-k645, slice B).
+		"off_gate_queue_exhaustion_cycles": defaultOffGateQueueExhaustionCycles,
+		"off_gate_warp_range_fuel":         defaultOffGateWarpRangeFuel,
+		"off_gate_value_weight":            defaultOffGateValueWeight,
+		"off_gate_fuel_weight":             defaultOffGateFuelWeight,
 	}
 }
 
@@ -413,6 +457,11 @@ type frontierConfig struct {
 	MaxDepthPathfinders      int
 	MaxDepthHops             int
 	ObjectiveBiasPercent     int
+	// Off-gate explorer demand + target selection (sp-k645, slice B).
+	OffGateQueueExhaustionCycles int
+	OffGateWarpRangeFuel         int
+	OffGateValueWeight           int
+	OffGateFuelWeight            int
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -440,6 +489,11 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		MaxDepthPathfinders:      cmd.MaxDepthPathfinders,
 		MaxDepthHops:             cmd.MaxDepthHops,
 		ObjectiveBiasPercent:     cmd.ObjectiveBiasPercent,
+
+		OffGateQueueExhaustionCycles: cmd.OffGateQueueExhaustionCycles,
+		OffGateWarpRangeFuel:         cmd.OffGateWarpRangeFuel,
+		OffGateValueWeight:           cmd.OffGateValueWeight,
+		OffGateFuelWeight:            cmd.OffGateFuelWeight,
 	}
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
@@ -450,6 +504,10 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		c.MaxDepthPathfinders = live.PositiveIntOrZero("max_depth_pathfinders")
 		c.MaxDepthHops = live.PositiveIntOrZero("max_depth_hops")
 		c.ObjectiveBiasPercent = live.PositiveIntOrZero("objective_bias_percent")
+		c.OffGateQueueExhaustionCycles = live.PositiveIntOrZero("off_gate_queue_exhaustion_cycles")
+		c.OffGateWarpRangeFuel = live.PositiveIntOrZero("off_gate_warp_range_fuel")
+		c.OffGateValueWeight = live.PositiveIntOrZero("off_gate_value_weight")
+		c.OffGateFuelWeight = live.PositiveIntOrZero("off_gate_fuel_weight")
 	}
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
@@ -498,6 +556,18 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	}
 	if c.ObjectiveBiasPercent <= 0 {
 		c.ObjectiveBiasPercent = defaultObjectiveBiasPercent
+	}
+	if c.OffGateQueueExhaustionCycles <= 0 {
+		c.OffGateQueueExhaustionCycles = defaultOffGateQueueExhaustionCycles
+	}
+	if c.OffGateWarpRangeFuel <= 0 {
+		c.OffGateWarpRangeFuel = defaultOffGateWarpRangeFuel
+	}
+	if c.OffGateValueWeight <= 0 {
+		c.OffGateValueWeight = defaultOffGateValueWeight
+	}
+	if c.OffGateFuelWeight <= 0 {
+		c.OffGateFuelWeight = defaultOffGateFuelWeight
 	}
 	return c
 }
@@ -574,6 +644,10 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 
 	// QUEUE: rank the uncovered gate-reachable frontier (logs the ranking, pin #1).
 	queue := h.buildExpansionQueue(ctx, cmd, cfg, posts)
+
+	// OFF-GATE DEMAND (sp-k645, slice B): raise the explorer-demand SIGNAL for slice C when
+	// the gate-reachable frontier can no longer serve expansion. Signal-only — no warp/buy.
+	h.evaluateOffGateDemand(ctx, cmd, cfg, len(queue))
 
 	// DEPLOY: declare the top uncovered frontier system as a sweep-once post, bounded by
 	// the in-flight cap so declaration never outruns what the fleet can man (pin #3).

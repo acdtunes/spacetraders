@@ -107,6 +107,11 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"max_depth_pathfinders":    {Type: "int", Min: 1, Max: 20, Default: frontier["max_depth_pathfinders"], Unit: "hulls", Description: "cap on concurrent depth-pathfinder posts"},
 			"max_depth_hops":           {Type: "int", Min: 1, Max: 12, Default: frontier["max_depth_hops"], Unit: "hops", Description: "depth scan horizon + per-pathfinder max target depth (within relay reach)"},
 			"objective_bias_percent":   {Type: "int", Min: 1, Max: 100, Default: frontier["objective_bias_percent"], Unit: "percent", Description: "points added to the depth fraction while the heavy-yard objective is unmet"},
+			// sp-k645 off-gate explorer demand + target selection (slice B) — signal-only, live-tunable.
+			"off_gate_queue_exhaustion_cycles": {Type: "int", Min: 1, Max: 1_000, Default: frontier["off_gate_queue_exhaustion_cycles"], Unit: "cycles", Description: "consecutive empty-queue cycles before off-gate explorer demand fires (trigger a debounce)"},
+			"off_gate_warp_range_fuel":         {Type: "int", Min: 1, Max: 100_000, Default: frontier["off_gate_warp_range_fuel"], Unit: "fuel", Description: "max warp fuel a single explorer leg may cost; off-gate systems beyond this are out of range"},
+			"off_gate_value_weight":            {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_value_weight"], Unit: "weight", Description: "weight on exploration value (promising-type unexplored systems) in off-gate target ranking"},
+			"off_gate_fuel_weight":             {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_fuel_weight"], Unit: "weight", Description: "weight on warp fuel (distance from the frontier edge) in off-gate target ranking"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},
