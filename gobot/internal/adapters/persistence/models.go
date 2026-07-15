@@ -786,6 +786,31 @@ func (WarehouseWithdrawalModel) TableName() string {
 	return "warehouse_withdrawals"
 }
 
+// WarehouseStockingModel represents the warehouse_stockings table (sp-j6uz): one row per
+// stocker→warehouse buffer DEPOSIT — the stock-IN mirror of WarehouseWithdrawalModel. A
+// deposit is a NON-monetary cargo transfer (credits are booked at the buy, in the ledger's
+// PURCHASE_CARGO row; the deposit moves credits nowhere), so — exactly like the withdrawal —
+// it is its own economic event rather than a financial-ledger Transaction. Downstream
+// analysis reads this table to measure depot stock-IN throughput (units-stocked), coverage
+// (distinct goods per warehouse), and source-provenance, and — differenced against
+// warehouse_withdrawals — an event-sourced view of current fill that does not depend on the
+// (stale, for stationary depot hulls) ship cargo sync. Born from AutoMigrate (no CREATE TABLE
+// migration), like warehouse_withdrawals and tour_leg_telemetry.
+type WarehouseStockingModel struct {
+	ID                uint      `gorm:"column:id;primaryKey;autoIncrement"`
+	Good              string    `gorm:"column:good;not null;index:idx_warehouse_stockings_good"`
+	Units             int       `gorm:"column:units;not null"`
+	WarehouseWaypoint string    `gorm:"column:warehouse_waypoint;not null;index:idx_warehouse_stockings_warehouse"`
+	SourceWaypoint    string    `gorm:"column:source_waypoint"` // "" when unknown (a resume deposit of prior-run cargo)
+	ShipSymbol        string    `gorm:"column:ship_symbol;not null"`
+	PlayerID          int       `gorm:"column:player_id;not null;index:idx_warehouse_stockings_player"`
+	DepositedAt       time.Time `gorm:"column:deposited_at;not null"`
+}
+
+func (WarehouseStockingModel) TableName() string {
+	return "warehouse_stockings"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -818,5 +843,6 @@ func AllModels() []any {
 		&MarketAbsorptionLedgerModel{},
 		&ContractDepotModel{},
 		&WarehouseWithdrawalModel{},
+		&WarehouseStockingModel{},
 	}
 }

@@ -1216,3 +1216,94 @@ func TestStocker_Pick_AutoCapCapsAtSingleContractSize(t *testing.T) {
 		t.Fatalf("DRUGS at its single-contract target (24) must be excluded — the cap is s_G, not the summed demand (72)")
 	}
 }
+
+// stkStockingRecorderSpy captures the stock-IN events the stocker emits at its deposit site
+// (the driven-port boundary, sp-j6uz), so a test can assert the deposit was recorded with the
+// right provenance. recordErr, when set, makes Record fail so the fail-open path is exercised.
+type stkStockingRecorderSpy struct {
+	mu        sync.Mutex
+	events    []storage.StockingEvent
+	recordErr error
+}
+
+func (s *stkStockingRecorderSpy) Record(_ context.Context, event storage.StockingEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+	return s.recordErr
+}
+
+func (s *stkStockingRecorderSpy) ListByPlayer(_ context.Context, _ int, _ time.Time) ([]storage.StockingEvent, error) {
+	return nil, nil
+}
+
+// A CONFIRMED stocker deposit emits exactly one stocking event carrying the deposit's full
+// provenance — good, units, the warehouse deposited into, the foreign market it was bought
+// from, the hauling ship, the player, and a stamped deposit time — so downstream analysis can
+// measure what the depot buffer actually received (the stock-IN mirror of kqxe's draw events).
+func TestStocker_Deposit_EmitsStockingEvent(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 1000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10)
+	spy := &stkStockingRecorderSpy{}
+	h.SetStockingRecorder(spy)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	before := time.Now()
+	if _, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STOCKER-1", PlayerID: 1, ContainerID: "ctr-1", WarehouseWaypoint: "X1-S1-H"}); err != nil {
+		t.Fatalf("stocker returned error: %v", err)
+	}
+
+	if len(spy.events) != 1 {
+		t.Fatalf("a single confirmed deposit must emit exactly one stocking event, got %d", len(spy.events))
+	}
+	ev := spy.events[0]
+	if ev.Good != "MEDICINE" || ev.Units != 40 {
+		t.Fatalf("expected 40 MEDICINE deposited, got %d %s", ev.Units, ev.Good)
+	}
+	if ev.WarehouseWaypoint != "X1-S1-H" {
+		t.Fatalf("expected warehouse waypoint X1-S1-H, got %q", ev.WarehouseWaypoint)
+	}
+	if ev.SourceWaypoint != "X1-S1-M" {
+		t.Fatalf("the event must attribute the deposit to the market it was bought from (X1-S1-M), got %q", ev.SourceWaypoint)
+	}
+	if ev.Ship != "STOCKER-1" {
+		t.Fatalf("expected hauling ship STOCKER-1, got %q", ev.Ship)
+	}
+	if ev.PlayerID != 1 {
+		t.Fatalf("expected player 1, got %d", ev.PlayerID)
+	}
+	if ev.DepositedAt.IsZero() || ev.DepositedAt.Before(before) {
+		t.Fatalf("deposit must be stamped with the handler clock at/after %v, got %v", before, ev.DepositedAt)
+	}
+}
+
+// The stocking event is additive, fail-open instrumentation (sp-j6uz, mirroring kqxe): a
+// recorder that errors must NOT fail the deposit whose cargo is already physically in the
+// warehouse. The warehouse still holds the deposited units and the run completes honestly.
+func TestStocker_Deposit_StockingRecordFailure_IsFailOpen(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 1000, []string{"MEDICINE"})
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 10)
+	h.SetStockingRecorder(&stkStockingRecorderSpy{recordErr: errors.New("db down")})
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STOCKER-1", PlayerID: 1, ContainerID: "ctr-1", WarehouseWaypoint: "X1-S1-H"})
+	if err != nil {
+		t.Fatalf("a telemetry record failure must never fail the deposit, got error: %v", err)
+	}
+	r := stkResponse(t, resp)
+	if r.UnitsDeposited != 40 {
+		t.Fatalf("the deposit must still land despite the record failure, got %d units deposited", r.UnitsDeposited)
+	}
+	if got := coord.GetTotalCargoAvailable("wh", "MEDICINE"); got != 40 {
+		t.Fatalf("warehouse should hold 40 deposited MEDICINE despite the record failure, got %d", got)
+	}
+	if r.CargoStranded {
+		t.Fatalf("a clean round-trip must not strand: %s", r.CargoStrandedReason)
+	}
+}

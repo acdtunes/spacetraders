@@ -1160,6 +1160,11 @@ func run(cfg *config.Config) error {
 	)
 	stockerCoordinatorHandler.SetGateGraph(gateGraphService)
 	stockerCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	// sp-j6uz: emit a structured stock-IN event on each CONFIRMED stocker→warehouse deposit so
+	// downstream analysis can measure depot throughput/coverage (the stock-IN mirror of the
+	// kqxe withdrawal recorder wired above). Additive + fail-open — a record error never fails
+	// a deposit.
+	stockerCoordinatorHandler.SetStockingRecorder(persistence.NewStockingEventRepository(db))
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunStockerCoordinatorCommand](med, stockerCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register StockerCoordinator handler: %w", err)
 	}

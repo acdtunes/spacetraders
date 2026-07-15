@@ -204,6 +204,14 @@ type RunStockerCoordinatorHandler struct {
 	capParams  tradingsvc.WarehouseCapParams
 	capStateMu sync.Mutex
 	capState   map[string]*warehouseCapState
+
+	// Stocking instrumentation (sp-j6uz): a driven port that records each CONFIRMED
+	// stocker→warehouse deposit as a structured economic event so downstream analysis can
+	// measure depot stock-IN throughput/coverage (the stock-IN mirror of the kqxe withdrawal
+	// stream). Optional — a nil recorder disables emission so existing tests and any caller
+	// that has not wired it are byte-identical (additive, fail-open). The event's DepositedAt
+	// is stamped with the handler's own clock (h.clock, guaranteed non-nil).
+	stockingRecorder storage.StockingRecorder
 }
 
 // warehouseCapState is one warehouse's carried optimizer state between passes: the EWMA
@@ -333,6 +341,16 @@ func (h *RunStockerCoordinatorHandler) SetGateGraph(g GateGraph) {
 // (sp-8l3o) instead of 4214'ing and burning the restart budget. Mirrors arb/tour.
 func (h *RunStockerCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
 	h.legs.SetEventSubscriber(subscriber)
+}
+
+// SetStockingRecorder wires the stock-IN deposit-event recorder (sp-j6uz): on each CONFIRMED
+// stocker→warehouse deposit the handler emits a structured storage.StockingEvent (good,
+// units, warehouse, source market, hauler, player, timestamp) so downstream analysis can
+// measure depot stock-IN throughput/coverage. A nil recorder is a no-op, so the daemon may
+// forward the wiring unconditionally. Mirrors SetGateGraph/SetWarehouseCapParams's
+// optional-injection shape; the event is stamped with the handler's own clock.
+func (h *RunStockerCoordinatorHandler) SetStockingRecorder(recorder storage.StockingRecorder) {
+	h.stockingRecorder = recorder
 }
 
 // Handle executes the stocker loop. A stranded-cargo veto returns a nil Go error (the
@@ -507,7 +525,9 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 		logger.Log("INFO", fmt.Sprintf("Stocker: hull %s laden on start - depositing held cargo before buying (resume-safe)", cmd.ShipSymbol), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint,
 		})
-		deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods)
+		// Resume deposit: the aboard cargo was bought in a PRIOR run, so its source market is
+		// unknown here ("") — the stock-IN analog of a non-contract draw's empty contract id.
+		deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods, "")
 		if derr != nil {
 			return false, derr
 		}
@@ -529,8 +549,9 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 		return false, nil // buy aborted (ceiling/floor/no-units) — empty pass
 	}
 
-	// HAUL HOME + DEPOSIT.
-	deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods)
+	// HAUL HOME + DEPOSIT. The just-bought cargo's source is the picked foreign market,
+	// threaded onto each stock-IN event (sp-j6uz) for source-provenance analysis.
+	deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods, pick.ForeignMarket)
 	if derr != nil {
 		return false, derr
 	}
@@ -836,13 +857,16 @@ func (h *RunStockerCoordinatorHandler) buy(
 // docks, and deposits every held good the warehouse supports via the Lane B protocol
 // (ReserveSpaceForDeposit → TransferCargo → ConfirmDeposit). A good the warehouse does
 // not support is left aboard (it will report stranded at the final exit). Returns the
-// total units deposited.
+// total units deposited. source is the market the just-bought cargo came from, threaded onto
+// each emitted stock-IN event (sp-j6uz); it is "" on the resume path, where the aboard cargo
+// was bought in a prior run and its provenance is unknown.
 func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 	ctx context.Context,
 	cmd *RunStockerCoordinatorCommand,
 	group []*storage.StorageOperation,
 	response *RunStockerCoordinatorResponse,
 	depositedGoods map[string]bool,
+	source string,
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -894,7 +918,7 @@ func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 				})
 				break
 			}
-			deposited, derr := h.depositGood(ctx, cmd, dst, good, remaining, response)
+			deposited, derr := h.depositGood(ctx, cmd, dst, good, remaining, response, source)
 			if derr != nil {
 				return total, derr
 			}
@@ -922,6 +946,7 @@ func (h *RunStockerCoordinatorHandler) depositGood(
 	good string,
 	units int,
 	response *RunStockerCoordinatorResponse,
+	source string,
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -948,12 +973,47 @@ func (h *RunStockerCoordinatorHandler) depositGood(
 	}
 	h.storageCoordinator.ConfirmDeposit(storageShip.ShipSymbol(), good, units)
 
+	// Emit the deposit as a structured stock-IN event (sp-j6uz) now that the transfer has
+	// physically moved (TransferCargo) and committed (ConfirmDeposit) — on the ACTUAL confirmed
+	// deposit, never on intent. This is the stock-IN mirror of kqxe's withdrawal event, read
+	// downstream to measure depot throughput/coverage and (differenced against draws) current
+	// fill. Additive + fail-open: a nil recorder is a no-op and a record error is swallowed.
+	h.recordStocking(ctx, storage.StockingEvent{
+		Good:              good,
+		Units:             units,
+		WarehouseWaypoint: storageShip.WaypointSymbol(),
+		SourceWaypoint:    source,
+		Ship:              cmd.ShipSymbol,
+		PlayerID:          cmd.PlayerID,
+	})
+
 	response.UnitsDeposited += units
 	logger.Log("INFO", fmt.Sprintf("Stocker: deposited %d %s into warehouse %s (no revenue, capital booked at buy)", units, good, storageShip.WaypointSymbol()), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "good": good, "units": units, "warehouse": op.ID(),
 		"storage_ship": storageShip.ShipSymbol(), "operation_type": "warehouse_deposit",
 	})
 	return units, nil
+}
+
+// recordStocking emits one stocker→warehouse deposit event (sp-j6uz) on the actual CONFIRMED
+// deposit, stamping it with the handler's clock. It is additive instrumentation mirroring
+// kqxe's recordWithdrawal: a nil recorder is a no-op, and a persistence error is logged and
+// swallowed so telemetry can never fail a deposit whose goods are already physically in the
+// warehouse (fail-open, RULINGS #1).
+func (h *RunStockerCoordinatorHandler) recordStocking(ctx context.Context, event storage.StockingEvent) {
+	if h.stockingRecorder == nil {
+		return
+	}
+	event.DepositedAt = h.clock.Now()
+	if err := h.stockingRecorder.Record(ctx, event); err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", "Stocking event record failed (deposit succeeded; telemetry only)", map[string]interface{}{
+			"ship_symbol":  event.Ship,
+			"trade_symbol": event.Good,
+			"units":        event.Units,
+			"warehouse":    event.WarehouseWaypoint,
+			"error":        err.Error(),
+		})
+	}
 }
 
 // warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the
