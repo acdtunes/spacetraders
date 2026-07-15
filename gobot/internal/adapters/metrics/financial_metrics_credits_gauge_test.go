@@ -85,7 +85,7 @@ func TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero(t *testing.T) {
 	collector := NewFinancialMetricsCollector(mediator, playerRepo, getContainers)
 
 	// A real transaction lands first - the ledger's authoritative value.
-	collector.RecordTransaction(playerID, agentSymbol, "SELL_CARGO", "trade", 1000, realBalance)
+	collector.RecordTransaction(playerID, agentSymbol, "SELL_CARGO", "trade", 1000, realBalance, "tour")
 
 	if got := testutil.ToFloat64(collector.creditsBalance.WithLabelValues("42", agentSymbol)); got != realBalance {
 		t.Fatalf("after RecordTransaction: creditsBalance = %v, want %v", got, realBalance)

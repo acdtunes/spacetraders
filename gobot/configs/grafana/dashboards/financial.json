@@ -745,8 +745,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "description": "Gross inflow vs outflow per hour (15m buckets x4).",
       "fieldConfig": {
@@ -805,13 +805,36 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(spacetraders_daemon_ledger_revenue_total[$__rate_interval])) * 3600",
+          "legendFormat": "revenue",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(spacetraders_daemon_ledger_cost_total[$__rate_interval])) * 3600",
+          "legendFormat": "costs",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) * 4 AS \"revenue\", COALESCE(-SUM(amount) FILTER (WHERE amount < 0), 0) * 4 AS \"costs\" FROM transactions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
-          "refId": "A"
+          "refId": "C",
+          "hide": true
         }
       ],
       "title": "Revenue vs Costs (cr/hr)",
@@ -819,8 +842,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "description": "Realized contract profit per hour. operation_type='contract' spans exactly CONTRACT_ACCEPTED/CONTRACT_FULFILLED (revenue, positive) and PURCHASE_CARGO/REFUEL (costs, negative) with no leakage either direction (live-verified), so SUM(amount) over that filter is net contract profit directly. 15m buckets x4 for cr/hr, mirroring Revenue vs Costs; current incomplete bucket excluded so the right edge does not dive.",
       "fieldConfig": {
@@ -863,13 +886,25 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{operation_type=\"contract\"}[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total{operation_type=\"contract\"}[$__rate_interval]))) * 3600",
+          "legendFormat": "contract profit/hr",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"contract profit/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='contract' AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') GROUP BY 1 ORDER BY 1",
-          "refId": "A"
+          "refId": "B",
+          "hide": true
         }
       ],
       "title": "Contract Profit (cr/hr)",
@@ -1028,8 +1063,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "description": "Tour-tagged ledger P/L per hour (buys, sells, fuel; 15m buckets x4).",
       "fieldConfig": {
@@ -1072,13 +1107,25 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{operation_type=\"tour\"}[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total{operation_type=\"tour\"}[$__rate_interval]))) * 3600",
+          "legendFormat": "tour net/hr",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), SUM(amount) * 4 AS \"tour net/hr\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='tour' GROUP BY 1 ORDER BY 1",
-          "refId": "A"
+          "refId": "B",
+          "hide": true
         }
       ],
       "title": "Tour Net P/L (cr/hr)",
@@ -1295,8 +1342,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "description": "Hourly operating profit (ex-capex) vs net (all-in). The gap between the lines in any hour IS that hour's ship-investment capex burn.",
       "fieldConfig": {
@@ -1339,13 +1386,36 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[$__rate_interval]))) * 3600",
+          "legendFormat": "operating (ex-capex)",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total[$__rate_interval]))) * 3600",
+          "legendFormat": "net (all-in)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), COALESCE(SUM(amount) FILTER (WHERE category != 'SHIP_INVESTMENTS'), 0) AS \"operating (ex-capex)\", COALESCE(SUM(amount), 0) AS \"net (all-in)\" FROM transactions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
-          "refId": "A"
+          "refId": "C",
+          "hide": true
         }
       ],
       "title": "Operating vs Net Profit (hourly)",

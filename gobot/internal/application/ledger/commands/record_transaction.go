@@ -190,7 +190,9 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		agentSymbol = "UNKNOWN"
 	}
 
-	// Record the transaction metrics
+	// Record the transaction metrics. cmd.OperationType (contract/tour/
+	// arbitrage/factory/...) drives the sp-miqt ledger-flow counters behind the
+	// cr/hr financial panels; it was previously dropped here.
 	metrics.RecordTransaction(
 		cmd.PlayerID,
 		agentSymbol,
@@ -198,6 +200,7 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		category,
 		cmd.Amount,
 		balanceAfter,
+		cmd.OperationType,
 	)
 
 	return &RecordTransactionResponse{

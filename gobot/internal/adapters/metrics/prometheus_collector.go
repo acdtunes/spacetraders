@@ -142,7 +142,7 @@ type NavigationMetricsRecorder interface {
 
 // FinancialMetricsRecorder defines the interface for recording financial metrics
 type FinancialMetricsRecorder interface {
-	RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int)
+	RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int, operationType string)
 	RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, quantity int)
 }
 
@@ -267,10 +267,12 @@ func SetGlobalFinancialCollector(collector FinancialMetricsRecorder) {
 	globalFinancialCollector = collector
 }
 
-// RecordTransaction records a transaction event globally
-func RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int) {
+// RecordTransaction records a transaction event globally. operationType
+// (contract/tour/arbitrage/...) drives the sp-miqt ledger-flow counters that
+// back the cr/hr financial panels; pass "" when unknown.
+func RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int, operationType string) {
 	if globalFinancialCollector != nil {
-		globalFinancialCollector.RecordTransaction(playerID, agentSymbol, transactionType, category, amount, creditsBalance)
+		globalFinancialCollector.RecordTransaction(playerID, agentSymbol, transactionType, category, amount, creditsBalance, operationType)
 	}
 }
 

@@ -29,6 +29,12 @@ type FinancialMetricsCollector struct {
 	transactionsTotal *prometheus.CounterVec
 	transactionAmount *prometheus.HistogramVec
 
+	// Ledger-flow counters (sp-miqt): monotonic signed-amount sums split by
+	// sign so PromQL rate() can drive the cr/hr financial panels. Labeled by
+	// operation_type (contract/tour/arbitrage/...) + category + player_id.
+	ledgerRevenueTotal *prometheus.CounterVec // += amount when amount > 0
+	ledgerCostTotal    *prometheus.CounterVec // += -amount when amount < 0
+
 	// P&L metrics
 	totalRevenue  *prometheus.GaugeVec
 	totalExpenses *prometheus.GaugeVec
@@ -87,6 +93,28 @@ func NewFinancialMetricsCollector(
 				Buckets:   []float64{100, 500, 1000, 5000, 10000, 50000, 100000, 500000},
 			},
 			[]string{"player_id", "type", "category"},
+		),
+
+		// Ledger revenue (positive inflow) running total by operation/category (sp-miqt)
+		ledgerRevenueTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "ledger_revenue_total",
+				Help:      "Cumulative positive ledger amount (revenue) by operation_type and category",
+			},
+			[]string{"operation_type", "category", "player_id"},
+		),
+
+		// Ledger cost (negative outflow magnitude) running total by operation/category (sp-miqt)
+		ledgerCostTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "ledger_cost_total",
+				Help:      "Cumulative negative ledger amount magnitude (cost) by operation_type and category",
+			},
+			[]string{"operation_type", "category", "player_id"},
 		),
 
 		// Total revenue by category
@@ -158,6 +186,8 @@ func (c *FinancialMetricsCollector) Register() error {
 		c.creditsBalance,
 		c.transactionsTotal,
 		c.transactionAmount,
+		c.ledgerRevenueTotal,
+		c.ledgerCostTotal,
 		c.totalRevenue,
 		c.totalExpenses,
 		c.netProfit,
@@ -298,6 +328,7 @@ func (c *FinancialMetricsCollector) RecordTransaction(
 	category string,
 	amount int,
 	creditsBalance int,
+	operationType string,
 ) {
 	playerIDStr := strconv.Itoa(playerID)
 
@@ -313,6 +344,23 @@ func (c *FinancialMetricsCollector) RecordTransaction(
 		absAmount = -absAmount
 	}
 	c.transactionAmount.WithLabelValues(playerIDStr, transactionType, category).Observe(float64(absAmount))
+
+	// Fan the signed amount into the sign-split ledger-flow counters (sp-miqt).
+	c.recordLedgerFlow(operationType, category, playerIDStr, amount)
+}
+
+// recordLedgerFlow increments exactly one of the monotonic ledger-flow counters
+// by the magnitude of a signed amount (sp-miqt): positive amounts are revenue,
+// negative amounts are cost, zero is neither. Split by sign because Prometheus
+// counters must be non-negative; PromQL nets the two sides back together.
+func (c *FinancialMetricsCollector) recordLedgerFlow(operationType, category, playerIDStr string, amount int) {
+	if amount > 0 {
+		c.ledgerRevenueTotal.WithLabelValues(operationType, category, playerIDStr).Add(float64(amount))
+		return
+	}
+	if amount < 0 {
+		c.ledgerCostTotal.WithLabelValues(operationType, category, playerIDStr).Add(float64(-amount))
+	}
 }
 
 // RecordTrade records trade profitability metrics
