@@ -163,12 +163,6 @@ func (r *GormTransactionRepository) modelToTransaction(model *TransactionModel) 
 		return nil, fmt.Errorf("invalid transaction type in database: %w", err)
 	}
 
-	// Parse category
-	category, err := ledger.ParseCategory(model.Category)
-	if err != nil {
-		return nil, fmt.Errorf("invalid category in database: %w", err)
-	}
-
 	// Parse metadata
 	var metadata map[string]interface{}
 	if model.Metadata != "" {
@@ -178,13 +172,14 @@ func (r *GormTransactionRepository) modelToTransaction(model *TransactionModel) 
 		}
 	}
 
-	// Reconstruct transaction entity
+	// Reconstruct transaction entity. category is intentionally NOT read from the
+	// model: ReconstructTransaction re-derives it from type (R1/sp-bt6r), so a
+	// divergent or invalid stored category can never surface on read.
 	return ledger.ReconstructTransaction(
 		id,
 		playerID,
 		model.Timestamp,
 		transactionType,
-		category,
 		model.Amount,
 		model.BalanceBefore,
 		model.BalanceAfter,

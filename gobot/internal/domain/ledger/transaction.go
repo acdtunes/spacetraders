@@ -95,16 +95,17 @@ func NewTransaction(
 // ReconstructTransaction reconstructs a transaction from persistence
 // This bypasses some validations and is used by the repository.
 //
-// The category arg is read-derived: category = f(transactionType) (see
-// TypeToCategoryMap), persisted only as a reporting convenience — NOT an
-// independent field. type is the source of truth; a future change (R1/sp-bt6r)
-// may derive category from type instead of storing it.
+// category is DERIVED from transactionType (category = f(type); see
+// TypeToCategoryMap), never taken from storage. category is a pure, deterministic
+// relabel of type, persisted only as a reporting convenience — NOT an independent
+// field. Re-deriving it on read (R1/sp-bt6r) means a stored category that
+// disagrees with type, or is structurally invalid, can never surface: type is the
+// single source of truth.
 func ReconstructTransaction(
 	id TransactionID,
 	playerID shared.PlayerID,
 	timestamp time.Time,
 	transactionType TransactionType,
-	category Category,
 	amount int,
 	balanceBefore int,
 	balanceAfter int,
@@ -114,6 +115,12 @@ func ReconstructTransaction(
 	relatedEntityID string,
 	operationType string,
 ) *Transaction {
+	// Derive category from type; the stored category column is intentionally not
+	// consulted. For any repository-validated type this cannot fail (every valid
+	// TransactionType is in TypeToCategoryMap); an unmapped type yields an empty
+	// category — a loud, non-silent signal rather than a wrong value.
+	category, _ := transactionType.ToCategory()
+
 	return &Transaction{
 		id:                id,
 		playerID:          playerID,
