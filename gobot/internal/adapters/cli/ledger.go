@@ -63,10 +63,13 @@ func newLedgerListCommand() *cobra.Command {
 Transactions can be filtered by date range, category, and type.
 Results are ordered by timestamp descending (newest first) by default.
 
-Categories:
+Categories (derived deterministically from transaction type):
   FUEL_COSTS        - Fuel expenses
-  TRADING_REVENUE   - Income from selling cargo
-  TRADING_COSTS     - Expenses from purchasing cargo
+  TRADING_REVENUE   - Income from ANY cargo sale (SELL_CARGO): factory output,
+                      tour/trade legs, construction supply, contract delivery —
+                      not just standalone arbitrage trades
+  TRADING_COSTS     - Cost of ANY cargo purchase (PURCHASE_CARGO): factory inputs,
+                      tour/trade buys, construction supply — not just standalone trades
   SHIP_INVESTMENTS  - Expenses from purchasing ships
   CONTRACT_REVENUE  - Income from contracts
 

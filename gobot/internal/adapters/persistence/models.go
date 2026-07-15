@@ -345,7 +345,7 @@ type TransactionModel struct {
 	Player            *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	Timestamp         time.Time    `gorm:"column:timestamp;index:idx_player_timestamp;not null"`
 	TransactionType   string       `gorm:"column:transaction_type;index:idx_type;size:50;not null"`
-	Category          string       `gorm:"column:category;index:idx_category;size:50;not null"`
+	Category          string       `gorm:"column:category;size:50;not null"`
 	Amount            int          `gorm:"column:amount;not null"` // Positive for income, negative for expenses
 	BalanceBefore     int          `gorm:"column:balance_before;not null"`
 	BalanceAfter      int          `gorm:"column:balance_after;not null"`

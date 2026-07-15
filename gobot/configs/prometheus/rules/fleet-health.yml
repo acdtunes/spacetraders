@@ -35,7 +35,7 @@ groups:
       # acceptance criterion (fire within 20 min of onset).
       - alert: EarnerDark
         expr: |
-          sum by (player_id) (rate(spacetraders_daemon_transactions_total{category="TRADING_REVENUE",type="SELL_CARGO"}[20m])) == 0
+          sum by (player_id) (rate(spacetraders_daemon_transactions_total{type="SELL_CARGO"}[20m])) == 0
           and
           sum by (player_id) (spacetraders_daemon_container_running_total{container_type="TRADING"}) > 0
         labels:

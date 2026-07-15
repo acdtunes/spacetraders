@@ -72,15 +72,17 @@ func NewFinancialMetricsCollector(
 			[]string{"player_id", "agent"},
 		),
 
-		// Transaction count by type/category
+		// Transaction count by type. category is dropped (sp-xdr6): it is a
+		// deterministic f(type) relabel, so it duplicated `type` here for no
+		// added signal. The Operating-vs-Net split lives on ledger_*_total below.
 		transactionsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: namespace,
 				Subsystem: subsystem,
 				Name:      "transactions_total",
-				Help:      "Total number of transactions by type and category",
+				Help:      "Total number of transactions by type",
 			},
-			[]string{"player_id", "type", "category"},
+			[]string{"player_id", "type"},
 		),
 
 		// Transaction amount distribution
@@ -92,7 +94,8 @@ func NewFinancialMetricsCollector(
 				Help:      "Transaction amount distribution",
 				Buckets:   []float64{100, 500, 1000, 5000, 10000, 50000, 100000, 500000},
 			},
-			[]string{"player_id", "type", "category"},
+			// category dropped (sp-xdr6): redundant f(type) relabel.
+			[]string{"player_id", "type"},
 		),
 
 		// Ledger revenue (positive inflow) running total by operation/category (sp-miqt)
@@ -335,17 +338,19 @@ func (c *FinancialMetricsCollector) RecordTransaction(
 	// Update credits balance
 	c.creditsBalance.WithLabelValues(playerIDStr, agentSymbol).Set(float64(creditsBalance))
 
-	// Increment transaction counter
-	c.transactionsTotal.WithLabelValues(playerIDStr, transactionType, category).Inc()
+	// Increment transaction counter. category is intentionally NOT a label here
+	// (sp-xdr6): it is a deterministic f(type), so `type` already carries it.
+	c.transactionsTotal.WithLabelValues(playerIDStr, transactionType).Inc()
 
 	// Record transaction amount (use absolute value for histogram)
 	absAmount := amount
 	if absAmount < 0 {
 		absAmount = -absAmount
 	}
-	c.transactionAmount.WithLabelValues(playerIDStr, transactionType, category).Observe(float64(absAmount))
+	c.transactionAmount.WithLabelValues(playerIDStr, transactionType).Observe(float64(absAmount))
 
-	// Fan the signed amount into the sign-split ledger-flow counters (sp-miqt).
+	// Fan the signed amount into the sign-split ledger-flow counters (sp-miqt),
+	// which DO keep category for the Operating-vs-Net capex/opex split.
 	c.recordLedgerFlow(operationType, category, playerIDStr, amount)
 }
 

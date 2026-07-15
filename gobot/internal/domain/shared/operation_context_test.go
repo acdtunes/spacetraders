@@ -14,13 +14,17 @@ func TestNormalizedOperationType(t *testing.T) {
 		want string
 	}{
 		{"tour_run", "tour"}, // sp-lgnh: the mapping this change adds
-		{"arbitrage_worker", "arbitrage"},
 		{"contract_workflow", "contract"},
 		{"balance_ship_position", "fleet rebalancing"},
-		{"goods_factory_coordinator", "factory"},
 		{"manufacturing_worker", "manufacturing"},
 		{"trade_route", "trade_route"},           // passthrough (unmapped) — unchanged
 		{"factory_workflow", "factory_workflow"}, // passthrough (unmapped) — unchanged
+		// sp-xdr6: arbitrage_worker/goods_factory_coordinator branches removed as
+		// dead — no coordinator ever constructs an OperationContext with these raw
+		// types (audit F4; detectors.go concurs). They now pass through unchanged;
+		// these cases guard against the dead mappings being reintroduced.
+		{"arbitrage_worker", "arbitrage_worker"},
+		{"goods_factory_coordinator", "goods_factory_coordinator"},
 	}
 	for _, tc := range cases {
 		got := NewOperationContext("ctr-1", tc.raw).NormalizedOperationType()

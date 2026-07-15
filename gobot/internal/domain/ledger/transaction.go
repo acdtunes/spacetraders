@@ -93,7 +93,12 @@ func NewTransaction(
 }
 
 // ReconstructTransaction reconstructs a transaction from persistence
-// This bypasses some validations and is used by the repository
+// This bypasses some validations and is used by the repository.
+//
+// The category arg is read-derived: category = f(transactionType) (see
+// TypeToCategoryMap), persisted only as a reporting convenience — NOT an
+// independent field. type is the source of truth; a future change (R1/sp-bt6r)
+// may derive category from type instead of storing it.
 func ReconstructTransaction(
 	id TransactionID,
 	playerID shared.PlayerID,

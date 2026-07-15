@@ -69,26 +69,26 @@ func (c *OperationContext) String() string {
 
 // NormalizedOperationType converts command_type to normalized operation_type for ledger
 // Maps from container command types to user-facing operation types:
-//   - arbitrage_worker → arbitrage
 //   - contract_workflow → contract
 //   - balance_ship_position → fleet rebalancing
-//   - goods_factory_coordinator → factory
 //   - manufacturing_worker → manufacturing
 //   - tour_run → tour
+//
+// Every other raw type (factory_workflow, trade_route, construction_supply,
+// stocker, ...) passes through unchanged. The former arbitrage_worker→arbitrage
+// and goods_factory_coordinator→factory cases were removed as dead (sp-xdr6): no
+// coordinator constructs an OperationContext with those raw types, so they never
+// appeared in live data (category audit 2026-07-14 F4; detectors.go concurs).
 func (c *OperationContext) NormalizedOperationType() string {
 	if c == nil || c.OperationType == "" {
 		return ""
 	}
 
 	switch c.OperationType {
-	case "arbitrage_worker":
-		return "arbitrage"
 	case "contract_workflow":
 		return "contract"
 	case "balance_ship_position":
 		return "fleet rebalancing"
-	case "goods_factory_coordinator":
-		return "factory"
 	case "manufacturing_worker":
 		return "manufacturing"
 	case "tour_run":
