@@ -1099,6 +1099,77 @@ func (s *daemonServiceImpl) FactoryWorkerCap(ctx context.Context, req *pb.Factor
 	}, nil
 }
 
+// TuneContainerConfig sets (or reverts, value 0) one live knob on a running
+// container (sp-vwek). Resolves the player from player_id or agent_symbol like the
+// other coordinator RPCs, then delegates the registry-validated, persisted-config
+// mutation to the daemon — the single writer (RULINGS #3). The running coordinator
+// re-reads its config at each tick start, so the tune lands on the next tick with
+// no restart.
+func (s *daemonServiceImpl) TuneContainerConfig(ctx context.Context, req *pb.TuneContainerConfigRequest) (*pb.TuneContainerConfigResponse, error) {
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	out, err := s.daemon.MutateContainerConfigKey(ctx, req.ContainerId, req.Operation, req.Key, int(req.Value), playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to tune container config: %w", err)
+	}
+
+	return &pb.TuneContainerConfigResponse{
+		ContainerId:   out.ContainerID,
+		ContainerType: out.ContainerType,
+		Key:           out.Key,
+		OldEffective:  int64(out.OldEffective),
+		OldSource:     out.OldSource,
+		NewEffective:  int64(out.NewEffective),
+		NewSource:     out.NewSource,
+		Unit:          out.Unit,
+		DefaultValue:  int64(out.DefaultValue),
+		Changed:       out.Changed,
+	}, nil
+}
+
+// ShowTunableConfig lists a container's live-tunable knobs with effective values,
+// sources, and bounds (sp-vwek `tune --show`).
+func (s *daemonServiceImpl) ShowTunableConfig(ctx context.Context, req *pb.ShowTunableConfigRequest) (*pb.ShowTunableConfigResponse, error) {
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	out, err := s.daemon.ShowTunableConfig(ctx, req.ContainerId, req.Operation, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tunable knobs: %w", err)
+	}
+
+	resp := &pb.ShowTunableConfigResponse{
+		ContainerId:   out.ContainerID,
+		ContainerType: out.ContainerType,
+	}
+	for _, k := range out.Knobs {
+		resp.Knobs = append(resp.Knobs, &pb.TunableKnobStatus{
+			Key:          k.Key,
+			Effective:    int64(k.Effective),
+			Source:       k.Source,
+			Min:          int64(k.Bound.Min),
+			Max:          int64(k.Bound.Max),
+			Unit:         k.Bound.Unit,
+			Description:  k.Bound.Description,
+			DefaultValue: int64(k.Bound.Default),
+		})
+	}
+	return resp, nil
+}
+
 func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.UnassignShipFleetRequest) (*pb.UnassignShipFleetResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

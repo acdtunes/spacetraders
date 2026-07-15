@@ -182,6 +182,20 @@ service DaemonService {
   // restarts.
   rpc FactoryWorkerCap(FactoryWorkerCapRequest) returns (FactoryWorkerCapResponse);
 
+  // TuneContainerConfig sets (or, with value 0, reverts) ONE live knob on a
+  // RUNNING/PENDING container's persisted config (sp-vwek) — the generic runtime
+  // tune verb generalizing FactoryWorkerCap. The tune is validated against a
+  // static bounds registry (out-of-bounds/unknown keys rejected before any
+  // write), lands on the coordinator's NEXT reconcile tick with no restart,
+  // survives daemon restarts (the config column is the recovery source), and
+  // emits a config.tuned captain audit event on every effective change.
+  rpc TuneContainerConfig(TuneContainerConfigRequest) returns (TuneContainerConfigResponse);
+
+  // ShowTunableConfig lists a container's live-tunable knobs with their effective
+  // values, sources (live-config vs default), and bounds (sp-vwek `tune --show`,
+  // minimal coverage — the migrated engines only; full coverage is sp-kv27).
+  rpc ShowTunableConfig(ShowTunableConfigRequest) returns (ShowTunableConfigResponse);
+
   // GetFactoryStatus retrieves status and progress of a goods factory
   rpc GetFactoryStatus(GetFactoryStatusRequest) returns (GetFactoryStatusResponse);
 
@@ -1227,6 +1241,65 @@ message FactoryWorkerCapResponse {
   // changed is false when the verb was a no-op (the cap already equalled count),
   // so the CLI can report it honestly.
   bool changed = 3;
+}
+
+// TuneContainerConfigRequest sets one live knob on a running container (sp-vwek).
+message TuneContainerConfigRequest {
+  // container_id names the tune target directly. Exactly one of container_id
+  // and operation is required.
+  string container_id = 1;
+  // operation resolves the target by coordinator type (e.g. "freshsizer",
+  // "frontier") via the active-coordinator lookup, like `fleet hub` does.
+  string operation = 2;
+  // key is the knob to tune, e.g. "purchase_cooldown_secs".
+  string key = 3;
+  // value > 0 sets the knob (validated against the bounds registry);
+  // value == 0 REVERTS the knob to its documented default.
+  int64 value = 4;
+  optional int32 player_id = 5;
+  optional string agent_symbol = 6;
+}
+
+// TuneContainerConfigResponse reports old -> new effective values with units.
+message TuneContainerConfigResponse {
+  string container_id = 1;
+  string container_type = 2;
+  string key = 3;
+  int64 old_effective = 4;
+  string old_source = 5; // "live-config" | "default"
+  int64 new_effective = 6;
+  string new_source = 7;
+  string unit = 8;
+  int64 default_value = 9;
+  // changed is false when the verb was an idempotent no-op (no write, no audit).
+  bool changed = 10;
+}
+
+// ShowTunableConfigRequest lists a container's tunable knobs (sp-vwek --show).
+message ShowTunableConfigRequest {
+  string container_id = 1; // exactly one of container_id and operation
+  string operation = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+// TunableKnobStatus is one knob row of the --show listing.
+message TunableKnobStatus {
+  string key = 1;
+  int64 effective = 2;
+  string source = 3; // "live-config" | "default"
+  int64 min = 4;
+  int64 max = 5;
+  string unit = 6;
+  string description = 7;
+  int64 default_value = 8;
+}
+
+// ShowTunableConfigResponse is the full --show listing for one container.
+message ShowTunableConfigResponse {
+  string container_id = 1;
+  string container_type = 2;
+  repeated TunableKnobStatus knobs = 3;
 }
 
 // GetFactoryStatusRequest retrieves factory status

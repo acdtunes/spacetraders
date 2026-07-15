@@ -176,7 +176,7 @@ func TestSizer_DeclaresStandingPostSizedToModel(t *testing.T) {
 	fl := &fakeSizerFleetRepo{all: scouts(t, 3)}
 	h := newSizer(fr, pr, fl)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Len(t, pr.upserts, 1, "one standing post declared")
 	got := pr.upserts[0]
@@ -211,7 +211,7 @@ func TestSizer_UsesMeasuredCycleOverSeedWhenEnoughTelemetry(t *testing.T) {
 			cmd.SeedCycleSeconds = 180
 			cmd.MinCycleSamples = 3
 
-			require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 
 			require.Len(t, pr.upserts, 1)
 			require.Equal(t, tc.wantHulls, pr.upserts[0].Hulls)
@@ -233,7 +233,7 @@ func TestSizer_BuysWhenAggregateDemandExceedsSupply(t *testing.T) {
 	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
 	h.SetProbePurchaser(pu)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, 1, pu.buyCalls, "one probe bought to close the freshness capacity gap")
 }
@@ -250,7 +250,7 @@ func TestSizer_NoBuyWhenSupplyCoversAggregateDemand(t *testing.T) {
 	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
 	h.SetProbePurchaser(pu)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, 0, pu.buyCalls, "no purchase when supply covers demand")
 }
@@ -267,7 +267,7 @@ func TestSizer_RaisesHullsWhenActualFreshnessBreachesSLA(t *testing.T) {
 	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
 	h := newSizer(fr, pr, fl)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, 8, pr.hullUpdates["X1-VB74"], "8× SLA breach raises the post to 8 probes (ground-truth feedback)")
 	require.Empty(t, pr.upserts, "resize goes through UpdateHulls, never a manning-clobbering full Upsert")
@@ -294,7 +294,7 @@ func TestSizer_ReleasesProbesOnlyWhenComfortablyUnderSLA(t *testing.T) {
 			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
 			h := newSizer(fr, pr, fl)
 
-			require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 			if tc.wantHulls == 3 {
 				_, resized := pr.hullUpdates["X1-VB74"]
@@ -320,7 +320,7 @@ func TestSizer_RetiresStandingPostForMarketlessSystem(t *testing.T) {
 	fl := &fakeSizerFleetRepo{all: scouts(t, 10)}
 	h := newSizer(fr, pr, fl)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, []string{"X1-RETIRED"}, pr.removed, "the marketless system's post is retired, freeing its probes")
 }
@@ -340,7 +340,7 @@ func TestSizer_EmptyCensusRetiresNothing(t *testing.T) {
 	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
 	h.SetProbePurchaser(pu)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Empty(t, pr.removed, "an empty census must not mass-retire standing posts (fleet-killer guard)")
 	require.Equal(t, 0, pu.buyCalls, "no demand, no buy")
@@ -361,7 +361,7 @@ func TestSizer_PromotesSweepOncePostToStandingWhenMarketsFound(t *testing.T) {
 	fl := &fakeSizerFleetRepo{all: scouts(t, 10)}
 	h := newSizer(fr, pr, fl)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), sizerCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Len(t, pr.upserts, 1, "the sweep-once post is promoted through a full upsert")
 	got := pr.upserts[0]
@@ -382,7 +382,7 @@ func TestSizer_HonorsPerSystemSLAOverride(t *testing.T) {
 	cmd := sizerCmd()
 	cmd.SystemSLAOverrides = map[string]int{"X1-CRITICAL": 1800}
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 
 	require.Len(t, pr.upserts, 1)
 	require.Equal(t, 4, pr.upserts[0].Hulls, "ceil(60×120/1800)=4 under the 30min override")

@@ -66,6 +66,8 @@ const (
 	DaemonService_StartGoodsFactory_FullMethodName            = "/daemon.DaemonService/StartGoodsFactory"
 	DaemonService_StopGoodsFactory_FullMethodName             = "/daemon.DaemonService/StopGoodsFactory"
 	DaemonService_FactoryWorkerCap_FullMethodName             = "/daemon.DaemonService/FactoryWorkerCap"
+	DaemonService_TuneContainerConfig_FullMethodName          = "/daemon.DaemonService/TuneContainerConfig"
+	DaemonService_ShowTunableConfig_FullMethodName            = "/daemon.DaemonService/ShowTunableConfig"
 	DaemonService_GetFactoryStatus_FullMethodName             = "/daemon.DaemonService/GetFactoryStatus"
 	DaemonService_ScanArbitrageOpportunities_FullMethodName   = "/daemon.DaemonService/ScanArbitrageOpportunities"
 	DaemonService_StartArbitrageCoordinator_FullMethodName    = "/daemon.DaemonService/StartArbitrageCoordinator"
@@ -226,6 +228,18 @@ type DaemonServiceClient interface {
 	// converges its fan-out to N with no container restart; the cap persists across
 	// restarts.
 	FactoryWorkerCap(ctx context.Context, in *FactoryWorkerCapRequest, opts ...grpc.CallOption) (*FactoryWorkerCapResponse, error)
+	// TuneContainerConfig sets (or, with value 0, reverts) ONE live knob on a
+	// RUNNING/PENDING container's persisted config (sp-vwek) — the generic runtime
+	// tune verb generalizing FactoryWorkerCap. The tune is validated against a
+	// static bounds registry (out-of-bounds/unknown keys rejected before any
+	// write), lands on the coordinator's NEXT reconcile tick with no restart,
+	// survives daemon restarts (the config column is the recovery source), and
+	// emits a config.tuned captain audit event on every effective change.
+	TuneContainerConfig(ctx context.Context, in *TuneContainerConfigRequest, opts ...grpc.CallOption) (*TuneContainerConfigResponse, error)
+	// ShowTunableConfig lists a container's live-tunable knobs with their effective
+	// values, sources (live-config vs default), and bounds (sp-vwek `tune --show`,
+	// minimal coverage — the migrated engines only; full coverage is sp-kv27).
+	ShowTunableConfig(ctx context.Context, in *ShowTunableConfigRequest, opts ...grpc.CallOption) (*ShowTunableConfigResponse, error)
 	// GetFactoryStatus retrieves status and progress of a goods factory
 	GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
@@ -760,6 +774,26 @@ func (c *daemonServiceClient) FactoryWorkerCap(ctx context.Context, in *FactoryW
 	return out, nil
 }
 
+func (c *daemonServiceClient) TuneContainerConfig(ctx context.Context, in *TuneContainerConfigRequest, opts ...grpc.CallOption) (*TuneContainerConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TuneContainerConfigResponse)
+	err := c.cc.Invoke(ctx, DaemonService_TuneContainerConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ShowTunableConfig(ctx context.Context, in *ShowTunableConfigRequest, opts ...grpc.CallOption) (*ShowTunableConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ShowTunableConfigResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ShowTunableConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFactoryStatusResponse)
@@ -1125,6 +1159,18 @@ type DaemonServiceServer interface {
 	// converges its fan-out to N with no container restart; the cap persists across
 	// restarts.
 	FactoryWorkerCap(context.Context, *FactoryWorkerCapRequest) (*FactoryWorkerCapResponse, error)
+	// TuneContainerConfig sets (or, with value 0, reverts) ONE live knob on a
+	// RUNNING/PENDING container's persisted config (sp-vwek) — the generic runtime
+	// tune verb generalizing FactoryWorkerCap. The tune is validated against a
+	// static bounds registry (out-of-bounds/unknown keys rejected before any
+	// write), lands on the coordinator's NEXT reconcile tick with no restart,
+	// survives daemon restarts (the config column is the recovery source), and
+	// emits a config.tuned captain audit event on every effective change.
+	TuneContainerConfig(context.Context, *TuneContainerConfigRequest) (*TuneContainerConfigResponse, error)
+	// ShowTunableConfig lists a container's live-tunable knobs with their effective
+	// values, sources (live-config vs default), and bounds (sp-vwek `tune --show`,
+	// minimal coverage — the migrated engines only; full coverage is sp-kv27).
+	ShowTunableConfig(context.Context, *ShowTunableConfigRequest) (*ShowTunableConfigResponse, error)
 	// GetFactoryStatus retrieves status and progress of a goods factory
 	GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
@@ -1329,6 +1375,12 @@ func (UnimplementedDaemonServiceServer) StopGoodsFactory(context.Context, *StopG
 }
 func (UnimplementedDaemonServiceServer) FactoryWorkerCap(context.Context, *FactoryWorkerCapRequest) (*FactoryWorkerCapResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FactoryWorkerCap not implemented")
+}
+func (UnimplementedDaemonServiceServer) TuneContainerConfig(context.Context, *TuneContainerConfigRequest) (*TuneContainerConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TuneContainerConfig not implemented")
+}
+func (UnimplementedDaemonServiceServer) ShowTunableConfig(context.Context, *ShowTunableConfigRequest) (*ShowTunableConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ShowTunableConfig not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFactoryStatus not implemented")
@@ -2266,6 +2318,42 @@ func _DaemonService_FactoryWorkerCap_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_TuneContainerConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TuneContainerConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).TuneContainerConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_TuneContainerConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).TuneContainerConfig(ctx, req.(*TuneContainerConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ShowTunableConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ShowTunableConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ShowTunableConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ShowTunableConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ShowTunableConfig(ctx, req.(*ShowTunableConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_GetFactoryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetFactoryStatusRequest)
 	if err := dec(in); err != nil {
@@ -2874,6 +2962,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FactoryWorkerCap",
 			Handler:    _DaemonService_FactoryWorkerCap_Handler,
+		},
+		{
+			MethodName: "TuneContainerConfig",
+			Handler:    _DaemonService_TuneContainerConfig_Handler,
+		},
+		{
+			MethodName: "ShowTunableConfig",
+			Handler:    _DaemonService_ShowTunableConfig_Handler,
 		},
 		{
 			MethodName: "GetFactoryStatus",

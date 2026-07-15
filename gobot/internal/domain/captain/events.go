@@ -132,6 +132,16 @@ const (
 	// system, waypoint, and the heavy types + prices found.
 	EventHeavyYardDiscovered EventType = "shipyard.heavy_yard_discovered"
 
+	// EventConfigTuned is the audit record of every EFFECTIVE `spacetraders tune`
+	// write (sp-vwek): a live change to a running container's spend/cooldown/cap
+	// knob. These knobs move real credits, so a tune must never be a silent DB
+	// write — the payload carries container, key, old→new effective values, and
+	// the requested value. Deferred class (NOT in DefaultInterruptTypes): a tune
+	// is operator-initiated news the captain reads on the next wake, never worth
+	// forcing one. No-op re-tunes and rejected tunes emit nothing (no write
+	// happened, nothing to audit).
+	EventConfigTuned EventType = "config.tuned"
+
 	// EventPrometheusAlertFiring (sp-y0f6) fires once per Prometheus alertname
 	// found in the "firing" state on Prometheus's own /api/v1/alerts endpoint —
 	// EarnerDark, BurstSaturation, ApproachCeiling, StarvationWave (see

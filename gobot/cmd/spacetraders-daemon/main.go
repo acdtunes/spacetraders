@@ -969,6 +969,10 @@ func run(cfg *config.Config) error {
 		gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo,
 	))
 	frontierExpansionHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
+	// sp-vwek: per-tick live-config snapshots from the container's OWN config column,
+	// so `spacetraders tune` retunes the spend/cooldown/cap knobs on the next tick —
+	// no restart, no rebuild.
+	frontierExpansionHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {
 		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
 	}
@@ -997,6 +1001,9 @@ func run(cfg *config.Config) error {
 	// a resize cannot clobber the manning the scout reconciler wrote to the same row.
 	freshnessSizerHandler.SetHullUpdater(scoutPostRepo)
 	freshnessSizerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
+	// sp-vwek: per-tick live-config snapshots — the motivating retune surface (the
+	// cooldown/spend knobs hand-edited on 2026-07-15 are now `tune`-able live).
+	freshnessSizerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand](med, freshnessSizerHandler); err != nil {
 		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
 	}

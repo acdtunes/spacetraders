@@ -29,6 +29,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -207,6 +208,12 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	// event instead of ERROR lines nothing reads. Optional-injection via
 	// SetEventRecorder, nil-safe like the contract coordinator's captainEvents.
 	captainEvents captain.EventRecorder
+
+	// liveConfig snapshots the container's OWN persisted config at each tick start
+	// (sp-vwek/sp-0z7f), so a `spacetraders tune` of a spend/cooldown/cap knob takes
+	// effect on the NEXT tick with no restart. Optional-injection: nil keeps the
+	// launch-frozen behavior byte-identical.
+	liveConfig liveconfig.Reader
 }
 
 // NewRunFrontierExpansionCoordinatorHandler wires the coordinator. clock defaults to
@@ -256,6 +263,13 @@ func (h *RunFrontierExpansionCoordinatorHandler) SetEventRecorder(rec captain.Ev
 	h.captainEvents = rec
 }
 
+// SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek), making
+// the tunable knobs (FrontierTunableDefaults) honor `spacetraders tune` on the next
+// tick. Leaving it unset keeps every knob launch-frozen (the pre-sp-vwek behavior).
+func (h *RunFrontierExpansionCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
+	h.liveConfig = r
+}
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -280,7 +294,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 	// errMon makes a reconcile pass that fails with the identical error every tick
 	// observable (sp-e2l1): once the streak crosses DefaultStreakThreshold it emits a
 	// captain event instead of just another ERROR line. One per Handle invocation so
-	// the streak persists across ticks; noteReconcile keeps reconcileOnce — the tested
+	// the streak persists across ticks; noteReconcile keeps ReconcileOnce — the tested
 	// unit — unchanged.
 	errMon := health.NewMonitor(health.DefaultStreakThreshold)
 
@@ -291,7 +305,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 		default:
 		}
 
-		err := h.reconcileOnce(ctx, cmd)
+		err := h.ReconcileOnce(ctx, cmd)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Frontier expansion reconcile failed: %v", err), nil)
@@ -304,6 +318,20 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 		case <-ctx.Done():
 			return result, ctx.Err()
 		}
+	}
+}
+
+// FrontierTunableDefaults maps every LIVE-tunable frontier-expansion knob (sp-0z7f) to
+// its documented default — the value that applies when neither the live container
+// config nor the launch command carries a positive one. The daemon's tune bounds
+// registry reads THIS map, so the defaults-of-record stay in this file next to the
+// consts they mirror. The map's KEY SET is also the contract for which keys
+// resolveConfig live-overlays.
+func FrontierTunableDefaults() map[string]int {
+	return map[string]int{
+		"max_spend_per_cycle":    defaultMaxSpendPerCycle,
+		"purchase_cooldown_secs": int(defaultPurchaseCooldown / time.Second),
+		"max_probe_fleet":        defaultMaxProbeFleet,
 	}
 }
 
@@ -322,7 +350,15 @@ type frontierConfig struct {
 	WeightVirginBonus        int
 }
 
-func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand) frontierConfig {
+// resolveConfig resolves one tick's effective config. live is the tick-start snapshot
+// of the container's persisted config column (nil when unwired/unreadable). For the
+// TUNABLE knobs (FrontierTunableDefaults) a non-nil snapshot is AUTHORITATIVE: a
+// positive value is the live value (the launch verb wrote its values into the same
+// column, so untuned knobs still read their launch values here), and an absent/zeroed
+// key means the documented default — the `tune <key> 0` revert. Only when there is NO
+// snapshot does the launch command fill those knobs (fail-safe launch behavior). The
+// non-tunable knobs always resolve from the launch command, unchanged.
+func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.Snapshot) frontierConfig {
 	c := frontierConfig{
 		MaxProbeFleet:            cmd.MaxProbeFleet,
 		MaxSpendPerCycle:         cmd.MaxSpendPerCycle,
@@ -334,6 +370,11 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand) frontierConfig {
 		WeightKnownMarket:        cmd.WeightKnownMarket,
 		WeightHopPenalty:         cmd.WeightHopPenalty,
 		WeightVirginBonus:        cmd.WeightVirginBonus,
+	}
+	if live != nil {
+		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
+		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
+		c.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
 	}
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
@@ -382,7 +423,7 @@ type queueEntry struct {
 // (sp-6wxq): a nil err is a success that resets the streak; a non-nil err that
 // repeats identically for DefaultStreakThreshold consecutive passes crosses and
 // emits the coordinator error-loop captain event. Edge-triggered and nil-safe on
-// the recorder (health.RecordErrorLoop). Per-decision failures inside reconcileOnce
+// the recorder (health.RecordErrorLoop). Per-decision failures inside ReconcileOnce
 // (a probe purchase, a single scan) are logged WARNING and swallowed there, so only
 // a pass-level error — the genuine silent-stuck signal — is tracked here.
 func (h *RunFrontierExpansionCoordinatorHandler) noteReconcile(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand, errMon *health.Monitor, err error) {
@@ -395,15 +436,33 @@ func (h *RunFrontierExpansionCoordinatorHandler) noteReconcile(ctx context.Conte
 	}
 }
 
-// reconcileOnce is one reconcile pass — the unit the tests drive directly (Handle just
+// liveConfigSnapshot takes the tick's live-config snapshot (sp-vwek). A nil reader
+// (not wired — tests, minimal boots) or a read error yields nil, which resolveConfig
+// treats as "run this tick entirely on the launch command" — the fail-safe launch
+// behavior, never a half-applied config. The read is logged, not fatal: a transient
+// DB gap must not kill the reconcile loop.
+func (h *RunFrontierExpansionCoordinatorHandler) liveConfigSnapshot(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand) liveconfig.Snapshot {
+	if h.liveConfig == nil {
+		return nil
+	}
+	snap, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID.Value())
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Live config unreadable — this tick runs on launch values: %v", err), nil)
+		return nil
+	}
+	return snap
+}
+
+// ReconcileOnce is one reconcile pass — the unit the tests drive directly (Handle just
 // calls it on a timer). It MEASURES demand, DECLARES the top frontier target, and BUYS
 // one probe when the fleet is short and every guard passes. It is idempotent: a restart
 // re-derives everything from persisted state (posts, ships, ledger), so it never
 // double-declares (Upsert is keyed by system) or double-buys (the cooldown reads the
-// ledger, not memory).
-func (h *RunFrontierExpansionCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand) error {
+// ledger, not memory). The tick runs entirely on the live-config snapshot taken here;
+// a knob tuned mid-tick lands next tick.
+func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand) error {
 	logger := common.LoggerFromContext(ctx)
-	cfg := resolveConfig(cmd)
+	cfg := resolveConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
 
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {

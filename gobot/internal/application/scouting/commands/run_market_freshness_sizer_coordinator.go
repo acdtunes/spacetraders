@@ -41,6 +41,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
@@ -58,13 +59,13 @@ const (
 	// Config defaults (RULINGS #5: every operational value is a flag/config key, filled
 	// here only when the launch config leaves it unset).
 	defaultSizerTickSeconds    = 60
-	defaultSLASeconds          = 3600   // 1h freshness SLA
-	defaultSeedCycleSeconds    = 180    // seeded per-market cycle until telemetry exists
-	defaultMinCycleSamples     = 3      // min consecutive-interval samples to trust a measured cycle
-	defaultMaxProbesPerSystem  = 8      // per-system hull cap (bounds a runaway feedback raise)
-	defaultReleaseSlackPercent = 60     // release a feedback probe only below this % of the SLA (hysteresis)
-	defaultSizerMaxProbeFleet  = 40     // total satellite cap
-	defaultSizerMaxSpend       = 500000 // max probe spend within the trailing spend window (Admiral 2026-07-15: ~17 probes/hr ramp; 25%-treasury + fleet cap still bind)
+	defaultSLASeconds          = 3600            // 1h freshness SLA
+	defaultSeedCycleSeconds    = 180             // seeded per-market cycle until telemetry exists
+	defaultMinCycleSamples     = 3               // min consecutive-interval samples to trust a measured cycle
+	defaultMaxProbesPerSystem  = 8               // per-system hull cap (bounds a runaway feedback raise)
+	defaultReleaseSlackPercent = 60              // release a feedback probe only below this % of the SLA (hysteresis)
+	defaultSizerMaxProbeFleet  = 40              // total satellite cap
+	defaultSizerMaxSpend       = 500000          // max probe spend within the trailing spend window (Admiral 2026-07-15: ~17 probes/hr ramp; 25%-treasury + fleet cap still bind)
 	defaultSizerCooldown       = 1 * time.Minute // Admiral 2026-07-15: fast ramp; spend window + treasury/fleet caps still bound total buys
 	defaultSizerSpendWindow    = 1 * time.Hour
 )
@@ -142,6 +143,12 @@ type RunMarketFreshnessSizerCoordinatorHandler struct {
 	// captainEvents emits the coordinator error-loop event when a reconcile pass fails with
 	// the identical error for DefaultStreakThreshold consecutive ticks. Optional-injection.
 	captainEvents captain.EventRecorder
+
+	// liveConfig snapshots the container's OWN persisted config at each tick start
+	// (sp-vwek/sp-0z7f), so a `spacetraders tune` of a spend/cooldown/cap knob takes
+	// effect on the NEXT tick with no restart. Optional-injection: nil keeps the
+	// launch-frozen behavior byte-identical.
+	liveConfig liveconfig.Reader
 }
 
 // NewRunMarketFreshnessSizerCoordinatorHandler wires the coordinator. clock defaults to the
@@ -189,6 +196,13 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) SetEventRecorder(rec captain
 	h.captainEvents = rec
 }
 
+// SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek), making
+// the tunable knobs (SizerTunableDefaults) honor `spacetraders tune` on the next tick.
+// Leaving it unset keeps every knob launch-frozen (the pre-sp-vwek behavior).
+func (h *RunMarketFreshnessSizerCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
+	h.liveConfig = r
+}
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunMarketFreshnessSizerCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -219,7 +233,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) Handle(ctx context.Context, 
 		default:
 		}
 
-		err := h.reconcileOnce(ctx, cmd)
+		err := h.ReconcileOnce(ctx, cmd)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Freshness sizer reconcile failed: %v", err), nil)
@@ -248,6 +262,24 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) noteReconcile(ctx context.Co
 	}
 }
 
+// SizerTunableDefaults maps every LIVE-tunable freshness-sizer knob (sp-0z7f) to its
+// documented default — the value that applies when neither the live container config
+// nor the launch command carries a positive one. The daemon's tune bounds registry
+// reads THIS map, so the defaults-of-record stay in this file next to the consts they
+// mirror (including today's Admiral retunes: cooldown 1m, max spend 500k). The map's
+// KEY SET is also the contract for which keys resolveSizerConfig live-overlays.
+func SizerTunableDefaults() map[string]int {
+	return map[string]int{
+		"max_spend_per_cycle":    defaultSizerMaxSpend,
+		"purchase_cooldown_secs": int(defaultSizerCooldown / time.Second),
+		"spend_window_secs":      int(defaultSizerSpendWindow / time.Second),
+		"max_probe_fleet":        defaultSizerMaxProbeFleet,
+		"max_probes_per_system":  defaultMaxProbesPerSystem,
+		"sla_seconds":            defaultSLASeconds,
+		"release_slack_percent":  defaultReleaseSlackPercent,
+	}
+}
+
 // sizerConfig is the launch command with every default resolved.
 type sizerConfig struct {
 	DefaultSLA          time.Duration
@@ -259,7 +291,15 @@ type sizerConfig struct {
 	Buy                 probebuy.Config
 }
 
-func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand) sizerConfig {
+// resolveSizerConfig resolves one tick's effective config. live is the tick-start
+// snapshot of the container's persisted config column (nil when unwired/unreadable).
+// For the TUNABLE knobs (SizerTunableDefaults) a non-nil snapshot is AUTHORITATIVE:
+// a positive value is the live value (the launch verb wrote its values into the same
+// column, so untuned knobs still read their launch values here), and an absent/zeroed
+// key means the documented default — the `tune <key> 0` revert. Only when there is NO
+// snapshot does the launch command fill those knobs (fail-safe launch behavior). The
+// non-tunable knobs always resolve from the launch command, unchanged.
+func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liveconfig.Snapshot) sizerConfig {
 	c := sizerConfig{
 		DefaultSLA:          time.Duration(cmd.SLASeconds) * time.Second,
 		SeedCycle:           time.Duration(cmd.SeedCycleSeconds) * time.Second,
@@ -272,6 +312,15 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand) sizerCon
 			PurchaseCooldown: time.Duration(cmd.PurchaseCooldownSecs) * time.Second,
 			SpendWindow:      time.Duration(cmd.SpendWindowSecs) * time.Second,
 		},
+	}
+	if live != nil {
+		c.DefaultSLA = time.Duration(live.PositiveIntOrZero("sla_seconds")) * time.Second
+		c.MaxProbesPerSystem = live.PositiveIntOrZero("max_probes_per_system")
+		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
+		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
+		c.Buy.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
+		c.Buy.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
+		c.Buy.SpendWindow = time.Duration(live.PositiveIntOrZero("spend_window_secs")) * time.Second
 	}
 	if c.DefaultSLA <= 0 {
 		c.DefaultSLA = defaultSLASeconds * time.Second
@@ -316,12 +365,30 @@ func (c sizerConfig) slaFor(system string) time.Duration {
 	return c.DefaultSLA
 }
 
-// reconcileOnce is one reconcile pass — the unit the tests drive directly. It MEASURES the
+// liveConfigSnapshot takes the tick's live-config snapshot (sp-vwek). A nil reader
+// (not wired — tests, minimal boots) or a read error yields nil, which
+// resolveSizerConfig treats as "run this tick entirely on the launch command" — the
+// fail-safe launch behavior, never a half-applied config. The read is logged, not
+// fatal: a transient DB gap must not kill the reconcile loop.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) liveConfigSnapshot(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) liveconfig.Snapshot {
+	if h.liveConfig == nil {
+		return nil
+	}
+	snap, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID.Value())
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Live config unreadable — this tick runs on launch values: %v", err), nil)
+		return nil
+	}
+	return snap
+}
+
+// ReconcileOnce is one reconcile pass — the unit the tests drive directly. It MEASURES the
 // per-system freshness demand, SIZES each market-bearing system's standing post, and BUYS
-// one probe when the aggregate demand outruns supply and every guard passes.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) error {
+// one probe when the aggregate demand outruns supply and every guard passes. The tick runs
+// entirely on the live-config snapshot taken here; a knob tuned mid-tick lands next tick.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) error {
 	logger := common.LoggerFromContext(ctx)
-	cfg := resolveSizerConfig(cmd)
+	cfg := resolveSizerConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
 
 	snapshots, err := h.freshnessReader.SystemsFreshness(ctx, cmd.PlayerID.Value())
 	if err != nil {

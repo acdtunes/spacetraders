@@ -210,7 +210,7 @@ func TestFrontier_DeclaresTopRankedFrontierPost(t *testing.T) {
 		{SystemSymbol: "X1-MID", Hops: 1, KnownMarkets: 3, Charted: true},
 	}})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 
 	require.Len(t, pr.upserts, 1, "exactly one frontier post declared (the head)")
 	got := pr.upserts[0]
@@ -240,7 +240,7 @@ func TestFrontier_RankingRespectsConfigWeights(t *testing.T) {
 	cmd.WeightHopPenalty = 20
 	cmd.WeightVirginBonus = 100
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 
 	require.Len(t, pr.upserts, 1)
 	require.Equal(t, "X1-VIRGIN", pr.upserts[0].SystemSymbol, "config weights make the near virgin outrank the far market cluster")
@@ -258,7 +258,7 @@ func TestFrontier_CoveredSystemExcludedFromQueue(t *testing.T) {
 		{SystemSymbol: "X1-MID", Hops: 1, KnownMarkets: 3, Charted: true},
 	}})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 
 	require.Len(t, pr.upserts, 1)
 	require.Equal(t, "X1-MID", pr.upserts[0].SystemSymbol, "the covered X1-HIGH is skipped; next best declared")
@@ -284,7 +284,7 @@ func TestFrontier_ChartedButUnscannedSystemIsScouted(t *testing.T) {
 		{SystemSymbol: "X1-UNSCANNED", Hops: 2, KnownMarkets: 0, Charted: true, Scanned: false}, // gate charted, waypoints never swept
 	}})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 
 	require.Len(t, pr.upserts, 1, "a charted-gate-but-unscanned system is a scout target, not dropped")
 	require.Equal(t, "X1-UNSCANNED", pr.upserts[0].SystemSymbol,
@@ -310,7 +310,7 @@ func TestFrontier_ScannedMarketlessSystemNotDeclared(t *testing.T) {
 		{SystemSymbol: "X1-BARREN", Hops: 2, KnownMarkets: 0, Charted: true, Scanned: true}, // swept, genuinely marketless
 	}})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 
 	require.Empty(t, pr.upserts,
 		"a scanned-and-genuinely-marketless system is dropped, not re-declared every cycle")
@@ -336,7 +336,7 @@ func TestFrontier_OccupiedAnchorSystemNotDeclared(t *testing.T) {
 		{SystemSymbol: "X1-VIRGIN", Hops: 1, KnownMarkets: 0, Charted: false}, // the genuine cross-system frontier
 	}})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 
 	require.Len(t, pr.upserts, 1, "exactly one frontier post declared")
 	require.Equal(t, "X1-VIRGIN", pr.upserts[0].SystemSymbol,
@@ -362,7 +362,7 @@ func TestFrontier_DeclarationCappedByInFlight(t *testing.T) {
 	cmd := testCmd()
 	cmd.MaxFrontierPostsInFlight = 2
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 	require.Empty(t, pr.upserts, "declaration blocked at the in-flight cap")
 }
 
@@ -380,7 +380,7 @@ func TestFrontier_NoTarget_NoBuy(t *testing.T) {
 	h.SetProbePurchaser(buyer)
 	h.SetExpansionScanner(&fakeScanner{candidates: nil})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "no target → no buy")
 	require.Empty(t, pr.upserts, "nothing to declare")
 }
@@ -397,7 +397,7 @@ func TestFrontier_IdleProbeAvailable_NoBuy(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "an idle probe covers the open slot → the reconciler relays it, no buy")
 }
 
@@ -413,7 +413,7 @@ func TestFrontier_TreasuryUnreadable_NoBuy(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "unreadable treasury fails closed — no buy")
 }
 
@@ -428,7 +428,7 @@ func TestFrontier_NoTreasuryReader_NoBuy(t *testing.T) {
 	h.SetProbePurchaser(buyer)
 	// No treasury reader wired.
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "no treasury reader → fail closed")
 }
 
@@ -443,7 +443,7 @@ func TestFrontier_TwentyFivePercentRule(t *testing.T) {
 		h.SetTreasuryReader(&fakeTreasury{credits: credits})
 		buyer := &fakePurchaser{quotePrice: price, quoteYard: "X1-HOME-SY", buySymbol: "NEW", buyPrice: price}
 		h.SetProbePurchaser(buyer)
-		require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+		require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 		return buyer
 	}
 
@@ -472,7 +472,7 @@ func TestFrontier_FleetCapEnforced(t *testing.T) {
 	cmd := testCmd()
 	cmd.MaxProbeFleet = 2
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 	require.Zero(t, buyer.buyCalls, "fleet cap reached → no buy")
 }
 
@@ -496,7 +496,7 @@ func TestFrontier_CycleSpendCapEnforced(t *testing.T) {
 	cmd.SpendWindowSecs = 3600    // 1h spend window → the 2-min-old buy IS inside it
 	cmd.MaxProbeFleet = 40
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 	require.Zero(t, buyer.buyCalls, "window spend + price exceeds the per-cycle cap → no buy")
 }
 
@@ -516,7 +516,7 @@ func TestFrontier_CooldownEnforced_FromLedger(t *testing.T) {
 	cmd := testCmd()
 	cmd.PurchaseCooldownSecs = int((10 * time.Minute).Seconds()) // 10 min cooldown; last buy 2 min ago
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 	require.Zero(t, buyer.buyCalls, "within cooldown (derived from the ledger) → no buy")
 }
 
@@ -539,7 +539,7 @@ func TestFrontier_RestartMidCycle_NoDoubleBuy(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 	require.Zero(t, buyer.buyCalls, "post-restart, the ledger-derived cooldown prevents a double-buy")
 }
 
@@ -554,7 +554,7 @@ func TestFrontier_LedgerUnreadable_NoBuy(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "unreadable purchase ledger fails closed")
 }
 
@@ -572,7 +572,7 @@ func TestFrontier_BuysProbeWhenShortAndGuardsPass(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "PROBE-NEW", buyPrice: 20000}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Equal(t, 1, buyer.buyCalls, "one probe bought")
 	require.Equal(t, 100000, buyer.lastBudget, "budget is 25% of the 400000 treasury")
 }
@@ -597,7 +597,7 @@ func TestFrontier_ClaimsNoHulls(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "PROBE-NEW", buyPrice: 20000}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Equal(t, 1, buyer.buyCalls, "short by one → buys one")
 	require.True(t, idle.IsIdle(), "the counted idle probe is never claimed by this coordinator")
 	require.Empty(t, idle.DedicatedFleet(), "and never dedicated by it")
@@ -621,7 +621,7 @@ func TestFrontier_DryRun_ActsOnNothing(t *testing.T) {
 	cmd := testCmd()
 	cmd.DryRun = true
 
-	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 	require.Empty(t, pr.upserts, "dry-run declares nothing")
 	require.Zero(t, buyer.buyCalls, "dry-run buys nothing")
 	require.Positive(t, buyer.quoteCalls, "dry-run still evaluates (quotes) the decision")
@@ -640,7 +640,7 @@ func TestFrontier_NoScanner_ServesSlotDemandOnly(t *testing.T) {
 	h.SetProbePurchaser(buyer)
 	// No scanner.
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Empty(t, pr.upserts, "no scanner → no expansion declarations")
 	require.Equal(t, 1, buyer.buyCalls, "unmanned-slot demand still drives a buy")
 }
@@ -659,7 +659,7 @@ func TestFrontier_RepositioningSlotNotDemand(t *testing.T) {
 	buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "NEW", buyPrice: 20000}
 	h.SetProbePurchaser(buyer)
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "a slot with a relay in flight is being served — not demand, no buy")
 }
 
@@ -684,7 +684,7 @@ func TestFrontier_OccupiedAnchorSystem_NoSpuriousBuy(t *testing.T) {
 		{SystemSymbol: "X1-HOME", Hops: 0, KnownMarkets: 5, Charted: true}, // only candidate: the occupied anchor
 	}})
 
-	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 
 	require.Empty(t, pr.upserts, "the occupied anchor is not declared")
 	require.Zero(t, buyer.buyCalls, "and no probe is bought to serve an in-system-coverable occupied system")

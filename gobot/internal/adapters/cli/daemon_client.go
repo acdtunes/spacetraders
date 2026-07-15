@@ -1078,6 +1078,44 @@ func (c *DaemonClient) FactoryWorkerCap(ctx context.Context, containerID string,
 	return resp, nil
 }
 
+// TuneContainerConfig sets (or, with value 0, reverts) one live knob on a running
+// container's persisted config, with no container restart (sp-vwek).
+func (c *DaemonClient) TuneContainerConfig(ctx context.Context, containerID, operation, key string, value int64, playerID *int32, agentSymbol *string) (*pb.TuneContainerConfigResponse, error) {
+	req := &pb.TuneContainerConfigRequest{
+		ContainerId: containerID,
+		Operation:   operation,
+		Key:         key,
+		Value:       value,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.TuneContainerConfig(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
+// ShowTunableConfig lists a running container's live-tunable knobs with their
+// effective values, sources, and bounds (sp-vwek `tune --show`).
+func (c *DaemonClient) ShowTunableConfig(ctx context.Context, containerID, operation string, playerID *int32, agentSymbol *string) (*pb.ShowTunableConfigResponse, error) {
+	req := &pb.ShowTunableConfigRequest{
+		ContainerId: containerID,
+		Operation:   operation,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.ShowTunableConfig(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
 func (c *DaemonClient) ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error) {
 	req := &pb.ListFleetsRequest{
