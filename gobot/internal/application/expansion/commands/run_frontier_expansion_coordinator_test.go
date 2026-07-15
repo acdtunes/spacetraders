@@ -279,6 +279,33 @@ func TestFrontier_ChartedMarketlessSystemNotDeclared(t *testing.T) {
 	require.Empty(t, pr.upserts, "an unserviceable charted-marketless system is not declared")
 }
 
+// sp-njwy STARVATION: the frontier must NOT auto-declare a post for a system it ALREADY
+// OCCUPIES (a hop-0 anchor — the HQ or any system the fleet already sits in). Such a system
+// is coverable in-system with no relay; declaring it as a frontier post spins up a local
+// in-system sweep tour that ABSORBS every freshly-bought probe — the scout reconciler mans
+// in-system posts before it relays a probe to a cross-system one — so the genuine virgin
+// frontier is starved of the probes it can only reach by gate-jump. Expansion targets NEW
+// systems. Here the occupied home outranks the virgin on raw score, yet the virgin (the real
+// frontier) must be the post that gets declared, leaving fresh probes idle-and-claimable for
+// the relay.
+func TestFrontier_OccupiedAnchorSystemNotDeclared(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	pr := &fakePostRepo{}
+	fr := &fakeFleetRepo{idle: []*navigation.Ship{newProbe(t, "P1", "X1-HOME-A1")}} // supply covers → isolate declaration
+	lr := &fakeLedgerRepo{}
+	h := newHandler(pr, fr, lr, clock)
+	h.SetExpansionScanner(&fakeScanner{candidates: []ExpansionCandidate{
+		{SystemSymbol: "X1-HOME", Hops: 0, KnownMarkets: 5, Charted: true},    // occupied anchor, TOP raw score
+		{SystemSymbol: "X1-VIRGIN", Hops: 1, KnownMarkets: 0, Charted: false}, // the genuine cross-system frontier
+	}})
+
+	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+
+	require.Len(t, pr.upserts, 1, "exactly one frontier post declared")
+	require.Equal(t, "X1-VIRGIN", pr.upserts[0].SystemSymbol,
+		"the occupied hop-0 anchor is excluded from expansion; the cross-system virgin is declared instead")
+}
+
 // Pin #3: declaration is bounded by MaxFrontierPostsInFlight so it never outruns manning.
 func TestFrontier_DeclarationCappedByInFlight(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
@@ -597,4 +624,31 @@ func TestFrontier_RepositioningSlotNotDemand(t *testing.T) {
 
 	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
 	require.Zero(t, buyer.buyCalls, "a slot with a relay in flight is being served — not demand, no buy")
+}
+
+// sp-njwy OVER-BUY: an occupied (hop-0) system is coverable in-system, so the frontier must
+// never BUY a probe to "serve" it. Before the fix the anchor was auto-declared as a sweep-once
+// post whose unmanned slot counted as buy-demand, so with no idle probe on hand the coordinator
+// bought a probe the system never needed — the credits-wasting over-buy the bead flags. With the
+// occupied anchor excluded from expansion there is no such demand and no buy. (The demand guard's
+// subtraction of idle probes + in-flight relays is already covered by
+// TestFrontier_IdleProbeAvailable_NoBuy and TestFrontier_RepositioningSlotNotDemand; this pins the
+// remaining over-buy vector — spurious demand from a system we already occupy.)
+func TestFrontier_OccupiedAnchorSystem_NoSpuriousBuy(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	pr := &fakePostRepo{}  // no posts
+	fr := &fakeFleetRepo{} // no idle probes → the cycle would look "short" and buy
+	lr := &fakeLedgerRepo{}
+	h := newHandler(pr, fr, lr, clock)
+	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
+	buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "NEW", buyPrice: 20000}
+	h.SetProbePurchaser(buyer)
+	h.SetExpansionScanner(&fakeScanner{candidates: []ExpansionCandidate{
+		{SystemSymbol: "X1-HOME", Hops: 0, KnownMarkets: 5, Charted: true}, // only candidate: the occupied anchor
+	}})
+
+	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
+
+	require.Empty(t, pr.upserts, "the occupied anchor is not declared")
+	require.Zero(t, buyer.buyCalls, "and no probe is bought to serve an in-system-coverable occupied system")
 }

@@ -617,6 +617,17 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildExpansionQueue(
 		if covered[c.SystemSymbol] {
 			continue // already has a declared post
 		}
+		if c.Hops == 0 {
+			// sp-njwy: an occupied/anchor system (hop 0 — the HQ or a system the fleet
+			// already sits in) is NOT a frontier. Auto-declaring it as a sweep-once post
+			// spins up a LOCAL in-system sweep tour that absorbs every freshly-bought probe
+			// before the scout reconciler can relay it to a genuinely virgin CROSS-SYSTEM
+			// post (the starvation that left all virgin posts unmanned), and its
+			// in-system-coverable slot spuriously inflates buy demand (the over-buy). Skip
+			// it: expansion targets systems we do NOT yet occupy, so fresh probes stay idle
+			// and claimable for the gate-jump relay.
+			continue
+		}
 		virgin := !c.Charted
 		if c.KnownMarkets == 0 && !virgin {
 			continue // charted but marketless and unposted — nothing to scan
