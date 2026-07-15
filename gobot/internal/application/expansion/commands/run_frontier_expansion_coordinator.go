@@ -83,6 +83,12 @@ const (
 	// raise it toward absolute proximity or lower it toward the cheapest reachable yard. Mirrors
 	// probebuy.DefaultHopPenaltyCredits (the freshness sizer's untuned value).
 	defaultProximalYardHopPenalty = probebuy.DefaultHopPenaltyCredits
+
+	// defaultProbeSiblingPriceMargin is the sp-iqv2 supply-depletion / load-balance margin: once the
+	// hop-penalty-preferred probe-yard's scanned price exceeds the cheapest reachable sibling by more
+	// than this, the buy spreads to that sibling instead of spiraling one market to 4x (the live home
+	// hub 20k→86k). It bounds the premium proximity may pay. Mirrors probebuy.DefaultSiblingPriceMarginCredits.
+	defaultProbeSiblingPriceMargin = probebuy.DefaultSiblingPriceMarginCredits
 	// Depth-vs-breadth balance (sp-rjgr). Pure BFS scores hop-1 above hop-2 EVERY time, so with
 	// scout throughput < ring width the near ring never drains and no probe ever reaches the depth
 	// a heavy-freighter yard needs. The depth slice reserves a fraction of frontier capacity for
@@ -254,6 +260,9 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// ProximalYardHopPenalty is the demand-proximal probe-buy tradeoff (sp-hej4): credits of
 	// price premium accepted per gate-hop closer to the target post's system. <= 0 → default.
 	ProximalYardHopPenalty int
+	// ProbeSiblingPriceMargin is the sp-iqv2 supply-depletion / load-balance margin: the buy spreads
+	// off a yard once a cheaper reachable sibling undercuts it by more than this. <= 0 → default.
+	ProbeSiblingPriceMargin int
 	// Depth-vs-breadth balance knobs (sp-rjgr), all live-tunable (FrontierTunableDefaults).
 	BreadthFractionPercent int // breadth share; depth = 100 - this. 100 ⇒ pure BFS.
 	MaxDepthPathfinders    int // cap on concurrent depth posts
@@ -438,10 +447,11 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 // resolveConfig live-overlays.
 func FrontierTunableDefaults() map[string]int {
 	return map[string]int{
-		"max_spend_per_cycle":       defaultMaxSpendPerCycle,
-		"purchase_cooldown_secs":    int(defaultPurchaseCooldown / time.Second),
-		"max_probe_fleet":           defaultMaxProbeFleet,
-		"proximal_yard_hop_penalty": defaultProximalYardHopPenalty,
+		"max_spend_per_cycle":        defaultMaxSpendPerCycle,
+		"purchase_cooldown_secs":     int(defaultPurchaseCooldown / time.Second),
+		"max_probe_fleet":            defaultMaxProbeFleet,
+		"proximal_yard_hop_penalty":  defaultProximalYardHopPenalty,
+		"probe_sibling_price_margin": defaultProbeSiblingPriceMargin,
 		// Depth-vs-breadth balance (sp-rjgr) — retunable live with no restart.
 		"breadth_fraction_percent": defaultBreadthFractionPercent,
 		"max_depth_pathfinders":    defaultMaxDepthPathfinders,
@@ -470,6 +480,7 @@ type frontierConfig struct {
 	WeightHopPenalty         int
 	WeightVirginBonus        int
 	ProximalYardHopPenalty   int
+	ProbeSiblingPriceMargin  int
 	BreadthFractionPercent   int
 	MaxDepthPathfinders      int
 	MaxDepthHops             int
@@ -503,6 +514,7 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		WeightHopPenalty:         cmd.WeightHopPenalty,
 		WeightVirginBonus:        cmd.WeightVirginBonus,
 		ProximalYardHopPenalty:   cmd.ProximalYardHopPenalty,
+		ProbeSiblingPriceMargin:  cmd.ProbeSiblingPriceMargin,
 		BreadthFractionPercent:   cmd.BreadthFractionPercent,
 		MaxDepthPathfinders:      cmd.MaxDepthPathfinders,
 		MaxDepthHops:             cmd.MaxDepthHops,
@@ -519,6 +531,7 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
 		c.ProximalYardHopPenalty = live.PositiveIntOrZero("proximal_yard_hop_penalty")
+		c.ProbeSiblingPriceMargin = live.PositiveIntOrZero("probe_sibling_price_margin")
 		c.BreadthFractionPercent = live.PositiveIntOrZero("breadth_fraction_percent")
 		c.MaxDepthPathfinders = live.PositiveIntOrZero("max_depth_pathfinders")
 		c.MaxDepthHops = live.PositiveIntOrZero("max_depth_hops")
@@ -563,6 +576,9 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	}
 	if c.ProximalYardHopPenalty <= 0 {
 		c.ProximalYardHopPenalty = defaultProximalYardHopPenalty
+	}
+	if c.ProbeSiblingPriceMargin <= 0 {
+		c.ProbeSiblingPriceMargin = defaultProbeSiblingPriceMargin
 	}
 	if c.BreadthFractionPercent <= 0 {
 		c.BreadthFractionPercent = defaultBreadthFractionPercent
@@ -758,7 +774,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	logger := common.LoggerFromContext(ctx)
 	// The demand-proximal yard hint handed to the quote+buy (sp-hej4). SELECTION only — every
 	// guard below is unchanged and gates the buy on the quoted price of the selected yard.
-	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty}
+	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty, SiblingPriceMarginCredits: cfg.ProbeSiblingPriceMargin}
 
 	// A named target must exist: an unmanned slot on a declared post. The expansion
 	// queue only becomes a target once declared into a post (above), so gating on

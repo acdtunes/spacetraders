@@ -636,8 +636,10 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	buyer := probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg.Buy)
 	// Demand-proximal buy hint (sp-hej4): spawn the probe at the yard nearest the neediest system.
 	// The sizer has no per-hop tuning knob of its own, so it applies the shared default penalty
-	// (proximity-first). An empty neediestSystem is the home-yard path — unchanged.
-	target := probebuy.ProbeTarget{System: neediestSystem, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits}
+	// (proximity-first) and the shared sp-iqv2 supply-depletion margin so a repeated aggregate buy
+	// spreads across sibling yards instead of spiraling one market to 4x. An empty neediestSystem is
+	// the home-yard path — unchanged.
+	target := probebuy.ProbeTarget{System: neediestSystem, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits}
 	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, totalDemand, supply, cmd.DryRun, target)
 
 	logger.Log("INFO", fmt.Sprintf("Freshness sizer cycle: %d market-bearing systems, aggregate demand %d probes, supply %d, %d retired — %s", len(marketBearing), totalDemand, supply, retired, outcome.Reason), map[string]interface{}{

@@ -103,10 +103,11 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"reserved_frontier_floor":    {Type: "int", Min: 0, Max: 200, Default: sizer["reserved_frontier_floor"], Unit: "hulls", Description: "sp-iopd MVP: probes reserved for the frontier — the sizer holds its aggregate against (supply − this) and releases the surplus; 0 = off (pre-sp-iopd)"},
 		},
 		string(container.ContainerTypeFrontierExpansion): {
-			"max_spend_per_cycle":       {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
-			"purchase_cooldown_secs":    {Type: "int", Min: 10, Max: 86_400, Default: frontier["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
-			"max_probe_fleet":           {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
-			"proximal_yard_hop_penalty": {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["proximal_yard_hop_penalty"], Unit: "credits", Description: "price premium accepted per gate-hop closer to the target post when picking the probe yard (sp-hej4); 0 = cheapest reachable yard"},
+			"max_spend_per_cycle":        {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
+			"purchase_cooldown_secs":     {Type: "int", Min: 10, Max: 86_400, Default: frontier["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
+			"max_probe_fleet":            {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
+			"proximal_yard_hop_penalty":  {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["proximal_yard_hop_penalty"], Unit: "credits", Description: "price premium accepted per gate-hop closer to the target post when picking the probe yard (sp-hej4); 0 = cheapest reachable yard"},
+			"probe_sibling_price_margin": {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["probe_sibling_price_margin"], Unit: "credits", Description: "sp-iqv2 supply-depletion margin: spread the probe buy off a yard once a cheaper reachable sibling undercuts it by more than this (prevents one market spiraling to 4x); 0 = pure proximity (no spread)"},
 			// sp-rjgr depth-vs-breadth balance — retune the outward drive live, no restart.
 			"breadth_fraction_percent": {Type: "int", Min: 1, Max: 100, Default: frontier["breadth_fraction_percent"], Unit: "percent", Description: "breadth share of frontier capacity (depth = 100 - this; 100 ⇒ pure BFS)"},
 			"max_depth_pathfinders":    {Type: "int", Min: 1, Max: 20, Default: frontier["max_depth_pathfinders"], Unit: "hulls", Description: "cap on concurrent depth-pathfinder posts"},

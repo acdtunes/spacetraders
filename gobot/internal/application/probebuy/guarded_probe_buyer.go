@@ -50,9 +50,17 @@ type TreasuryReader interface {
 // saving clears the penalty (a yard's effective cost is PurchasePrice + Hops*HopPenaltyCredits;
 // the lowest wins). It is a SIGNAL only: the fail-closed money guards (25% treasury, spend cap,
 // cooldown, fleet cap) are unchanged and still gate every buy on the yard the target selected.
+//
+// SiblingPriceMarginCredits is the sp-iqv2 supply-depletion / load-balance threshold: repeated
+// buys at one yard raise its price (LIMITED→SCARCE), so once the hop-penalty-preferred yard's
+// scanned price exceeds the CHEAPEST reachable sibling by more than this margin, the buy spreads
+// to that sibling instead of spiraling one market to 4x. It bounds the premium the proximity
+// preference may pay: a yard is abandoned the moment a sibling undercuts it by more than the
+// margin. <=0 disables the override (pure HopPenaltyCredits selection — the pre-sp-iqv2 lever).
 type ProbeTarget struct {
-	System            string
-	HopPenaltyCredits int
+	System                    string
+	HopPenaltyCredits         int
+	SiblingPriceMarginCredits int
 }
 
 // DefaultHopPenaltyCredits is the demand-proximal tradeoff a caller applies when it resolves a
@@ -62,6 +70,14 @@ type ProbeTarget struct {
 // frontier coordinator's live proximal_yard_hop_penalty knob can raise it toward absolute
 // proximity or lower it toward the cheapest reachable yard.
 const DefaultHopPenaltyCredits = 50_000
+
+// DefaultSiblingPriceMarginCredits is the sp-iqv2 supply-depletion margin a caller applies when it
+// carries no tuned per-yard-spread knob of its own (the freshness sizer). ~a probe's price: it
+// abandons a yard once a reachable sibling undercuts it by more than this, so a market can never
+// spiral toward the observed 4x (home hub 20k→86k) — the proximity preference may pay a modest
+// premium but not a runaway one. The frontier coordinator's live probe_sibling_price_margin knob
+// tunes it up (tolerate a wider premium for proximity) or down (spread more aggressively).
+const DefaultSiblingPriceMarginCredits = 30_000
 
 // ProbePurchaser prices and buys ONE probe through the existing purchase_ship machinery.
 // A nil purchaser or any error fails the buy CLOSED. Structurally satisfied by the same

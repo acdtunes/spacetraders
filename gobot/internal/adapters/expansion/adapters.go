@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -109,31 +110,39 @@ func (p *ProbePurchaser) QuoteProbe(ctx context.Context, playerID shared.PlayerI
 
 // BuyProbe purchases one probe at the demand-proximal (or fallback home) yard, refusing a fill
 // whose price exceeds maxBudget (the 25% treasury ceiling the coordinator computed). A target-yard
-// plan navigates an idle undedicated hull to the yard; a home-yard plan buys through the in-place
-// hull movement-free. It verifies the yard delivered a probe and not a substituted hull (sp-e7je
-// money integrity), then returns the price paid and the new hull's symbol.
+// plan RELAYS an idle undedicated hull to the winning yard (sp-iqv2 — never a movement-free buy
+// where a hull happens to sit, which spiked the home hub to 4.2x) and RE-CHECKS the live dock price
+// there so the guard judges the ACTUAL price and not a stale scan; a home-yard fallback plan buys
+// through the in-place hull movement-free at its already-live price. It verifies the yard delivered
+// a probe and not a substituted hull (sp-e7je money integrity), then returns the price paid and the
+// new hull's symbol.
 func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int, target probebuy.ProbeTarget) (int, string, error) {
 	plan, err := p.resolveProbeBuy(ctx, playerID, target)
 	if err != nil {
 		return 0, "", err
 	}
-	if plan.price > maxBudget {
-		return 0, "", fmt.Errorf("probe price %d exceeds budget %d", plan.price, maxBudget)
-	}
 
 	buyer := plan.buyer
-	if buyer == "" { // target-yard plan: any idle undedicated hull navigates to the yard to buy
-		buyer, err = p.resolveIdleUndedicatedBuyer(ctx, playerID, plan.yard)
+	price := plan.price
+	if buyer == "" { // target-yard plan: relay an idle hull to the yard, then re-price at the dock
+		buyer, price, err = p.prepareTargetYardBuyer(ctx, playerID, plan.yard)
 		if err != nil {
 			return 0, "", err
 		}
+	}
+
+	// Guard on the ACTUAL price the buy will pay (sp-iqv2): the live dock re-check for a relayed
+	// target-yard buy, or the already-live in-place price for a home-yard fallback — never a stale
+	// scan that lets a depleted yard slip past the 25% treasury ceiling.
+	if price > maxBudget {
+		return 0, "", fmt.Errorf("probe price %d exceeds budget %d", price, maxBudget)
 	}
 
 	resp, err := p.mediator.Send(ctx, &shipyardCmd.PurchaseShipCommand{
 		PurchasingShipSymbol: buyer,
 		ShipType:             probeShipType,
 		PlayerID:             playerID,
-		ShipyardWaypoint:     plan.yard, // in-place: buyer is here → no nav; target: buyer navigates here
+		ShipyardWaypoint:     plan.yard, // buyer is now AT the yard (relayed or in-place) → movement-free
 	})
 	if err != nil {
 		return 0, "", err
@@ -172,8 +181,26 @@ func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared
 	if err != nil || len(candidates) == 0 {
 		return probeBuyPlan{}, false // fail OPEN — a sparse/unreadable scan store falls back to home
 	}
-	best := pickProximalYard(candidates, target.HopPenaltyCredits)
+	best := pickBuyYard(candidates, target.HopPenaltyCredits, target.SiblingPriceMarginCredits)
 	return probeBuyPlan{yard: best.WaypointSymbol, price: best.PurchasePrice}, true
+}
+
+// pickBuyYard selects the buy yard across ALL reachable candidates: the demand-proximal
+// hop-penalty winner (sp-hej4), UNLESS a cheaper reachable sibling undercuts it by more than
+// siblingMargin — the sp-iqv2 supply-depletion override. Repeated buys raise a yard's scanned
+// price (LIMITED→SCARCE); the override abandons a yard the moment a sibling beats it by more than
+// the margin, so the buy spreads instead of spiraling one market to 4x (the home hub 20k→86k). A
+// siblingMargin<=0 disables the override, degenerating to pure hop-penalty selection (rollback).
+func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, siblingMargin int) shipyardQueries.YardCandidate {
+	proximal := pickProximalYard(candidates, hopPenalty)
+	if siblingMargin <= 0 {
+		return proximal
+	}
+	cheapest := cheapestYard(candidates)
+	if proximal.PurchasePrice-cheapest.PurchasePrice > siblingMargin {
+		return cheapest // depleted near yard — spread the buy to the cheapest sibling
+	}
+	return proximal
 }
 
 // pickProximalYard chooses the scanned probe-yard minimizing effectiveCost = PurchasePrice +
@@ -191,6 +218,19 @@ func pickProximalYard(candidates []shipyardQueries.YardCandidate, hopPenalty int
 		}
 	}
 	return best
+}
+
+// cheapestYard returns the candidate with the lowest scanned PurchasePrice — the sibling the
+// supply-depletion override spreads a buy to when the proximity winner has been priced up. Ties
+// keep the first (the finder pre-sorts hops-then-price, so the nearest cheapest wins).
+func cheapestYard(candidates []shipyardQueries.YardCandidate) shipyardQueries.YardCandidate {
+	cheapest := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.PurchasePrice < cheapest.PurchasePrice {
+			cheapest = candidate
+		}
+	}
+	return cheapest
 }
 
 // resolveInPlaceBuy scans idle, undedicated ships for one sitting at a shipyard that sells
@@ -224,31 +264,77 @@ func (p *ProbePurchaser) resolveInPlaceBuy(ctx context.Context, playerID shared.
 	return best, nil
 }
 
+// prepareTargetYardBuyer readies a target-yard buy (sp-iqv2): it resolves an idle undedicated
+// hull, RELAYS it to the winning yard when it is not already there (never a movement-free buy
+// wherever a hull sits — the 4.2x spiral), and RE-CHECKS the live dock price so the money guard
+// judges the ACTUAL price rather than a stale scan. Returns the buyer symbol and the re-checked
+// live price. A relay that cannot route, or a dock whose live price is unreadable after arrival,
+// fails the buy CLOSED — the fail-OPEN home fallback covers only MISSING selection data, not a
+// committed relay that then cannot be priced (never overpay blind).
+func (p *ProbePurchaser) prepareTargetYardBuyer(ctx context.Context, playerID shared.PlayerID, yard string) (string, int, error) {
+	buyer, err := p.resolveIdleUndedicatedBuyer(ctx, playerID, yard)
+	if err != nil {
+		return "", 0, err
+	}
+	if !buyerAtYard(buyer, yard) {
+		if err := p.navigateBuyerToYard(ctx, playerID, buyer.ShipSymbol(), yard); err != nil {
+			return "", 0, err
+		}
+	}
+	price, ok := p.probePriceAt(ctx, playerID, shared.ExtractSystemSymbol(yard), yard)
+	if !ok {
+		return "", 0, fmt.Errorf("live dock price at %s unreadable after relay", yard)
+	}
+	return buyer.ShipSymbol(), price, nil
+}
+
+// navigateBuyerToYard relays the buyer to the winning yard via the shared high-level navigation
+// command, which routes CROSS-SYSTEM through the sp-9l4p gate-crosser wired on the NavigateRoute
+// handler — a frontier yard is almost always in another system. A relay error surfaces so the buy
+// fails closed rather than buying at the wrong (current) location.
+func (p *ProbePurchaser) navigateBuyerToYard(ctx context.Context, playerID shared.PlayerID, buyerSymbol, yard string) error {
+	if _, err := p.mediator.Send(ctx, &shipNav.NavigateRouteCommand{
+		ShipSymbol:  buyerSymbol,
+		Destination: yard,
+		PlayerID:    playerID,
+	}); err != nil {
+		return fmt.Errorf("failed to relay probe buyer to %s: %w", yard, err)
+	}
+	return nil
+}
+
+// buyerAtYard reports whether the resolved hull already sits at the winning yard, so a relay is
+// skipped (movement-free) when a hull happens to be present there already.
+func buyerAtYard(buyer *navigation.Ship, yard string) bool {
+	loc := buyer.CurrentLocation()
+	return loc != nil && loc.Symbol == yard
+}
+
 // resolveIdleUndedicatedBuyer returns an idle, undedicated hull to execute a target-yard buy,
-// PREFERRING one already at preferYard (movement-free) so the purchase navigates nothing when a
-// hull is already present. It never selects a dedicated hull (RULINGS #7). "" hulls → error (the
-// buy fails closed exactly as the in-place path does when no buyer exists — never a data-driven
-// fail-close, just no hull to buy through).
-func (p *ProbePurchaser) resolveIdleUndedicatedBuyer(ctx context.Context, playerID shared.PlayerID, preferYard string) (string, error) {
+// PREFERRING one already at preferYard (movement-free) so no relay is needed when a hull is already
+// present. It never selects a dedicated hull (RULINGS #7). No idle hull → error (the buy fails
+// closed exactly as the in-place path does when no buyer exists — never a data-driven fail-close,
+// just no hull to buy through).
+func (p *ProbePurchaser) resolveIdleUndedicatedBuyer(ctx context.Context, playerID shared.PlayerID, preferYard string) (*navigation.Ship, error) {
 	ships, err := p.shipRepo.FindIdleByPlayer(ctx, playerID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	fallback := ""
+	var fallback *navigation.Ship
 	for _, ship := range ships {
 		if ship.DedicatedFleet() != "" {
 			continue
 		}
 		loc := ship.CurrentLocation()
 		if loc != nil && loc.Symbol == preferYard {
-			return ship.ShipSymbol(), nil // already at the yard → movement-free
+			return ship, nil // already at the yard → movement-free
 		}
-		if fallback == "" {
-			fallback = ship.ShipSymbol()
+		if fallback == nil {
+			fallback = ship
 		}
 	}
-	if fallback == "" {
-		return "", fmt.Errorf("no idle undedicated ship available to buy the probe")
+	if fallback == nil {
+		return nil, fmt.Errorf("no idle undedicated ship available to buy the probe")
 	}
 	return fallback, nil
 }
