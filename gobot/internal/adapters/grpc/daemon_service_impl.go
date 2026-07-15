@@ -597,6 +597,22 @@ func (s *daemonServiceImpl) CapacityReconcilerCoordinator(ctx context.Context, r
 	return &pb.CapacityReconcilerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd):
+// the module analogue of hull acquisition. EXPLICIT START ONLY (deploy-inert).
+func (s *daemonServiceImpl) AutoOutfitCoordinator(ctx context.Context, req *pb.AutoOutfitCoordinatorRequest) (*pb.AutoOutfitCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.AutoOutfitCoordinator(ctx, playerID, req.DryRun)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start auto-outfit coordinator: %w", err)
+	}
+
+	return &pb.AutoOutfitCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

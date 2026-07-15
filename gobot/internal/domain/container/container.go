@@ -97,6 +97,16 @@ const (
 	// boot-standing-armed — it runs only when explicitly started, then survives restarts
 	// through the persisted-container recovery idiom.
 	ContainerTypeCapacityReconciler ContainerType = "CAPACITY_RECONCILER_COORDINATOR"
+	// ContainerTypeAutoOutfitCoordinator is the standing guarded auto-outfit coordinator
+	// (sp-buyd): a per-player coordinator that loops forever inside one Handle() reading
+	// per-hull cargo saturation from tour_leg_telemetry, cataloguing available modules,
+	// and installing the highest-marginal-value (hull, module) upgrade behind a
+	// fail-closed money/ceiling/cap guard stack — the module analogue of the autosizer's
+	// hull-buying. Like the siting/autosizer/capacity coordinators it is NOT a
+	// CoordinatorOwnsIterations type. DEPLOY-INERT: it is never boot-standing-armed — it
+	// runs only when explicitly started, then survives restarts through the
+	// persisted-container recovery idiom.
+	ContainerTypeAutoOutfitCoordinator ContainerType = "AUTO_OUTFIT_COORDINATOR"
 	// ContainerTypeConstructionCoordinator is the standing construction-supply drain (sp-382j):
 	// a per-player coordinator that loops forever inside one Handle() sourcing and delivering a
 	// gate-construction pipeline's READY DELIVER_TO_CONSTRUCTION tasks on the shared

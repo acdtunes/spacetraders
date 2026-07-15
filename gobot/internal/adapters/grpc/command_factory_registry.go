@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	commonApp "github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
@@ -421,6 +422,12 @@ func containerSpecList() []ContainerSpec {
 		// Registering it here is what makes a launched or restart-recovered reconciler
 		// runnable — launch itself stays EXPLICIT (never boot-standing, st-fyr).
 		{CommandType: "capacity_reconciler_coordinator", build: buildCapacityReconcilerCoordinatorCommand},
+		// auto_outfit_coordinator (sp-buyd): the standing guarded auto-outfit coordinator.
+		// Like fleet_autosizer/capacity it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		// Registering it here is what makes a launched or restart-recovered coordinator
+		// runnable — launch itself stays EXPLICIT (never boot-standing, deploy-inert).
+		{CommandType: "auto_outfit_coordinator", build: buildAutoOutfitCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "warehouse", build: buildWarehouseCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
@@ -754,6 +761,32 @@ func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int
 		MaxSpendPerCycle:        cfg.OptionalInt("max_spend_per_cycle", 0),
 		PurchaseCooldownSecs:    cfg.OptionalInt("purchase_cooldown_secs", 0),
 		SpendWindowSecs:         cfg.OptionalInt("spend_window_secs", 0),
+	}
+}
+
+// buildAutoOutfitCoordinatorCommand rebuilds the standing guarded auto-outfit coordinator
+// from its persisted launch config so restart recovery re-adopts it byte-identically
+// (RULINGS #2, sp-buyd). Like the autosizer it is a reconcile-loop coordinator (NOT a
+// CoordinatorOwnsIterations type). Every tunable knob is optional (0 → the coordinator's
+// own default, RULINGS #5) and live-tunable via `tune --operation autooutfit`, so the flat
+// launch config carries only identity + the sticky dry-run flag. auto_outfit_launch_dry_run
+// is IDENTITY (set once at creation, preserved across restart, mirrors
+// capacity_launch_dry_run) so a dry-run launch stays observe-only through recovery.
+func buildAutoOutfitCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &autooutfitCmd.RunAutoOutfitCoordinatorCommand{
+		PlayerID:               shared.MustNewPlayerID(playerID),
+		ContainerID:            cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:       cfg.OptionalInt("tick_interval_secs", 0),
+		DryRun:                 cfg.OptionalBool("auto_outfit_launch_dry_run"),
+		MinTelemetrySamples:    cfg.OptionalInt("min_telemetry_samples", 0),
+		PriceCeiling:           cfg.OptionalInt("price_ceiling", 0),
+		MaxInstallsPerTick:     cfg.OptionalInt("max_installs_per_tick", 0),
+		PaybackHorizonHours:    cfg.OptionalInt("payback_horizon_hours", 0),
+		TreasuryReserve:        cfg.OptionalInt("treasury_reserve", 0),
+		MaxTreasuryFractionPct: cfg.OptionalInt("max_treasury_fraction_pct", 0),
+		InstallFeeEstimate:     cfg.OptionalInt("install_fee_estimate", 0),
+		HopCost:                cfg.OptionalInt("hop_cost", 0),
+		TelemetryWindowSecs:    cfg.OptionalInt("telemetry_window_secs", 0),
 	}
 }
 

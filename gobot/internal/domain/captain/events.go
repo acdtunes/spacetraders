@@ -141,6 +141,22 @@ const (
 	// The payload carries the class, ship type, price, and the demand arithmetic that justified it.
 	EventFleetAutosizerPurchase EventType = "fleet.autosizer_purchase"
 
+	// EventAutoOutfitInstalled fires when the guarded auto-outfit coordinator (sp-buyd)
+	// installs a capacity module on an existing hull — the module analogue of an
+	// autosizer hull purchase, and equally a treasury-moving action the captain must be
+	// able to see and audit. DEFERRED class (NOT in DefaultInterruptTypes): a capacity
+	// upgrade rides the next wake, never forces one. The payload carries the ship, the
+	// module, the price, the new capacity, and the cost-per-unit that beat the new-hull
+	// alternative.
+	EventAutoOutfitInstalled EventType = "fleet.auto_outfit_installed"
+
+	// EventAutoOutfitModuleInReach fires ONCE when a watchlisted capacity module
+	// (FUEL_TANK, CARGO_HOLD_II/III) first appears in a reachable market (sp-buyd). A
+	// fleet-capability milestone: the coordinator can now close a capability gap without
+	// buying a new hull. DEFERRED class — it rides the next wake. The payload carries the
+	// module, the market waypoint, and the price.
+	EventAutoOutfitModuleInReach EventType = "fleet.auto_outfit_module_in_reach"
+
 	// EventHeavyYardDiscovered fires ONCE per era when the scout tour's
 	// piggybacked shipyard scan (sp-42ow) first discovers a yard selling a
 	// heavy-freight hull ({SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER} by

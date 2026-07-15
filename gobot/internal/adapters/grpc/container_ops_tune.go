@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -65,6 +66,7 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"frontier":   string(container.ContainerTypeFrontierExpansion),
 	"scoutpost":  string(container.ContainerTypeScoutPostCoordinator),
 	"contract":   string(container.ContainerTypeContractFleetCoordinator),
+	"autooutfit": string(container.ContainerTypeAutoOutfitCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -72,7 +74,16 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	frontier := expansionCmd.FrontierTunableDefaults()
 	scoutPost := scoutingCmd.ScoutPostTunableDefaults()
 	contract := ContractCoordinatorTunableDefaults()
+	autoOutfit := autooutfitCmd.AutoOutfitTunableDefaults()
 	return map[string]map[string]TuneBound{
+		string(container.ContainerTypeAutoOutfitCoordinator): {
+			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},
+			"price_ceiling":             {Type: "int", Min: 0, Max: 5_000_000, Default: autoOutfit["price_ceiling"], Unit: "credits", Description: "max module price the coordinator will pay per install"},
+			"max_installs_per_tick":     {Type: "int", Min: 1, Max: 20, Default: autoOutfit["max_installs_per_tick"], Unit: "installs", Description: "per-tick install cap"},
+			"payback_horizon_hours":     {Type: "int", Min: 1, Max: 8760, Default: autoOutfit["payback_horizon_hours"], Unit: "hours", Description: "absolute payback gate — cost must be recovered within this horizon (default 0 = off until per-hull throughput is wired)"},
+			"treasury_reserve":          {Type: "int", Min: 0, Max: 5_000_000, Default: autoOutfit["treasury_reserve"], Unit: "credits", Description: "working-capital floor an install must never breach"},
+			"max_treasury_fraction_pct": {Type: "int", Min: 1, Max: 100, Default: autoOutfit["max_treasury_fraction_pct"], Unit: "percent", Description: "a single module never exceeds this fraction of live treasury"},
+		},
 		string(container.ContainerTypeMarketFreshnessSizer): {
 			"max_spend_per_cycle":        {Type: "int", Min: 0, Max: 5_000_000, Default: sizer["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
 			"purchase_cooldown_secs":     {Type: "int", Min: 10, Max: 86_400, Default: sizer["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},

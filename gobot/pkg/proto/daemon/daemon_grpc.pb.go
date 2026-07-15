@@ -39,6 +39,7 @@ const (
 	DaemonService_FleetAutosizerCoordinator_FullMethodName     = "/daemon.DaemonService/FleetAutosizerCoordinator"
 	DaemonService_BootstrapCoordinator_FullMethodName          = "/daemon.DaemonService/BootstrapCoordinator"
 	DaemonService_CapacityReconcilerCoordinator_FullMethodName = "/daemon.DaemonService/CapacityReconcilerCoordinator"
+	DaemonService_AutoOutfitCoordinator_FullMethodName         = "/daemon.DaemonService/AutoOutfitCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName  = "/daemon.DaemonService/FrontierExpansionCoordinator"
 	DaemonService_WorkerRebalancerCoordinator_FullMethodName   = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                  = "/daemon.DaemonService/AddScoutPost"
@@ -161,6 +162,12 @@ type DaemonServiceClient interface {
 	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced, captain/DISABLED-gated every
 	// tick. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert foundation).
 	CapacityReconcilerCoordinator(ctx context.Context, in *CapacityReconcilerCoordinatorRequest, opts ...grpc.CallOption) (*CapacityReconcilerCoordinatorResponse, error)
+	// AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd):
+	// the module analogue of hull acquisition. Each tick it measures per-hull cargo
+	// saturation from tour_leg_telemetry, catalogs available modules, and installs the
+	// highest-marginal-value upgrade behind a fail-closed money/ceiling/cap guard stack.
+	// EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+	AutoOutfitCoordinator(ctx context.Context, in *AutoOutfitCoordinatorRequest, opts ...grpc.CallOption) (*AutoOutfitCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -504,6 +511,16 @@ func (c *daemonServiceClient) CapacityReconcilerCoordinator(ctx context.Context,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CapacityReconcilerCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_CapacityReconcilerCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) AutoOutfitCoordinator(ctx context.Context, in *AutoOutfitCoordinatorRequest, opts ...grpc.CallOption) (*AutoOutfitCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AutoOutfitCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_AutoOutfitCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1107,6 +1124,12 @@ type DaemonServiceServer interface {
 	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced, captain/DISABLED-gated every
 	// tick. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert foundation).
 	CapacityReconcilerCoordinator(context.Context, *CapacityReconcilerCoordinatorRequest) (*CapacityReconcilerCoordinatorResponse, error)
+	// AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd):
+	// the module analogue of hull acquisition. Each tick it measures per-hull cargo
+	// saturation from tour_leg_telemetry, catalogs available modules, and installs the
+	// highest-marginal-value upgrade behind a fail-closed money/ceiling/cap guard stack.
+	// EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+	AutoOutfitCoordinator(context.Context, *AutoOutfitCoordinatorRequest) (*AutoOutfitCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -1315,6 +1338,9 @@ func (UnimplementedDaemonServiceServer) BootstrapCoordinator(context.Context, *B
 }
 func (UnimplementedDaemonServiceServer) CapacityReconcilerCoordinator(context.Context, *CapacityReconcilerCoordinatorRequest) (*CapacityReconcilerCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CapacityReconcilerCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) AutoOutfitCoordinator(context.Context, *AutoOutfitCoordinatorRequest) (*AutoOutfitCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AutoOutfitCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
@@ -1852,6 +1878,24 @@ func _DaemonService_CapacityReconcilerCoordinator_Handler(srv interface{}, ctx c
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).CapacityReconcilerCoordinator(ctx, req.(*CapacityReconcilerCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_AutoOutfitCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AutoOutfitCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).AutoOutfitCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_AutoOutfitCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).AutoOutfitCoordinator(ctx, req.(*AutoOutfitCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2896,6 +2940,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CapacityReconcilerCoordinator",
 			Handler:    _DaemonService_CapacityReconcilerCoordinator_Handler,
+		},
+		{
+			MethodName: "AutoOutfitCoordinator",
+			Handler:    _DaemonService_AutoOutfitCoordinator_Handler,
 		},
 		{
 			MethodName: "FrontierExpansionCoordinator",

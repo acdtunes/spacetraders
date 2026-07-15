@@ -32,6 +32,7 @@ import (
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
+	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -1085,6 +1086,21 @@ func run(cfg *config.Config) error {
 	capacityReconcilerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
 	if err := mediator.RegisterHandler[*capacityCmd.RunCapacityReconcilerCoordinatorCommand](med, capacityReconcilerHandler); err != nil {
 		return fmt.Errorf("failed to register CapacityReconcilerCoordinator handler: %w", err)
+	}
+
+	// Auto-outfit coordinator (sp-buyd): the standing guarded auto-outfit coordinator — the
+	// module analogue of the autosizer's hull-buying. Each tick it measures per-hull cargo
+	// saturation from tour_leg_telemetry, catalogs available modules off the market cache,
+	// and installs the highest-marginal-value (hull, module) upgrade behind a fail-closed
+	// money/ceiling/cap guard stack. REGISTRATION ONLY — the coordinator is deliberately NOT
+	// boot-standing-armed (deploy-inert): it runs only when explicitly started via
+	// `workflow auto-outfit`, then survives restarts through the persisted-container recovery
+	// idiom. Live-tunable via `tune --operation autooutfit`.
+	autoOutfitHandler := grpc.NewAutoOutfitCoordinatorHandler(
+		apiClient, shipRepo, persistence.NewTourTelemetryRepository(db), marketRepo, med, captainEventRepo, containerRepo,
+	)
+	if err := mediator.RegisterHandler[*autooutfitCmd.RunAutoOutfitCoordinatorCommand](med, autoOutfitHandler); err != nil {
+		return fmt.Errorf("failed to register AutoOutfitCoordinator handler: %w", err)
 	}
 
 	// Arb-run coordinator (sp-p4ua): a one-shot, captain-directed, guarded arbitrage run

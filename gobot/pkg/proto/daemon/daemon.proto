@@ -87,6 +87,13 @@ service DaemonService {
   // tick. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert foundation).
   rpc CapacityReconcilerCoordinator(CapacityReconcilerCoordinatorRequest) returns (CapacityReconcilerCoordinatorResponse);
 
+  // AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd):
+  // the module analogue of hull acquisition. Each tick it measures per-hull cargo
+  // saturation from tour_leg_telemetry, catalogs available modules, and installs the
+  // highest-marginal-value upgrade behind a fail-closed money/ceiling/cap guard stack.
+  // EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+  rpc AutoOutfitCoordinator(AutoOutfitCoordinatorRequest) returns (AutoOutfitCoordinatorResponse);
+
   // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
   rpc FrontierExpansionCoordinator(FrontierExpansionCoordinatorRequest) returns (FrontierExpansionCoordinatorResponse);
 
@@ -670,6 +677,20 @@ message CapacityReconcilerCoordinatorRequest {
 }
 
 message CapacityReconcilerCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// AutoOutfitCoordinatorRequest starts the standing guarded auto-outfit coordinator
+// (sp-buyd). All calibration is live-tunable via `tune --operation autooutfit`; this
+// request names the player/agent and an optional dry-run override.
+message AutoOutfitCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+  bool dry_run = 3;  // observe + log every WOULD-install, actuate nothing (recommended first-start posture)
+}
+
+message AutoOutfitCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

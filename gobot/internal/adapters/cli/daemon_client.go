@@ -1350,6 +1350,25 @@ func (c *DaemonClient) CapacityReconcilerCoordinator(ctx context.Context, player
 	return resp.ContainerId, nil
 }
 
+// AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd): the
+// module analogue of hull acquisition. Identity-only launch — all knobs default and are
+// live-tunable via `tune --operation autooutfit`. dryRun (the CLI --dry-run) launches it in
+// observe mode: it evaluates + logs every WOULD-install but installs nothing.
+func (c *DaemonClient) AutoOutfitCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
+	req := &pb.AutoOutfitCoordinatorRequest{
+		PlayerId: int32(playerID),
+		DryRun:   dryRun,
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.AutoOutfitCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a reconciler
 // that drives a cold agent through the cold-start arc to the jump gate. Identity-only launch — all
 // [bootstrap] tuning resolves live from config.yaml. dryRun (the CLI --dry-run) launches it in watch
