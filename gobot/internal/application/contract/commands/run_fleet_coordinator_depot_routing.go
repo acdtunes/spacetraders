@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 
+	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -102,6 +103,44 @@ func routeContractViaDepot(reg *depot.Registry, contract *domainContract.Contrac
 		DeliveryHull: hull.ShipSymbol,
 		Warehouse:    routedDest,
 	}, true
+}
+
+// contractHullRoute is the coordinator's resolved hull-selection strategy for one contract
+// pass (bead sp-obtr): whether to DELIVER via the depot's co-located, destination-nearest
+// delivery hull, or to fall through to source-nearest idle-hull selection.
+type contractHullRoute struct {
+	// UseDepotHull is true ONLY for a BUFFERED depot-owned contract — the good is on hand in
+	// the hub warehouse, so the destination-nearest depot delivery hull withdraws from stock
+	// and delivers locally (sp-9j9c pick preserved, ~0 source travel). False otherwise, so the
+	// coordinator selects the idle hull nearest the SOURCE market instead.
+	UseDepotHull bool
+	// DepotHull is the depot delivery hull to dispatch when UseDepotHull; "" otherwise.
+	DepotHull string
+}
+
+// resolveContractHullRoute branches an owned-destination (depot-routed) contract on buffered
+// vs unbuffered sourcing (bead sp-obtr) — the fix for a systemic ~2x-travel loss. It combines
+// the depot routing match (routeContractViaDepot) with the resolved sourcing plan
+// (PlanSourcing / InventorySourceFinder), which is the ONLY place both are in hand. The
+// buffered/unbuffered signal is the plan's Source:
+//
+//   - BUFFERED (SourceInventory): the good is staged in the hub warehouse at zero ask. Keep
+//     sp-9j9c's co-located, destination-nearest depot delivery hull — it withdraws from stock
+//     and delivers locally (~0 source travel). No regression.
+//   - UNBUFFERED (SourceMarket): the good must be bought at a REMOTE source market, so the
+//     destination-pinned depot hull is the WRONG hull — it would fly empty to the far source
+//     then back (~2x) and leave its hub uncovered for the round trip. Fall through to
+//     source-nearest idle-hull selection (the coordinator's default SelectClosestShip toward
+//     the source market over the idle pool, which already EXCLUDES the depot delivery hull per
+//     sp-3l64 — so a genuinely-idle non-depot hull nearest the source is chosen).
+//
+// A non-matching depot route (routeMatched == false — nil/empty/non-owning registry) also
+// falls through to source-nearest selection: the sp-u9xa default path, byte-identical.
+func resolveContractHullRoute(route depotRoute, routeMatched bool, plan *appContract.SourcingPlan) contractHullRoute {
+	if routeMatched && plan != nil && plan.Source == appContract.SourceInventory {
+		return contractHullRoute{UseDepotHull: true, DepotHull: route.DeliveryHull}
+	}
+	return contractHullRoute{}
 }
 
 // unfulfilledDestinations collects the destination waypoints of the contract's deliveries

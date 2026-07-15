@@ -681,28 +681,35 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// sp-u9xa depot routing seam (the FINAL integration): BEFORE the default
 		// distance-based hull selection, consult the LIVE depot registry (resolved
 		// fail-safe each pass from the boot-loaded durable store). An owning depot with
-		// a config-assigned delivery hull diverts THIS contract onto that pinned,
-		// co-located hull (withdraw-local + deliver-local) — the good is already
-		// pre-staged in the depot's destination warehouse, which the inventory-first
-		// sourcing above (PlanSourcing + invFinder) already prefers as the zero-ask
-		// source, so purchaseMarket is that warehouse. A nil/empty/unavailable registry,
-		// or a destination no depot owns, returns ok=false and the default
-		// SelectClosestShip path in the else runs BYTE-IDENTICALLY — the natural
-		// off-switch (no config flag; empty registry == today's behavior).
-		var selectedShip string
-		var distance float64
-		if route, ok := routeContractViaDepot(
+		// a config-assigned delivery hull may divert THIS contract onto that pinned,
+		// co-located hull (withdraw-local + deliver-local). A nil/empty/unavailable
+		// registry, or a destination no depot owns, returns routeMatched=false and the
+		// default SelectClosestShip path runs BYTE-IDENTICALLY — the natural off-switch
+		// (no config flag; empty registry == today's behavior).
+		route, routeMatched := routeContractViaDepot(
 			appContract.ResolveDepotRegistry(ctx, logger, h.depotRegistryProvider, cmd.PlayerID.Value()),
 			contract,
 			// sp-9j9c: rank the depot's delivery hulls by the SAME in-system distance the default
 			// SelectClosestShip path uses, so a MULTI-hub delivery fleet routes each contract to its
 			// cluster's nearest hull. A single-hull depot never invokes this (byte-identical).
 			newDepotDeliveryDistance(ctx, h.graphProvider, cmd.PlayerID.Value()),
-		); ok {
-			selectedShip = route.DeliveryHull
+		)
+
+		// sp-obtr: the depot delivery hull is destination-pinned, so it is the right hull ONLY
+		// when the good is already BUFFERED at the hub (SourceInventory — deliver from stock,
+		// ~0 source travel). When the good is UNBUFFERED (SourceMarket — must be bought at a
+		// remote source market), routing to the destination-pinned depot hull makes it fly empty
+		// to the far source then back (~2x) and leaves its hub uncovered; resolveContractHullRoute
+		// then declines the depot hull so the coordinator falls through to source-nearest idle-hull
+		// selection below (SelectClosestShip toward purchaseMarket — the source market — over the
+		// idle pool, which already excludes the depot hull per sp-3l64).
+		var selectedShip string
+		var distance float64
+		if hullRoute := resolveContractHullRoute(route, routeMatched, plan); hullRoute.UseDepotHull {
+			selectedShip = hullRoute.DepotHull
 			logger.Log("INFO", fmt.Sprintf(
-				"Contract %s destination owned by depot %s - routing to config-assigned delivery hull %s (prefer warehouse %s; withdraw-local+deliver-local via source %s)",
-				contract.ContractID(), route.DepotID, route.DeliveryHull, route.Warehouse, purchaseMarket),
+				"Contract %s destination owned by depot %s - good BUFFERED at hub, routing to co-located delivery hull %s (withdraw-local+deliver-local via warehouse %s)",
+				contract.ContractID(), route.DepotID, route.DeliveryHull, route.Warehouse),
 				map[string]interface{}{
 					"action":        "depot_route_contract",
 					"contract_id":   contract.ContractID(),
@@ -710,8 +717,27 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					"delivery_hull": route.DeliveryHull,
 					"warehouse":     route.Warehouse,
 					"source":        purchaseMarket,
+					"buffered":      true,
 				})
 		} else {
+			// sp-obtr: a depot owns the destination but the good is UNBUFFERED — DECOUPLE
+			// sourcing from delivery. Do NOT pull the destination-pinned depot hull off its hub
+			// to fly ~2x; source with the idle hull nearest the SOURCE market instead (the default
+			// path below). Logged so the divergence from the depot hull is auditable.
+			if routeMatched {
+				logger.Log("INFO", fmt.Sprintf(
+					"Contract %s destination owned by depot %s but good %s is UNBUFFERED (source %s) - decoupling sourcing from delivery: selecting the idle hull nearest the source market instead of the destination-pinned depot hull %s (sp-obtr)",
+					contract.ContractID(), route.DepotID, requiredCargo, purchaseMarket, route.DeliveryHull),
+					map[string]interface{}{
+						"action":        "depot_route_unbuffered_source",
+						"contract_id":   contract.ContractID(),
+						"depot_id":      route.DepotID,
+						"delivery_hull": route.DeliveryHull,
+						"source":        purchaseMarket,
+						"trade_symbol":  requiredCargo,
+						"buffered":      false,
+					})
+			}
 			// DEFAULT PATH (byte-identical to pre-sp-u9xa): select closest ship to
 			// purchase market (prioritizes ships with required cargo).
 			logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
