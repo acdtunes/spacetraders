@@ -1,0 +1,416 @@
+// Package commands: the capacity reconciler's reconcile-loop coordinator
+// (epic st-7zk foundation, st-fyr; design spec
+// docs/superpowers/specs/2026-07-15-capacity-reconciler-design.md).
+//
+// A standing daemon coordinator that continuously drives the contract-delivery
+// machine's ACTUAL capacity topology toward a computed DESIRED topology,
+// maximizing per-hull-sustained credits/hr with cycle-time as the lever. Each
+// tick runs SENSE → PLAN → DIFF → GOVERN → CONVERGE through the
+// dependency-injected components of internal/domain/capacity. The loop is
+// STATELESS PER TICK — desired state is recomputed from live state every pass
+// — so it is idempotent, restart-safe, and self-healing: a failed action or a
+// drifted hull simply reappears as gap on the next pass.
+//
+// Foundation wiring ships the NoOp component chain (empty desired topology →
+// zero actions end-to-end) and is DEPLOY-INERT: the coordinator is NOT
+// boot-standing-armed (contrast: the market-freshness sizer in
+// bootStandingCoordinatorTypes); it runs only when explicitly started via
+// `spacetraders workflow capacity-reconciler` / the CapacityReconcilerCoordinator
+// RPC, and then survives restarts through the persisted-container recovery
+// idiom (RULINGS #2).
+//
+// The captain/DISABLED kill switch is honored at the TOP OF EVERY TICK, not
+// just at startup: an engaged switch idles the tick without invoking a single
+// phase component — the exact mechanism the watchkeeper supervisor's Tick
+// uses (internal/captain/workspace.go, wired here as capacity.KillSwitch).
+package commands
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// RunCapacityReconcilerCoordinatorCommand launches the standing capacity
+// reconciler for a player. Like the other standing coordinators it runs an
+// infinite reconcile loop inside a single Handle() call. Every calibration
+// knob is a launch-config key (RULINGS #5); a zero value falls back to the
+// documented default in capacity.DefaultCalibration, and an invalid explicit
+// value fails the launch loudly.
+type RunCapacityReconcilerCoordinatorCommand struct {
+	PlayerID    shared.PlayerID
+	ContainerID string
+
+	// TickIntervalSecs is the reconcile cadence. 0 → 300s.
+	TickIntervalSecs int
+
+	// Calibration params (spec: Calibration section). 0 → documented default.
+	ReserveFloorCredits      int64   // hard treasury floor; 0 → 50000
+	SurplusFraction          float64 // f in deployable = f × (treasury − floor); 0 → 0.25
+	PerDecisionCapPct        int     // single-decision % of deployable; 0 → 25
+	ROIPaybackHorizonHours   float64 // capital payback window; 0 → 24h
+	AddThresholdPerHullCrHr  float64 // per-hull $/hr floor for adds; 0 → none
+	StockerCapacityBudget    int     // per-hub stocker budget; 0 → planner default
+	ApprovalThresholdCredits int64   // tier-4 cost needing approval; 0 → ALL tier-4
+}
+
+// RunCapacityReconcilerCoordinatorResponse reports reconcile progress. Because
+// the loop is infinite it is only observed on context cancellation (shutdown).
+type RunCapacityReconcilerCoordinatorResponse struct {
+	Ticks  int
+	Errors []string
+}
+
+// RunCapacityReconcilerCoordinatorHandler owns the reconcile loop. It is a
+// registered singleton holding no per-player mutable state — every decision is
+// derived fresh from the injected components each pass (RULINGS #2).
+type RunCapacityReconcilerCoordinatorHandler struct {
+	domain     capacity.CapacityDomain
+	differ     capacity.Differ
+	governor   capacity.Governor
+	actuator   capacity.Actuator
+	proposals  capacity.ProposalChannel
+	killSwitch capacity.KillSwitch
+	clock      shared.Clock
+
+	// observer receives every tick's outcome — the harness/scenario seam
+	// (st-6wa). Optional; production runs without one.
+	observer capacity.TickObserver
+
+	// captainEvents emits the coordinator error-loop event when a reconcile
+	// pass fails identically for DefaultStreakThreshold consecutive ticks.
+	// Optional-injection.
+	captainEvents captain.EventRecorder
+}
+
+// NewRunCapacityReconcilerCoordinatorHandler wires the loop. clock defaults to
+// the real clock when nil (production). A nil killSwitch is treated as ENGAGED
+// (fail-closed): a mis-wired engine idles rather than running unsupervised.
+func NewRunCapacityReconcilerCoordinatorHandler(
+	domain capacity.CapacityDomain,
+	differ capacity.Differ,
+	governor capacity.Governor,
+	actuator capacity.Actuator,
+	proposals capacity.ProposalChannel,
+	killSwitch capacity.KillSwitch,
+	clock shared.Clock,
+) *RunCapacityReconcilerCoordinatorHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+	return &RunCapacityReconcilerCoordinatorHandler{
+		domain:     domain,
+		differ:     differ,
+		governor:   governor,
+		actuator:   actuator,
+		proposals:  proposals,
+		killSwitch: killSwitch,
+		clock:      clock,
+	}
+}
+
+// SetTickObserver wires the per-tick outcome observer (harness seam, st-6wa).
+// Call before Handle; the loop reads it without further synchronization.
+func (h *RunCapacityReconcilerCoordinatorHandler) SetTickObserver(o capacity.TickObserver) {
+	h.observer = o
+}
+
+// SetEventRecorder wires the captain outbox for the reconcile error-loop event.
+func (h *RunCapacityReconcilerCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
+	h.captainEvents = rec
+}
+
+// Handle runs the reconcile loop until the context is cancelled.
+func (h *RunCapacityReconcilerCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	cmd, ok := request.(*RunCapacityReconcilerCoordinatorCommand)
+	if !ok {
+		return nil, fmt.Errorf("invalid request type")
+	}
+	if err := h.validateWiring(); err != nil {
+		return nil, err
+	}
+	cal, err := resolveCalibration(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("capacity reconciler calibration invalid: %w", err)
+	}
+
+	result := &RunCapacityReconcilerCoordinatorResponse{Errors: []string{}}
+	logger.Log("INFO", fmt.Sprintf("Capacity reconciler starting (domain %s, tick %s, per-decision cap %d%%)", h.domain.Name(), cal.TickInterval, cal.PerDecisionCapPct), map[string]interface{}{
+		"action":       "capacity_reconciler_start",
+		"container_id": cmd.ContainerID,
+		"domain":       h.domain.Name(),
+	})
+
+	errMon := health.NewMonitor(health.DefaultStreakThreshold)
+	seq := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+
+		seq++
+		outcome := h.reconcileTick(ctx, cmd, cal, seq)
+		h.noteOutcome(ctx, cmd, errMon, outcome)
+		if h.observer != nil {
+			h.observer.ObserveTick(outcome)
+		}
+		result.Ticks++
+		if outcome.Error != "" {
+			result.Errors = append(result.Errors, outcome.Error)
+		}
+
+		h.sleepTick(ctx, cal.TickInterval)
+	}
+}
+
+// validateWiring refuses to run a partially-assembled engine — fail loud at
+// launch, never dark at converge time.
+func (h *RunCapacityReconcilerCoordinatorHandler) validateWiring() error {
+	missing := []string{}
+	if h.domain == nil {
+		missing = append(missing, "domain")
+	}
+	if h.differ == nil {
+		missing = append(missing, "differ")
+	}
+	if h.governor == nil {
+		missing = append(missing, "governor")
+	}
+	if h.actuator == nil {
+		missing = append(missing, "actuator")
+	}
+	if h.proposals == nil {
+		missing = append(missing, "proposal channel")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("capacity reconciler not wired: missing %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// resolveCalibration merges the launch config over the documented defaults
+// and validates the result. A zero field defers to the default (RULINGS #5);
+// an invalid explicit value is an error, never a silent clamp.
+func resolveCalibration(cmd *RunCapacityReconcilerCoordinatorCommand) (capacity.Calibration, error) {
+	cal := capacity.DefaultCalibration()
+	if cmd.TickIntervalSecs != 0 {
+		cal.TickInterval = time.Duration(cmd.TickIntervalSecs) * time.Second
+	}
+	if cmd.ReserveFloorCredits != 0 {
+		cal.ReserveFloorCredits = cmd.ReserveFloorCredits
+	}
+	if cmd.SurplusFraction != 0 {
+		cal.SurplusFraction = cmd.SurplusFraction
+	}
+	if cmd.PerDecisionCapPct != 0 {
+		cal.PerDecisionCapPct = cmd.PerDecisionCapPct
+	}
+	if cmd.ROIPaybackHorizonHours != 0 {
+		cal.ROIPaybackHorizon = time.Duration(cmd.ROIPaybackHorizonHours * float64(time.Hour))
+	}
+	if cmd.AddThresholdPerHullCrHr != 0 {
+		cal.AddThresholdPerHullCrHr = cmd.AddThresholdPerHullCrHr
+	}
+	if cmd.StockerCapacityBudget != 0 {
+		cal.StockerCapacityBudget = cmd.StockerCapacityBudget
+	}
+	if cmd.ApprovalThresholdCredits != 0 {
+		cal.ApprovalThresholdCredits = cmd.ApprovalThresholdCredits
+	}
+	return cal, cal.Validate()
+}
+
+// reconcileTick is one SENSE → PLAN → DIFF → GOVERN → CONVERGE pass — the unit
+// the tests drive. A failing phase ends the tick (outcome carries which and
+// why); the loop itself never stops.
+func (h *RunCapacityReconcilerCoordinatorHandler) reconcileTick(ctx context.Context, cmd *RunCapacityReconcilerCoordinatorCommand, cal capacity.Calibration, seq int) capacity.TickOutcome {
+	outcome := capacity.TickOutcome{Sequence: seq, At: h.clock.Now()}
+
+	// captain/DISABLED, re-read EVERY tick: engaged (or unwired) ⇒ idle
+	// without invoking a single phase component.
+	if h.killSwitch == nil || h.killSwitch.Disabled() {
+		outcome.Idle = true
+		return outcome
+	}
+
+	signals, err := h.domain.Sensor().Sense(ctx, cmd.PlayerID.Value())
+	if err != nil {
+		return failTick(outcome, capacity.PhaseSense, err)
+	}
+	desired, err := h.domain.Planner().ComputeDesired(ctx, signals, cal)
+	if err != nil {
+		return failTick(outcome, capacity.PhasePlan, err)
+	}
+	actions, err := h.differ.Diff(ctx, desired, signals.Topology, cal)
+	if err != nil {
+		return failTick(outcome, capacity.PhaseDiff, err)
+	}
+	governed, err := h.governor.Govern(ctx, actions, signals.Economics, cal)
+	if err != nil {
+		return failTick(outcome, capacity.PhaseGovern, err)
+	}
+	h.converge(ctx, cmd.PlayerID.Value(), cal, governed, &outcome)
+	return outcome
+}
+
+func failTick(outcome capacity.TickOutcome, phase capacity.Phase, err error) capacity.TickOutcome {
+	outcome.FailedPhase = phase
+	outcome.Error = err.Error()
+	return outcome
+}
+
+// converge executes the approved actions through the actuator (each verb
+// dispatched by its tier) and files the proposals. Per-item failures are
+// collected and reported but never abort the rest — statelessness means a
+// failed item reappears as gap next tick and is re-converged.
+//
+// Two structural backstops live here, independent of the governor's
+// correctness (safety invariant 4 must never rest on a single component):
+//
+//   - An Approved tier-4 action costing >= cal.ApprovalThresholdCredits is
+//     REFUSED (recorded as a CONVERGE failure), never executed — a governor
+//     contradicting its own gate is loud, not a silent treasury drain. Under
+//     the v1 default threshold (0) NO tier-4 action can execute from Approved;
+//     under a raised threshold, graduated auto-approval below it passes.
+//   - A proposal the governor left unattributed (PlayerID zero — its Govern
+//     inputs carry no player identity) is stamped with the reconciling
+//     player's ID before Submit; a non-zero PlayerID passes verbatim.
+func (h *RunCapacityReconcilerCoordinatorHandler) converge(ctx context.Context, playerID int, cal capacity.Calibration, governed capacity.GovernResult, outcome *capacity.TickOutcome) {
+	failures := []string{}
+	for _, action := range governed.Approved {
+		if action.Tier == capacity.TierCapital && action.EstimatedCostCredits >= cal.ApprovalThresholdCredits {
+			failures = append(failures, fmt.Sprintf(
+				"unapproved capital refused: %s %s cost %d >= approval threshold %d (invariant 4: tier-4 executes only via an approved proposal)",
+				action.Tier, action.Verb, action.EstimatedCostCredits, cal.ApprovalThresholdCredits))
+			continue
+		}
+		if err := h.executeAction(ctx, action); err != nil {
+			failures = append(failures, fmt.Sprintf("%s %s: %v", action.Tier, action.Verb, err))
+			continue
+		}
+		outcome.ActionsExecuted = append(outcome.ActionsExecuted, action)
+	}
+	for _, proposal := range governed.Proposals {
+		if proposal.PlayerID == 0 {
+			proposal.PlayerID = playerID
+		}
+		if err := h.proposals.Submit(ctx, proposal); err != nil {
+			failures = append(failures, fmt.Sprintf("proposal %s: %v", proposal.ID, err))
+			continue
+		}
+		outcome.ProposalsFiled = append(outcome.ProposalsFiled, proposal)
+	}
+	if len(failures) > 0 {
+		outcome.FailedPhase = capacity.PhaseConverge
+		outcome.Error = strings.Join(failures, "; ")
+	}
+}
+
+// verbTiers pins the documented verb → canonical-tier mapping (action.go:
+// "each verb maps to exactly one Actuator method (by its tier)"). Dispatch
+// verifies it: a mislabeled tier (e.g. buy_hull claiming tier-2) would
+// otherwise sail past the capital gate as a free cheap-tier action.
+var verbTiers = map[capacity.ActionVerb]capacity.Tier{
+	capacity.VerbReassignHull:          capacity.TierReuseIdle,
+	capacity.VerbRepositionHull:        capacity.TierRebalance,
+	capacity.VerbRebalanceWorkers:      capacity.TierRebalance,
+	capacity.VerbAdjustBufferWhitelist: capacity.TierBufferAdjust,
+	capacity.VerbAdjustBufferCap:       capacity.TierBufferAdjust,
+	capacity.VerbAddCluster:            capacity.TierCapital,
+	capacity.VerbBuyHull:               capacity.TierCapital,
+}
+
+// executeAction dispatches one approved action to the actuator verb its tier
+// owns, after verifying the verb/tier pairing is the canonical one — tier
+// mislabeling is the cheapest way to defeat the escalation ladder, so it is
+// refused loudly instead of dispatched. Tier 4 reaches ExecuteCapital only
+// past converge's approval-threshold backstop.
+func (h *RunCapacityReconcilerCoordinatorHandler) executeAction(ctx context.Context, action capacity.Action) error {
+	canonical, known := verbTiers[action.Verb]
+	if !known {
+		return fmt.Errorf("unknown action verb %q (tier %s) — refusing dispatch", action.Verb, action.Tier)
+	}
+	if canonical != action.Tier {
+		return fmt.Errorf("verb/tier mismatch: %s is canonically %s but the action claims %s — refused (a mislabeled tier would bypass the capital gate)",
+			action.Verb, canonical, action.Tier)
+	}
+	switch action.Tier {
+	case capacity.TierReuseIdle:
+		return h.actuator.ReuseIdleHull(ctx, action)
+	case capacity.TierRebalance:
+		return h.actuator.Rebalance(ctx, action)
+	case capacity.TierBufferAdjust:
+		return h.actuator.AdjustBuffer(ctx, action)
+	case capacity.TierCapital:
+		return h.actuator.ExecuteCapital(ctx, action)
+	}
+	return fmt.Errorf("unknown action tier %d (%s)", action.Tier, action.Verb)
+}
+
+// noteOutcome logs the tick and records it at the error-streak checkpoint: a
+// clean tick resets the streak; an identical error repeating for
+// DefaultStreakThreshold passes emits the coordinator error-loop captain
+// event. Edge-triggered and nil-safe on the recorder.
+func (h *RunCapacityReconcilerCoordinatorHandler) noteOutcome(ctx context.Context, cmd *RunCapacityReconcilerCoordinatorCommand, errMon *health.Monitor, outcome capacity.TickOutcome) {
+	logger := common.LoggerFromContext(ctx)
+	if outcome.Idle {
+		// Diagnose the idle honestly: a nil switch is UNWIRED (fail-closed),
+		// not an engaged DISABLED file — don't send an operator hunting for a
+		// file that does not exist.
+		msg := "Capacity reconciler idle: captain/DISABLED engaged"
+		if h.killSwitch == nil {
+			msg = "Capacity reconciler idle: kill switch UNWIRED — failing closed (wire capacity.KillSwitch)"
+		}
+		logger.Log("INFO", msg, map[string]interface{}{
+			"action": "capacity_reconciler_idle", "tick": outcome.Sequence,
+		})
+		return
+	}
+	if outcome.Error != "" {
+		logger.Log("ERROR", fmt.Sprintf("Capacity reconcile tick %d failed at %s: %s", outcome.Sequence, outcome.FailedPhase, outcome.Error), map[string]interface{}{
+			"action": "capacity_reconciler_tick_failed", "tick": outcome.Sequence, "phase": string(outcome.FailedPhase),
+		})
+	} else {
+		logger.Log("INFO", fmt.Sprintf("Capacity reconcile tick %d: %d actions executed, %d proposals filed", outcome.Sequence, len(outcome.ActionsExecuted), len(outcome.ProposalsFiled)), map[string]interface{}{
+			"action": "capacity_reconciler_tick", "tick": outcome.Sequence,
+			"actions_executed": len(outcome.ActionsExecuted), "proposals_filed": len(outcome.ProposalsFiled),
+		})
+	}
+	if streak, crossed := errMon.Note("reconcile", outcome.Error); crossed {
+		health.RecordErrorLoop(h.captainEvents, logger, cmd.ContainerID, cmd.PlayerID.Value(), "reconcile", fmt.Errorf("%s", outcome.Error), streak)
+	}
+}
+
+// sleepTick waits one tick on the injected clock, honoring cancellation. A
+// real clock sleeps out the interval (the goroutine drains harmlessly if the
+// context wins); a test clock's Sleep returns immediately after advancing.
+// An already-cancelled context returns at once without spawning a sleeper —
+// the common shutdown path (cancel lands during the phases) leaks nothing.
+func (h *RunCapacityReconcilerCoordinatorHandler) sleepTick(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	slept := make(chan struct{})
+	go func() {
+		h.clock.Sleep(d)
+		close(slept)
+	}()
+	select {
+	case <-slept:
+	case <-ctx.Done():
+	}
+}

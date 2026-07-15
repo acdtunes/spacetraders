@@ -415,6 +415,12 @@ func containerSpecList() []ContainerSpec {
 		// fleet_autosizer/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		{CommandType: "bootstrap", build: buildBootstrapCommand},
+		// capacity_reconciler_coordinator (st-7zk): the standing capacity reconciler. Like
+		// fleet_autosizer/siting it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		// Registering it here is what makes a launched or restart-recovered reconciler
+		// runnable — launch itself stays EXPLICIT (never boot-standing, st-fyr).
+		{CommandType: "capacity_reconciler_coordinator", build: buildCapacityReconcilerCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "warehouse", build: buildWarehouseCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
@@ -520,6 +526,14 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// persisted copy can shadow the live value (the sp-ts82 pattern).
 	if commandType == "bootstrap" {
 		s.resolveBootstrapConfig(config)
+	}
+	// st-7zk: same live-config discipline for the capacity reconciler. Its
+	// [capacity_reconciler] calibration is cleared and re-injected from the boot-loaded
+	// config.yaml on every build — creation and recovery alike — so a config edit + restart
+	// retunes a recovered coordinator and no persisted copy can shadow the live value (the
+	// sp-ts82 pattern).
+	if commandType == "capacity_reconciler_coordinator" {
+		s.resolveCapacityReconcilerConfig(config)
 	}
 	// sp-x8i5: same live-config discipline for the scouting subsystem's tour-start
 	// phase jitter ceiling. The [scouting] knob is cleared and re-injected from the

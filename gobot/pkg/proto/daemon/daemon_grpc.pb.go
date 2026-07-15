@@ -19,78 +19,79 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_NavigateShip_FullMethodName                 = "/daemon.DaemonService/NavigateShip"
-	DaemonService_RouteShip_FullMethodName                    = "/daemon.DaemonService/RouteShip"
-	DaemonService_DockShip_FullMethodName                     = "/daemon.DaemonService/DockShip"
-	DaemonService_OrbitShip_FullMethodName                    = "/daemon.DaemonService/OrbitShip"
-	DaemonService_RefuelShip_FullMethodName                   = "/daemon.DaemonService/RefuelShip"
-	DaemonService_JumpShip_FullMethodName                     = "/daemon.DaemonService/JumpShip"
-	DaemonService_InstallModule_FullMethodName                = "/daemon.DaemonService/InstallModule"
-	DaemonService_RemoveModule_FullMethodName                 = "/daemon.DaemonService/RemoveModule"
-	DaemonService_ListShipModules_FullMethodName              = "/daemon.DaemonService/ListShipModules"
-	DaemonService_BatchContractWorkflow_FullMethodName        = "/daemon.DaemonService/BatchContractWorkflow"
-	DaemonService_ContractFleetCoordinator_FullMethodName     = "/daemon.DaemonService/ContractFleetCoordinator"
-	DaemonService_ScoutTour_FullMethodName                    = "/daemon.DaemonService/ScoutTour"
-	DaemonService_ScoutMarkets_FullMethodName                 = "/daemon.DaemonService/ScoutMarkets"
-	DaemonService_AssignScoutingFleet_FullMethodName          = "/daemon.DaemonService/AssignScoutingFleet"
-	DaemonService_ScoutPostCoordinator_FullMethodName         = "/daemon.DaemonService/ScoutPostCoordinator"
-	DaemonService_TradeFleetCoordinator_FullMethodName        = "/daemon.DaemonService/TradeFleetCoordinator"
-	DaemonService_SitingCoordinator_FullMethodName            = "/daemon.DaemonService/SitingCoordinator"
-	DaemonService_FleetAutosizerCoordinator_FullMethodName    = "/daemon.DaemonService/FleetAutosizerCoordinator"
-	DaemonService_BootstrapCoordinator_FullMethodName         = "/daemon.DaemonService/BootstrapCoordinator"
-	DaemonService_FrontierExpansionCoordinator_FullMethodName = "/daemon.DaemonService/FrontierExpansionCoordinator"
-	DaemonService_WorkerRebalancerCoordinator_FullMethodName  = "/daemon.DaemonService/WorkerRebalancerCoordinator"
-	DaemonService_AddScoutPost_FullMethodName                 = "/daemon.DaemonService/AddScoutPost"
-	DaemonService_RemoveScoutPost_FullMethodName              = "/daemon.DaemonService/RemoveScoutPost"
-	DaemonService_ListScoutPosts_FullMethodName               = "/daemon.DaemonService/ListScoutPosts"
-	DaemonService_ListContainers_FullMethodName               = "/daemon.DaemonService/ListContainers"
-	DaemonService_GetContainer_FullMethodName                 = "/daemon.DaemonService/GetContainer"
-	DaemonService_StopContainer_FullMethodName                = "/daemon.DaemonService/StopContainer"
-	DaemonService_GetContainerLogs_FullMethodName             = "/daemon.DaemonService/GetContainerLogs"
-	DaemonService_HealthCheck_FullMethodName                  = "/daemon.DaemonService/HealthCheck"
-	DaemonService_GetAPIBudget_FullMethodName                 = "/daemon.DaemonService/GetAPIBudget"
-	DaemonService_ListShips_FullMethodName                    = "/daemon.DaemonService/ListShips"
-	DaemonService_GetShip_FullMethodName                      = "/daemon.DaemonService/GetShip"
-	DaemonService_RefreshShip_FullMethodName                  = "/daemon.DaemonService/RefreshShip"
-	DaemonService_ReserveShip_FullMethodName                  = "/daemon.DaemonService/ReserveShip"
-	DaemonService_ReleaseShip_FullMethodName                  = "/daemon.DaemonService/ReleaseShip"
-	DaemonService_AssignShipFleet_FullMethodName              = "/daemon.DaemonService/AssignShipFleet"
-	DaemonService_UnassignShipFleet_FullMethodName            = "/daemon.DaemonService/UnassignShipFleet"
-	DaemonService_ListFleets_FullMethodName                   = "/daemon.DaemonService/ListFleets"
-	DaemonService_FleetHub_FullMethodName                     = "/daemon.DaemonService/FleetHub"
-	DaemonService_ListWaypoints_FullMethodName                = "/daemon.DaemonService/ListWaypoints"
-	DaemonService_GetWaypoint_FullMethodName                  = "/daemon.DaemonService/GetWaypoint"
-	DaemonService_PurchaseShip_FullMethodName                 = "/daemon.DaemonService/PurchaseShip"
-	DaemonService_BatchPurchaseShips_FullMethodName           = "/daemon.DaemonService/BatchPurchaseShips"
-	DaemonService_GetShipyardListings_FullMethodName          = "/daemon.DaemonService/GetShipyardListings"
-	DaemonService_StartGoodsFactory_FullMethodName            = "/daemon.DaemonService/StartGoodsFactory"
-	DaemonService_StopGoodsFactory_FullMethodName             = "/daemon.DaemonService/StopGoodsFactory"
-	DaemonService_FactoryWorkerCap_FullMethodName             = "/daemon.DaemonService/FactoryWorkerCap"
-	DaemonService_TuneContainerConfig_FullMethodName          = "/daemon.DaemonService/TuneContainerConfig"
-	DaemonService_ShowTunableConfig_FullMethodName            = "/daemon.DaemonService/ShowTunableConfig"
-	DaemonService_GetFactoryStatus_FullMethodName             = "/daemon.DaemonService/GetFactoryStatus"
-	DaemonService_ScanArbitrageOpportunities_FullMethodName   = "/daemon.DaemonService/ScanArbitrageOpportunities"
-	DaemonService_StartArbitrageCoordinator_FullMethodName    = "/daemon.DaemonService/StartArbitrageCoordinator"
-	DaemonService_JettisonCargo_FullMethodName                = "/daemon.DaemonService/JettisonCargo"
-	DaemonService_GasExtractionOperation_FullMethodName       = "/daemon.DaemonService/GasExtractionOperation"
-	DaemonService_StartTradeRoute_FullMethodName              = "/daemon.DaemonService/StartTradeRoute"
-	DaemonService_StartWarehouse_FullMethodName               = "/daemon.DaemonService/StartWarehouse"
-	DaemonService_StartArbRun_FullMethodName                  = "/daemon.DaemonService/StartArbRun"
-	DaemonService_StartTourRun_FullMethodName                 = "/daemon.DaemonService/StartTourRun"
-	DaemonService_StartStocker_FullMethodName                 = "/daemon.DaemonService/StartStocker"
-	DaemonService_StartConstructionPipeline_FullMethodName    = "/daemon.DaemonService/StartConstructionPipeline"
-	DaemonService_GetConstructionStatus_FullMethodName        = "/daemon.DaemonService/GetConstructionStatus"
-	DaemonService_StopConstructionPipeline_FullMethodName     = "/daemon.DaemonService/StopConstructionPipeline"
-	DaemonService_ConstructionGoodOverride_FullMethodName     = "/daemon.DaemonService/ConstructionGoodOverride"
-	DaemonService_ApplyDepotTopology_FullMethodName           = "/daemon.DaemonService/ApplyDepotTopology"
-	DaemonService_AddDepot_FullMethodName                     = "/daemon.DaemonService/AddDepot"
-	DaemonService_RemoveDepot_FullMethodName                  = "/daemon.DaemonService/RemoveDepot"
-	DaemonService_AddDepotElement_FullMethodName              = "/daemon.DaemonService/AddDepotElement"
-	DaemonService_RemoveDepotElement_FullMethodName           = "/daemon.DaemonService/RemoveDepotElement"
-	DaemonService_PlaceDepotElement_FullMethodName            = "/daemon.DaemonService/PlaceDepotElement"
-	DaemonService_ListDepots_FullMethodName                   = "/daemon.DaemonService/ListDepots"
-	DaemonService_StartDepot_FullMethodName                   = "/daemon.DaemonService/StartDepot"
-	DaemonService_StopDepot_FullMethodName                    = "/daemon.DaemonService/StopDepot"
+	DaemonService_NavigateShip_FullMethodName                  = "/daemon.DaemonService/NavigateShip"
+	DaemonService_RouteShip_FullMethodName                     = "/daemon.DaemonService/RouteShip"
+	DaemonService_DockShip_FullMethodName                      = "/daemon.DaemonService/DockShip"
+	DaemonService_OrbitShip_FullMethodName                     = "/daemon.DaemonService/OrbitShip"
+	DaemonService_RefuelShip_FullMethodName                    = "/daemon.DaemonService/RefuelShip"
+	DaemonService_JumpShip_FullMethodName                      = "/daemon.DaemonService/JumpShip"
+	DaemonService_InstallModule_FullMethodName                 = "/daemon.DaemonService/InstallModule"
+	DaemonService_RemoveModule_FullMethodName                  = "/daemon.DaemonService/RemoveModule"
+	DaemonService_ListShipModules_FullMethodName               = "/daemon.DaemonService/ListShipModules"
+	DaemonService_BatchContractWorkflow_FullMethodName         = "/daemon.DaemonService/BatchContractWorkflow"
+	DaemonService_ContractFleetCoordinator_FullMethodName      = "/daemon.DaemonService/ContractFleetCoordinator"
+	DaemonService_ScoutTour_FullMethodName                     = "/daemon.DaemonService/ScoutTour"
+	DaemonService_ScoutMarkets_FullMethodName                  = "/daemon.DaemonService/ScoutMarkets"
+	DaemonService_AssignScoutingFleet_FullMethodName           = "/daemon.DaemonService/AssignScoutingFleet"
+	DaemonService_ScoutPostCoordinator_FullMethodName          = "/daemon.DaemonService/ScoutPostCoordinator"
+	DaemonService_TradeFleetCoordinator_FullMethodName         = "/daemon.DaemonService/TradeFleetCoordinator"
+	DaemonService_SitingCoordinator_FullMethodName             = "/daemon.DaemonService/SitingCoordinator"
+	DaemonService_FleetAutosizerCoordinator_FullMethodName     = "/daemon.DaemonService/FleetAutosizerCoordinator"
+	DaemonService_BootstrapCoordinator_FullMethodName          = "/daemon.DaemonService/BootstrapCoordinator"
+	DaemonService_CapacityReconcilerCoordinator_FullMethodName = "/daemon.DaemonService/CapacityReconcilerCoordinator"
+	DaemonService_FrontierExpansionCoordinator_FullMethodName  = "/daemon.DaemonService/FrontierExpansionCoordinator"
+	DaemonService_WorkerRebalancerCoordinator_FullMethodName   = "/daemon.DaemonService/WorkerRebalancerCoordinator"
+	DaemonService_AddScoutPost_FullMethodName                  = "/daemon.DaemonService/AddScoutPost"
+	DaemonService_RemoveScoutPost_FullMethodName               = "/daemon.DaemonService/RemoveScoutPost"
+	DaemonService_ListScoutPosts_FullMethodName                = "/daemon.DaemonService/ListScoutPosts"
+	DaemonService_ListContainers_FullMethodName                = "/daemon.DaemonService/ListContainers"
+	DaemonService_GetContainer_FullMethodName                  = "/daemon.DaemonService/GetContainer"
+	DaemonService_StopContainer_FullMethodName                 = "/daemon.DaemonService/StopContainer"
+	DaemonService_GetContainerLogs_FullMethodName              = "/daemon.DaemonService/GetContainerLogs"
+	DaemonService_HealthCheck_FullMethodName                   = "/daemon.DaemonService/HealthCheck"
+	DaemonService_GetAPIBudget_FullMethodName                  = "/daemon.DaemonService/GetAPIBudget"
+	DaemonService_ListShips_FullMethodName                     = "/daemon.DaemonService/ListShips"
+	DaemonService_GetShip_FullMethodName                       = "/daemon.DaemonService/GetShip"
+	DaemonService_RefreshShip_FullMethodName                   = "/daemon.DaemonService/RefreshShip"
+	DaemonService_ReserveShip_FullMethodName                   = "/daemon.DaemonService/ReserveShip"
+	DaemonService_ReleaseShip_FullMethodName                   = "/daemon.DaemonService/ReleaseShip"
+	DaemonService_AssignShipFleet_FullMethodName               = "/daemon.DaemonService/AssignShipFleet"
+	DaemonService_UnassignShipFleet_FullMethodName             = "/daemon.DaemonService/UnassignShipFleet"
+	DaemonService_ListFleets_FullMethodName                    = "/daemon.DaemonService/ListFleets"
+	DaemonService_FleetHub_FullMethodName                      = "/daemon.DaemonService/FleetHub"
+	DaemonService_ListWaypoints_FullMethodName                 = "/daemon.DaemonService/ListWaypoints"
+	DaemonService_GetWaypoint_FullMethodName                   = "/daemon.DaemonService/GetWaypoint"
+	DaemonService_PurchaseShip_FullMethodName                  = "/daemon.DaemonService/PurchaseShip"
+	DaemonService_BatchPurchaseShips_FullMethodName            = "/daemon.DaemonService/BatchPurchaseShips"
+	DaemonService_GetShipyardListings_FullMethodName           = "/daemon.DaemonService/GetShipyardListings"
+	DaemonService_StartGoodsFactory_FullMethodName             = "/daemon.DaemonService/StartGoodsFactory"
+	DaemonService_StopGoodsFactory_FullMethodName              = "/daemon.DaemonService/StopGoodsFactory"
+	DaemonService_FactoryWorkerCap_FullMethodName              = "/daemon.DaemonService/FactoryWorkerCap"
+	DaemonService_TuneContainerConfig_FullMethodName           = "/daemon.DaemonService/TuneContainerConfig"
+	DaemonService_ShowTunableConfig_FullMethodName             = "/daemon.DaemonService/ShowTunableConfig"
+	DaemonService_GetFactoryStatus_FullMethodName              = "/daemon.DaemonService/GetFactoryStatus"
+	DaemonService_ScanArbitrageOpportunities_FullMethodName    = "/daemon.DaemonService/ScanArbitrageOpportunities"
+	DaemonService_StartArbitrageCoordinator_FullMethodName     = "/daemon.DaemonService/StartArbitrageCoordinator"
+	DaemonService_JettisonCargo_FullMethodName                 = "/daemon.DaemonService/JettisonCargo"
+	DaemonService_GasExtractionOperation_FullMethodName        = "/daemon.DaemonService/GasExtractionOperation"
+	DaemonService_StartTradeRoute_FullMethodName               = "/daemon.DaemonService/StartTradeRoute"
+	DaemonService_StartWarehouse_FullMethodName                = "/daemon.DaemonService/StartWarehouse"
+	DaemonService_StartArbRun_FullMethodName                   = "/daemon.DaemonService/StartArbRun"
+	DaemonService_StartTourRun_FullMethodName                  = "/daemon.DaemonService/StartTourRun"
+	DaemonService_StartStocker_FullMethodName                  = "/daemon.DaemonService/StartStocker"
+	DaemonService_StartConstructionPipeline_FullMethodName     = "/daemon.DaemonService/StartConstructionPipeline"
+	DaemonService_GetConstructionStatus_FullMethodName         = "/daemon.DaemonService/GetConstructionStatus"
+	DaemonService_StopConstructionPipeline_FullMethodName      = "/daemon.DaemonService/StopConstructionPipeline"
+	DaemonService_ConstructionGoodOverride_FullMethodName      = "/daemon.DaemonService/ConstructionGoodOverride"
+	DaemonService_ApplyDepotTopology_FullMethodName            = "/daemon.DaemonService/ApplyDepotTopology"
+	DaemonService_AddDepot_FullMethodName                      = "/daemon.DaemonService/AddDepot"
+	DaemonService_RemoveDepot_FullMethodName                   = "/daemon.DaemonService/RemoveDepot"
+	DaemonService_AddDepotElement_FullMethodName               = "/daemon.DaemonService/AddDepotElement"
+	DaemonService_RemoveDepotElement_FullMethodName            = "/daemon.DaemonService/RemoveDepotElement"
+	DaemonService_PlaceDepotElement_FullMethodName             = "/daemon.DaemonService/PlaceDepotElement"
+	DaemonService_ListDepots_FullMethodName                    = "/daemon.DaemonService/ListDepots"
+	DaemonService_StartDepot_FullMethodName                    = "/daemon.DaemonService/StartDepot"
+	DaemonService_StopDepot_FullMethodName                     = "/daemon.DaemonService/StopDepot"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -155,6 +156,11 @@ type DaemonServiceClient interface {
 	// reconciler that drives a cold agent through the cold-start arc to the jump gate. Slice 1
 	// ships the DATA phase (probes → 3, scout every market). LIVE BY DEFAULT once launched.
 	BootstrapCoordinator(ctx context.Context, in *BootstrapCoordinatorRequest, opts ...grpc.CallOption) (*BootstrapCoordinatorResponse, error)
+	// CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk): drives
+	// the contract-delivery machine's actual topology toward the computed desired topology
+	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced, captain/DISABLED-gated every
+	// tick. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert foundation).
+	CapacityReconcilerCoordinator(ctx context.Context, in *CapacityReconcilerCoordinatorRequest, opts ...grpc.CallOption) (*CapacityReconcilerCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(ctx context.Context, in *FrontierExpansionCoordinatorRequest, opts ...grpc.CallOption) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -488,6 +494,16 @@ func (c *daemonServiceClient) BootstrapCoordinator(ctx context.Context, in *Boot
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BootstrapCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_BootstrapCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) CapacityReconcilerCoordinator(ctx context.Context, in *CapacityReconcilerCoordinatorRequest, opts ...grpc.CallOption) (*CapacityReconcilerCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CapacityReconcilerCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_CapacityReconcilerCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1086,6 +1102,11 @@ type DaemonServiceServer interface {
 	// reconciler that drives a cold agent through the cold-start arc to the jump gate. Slice 1
 	// ships the DATA phase (probes → 3, scout every market). LIVE BY DEFAULT once launched.
 	BootstrapCoordinator(context.Context, *BootstrapCoordinatorRequest) (*BootstrapCoordinatorResponse, error)
+	// CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk): drives
+	// the contract-delivery machine's actual topology toward the computed desired topology
+	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced, captain/DISABLED-gated every
+	// tick. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert foundation).
+	CapacityReconcilerCoordinator(context.Context, *CapacityReconcilerCoordinatorRequest) (*CapacityReconcilerCoordinatorResponse, error)
 	// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 	FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error)
 	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
@@ -1291,6 +1312,9 @@ func (UnimplementedDaemonServiceServer) FleetAutosizerCoordinator(context.Contex
 }
 func (UnimplementedDaemonServiceServer) BootstrapCoordinator(context.Context, *BootstrapCoordinatorRequest) (*BootstrapCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BootstrapCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) CapacityReconcilerCoordinator(context.Context, *CapacityReconcilerCoordinatorRequest) (*CapacityReconcilerCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CapacityReconcilerCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Context, *FrontierExpansionCoordinatorRequest) (*FrontierExpansionCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FrontierExpansionCoordinator not implemented")
@@ -1810,6 +1834,24 @@ func _DaemonService_BootstrapCoordinator_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).BootstrapCoordinator(ctx, req.(*BootstrapCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_CapacityReconcilerCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CapacityReconcilerCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).CapacityReconcilerCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_CapacityReconcilerCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).CapacityReconcilerCoordinator(ctx, req.(*CapacityReconcilerCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2850,6 +2892,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BootstrapCoordinator",
 			Handler:    _DaemonService_BootstrapCoordinator_Handler,
+		},
+		{
+			MethodName: "CapacityReconcilerCoordinator",
+			Handler:    _DaemonService_CapacityReconcilerCoordinator_Handler,
 		},
 		{
 			MethodName: "FrontierExpansionCoordinator",

@@ -581,6 +581,22 @@ func (s *daemonServiceImpl) BootstrapCoordinator(ctx context.Context, req *pb.Bo
 	return &pb.BootstrapCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk). Explicit
+// start only — the daemon never boot-arms it (deploy-inert foundation).
+func (s *daemonServiceImpl) CapacityReconcilerCoordinator(ctx context.Context, req *pb.CapacityReconcilerCoordinatorRequest) (*pb.CapacityReconcilerCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.CapacityReconcilerCoordinator(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start capacity reconciler coordinator: %w", err)
+	}
+
+	return &pb.CapacityReconcilerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89)
 func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

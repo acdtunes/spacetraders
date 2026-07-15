@@ -46,6 +46,10 @@ type Config struct {
 	// the bootstrap coordinator container on every build (creation + recovery), so a captain
 	// retunes the cold-start behaviour by editing config.yaml and restarting.
 	Bootstrap BootstrapConfig `mapstructure:"bootstrap"`
+	// CapacityReconciler holds the capacity reconciler's calibration (st-7zk), injected live
+	// into the capacity_reconciler_coordinator container on every build (creation + recovery),
+	// so a captain retunes the engine by editing config.yaml and restarting.
+	CapacityReconciler CapacityReconcilerConfig `mapstructure:"capacity_reconciler"`
 	// ShipResync holds the periodic full-fleet ship-resync cadence knobs (sp-p1ci) — base
 	// interval + jitter — consumed by the daemon's ShipResyncScheduler. Zero defers to the
 	// documented defaults (1h +/-10min).

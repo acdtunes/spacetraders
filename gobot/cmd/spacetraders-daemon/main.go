@@ -16,6 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
+	capacityCmd "github.com/andrescamacho/spacetraders-go/internal/application/capacity/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
@@ -50,6 +51,7 @@ import (
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -538,7 +540,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.CapacityReconciler, cfg.ShipResync, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -1006,6 +1008,32 @@ func run(cfg *config.Config) error {
 	freshnessSizerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand](med, freshnessSizerHandler); err != nil {
 		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
+	}
+
+	// Capacity reconciler (epic st-7zk, foundation st-fyr): the standing declarative
+	// reconciler that drives the contract-delivery machine's actual capacity topology toward
+	// a computed desired topology (SENSE → PLAN → DIFF → GOVERN → CONVERGE), maximizing
+	// per-hull-sustained $/hr, capex-paced. REGISTRATION ONLY — the coordinator is
+	// deliberately NOT boot-standing-armed (deploy-inert): it runs only when explicitly
+	// started via `workflow capacity-reconciler`, then survives restarts through the
+	// persisted-container recovery idiom. The foundation wiring is the provably-inert NoOp
+	// chain (empty desired topology → zero actions); each epic lane replaces exactly one
+	// component here (SENSE st-7ee, planner st-hlw, differ st-zr0, actuator st-5ig, governor
+	// st-x00, proposals st-0h8 — see internal/domain/capacity/CONTRACTS.md). The
+	// captain/DISABLED kill switch is the watchkeeper Workspace over the SAME workspace dir
+	// the supervisor polls, re-read at the top of every tick.
+	capacityReconcilerHandler := capacityCmd.NewRunCapacityReconcilerCoordinatorHandler(
+		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacity.NoOpSensor{}, capacity.NoOpPlanner{}),
+		capacity.NoOpDiffer{},
+		capacity.NoOpGovernor{},
+		capacity.NoOpActuator{},
+		capacity.NoOpProposalChannel{},
+		watchkeeper.NewWorkspace(cfg.Captain.WorkspaceDir),
+		nil, // nil = use RealClock
+	)
+	capacityReconcilerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
+	if err := mediator.RegisterHandler[*capacityCmd.RunCapacityReconcilerCoordinatorCommand](med, capacityReconcilerHandler); err != nil {
+		return fmt.Errorf("failed to register CapacityReconcilerCoordinator handler: %w", err)
 	}
 
 	// Arb-run coordinator (sp-p4ua): a one-shot, captain-directed, guarded arbitrage run

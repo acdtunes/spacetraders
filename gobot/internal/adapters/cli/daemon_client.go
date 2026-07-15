@@ -1330,6 +1330,24 @@ func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID i
 	return resp.ContainerId, nil
 }
 
+// CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk): drives the
+// contract-delivery machine's actual capacity topology toward the computed desired topology,
+// capex-paced. Identity-only launch — all [capacity_reconciler] calibration resolves live from
+// config.yaml. Explicit start only; a fresh deploy never arms it.
+func (c *DaemonClient) CapacityReconcilerCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+	req := &pb.CapacityReconcilerCoordinatorRequest{
+		PlayerId: int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.CapacityReconcilerCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a reconciler
 // that drives a cold agent through the cold-start arc to the jump gate. Identity-only launch — all
 // [bootstrap] tuning resolves live from config.yaml. dryRun (the CLI --dry-run) launches it in watch

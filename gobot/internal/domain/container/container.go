@@ -89,6 +89,14 @@ const (
 	// the cold-start arc to the jump gate (DATA→INCOME→GATE). Like the siting/autosizer
 	// coordinators it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeBootstrapCoordinator ContainerType = "BOOTSTRAP_COORDINATOR"
+	// ContainerTypeCapacityReconciler is the standing capacity reconciler (epic st-7zk): a
+	// per-player coordinator that loops forever inside one Handle() driving the
+	// contract-delivery machine's actual topology toward a computed desired topology
+	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced. Like the siting/autosizer
+	// coordinators it is NOT a CoordinatorOwnsIterations type. DEPLOY-INERT: it is never
+	// boot-standing-armed — it runs only when explicitly started, then survives restarts
+	// through the persisted-container recovery idiom.
+	ContainerTypeCapacityReconciler ContainerType = "CAPACITY_RECONCILER_COORDINATOR"
 	// ContainerTypeConstructionCoordinator is the standing construction-supply drain (sp-382j):
 	// a per-player coordinator that loops forever inside one Handle() sourcing and delivering a
 	// gate-construction pipeline's READY DELIVER_TO_CONSTRUCTION tasks on the shared
