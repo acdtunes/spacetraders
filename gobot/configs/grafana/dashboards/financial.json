@@ -683,10 +683,10 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "description": "15-minute buckets scaled to credits/hour, stacked by ledger operation tag (tour, contract, factory_workflow, stocker, ...).",
+      "description": "Net credits/hour per ledger operation_type as UNSTACKED lines: rate() over $smooth of the sp-miqt ledger counters, revenue minus cost per operation_type, x3600. A zero-backfill (`... or (... * 0)`) keeps cost-only ops (e.g. fleet expansion) and revenue-only ops on the chart instead of dropping from the subtraction. Each operation_type is its own line — positive above zero, negative below — since stacking signed net across opposite-direction ops (tour + vs factory/fleet -) was visually meaningless; rate()*3600 also removes the old partial-bucket x4 distortion. Legacy SQL kept hidden as a cross-check.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -695,15 +695,15 @@
           "mappings": [],
           "unit": "locale",
           "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 60,
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "lineWidth": 2,
             "pointSize": 5,
             "showPoints": "never",
             "spanNulls": true,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
             }
           }
         },
@@ -731,13 +731,25 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "((sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total[$smooth])) * 0)) - (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) * 0))) * 3600",
+          "legendFormat": "{{operation_type}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), COALESCE(operation_type, '(untagged)') AS metric, SUM(amount) * 4 AS \"net_per_hr\" FROM transactions WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1",
-          "refId": "A"
+          "refId": "B",
+          "hide": true
         }
       ],
       "title": "Net P/L per Hour by Operation",
@@ -809,7 +821,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spacetraders_daemon_ledger_revenue_total[$__rate_interval])) * 3600",
+          "expr": "sum(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) * 3600",
           "legendFormat": "revenue",
           "range": true,
           "refId": "A"
@@ -820,7 +832,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spacetraders_daemon_ledger_cost_total[$__rate_interval])) * 3600",
+          "expr": "sum(rate(spacetraders_daemon_ledger_cost_total[$smooth])) * 3600",
           "legendFormat": "costs",
           "range": true,
           "refId": "B"
@@ -890,7 +902,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{operation_type=\"contract\"}[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total{operation_type=\"contract\"}[$__rate_interval]))) * 3600",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{operation_type=\"contract\"}[$smooth])) - sum(rate(spacetraders_daemon_ledger_cost_total{operation_type=\"contract\"}[$smooth]))) * 3600",
           "legendFormat": "contract profit/hr",
           "range": true,
           "refId": "A"
@@ -1111,7 +1123,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{operation_type=\"tour\"}[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total{operation_type=\"tour\"}[$__rate_interval]))) * 3600",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{operation_type=\"tour\"}[$smooth])) - sum(rate(spacetraders_daemon_ledger_cost_total{operation_type=\"tour\"}[$smooth]))) * 3600",
           "legendFormat": "tour net/hr",
           "range": true,
           "refId": "A"
@@ -1133,10 +1145,10 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "description": "Realized vs solver-planned unit prices per leg. Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution.",
+      "description": "Realized vs solver-planned unit prices per leg, as the windowed-average drift percent: rate(_sum[$smooth])/rate(_count[$smooth]) over the sp-umyb tour_leg_price_drift_percent summary (matches the SQL AVG it replaces). Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution. Legacy SQL kept hidden as a cross-check.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1177,13 +1189,36 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(spacetraders_daemon_tour_leg_price_drift_percent_sum{side=\"buy\"}[$smooth]) / rate(spacetraders_daemon_tour_leg_price_drift_percent_count{side=\"buy\"}[$smooth])",
+          "legendFormat": "buy drift %",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(spacetraders_daemon_tour_leg_price_drift_percent_sum{side=\"sell\"}[$smooth]) / rate(spacetraders_daemon_tour_leg_price_drift_percent_count{side=\"sell\"}[$smooth])",
+          "legendFormat": "sell drift %",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "SELECT $__timeGroupAlias(realized_at, '30m'), CASE WHEN is_buy THEN 'buy drift %' ELSE 'sell drift %' END AS metric, AVG((realized_unit_price - planned_unit_price)::numeric / NULLIF(planned_unit_price, 0) * 100) AS \"drift\" FROM tour_leg_telemetry WHERE $__timeFilter(realized_at) AND realized_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
-          "refId": "A"
+          "refId": "C",
+          "hide": true
         }
       ],
       "title": "Plan vs Realized Unit Price Drift %",
@@ -1390,7 +1425,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[$__rate_interval]))) * 3600",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[$smooth])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[$smooth]))) * 3600",
           "legendFormat": "operating (ex-capex)",
           "range": true,
           "refId": "A"
@@ -1401,7 +1436,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total[$__rate_interval])) - sum(rate(spacetraders_daemon_ledger_cost_total[$__rate_interval]))) * 3600",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) - sum(rate(spacetraders_daemon_ledger_cost_total[$smooth]))) * 3600",
           "legendFormat": "net (all-in)",
           "range": true,
           "refId": "B"
@@ -1423,10 +1458,10 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr over 15-minute buckets: 3h = 12-point, 6h = 24-point trailing mean. Reads the trend through the lumpy tour buy/sell texture (raw 15m rate swings by millions; the 24-point mean's median step-to-step move is ~47k). Each 15m bucket SUM is x4 to stay in cr/hr. The moving average is computed over a 6h-widened input in a first CTE then clipped to the visible range in the outer query (so the leftmost points average over real prior history rather than a starved frame), and the current incomplete 15m bucket is excluded so the right edge does not dive.",
+      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr. rate() over a FIXED window IS the trailing mean rate over that window, so rate([3h]) and rate([6h]) are the 3h and 6h moving averages directly — reading the trend through the lumpy tour buy/sell texture. The fixed 3h/6h windows are this panel's identity, so the $smooth dropdown deliberately does NOT apply here. Reuses the sp-miqt ledger counters (category!=SHIP_INVESTMENTS = ex-capex); legacy SQL kept hidden as a cross-check.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1467,13 +1502,36 @@
       "targets": [
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[3h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[3h]))) * 3600",
+          "legendFormat": "operating 3h avg",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[6h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[6h]))) * 3600",
+          "legendFormat": "operating 6h avg",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "time_series",
           "rawQuery": true,
           "rawSql": "WITH buckets AS (SELECT date_bin('15 minutes', created_at, TIMESTAMPTZ '2001-01-01') AS b, SUM(amount) * 4 AS rate FROM transactions WHERE created_at > $__timeFrom()::timestamptz - INTERVAL '6 hours' AND created_at < $__timeTo()::timestamptz AND created_at < date_bin('15 minutes', now(), TIMESTAMPTZ '2001-01-01') AND category != 'SHIP_INVESTMENTS' GROUP BY 1), smoothed AS (SELECT b, AVG(rate) OVER (ORDER BY b ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS \"operating 3h avg\", AVG(rate) OVER (ORDER BY b ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS \"operating 6h avg\" FROM buckets) SELECT b AS \"time\", \"operating 3h avg\", \"operating 6h avg\" FROM smoothed WHERE b >= date_bin('15 minutes', $__timeFrom()::timestamptz, TIMESTAMPTZ '2001-01-01') ORDER BY b",
-          "refId": "A"
+          "refId": "C",
+          "hide": true
         }
       ],
       "title": "Operating Profit/hr - Smoothed (3h/6h trailing)",
@@ -1656,7 +1714,35 @@
     "trading"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "current": {
+          "selected": true,
+          "text": "30m",
+          "value": "30m"
+        },
+        "description": "rate() smoothing window applied to every cr/hr PromQL panel — a larger window is a smoother, slower-moving line (sp-umyb).",
+        "hide": 0,
+        "label": "Smoothing",
+        "name": "smooth",
+        "options": [
+          { "selected": false, "text": "5m", "value": "5m" },
+          { "selected": false, "text": "15m", "value": "15m" },
+          { "selected": true, "text": "30m", "value": "30m" },
+          { "selected": false, "text": "1h", "value": "1h" },
+          { "selected": false, "text": "3h", "value": "3h" },
+          { "selected": false, "text": "6h", "value": "6h" }
+        ],
+        "query": "5m,15m,30m,1h,3h,6h",
+        "queryValue": "",
+        "refresh": 2,
+        "skipUrlSync": false,
+        "type": "interval"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",

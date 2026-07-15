@@ -487,6 +487,16 @@ func ObserveTourPlanRate(playerID int, phase string, creditsPerHour float64) {
 	}
 }
 
+// ObserveTourLegPriceDrift observes one realized tour leg's unit-price drift from plan
+// globally (sp-umyb), keyed by side ("buy"|"sell") — (realized-planned)/planned*100,
+// skipping a non-positive planned basis. No-op when metrics are disabled, so a metrics
+// miss never touches the trade path (RULINGS #4).
+func ObserveTourLegPriceDrift(side string, planned, realized float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.ObserveLegPriceDrift(side, planned, realized)
+	}
+}
+
 // SetGlobalTourStalenessCollector sets the global planner staleness-exclusion
 // collector (sp-k7q5 layer 2).
 func SetGlobalTourStalenessCollector(collector *TourStalenessMetricsCollector) {

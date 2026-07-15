@@ -2000,6 +2000,12 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 	realizedUnits, realizedUnitPrice int,
 	plannedAt time.Time,
 ) {
+	// sp-umyb: emit the realized-vs-planned unit-price drift (feeds the Plan vs Realized
+	// Drift % panel) keyed by side. Independent of the telemetry repo — a nil telemetry
+	// sink must not suppress it — and nil-safe, so a metrics miss never touches the trade
+	// path (RULINGS #4). ExpectedUnitPrice is the plan basis; a non-positive basis is
+	// skipped downstream.
+	metrics.ObserveTourLegPriceDrift(tradeSide(trade), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
 	if h.telemetry == nil {
 		return
 	}

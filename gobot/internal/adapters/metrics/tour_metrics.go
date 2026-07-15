@@ -96,6 +96,19 @@ type TourMetricsCollector struct {
 	// the RESTED ask series, not the ladder. A gauge (last-write-wins per good+source):
 	// the analyst reads the level and its stock/market split, not a distribution.
 	factoryGoodAcquisitionCost *prometheus.GaugeVec
+
+	// legPriceDriftPercent observes each realized tour leg's unit-price drift from the
+	// solver's plan — (realized-planned)/planned*100 — keyed by side (buy|sell)
+	// (sp-umyb). A SummaryVec with NO objectives: it exports only _sum and _count (no
+	// quantile streams), so the Plan-vs-Realized panel reads
+	// rate(_sum[$smooth])/rate(_count[$smooth]) = the windowed AVERAGE drift, exactly
+	// the SQL AVG it replaces. Deliberately UNLABELED by player_id: the panel is a
+	// global cross-player average and the prescribed expr does no aggregation, so a
+	// player_id split would fan the two intended buy/sell lines into one-line-per-player.
+	// A non-positive planned basis is skipped (nothing to divide by — mirrors the SQL
+	// NULLIF(planned,0)); drift is SIGNED, so Summary (not a CounterVec, whose Add
+	// panics on the negative sell-side drift) is the correct shape.
+	legPriceDriftPercent *prometheus.SummaryVec
 }
 
 // NewTourMetricsCollector creates a new tour metrics collector (sp-fbih).
@@ -192,6 +205,16 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 			},
 			[]string{"player_id", "good_symbol", "source"},
 		),
+
+		legPriceDriftPercent: prometheus.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_leg_price_drift_percent",
+				Help:      "Realized-vs-planned tour leg unit-price drift percent by side (side=buy|sell): (realized-planned)/planned*100. No objectives — exports _sum/_count for a windowed-average panel rate(_sum[w])/rate(_count[w]); a non-positive planned basis is skipped (sp-umyb).",
+			},
+			[]string{"side"},
+		),
 	}
 }
 
@@ -212,6 +235,7 @@ func (c *TourMetricsCollector) Register() error {
 		c.jumpLoadedTotal,
 		c.planRate,
 		c.factoryGoodAcquisitionCost,
+		c.legPriceDriftPercent,
 	}
 
 	for _, metric := range metrics {
@@ -303,4 +327,21 @@ func (c *TourMetricsCollector) ObservePlanRate(playerID int, phase string, credi
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.planRate.WithLabelValues(strconv.Itoa(playerID), phase).Observe(creditsPerHour)
+}
+
+// ObserveLegPriceDrift observes one realized tour leg's unit-price drift from the
+// solver's plan, keyed by side ("buy"|"sell") (sp-umyb). Drift is
+// (realized-planned)/planned*100 (SIGNED: buy over plan is positive, sell under plan
+// is negative). A non-positive planned basis is SKIPPED — there is no basis to divide
+// by (mirrors the SQL NULLIF(planned,0)). Best-effort/nil-safe: a recording miss never
+// panics a trade path (RULINGS #4).
+func (c *TourMetricsCollector) ObserveLegPriceDrift(side string, planned, realized float64) {
+	if c == nil || c.legPriceDriftPercent == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	if planned <= 0 {
+		return // No planned basis to divide by — skip (mirrors the SQL NULLIF(planned,0)).
+	}
+	drift := (realized - planned) / planned * 100
+	c.legPriceDriftPercent.WithLabelValues(side).Observe(drift)
 }

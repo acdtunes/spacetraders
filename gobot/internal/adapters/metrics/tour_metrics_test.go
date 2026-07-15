@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"math"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -76,6 +77,109 @@ func gatherHistogramCount(t *testing.T, reg *prometheus.Registry, name string, l
 		}
 	}
 	return 0, false
+}
+
+// gatherSummary reads one SummaryVec series off the registry via Gather() — the same
+// path promhttp serves on /metrics — returning the exported _sum and _count (a
+// no-objectives summary exports exactly those). ok=false means the series is absent
+// (never registered, or never observed and therefore never exported).
+func gatherSummary(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) (sampleSum float64, sampleCount uint64, ok bool) {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			got := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				got[lp.GetName()] = lp.GetValue()
+			}
+			if len(got) != len(labels) {
+				continue
+			}
+			match := true
+			for k, v := range labels {
+				if got[k] != v {
+					match = false
+					break
+				}
+			}
+			if match {
+				s := m.GetSummary()
+				return s.GetSampleSum(), s.GetSampleCount(), true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// TestTourMetrics_LegPriceDrift pins the sp-umyb Plan-vs-Realized drift metric feeding
+// panel 16: each realized leg observes SIGNED drift (realized-planned)/planned*100 under
+// its side; the metric exports the _sum/_count pair the panel's
+// rate(_sum[$smooth])/rate(_count[$smooth]) windowed-average reads (so two buys sum to
+// their combined drift over a count of two = their average); buy and sell are
+// independent series; and a non-positive planned basis is skipped (no basis to divide by,
+// mirroring the SQL NULLIF(planned,0)).
+func TestTourMetrics_LegPriceDrift(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	const name = "spacetraders_daemon_tour_leg_price_drift_percent"
+
+	// Two buy legs realized ABOVE plan → positive drift on side=buy. They accumulate so
+	// the _sum/_count pair is the AVERAGE drift the panel divides for: +10% and +5% →
+	// sum 15 over count 2 (avg 7.5).
+	c.ObserveLegPriceDrift("buy", 1000, 1100) // (1100-1000)/1000*100 = +10
+	c.ObserveLegPriceDrift("buy", 1000, 1050) // (1050-1000)/1000*100 = +5
+
+	// A sell leg realized BELOW plan → negative drift on a distinct side=sell series.
+	c.ObserveLegPriceDrift("sell", 2000, 1800) // (1800-2000)/2000*100 = -10
+
+	// A non-positive planned basis is skipped on BOTH sides — no observation recorded.
+	c.ObserveLegPriceDrift("buy", 0, 500)
+	c.ObserveLegPriceDrift("sell", -50, 500)
+
+	buySum, buyCount, ok := gatherSummary(t, Registry, name, map[string]string{"side": "buy"})
+	if !ok {
+		t.Fatalf("side=buy series not exported")
+	}
+	if buyCount != 2 {
+		t.Errorf("side=buy count = %d, want 2 (two buys; the planned=0 buy is skipped)", buyCount)
+	}
+	if math.Abs(buySum-15) > 1e-9 {
+		t.Errorf("side=buy sum = %v, want 15 (+10 and +5); rate(_sum)/rate(_count) is the avg drift", buySum)
+	}
+	if buySum <= 0 {
+		t.Errorf("side=buy drift sum = %v, want positive (realized above plan)", buySum)
+	}
+
+	sellSum, sellCount, ok := gatherSummary(t, Registry, name, map[string]string{"side": "sell"})
+	if !ok {
+		t.Fatalf("side=sell series not exported")
+	}
+	if sellCount != 1 {
+		t.Errorf("side=sell count = %d, want 1 (the planned<=0 sell is skipped)", sellCount)
+	}
+	if math.Abs(sellSum-(-10)) > 1e-9 {
+		t.Errorf("side=sell sum = %v, want -10 (realized below plan → negative drift)", sellSum)
+	}
+
+	// The nil-safe contract every sibling emitter keeps (RULINGS #4): a recording miss on
+	// a typed-nil receiver or an uninitialized collector degrades to a no-op, never a
+	// SIGSEGV that would take down the trade path.
+	var nilC *TourMetricsCollector
+	nilC.ObserveLegPriceDrift("buy", 1000, 1100)
+	(&TourMetricsCollector{}).ObserveLegPriceDrift("buy", 1000, 1100)
 }
 
 // TestTourMetrics_RegisterAndExport proves ALL SIX tour metrics REGISTER on the daemon's
