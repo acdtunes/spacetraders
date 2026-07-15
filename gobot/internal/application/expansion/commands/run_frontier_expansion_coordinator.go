@@ -629,9 +629,13 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildExpansionQueue(
 			continue
 		}
 		virgin := !c.Charted
-		if c.KnownMarkets == 0 && !virgin {
-			continue // charted but marketless and unposted — nothing to scan
-		}
+		// sp-dc50 gap 2: do NOT skip a charted-but-0-market system as "nothing to scan". A
+		// persisted gate edge (Charted=true) means we can REACH the system, not that its MARKETS
+		// were ever scanned — it may still hold a marketplace and shipyard (even the heavy-freighter
+		// yard the expansion is hunting). The old skip keyed on gate-edge presence, not market
+		// knowledge, so it dropped every hop-2+ system the BFS reached over a charted gate but had
+		// never scanned — the frontier froze at the pre-charted boundary and the queue emptied. A
+		// reachable, uncovered system with no known markets simply stays an unscanned scout target.
 		score := c.KnownMarkets*cfg.WeightKnownMarket - c.Hops*cfg.WeightHopPenalty
 		if virgin {
 			score += cfg.WeightVirginBonus

@@ -170,10 +170,15 @@ func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.Playe
 
 // ---- ExpansionScanner ------------------------------------------------------
 
-// AdjacencyProvider is the slice of gategraph.Service the scanner BFS-walks: the whole
-// persisted cross-system gate graph in one era-scoped read.
-type AdjacencyProvider interface {
+// GateGraph is the slice of gategraph.Service the scanner uses. Adjacency is the whole
+// persisted cross-system gate graph in one era-scoped read (what the BFS walks). Connections
+// is the per-system fetch-through read that CHARTS a covered frontier system's own jump gate
+// on a miss (a single live GetJumpGate that persists the edge set) — the seam that grows the
+// walkable graph one ring at a time so expansion does not freeze at the last charted ring
+// (sp-dc50). The real *gategraph.Service satisfies both.
+type GateGraph interface {
 	Adjacency(ctx context.Context) (map[string][]system.GateEdge, error)
+	Connections(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error)
 }
 
 // ExpansionScanner enumerates the gate-reachable frontier for the coordinator's queue.
@@ -183,7 +188,7 @@ type AdjacencyProvider interface {
 // reachability: virgin systems surface as edge targets of a charted neighbor (a probe
 // relayed there charts it on arrival, nn0y).
 type ExpansionScanner struct {
-	adjacency  AdjacencyProvider
+	gateGraph  GateGraph
 	marketRepo market.MarketRepository
 	shipRepo   navigation.ShipRepository
 	playerRepo player.PlayerRepository
@@ -191,13 +196,13 @@ type ExpansionScanner struct {
 
 // NewExpansionScanner wires the frontier enumerator.
 func NewExpansionScanner(
-	adjacency AdjacencyProvider,
+	gateGraph GateGraph,
 	marketRepo market.MarketRepository,
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 ) *ExpansionScanner {
 	return &ExpansionScanner{
-		adjacency:  adjacency,
+		gateGraph:  gateGraph,
 		marketRepo: marketRepo,
 		shipRepo:   shipRepo,
 		playerRepo: playerRepo,
@@ -207,7 +212,7 @@ func NewExpansionScanner(
 // ExpansionCandidates returns every gate-reachable system within maxHops of the anchor
 // set, annotated with hop distance, known-market count, and a charted flag.
 func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int, maxHops int) ([]expansionCmd.ExpansionCandidate, error) {
-	adj, err := s.adjacency.Adjacency(ctx)
+	adj, err := s.gateGraph.Adjacency(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("gate adjacency unreadable: %w", err)
 	}
@@ -216,6 +221,13 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 	if len(anchors) == 0 {
 		return nil, nil // no anchor to measure from → no queue this cycle
 	}
+
+	// Grow the walkable graph one ring BEFORE the BFS enumerates candidates (sp-dc50). The
+	// sweep charts a scouted frontier system's markets but not its jump gate, so its onward
+	// edges never reach the persisted adjacency and the BFS below would dead-end at the last
+	// charted ring — the frozen frontier / empty queue. Charting the covered ring's gate here
+	// (fetch-through+persist, at most once per system) lets the BFS reach the next ring.
+	s.growReachableFrontierGates(ctx, playerID, adj, anchors, maxHops)
 
 	hops := bfsHops(adj, anchors, maxHops)
 
@@ -265,6 +277,21 @@ func (s *ExpansionScanner) knownMarketCount(ctx context.Context, playerID int, s
 	return len(markets)
 }
 
+// growReachableFrontierGates charts+persists the jump-gate edges of covered frontier systems
+// so the reachability graph grows one ring per cycle (sp-dc50). It supplies growFrontierGraph
+// with the two live collaborators: a charted-predicate (a system a probe has SWEPT has known
+// markets — only then is its gate chartable; a virgin system's live gate 400s "no ship
+// present") and the fetch-through Connections call (a miss triggers one live GetJumpGate that
+// PERSISTS the edge set, so the fetch is amortized to at most once per system).
+func (s *ExpansionScanner) growReachableFrontierGates(ctx context.Context, playerID int, adj map[string][]system.GateEdge, anchors map[string]bool, maxHops int) {
+	growFrontierGraph(adj, anchors, maxHops,
+		func(systemSymbol string) bool { return s.knownMarketCount(ctx, playerID, systemSymbol) > 0 },
+		func(systemSymbol string) ([]system.GateEdge, error) {
+			return s.gateGraph.Connections(ctx, systemSymbol, playerID)
+		},
+	)
+}
+
 // bfsHops runs a multi-source BFS over the gate adjacency from the anchor set, returning
 // each reachable system's minimum hop distance (<= maxHops). Under-construction edges are
 // skipped (a multi-jump route can never traverse them, sp-7gr2) — Adjacency does not
@@ -304,4 +331,53 @@ func bfsHops(adj map[string][]system.GateEdge, anchors map[string]bool, maxHops 
 		}
 	}
 	return hops
+}
+
+// growFrontierGraph grows the walkable gate graph by ONE ring, mutating adj in place
+// (sp-dc50). The frozen-frontier bug: a scouted ring's MARKETS are charted by the sweep but
+// its JUMP GATE is not, so its onward edges never enter the persisted adjacency and the
+// multi-source BFS dead-ends at the last charted ring — the expansion queue empties. For each
+// system reachable within the hop bound that is CHARTED (a probe reached it) but whose OWN
+// gate edges are not yet persisted, it fetches them once via fetchConnections (fetch-through:
+// a miss persists the edge set) and merges them into adj, so the following bfsHops reaches the
+// next ring's virgins.
+//
+// It is pure over its inputs — the scanner supplies the real charted-predicate (known-market
+// count) and fetch (gategraph Connections) — so the ring-growth is unit-testable with no
+// store, API, or repo, mirroring bfsHops.
+//
+// API-frugality is structural, so a wide frontier is never stormed:
+//   - a system already carrying edges is never fetched (served from the map, zero API);
+//   - an UNCHARTED system (charted==false — no probe has arrived) is never probed, because its
+//     live gate would 400 "no ship present" and trip the sp-ikx1 negative-result backoff;
+//   - a system AT the hop bound is never charted onward (its neighbors fall beyond maxHops and
+//     the bounded BFS would discard them).
+//
+// Each qualifying system is therefore fetched at most ONCE ever: the next cycle it carries
+// persisted edges and is skipped. A fetch error (an unreadable / backed-off gate) leaves the
+// node ungrown — the BFS already treats it as a dead-end — so it is swallowed here.
+func growFrontierGraph(
+	adj map[string][]system.GateEdge,
+	anchors map[string]bool,
+	maxHops int,
+	charted func(systemSymbol string) bool,
+	fetchConnections func(systemSymbol string) ([]system.GateEdge, error),
+) {
+	reachable := bfsHops(adj, anchors, maxHops)
+	for systemSymbol, hop := range reachable {
+		if hop >= maxHops {
+			continue // its onward neighbors would fall beyond the bound — not worth a fetch
+		}
+		if _, hasEdges := adj[systemSymbol]; hasEdges {
+			continue // gate already persisted — never re-fetch (frugality)
+		}
+		if !charted(systemSymbol) {
+			continue // uncharted virgin — its live gate would 400/back off; leave it for a probe
+		}
+		edges, err := fetchConnections(systemSymbol)
+		if err != nil || len(edges) == 0 {
+			continue // unreadable/backed-off (sp-ikx1/qxa4) — the graph just doesn't grow through it
+		}
+		adj[systemSymbol] = edges
+	}
 }

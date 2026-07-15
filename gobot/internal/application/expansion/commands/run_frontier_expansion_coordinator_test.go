@@ -264,19 +264,29 @@ func TestFrontier_CoveredSystemExcludedFromQueue(t *testing.T) {
 	require.Equal(t, "X1-MID", pr.upserts[0].SystemSymbol, "the covered X1-HIGH is skipped; next best declared")
 }
 
-// A charted-but-marketless system with no post is unserviceable — never declared.
-func TestFrontier_ChartedMarketlessSystemNotDeclared(t *testing.T) {
+// sp-dc50 gap 2: a reachable, uncovered system whose gate we have charted (Charted=true) but
+// whose MARKETS were never scanned (KnownMarkets=0) is an UNSCANNED scout target — NOT "known
+// marketless." The old skip ("charted but marketless — nothing to scan") keyed on gate-edge
+// presence, not on actual market knowledge, so it silently dropped every hop-2+ system the BFS
+// reached over a charted gate but had never scanned — the frontier froze at the pre-charted
+// boundary and the expansion queue emptied. Such a system may well hold markets AND shipyards
+// (including the heavy-freighter yard the expansion is hunting), so it must be scouted to find
+// out, not discarded. Discovery is now driven by market knowledge, not gate-edge presence.
+func TestFrontier_ChartedButUnscannedSystemIsScouted(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	pr := &fakePostRepo{}
-	fr := &fakeFleetRepo{idle: []*navigation.Ship{newProbe(t, "P1", "X1-HOME-A1")}}
+	fr := &fakeFleetRepo{idle: []*navigation.Ship{newProbe(t, "P1", "X1-HOME-A1")}} // supply covers → isolate declaration
 	lr := &fakeLedgerRepo{}
 	h := newHandler(pr, fr, lr, clock)
 	h.SetExpansionScanner(&fakeScanner{candidates: []ExpansionCandidate{
-		{SystemSymbol: "X1-BARREN", Hops: 1, KnownMarkets: 0, Charted: true}, // charted, no markets, no post
+		{SystemSymbol: "X1-UNSCANNED", Hops: 2, KnownMarkets: 0, Charted: true}, // gate charted, markets never scanned
 	}})
 
 	require.NoError(t, h.reconcileOnce(context.Background(), testCmd()))
-	require.Empty(t, pr.upserts, "an unserviceable charted-marketless system is not declared")
+
+	require.Len(t, pr.upserts, 1, "a charted-gate-but-unscanned system is a scout target, not dropped")
+	require.Equal(t, "X1-UNSCANNED", pr.upserts[0].SystemSymbol,
+		"the unscanned system is declared so a probe scouts its markets/shipyards")
 }
 
 // sp-njwy STARVATION: the frontier must NOT auto-declare a post for a system it ALREADY
