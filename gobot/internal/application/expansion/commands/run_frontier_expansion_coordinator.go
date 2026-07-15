@@ -104,6 +104,17 @@ const (
 	// outward until a yard is found, then relax back to the baseline split.
 	defaultObjectiveBiasPercent = 40
 
+	// defaultReservedFreshnessFloor is the sp-iopd SYMMETRIC freshness floor: N idle probes the
+	// frontier treats as UNAVAILABLE (reserved for the market-freshness sizer, sp-orgp). The
+	// frontier discounts them from the idle supply it counts toward covering its OWN coverage
+	// demand, so an aggressive frontier (heavy objective bias, many depth pathfinders) GROWS the
+	// pool with a guarded buy rather than cannibalizing scanning below a relaxed baseline. It is
+	// the mirror of the freshness sizer's reserved_frontier_floor; the pair keeps neither
+	// coordinator able to starve the other. 0 (the default) is EXACT pre-sp-iopd behavior — the
+	// floor is OFF until deployed, opt-in via `tune reserved_freshness_floor <N>` (a probe count
+	// for the MVP; the full allocator sizes it to hold known markets under a RELAXED SLA).
+	defaultReservedFreshnessFloor = 0
+
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
 	rankingLogLimit = 10
@@ -254,6 +265,11 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	OffGateWarpRangeFuel         int // max warp fuel a single explorer leg may cost (target range bound)
 	OffGateValueWeight           int // weight on exploration value in target ranking
 	OffGateFuelWeight            int // weight on warp fuel (distance) in target ranking
+	// ReservedFreshnessFloor (sp-iopd) is the count of idle probes the frontier treats as
+	// reserved for the freshness sizer: it discounts them from the idle supply that covers its
+	// own demand, so it never cannibalizes scanning's baseline. 0 → the floor is off (pre-sp-iopd
+	// behavior). Live-tunable (FrontierTunableDefaults).
+	ReservedFreshnessFloor int
 }
 
 // RunFrontierExpansionCoordinatorResponse reports reconcile progress. Because the loop
@@ -436,6 +452,7 @@ func FrontierTunableDefaults() map[string]int {
 		"off_gate_warp_range_fuel":         defaultOffGateWarpRangeFuel,
 		"off_gate_value_weight":            defaultOffGateValueWeight,
 		"off_gate_fuel_weight":             defaultOffGateFuelWeight,
+		"reserved_freshness_floor":         defaultReservedFreshnessFloor,
 	}
 }
 
@@ -462,6 +479,7 @@ type frontierConfig struct {
 	OffGateWarpRangeFuel         int
 	OffGateValueWeight           int
 	OffGateFuelWeight            int
+	ReservedFreshnessFloor       int
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -494,6 +512,7 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		OffGateWarpRangeFuel:         cmd.OffGateWarpRangeFuel,
 		OffGateValueWeight:           cmd.OffGateValueWeight,
 		OffGateFuelWeight:            cmd.OffGateFuelWeight,
+		ReservedFreshnessFloor:       cmd.ReservedFreshnessFloor,
 	}
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
@@ -508,6 +527,9 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		c.OffGateWarpRangeFuel = live.PositiveIntOrZero("off_gate_warp_range_fuel")
 		c.OffGateValueWeight = live.PositiveIntOrZero("off_gate_value_weight")
 		c.OffGateFuelWeight = live.PositiveIntOrZero("off_gate_fuel_weight")
+		// sp-iopd reserved freshness floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
+		// the documented default — no <=0 fallback, since 0 IS the default here.
+		c.ReservedFreshnessFloor = live.PositiveIntOrZero("reserved_freshness_floor")
 	}
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
@@ -745,10 +767,22 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		return "no purchase: no unmanned slot to serve"
 	}
 
-	// Fleet short? If idle probes already cover the open demand, the reconciler will
-	// relay them — buying while an idle probe can serve the target is the bug (pin #2).
-	if availableCount >= openSlots {
-		return fmt.Sprintf("no purchase: supply covers demand (%d idle probes >= %d open slots)", availableCount, openSlots)
+	// SYMMETRIC FRESHNESS FLOOR (sp-iopd): the frontier DISCOUNTS reserved_freshness_floor idle
+	// probes as reserved for the freshness sizer (sp-orgp) — it will not count them toward covering
+	// its OWN coverage demand, so an aggressive frontier GROWS the pool with a guarded buy rather
+	// than cannibalizing scanning below a relaxed baseline. floor 0 (default) leaves
+	// effectiveAvailable == availableCount, i.e. exact pre-sp-iopd behavior. The reconciler still
+	// relays whichever idle probes it chooses; this governs only whether the frontier BUYS — the
+	// coordinator never claims a hull (RULINGS #7).
+	effectiveAvailable := availableCount - cfg.ReservedFreshnessFloor
+	if effectiveAvailable < 0 {
+		effectiveAvailable = 0
+	}
+
+	// Fleet short? If the frontier's (floor-discounted) idle probes already cover the open demand,
+	// the reconciler will relay them — buying while an idle probe can serve the target is the bug (pin #2).
+	if effectiveAvailable >= openSlots {
+		return fmt.Sprintf("no purchase: supply covers demand (%d idle − %d reserved-freshness = %d >= %d open slots)", availableCount, cfg.ReservedFreshnessFloor, effectiveAvailable, openSlots)
 	}
 
 	// Fleet cap (RULINGS #5 ceiling): never grow the satellite fleet past the cap.

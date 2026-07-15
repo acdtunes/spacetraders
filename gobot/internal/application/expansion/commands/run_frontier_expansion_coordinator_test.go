@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -696,4 +697,106 @@ func TestFrontier_OccupiedAnchorSystem_NoSpuriousBuy(t *testing.T) {
 
 	require.Empty(t, pr.upserts, "the occupied anchor is not declared")
 	require.Zero(t, buyer.buyCalls, "and no probe is bought to serve an in-system-coverable occupied system")
+}
+
+// ---- sp-iopd: symmetric reserved FRESHNESS floor -------------------------------------
+
+// THE sp-iopd MVP (frontier side): the symmetric freshness floor makes the frontier DISCOUNT
+// reserved_freshness_floor idle probes as reserved for the market-freshness sizer — so an aggressive
+// frontier GROWS the pool with a guarded buy rather than cannibalizing scanning's baseline. Five
+// standing posts carry one open slot each (demand 5) and the fleet has exactly five idle probes
+// (supply 5): under normal counting the idle probes cover the demand and the frontier does not buy.
+// floor 0 is exact pre-sp-iopd behavior (no buy); floor 3 discounts three idle probes so the frontier
+// counts only 2 toward its demand → short → buys, keeping 3 idle available for freshness. The floor-3
+// row is the mutation guard: removing the −floor discount makes 5 cover 5 → no buy → it fails.
+func TestFrontier_ReservedFreshnessFloorReservesIdleProbesForFreshness(t *testing.T) {
+	cases := []struct {
+		name     string
+		floor    int
+		wantBuys int
+	}{
+		{"floor 0 is pre-sp-iopd: 5 idle cover 5 slots, no buy", 0, 0},
+		{"floor 3 reserves 3 idle for freshness — the frontier buys to cover its own demand", 3, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &shared.MockClock{CurrentTime: time.Now()}
+			pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{
+				{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding},
+				{PlayerID: 1, SystemSymbol: "X1-B", Kind: domainScouting.PostKindStanding},
+				{PlayerID: 1, SystemSymbol: "X1-C", Kind: domainScouting.PostKindStanding},
+				{PlayerID: 1, SystemSymbol: "X1-D", Kind: domainScouting.PostKindStanding},
+				{PlayerID: 1, SystemSymbol: "X1-E", Kind: domainScouting.PostKindStanding},
+			}}
+			idle := []*navigation.Ship{
+				newProbe(t, "P1", "X1-Z-1"), newProbe(t, "P2", "X1-Z-2"), newProbe(t, "P3", "X1-Z-3"),
+				newProbe(t, "P4", "X1-Z-4"), newProbe(t, "P5", "X1-Z-5"),
+			}
+			fr := &fakeFleetRepo{idle: idle, all: idle}
+			lr := &fakeLedgerRepo{}
+			h := newHandler(pr, fr, lr, clock)
+			h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
+			buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "NEW", buyPrice: 20000}
+			h.SetProbePurchaser(buyer)
+
+			cmd := testCmd()
+			cmd.ReservedFreshnessFloor = tc.floor
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+			require.Equal(t, tc.wantBuys, buyer.buyCalls,
+				"the frontier discounts reserved_freshness_floor idle probes from the supply covering its demand")
+		})
+	}
+}
+
+// sp-iopd bead scenario 2: the reserved_frontier_floor is the FRESHNESS sizer's knob — the frontier
+// has no such deduction, so the probes freshness releases stay fully AVAILABLE to the frontier.
+// Six such idle probes cover six open slots and the frontier does not buy — the reserved probes
+// reach the frontier. This is the complement of the sizer's frontier-floor release (freshness frees
+// six; the frontier uses six), proving the loop is actually broken end to end.
+func TestFrontier_ReservedFrontierProbesRemainAvailableToTheFrontier(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{
+		{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding},
+		{PlayerID: 1, SystemSymbol: "X1-B", Kind: domainScouting.PostKindStanding},
+		{PlayerID: 1, SystemSymbol: "X1-C", Kind: domainScouting.PostKindStanding},
+		{PlayerID: 1, SystemSymbol: "X1-D", Kind: domainScouting.PostKindStanding},
+		{PlayerID: 1, SystemSymbol: "X1-E", Kind: domainScouting.PostKindStanding},
+		{PlayerID: 1, SystemSymbol: "X1-F", Kind: domainScouting.PostKindStanding},
+	}}
+	// Six idle probes — the ones the freshness sizer released for the frontier.
+	idle := []*navigation.Ship{
+		newProbe(t, "P1", "X1-Z-1"), newProbe(t, "P2", "X1-Z-2"), newProbe(t, "P3", "X1-Z-3"),
+		newProbe(t, "P4", "X1-Z-4"), newProbe(t, "P5", "X1-Z-5"), newProbe(t, "P6", "X1-Z-6"),
+	}
+	fr := &fakeFleetRepo{idle: idle, all: idle}
+	lr := &fakeLedgerRepo{}
+	h := newHandler(pr, fr, lr, clock)
+	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
+	buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "NEW", buyPrice: 20000}
+	h.SetProbePurchaser(buyer)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd())) // reserved_freshness_floor defaults 0
+
+	require.Zero(t, buyer.buyCalls,
+		"the frontier's idle supply includes the probes freshness reserved for it — no frontier-side deduction, no needless buy")
+}
+
+// sp-iopd config wiring (frontier side): the reserved_freshness_floor knob is live-tunable.
+// resolveConfig reads it from the tick's live-config snapshot (live > launch), and with NO snapshot
+// falls back to the launch command, else the documented default 0 (floor OFF) — guarding the
+// registry↔overlay drift that would leave the knob registered but silently ineffective.
+func TestResolveFrontierConfig_ReadsReservedFreshnessFloorLiveWithDefaultFallback(t *testing.T) {
+	def := resolveConfig(testCmd(), nil)
+	require.Equal(t, defaultReservedFreshnessFloor, def.ReservedFreshnessFloor,
+		"no snapshot, no launch value → the documented default (0, floor OFF)")
+
+	launch := testCmd()
+	launch.ReservedFreshnessFloor = 2
+	require.Equal(t, 2, resolveConfig(launch, nil).ReservedFreshnessFloor,
+		"no snapshot → the launch command value governs")
+
+	live := liveconfig.Snapshot{"reserved_freshness_floor": 3}
+	require.Equal(t, 3, resolveConfig(launch, live).ReservedFreshnessFloor,
+		"a live snapshot overrides the launch value next tick")
 }

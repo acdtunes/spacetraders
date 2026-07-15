@@ -826,3 +826,104 @@ func TestSizer_AggregateDemandClimbsToTrueSLANeedForBreachingFleet(t *testing.T)
 	require.Equal(t, 1, pu.buyCalls,
 		"aggregate demand (14) now outruns the supply (10) that covered the old +1 demand (10) — the sizer buys")
 }
+
+// ---- sp-iopd: reserved FRONTIER floor (freshness holds against pool − N) --------------
+
+// THE sp-iopd MVP (freshness side): with the reserved frontier floor engaged, the sizer HOLDS its
+// AGGREGATE footprint against (supply − floor) and RELEASES the surplus, so the frontier keeps its
+// reserved probes even when raw freshness demand exceeds the whole pool (the live starvation case).
+// Two market-rich systems each seed to the per-system cap (8) → raw aggregate 16 against a 14-probe
+// pool. floor 0 is exact pre-sp-iopd behavior (sizes to 16, buys toward it — holding the pool, the
+// starvation); floor 6 caps the aggregate at 14−6=8, leaving 6 idle for the frontier and never
+// buying into them. The floor-6 row is ALSO the mutation guard: removing the freshness-side
+// subtraction (supply−floor → supply) sizes to 16 again, re-consuming the reserved 6 → it fails.
+func TestSizer_ReservedFrontierFloorHoldsAggregateAgainstReducedPool(t *testing.T) {
+	const pool = 14
+	cases := []struct {
+		name          string
+		floor         int
+		wantAggregate int // total hulls declared across the two posts
+		wantBuys      int
+		wantIdleFree  int // pool − aggregate, the probes left for the frontier
+	}{
+		{"floor 0 is pre-sp-iopd: sizes to raw demand (16) and buys, holding the pool", 0, 16, 1, pool - 16},
+		{"floor 6 holds the aggregate at supply−floor (8), leaving 6 for the frontier, no buy", 6, 8, 0, 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snap("X1-A", 160, 28800, 0, 0), // telemetry-starved → seeds to the per-system cap (8)
+				snap("X1-B", 160, 28800, 0, 0), // same → raw aggregate 16, EXCEEDING the 14-probe pool
+			}}
+			pr := newSizerPostRepo()                        // no existing posts → declare path
+			fl := &fakeSizerFleetRepo{all: scouts(t, pool)} // pool of 14 < raw demand 16
+			h := newSizer(fr, pr, fl)
+			pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+			h.SetProbePurchaser(pu)
+			cmd := sizerCmd()
+			cmd.ReservedFrontierFloor = tc.floor
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+			aggregate := 0
+			for _, u := range pr.upserts {
+				aggregate += u.Hulls
+			}
+			require.Equal(t, tc.wantAggregate, aggregate,
+				"the sizer holds its aggregate footprint against (supply − reserved_frontier_floor)")
+			require.Equal(t, tc.wantBuys, pu.buyCalls,
+				"with the floor engaged the sizer never buys into the reserved probes")
+			require.Equal(t, tc.wantIdleFree, pool-aggregate,
+				"the probes the sizer does NOT hold stay idle for the frontier (its reserved floor)")
+		})
+	}
+}
+
+// sp-iopd config wiring (freshness side): the reserved_frontier_floor knob is live-tunable.
+// resolveSizerConfig reads it from the tick's live-config snapshot (live > launch), and with NO
+// snapshot falls back to the launch command, else the documented default 0 (floor OFF) — guarding
+// the registry↔overlay drift that would leave the knob registered but silently ineffective.
+func TestResolveSizerConfig_ReadsReservedFrontierFloorLiveWithDefaultFallback(t *testing.T) {
+	def := resolveSizerConfig(sizerCmd(), nil)
+	require.Equal(t, defaultReservedFrontierFloor, def.ReservedFrontierFloor,
+		"no snapshot, no launch value → the documented default (0, floor OFF)")
+
+	launch := sizerCmd()
+	launch.ReservedFrontierFloor = 4
+	require.Equal(t, 4, resolveSizerConfig(launch, nil).ReservedFrontierFloor,
+		"no snapshot → the launch command value governs")
+
+	live := liveconfig.Snapshot{"reserved_frontier_floor": 6}
+	require.Equal(t, 6, resolveSizerConfig(launch, live).ReservedFrontierFloor,
+		"a live snapshot overrides the launch value next tick")
+}
+
+// sp-iopd release path: when the sizer already HOLDS oversized posts, the reserved frontier floor
+// RELEASES the surplus through the manning-preserving resize-DOWN seam (UpdateHulls) — never
+// retiring the post or selling the hull — so the freed probes land undedicated in the shared pool
+// the frontier claims. Two standing posts at 5 probes each (aggregate 10) held against a 12-probe
+// pool with a floor of 6 are resized DOWN to aggregate 6, freeing 6 for the frontier, no re-buy.
+func TestSizer_ReservedFrontierFloorReleasesExistingSurplusThroughResizeDown(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-A", 100, 28800, 0, 0), // starved → seeds to ceil(100×180/3600)=5
+		snap("X1-B", 100, 28800, 0, 0), // same → raw aggregate 10
+	}}
+	pr := newSizerPostRepo(
+		standingSizerPost("X1-A", 5, "PROBE-A"),
+		standingSizerPost("X1-B", 5, "PROBE-B"),
+	)
+	fl := &fakeSizerFleetRepo{all: scouts(t, 12)}
+	h := newSizer(fr, pr, fl)
+	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+	h.SetProbePurchaser(pu)
+	cmd := sizerCmd()
+	cmd.ReservedFrontierFloor = 6 // effective pool 12 − 6 = 6
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+	released := pr.hullUpdates["X1-A"] + pr.hullUpdates["X1-B"]
+	require.Equal(t, 6, released, "the aggregate is released DOWN to supply−floor (6), freeing 6 for the frontier")
+	require.Empty(t, pr.removed, "release resizes posts DOWN — it never retires them (freed hulls return to the shared pool)")
+	require.Empty(t, pr.upserts, "release goes through the manning-preserving UpdateHulls seam, not a clobbering Upsert")
+	require.Zero(t, pu.buyCalls, "no-churn: the sizer does not re-buy a hull it just released")
+}

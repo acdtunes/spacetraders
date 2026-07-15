@@ -732,6 +732,7 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 		MaxDepthPathfinders:    cfg.OptionalInt("max_depth_pathfinders", 0),
 		MaxDepthHops:           cfg.OptionalInt("max_depth_hops", 0),
 		ObjectiveBiasPercent:   cfg.OptionalInt("objective_bias_percent", 0),
+		ReservedFreshnessFloor: cfg.OptionalInt("reserved_freshness_floor", 0), // sp-iopd symmetric floor
 	}
 }
 
@@ -758,6 +759,7 @@ func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int
 		BreachResponsePercent:   cfg.OptionalInt("breach_response_percent", 0),
 		ReleaseSlackPercent:     cfg.OptionalInt("release_slack_percent", 0),
 		ReleaseStableWindowSecs: cfg.OptionalInt("release_stable_window_secs", 0),
+		ReservedFrontierFloor:   cfg.OptionalInt("reserved_frontier_floor", 0), // sp-iopd reserved frontier floor
 		MaxProbeFleet:           cfg.OptionalInt("max_probe_fleet", 0),
 		MaxSpendPerCycle:        cfg.OptionalInt("max_spend_per_cycle", 0),
 		PurchaseCooldownSecs:    cfg.OptionalInt("purchase_cooldown_secs", 0),

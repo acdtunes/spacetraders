@@ -96,6 +96,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"breach_response_percent":    {Type: "int", Min: 1, Max: 500, Default: sizer["breach_response_percent"], Unit: "percent", Description: "aggressiveness of the circuit-observed breach response (scales the observed age fed to the circuit sizing; 100 = exact measured circuit, >100 buys headroom)"},
 			"release_slack_percent":      {Type: "int", Min: 1, Max: 100, Default: sizer["release_slack_percent"], Unit: "percent", Description: "release hysteresis as a percent of the SLA"},
 			"release_stable_window_secs": {Type: "int", Min: 10, Max: 86_400, Default: sizer["release_stable_window_secs"], Unit: "seconds", Description: "how long a warm surplus must hold before a probe is shed"},
+			"reserved_frontier_floor":    {Type: "int", Min: 0, Max: 200, Default: sizer["reserved_frontier_floor"], Unit: "hulls", Description: "sp-iopd MVP: probes reserved for the frontier — the sizer holds its aggregate against (supply − this) and releases the surplus; 0 = off (pre-sp-iopd)"},
 		},
 		string(container.ContainerTypeFrontierExpansion): {
 			"max_spend_per_cycle":       {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
@@ -112,6 +113,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"off_gate_warp_range_fuel":         {Type: "int", Min: 1, Max: 100_000, Default: frontier["off_gate_warp_range_fuel"], Unit: "fuel", Description: "max warp fuel a single explorer leg may cost; off-gate systems beyond this are out of range"},
 			"off_gate_value_weight":            {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_value_weight"], Unit: "weight", Description: "weight on exploration value (promising-type unexplored systems) in off-gate target ranking"},
 			"off_gate_fuel_weight":             {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_fuel_weight"], Unit: "weight", Description: "weight on warp fuel (distance from the frontier edge) in off-gate target ranking"},
+			"reserved_freshness_floor":         {Type: "int", Min: 0, Max: 200, Default: frontier["reserved_freshness_floor"], Unit: "hulls", Description: "sp-iopd MVP: idle probes the frontier reserves for freshness — discounted from the supply covering its demand (buys rather than cannibalize scanning); 0 = off (pre-sp-iopd)"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},

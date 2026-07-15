@@ -90,6 +90,22 @@ const (
 	defaultSizerMaxSpend           = 500000          // max probe spend within the trailing spend window (Admiral 2026-07-15: ~17 probes/hr ramp; 25%-treasury + fleet cap still bind)
 	defaultSizerCooldown           = 1 * time.Minute // Admiral 2026-07-15: fast ramp; spend window + treasury/fleet caps still bound total buys
 	defaultSizerSpendWindow        = 1 * time.Hour
+	// defaultReservedFrontierFloor is the sp-iopd MVP reserved FRONTIER floor: N probes the
+	// freshness sizer treats as UNAVAILABLE. The sizer holds its AGGREGATE demand against
+	// (supply − N) and RELEASES the surplus down to that reduced effective pool, so the
+	// frontier expansion coordinator (sp-8w89/sp-rjgr) keeps its depth probes no matter how
+	// high freshness demand climbs — breaking the self-defeating loop where depth discovers
+	// markets, freshness eats the probes, and depth starves. The per-system computeTarget is
+	// UNCHANGED; the floor is a separate aggregate ceiling, applied via the same resize-DOWN
+	// release seam sp-iupr uses (the freed hulls land undedicated in the shared pool the
+	// frontier claims — never sold or retired). 0 (the default) is EXACT pre-sp-iopd behavior:
+	// the floor is OFF until deployed, opt-in via `tune reserved_frontier_floor <N>` (recommended
+	// production value ~ the frontier's max_depth_pathfinders, e.g. 6). The FULL global probe
+	// allocator (one owner, total demand = freshness+frontier, a single global cap replacing the
+	// two double-drawing caps, priority grants + relaxed-SLA graceful degradation, and the
+	// count-only-OWN-probes fix so freed hulls actually reach depth) is the deferred follow-up;
+	// this static floor is the surgical de-risk.
+	defaultReservedFrontierFloor = 0
 )
 
 // FleetReader is the narrow slice of the ship repository the sizer reads: the whole fleet,
@@ -132,6 +148,11 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	BreachResponsePercent   int            // aggressiveness of the circuit-observed breach response (sp-tor9); 100 = exact measured circuit
 	ReleaseSlackPercent     int            // release hysteresis: shed a probe only below this % of the SLA
 	ReleaseStableWindowSecs int            // a warm surplus must hold this long before one probe is shed (sp-iupr)
+
+	// ReservedFrontierFloor (sp-iopd) is the count of probes the sizer treats as reserved for
+	// the frontier: it holds its aggregate demand against (supply − this) and releases the
+	// surplus. 0 → the floor is off (pre-sp-iopd behavior). Live-tunable (SizerTunableDefaults).
+	ReservedFrontierFloor int
 
 	MaxProbeFleet        int // total satellite cap
 	MaxSpendPerCycle     int // max probe spend within the trailing spend window
@@ -320,6 +341,7 @@ func SizerTunableDefaults() map[string]int {
 		"breach_response_percent":    defaultBreachResponsePercent,
 		"release_slack_percent":      defaultReleaseSlackPercent,
 		"release_stable_window_secs": defaultReleaseStableWindowSecs,
+		"reserved_frontier_floor":    defaultReservedFrontierFloor,
 	}
 }
 
@@ -335,6 +357,7 @@ type sizerConfig struct {
 	BreachResponsePercent int
 	ReleaseSlackPercent   int
 	ReleaseStableWindow   time.Duration
+	ReservedFrontierFloor int
 	Buy                   probebuy.Config
 }
 
@@ -357,6 +380,7 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		BreachResponsePercent: cmd.BreachResponsePercent,
 		ReleaseSlackPercent:   cmd.ReleaseSlackPercent,
 		ReleaseStableWindow:   time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
+		ReservedFrontierFloor: cmd.ReservedFrontierFloor,
 		Buy: probebuy.Config{
 			MaxProbeFleet:    cmd.MaxProbeFleet,
 			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
@@ -372,6 +396,9 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		c.BreachResponsePercent = live.PositiveIntOrZero("breach_response_percent")
 		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
 		c.ReleaseStableWindow = time.Duration(live.PositiveIntOrZero("release_stable_window_secs")) * time.Second
+		// sp-iopd reserved frontier floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
+		// which is the documented default — no <=0 fallback, since 0 IS the default here.
+		c.ReservedFrontierFloor = live.PositiveIntOrZero("reserved_frontier_floor")
 		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.Buy.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.Buy.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
@@ -468,15 +495,20 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	postBySystem := indexPostsBySystem(posts)
 	globalCycle := aggregateMeasuredCycleSeconds(snapshots, cfg.MinCycleSamples)
 
-	totalDemand := 0
+	// SUPPLY is read up front: the sp-iopd reserved frontier floor holds the sizer's AGGREGATE
+	// demand against (supply − floor), so the cap needs the pool count before the posts are sized.
+	supply, err := h.scoutSupply(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
 	marketBearing := make(map[string]bool, len(snapshots))
-	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
-	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
-	// undedicated probe for the reconciler to relay; naming the neediest system lets the purchaser
-	// spawn it at the probe-yard NEAREST that system instead of the home yard. Empty (no positive
-	// gap) is the no-target home-yard path.
-	neediestSystem := ""
-	neediestGap := 0
+	// desiredBySystem holds each market-bearing system's target from the UNCHANGED
+	// computeTarget/desiredHulls pipeline (model → clamp → circuit → per-system release pacing).
+	// The reserved frontier floor may release from this AGGREGATE below (a separate ceiling), but
+	// it never changes how a per-system target is computed.
+	desiredBySystem := make(map[string]int, len(snapshots))
+	totalDemand := 0
 	for _, snap := range snapshots {
 		if snap.MarketCount <= 0 {
 			continue
@@ -492,13 +524,45 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			fullyManned = existing.IsFullyManned() // sp-iupr issue 3a: gates the empirical-age sanity floor.
 		}
 		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, fullyManned, snap, sla, cycle, cfg)
+		desiredBySystem[snap.SystemSymbol] = desired
 		totalDemand += desired
+	}
+
+	// RESERVED FRONTIER FLOOR (sp-iopd): hold the aggregate against (supply − floor), RELEASING the
+	// surplus down to that reduced effective pool so the frontier keeps its reserved probes no
+	// matter how high freshness demand climbs (breaking the depth→freshness→starve loop). Gated on
+	// floor>0 (default 0 = exact pre-sp-iopd behavior) AND a pool bigger than the floor — you
+	// cannot reserve more probes than the pool holds, so a pool ≤ the floor degrades to raw sizing
+	// rather than starving freshness to nothing (the full allocator does relaxed-SLA graceful
+	// degradation instead). The release lands per-post below through the SAME resize-DOWN seam
+	// sp-iupr uses, so freed hulls return undedicated to the shared pool the frontier claims.
+	if cfg.ReservedFrontierFloor > 0 && supply > cfg.ReservedFrontierFloor && totalDemand > supply-cfg.ReservedFrontierFloor {
+		releaseAggregateToPool(desiredBySystem, supply-cfg.ReservedFrontierFloor)
+		totalDemand = sumDesired(desiredBySystem)
+	}
+
+	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
+	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
+	// undedicated probe for the reconciler to relay; naming the neediest system lets the purchaser
+	// spawn it at the probe-yard NEAREST that system. Empty (no positive gap) is the home-yard path.
+	neediestSystem := ""
+	neediestGap := 0
+	for _, snap := range snapshots {
+		if snap.MarketCount <= 0 {
+			continue
+		}
+		desired := desiredBySystem[snap.SystemSymbol]
+		existing := postBySystem[snap.SystemSymbol]
+		current := 0
+		if existing != nil {
+			current = existing.HullBudget()
+		}
 		if gap := desired - current; gap > neediestGap {
 			neediestGap = gap
 			neediestSystem = snap.SystemSymbol
 		}
 		if !cmd.DryRun {
-			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, desired, sla)
+			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, desired, cfg.slaFor(snap.SystemSymbol))
 		}
 	}
 
@@ -506,11 +570,9 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// markets retired) is removed, freeing its probes back to the pool.
 	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing)
 
-	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply.
-	supply, err := h.scoutSupply(ctx, cmd)
-	if err != nil {
-		return err
-	}
+	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply. With the
+	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
+	// sizer never buys into the reserved probes — it holds strictly against the reduced pool.
 	buyer := probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg.Buy)
 	// Demand-proximal buy hint (sp-hej4): spawn the probe at the yard nearest the neediest system.
 	// The sizer has no per-hop tuning knob of its own, so it applies the shared default penalty
@@ -662,6 +724,43 @@ func stepDownToward(current, target int) int {
 		stepDown = target
 	}
 	return stepDown
+}
+
+// releaseAggregateToPool is the sp-iopd reserved-frontier-floor RELEASE: it sheds one probe at a
+// time from the LARGEST post (tie-break by system symbol for determinism) until the aggregate
+// desired fits effectivePool or every post sits at its floor of 1. Each shed is a resize-DOWN the
+// scout reconciler un-mans, returning the hull undedicated to the shared pool the frontier claims
+// — never sold or retired. It caps the AGGREGATE only; the per-system computeTarget that produced
+// each `desired` is untouched. Largest-first keeps freshness's smallest (cheapest-to-keep) posts
+// intact longest, shedding from the systems best able to absorb one fewer probe.
+func releaseAggregateToPool(desired map[string]int, effectivePool int) {
+	if effectivePool < 0 {
+		effectivePool = 0
+	}
+	for sumDesired(desired) > effectivePool {
+		pick := ""
+		for system, hulls := range desired {
+			if hulls <= 1 {
+				continue // never shed a post below one probe — that is retirement, not release
+			}
+			if pick == "" || hulls > desired[pick] || (hulls == desired[pick] && system < pick) {
+				pick = system
+			}
+		}
+		if pick == "" {
+			return // every post already at its floor of 1 — the floor is unsatisfiable this tick
+		}
+		desired[pick]--
+	}
+}
+
+// sumDesired totals a per-system desired-hulls map — the sizer's aggregate probe footprint.
+func sumDesired(desired map[string]int) int {
+	total := 0
+	for _, hulls := range desired {
+		total += hulls
+	}
+	return total
 }
 
 // releaseKey scopes the warm-surplus debounce per player and system (matching the scout
