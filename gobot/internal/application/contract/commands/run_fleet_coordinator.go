@@ -694,6 +694,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		if route, ok := routeContractViaDepot(
 			appContract.ResolveDepotRegistry(ctx, logger, h.depotRegistryProvider, cmd.PlayerID.Value()),
 			contract,
+			// sp-9j9c: rank the depot's delivery hulls by the SAME in-system distance the default
+			// SelectClosestShip path uses, so a MULTI-hub delivery fleet routes each contract to its
+			// cluster's nearest hull. A single-hull depot never invokes this (byte-identical).
+			newDepotDeliveryDistance(ctx, h.graphProvider, cmd.PlayerID.Value()),
 		); ok {
 			selectedShip = route.DeliveryHull
 			logger.Log("INFO", fmt.Sprintf(

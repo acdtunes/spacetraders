@@ -1,22 +1,27 @@
 package commands
 
 import (
+	"context"
+
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// depotRoute is the coordinator's per-contract depot routing decision (bead
-// sp-u9xa, the final seam): when a configured depot OWNS the contract's delivery
-// geometry, the coordinator delivers via the depot's config-assigned delivery hull
-// and withdraws the pre-staged good from the depot's co-located destination
-// warehouse (withdraw-local + deliver-local), instead of the default distance-based
+// depotRoute is the coordinator's per-contract depot routing decision (bead sp-u9xa, extended
+// by sp-9j9c): when a configured depot OWNS the contract's delivery geometry, the coordinator
+// delivers via the depot's NEAREST delivery hull (the one whose hub is closest to this
+// contract's destination) and withdraws the pre-staged good from the depot's co-located
+// destination warehouse (withdraw-local + deliver-local), instead of the default distance-based
 // pool selection + cheapest-market sourcing.
 type depotRoute struct {
 	// DepotID is the owning depot's stable id (for logging/observability).
 	DepotID string
-	// DeliveryHull is the ShipSymbol of the depot's config-assigned delivery hull
-	// (SelectDeliveryHull) — the hull the contract is dispatched on instead of the
-	// distance-selected pool candidate. Pure config output: never a co-location bias.
+	// DeliveryHull is the ShipSymbol of the depot delivery hull NEAREST to the routed
+	// destination (SelectDeliveryHull, ranked by the same in-system distance the default pool
+	// path uses) — the hull the contract is dispatched on instead of the distance-selected pool
+	// candidate. A single-hull depot returns that hull unchanged (byte-identical).
 	DeliveryHull string
 	// Warehouse is the depot's destination-warehouse waypoint that covers the routed
 	// destination — the co-located withdraw-local source. The good is pre-staged there
@@ -27,20 +32,22 @@ type depotRoute struct {
 	Warehouse string
 }
 
-// routeContractViaDepot is the FINAL sp-u9xa seam: the pure decision the contract
-// coordinator consults BEFORE its default hull+source selection. It asks the boot-loaded
-// depot registry whether a configured depot OWNS this contract's remaining delivery
-// geometry; if so — and that depot has a config-assigned delivery hull — it returns
-// the depotRoute that diverts the contract onto the pinned, co-located hull.
+// routeContractViaDepot is the sp-u9xa seam (extended by sp-9j9c): the pure decision the
+// contract coordinator consults BEFORE its default hull+source selection. It asks the boot-loaded
+// depot registry whether a configured depot OWNS this contract's remaining delivery geometry; if
+// so — and that depot has a delivery hull — it returns the depotRoute that diverts the contract
+// onto the delivery hull NEAREST the routed destination (ranked by the injected distance oracle,
+// so a multi-hub delivery fleet serves each cluster locally).
 //
 // FAIL-SAFE / REGRESSION GUARD (dominant income): it returns ok=false for EVERY shape
 // that is not a fully-owning depot — a nil registry (feature unwired), an empty
 // registry (the natural off-switch, no config flag), a registry whose depots do not
-// cover this contract's destination, or an owning depot with no config-assigned
-// delivery hull. In all those cases the caller runs its pre-existing default path
-// BYTE-IDENTICALLY: empty registry == today's behavior. It is a pure query (no I/O),
-// safe to consult every pass.
-func routeContractViaDepot(reg *depot.Registry, contract *domainContract.Contract) (depotRoute, bool) {
+// cover this contract's destination, or an owning depot with no delivery hull. In all
+// those cases the caller runs its pre-existing default path BYTE-IDENTICALLY: empty
+// registry == today's behavior. The distance oracle is injected (may be nil — then
+// SelectDeliveryHull keeps config order), and the decision itself does no I/O beyond the
+// oracle's lazy, memoized graph read, safe to consult every pass.
+func routeContractViaDepot(reg *depot.Registry, contract *domainContract.Contract, distance depot.DistanceBetween) (depotRoute, bool) {
 	// Feature unwired (tests / daemon predating the wiring): default path, untouched.
 	if reg == nil {
 		return depotRoute{}, false
@@ -64,10 +71,11 @@ func routeContractViaDepot(reg *depot.Registry, contract *domainContract.Contrac
 		return depotRoute{}, false
 	}
 
-	// The config-assigned delivery hull (pure config, first configured — SelectDeliveryHull
-	// applies NO co-location preference). A depot with warehouses but no pinned delivery
-	// hull cannot deliver locally, so it degrades to the default long-haul path.
-	hull, ok := owning.SelectDeliveryHull(routedDest)
+	// The delivery hull NEAREST the routed destination (SelectDeliveryHull ranks the depot's
+	// hubs by the injected in-system distance; a single-hull depot returns that hull unchanged).
+	// A depot with warehouses but no pinned delivery hull cannot deliver locally, so it degrades
+	// to the default long-haul path.
+	hull, ok := owning.SelectDeliveryHull(routedDest, distance)
 	if !ok || hull.ShipSymbol == "" {
 		return depotRoute{}, false
 	}
@@ -104,4 +112,42 @@ func firstOwnedDestination(c *depot.ContractDepot, dests []string) string {
 		}
 	}
 	return ""
+}
+
+// newDepotDeliveryDistance builds the delivery-hull selection distance oracle (bead sp-9j9c)
+// from the system graph — the SAME in-system coordinate separation SelectClosestShip ranks pool
+// candidates by (Waypoint.DistanceTo). It memoizes each system's graph inside the returned
+// closure so ranking N delivery hulls costs one graph read per system, not one per hull; and the
+// read is lazy, so a single-hull depot (which never invokes the oracle) pays nothing. ok=false
+// when a graph is unavailable or either waypoint is uncharted, so SelectDeliveryHull falls open
+// to config order (regression-safe: an unresolved position never reorders the config pick). A nil
+// graph provider yields a nil oracle — SelectDeliveryHull then keeps config order too.
+func newDepotDeliveryDistance(ctx context.Context, graphProvider system.ISystemGraphProvider, playerID int) depot.DistanceBetween {
+	if graphProvider == nil {
+		return nil
+	}
+	graphs := map[string]*system.NavigationGraph{}
+	coordsOf := func(waypoint string) (*shared.Waypoint, bool) {
+		systemSymbol := shared.ExtractSystemSymbol(waypoint)
+		graph, seen := graphs[systemSymbol]
+		if !seen {
+			if result, err := graphProvider.GetGraph(ctx, systemSymbol, false, playerID); err == nil && result != nil {
+				graph = result.Graph
+			}
+			graphs[systemSymbol] = graph // cache even a nil (failed) system so it is not re-fetched this pass
+		}
+		if graph == nil {
+			return nil, false
+		}
+		waypointCoords, ok := graph.Waypoints[waypoint]
+		return waypointCoords, ok && waypointCoords != nil
+	}
+	return func(from, to string) (float64, bool) {
+		fromCoords, okFrom := coordsOf(from)
+		toCoords, okTo := coordsOf(to)
+		if !okFrom || !okTo {
+			return 0, false
+		}
+		return fromCoords.DistanceTo(toCoords), true
+	}
 }

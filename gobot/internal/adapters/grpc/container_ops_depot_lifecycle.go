@@ -82,10 +82,11 @@ func planDepotStops(reg *depot.Registry, depotID string, refs []depotContainerRe
 	return ids
 }
 
-// depotCoordinatorShips is the set of ship symbols crewing the named depot's LAUNCHED
-// coordinators (warehouses + stockers). Delivery hulls and source hubs are config-only —
-// planDepotLaunches starts no coordinator for them — so they are not torn down here,
-// keeping stop the exact inverse of start.
+// depotCoordinatorShips is the set of ship symbols crewing the named depot's STANDING
+// coordinators (warehouses + stockers) — the long-running containers stop tears down. Delivery
+// hulls are POSITIONED (a one-shot NavigateShip reposition, sp-9j9c) rather than run as a standing
+// coordinator, and source hubs are config-only, so neither has a long-running container to stop —
+// they are excluded here, keeping stop the inverse of the STANDING-coordinator launches.
 func depotCoordinatorShips(reg *depot.Registry, depotID string) map[string]bool {
 	ships := map[string]bool{}
 	if reg == nil {

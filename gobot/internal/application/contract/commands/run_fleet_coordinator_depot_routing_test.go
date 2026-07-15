@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"math"
 	"testing"
 
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
@@ -8,14 +9,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests cover the FINAL sp-u9xa seam: the live contract coordinator consuming
-// the depot registry (option a). routeContractViaDepot is the decision the main
-// loop consults BEFORE the default distance-based hull selection (SelectClosestShip).
-// It is the single point where a configured depot diverts a contract onto its
-// config-assigned, co-located delivery hull; a nil / empty / non-owning registry
-// returns ok=false so the coordinator runs its pre-existing default path
-// BYTE-IDENTICALLY — the natural off-switch (no config flag; empty registry ==
-// today's behavior, which is the dominant-income regression guard).
+// These tests cover the sp-u9xa seam (extended by sp-9j9c): the live contract coordinator
+// consuming the depot registry. routeContractViaDepot is the decision the main loop consults
+// BEFORE the default distance-based hull selection (SelectClosestShip). It is the single point
+// where a configured depot diverts a contract onto its delivery hull NEAREST the destination
+// (a single-hull depot routes to that one hull unchanged); a nil / empty / non-owning registry
+// returns ok=false so the coordinator runs its pre-existing default path BYTE-IDENTICALLY — the
+// natural off-switch (no config flag; empty registry == today's behavior, the dominant-income
+// regression guard).
 
 // newDepotRoutingContract builds a single-delivery PROCUREMENT contract delivering
 // to dest — the geometry the registry routes on.
@@ -77,7 +78,7 @@ func TestRouteContractViaDepot_NoOwningDepot_FallsThroughToDefault(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if route, ok := routeContractViaDepot(tc.reg, contract); ok {
+			if route, ok := routeContractViaDepot(tc.reg, contract, nil); ok {
 				t.Fatalf("expected NO depot route (default path must run byte-identical), got %+v", route)
 			}
 		})
@@ -94,7 +95,7 @@ func TestRouteContractViaDepot_OwningDepot_RoutesToConfigDeliveryHull(t *testing
 	contract := newDepotRoutingContract(t, "X1-SYS-DEST")
 	reg := newOwningDepotRegistry(t, "alpha", "X1-SYS-DEST", "WH-1", "DLV-ALPHA")
 
-	route, ok := routeContractViaDepot(reg, contract)
+	route, ok := routeContractViaDepot(reg, contract, nil)
 	if !ok {
 		t.Fatal("expected the owning depot to route this contract to its config-assigned delivery hull")
 	}
@@ -106,5 +107,54 @@ func TestRouteContractViaDepot_OwningDepot_RoutesToConfigDeliveryHull(t *testing
 	}
 	if route.DepotID != "alpha" {
 		t.Fatalf("expected owning depot id alpha, got %q", route.DepotID)
+	}
+}
+
+// newMultiHullOwningDepotRegistry builds a registry with ONE depot owning dest (a warehouse
+// there) and the given delivery hulls placed across hubs — so routeContractViaDepot must pick
+// the hull NEAREST to dest via the injected distance oracle, not config order [0].
+func newMultiHullOwningDepotRegistry(t *testing.T, id, dest, warehouseHull string, hulls []depot.Element) *depot.Registry {
+	t.Helper()
+	c, err := depot.NewContractDepot(id,
+		[]depot.Element{{Waypoint: dest, ShipSymbol: warehouseHull}}, // destination warehouse (routing anchor)
+		nil,   // stockers
+		hulls, // delivery hulls placed across hubs
+		nil,   // source hubs
+	)
+	if err != nil {
+		t.Fatalf("build depot: %v", err)
+	}
+	return depot.NewRegistry([]*depot.ContractDepot{c})
+}
+
+// TestRouteContractViaDepot_MultiHull_RoutesToNearestDeliveryHull is the sp-9j9c enabler at the
+// live seam: with N delivery hulls placed across hubs, the contract is diverted onto the hull
+// whose hub is NEAREST the destination (via the injected in-system distance oracle), so each
+// cluster's contract delivers locally — NOT shuttled onto the single config-first hull. The
+// config-first hull here is the FAR one, so a pass proves distance (not config order) decided.
+func TestRouteContractViaDepot_MultiHull_RoutesToNearestDeliveryHull(t *testing.T) {
+	const dest = "X1-VB74-J58"
+	contract := newDepotRoutingContract(t, dest)
+	reg := newMultiHullOwningDepotRegistry(t, "vb74", dest, "WH-1", []depot.Element{
+		{Waypoint: "X1-VB74-A1", ShipSymbol: "DLV-FAR"}, // far hub, config-FIRST
+		{Waypoint: dest, ShipSymbol: "DLV-LOCAL"},       // co-located with the destination
+	})
+	coords := map[string][2]float64{dest: {0, 0}, "X1-VB74-A1": {100, 0}}
+	distance := func(from, to string) (float64, bool) {
+		a, okA := coords[from]
+		b, okB := coords[to]
+		if !okA || !okB {
+			return 0, false
+		}
+		dx, dy := b[0]-a[0], b[1]-a[1]
+		return math.Sqrt(dx*dx + dy*dy), true
+	}
+
+	route, ok := routeContractViaDepot(reg, contract, distance)
+	if !ok {
+		t.Fatal("expected the owning depot to route this contract to a delivery hull")
+	}
+	if route.DeliveryHull != "DLV-LOCAL" {
+		t.Fatalf("expected the NEAREST delivery hull DLV-LOCAL (co-located at %s), got %q (config-first was the far DLV-FAR)", dest, route.DeliveryHull)
 	}
 }

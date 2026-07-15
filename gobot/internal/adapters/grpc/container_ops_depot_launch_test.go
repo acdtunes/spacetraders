@@ -16,6 +16,7 @@ import (
 type spyDepotSink struct {
 	warehouses []depotLaunchRecord
 	stockers   []depotLaunchRecord
+	deliveries []depotLaunchRecord
 }
 
 type depotLaunchRecord struct {
@@ -32,6 +33,11 @@ func (s *spyDepotSink) launchDepotWarehouse(_ context.Context, shipSymbol, wareh
 
 func (s *spyDepotSink) launchDepotStocker(_ context.Context, shipSymbol, warehouseWaypoint string, playerID int) error {
 	s.stockers = append(s.stockers, depotLaunchRecord{ship: shipSymbol, waypoint: warehouseWaypoint, playerID: playerID})
+	return nil
+}
+
+func (s *spyDepotSink) launchDepotDelivery(_ context.Context, shipSymbol, hubWaypoint string, playerID int) error {
+	s.deliveries = append(s.deliveries, depotLaunchRecord{ship: shipSymbol, waypoint: hubWaypoint, playerID: playerID})
 	return nil
 }
 
@@ -79,6 +85,38 @@ func TestLaunchDepotCoordinators_LaunchesWarehouseAndStockerAnchoredAtWarehouse(
 		"the depot stocker must deposit into the depot's destination warehouse waypoint (the anchor)")
 }
 
+// sp-9j9c #2: a depot declaring N delivery hulls at N hub waypoints must LAUNCH (position) each —
+// one delivery launch per crewed delivery hull, parked at its OWN hub waypoint — so the multi-hub
+// fleet is actually PRESENT at its hubs for the nearest-selection router (#1) to route each
+// cluster's contract to its LOCAL hull. Before this, delivery hulls were config-only (inert):
+// planDepotLaunches started nothing for them, so a declared multi-hub fleet never deployed.
+func TestLaunchDepotCoordinators_PlacesEachDeliveryHullAtItsHub(t *testing.T) {
+	c, err := depot.NewContractDepot(
+		"vb74",
+		[]depot.Element{{Waypoint: "X1-VB74-J58", ShipSymbol: "WH-1"}}, // destination warehouse (routing anchor)
+		nil, // stockers
+		[]depot.Element{
+			{Waypoint: "X1-VB74-J58", ShipSymbol: "DLV-J58"}, // hull placed at the J58 hub (co-located)
+			{Waypoint: "X1-VB74-A1", ShipSymbol: "DLV-A1"},   // hull placed at the A1 hub
+		},
+		nil, // source hubs
+	)
+	require.NoError(t, err)
+	reg := depot.NewRegistry([]*depot.ContractDepot{c})
+	sink := &spyDepotSink{}
+
+	launchDepotCoordinators(context.Background(), reg, 7, sink)
+
+	require.Len(t, sink.deliveries, 2, "each declared, crewed delivery hull launches (positioned at its own hub)")
+	byShip := map[string]string{}
+	for _, d := range sink.deliveries {
+		byShip[d.ship] = d.waypoint
+		require.Equal(t, 7, d.playerID)
+	}
+	require.Equal(t, "X1-VB74-J58", byShip["DLV-J58"], "the J58 delivery hull is placed at its own J58 hub")
+	require.Equal(t, "X1-VB74-A1", byShip["DLV-A1"], "the A1 delivery hull is placed at its own A1 hub")
+}
+
 // A depot with MULTIPLE stockers points every one of them at the shared destination
 // warehouse anchor, and each warehouse element launches its own coordinator — the parametrized
 // topology (sp-u9xa: counts are parameters) drives the launch fan-out with no hardcoded count.
@@ -114,7 +152,7 @@ func TestLaunchDepotCoordinators_NoLaunchCases(t *testing.T) {
 		"j58",
 		[]depot.Element{{Waypoint: "X1-J58-WH", ShipSymbol: ""}}, // declared, not yet crewed
 		[]depot.Element{{Waypoint: "X1-SRC-1", ShipSymbol: ""}},
-		nil,
+		[]depot.Element{{Waypoint: "X1-J58-DLV", ShipSymbol: ""}}, // declared delivery-hull slot, not yet crewed
 		nil,
 	)
 	require.NoError(t, err)
@@ -131,6 +169,7 @@ func TestLaunchDepotCoordinators_NoLaunchCases(t *testing.T) {
 			launchDepotCoordinators(context.Background(), reg, 7, sink)
 			require.Empty(t, sink.warehouses, "no crewed warehouse element -> no warehouse launch")
 			require.Empty(t, sink.stockers, "no crewed stocker element -> no stocker launch")
+			require.Empty(t, sink.deliveries, "no crewed delivery hull -> no delivery launch")
 		})
 	}
 }

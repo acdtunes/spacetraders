@@ -33,12 +33,13 @@ import (
 // (sp-u9xa parametrization principle).
 type depotLaunchIntent struct {
 	depotID string
-	role    depot.Role // RoleWarehouse | RoleStocker
-	// shipSymbol is the crewing hull to fly (a warehouse hull, or a stocker hull).
+	role    depot.Role // RoleWarehouse | RoleStocker | RoleDeliveryHull
+	// shipSymbol is the crewing hull to fly (a warehouse hull, a stocker hull, or a delivery hull).
 	shipSymbol string
-	// warehouseWaypoint is where the coordinator points: a warehouse parks at its OWN waypoint;
-	// a stocker deposits into the depot's destination warehouse ANCHOR (warehouses[0]).
-	warehouseWaypoint string
+	// targetWaypoint is where the element is anchored: a warehouse parks at its OWN waypoint; a
+	// stocker deposits into the depot's destination warehouse ANCHOR (warehouses[0]); a delivery
+	// hull parks at its OWN hub waypoint (sp-9j9c) to wait for the contract coordinator's dispatch.
+	targetWaypoint string
 	// coLocatedWarehouseShips is the CO-LOCATED warehouse group this warehouse belongs to: every
 	// crewed warehouse hull of the SAME depot parked at the SAME waypoint, including this one
 	// (sp-5q2c/sp-64se). The receipt knapsack solves over the group's AGGREGATE cargo capacity
@@ -85,7 +86,7 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 				depotID:                 c.ID(),
 				role:                    depot.RoleWarehouse,
 				shipSymbol:              w.ShipSymbol,
-				warehouseWaypoint:       w.Waypoint, // a warehouse parks at its own waypoint
+				targetWaypoint:          w.Waypoint, // a warehouse parks at its own waypoint
 				coLocatedWarehouseShips: coLocatedByWaypoint[w.Waypoint],
 			})
 		}
@@ -94,10 +95,26 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 				continue
 			}
 			intents = append(intents, depotLaunchIntent{
-				depotID:           c.ID(),
-				role:              depot.RoleStocker,
-				shipSymbol:        st.ShipSymbol,
-				warehouseWaypoint: anchor, // every depot stocker deposits into the anchor
+				depotID:        c.ID(),
+				role:           depot.RoleStocker,
+				shipSymbol:     st.ShipSymbol,
+				targetWaypoint: anchor, // every depot stocker deposits into the anchor
+			})
+		}
+		// sp-9j9c #2: place each crewed delivery hull at its OWN hub waypoint. This is what makes
+		// the topology's multi-hub delivery fleet no longer inert — the hulls are positioned across
+		// hubs so the nearest-selection router (#1) can route each cluster's contract to its local
+		// hull. A declared-but-uncrewed slot yields no launch (no hull to fly yet), matching the
+		// warehouse/stocker discipline.
+		for _, dh := range c.DeliveryHulls() {
+			if dh.ShipSymbol == "" {
+				continue
+			}
+			intents = append(intents, depotLaunchIntent{
+				depotID:        c.ID(),
+				role:           depot.RoleDeliveryHull,
+				shipSymbol:     dh.ShipSymbol,
+				targetWaypoint: dh.Waypoint, // a delivery hull parks at its own hub waypoint
 			})
 		}
 	}
@@ -112,6 +129,10 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 type depotCoordinatorSink interface {
 	launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, coLocatedWarehouseShips []string, playerID int) error
 	launchDepotStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
+	// launchDepotDelivery POSITIONS a delivery hull at its hub waypoint (sp-9j9c). Unlike the
+	// standing warehouse/stocker coordinators it is a one-shot reposition — the hull waits idle
+	// at its hub for the contract coordinator to dispatch it on demand.
+	launchDepotDelivery(ctx context.Context, shipSymbol, hubWaypoint string, playerID int) error
 }
 
 // launchDepotCoordinators starts every coordinator a loaded registry declares, dispatching
@@ -125,9 +146,11 @@ func launchDepotCoordinators(ctx context.Context, reg *depot.Registry, playerID 
 		var err error
 		switch intent.role {
 		case depot.RoleWarehouse:
-			err = sink.launchDepotWarehouse(ctx, intent.shipSymbol, intent.warehouseWaypoint, intent.coLocatedWarehouseShips, playerID)
+			err = sink.launchDepotWarehouse(ctx, intent.shipSymbol, intent.targetWaypoint, intent.coLocatedWarehouseShips, playerID)
 		case depot.RoleStocker:
-			err = sink.launchDepotStocker(ctx, intent.shipSymbol, intent.warehouseWaypoint, playerID)
+			err = sink.launchDepotStocker(ctx, intent.shipSymbol, intent.targetWaypoint, playerID)
+		case depot.RoleDeliveryHull:
+			err = sink.launchDepotDelivery(ctx, intent.shipSymbol, intent.targetWaypoint, playerID)
 		default:
 			continue
 		}
@@ -376,6 +399,39 @@ func hullCrewsOperation(storageShips []string, shipSymbol string) bool {
 		}
 	}
 	return false
+}
+
+// launchDepotDelivery (depotCoordinatorSink) POSITIONS a depot delivery hull at its configured
+// hub waypoint (bead sp-9j9c) so a multi-hub delivery fleet is actually PRESENT at its hubs for
+// the nearest-selection router (SelectDeliveryHull) to route each cluster's contract to its LOCAL
+// hull. Unlike the standing warehouse/stocker coordinators, a delivery hull is DISPATCHED on
+// demand by the contract coordinator; between contracts it waits idle AT its hub, so positioning
+// is a one-shot in-system reposition (NavigateShip), not a standing loop.
+//
+// It is idle-gated (only a genuinely idle hull is moved — never yanked mid-contract) and
+// fail-open (a non-idle hull is already flying its dispatch or a prior reposition, a benign skip;
+// a hull already at its hub is a no-op), mirroring launchDepotStocker so the boot re-run is quiet
+// and idempotent. NOTE: durable reservation of the idle hull against poaching between contracts is
+// owned by the contract coordinator's idle-hull acquisition path, not by this positioning step.
+func (s *DaemonServer) launchDepotDelivery(ctx context.Context, shipSymbol, hubWaypoint string, playerID int) error {
+	if shipSymbol == "" || hubWaypoint == "" {
+		return fmt.Errorf("depot delivery hull launch requires a ship symbol and hub waypoint")
+	}
+	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return fmt.Errorf("failed to load depot delivery hull %s: %w", shipSymbol, err)
+	}
+	if ship == nil {
+		return fmt.Errorf("depot delivery hull %s not found", shipSymbol)
+	}
+	if !ship.IsIdle() {
+		return nil // already flying (dispatched on a contract, or mid-reposition) — benign skip
+	}
+	if loc := ship.CurrentLocation(); loc != nil && loc.Symbol == hubWaypoint {
+		return nil // already parked at its hub — nothing to reposition
+	}
+	_, err = s.NavigateShip(ctx, shipSymbol, hubWaypoint, playerID)
+	return err
 }
 
 // launchDepotStocker (depotCoordinatorSink) starts a STANDING, continuous stocker on

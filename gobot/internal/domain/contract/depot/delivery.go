@@ -1,25 +1,48 @@
 package depot
 
-// SelectDeliveryHull returns the pinned delivery hull the depot uses to fulfil a
-// contract delivering to destinationSymbol. Selection is PURE CONFIGURATION: the
-// mechanism returns the config-assigned delivery hull (the first configured, in
-// config order) and does NOT prefer, favor, or special-case a hull that happens to
-// be co-located at the destination.
+// DistanceBetween resolves the travel distance between two waypoints for delivery-hull
+// selection. ok=false means the position pair is unknown (a nil oracle, an uncharted /
+// TTL-expired waypoint, or an unavailable graph) — the selector then treats that hull as
+// non-preferred and falls open to config order.
+type DistanceBetween func(fromWaypoint, toWaypoint string) (distance float64, ok bool)
+
+// SelectDeliveryHull returns the pinned delivery hull the depot uses to fulfil a contract
+// delivering to destinationSymbol: the hull whose parked hub is NEAREST to destinationSymbol
+// (bead sp-9j9c). With a MULTI-hub delivery fleet this is what makes every cluster's contract
+// deliver locally — each routes to its own nearest hull — instead of shuttling the single
+// config-first hull to every destination (which only compressed the haul for destinations
+// adjacent to where that one hull parked). distance is the SAME in-system coordinate separation
+// the rest of the routing ranks pool candidates by (SelectClosestShip / Waypoint.DistanceTo).
 //
-// Co-location is whatever the config produced, never a built-in rule: if the analyst
-// parked the config-assigned hull at the destination it delivers locally (~0 haul),
-// but that is a property of the PLACEMENT, not of this selector. A co-located hull
-// placed anywhere but first is NOT promoted over the config-assigned first hull.
-// destinationSymbol is therefore not consulted by the current config-assigned-hull
-// rule; it is retained so a future PURE-CONFIG rule (e.g. a config-driven per-
-// destination assignment) can slot in without a signature change — never to
-// reintroduce a co-location preference.
-//
-// Returns ok=false only when the depot has no delivery hull at all — then no local
-// delivery is possible and the caller keeps the legacy long haul.
-func (c *ContractDepot) SelectDeliveryHull(destinationSymbol string) (Element, bool) {
+// It is fail-open and regression-safe on every degenerate shape:
+//   - no delivery hull    -> ok=false (no local delivery possible; caller keeps the long haul).
+//   - exactly one hull    -> that hull, byte-identical (nearest-of-one is that one; the distance
+//     oracle is never consulted, so a single-hull depot behaves exactly as it did pre-sp-9j9c).
+//   - nil distance oracle -> the first configured hull (an un-wired / degraded deployment keeps
+//     the old config-order rule).
+//   - a hull at an uncharted hub (ok=false) never displaces a hull with a known, nearer position,
+//     and ties keep config order — so the pick is deterministic pass-to-pass.
+func (c *ContractDepot) SelectDeliveryHull(destinationSymbol string, distance DistanceBetween) (Element, bool) {
 	if len(c.deliveryHulls) == 0 {
 		return Element{}, false
 	}
-	return c.deliveryHulls[0], true
+	if len(c.deliveryHulls) == 1 || distance == nil {
+		return c.deliveryHulls[0], true
+	}
+	return c.nearestDeliveryHull(destinationSymbol, distance), true
+}
+
+// nearestDeliveryHull returns the delivery hull whose parked hub is closest to
+// destinationSymbol, keeping config order for ties and for hulls whose position is unknown (so a
+// stale-graph hull can never hijack the route from a known-nearer one).
+func (c *ContractDepot) nearestDeliveryHull(destinationSymbol string, distance DistanceBetween) Element {
+	best := c.deliveryHulls[0]
+	bestDistance, bestKnown := distance(best.Waypoint, destinationSymbol)
+	for _, candidate := range c.deliveryHulls[1:] {
+		candidateDistance, candidateKnown := distance(candidate.Waypoint, destinationSymbol)
+		if candidateKnown && (!bestKnown || candidateDistance < bestDistance) {
+			best, bestDistance, bestKnown = candidate, candidateDistance, true
+		}
+	}
+	return best
 }

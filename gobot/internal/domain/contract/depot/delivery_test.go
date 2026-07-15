@@ -1,75 +1,137 @@
 package depot
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
-// The load-bearing element: a depot fulfils a routed contract with its PINNED
-// delivery hull, chosen by PURE CONFIGURATION (the config-assigned hull — first in
-// config order). The mechanism does NOT prefer, favor, or special-case a hull that
-// happens to be co-located at the destination: co-location is whatever the config
-// produced, never a built-in selection rule. A hull the analyst parked at the
-// destination delivers locally (~0 haul), but ONLY when the config placed it first;
-// a co-located hull placed second is NOT promoted over the config-assigned first
-// hull. No delivery hull -> no local delivery available (ok=false) and the caller
-// keeps the long haul. The delivered outcome (co-located or not) is observable via
-// the returned hull's waypoint.
-func TestContractDepot_SelectsDeliveryHullPurelyByConfig(t *testing.T) {
-	const dest = "X1-FAR-58"
+// fakeDistance builds a DistanceBetween from a waypoint->coordinate map, computing the SAME
+// Euclidean separation the production graph oracle does (shared.Waypoint.DistanceTo). An
+// unmapped waypoint resolves ok=false (uncharted / off-graph), so the selector's fail-open
+// path — an unknown position never displaces a placed pick — is exercisable.
+func fakeDistance(coords map[string][2]float64) DistanceBetween {
+	return func(from, to string) (float64, bool) {
+		a, okA := coords[from]
+		b, okB := coords[to]
+		if !okA || !okB {
+			return 0, false
+		}
+		dx, dy := b[0]-a[0], b[1]-a[1]
+		return math.Sqrt(dx*dx + dy*dy), true
+	}
+}
+
+// The load-bearing element (bead sp-9j9c): a depot fulfils a routed contract with the delivery
+// hull whose parked hub is NEAREST to the contract's destination. This is what makes a MULTI-hub
+// delivery fleet deliver locally for ALL destinations — each contract routes to its cluster's
+// nearest hull — instead of shuttling a single [0] hull to every destination (which compressed
+// the haul only for destinations adjacent to where that one hull parked). The distance is the
+// SAME in-system coordinate separation the rest of the routing ranks by (SelectClosestShip).
+//
+// Regression-critical: a SINGLE-hull depot returns that hull byte-identically (nearest-of-one is
+// that one, the distance oracle never consulted), and a nil distance oracle falls open to config
+// order — so an un-wired / uncharted / degraded deployment behaves exactly as before.
+func TestContractDepot_SelectsNearestDeliveryHullToDestination(t *testing.T) {
+	const dest = "X1-VB74-J58"
+	// A 9-cluster-style map fragment: the destination cluster plus off-cluster hubs at
+	// increasing distance. Coordinates only — placement is config; the selector reads distance.
+	coords := map[string][2]float64{
+		dest:         {0, 0},
+		"X1-VB74-A1": {100, 0}, // far hub
+		"X1-VB74-B2": {40, 0},  // nearer hub
+		"X1-VB74-C3": {0, 40},  // equidistant with B2 (both 40 from dest)
+	}
+	nearest := fakeDistance(coords)
 
 	cases := []struct {
 		name          string
 		deliveryHulls []Element
+		distance      DistanceBetween
 		wantOk        bool
 		wantShip      string
-		wantColocated bool
 	}{
 		{
-			// The anti-preference pin: a co-located hull exists but is placed SECOND.
-			// Pure-config selection returns the FIRST configured hull (off-site) and
-			// does NOT promote the co-located one — proving co-location is not favored.
-			name: "co-located hull placed second is NOT preferred over the config-assigned first hull",
+			// THE ENABLER (and the reversal of the old pure-config rule): a hull co-located at the
+			// destination is preferred even when config placed it SECOND — nearest wins.
+			name: "co-located hull placed second is now PREFERRED (nearest to destination)",
 			deliveryHulls: []Element{
-				{Waypoint: "X1-ELSEWHERE-1", ShipSymbol: "OFF-1"},
+				{Waypoint: "X1-VB74-A1", ShipSymbol: "FAR-1"},
 				{Waypoint: dest, ShipSymbol: "LOCAL-1"},
 			},
-			wantOk:        true,
-			wantShip:      "OFF-1",
-			wantColocated: false,
+			distance: nearest,
+			wantOk:   true,
+			wantShip: "LOCAL-1",
 		},
 		{
-			// Co-location is honored ONLY because the config placed the local hull
-			// first — it is selected per config order, not because it is co-located.
-			name: "config-assigned first hull that happens to be co-located is selected (co-location incidental)",
+			name: "among off-cluster hubs the geometrically nearest hub's hull is chosen",
 			deliveryHulls: []Element{
+				{Waypoint: "X1-VB74-A1", ShipSymbol: "FAR-1"}, // dist 100
+				{Waypoint: "X1-VB74-B2", ShipSymbol: "MID-1"}, // dist 40 — nearest
+			},
+			distance: nearest,
+			wantOk:   true,
+			wantShip: "MID-1",
+		},
+		{
+			// REGRESSION: a single-hull depot returns that hull unchanged — nearest-of-one is that
+			// one, distance not consulted.
+			name:          "single hull: returned unchanged (byte-identical, distance not consulted)",
+			deliveryHulls: []Element{{Waypoint: "X1-VB74-A1", ShipSymbol: "ONLY-1"}},
+			distance:      nearest,
+			wantOk:        true,
+			wantShip:      "ONLY-1",
+		},
+		{
+			// REGRESSION fail-open: multiple hulls but NO distance oracle (un-wired / degraded) ->
+			// config order [0], byte-identical to the pre-sp-9j9c behavior.
+			name: "nil distance oracle falls open to config order (first configured)",
+			deliveryHulls: []Element{
+				{Waypoint: "X1-VB74-A1", ShipSymbol: "FIRST-1"},
 				{Waypoint: dest, ShipSymbol: "LOCAL-1"},
-				{Waypoint: "X1-ELSEWHERE-1", ShipSymbol: "OFF-1"},
 			},
-			wantOk:        true,
-			wantShip:      "LOCAL-1",
-			wantColocated: true,
+			distance: nil,
+			wantOk:   true,
+			wantShip: "FIRST-1",
 		},
 		{
-			name: "single off-site hull: returned exactly per config, never deprioritized",
+			// Determinism: two equidistant hubs keep config order (the first configured wins the
+			// tie) so the pick is stable pass-to-pass.
+			name: "equidistant hubs break the tie by config order (deterministic)",
 			deliveryHulls: []Element{
-				{Waypoint: "X1-ELSEWHERE-1", ShipSymbol: "OFF-1"},
+				{Waypoint: "X1-VB74-B2", ShipSymbol: "TIE-A"}, // dist 40
+				{Waypoint: "X1-VB74-C3", ShipSymbol: "TIE-B"}, // dist 40
 			},
-			wantOk:        true,
-			wantShip:      "OFF-1",
-			wantColocated: false,
+			distance: nearest,
+			wantOk:   true,
+			wantShip: "TIE-A",
+		},
+		{
+			// Fail-open per-hull: a hull whose hub is uncharted (ok=false) never displaces a hull
+			// with a known, nearer position — so a stale-graph hull can't hijack the route.
+			name: "hull with an uncharted hub never displaces a known nearer hull",
+			deliveryHulls: []Element{
+				{Waypoint: "X1-VB74-UNCHARTED", ShipSymbol: "GHOST-1"}, // ok=false
+				{Waypoint: "X1-VB74-B2", ShipSymbol: "KNOWN-1"},        // dist 40
+			},
+			distance: nearest,
+			wantOk:   true,
+			wantShip: "KNOWN-1",
 		},
 		{
 			name:          "no delivery hull -> no local delivery available",
 			deliveryHulls: nil,
+			distance:      nearest,
 			wantOk:        false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := NewContractDepot("depot-far", warehousesAt(dest), nil, tc.deliveryHulls, nil)
+			c, err := NewContractDepot("depot-vb74", warehousesAt(dest), nil, tc.deliveryHulls, nil)
 			if err != nil {
 				t.Fatalf("build depot: %v", err)
 			}
-			hull, ok := c.SelectDeliveryHull(dest)
+			hull, ok := c.SelectDeliveryHull(dest, tc.distance)
 			if ok != tc.wantOk {
 				t.Fatalf("SelectDeliveryHull ok = %v, want %v", ok, tc.wantOk)
 			}
@@ -78,9 +140,6 @@ func TestContractDepot_SelectsDeliveryHullPurelyByConfig(t *testing.T) {
 			}
 			if hull.ShipSymbol != tc.wantShip {
 				t.Errorf("selected ship %q, want %q", hull.ShipSymbol, tc.wantShip)
-			}
-			if colocated := hull.Waypoint == dest; colocated != tc.wantColocated {
-				t.Errorf("co-located = %v (hull at %q), want %v", colocated, hull.Waypoint, tc.wantColocated)
 			}
 		})
 	}
