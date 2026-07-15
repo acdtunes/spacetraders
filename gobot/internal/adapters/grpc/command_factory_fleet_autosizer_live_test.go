@@ -147,6 +147,46 @@ func TestAutosizerUnsetKnobsAreZeroSentinel(t *testing.T) {
 	require.Nil(t, cmd.PreferDemandProximalYard, "unset proximal-yard must stay nil so the coordinator applies its true default")
 }
 
+// sp-a3yn DEPLOY-SAFETY PIN: with no explorer_hulls_enabled anywhere, the built command carries
+// ExplorerHullsEnabled=false — NOTHING boot-arms the ~819k ROI-exempt explorer buy. A bare deploy is
+// inert on the explorer class.
+func TestAutosizerExplorerDisarmedByDefault(t *testing.T) {
+	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{})
+	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
+	require.False(t, cmd.ExplorerHullsEnabled,
+		"absent config must leave the explorer class DISARMED — nothing boot-arms the ROI-exempt buy")
+}
+
+// sp-a3yn: the captain arming the explorer (config.yaml explorer_hulls_enabled=true) + its knobs
+// round-trips through the whole pipeline into the built command.
+func TestAutosizerResolvesExplorerKnobsFromLiveConfig(t *testing.T) {
+	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
+		ExplorerHullsEnabled:           true,
+		FleetCeilingExplorer:           2,
+		ExplorerTreasuryPctPerPurchase: 20,
+		MaxPriceExplorer:               850000,
+		ShipTypeExplorer:               "SHIP_EXPLORER",
+	})
+	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
+	require.True(t, cmd.ExplorerHullsEnabled, "explorer arming must round-trip")
+	require.Equal(t, 2, cmd.FleetCeilingExplorer)
+	require.Equal(t, 20, cmd.ExplorerTreasuryPctPerPurchase)
+	require.Equal(t, int64(850000), cmd.MaxPriceExplorer)
+	require.Equal(t, "SHIP_EXPLORER", cmd.ShipTypeExplorer)
+}
+
+// sp-a3yn DEPLOY-SAFETY PIN (sp-ts82 live discipline): dropping explorer_hulls_enabled from
+// config.yaml must CLEAR a stale persisted arm from a prior boot — otherwise a stale arm would
+// silently keep buying the ROI-exempt explorer after the captain disarmed it.
+func TestAutosizerExplorerArmingClearsStalePersisted(t *testing.T) {
+	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{}) // disarmed in current config.yaml
+	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(map[string]interface{}{
+		"autosizer_explorer_hulls_enabled": true, // stale arm from a prior boot
+	}))
+	require.False(t, cmd.ExplorerHullsEnabled,
+		"unset live must clear the stale persisted arm → explorer DISARMED")
+}
+
 // The default-TRUE prefer_demand_proximal_yard round-trips: unset → nil (default true downstream);
 // explicit false in live config → a non-nil *bool carrying false (the captain's explicit opt-out
 // survives, not collapsed into the default).

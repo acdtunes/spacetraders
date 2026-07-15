@@ -72,6 +72,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	marketRepo market.MarketRepository,
 	tourTelemetry tourTelemetryReader,
 	scannedYards scannedYardRanker,
+	offGateDemand fleetCmd.OffGateDemandSource,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
 
@@ -102,6 +103,13 @@ func NewFleetAutosizerCoordinatorHandler(
 		newWarehouseHullSource(server.containerRepo, shipRepo),
 		newWarehouseDispatchBridge(server, shipRepo),
 	))
+
+	// Explorer class (sp-a3yn slice C): reads slice-B off-gate demand through the cross-coordinator
+	// bridge (offGateDemand) and the live explorer-pool count (dedicate-at-purchase "explorer" fleet).
+	// DORMANT until BOTH armed (explorer_hulls_enabled, default off — classDisabled skips it otherwise)
+	// AND the frontier raises off-gate demand into the bridge, so registering it here changes no live
+	// behaviour and nothing auto-buys. The frontier warps the bought hull (SetExplorerDispatchPort).
+	h.AddDemandProvider(fleetCmd.NewExplorerDemandProvider(offGateDemand, &autosizerExplorerFleetSource{shipRepo: shipRepo}))
 
 	// Buy-path readers + writers.
 	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient})
@@ -336,6 +344,10 @@ func autosizerDedicatedFleet(class fleetCmd.HullClass) string {
 		return "trade"
 	case fleetCmd.HullClassWarehouse:
 		return "warehouse"
+	case fleetCmd.HullClassExplorer:
+		// sp-a3yn dedicate-at-purchase: tag the bought explorer to the "explorer" fleet in the same
+		// breath so no coordinator poaches it before the frontier dispatch loop warps it off-gate.
+		return "explorer"
 	default:
 		return ""
 	}
@@ -603,6 +615,20 @@ func distinctShipSystems(ships []*navigation.Ship) []string {
 		out = append(out, system)
 	}
 	return out
+}
+
+// --- explorer pool count (sp-a3yn: the hard-cap basis + shortfall Current) ---
+
+// autosizerExplorerFleetSource counts the player's explorer-dedicated hulls (DedicatedFleet
+// "explorer", stamped by dedicate-at-purchase). It is the hard-cap basis and the shortfall's Current
+// the ExplorerDemandProvider reads; a read failure fails the class CLOSED (an unknowable pool must
+// never buy, lest it breach the hard cap of 1).
+type autosizerExplorerFleetSource struct{ shipRepo navigation.ShipRepository }
+
+func (s *autosizerExplorerFleetSource) ExplorerCount(ctx context.Context, playerID int) (int, error) {
+	return countShips(ctx, s.shipRepo, playerID, func(sh *navigation.Ship) bool {
+		return sh.DedicatedFleet() == "explorer"
+	})
 }
 
 // --- shared helper ---

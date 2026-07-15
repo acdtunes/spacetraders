@@ -24,16 +24,17 @@ import (
 type GuardName string
 
 const (
-	GuardDemand        GuardName = "demand"         // there is unmet demand for the class
-	GuardFleetCeiling  GuardName = "fleet_ceiling"  // per-class + absolute fleet-size ceilings
-	GuardPerTickCap    GuardName = "per_tick_cap"   // hulls already bought this tick
-	GuardPriceRead     GuardName = "price_read"     // the yard ask was readable (fail-closed)
-	GuardPriceCeiling  GuardName = "price_ceiling"  // per-class absolute + premium-over-cheapest cap
-	GuardEraPayback    GuardName = "era_payback"    // buy pays back before era reset; hard T-cutoff
-	GuardRealizedRate  GuardName = "realized_rate"  // marginal $/hr clears the floor, not decaying
-	GuardTreasuryPct   GuardName = "treasury_pct"   // a single hull ≤ pct% of live treasury (analyst rule)
-	GuardAPIUtil       GuardName = "api_util"       // sustained request-utilization below ceiling (fail-closed)
-	GuardTreasuryFloor GuardName = "treasury_floor" // treasury net of the reserve floor covers price+margin
+	GuardDemand         GuardName = "demand"          // there is unmet demand for the class
+	GuardFleetCeiling   GuardName = "fleet_ceiling"   // per-class + absolute fleet-size ceilings
+	GuardPerTickCap     GuardName = "per_tick_cap"    // hulls already bought this tick
+	GuardPriceRead      GuardName = "price_read"      // the yard ask was readable (fail-closed)
+	GuardPriceCeiling   GuardName = "price_ceiling"   // per-class absolute + premium-over-cheapest cap
+	GuardEraPayback     GuardName = "era_payback"     // buy pays back before era reset; hard T-cutoff
+	GuardRealizedRate   GuardName = "realized_rate"   // marginal $/hr clears the floor, not decaying
+	GuardExplorerExempt GuardName = "explorer_exempt" // sp-a3yn: exploration-justified — REPLACES the two income guards for the explorer ONLY
+	GuardTreasuryPct    GuardName = "treasury_pct"    // a single hull ≤ pct% of live treasury (analyst rule)
+	GuardAPIUtil        GuardName = "api_util"        // sustained request-utilization below ceiling (fail-closed)
+	GuardTreasuryFloor  GuardName = "treasury_floor"  // treasury net of the reserve floor covers price+margin
 )
 
 // GuardVerdict is one guard's outcome plus the arithmetic behind it (Detail), so the decision log
@@ -144,12 +145,35 @@ func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 		guardPerTickCap(req),
 		guardPriceRead(req),
 		guardPriceCeiling(req),
-		guardEraPayback(req),
-		guardRealizedRate(req),
+	}
+	// THE EXPLORER PAYBACK EXEMPTION (sp-a3yn) — the single, class-gated carve-out.
+	//
+	// The explorer buys REACH, not income: it warps off the gate network to chart new systems so
+	// the cheap probe frontier resumes (growFrontierGraph picks up the charted cluster next cycle).
+	// It therefore has NO marginal realized $/hr, so req.MarginalRate/req.RateReadable are unset —
+	// which means the two realized-rate INCOME guards (era_payback: price must pay back before the
+	// era reset; realized_rate: marginal $/hr clears the fleet-avg floor) would BOTH fail CLOSED and
+	// the explorer could never buy. For the explorer ONLY we REPLACE that payback proof with the
+	// explorer_exempt verdict. The proof is not dropped — it is replaced by three explorer-only
+	// bounds ALREADY enforced above: the demand-gate (guardDemand; the provider emits demand only
+	// when slice-B off-gate demand fires AND the class is armed), the HARD CAP of 1 (guardFleetCeiling
+	// with ClassCeiling=1), and the price ceiling (guardPriceCeiling, MaxPriceClass ~= 819k+premium).
+	//
+	// The carve-out is gated to HullClassExplorer and NOTHING else: every other class still runs BOTH
+	// income guards, so a non-explorer with an unprovable payback is STILL refused (regression-tested,
+	// and the class-gate is mutation-verified — dropping it makes that test fail). Every OTHER guard
+	// (demand, fleet ceiling, per-tick, price read+ceiling, 25%-treasury, api-util, reserve/spend)
+	// applies to the explorer unchanged.
+	if req.Class == HullClassExplorer {
+		verdicts = append(verdicts, guardExplorerExempt(req))
+	} else {
+		verdicts = append(verdicts, guardEraPayback(req), guardRealizedRate(req))
+	}
+	verdicts = append(verdicts,
 		guardTreasuryPct(req),
 		guardAPIUtil(req),
 		guardTreasuryFloor(req),
-	}
+	)
 	d := PurchaseDecision{Approved: true, Verdicts: verdicts}
 	for _, v := range verdicts {
 		if !v.Passed {
@@ -241,6 +265,20 @@ func guardEraPayback(req PurchaseRequest) GuardVerdict {
 		Guard:  GuardEraPayback,
 		Passed: float64(req.Price) <= maxAffordable,
 		Detail: fmt.Sprintf("price %d <= rate %.0f × %.2fh × safety %.2f = %.0f", req.Price, req.MarginalRate, req.HoursToEraEnd, req.PaybackSafety, maxAffordable),
+	}
+}
+
+// guardExplorerExempt is the explorer's exploration-justification verdict that REPLACES the two
+// realized-rate income guards (era_payback + realized_rate) — see the carve-out in EvaluateGuards.
+// It ALWAYS passes: the payback proof is waived because the explorer buys REACH not income. It is
+// reached ONLY for HullClassExplorer, so it can never waive an income guard for any other class.
+// The detail names the three explorer-only bounds that replace the waived proof, so the decision
+// log tells the captain exactly what still gates the ~819k spend.
+func guardExplorerExempt(req PurchaseRequest) GuardVerdict {
+	return GuardVerdict{
+		Guard:  GuardExplorerExempt,
+		Passed: true,
+		Detail: fmt.Sprintf("exploration-justified: explorer buys REACH not income — payback proof WAIVED; replaced by demand-gate + hard cap %d + price ceiling %d (all still gating above)", req.ClassCeiling, req.MaxPriceClass),
 	}
 }
 

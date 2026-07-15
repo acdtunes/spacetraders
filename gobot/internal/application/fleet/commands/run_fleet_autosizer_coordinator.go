@@ -48,6 +48,15 @@ const (
 	defaultWarehouseMinChainTickPersistence = 2
 	defaultWarehouseCapacityTargetHours     = 2.0
 	defaultWarehouseFrameClassCeiling       = "light"
+
+	// Explorer class (sp-a3yn slice C). Opt-IN (default OFF, arming knob). The HARD CAP is 1; the
+	// PRICE CEILING defaults to ~819k SHIP_EXPLORER + a premium (a REAL default, never 0=off — the
+	// explorer's price ceiling is a required guard); the 25%-treasury big-ticket affordability rule
+	// applies (the explorer buys an ~819k hull).
+	defaultFleetCeilingExplorer           = 1
+	defaultExplorerTreasuryPctPerPurchase = 25
+	defaultMaxPriceExplorer               = 900000
+	defaultShipTypeExplorer               = "SHIP_EXPLORER"
 )
 
 // DemandParams carries the live-resolved config the demand providers need each tick (rotation
@@ -65,6 +74,12 @@ type DemandParams struct {
 	WarehouseMinRealizedPerHour float64
 	// MaxWarehouseHulls caps the warehouse demand regardless of how many durable chains exist.
 	MaxWarehouseHulls int
+	// ExplorerHullsEnabled ARMS the explorer class (sp-a3yn). Default false (opt-in): when false the
+	// explorer provider emits ZERO demand unconditionally, so a bare deploy buys no explorer.
+	ExplorerHullsEnabled bool
+	// MaxExplorerHulls is the explorer HARD CAP (the class fleet ceiling, default 1): the provider
+	// never wants more than this regardless of the off-gate signal's count.
+	MaxExplorerHulls int
 }
 
 // ClassDemandProvider reads one hull class's demand each tick (the pluggable-provider seam,
@@ -142,6 +157,15 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	WarehouseCapacityTargetHours     float64
 	MaxModuleSpendPerHull            int64
 	WarehouseFrameClassCeiling       string
+
+	// Explorer class (sp-a3yn slice C). ExplorerHullsEnabled is the opt-IN arming knob (default OFF
+	// — nothing boot-arms it). FleetCeilingExplorer is the HARD CAP (default 1); MaxPriceExplorer is
+	// the price ceiling (default ~819k+premium); ExplorerTreasuryPctPerPurchase is the 25% rule.
+	ExplorerHullsEnabled           bool
+	FleetCeilingExplorer           int
+	ExplorerTreasuryPctPerPurchase int
+	MaxPriceExplorer               int64
+	ShipTypeExplorer               string
 }
 
 // RunFleetAutosizerCoordinatorResponse reports reconcile progress. Because the loop is infinite
@@ -317,6 +341,10 @@ func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 		return c.HeaviesDisabled
 	case HullClassWarehouse:
 		return !c.WarehouseHullsEnabled
+	case HullClassExplorer:
+		// Opt-IN arming (sp-a3yn): the explorer class runs ONLY when explicitly armed, so a bare
+		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
+		return !c.ExplorerHullsEnabled
 	default:
 		return true // unknown class: never act
 	}

@@ -22,6 +22,15 @@ const (
 	// HullClassWarehouse is the storage/stocker pool (DedicatedFleet "warehouse"), sized to
 	// producing-chain export demand (sp-1txd M7).
 	HullClassWarehouse HullClass = "warehouse"
+	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer", sp-a3yn
+	// slice C of sp-4imi). It is sized to slice-B off-gate demand and is the ONE class EXEMPT from
+	// the realized-$/hr payback guards: an explorer buys REACH (it charts new systems so the cheap
+	// probe frontier resumes via growFrontierGraph), NOT income, so it has no marginal realized
+	// rate. That exemption is REPLACED — not dropped — by three explorer-only bounds enforced in
+	// EvaluateGuards: the demand-gate (buys only when off-gate demand fires AND the class is armed),
+	// a HARD CAP of 1 (the class fleet ceiling), and a price ceiling (~819k SHIP_EXPLORER + premium).
+	// Opt-IN (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
+	HullClassExplorer HullClass = "explorer"
 )
 
 // ClassDemand is one class's demand read for a tick: how many hulls the demand model wants

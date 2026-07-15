@@ -104,6 +104,11 @@ var fleetAutosizerConfigKeys = []string{
 	"autosizer_warehouse_capacity_target_hours",
 	"autosizer_max_module_spend_per_hull",
 	"autosizer_warehouse_frame_class_ceiling",
+	"autosizer_explorer_hulls_enabled",
+	"autosizer_fleet_ceiling_explorer",
+	"autosizer_explorer_treasury_pct_per_purchase",
+	"autosizer_max_price_explorer",
+	"autosizer_ship_type_explorer",
 }
 
 // resolveFleetAutosizerConfig makes config.yaml the single LIVE source of truth for the
@@ -239,6 +244,23 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.WarehouseFrameClassCeiling != "" {
 		config["autosizer_warehouse_frame_class_ceiling"] = fa.WarehouseFrameClassCeiling
 	}
+	// Explorer class (sp-a3yn). The opt-in arming bool is written ONLY when true (an absent key reads
+	// as DISARMED, so nothing boot-arms it — mirrors warehouse_hulls_enabled).
+	if fa.ExplorerHullsEnabled {
+		config["autosizer_explorer_hulls_enabled"] = true
+	}
+	if fa.FleetCeilingExplorer != 0 {
+		config["autosizer_fleet_ceiling_explorer"] = fa.FleetCeilingExplorer
+	}
+	if fa.ExplorerTreasuryPctPerPurchase != 0 {
+		config["autosizer_explorer_treasury_pct_per_purchase"] = fa.ExplorerTreasuryPctPerPurchase
+	}
+	if fa.MaxPriceExplorer != 0 {
+		config["autosizer_max_price_explorer"] = int(fa.MaxPriceExplorer)
+	}
+	if fa.ShipTypeExplorer != "" {
+		config["autosizer_ship_type_explorer"] = fa.ShipTypeExplorer
+	}
 }
 
 // buildFleetAutosizerCommand rebuilds the standing autosizer command (sp-1txd) from a persisted
@@ -299,6 +321,12 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		WarehouseCapacityTargetHours:     cfg.OptionalFloat("autosizer_warehouse_capacity_target_hours", 0),
 		MaxModuleSpendPerHull:            int64(cfg.OptionalInt("autosizer_max_module_spend_per_hull", 0)),
 		WarehouseFrameClassCeiling:       cfg.OptionalString("autosizer_warehouse_frame_class_ceiling"),
+
+		ExplorerHullsEnabled:           cfg.OptionalBool("autosizer_explorer_hulls_enabled"),
+		FleetCeilingExplorer:           cfg.OptionalInt("autosizer_fleet_ceiling_explorer", 0),
+		ExplorerTreasuryPctPerPurchase: cfg.OptionalInt("autosizer_explorer_treasury_pct_per_purchase", 0),
+		MaxPriceExplorer:               int64(cfg.OptionalInt("autosizer_max_price_explorer", 0)),
+		ShipTypeExplorer:               cfg.OptionalString("autosizer_ship_type_explorer"),
 	}
 	// Default-TRUE bool: present-vs-absent is what carries the default, so read it as a *bool.
 	if v, ok := cfg.PresentBool("autosizer_prefer_demand_proximal_yard"); ok {

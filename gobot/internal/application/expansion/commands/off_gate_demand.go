@@ -165,6 +165,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) evaluateOffGateDemand(ctx conte
 	reason, triggered := h.offGateTrigger(ctx, cmd, cfg, streak)
 	if !triggered {
 		h.offGate.setLatest(playerID, OffGateDemandSignal{})
+		h.emitOffGateDemand(playerID, OffGateDemandSignal{}) // bridge the "no demand" out to the buy side too
 		return
 	}
 
@@ -187,6 +188,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) evaluateOffGateDemand(ctx conte
 		signal.Target = target
 	}
 	h.offGate.setLatest(playerID, signal)
+	h.emitOffGateDemand(playerID, signal) // bridge the raised signal out to the fleet autosizer's buy side
 	h.logOffGateDemand(ctx, cmd, signal)
 }
 

@@ -348,6 +348,133 @@ func TestDecision_BlockedByFirstFailure(t *testing.T) {
 	}
 }
 
+// --- sp-a3yn: the EXPLORER payback exemption (the crux) ----------------------
+
+// explorerPassingRequest is an EXPLORER candidate where every REUSED guard passes and the
+// realized-rate inputs are UNSET (MarginalRate=0, RateReadable=false, EraReadable=false) — exactly
+// what an explorer looks like (it buys REACH, not income, so it has no marginal rate). A non-
+// explorer with these same unset rate inputs would fail the era-payback + realized-rate guards
+// CLOSED; the explorer is EXEMPT, so this request must be APPROVED. Each explorer test flips ONE
+// field to pin exactly one reused guard's refusal, proving the exemption did NOT open any other gate.
+func explorerPassingRequest() PurchaseRequest {
+	return PurchaseRequest{
+		Class:    HullClassExplorer,
+		ShipType: "SHIP_EXPLORER",
+
+		Shortfall: 1,
+
+		CurrentClassCount: 0, // no explorer owned yet
+		ClassCeiling:      1, // HARD CAP 1
+		CurrentTotalCount: 20,
+		TotalCeiling:      50,
+
+		PurchasesThisTick: 0,
+		PerTickCap:        1,
+
+		Price:              819000,
+		PriceReadable:      true,
+		CheapestKnownPrice: 819000,
+		MaxPriceClass:      900000, // ~819k + premium price ceiling
+		MaxPremiumPct:      50,
+
+		// Realized-rate inputs deliberately UNSET — the explorer has none.
+		HoursToEraEnd:  0,
+		EraReadable:    false,
+		EraCutoffHours: 3,
+		PaybackSafety:  0.5,
+		MarginalRate:   0,
+		RateFloor:      0,
+		RateReadable:   false,
+		RateDeclining:  false,
+
+		LiveTreasury:      10000000,
+		TreasuryReadable:  true,
+		ReserveAbsolute:   200000,
+		ReservePct:        40,
+		MarginOverFloor:   200000,
+		TreasuryPctPerBuy: 25, // big-ticket 25%-treasury affordability rule DOES apply to the explorer
+
+		APIUtilPct:      40,
+		APIUtilReadable: true,
+		APIUtilCeiling:  85,
+	}
+}
+
+// The exemption itself: an explorer with NO provable payback (era + rate unreadable) is APPROVED —
+// it is exploration-justified, not income-justified. This is the whole point of the feature.
+func TestGuard_Explorer_ExemptFromRealizedRatePaybackGuards(t *testing.T) {
+	d := EvaluateGuards(explorerPassingRequest())
+	if !d.Approved {
+		t.Fatalf("explorer must be APPROVED despite unset payback/rate (exploration-justified); blocked by %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+}
+
+// THE CRITICAL REGRESSION + class-gate mutation guard: a NON-explorer (light) with the SAME unset
+// payback inputs is STILL REFUSED. If the class-gate on the exemption is removed (exemption applied
+// to every class), this test fails — proving the carve-out is scoped to HullClassExplorer ONLY.
+func TestGuard_NonExplorer_UnprovablePayback_StillRefused(t *testing.T) {
+	r := explorerPassingRequest()
+	r.Class = HullClassLight // a light with no provable payback must NOT get the exemption
+	d := EvaluateGuards(r)
+	if d.Approved {
+		t.Fatalf("a NON-explorer with unprovable payback must be REFUSED — the exemption leaked to %q; arithmetic: %s", r.Class, d.Arithmetic())
+	}
+	if d.BlockedBy != GuardEraPayback {
+		t.Fatalf("a non-explorer with unreadable era clock must block on era_payback first, got %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+}
+
+// The explorer decision log carries an explicit explorer_exempt verdict and does NOT run the two
+// income guards — the captain reading the log sees exactly why the payback proof was waived.
+func TestGuard_Explorer_ExemptVerdictLoggedAndIncomeGuardsSkipped(t *testing.T) {
+	arith := EvaluateGuards(explorerPassingRequest()).Arithmetic()
+	if !strings.Contains(arith, string(GuardExplorerExempt)) {
+		t.Errorf("explorer arithmetic must carry the explorer_exempt verdict: %s", arith)
+	}
+	if strings.Contains(arith, string(GuardEraPayback)) || strings.Contains(arith, string(GuardRealizedRate)) {
+		t.Errorf("explorer must NOT run the era_payback/realized_rate income guards: %s", arith)
+	}
+}
+
+// The HARD CAP is enforced by the reused fleet-ceiling guard with ClassCeiling=1: a second explorer
+// (one already owned) is refused. The exemption did not disable the ceiling.
+func TestGuard_Explorer_HardCapCeilingRefusesSecond(t *testing.T) {
+	r := explorerPassingRequest()
+	r.CurrentClassCount = 1 // one explorer already owned; ceiling is 1
+	assertBlockedBy(t, r, GuardFleetCeiling)
+}
+
+// The PRICE CEILING still bites: an explorer priced above the ~819k+premium cap is refused.
+func TestGuard_Explorer_PriceCeilingRefusesOverpriced(t *testing.T) {
+	r := explorerPassingRequest()
+	r.Price = 950000 // above the 900000 class cap
+	assertBlockedBy(t, r, GuardPriceCeiling)
+}
+
+// The DEMAND gate still bites: no shortfall ⇒ no buy (the explorer is not exempt from needing demand).
+func TestGuard_Explorer_DemandGateRefusesZeroShortfall(t *testing.T) {
+	r := explorerPassingRequest()
+	r.Shortfall = 0
+	assertBlockedBy(t, r, GuardDemand)
+}
+
+// The REUSED treasury guards still bite for the explorer (fail-closed on unreadable, and the 25%
+// affordability rule + reserve floor still gate the ~819k spend).
+func TestGuard_Explorer_ReusedTreasuryGuardsStillBite(t *testing.T) {
+	unreadable := explorerPassingRequest()
+	unreadable.TreasuryReadable = false
+	// treasury_pct (25%, applied to the explorer) fail-closes on unreadable treasury and is first.
+	assertBlockedBy(t, unreadable, GuardTreasuryPct)
+
+	tooExpensive := explorerPassingRequest()
+	tooExpensive.LiveTreasury = 2000000 // 25% = 500000 < price 819000 → affordability rule blocks
+	assertBlockedBy(t, tooExpensive, GuardTreasuryPct)
+
+	apiSaturated := explorerPassingRequest()
+	apiSaturated.APIUtilReadable = false // sp-a5dq fail-closed still holds for the explorer
+	assertBlockedBy(t, apiSaturated, GuardAPIUtil)
+}
+
 func assertBlockedBy(t *testing.T, r PurchaseRequest, want GuardName) {
 	t.Helper()
 	d := EvaluateGuards(r)

@@ -842,10 +842,18 @@ func run(cfg *config.Config) error {
 	// the COMBINED post-buy fleet count across every provider, this one included.
 	contractDeliveryDemand := capacityAdapters.NewContractDeliveryDemandBridge()
 
+	// sp-a3yn slice C: the cross-coordinator bridge carrying slice-B off-gate demand (raised in the
+	// FRONTIER coordinator, wired below) to the FLEET autosizer's explorer BUY path. Created here so
+	// the explorer demand provider can be registered on the autosizer handler at construction; the
+	// frontier connects the WRITE side (SetOffGateDemandSink) further down. Dormant until the frontier
+	// emits AND the explorer class is armed (explorer_hulls_enabled, default off) — nothing auto-buys.
+	explorerOffGateBridge := expansionAdapters.NewExplorerOffGateBridge()
+
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo, goodsMarketLocator,
 		marketRepo, persistence.NewTourTelemetryRepository(db),
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
+		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge
 	)
 	fleetAutosizerHandler.AddDemandProvider(contractDeliveryDemand) // st-x00: contract-delivery capital demand → sp-1txd buy path (dormant until armed)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
@@ -1050,6 +1058,15 @@ func run(cfg *config.Config) error {
 	// so `spacetraders tune` retunes the spend/cooldown/cap knobs on the next tick —
 	// no restart, no rebuild.
 	frontierExpansionHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	// sp-a3yn slice C: connect the off-gate BUY seam (mirror each tick's signal into the bridge the
+	// autosizer's explorer provider reads) and the explorer DISPATCH seam (warp a bought+dedicated
+	// idle explorer to the off-gate target via slice-A ExecuteWarpRoute; on arrival slice A charts the
+	// system so growFrontierGraph resumes). Both are optional injection — a bare deploy with the
+	// explorer class disarmed buys nothing, so this dispatch never fires.
+	frontierExpansionHandler.SetOffGateDemandSink(explorerOffGateBridge)
+	frontierExpansionHandler.SetExplorerDispatchPort(expansionAdapters.NewExplorerWarpDispatcher(
+		routeExecutor, shipRepo, ship.NewGraphWaypointSource(graphService),
+	))
 	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {
 		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
 	}
@@ -1135,8 +1152,8 @@ func run(cfg *config.Config) error {
 		// st-5ig CONVERGE actuator (cheap tiers 1-3): each verb drives its EXISTING
 		// primitive; ExecuteCapital is fail-closed (st-0h8 owns the capital path).
 		capacityAdapters.NewActuator(
-			capacityAdapters.NewMediatorReassigner(med),                                        // tier-1 reassign -> fleet-assign command
-			capacityAdapters.NewMediatorRepositioner(med),                                      // tier-2 reposition -> navigate command
+			capacityAdapters.NewMediatorReassigner(med),                                         // tier-1 reassign -> fleet-assign command
+			capacityAdapters.NewMediatorRepositioner(med),                                       // tier-2 reposition -> navigate command
 			capacityAdapters.NewWorkerRebalanceEnsurer(containerRepo, daemonServer, playerRepo), // tier-2 workers -> ensure the sp-f5pr rebalancer runs
 			capacityAdapters.NewWarehouseBufferConfigurator(db, shared.NewRealClock()),          // tier-3 buffer -> depot supported-goods whitelist writer
 			capacityAdapters.NewTokenPlayerResolver(apiClient, playerRepo),                      // reconciling player from the ambient auth token

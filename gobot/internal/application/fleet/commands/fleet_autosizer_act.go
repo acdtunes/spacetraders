@@ -143,6 +143,12 @@ func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string,
 		// Warehouse buys a light frame by default (the capacity ladder, M8); the big-ticket
 		// affordability rule applies.
 		return cfg.ShipTypeLights, cfg.FleetCeilingWarehouse, cfg.MaxPriceLights, cfg.HeavyTreasuryPctPerPurchase
+	case HullClassExplorer:
+		// sp-a3yn: the explorer's ship type (SHIP_EXPLORER), its HARD-CAP-1 class ceiling, its price
+		// ceiling (~819k+premium — a REAL cap, not 0=off), and the 25% big-ticket affordability rule.
+		// The realized-$/hr payback exemption is applied class-gated INSIDE EvaluateGuards, not here —
+		// every knob returned here is a REAL guard bound the explorer must still clear.
+		return cfg.ShipTypeExplorer, cfg.FleetCeilingExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
 	default:
 		return "", 0, 0, 0
 	}

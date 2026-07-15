@@ -60,6 +60,13 @@ type autosizerRunConfig struct {
 	WarehouseCapacityTargetHours     float64
 	MaxModuleSpendPerHull            int64
 	WarehouseFrameClassCeiling       string
+
+	// Explorer class (sp-a3yn slice C).
+	ExplorerHullsEnabled           bool
+	FleetCeilingExplorer           int
+	ExplorerTreasuryPctPerPurchase int
+	MaxPriceExplorer               int64
+	ShipTypeExplorer               string
 }
 
 func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autosizerRunConfig {
@@ -99,6 +106,12 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 		WarehouseCapacityTargetHours:     cmd.WarehouseCapacityTargetHours,
 		MaxModuleSpendPerHull:            cmd.MaxModuleSpendPerHull,
 		WarehouseFrameClassCeiling:       cmd.WarehouseFrameClassCeiling,
+
+		ExplorerHullsEnabled:           cmd.ExplorerHullsEnabled,
+		FleetCeilingExplorer:           cmd.FleetCeilingExplorer,
+		ExplorerTreasuryPctPerPurchase: cmd.ExplorerTreasuryPctPerPurchase,
+		MaxPriceExplorer:               cmd.MaxPriceExplorer,
+		ShipTypeExplorer:               cmd.ShipTypeExplorer,
 	}
 
 	if c.Tick <= 0 {
@@ -170,6 +183,21 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	if c.WarehouseFrameClassCeiling == "" {
 		c.WarehouseFrameClassCeiling = defaultWarehouseFrameClassCeiling
 	}
+	// Explorer defaults (sp-a3yn). ExplorerHullsEnabled has NO fallback — its false zero value IS the
+	// default (disarmed), so nothing boot-arms it. MaxPriceExplorer resolves to a REAL default (never
+	// 0=off, unlike MaxPrice{Lights,Heavies}) because the explorer's price ceiling is a required guard.
+	if c.FleetCeilingExplorer <= 0 {
+		c.FleetCeilingExplorer = defaultFleetCeilingExplorer
+	}
+	if c.ExplorerTreasuryPctPerPurchase <= 0 {
+		c.ExplorerTreasuryPctPerPurchase = defaultExplorerTreasuryPctPerPurchase
+	}
+	if c.MaxPriceExplorer <= 0 {
+		c.MaxPriceExplorer = defaultMaxPriceExplorer
+	}
+	if c.ShipTypeExplorer == "" {
+		c.ShipTypeExplorer = defaultShipTypeExplorer
+	}
 	// PreferDemandProximalYard defaults TRUE: nil (unset) → true; the *bool distinguishes an
 	// explicit false from "not configured".
 	c.PreferDemandProximalYard = true
@@ -220,6 +248,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		WarehouseMinTickPersistence: cfg.WarehouseMinChainTickPersistence,
 		WarehouseMinRealizedPerHour: cfg.WarehouseMinChainRealizedPerHour,
 		MaxWarehouseHulls:           cfg.MaxWarehouseHulls,
+		ExplorerHullsEnabled:        cfg.ExplorerHullsEnabled,
+		MaxExplorerHulls:            cfg.FleetCeilingExplorer,
 	}
 
 	purchasesThisTick := 0

@@ -155,4 +155,28 @@ type FleetAutosizerConfig struct {
 	// WarehouseFrameClassCeiling caps the frame class the capacity ladder may buy ("light" or
 	// "heavy"); heavy requires explicit enable. 0/absent → "light".
 	WarehouseFrameClassCeiling string `mapstructure:"warehouse_frame_class_ceiling"`
+
+	// --- explorer hull class (sp-a3yn slice C of sp-4imi) ---
+	//
+	// The explorer auto-buys an ~819k SHIP_EXPLORER that is EXEMPT from the realized-$/hr payback
+	// gate (it buys REACH, not income). Because that spend is ROI-exempt and captain-reviewed, it is
+	// DEPLOY-INERT: ExplorerHullsEnabled defaults OFF and NOTHING boot-arms it — the buy requires BOTH
+	// (a) this flag armed AND (b) slice-B off-gate demand firing. Config+restart arming (not a live
+	// `tune`) is deliberate: a runtime tune cannot flip it. Like WarehouseHullsEnabled it is opt-IN.
+
+	// ExplorerHullsEnabled ARMS the explorer class. Absent/false = DISARMED (the class emits zero
+	// demand and buys nothing). Set true ONLY after the captain/human review signs off.
+	ExplorerHullsEnabled bool `mapstructure:"explorer_hulls_enabled"`
+	// FleetCeilingExplorer is the explorer HARD CAP (never own more than this). 0/absent → 1.
+	FleetCeilingExplorer int `mapstructure:"fleet_ceiling_explorer"`
+	// ExplorerTreasuryPctPerPurchase is the 25% big-ticket affordability rule for the ~819k buy.
+	// 0/absent → 25.
+	ExplorerTreasuryPctPerPurchase int `mapstructure:"explorer_treasury_pct_per_purchase"`
+	// MaxPriceExplorer is the explorer PRICE CEILING (~819k SHIP_EXPLORER + premium). Unlike
+	// MaxPrice{Lights,Heavies} it resolves to a REAL default (never 0=no-cap): the ceiling is a
+	// required guard on the ROI-exempt buy. 0/absent → 900000.
+	MaxPriceExplorer int64 `mapstructure:"max_price_explorer"`
+	// ShipTypeExplorer is the shipyard ship-type bought for the explorer class. 0/absent →
+	// "SHIP_EXPLORER" (the only warp-drive-carrying hull).
+	ShipTypeExplorer string `mapstructure:"ship_type_explorer"`
 }

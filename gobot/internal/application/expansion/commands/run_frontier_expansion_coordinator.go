@@ -332,6 +332,15 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	offGateSelector  OffGateTargetSelector
 	shipyardCoverage ShipyardCoverageReader
 	offGate          *offGateDemandTracker
+
+	// Explorer buy+dispatch seam (sp-a3yn, slice C). offGateSink mirrors each tick's off-gate signal
+	// out to the fleet autosizer's explorer demand provider (the cross-coordinator BRIDGE — the buy
+	// side); explorerDispatch warps a bought+dedicated idle explorer to the selected off-gate target
+	// via slice-A ExecuteWarpRoute (the dispatch side). BOTH optional-injection: nil sink / nil
+	// dispatch make their hooks no-ops, so the coordinator is byte-identical to pre-slice-C when
+	// unwired. Wired + driven in off_gate_dispatch.go.
+	offGateSink      OffGateDemandSink
+	explorerDispatch ExplorerDispatchPort
 }
 
 // NewRunFrontierExpansionCoordinatorHandler wires the coordinator. clock defaults to
@@ -686,6 +695,11 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 	// OFF-GATE DEMAND (sp-k645, slice B): raise the explorer-demand SIGNAL for slice C when
 	// the gate-reachable frontier can no longer serve expansion. Signal-only — no warp/buy.
 	h.evaluateOffGateDemand(ctx, cmd, cfg, len(queue))
+
+	// EXPLORER DISPATCH (sp-a3yn, slice C): warp a bought+dedicated idle explorer to this cycle's
+	// off-gate target. No-op unless demand fired AND an idle dedicated explorer exists (the autosizer
+	// buys it). On arrival slice-A charts the system → growFrontierGraph resumes next cycle. ONE line.
+	h.dispatchOffGateExplorer(ctx, cmd)
 
 	// DEPLOY: declare the top uncovered frontier system as a sweep-once post, bounded by
 	// the in-flight cap so declaration never outruns what the fleet can man (pin #3).
