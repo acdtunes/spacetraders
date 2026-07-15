@@ -243,6 +243,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -694,6 +695,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -768,6 +770,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -865,6 +868,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -1086,6 +1090,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -1388,6 +1393,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -1469,6 +1475,7 @@
           },
           "mappings": [],
           "unit": "locale",
+          "decimals": 0,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
