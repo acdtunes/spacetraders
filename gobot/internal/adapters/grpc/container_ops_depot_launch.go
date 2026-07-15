@@ -155,6 +155,13 @@ type depotCoordinatorSink interface {
 	// delivery hull it is a one-shot free+exclude+park (a source hub has no standing coordinator);
 	// unlike it, the parked hull is not dispatched — it holds the buy anchor for the stockers.
 	launchDepotSourceHub(ctx context.Context, shipSymbol, hubWaypoint string, playerID int) error
+	// homeContractWorkerReserve is the reserve-floor census the delivery-hull launch consults so it
+	// never pins the LAST undedicated home general haulers the contract coordinator needs to source
+	// an UNBUFFERED-good contract (bead sp-mzdk): the current pool size, the configured floor to
+	// keep, and which ships are in the pool right now. *DaemonServer computes it from the ship repo
+	// + the live min_home_contract_workers knob; a spy returns a canned budget. A zero value reserves
+	// nothing (regression-safe: the pre-sp-mzdk pin-everything behavior).
+	homeContractWorkerReserve(ctx context.Context, reg *depot.Registry, playerID int) deliveryPinBudget
 }
 
 // depotSourceHubFleet is the DedicatedFleet tag a depot source-hub hull carries (sp-3l64). Like
@@ -171,7 +178,18 @@ const depotSourceHubFleet = "depot-source-hub"
 // never blocks the rest, and a reboot re-runs it harmlessly (the sink's idle-gap discipline
 // refuses a double-launch). It is the same shape as ensureBootStandingCoordinators.
 func launchDepotCoordinators(ctx context.Context, reg *depot.Registry, playerID int, sink depotCoordinatorSink) {
-	for _, intent := range planDepotLaunches(reg) {
+	intents := planDepotLaunches(reg)
+	// Reserve floor (sp-mzdk): before pinning, consult the census of undedicated home general
+	// haulers and RESERVE min_home_contract_workers of them so an unbuffered-good contract always
+	// has a general sourcing worker. A reserved delivery hull is left undedicated + home + available
+	// to the contract grab — not pinned to its hub.
+	reserved := reserveHomeContractWorkers(intents, sink.homeContractWorkerReserve(ctx, reg, playerID))
+	for _, intent := range intents {
+		if intent.role == depot.RoleDeliveryHull && reserved[intent.shipSymbol] {
+			fmt.Printf("Reserve floor (sp-mzdk): keeping home general hauler %s undedicated as a contract-worker reserve instead of pinning it to hub %s\n",
+				intent.shipSymbol, intent.targetWaypoint)
+			continue
+		}
 		dispatchDepotLaunch(ctx, sink, intent, playerID)
 	}
 }

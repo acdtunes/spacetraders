@@ -18,6 +18,9 @@ type spyDepotSink struct {
 	stockers   []depotLaunchRecord
 	deliveries []depotLaunchRecord
 	sourceHubs []depotLaunchRecord
+	// reserve is the reserve-floor census the launch consults (sp-mzdk). The zero value reserves
+	// nothing, so every pre-sp-mzdk test keeps its pin-everything behavior unchanged.
+	reserve deliveryPinBudget
 }
 
 type depotLaunchRecord struct {
@@ -45,6 +48,10 @@ func (s *spyDepotSink) launchDepotDelivery(_ context.Context, shipSymbol, hubWay
 func (s *spyDepotSink) launchDepotSourceHub(_ context.Context, shipSymbol, hubWaypoint string, playerID int) error {
 	s.sourceHubs = append(s.sourceHubs, depotLaunchRecord{ship: shipSymbol, waypoint: hubWaypoint, playerID: playerID})
 	return nil
+}
+
+func (s *spyDepotSink) homeContractWorkerReserve(_ context.Context, _ *depot.Registry, _ int) deliveryPinBudget {
+	return s.reserve
 }
 
 // fakeReceiptMiner is a Lane A demand-miner double that records the system it was mined for

@@ -64,12 +64,14 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"freshsizer": string(container.ContainerTypeMarketFreshnessSizer),
 	"frontier":   string(container.ContainerTypeFrontierExpansion),
 	"scoutpost":  string(container.ContainerTypeScoutPostCoordinator),
+	"contract":   string(container.ContainerTypeContractFleetCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	sizer := scoutingCmd.SizerTunableDefaults()
 	frontier := expansionCmd.FrontierTunableDefaults()
 	scoutPost := scoutingCmd.ScoutPostTunableDefaults()
+	contract := ContractCoordinatorTunableDefaults()
 	return map[string]map[string]TuneBound{
 		string(container.ContainerTypeMarketFreshnessSizer): {
 			"max_spend_per_cycle":        {Type: "int", Min: 0, Max: 5_000_000, Default: sizer["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
@@ -91,6 +93,9 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},
 			"manning_stall_correction_cap": {Type: "int", Min: 1, Max: 100, Default: scoutPost["manning_stall_correction_cap"], Unit: "corrections", Description: "re-mans of one silent post before the watchdog backs off to the captain event"},
+		},
+		string(container.ContainerTypeContractFleetCoordinator): {
+			"min_home_contract_workers": {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
 		},
 	}
 }

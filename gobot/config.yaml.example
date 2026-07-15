@@ -135,6 +135,17 @@ captain:
 
 # Contract fleet coordinator configuration
 contract:
+  # Contract-worker reserve floor (sp-mzdk): the number of UNDEDICATED HOME
+  # general haulers the depot topology must NEVER convert to depot-delivery pins,
+  # so an UNBUFFERED-good contract always has a general worker to fly out and
+  # source it. The depot delivery-hull launch pins only DOWN TO
+  # (available_home_haulers - min_home_contract_workers); further declared
+  # delivery hulls stay undedicated + home + available to the contract grab.
+  # 0/absent => the documented default (6). Live-tunable without restart:
+  #   tune --operation contract --key min_home_contract_workers --value N
+  # (a live tune wins over this file, which wins over the default).
+  min_home_contract_workers: 6
+
   # Idle-gap arbitrage harvest (sp-1z2h / sp-uohe): the contract fleet's
   # dedicated hulls sit idle ~89% of wall-time; this harvests that idle time
   # with hub-local one-shot guarded arb legs. Every value below is OPTIONAL —

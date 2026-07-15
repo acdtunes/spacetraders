@@ -11,6 +11,13 @@ type ContractConfig struct {
 	PrePositioning    PrePositioningSettings    `mapstructure:"pre_positioning"`
 	SourcePreposition SourcePrepositionSettings `mapstructure:"source_preposition"`
 	AutoLiquidation   AutoLiquidationSettings   `mapstructure:"auto_liquidation"`
+	// MinHomeContractWorkers is the contract-worker RESERVE FLOOR (bead sp-mzdk): the number of
+	// undedicated HOME general haulers the depot topology must NEVER convert to depot-delivery pins,
+	// so an UNBUFFERED-good contract always has a general sourcing worker to fly out and buy it. It
+	// is the LAUNCH tier of the live>launch>default chain; 0/absent defers to the documented default
+	// (MinHomeContractWorkersDefault = 6). Live-tunable without restart via `tune --operation
+	// contract --key min_home_contract_workers`.
+	MinHomeContractWorkers int `mapstructure:"min_home_contract_workers"`
 }
 
 // SourcePrepositionSettings are the yaml-tunable knobs for contract source
