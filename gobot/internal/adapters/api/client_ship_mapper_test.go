@@ -24,7 +24,11 @@ func fullShipJSON(symbol string) string {
 			"waypointSymbol": "X1-SYS-WP",
 			"status": "IN_TRANSIT",
 			"flightMode": "CRUISE",
-			"route": {"arrival": "2024-01-01T12:05:00Z"}
+			"route": {
+				"origin": {"symbol": "X1-SYS-ORIGIN", "type": "PLANET", "systemSymbol": "X1-SYS", "x": 12, "y": -7},
+				"departureTime": "2024-01-01T12:00:00Z",
+				"arrival": "2024-01-01T12:05:00Z"
+			}
 		},
 		"fuel": {"current": 380, "capacity": 400},
 		"cargo": {
@@ -77,6 +81,20 @@ func assertCommonShipFields(t *testing.T, ship *navigation.ShipData, symbol stri
 	}
 	if ship.ArrivalTime != "2024-01-01T12:05:00Z" {
 		t.Errorf("ArrivalTime: want 2024-01-01T12:05:00Z, got %q", ship.ArrivalTime)
+	}
+	// Nav route origin + departure for the IN_TRANSIT ship (sp-vp9k): toShipData
+	// historically dropped nav.route.origin and nav.route.departureTime, keeping
+	// only waypointSymbol + arrival, so no DB consumer could compute exact transit
+	// progress. Every mapping path (GetShip/ListShips/PurchaseShip) funnels through
+	// toShipData, so this asserts parity across all three.
+	if ship.OriginSymbol != "X1-SYS-ORIGIN" {
+		t.Errorf("OriginSymbol: want X1-SYS-ORIGIN, got %q", ship.OriginSymbol)
+	}
+	if ship.OriginX != 12 || ship.OriginY != -7 {
+		t.Errorf("Origin coords: want x=12/y=-7, got x=%v/y=%v", ship.OriginX, ship.OriginY)
+	}
+	if ship.DepartureTime != "2024-01-01T12:00:00Z" {
+		t.Errorf("DepartureTime: want 2024-01-01T12:00:00Z, got %q", ship.DepartureTime)
 	}
 	if ship.FuelCurrent != 380 || ship.FuelCapacity != 400 {
 		t.Errorf("Fuel: want 380/400, got %d/%d", ship.FuelCurrent, ship.FuelCapacity)

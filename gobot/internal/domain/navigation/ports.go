@@ -275,11 +275,20 @@ type ShipArrivedEvent struct {
 // DTOs for ship operations
 
 type ShipData struct {
-	Symbol             string
-	Location           string
-	NavStatus          string
-	FlightMode         string // CRUISE, DRIFT, BURN, or STEALTH
-	ArrivalTime        string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
+	Symbol      string
+	Location    string
+	NavStatus   string
+	FlightMode  string // CRUISE, DRIFT, BURN, or STEALTH
+	ArrivalTime string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
+	// Nav route origin + departure for the current transit (sp-vp9k). The API's
+	// nav.route carries where an IN_TRANSIT ship departed from (symbol +
+	// coordinates) and when; persisting them lets DB consumers compute exact
+	// transit progress instead of guessing from poll timing. Empty/zero and
+	// empty respectively when the ship is not in transit (no route).
+	OriginSymbol       string
+	OriginX            float64
+	OriginY            float64
+	DepartureTime      string // ISO8601 timestamp the current transit departed (e.g., "2024-01-01T12:00:00Z"), empty otherwise
 	CooldownExpiration string // ISO8601 timestamp when cooldown expires (e.g., "2024-01-01T12:00:00Z"), empty if no cooldown
 	FuelCurrent        int
 	FuelCapacity       int

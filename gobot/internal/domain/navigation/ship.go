@@ -88,6 +88,17 @@ type Ship struct {
 	arrivalTime        *time.Time // When IN_TRANSIT ship will arrive
 	cooldownExpiration *time.Time // When cooldown expires (mining, surveying, etc.)
 
+	// Nav route origin + departure for the current transit (sp-vp9k), carried
+	// from the API nav.route so a persisted IN_TRANSIT ship exposes where it
+	// departed from and when — the DB consumers compute exact transit progress
+	// from these. originSymbol/X/Y are empty/zero and departureTime nil when the
+	// ship is not in transit. Reloaded on reconstruct so they round-trip through a
+	// domain Save (whole-row UpdateAll upsert) instead of being clobbered to zero.
+	originSymbol  string
+	originX       float64
+	originY       float64
+	departureTime *time.Time
+
 	// dedicatedFleet marks the ship as permanently reserved for a specific
 	// coordinator (e.g. "contract"), set by the operator via CLI/config rather
 	// than derived at runtime. Empty means unreserved - the ship is fair game
@@ -762,6 +773,39 @@ func (s *Ship) SetArrivalTime(t time.Time) {
 // ClearArrivalTime clears the arrival time (ship has arrived)
 func (s *Ship) ClearArrivalTime() {
 	s.arrivalTime = nil
+}
+
+// OriginSymbol returns the waypoint the current transit departed from (sp-vp9k),
+// or "" when the ship is not in transit.
+func (s *Ship) OriginSymbol() string {
+	return s.originSymbol
+}
+
+// OriginX returns the x coordinate of the current transit's origin (sp-vp9k).
+func (s *Ship) OriginX() float64 {
+	return s.originX
+}
+
+// OriginY returns the y coordinate of the current transit's origin (sp-vp9k).
+func (s *Ship) OriginY() float64 {
+	return s.originY
+}
+
+// DepartureTime returns when the current transit departed (sp-vp9k), or nil when
+// the ship is not in transit.
+func (s *Ship) DepartureTime() *time.Time {
+	return s.departureTime
+}
+
+// SetTransitOrigin records where the current transit departed from (waypoint
+// symbol + coordinates) and when (sp-vp9k). Set from the API nav.route on sync
+// and reloaded on reconstruct so the values survive a domain Save. A nil
+// departure and empty symbol represent a ship that is not in transit.
+func (s *Ship) SetTransitOrigin(symbol string, x, y float64, departure *time.Time) {
+	s.originSymbol = symbol
+	s.originX = x
+	s.originY = y
+	s.departureTime = departure
 }
 
 // SetCooldown sets the cooldown expiration time

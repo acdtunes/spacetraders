@@ -736,6 +736,15 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	model.FlightMode = ship.FlightMode()
 	model.ArrivalTime = ship.ArrivalTime()
 
+	// Nav route origin + departure (sp-vp9k): persist from the domain ship so a
+	// whole-row Save upsert (UpdateAll) does not clobber the synced transit origin
+	// back to zero — the sp-90a3/w870/bi75 clobber class. modelToDomain reloads
+	// these onto the ship, so this write is the round-trip's return leg.
+	model.OriginSymbol = ship.OriginSymbol()
+	model.OriginX = ship.OriginX()
+	model.OriginY = ship.OriginY()
+	model.DepartureTime = ship.DepartureTime()
+
 	// Location
 	if ship.CurrentLocation() != nil {
 		model.LocationSymbol = ship.CurrentLocation().Symbol
@@ -1822,6 +1831,12 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	// protections it cannot read.
 	overrides, corrupt := parseReservationOverrides(model.ReservationOverrides)
 	ship.SetReservationOverrides(overrides, corrupt)
+
+	// Nav route origin + departure (sp-vp9k): reload the persisted transit origin
+	// onto the domain ship so it survives a subsequent whole-row Save instead of
+	// being clobbered to zero (see shipToModel).
+	ship.SetTransitOrigin(model.OriginSymbol, model.OriginX, model.OriginY, model.DepartureTime)
+
 	ship.SetPersistedVersion(model.Version)
 	return ship, nil
 }
@@ -1878,6 +1893,19 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 	if data.ArrivalTime != "" {
 		if arrivalTime, err := time.Parse(time.RFC3339, data.ArrivalTime); err == nil {
 			model.ArrivalTime = &arrivalTime
+		}
+	}
+
+	// Nav route origin + departure (sp-vp9k): carried directly from the API
+	// nav.route (not the waypoint provider) so an IN_TRANSIT ship persists where
+	// and when its current transit began, letting DB consumers compute exact
+	// transit progress. Empty/zero and NULL for a ship that is not in transit.
+	model.OriginSymbol = data.OriginSymbol
+	model.OriginX = data.OriginX
+	model.OriginY = data.OriginY
+	if data.DepartureTime != "" {
+		if departureTime, err := time.Parse(time.RFC3339, data.DepartureTime); err == nil {
+			model.DepartureTime = &departureTime
 		}
 	}
 

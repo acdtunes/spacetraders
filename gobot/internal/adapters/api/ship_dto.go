@@ -27,6 +27,16 @@ type shipDTO struct {
 		FlightMode     string `json:"flightMode"`
 		Route          *struct {
 			Arrival string `json:"arrival"`
+			// DepartureTime + Origin were historically dropped here (sp-vp9k),
+			// leaving DB consumers unable to compute exact transit progress. The
+			// API's route.origin is a waypoint object (symbol + coordinates) marking
+			// where the current transit began; departureTime is when it began.
+			DepartureTime string `json:"departureTime"`
+			Origin        struct {
+				Symbol string  `json:"symbol"`
+				X      float64 `json:"x"`
+				Y      float64 `json:"y"`
+			} `json:"origin"`
 		} `json:"route,omitempty"`
 	} `json:"nav"`
 	Fuel struct {
@@ -61,10 +71,10 @@ type shipDTO struct {
 	// swap/upgrade endpoint in the SpaceTraders API - PowerOutput is
 	// permanent for the life of the ship (sp-el60).
 	Reactor struct {
-		Symbol       string           `json:"symbol"`
-		Name         string           `json:"name"`
-		PowerOutput  int              `json:"powerOutput"`
-		Requirements requirementsDTO  `json:"requirements"`
+		Symbol       string          `json:"symbol"`
+		Name         string          `json:"name"`
+		PowerOutput  int             `json:"powerOutput"`
+		Requirements requirementsDTO `json:"requirements"`
 	} `json:"reactor"`
 	Crew struct {
 		Current  int `json:"current"`
@@ -135,8 +145,16 @@ func (d *shipDTO) toShipData() *navigation.ShipData {
 	}
 
 	arrivalTime := ""
+	departureTime := ""
+	originSymbol := ""
+	originX := 0.0
+	originY := 0.0
 	if d.Nav.Route != nil {
 		arrivalTime = d.Nav.Route.Arrival
+		departureTime = d.Nav.Route.DepartureTime
+		originSymbol = d.Nav.Route.Origin.Symbol
+		originX = d.Nav.Route.Origin.X
+		originY = d.Nav.Route.Origin.Y
 	}
 
 	cooldownExpiration := ""
@@ -150,6 +168,10 @@ func (d *shipDTO) toShipData() *navigation.ShipData {
 		NavStatus:          d.Nav.Status,
 		FlightMode:         d.Nav.FlightMode,
 		ArrivalTime:        arrivalTime,
+		OriginSymbol:       originSymbol,
+		OriginX:            originX,
+		OriginY:            originY,
+		DepartureTime:      departureTime,
 		CooldownExpiration: cooldownExpiration,
 		FuelCurrent:        d.Fuel.Current,
 		FuelCapacity:       d.Fuel.Capacity,

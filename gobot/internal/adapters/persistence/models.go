@@ -92,6 +92,17 @@ type ShipModel struct {
 	FlightMode  string     `gorm:"column:flight_mode;default:'CRUISE'"`
 	ArrivalTime *time.Time `gorm:"column:arrival_time"`
 
+	// Nav route origin + departure (sp-vp9k): where an IN_TRANSIT ship departed
+	// from and when, carried from the API nav.route so DB consumers can compute
+	// exact transit progress instead of approximating from poll timing. Empty/zero
+	// and NULL respectively when the ship is not in transit. Additive columns with
+	// no constraints (mirroring location_symbol/x/y + arrival_time), so AutoMigrate
+	// adds them and no CHECK/enum drift gate is involved. Backed by migration 040.
+	OriginSymbol  string     `gorm:"column:origin_symbol"`
+	OriginX       float64    `gorm:"column:origin_x;default:0"`
+	OriginY       float64    `gorm:"column:origin_y;default:0"`
+	DepartureTime *time.Time `gorm:"column:departure_time"`
+
 	// Location (denormalized for quick reconstruction)
 	LocationSymbol string  `gorm:"column:location_symbol"`
 	LocationX      float64 `gorm:"column:location_x;default:0"`
