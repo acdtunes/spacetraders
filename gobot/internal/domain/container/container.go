@@ -62,8 +62,14 @@ const (
 	// ContainerTypeCargoLiquidation is the one-shot cargo-liquidation worker the contract
 	// fleet coordinator spawns on a parked-with-cargo hull (sp-39oi), twin of
 	// ContainerTypeWorkerFerry: coordinator-managed, one iteration, self-clears the strand.
-	ContainerTypeCargoLiquidation         ContainerType = "CARGO_LIQUIDATION"
-	ContainerTypeFrontierExpansion        ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
+	ContainerTypeCargoLiquidation  ContainerType = "CARGO_LIQUIDATION"
+	ContainerTypeFrontierExpansion ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
+	// ContainerTypeMarketFreshnessSizer is the standing market-freshness auto-sizer (sp-orgp):
+	// a per-player coordinator that loops forever inside one Handle() sizing each market-bearing
+	// system's standing scout post to a freshness SLA and auto-buying probes behind the shared
+	// money-guard stack. Like the frontier/siting/autosizer coordinators it is NOT a
+	// CoordinatorOwnsIterations type.
+	ContainerTypeMarketFreshnessSizer     ContainerType = "MARKET_FRESHNESS_SIZER_COORDINATOR"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"
 	// ContainerTypeSitingCoordinator is the standing factory-siting brain (sp-vdld): a

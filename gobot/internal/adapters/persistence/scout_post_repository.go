@@ -102,6 +102,27 @@ func (r *GormScoutPostRepository) Upsert(ctx context.Context, post *domainScouti
 	}
 }
 
+// UpdateHulls updates ONLY the hull budget of the (playerID, systemSymbol) post in the
+// open era (sp-orgp): the market-freshness auto-sizer's narrow, manning-preserving resize
+// seam. Unlike Upsert (which writes the whole row and would clobber any assignment the
+// scout reconciler concurrently wrote), this touches a single column, so resizing a live
+// post can never lose its manning. Updating a post that does not exist is a no-op, not an
+// error — the caller declares a missing post through Upsert instead.
+func (r *GormScoutPostRepository) UpdateHulls(ctx context.Context, playerID int, systemSymbol string, hulls int) error {
+	openEra := r.openEraID(ctx)
+	if openEra == nil {
+		return fmt.Errorf("cannot update scout post hulls: no open era")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&ScoutPostModel{}).
+		Where("player_id = ? AND system_symbol = ? AND era_id = ?", playerID, systemSymbol, *openEra).
+		Update("hulls", hulls)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update scout post hulls: %w", result.Error)
+	}
+	return nil
+}
+
 // Remove deletes the post for (playerID, systemSymbol). Not finding a row to
 // delete is not an error.
 func (r *GormScoutPostRepository) Remove(ctx context.Context, playerID int, systemSymbol string) error {

@@ -3,12 +3,14 @@ package persistence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -487,6 +489,75 @@ func (r *MarketRepositoryGORM) MaxAgeSecondsBySystem(
 	}
 
 	return ages, nil
+}
+
+// SystemsFreshness returns the per-system freshness census the market-freshness
+// auto-sizer reconciles against (sp-orgp): for every system with cached market rows,
+// its market count, worst-case market age, and the EMPIRICALLY MEASURED per-market scan
+// cycle. All three come from the market_data scan timestamps in a single pass, so the
+// coordinator holds no telemetry of its own.
+//
+// market_data has one row per (waypoint, good), so the per-good rows are first collapsed
+// to one scan time per WAYPOINT (a market) — the latest, defensively, though a market's
+// goods share one scan. The per-market cycle is then the MEDIAN gap between consecutive
+// market scans in the system (MedianScanIntervalSeconds): with a single probe cycling the
+// system this is exactly the market-to-market travel+scan interval; with N probes the
+// interleaved scans compress it toward interval/N, which the closed-loop age feedback then
+// corrects. Attributing scans to the specific probe that made them (for a pure single-probe
+// cycle even under multi-probe manning) needs a scanner id on the scan row and is deferred.
+func (r *MarketRepositoryGORM) SystemsFreshness(
+	ctx context.Context,
+	playerID int,
+) ([]domainScouting.SystemFreshnessSnapshot, error) {
+	var rows []struct {
+		WaypointSymbol string
+		LastUpdated    time.Time
+	}
+
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("waypoint_symbol, last_updated").
+		Where("player_id = ?", playerID).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to read system freshness: %w", err)
+	}
+
+	// Collapse per-(waypoint,good) rows to one latest scan time per waypoint (market).
+	perWaypoint := make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		if existing, ok := perWaypoint[row.WaypointSymbol]; !ok || row.LastUpdated.After(existing) {
+			perWaypoint[row.WaypointSymbol] = row.LastUpdated
+		}
+	}
+
+	// Group markets by system.
+	scanTimesBySystem := make(map[string][]time.Time)
+	for waypoint, ts := range perWaypoint {
+		system := shared.ExtractSystemSymbol(waypoint)
+		scanTimesBySystem[system] = append(scanTimesBySystem[system], ts)
+	}
+
+	now := time.Now()
+	out := make([]domainScouting.SystemFreshnessSnapshot, 0, len(scanTimesBySystem))
+	for system, times := range scanTimesBySystem {
+		oldest := times[0]
+		for _, ts := range times {
+			if ts.Before(oldest) {
+				oldest = ts
+			}
+		}
+		cycleSeconds, samples := domainScouting.MedianScanIntervalSeconds(times)
+		out = append(out, domainScouting.SystemFreshnessSnapshot{
+			SystemSymbol:         system,
+			MarketCount:          len(times),
+			OldestAgeSeconds:     now.Sub(oldest).Seconds(),
+			MeasuredCycleSeconds: cycleSeconds,
+			CycleSamples:         samples,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SystemSymbol < out[j].SystemSymbol })
+	return out, nil
 }
 
 // openEraID mirrors GormWaypointRepository.openEraID: the open era is the highest

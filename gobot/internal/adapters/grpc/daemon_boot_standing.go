@@ -31,6 +31,12 @@ import (
 // across restarts with no manual relaunch.
 var bootStandingCoordinatorTypes = []container.ContainerType{
 	container.ContainerTypeConstructionCoordinator,
+	// sp-orgp: the market-freshness auto-sizer is a genuinely STANDING coordinator (it must
+	// hold every market under an SLA continuously), so it boot-launches unconditionally like
+	// the construction drain. Its launch is idempotent (skips if already RUNNING/PENDING) and
+	// every action it takes is guarded — money guards on buys, and a fail-safe that never
+	// mass-retires on an empty census — so an armed auto-start is safe.
+	container.ContainerTypeMarketFreshnessSizer,
 }
 
 // ensureBootStandingCoordinators launches every boot-standing coordinator type not already
@@ -45,6 +51,18 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			mc := &bootstrapManufacturingController{server: s}
 			if err := mc.EnsureRunning(ctx, playerID); err != nil {
 				fmt.Printf("Warning: failed to launch boot-standing construction coordinator: %v\n", err)
+			}
+		case container.ContainerTypeMarketFreshnessSizer:
+			// Idempotent: skip if a sizer is already RUNNING/PENDING (a warm restart re-adopts
+			// it from its persisted config via RecoverRunningContainers instead). All-default
+			// knobs (RULINGS #5); the coordinator fills in its documented defaults.
+			running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeMarketFreshnessSizer)
+			if err != nil {
+				fmt.Printf("Warning: failed to check market-freshness sizer state: %v\n", err)
+			} else if !running {
+				if _, lerr := s.MarketFreshnessSizerCoordinator(ctx, playerID, 0, false, 0, 0, 0, 0, 0); lerr != nil {
+					fmt.Printf("Warning: failed to launch boot-standing market-freshness sizer: %v\n", lerr)
+				}
 			}
 		}
 	}

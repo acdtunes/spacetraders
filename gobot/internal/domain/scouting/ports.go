@@ -23,3 +23,33 @@ type ScoutPostRepository interface {
 	// not an error to remove a post that does not exist.
 	Remove(ctx context.Context, playerID int, systemSymbol string) error
 }
+
+// SystemFreshnessSnapshot is one market-bearing system's live freshness census
+// (sp-orgp): the three inputs the auto-sizer needs to size a standing post to the SLA,
+// all derived from persisted scan telemetry so the coordinator holds none of it itself.
+type SystemFreshnessSnapshot struct {
+	SystemSymbol string
+	// MarketCount is how many marketplace waypoints the system holds — the sizing
+	// numerator (required_probes = ceil(markets × cycle / sla)).
+	MarketCount int
+	// OldestAgeSeconds is the worst-case market staleness — MAX(now - last_scan) across
+	// the system's markets. It is the CLOSED-LOOP ground truth: when it breaches the SLA
+	// the sizer raises demand beyond the static model regardless of what the model says.
+	OldestAgeSeconds float64
+	// MeasuredCycleSeconds is the empirically measured per-market scan interval (the
+	// median gap between consecutive market scans in the system). 0 ⇒ not enough scan
+	// telemetry yet; the coordinator seeds a default until it fills in.
+	MeasuredCycleSeconds float64
+	// CycleSamples is how many consecutive-interval samples back MeasuredCycleSeconds —
+	// the coordinator trusts the measurement only once it clears a minimum sample floor,
+	// otherwise it falls back to the fleet-wide median or the seed.
+	CycleSamples int
+}
+
+// SystemFreshnessReader supplies the per-system freshness census the market-freshness
+// auto-sizer reconciles against (sp-orgp). One call per tick returns every market-bearing
+// system for the player. Satisfied by the GORM market repository, which derives all three
+// fields from the market_data scan timestamps in a single pass.
+type SystemFreshnessReader interface {
+	SystemsFreshness(ctx context.Context, playerID int) ([]SystemFreshnessSnapshot, error)
+}

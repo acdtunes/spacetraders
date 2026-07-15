@@ -954,6 +954,34 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
 	}
 
+	// Market-freshness auto-sizer (sp-orgp): the standing coordinator that keeps EVERY
+	// scanned market fresh within an SLA by auto-sizing AND auto-buying probe capacity per
+	// system — the freshness analogue of the frontier coverage auto-sizer above. It measures
+	// per-system demand (markets × measured scan-cycle / SLA, corrected by the empirical
+	// worst-case market age), declares/resizes/retires each market-bearing system's STANDING
+	// scout post through the SAME scout-post repo the reconciler mans and partitions, and
+	// buys probes under the SHARED money-guard stack (probebuy.GuardedProbeBuyer). It moves
+	// and claims NOTHING. marketRepo satisfies the per-system freshness census
+	// (SystemsFreshness); shipRepo the read-only FleetReader; transactionRepo the
+	// ledger-derived, restart-safe cooldown/spend it shares with the frontier coordinator so
+	// the two never collectively over-buy.
+	freshnessSizerHandler := scoutingCmd.NewRunMarketFreshnessSizerCoordinatorHandler(
+		marketRepo, scoutPostRepo, shipRepo, transactionRepo, nil, // nil = use RealClock
+	)
+	// Live treasury for the 25% guard — nil would fail-close every buy. Reuses the frontier
+	// coordinator's api-backed reader (same seam, same guard).
+	freshnessSizerHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
+	// Price-and-buy over the existing purchase_ship machinery, landing the probe undedicated
+	// for the reconciler to relay — the SAME purchaser the frontier coordinator uses.
+	freshnessSizerHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo))
+	// The narrow, manning-preserving resize seam: UpdateHulls touches only the hull column so
+	// a resize cannot clobber the manning the scout reconciler wrote to the same row.
+	freshnessSizerHandler.SetHullUpdater(scoutPostRepo)
+	freshnessSizerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
+	if err := mediator.RegisterHandler[*scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand](med, freshnessSizerHandler); err != nil {
+		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
+	}
+
 	// Arb-run coordinator (sp-p4ua): a one-shot, captain-directed, guarded arbitrage run
 	// (buy@source → cross-gate → sell@dest, ONCE, capped + floor-guarded). Wired with the
 	// same ports as trade-route so its buy/sell/navigate legs resolve to the identical
