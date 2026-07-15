@@ -394,7 +394,7 @@ export default function ContractOpsScene() {
                     const emphasized = selected || ship.role === 'worker';
                     const reg = ship.registrationRole.toUpperCase();
                     const isSmallHull = reg.includes('PROBE') || reg.includes('SATELLITE') || reg.includes('SURVEYOR');
-                    const spriteSize = ship.role === 'worker' ? 7.2 : isSmallHull ? 3.6 : 5.8;
+                    const spriteSize = ship.role === 'worker' ? 2.4 : isSmallHull ? 1.2 : 1.95;
                     const r = spriteSize * 0.62; // role ring radius; adornments key off it
                     const cargoFrac = ship.cargoCapacity > 0 ? ship.cargoUnits / ship.cargoCapacity : 0;
                     let gx = p.x;
@@ -419,7 +419,7 @@ export default function ContractOpsScene() {
                       >
                         {/* generous hit target */}
                         <Circle radius={Math.max(r + 1.5, 10 / scale)} fill="transparent" />
-                        {selected && <Circle radius={r + 2.6} stroke={NOIR.ink} strokeWidth={hair(1)} opacity={0.9} listening={false} />}
+                        {selected && <Circle radius={r + 1.3} stroke={NOIR.ink} strokeWidth={hair(1)} opacity={0.9} listening={false} />}
 
                         {/* engine wake while flying a reconstructed path */}
                         {p.mode === 'exact' && p.headingRad !== null && (
@@ -427,16 +427,16 @@ export default function ContractOpsScene() {
                             {[0, 1, 2].map((ti) => (
                               <Circle
                                 key={ti}
-                                x={-Math.cos(p.headingRad!) * (r + 2 + ti * 2.6)}
-                                y={-Math.sin(p.headingRad!) * (r + 2 + ti * 2.6)}
-                                radius={Math.max(0.5, 0.9 - ti * 0.25)}
+                                x={-Math.cos(p.headingRad!) * (r + 0.8 + ti * 1.1)}
+                                y={-Math.sin(p.headingRad!) * (r + 0.8 + ti * 1.1)}
+                                radius={Math.max(0.25, 0.45 - ti * 0.12)}
                                 fill={noirAlpha(color, 0.4 - ti * 0.1)}
                               />
                             ))}
                           </Group>
                         )}
                         {p.mode === 'inbound' && (
-                          <Circle radius={r + 1.6 + pulse * 1.2} stroke={noirAlpha(color, 0.55)} strokeWidth={hair(1)} dash={[hair(2), hair(2)]} listening={false} />
+                          <Circle radius={r + 0.8 + pulse * 0.6} stroke={noirAlpha(color, 0.55)} strokeWidth={hair(1)} dash={[hair(2), hair(2)]} listening={false} />
                         )}
 
                         {/* role ring (the op-role encoding) around the hull sprite */}
@@ -452,9 +452,9 @@ export default function ContractOpsScene() {
 
                         {/* cargo bar */}
                         {ship.cargoCapacity > 0 && (
-                          <Group y={r + 2.2} listening={false}>
-                            <Rect x={-4} width={8} height={1.1} fill={noirAlpha(NOIR.panel, 0.9)} stroke={noirAlpha(NOIR.dim, 0.5)} strokeWidth={hair(0.4)} cornerRadius={0.5} />
-                            <Rect x={-4} width={8 * cargoFrac} height={1.1} fill={noirAlpha(color, 0.95)} cornerRadius={0.5} />
+                          <Group y={r + 1} listening={false}>
+                            <Rect x={-1.7} width={3.4} height={0.55} fill={noirAlpha(NOIR.panel, 0.9)} stroke={noirAlpha(NOIR.dim, 0.5)} strokeWidth={hair(0.4)} cornerRadius={0.3} />
+                            <Rect x={-1.7} width={3.4 * cargoFrac} height={0.55} fill={noirAlpha(color, 0.95)} cornerRadius={0.3} />
                           </Group>
                         )}
 
