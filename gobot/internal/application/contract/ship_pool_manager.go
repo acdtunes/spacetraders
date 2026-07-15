@@ -604,6 +604,81 @@ func FilterUnrelatedCargo(
 	return claimable, parked, nil
 }
 
+// FilterToHomeSystem narrows a candidate ship-symbol list to the hulls currently located in
+// homeSystem — the contract's HOME system, derived from the delivery destination
+// (shared.ExtractSystemSymbol) exactly as PlanSourcing/market_finder scope contract sourcing
+// (RULINGS #14). A contract worker sources AND delivers in that one system with ZERO jump
+// capability, so a hull idle in a FOREIGN system (a gate hop away — the live TORWIND-E in the
+// arb system X1-DF86, grabbed for a COPPER_ORE -> X1-VB74-H51 contract and stalled 80min
+// reaching cross-gate: sp-ue1s) can reach neither the source market nor the delivery and must
+// be UNSELECTABLE here, never claimed-then-stalled. This is the worker-pool LOCALITY half of
+// the sp-mzdk reserve floor: the floor keeps N HOME haulers undedicated; this ensures the grab
+// only ever takes HOME ones.
+//
+// homeSystem == "" degrades to a fleet-wide passthrough (fail-open): an un-derivable
+// destination must never block the contract, matching FindIdleLightHaulers' "" convention.
+// A candidate whose CURRENT system cannot be resolved (unknown location) is treated as
+// out-of-home and dropped (fail-closed, matching shipCurrentSystem / the sp-qr3v pre-filter):
+// the pool never surfaces a hull it cannot confirm is in range. A symbol absent from the
+// current fleet snapshot is skipped silently, mirroring FilterUnrelatedCargo's tolerance for
+// fleet composition that varies between passes.
+//
+// Parameters:
+//   - symbols: Candidate ship symbols to scope (already idle/dedication/cargo filtered by the caller)
+//   - homeSystem: The contract's home system; "" returns symbols unchanged (fleet-wide)
+//
+// Returns:
+//   - homeSymbols: The subset of symbols whose ship is currently in homeSystem, in input order
+//   - error: Any error encountered fetching the fleet snapshot
+func FilterToHomeSystem(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
+	symbols []string,
+	homeSystem string,
+) ([]string, error) {
+	if homeSystem == "" {
+		return symbols, nil
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+	bySymbol := make(map[string]*navigation.Ship, len(allShips))
+	for _, ship := range allShips {
+		bySymbol[ship.ShipSymbol()] = ship
+	}
+
+	homeSymbols := make([]string, 0, len(symbols))
+	var foreign []string
+	for _, symbol := range symbols {
+		ship, ok := bySymbol[symbol]
+		if !ok {
+			// Not in the current fleet snapshot (sold/renamed since discovery) — excluded
+			// from the result rather than guessed at, mirroring FilterUnrelatedCargo.
+			continue
+		}
+		if shipCurrentSystem(ship) == homeSystem {
+			homeSymbols = append(homeSymbols, symbol)
+		} else {
+			foreign = append(foreign, symbol)
+		}
+	}
+
+	if len(foreign) > 0 {
+		logger.Log("INFO", "Excluded out-of-home-system hulls from contract worker selection", map[string]interface{}{
+			"action":        "filter_to_home_system",
+			"home_system":   homeSystem,
+			"home_symbols":  homeSymbols,
+			"foreign_ships": foreign,
+		})
+	}
+
+	return homeSymbols, nil
+}
+
 // isCommandHull reports whether a ship is the command ship, by registration role
 // or by the conventional "*-1" symbol. Candidate discovery, the selection log
 // and the domain cargo-fit ladder (SelectHullForCargo) share the one domain

@@ -581,13 +581,18 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			})
 		}
 
-		// Extract required cargo for delivery (for ship selection prioritization)
+		// Extract required cargo for delivery (for ship selection prioritization).
+		// deliveryDestination is the active delivery's waypoint - its system is the
+		// contract's HOME system (sp-ue1s), the same scope PlanSourcing derives sourcing
+		// from below, used to keep the worker grab home-local.
 		var requiredCargo string
 		var unitsNeeded int
+		var deliveryDestination string
 		for _, delivery := range contract.Terms().Deliveries {
 			if delivery.UnitsRequired > delivery.UnitsFulfilled {
 				requiredCargo = delivery.TradeSymbol
 				unitsNeeded = delivery.UnitsRequired - delivery.UnitsFulfilled
+				deliveryDestination = delivery.DestinationSymbol
 				break
 			}
 		}
@@ -622,6 +627,25 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		if inFlightCargo > 0 {
 			logger.Log("INFO", fmt.Sprintf("Contract needs %d more units of %s (%d in-flight, %d required, %d fulfilled)",
 				unitsNeeded-inFlightCargo, requiredCargo, inFlightCargo, unitsNeeded+contract.Terms().Deliveries[0].UnitsFulfilled, contract.Terms().Deliveries[0].UnitsFulfilled), nil)
+		}
+
+		// HOME-SYSTEM LOCALITY (sp-ue1s): the contract worker sources AND delivers in the
+		// delivery's HOME system with ZERO jump capability (RULINGS #14 - the same scope
+		// PlanSourcing used above). A hull idle in a FOREIGN system (a gate hop away - the
+		// live TORWIND-E in the arb system X1-DF86, grabbed for a COPPER_ORE -> X1-VB74-H51
+		// contract and stalled 80min reaching cross-gate) can reach neither the source
+		// market nor the delivery, so it must be UNSELECTABLE here rather than
+		// claimed-then-stalled. Scoped to the GENERAL grab pool only; a dedicated fleet
+		// (EXCLUSIVE MODE, sp-wq7r) passes through untouched. An empty home-scoped pool
+		// falls through to the "no spawnable ships" wait branch below - the coordinator
+		// waits/spawns per existing policy, never reaching for the foreign hull.
+		availableShips, err = h.scopeCandidatesToContractHome(ctx, cmd.PlayerID, availableShips, deliveryDestination, dedicatedFleetActive)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to scope candidates to contract home system: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			h.clock.Sleep(10 * time.Second)
+			continue
 		}
 
 		// NO-CARGO-DUMP CLAIM GUARD (sp-wq7r): a candidate hull already
@@ -1493,6 +1517,36 @@ func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
 // cargo would.
 //
 // This is used during restart recovery to prevent duplicate cargo purchases.
+// scopeCandidatesToContractHome narrows the worker-candidate pool to hulls idle in the
+// contract's HOME system — the delivery-destination system, the SAME authoritative scope
+// PlanSourcing/market_finder derive contract sourcing from (RULINGS #14: the worker is
+// zero-jump, so a hull outside the delivery system can neither source nor deliver). This is
+// the locality fix for sp-ue1s: the idle-hauler grab had no home constraint and poached
+// TORWIND-E, idle in the foreign arb system X1-DF86 a gate hop from home X1-VB74, for a
+// COPPER_ORE -> X1-VB74-H51 contract — an 80min cross-gate stall.
+//
+// The scope applies to the GENERAL grab pool only. In EXCLUSIVE MODE (a dedicated contract
+// fleet is active, sp-wq7r) the pool passes through unscoped: a dedicated fleet is the
+// operator's explicit, sealed choice with its own "draw ONLY from dedicated members" contract,
+// and the sp-ue1s bug is an UNDEDICATED-pool poach, so narrowing the dedicated pool here would
+// be out of scope and risk that feature. It composes with the sp-mzdk reserve floor, whose
+// reserved hulls are UNDEDICATED + home and therefore ride this (general) path where they stay
+// eligible. An un-derivable destination yields an empty home system, so FilterToHomeSystem
+// degrades to fleet-wide (fail-open) and never blocks the contract.
+func (h *RunFleetCoordinatorHandler) scopeCandidatesToContractHome(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	candidates []string,
+	deliveryDestination string,
+	dedicatedFleetActive bool,
+) ([]string, error) {
+	if dedicatedFleetActive {
+		return candidates, nil
+	}
+	homeSystem := shared.ExtractSystemSymbol(deliveryDestination)
+	return appContract.FilterToHomeSystem(ctx, playerID, h.shipRepo, candidates, homeSystem)
+}
+
 func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	ctx context.Context,
 	tradeSymbol string,

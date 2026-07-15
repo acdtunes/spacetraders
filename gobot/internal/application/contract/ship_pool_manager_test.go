@@ -367,6 +367,73 @@ func TestFindIdleLightHaulers_EmptySystemFilter_ReturnsAllSystems(t *testing.T) 
 	}
 }
 
+// HOME-SYSTEM LOCALITY (sp-ue1s): a contract worker sources AND delivers in the delivery's
+// HOME system with ZERO jump capability (RULINGS #14 — the same scope PlanSourcing and
+// market_finder narrow contract sourcing to). FilterToHomeSystem is the worker-pool half of
+// that constraint: a hull idle in the delivery's home system stays eligible; a hull idle in a
+// FOREIGN system — the live TORWIND-E sitting in the arb system X1-DF86 a gate hop from home
+// X1-VB74, grabbed for a COPPER_ORE -> X1-VB74-H51 contract and stalled 80min reaching
+// cross-gate — is UNSELECTABLE, never a contract worker. Input variations of the one locality
+// behavior share one parametrized test (Mandate 5). The foreign-exclusion assertion is the
+// mutation guard: drop the system comparison (passthrough) and the foreign hull is retained,
+// refilling exactly the pool the live bug drew from. An empty home system degrades to
+// fleet-wide (fail-open), mirroring FindIdleLightHaulers' "" convention so an un-derivable
+// destination never blocks the contract.
+func TestFilterToHomeSystem_ScopesCandidatesToDeliveryHomeSystem(t *testing.T) {
+	const home = "X1-VB74"    // the contract's delivery home system (delivery X1-VB74-H51)
+	const foreign = "X1-DF86" // the arb system, a gate hop away
+
+	homeHull := newCandidateShipAt(t, "TORWIND-H", home+"-A1")
+	foreignHull := newCandidateShipAt(t, "TORWIND-E", foreign+"-B7") // the live bug hull
+	repo := &stubShipRepo{ships: []*navigation.Ship{homeHull, foreignHull}}
+
+	cases := []struct {
+		name       string
+		symbols    []string
+		homeSystem string
+		want       []string
+	}{
+		{
+			name:       "home hull eligible, foreign DF86 hull excluded (the live bug)",
+			symbols:    []string{"TORWIND-H", "TORWIND-E"},
+			homeSystem: home,
+			want:       []string{"TORWIND-H"},
+		},
+		{
+			name:       "no home hull available -> empty pool (coordinator waits, never reaches foreign)",
+			symbols:    []string{"TORWIND-E"},
+			homeSystem: home,
+			want:       []string{},
+		},
+		{
+			name:       "empty home system -> fleet-wide passthrough (fail-open, pre-fix behavior preserved)",
+			symbols:    []string{"TORWIND-H", "TORWIND-E"},
+			homeSystem: "",
+			want:       []string{"TORWIND-H", "TORWIND-E"},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := FilterToHomeSystem(context.Background(), shared.MustNewPlayerID(1), repo, tc.symbols, tc.homeSystem)
+			if err != nil {
+				t.Fatalf("FilterToHomeSystem: %v", err)
+			}
+			if tc.homeSystem != "" && containsSymbol(got, "TORWIND-E") {
+				t.Fatalf("foreign hull TORWIND-E (%s) must NEVER be a contract worker when home is %s, got %v", foreign, tc.homeSystem, got)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+			for _, w := range tc.want {
+				if !containsSymbol(got, w) {
+					t.Fatalf("expected result %v to contain %s, got %v", tc.want, w, got)
+				}
+			}
+		})
+	}
+}
+
 // FindIdleShipsByFleet is a coordinator's direct lookup for its own dedicated
 // fleet (sp-l7h2, replacing sp-snmb's symbol-list FindIdleDedicatedShips): it
 // returns only currently-idle ships whose persisted DedicatedFleet tag equals
