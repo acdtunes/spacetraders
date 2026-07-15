@@ -32,6 +32,23 @@ type depotRoute struct {
 	Warehouse string
 }
 
+// contractClaimFleet is the fleet identity the contract coordinator claims a dispatched hull
+// under (bead sp-3l64). A depot delivery hull carries the DISTINCT depot.DeliveryHullFleet
+// dedication so the coordinator's discovery can never re-grab it for a general contract; it is
+// dispatched ONLY via routeContractViaDepot. That depot-routed claim must therefore run under
+// the hull's OWN depot-delivery identity, or ClaimShip's dedication guard (DedicatedFleet != ""
+// && DedicatedFleet != operation) would REJECT the very hull the depot route selected. Every
+// other hull — unpinned or contract-pinned — still claims under the coordinator's "contract"
+// identity, so a foreign-pinned hull is rejected, never poached (sp-lprs unchanged). A
+// depot-delivery hull only ever reaches the claim via the depot route (excluded from both pools)
+// or a mid-delivery readopt, so keying the claim on its dedication cannot widen the poach surface.
+func contractClaimFleet(dedicatedFleet string) string {
+	if dedicatedFleet == depot.DeliveryHullFleet {
+		return dedicatedFleet
+	}
+	return dedicatedFleetContract
+}
+
 // routeContractViaDepot is the sp-u9xa seam (extended by sp-9j9c): the pure decision the
 // contract coordinator consults BEFORE its default hull+source selection. It asks the boot-loaded
 // depot registry whether a configured depot OWNS this contract's remaining delivery geometry; if

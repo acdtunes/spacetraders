@@ -401,36 +401,77 @@ func hullCrewsOperation(storageShips []string, shipSymbol string) bool {
 	return false
 }
 
-// launchDepotDelivery (depotCoordinatorSink) POSITIONS a depot delivery hull at its configured
-// hub waypoint (bead sp-9j9c) so a multi-hub delivery fleet is actually PRESENT at its hubs for
-// the nearest-selection router (SelectDeliveryHull) to route each cluster's contract to its LOCAL
-// hull. Unlike the standing warehouse/stocker coordinators, a delivery hull is DISPATCHED on
-// demand by the contract coordinator; between contracts it waits idle AT its hub, so positioning
-// is a one-shot in-system reposition (NavigateShip), not a standing loop.
+// launchDepotDelivery (depotCoordinatorSink) makes depot delivery-hull assignment ATOMIC
+// (bead sp-3l64, extending sp-9j9c) so a multi-hub delivery fleet is actually PRESENT at its hubs
+// for the nearest-selection router (SelectDeliveryHull) to route each cluster's contract to its
+// LOCAL hull — and STAYS there. It performs three things, in order, every config apply / element
+// add and every reload/re-apply:
 //
-// It is idle-gated (only a genuinely idle hull is moved — never yanked mid-contract) and
-// fail-open (a non-idle hull is already flying its dispatch or a prior reposition, a benign skip;
-// a hull already at its hub is a no-op), mirroring launchDepotStocker so the boot re-run is quiet
-// and idempotent. NOTE: durable reservation of the idle hull against poaching between contracts is
-// owned by the contract coordinator's idle-hull acquisition path, not by this positioning step.
+//  1. CLAIM-RELEASE + RE-DEDICATE (behavior 1): a hull not yet dedicated as a depot delivery hull
+//     is re-dedicated to depot.DeliveryHullFleet and severed from any prior fleet's LIVE work-claim,
+//     reusing the SAME sp-w3yd machinery `fleet unassign` uses (AssignFleet + ReleaseContainerClaim).
+//     Re-dedicate FIRST so the instant the claim breaks the distinct tag already prevents the old
+//     coordinator (contract/manufacturing) from re-grabbing it; then break the claim so a hull that
+//     was MID-TASK at assign time becomes free. Without this, an added hull kept its 'contract' tag
+//     and was re-grabbed onto general contracts (pulled off-hub), or kept its 'manufacturing' tag
+//     and stayed busy so it never navigated — the two live recurrences this bead closes.
+//  2. EXCLUDE from the contract coordinator's grab (behavior 2): the depot-delivery tag is DISTINCT
+//     from "contract", so the hull is invisible to BOTH pools the coordinator draws from
+//     (FindIdleLightHaulers excludes any DedicatedFleet != ""; FindIdleShipsByFleet("contract")
+//     returns only "contract"-tagged hulls). The hull is dispatched ONLY via routeContractViaDepot,
+//     whose claim runs under this same identity (contractClaimFleet). This step is emergent from
+//     the tag written in step 1 — no separate write.
+//  3. (RE)NAVIGATE to hub (behavior 3): once free, a genuinely idle hull that has drifted (or was
+//     just released) homes to its hub. A hull still flying (dispatched on a depot contract, or
+//     mid-reposition) is a benign skip — never yanked; a hull already at its hub is a no-op.
+//
+// It is IDEMPOTENT and fail-open: a hull already carrying the depot-delivery tag skips the
+// claim-release entirely, so a hull mid-DEPOT-delivery is never yanked on a reload, mirroring
+// launchDepotStocker so the boot re-run is quiet.
 func (s *DaemonServer) launchDepotDelivery(ctx context.Context, shipSymbol, hubWaypoint string, playerID int) error {
 	if shipSymbol == "" || hubWaypoint == "" {
 		return fmt.Errorf("depot delivery hull launch requires a ship symbol and hub waypoint")
 	}
-	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	pid := shared.MustNewPlayerID(playerID)
+	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
 	if err != nil {
 		return fmt.Errorf("failed to load depot delivery hull %s: %w", shipSymbol, err)
 	}
 	if ship == nil {
 		return fmt.Errorf("depot delivery hull %s not found", shipSymbol)
 	}
+
+	// Behavior 1: atomic claim-release + re-dedicate, only when not already a depot delivery hull.
+	if ship.DedicatedFleet() != depot.DeliveryHullFleet {
+		if err := s.shipRepo.AssignFleet(ctx, shipSymbol, depot.DeliveryHullFleet, pid); err != nil {
+			return fmt.Errorf("failed to re-dedicate depot delivery hull %s: %w", shipSymbol, err)
+		}
+		if _, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, pid,
+			fmt.Sprintf("re-dedicated as depot delivery hull for hub %s (sp-3l64)", hubWaypoint)); err != nil {
+			return fmt.Errorf("failed to release prior work-claim on depot delivery hull %s: %w", shipSymbol, err)
+		}
+		// Reload so the idle / location gates below observe the post-release state.
+		ship, err = s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
+		if err != nil {
+			return fmt.Errorf("failed to reload depot delivery hull %s after re-dedication: %w", shipSymbol, err)
+		}
+		if ship == nil {
+			return fmt.Errorf("depot delivery hull %s not found after re-dedication", shipSymbol)
+		}
+	}
+
+	// Behavior 3: (re)navigate the now-free hull to its hub.
 	if !ship.IsIdle() {
-		return nil // already flying (dispatched on a contract, or mid-reposition) — benign skip
+		return nil // still flying (dispatched on a depot contract, or mid-reposition) — benign skip
 	}
 	if loc := ship.CurrentLocation(); loc != nil && loc.Symbol == hubWaypoint {
 		return nil // already parked at its hub — nothing to reposition
 	}
-	_, err = s.NavigateShip(ctx, shipSymbol, hubWaypoint, playerID)
+	navigate := s.NavigateShip
+	if s.depotDeliveryNavigateOverride != nil {
+		navigate = s.depotDeliveryNavigateOverride
+	}
+	_, err = navigate(ctx, shipSymbol, hubWaypoint, playerID)
 	return err
 }
 

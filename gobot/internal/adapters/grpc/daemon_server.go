@@ -77,6 +77,14 @@ type DaemonServer struct {
 	// post-construction test-seam convention as storageRecovery.
 	depotReceiptMinerOverride tradingsvc.DepositDemandMiner
 
+	// depotDeliveryNavigateOverride, when non-nil, replaces NavigateShip for the depot
+	// delivery-hull hub repositioning in launchDepotDelivery (sp-3l64). Nil in production →
+	// the real NavigateShip (which spawns a navigate container). Injected in tests so the
+	// atomic claim-release + reposition decision is unit-tested against the real ship repo
+	// WITHOUT spawning a navigate goroutine that would race the assertions. Same
+	// post-construction test-seam convention as depotReceiptMinerOverride.
+	depotDeliveryNavigateOverride func(ctx context.Context, shipSymbol, destination string, playerID int) (string, error)
+
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 

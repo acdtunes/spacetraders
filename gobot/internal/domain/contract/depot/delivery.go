@@ -1,5 +1,18 @@
 package depot
 
+// DeliveryHullFleet is the DedicatedFleet tag a depot delivery hull carries (bead sp-3l64).
+// Assigning a hull as a depot delivery hull re-dedicates it to this fleet, which makes hull
+// assignment ATOMIC: the tag is DISTINCT from the contract coordinator's own "contract" fleet
+// on purpose, so a delivery hull is invisible to BOTH pools the coordinator draws from — the
+// general idle-hauler pool (FindIdleLightHaulers excludes any DedicatedFleet != "") and the
+// coordinator's own dedicated-fleet lookup (FindIdleShipsByFleet("contract") returns only
+// "contract"-tagged hulls). The coordinator therefore can never re-grab a delivery hull for a
+// general contract and pull it off its hub. A delivery hull is dispatched ONLY via
+// routeContractViaDepot, whose claim runs under THIS same identity so ClaimShip's dedication
+// guard (DedicatedFleet != "" && DedicatedFleet != operation) admits the depot route while still
+// rejecting the general "contract" grab.
+const DeliveryHullFleet = "depot-delivery"
+
 // DistanceBetween resolves the travel distance between two waypoints for delivery-hull
 // selection. ok=false means the position pair is unknown (a nil oracle, an uncharted /
 // TTL-expired waypoint, or an unavailable graph) — the selector then treats that hull as

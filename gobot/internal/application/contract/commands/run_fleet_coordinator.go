@@ -1280,7 +1280,13 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 	// claims normally. Both callers hand this an idle ship: the main loop selects
 	// from idle candidates, and readoptInterruptedDeliveries force-releases the
 	// dead worker's hull to idle before re-adopting it.
-	if err := h.shipRepo.ClaimShip(ctx, selectedShip, workerContainerID, cmd.PlayerID, dedicatedFleetContract); err != nil {
+	//
+	// sp-3l64: a DEPOT DELIVERY hull carries the distinct depot.DeliveryHullFleet
+	// dedication (so discovery can never re-grab it) and reaches this claim ONLY via
+	// routeContractViaDepot or a mid-delivery readopt. contractClaimFleet keys the
+	// claim on the hull's own dedication so that depot-routed dispatch passes the
+	// dedication guard, while every other hull still claims under "contract".
+	if err := h.shipRepo.ClaimShip(ctx, selectedShip, workerContainerID, cmd.PlayerID, contractClaimFleet(ship.DedicatedFleet())); err != nil {
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		// %w so callers (and the poach-vector test) can distinguish a fleet-
 		// dedication rejection from a transient failure; the string is identical.
