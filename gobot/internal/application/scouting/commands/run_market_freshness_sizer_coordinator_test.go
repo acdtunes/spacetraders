@@ -182,6 +182,43 @@ func snap(system string, markets int, oldestAgeSecs, cycleSecs float64, samples 
 	}
 }
 
+// mkt builds one market sample (age seconds, value weight) for an sp-r57g percentile fixture.
+func mkt(ageSecs, weight float64) domainScouting.MarketFreshnessSample {
+	return domainScouting.MarketFreshnessSample{AgeSeconds: ageSecs, Weight: weight}
+}
+
+// freshMarkets builds n identical markets at the given age + value weight — the fresh bulk a
+// stale straggler is appended to in the reframe fixtures.
+func freshMarkets(n int, ageSecs, weight float64) []domainScouting.MarketFreshnessSample {
+	out := make([]domainScouting.MarketFreshnessSample, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, mkt(ageSecs, weight))
+	}
+	return out
+}
+
+// snapWithMarkets builds a TRUSTED freshness snapshot from an explicit per-market distribution
+// (sp-r57g): MarketCount and OldestAgeSeconds (the max) are DERIVED from the markets so the
+// snapshot is self-consistent, while Markets drives the value-weighted percentile the sizer sizes
+// against. This is the fixture that exercises the percentile path (vs snap()'s aggregate-only
+// fallback to the max).
+func snapWithMarkets(system string, cycleSecs float64, samples int, markets []domainScouting.MarketFreshnessSample) domainScouting.SystemFreshnessSnapshot {
+	oldest := 0.0
+	for _, m := range markets {
+		if m.AgeSeconds > oldest {
+			oldest = m.AgeSeconds
+		}
+	}
+	return domainScouting.SystemFreshnessSnapshot{
+		SystemSymbol:         system,
+		MarketCount:          len(markets),
+		OldestAgeSeconds:     oldest,
+		MeasuredCycleSeconds: cycleSecs,
+		CycleSamples:         samples,
+		Markets:              markets,
+	}
+}
+
 // newSizerWithClock is newSizer's multi-tick sibling: it hands back the MockClock so a
 // test can ADVANCE wall time between ReconcileOnce passes (the stable-window release
 // debounce is measured against this clock).
@@ -706,16 +743,20 @@ func TestResolveSizerConfig_ReadsBreachResponseKnobLiveWithDefaultFallback(t *te
 
 // ---- sp-tor9: size from the empirical circuit, respond to breach proportionally ----
 
-// The VB74/DF86 incident: a high-market system whose MEASURED circuit exceeds the SLA at its
-// current probe count is sized UP to the N that brings the worst-case age under-SLA in ONE
-// resize, not the slow +1-per-manning-cycle nudge. 26 markets, 4 fully-manned probes, oldest
-// scan 94min (5640s) against the 60min SLA: the measured-cycle model collapses toward 1-2 probes
+// The VB74/DF86 incident, UPDATED OPENLY to sp-r57g percentile semantics (this test formerly fed
+// the scalar MAX age; sp-r57g SUPERSEDES that premise — the driving age is now the value-weighted
+// P90, and the max tail is tolerated). A high-market system whose P90 market age exceeds the SLA is
+// sized UP to the N that brings the P90 under-SLA in ONE resize, not the slow +1 nudge. 26 markets,
+// 4 fully-manned probes: 24 markets at exactly the breaching P90 age (5640s = 94min) plus a
+// DEEPER stale tail (two markets at 9000s). The measured-cycle model collapses toward 1-2 probes
 // here (the pooled inter-scan interval deflates with probe count), so the old closed loop could
-// only reach current+1 = 5. Sizing from the OBSERVED circuit (ceil(4×5640/3600)=7) reaches
-// coverage at once. Flattening the response to +1 sizes it to 5 and fails this test.
+// only reach current+1 = 5. Sizing from the P90 through the REUSED sp-tor9 circuit machinery
+// (ceil(4×5640/3600)=7) reaches coverage at once — and the 9000s tail is TOLERATED, NOT chased to
+// ceil(4×9000/3600)=10. Flattening the response to +1 sizes it to 5 and fails this test.
 func TestSizer_ProportionallyRaisesFullyMannedBreachingHighMarketSystem(t *testing.T) {
+	markets := append(freshMarkets(24, 5640, 1), mkt(9000, 1), mkt(9000, 1)) // P90 (24th of 26) = 5640
 	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
-		snap("X1-VB74", 26, 5640, 120, 25),
+		snapWithMarkets("X1-VB74", 120, 25, markets),
 	}}
 	pr := newSizerPostRepo(fullyMannedSizerPost("X1-VB74", 4))
 	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
@@ -724,7 +765,7 @@ func TestSizer_ProportionallyRaisesFullyMannedBreachingHighMarketSystem(t *testi
 	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, 7, pr.hullUpdates["X1-VB74"],
-		"a fully-manned breaching post is sized from its observed circuit (ceil(4×5640/3600)=7), not nudged +1 to 5")
+		"sized from the breaching P90 via the reused sp-tor9 circuit (ceil(4×5640/3600)=7); the 9000s tail is tolerated, not chased to 10")
 	require.Empty(t, pr.upserts, "the raise goes through the manning-preserving UpdateHulls seam, never a clobbering Upsert")
 }
 
@@ -926,4 +967,188 @@ func TestSizer_ReservedFrontierFloorReleasesExistingSurplusThroughResizeDown(t *
 	require.Empty(t, pr.removed, "release resizes posts DOWN — it never retires them (freed hulls return to the shared pool)")
 	require.Empty(t, pr.upserts, "release goes through the manning-preserving UpdateHulls seam, not a clobbering Upsert")
 	require.Zero(t, pu.buyCalls, "no-churn: the sizer does not re-buy a hull it just released")
+}
+
+// ---- sp-r57g: PERCENTILE-age target (P90), stale tail explicitly tolerated -------------
+
+// THE CORE REFRAME: a big system whose MAX market age breaches the SLA but whose P90 is comfortably
+// under it is NOT over-sized — the stale tail is explicitly TOLERATED (DA78-class: a couple of
+// stragglers must not drag the whole system's demand up). 26 markets on a fully-manned single probe:
+// 24 fresh (600s) and 2 deeply stale (9000s, 2.5× the SLA). The P90 sits in the fresh bulk (600s) so
+// the post HOLDS at 1; reverting the target to the max (target_percentile=100) chases the tail and
+// over-sizes it to ceil(1×9000/3600)=3. The P100 row is the MUTATION GUARD — it proves the P90 (not
+// the max) is what tolerates the tail: restoring the max metric re-inflates demand and this reframe fails.
+func TestSizer_MaxBreachesButP90UnderTargetIsNotOversized(t *testing.T) {
+	cases := []struct {
+		name          string
+		percentile    int
+		wantResizedTo int // 0 ⇒ held (no hull update recorded)
+	}{
+		{"P90 tolerates the stale tail — the post is NOT oversized", 90, 0},
+		{"reverting the target to the max (P100) chases the tail and over-sizes (mutation guard)", 100, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			markets := append(freshMarkets(24, 600, 1), mkt(9000, 1), mkt(9000, 1))
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snapWithMarkets("X1-DA78", 120, 25, markets),
+			}}
+			pr := newSizerPostRepo(fullyMannedSizerPost("X1-DA78", 1))
+			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+			h := newSizer(fr, pr, fl)
+			cmd := sizerCmd()
+			cmd.TargetPercentile = tc.percentile
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+			if tc.wantResizedTo == 0 {
+				_, resized := pr.hullUpdates["X1-DA78"]
+				require.False(t, resized, "P90 under the SLA holds the post — the stale tail is tolerated, not chased")
+			} else {
+				require.Equal(t, tc.wantResizedTo, pr.hullUpdates["X1-DA78"],
+					"the max-age premise (P100) over-sizes to chase the tail — exactly the mis-allocation sp-r57g kills")
+			}
+		})
+	}
+}
+
+// VALUE-WEIGHTING, both directions at the port (sp-r57g's key extension). Two runs, IDENTICAL
+// 26-market counts and an IDENTICAL stale market (5640s), differing ONLY in that stale market's
+// throughput weight. HIGH value → the value-weighted P90 is pulled up ONTO the stale market, so it
+// breaches and the post is RAISED to 7 (the arb core — VB74/DF86/GP32 — stays tight). LOW value →
+// the fresh bulk out-weighs the straggler, the P90 stays fresh, and the post is NOT raised: it
+// releases toward the model (the low-traffic periphery lags cheaply). Same inputs, opposite
+// outcomes, selected purely by per-market value — the property that keeps the arb core tight.
+func TestSizer_ValueWeightedPercentileRaisesHighValueStaleMarketToleratesLowValueStraggler(t *testing.T) {
+	cases := []struct {
+		name        string
+		staleWeight float64
+		wantHulls   int
+	}{
+		{"a HIGH-value stale arb market pulls the P90 up — the post is raised to hold it", 100, 7},
+		{"an equal-count LOW-value stale straggler stays in the tolerated tail — the post releases", 1, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 25 fresh arb-core markets (600s, unit weight) + one stale market (5640s) of the case's value.
+			markets := append(freshMarkets(25, 600, 1), mkt(5640, tc.staleWeight))
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snapWithMarkets("X1-GP32", 120, 25, markets),
+			}}
+			pr := newSizerPostRepo(fullyMannedSizerPost("X1-GP32", 4))
+			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+			h := newSizer(fr, pr, fl)
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+			require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-GP32"],
+				"per-market value decides whether a stale market drives demand up (raise to 7) or is tolerated (release to 3)")
+		})
+	}
+}
+
+// AGGREGATE DEMAND DROPS vs the max-age baseline, and the freed slug RELEASES through the existing
+// sp-iupr hysteresis. Four fully-manned 26-market posts currently oversized at the MAX-age level (3
+// probes each = aggregate 12), each a fresh bulk (600s) with a 2-market stale tail (9000s). Under
+// the P90 target the tail is tolerated, so each post's demand collapses to the model and it RELEASES
+// one probe this tick (→2) through the manning-preserving resize-DOWN seam — never retired. Under
+// the max premise (target_percentile=100) the SAME fleet chases the tail and RAISES each to the cap
+// (8), the ~68-probe over-provisioning sp-r57g exists to kill. Aggregate 8 vs 32 — the freshness saving.
+func TestSizer_PercentileDropsAggregateDemandAndReleasesSlugThroughHysteresis(t *testing.T) {
+	cases := []struct {
+		name         string
+		percentile   int
+		wantPerPost  int
+		wantReleased bool // true ⇒ resize-DOWN (release), false ⇒ raised
+	}{
+		{"P90 tolerates the tail: aggregate collapses and each post releases a probe", 90, 2, true},
+		{"the max-age baseline (P100) chases the tail and over-provisions to the cap", 100, 8, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			systems := []string{"X1-VB74", "X1-DF86", "X1-GP32", "X1-ZK55"}
+			snaps := make([]domainScouting.SystemFreshnessSnapshot, 0, len(systems))
+			posts := make([]*domainScouting.ScoutPost, 0, len(systems))
+			for _, s := range systems {
+				markets := append(freshMarkets(24, 600, 1), mkt(9000, 1), mkt(9000, 1))
+				snaps = append(snaps, snapWithMarkets(s, 120, 25, markets))
+				posts = append(posts, fullyMannedSizerPost(s, 3))
+			}
+			fr := &fakeFreshnessReader{snapshots: snaps}
+			pr := newSizerPostRepo(posts...)
+			fl := &fakeSizerFleetRepo{all: scouts(t, 40)}
+			h := newSizer(fr, pr, fl)
+			cmd := sizerCmd()
+			cmd.TargetPercentile = tc.percentile
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+			aggregate := 0
+			for _, s := range systems {
+				require.Equal(t, tc.wantPerPost, pr.hullUpdates[s], "each post sized to the percentile target")
+				aggregate += pr.hullUpdates[s]
+			}
+			require.Equal(t, tc.wantPerPost*len(systems), aggregate, "aggregate demand tracks the percentile, not the tail")
+			require.Empty(t, pr.removed, "release resizes posts DOWN — the freed slug returns to the shared pool, never retired")
+			if tc.wantReleased {
+				require.Empty(t, pr.upserts, "the release flows through the manning-preserving UpdateHulls seam")
+			}
+		})
+	}
+}
+
+// COMPOSES WITH sp-iopd: the reserved frontier floor still caps PERCENTILE-driven demand against
+// (supply − floor). Two fully-manned 26-market posts whose breaching P90 (5640s) sizes each to the
+// circuit target 7 (raw aggregate 14) are held against a 14-probe pool with a floor of 6 → the
+// aggregate is RELEASED down to 14−6=8 through the same resize-DOWN seam, leaving 6 for the frontier
+// and buying nothing. Percentile lowers per-system demand; the reserved-floor ceiling still caps the total.
+func TestSizer_PercentileDemandStillCappedByReservedFrontierFloor(t *testing.T) {
+	const pool = 14
+	markets := append(freshMarkets(24, 5640, 1), mkt(9000, 1), mkt(9000, 1)) // P90=5640 breaching → circuit 7
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snapWithMarkets("X1-A", 120, 25, markets),
+		snapWithMarkets("X1-B", 120, 25, markets),
+	}}
+	pr := newSizerPostRepo(
+		fullyMannedSizerPost("X1-A", 7),
+		fullyMannedSizerPost("X1-B", 7),
+	)
+	fl := &fakeSizerFleetRepo{all: scouts(t, pool)}
+	h := newSizer(fr, pr, fl)
+	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+	h.SetProbePurchaser(pu)
+	cmd := sizerCmd()
+	cmd.ReservedFrontierFloor = 6
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+	aggregate := pr.hullUpdates["X1-A"] + pr.hullUpdates["X1-B"]
+	require.Equal(t, 8, aggregate, "percentile-driven demand (7+7) is held against supply−floor (14−6=8)")
+	require.Empty(t, pr.removed, "the floor releases through resize-DOWN, never retiring a post")
+	require.Zero(t, pu.buyCalls, "with the floor engaged the sizer never buys into the reserved probes")
+}
+
+// sp-r57g config wiring: the two new knobs resolve live > launch > default. target_percentile is a
+// standard positive-int knob (default 90); value_weighted is the int-mode toggle (2=on default,
+// 1=off) that stays live-tunable in BOTH directions despite the registry's 0=revert overload — a
+// live snapshot can re-enable a launch-disabled weighting, or disable it live if it misbehaves.
+func TestResolveSizerConfig_ReadsPercentileKnobsLiveWithDefaultFallback(t *testing.T) {
+	def := resolveSizerConfig(sizerCmd(), nil)
+	require.Equal(t, defaultTargetPercentile, def.TargetPercentile, "no snapshot, no launch → the documented percentile default (90)")
+	require.True(t, def.ValueWeighted, "no snapshot, no launch → value-weighting defaults ON")
+
+	launch := sizerCmd()
+	launch.TargetPercentile = 95
+	launch.ValueWeightedMode = valueWeightedModeOff
+	got := resolveSizerConfig(launch, nil)
+	require.Equal(t, 95, got.TargetPercentile, "no snapshot → the launch percentile governs")
+	require.False(t, got.ValueWeighted, "no snapshot → the launch value-weighting mode governs (off)")
+
+	live := liveconfig.Snapshot{"target_percentile": 80, "value_weighted": valueWeightedModeOff}
+	liveGot := resolveSizerConfig(launch, live)
+	require.Equal(t, 80, liveGot.TargetPercentile, "a live snapshot overrides the percentile next tick")
+	require.False(t, liveGot.ValueWeighted, "a live snapshot can disable value-weighting next tick")
+
+	reEnabled := resolveSizerConfig(launch, liveconfig.Snapshot{"value_weighted": valueWeightedModeOn})
+	require.True(t, reEnabled.ValueWeighted, "a live snapshot can re-enable the value-weighting the launch disabled")
 }

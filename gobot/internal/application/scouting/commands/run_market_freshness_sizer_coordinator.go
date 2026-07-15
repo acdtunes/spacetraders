@@ -15,9 +15,10 @@
 // Every tick, per market-bearing system:
 //   - required_probes = ceil(markets × per_market_cycle / sla), where per_market_cycle is
 //     MEASURED from live scan telemetry (not a constant), seeded until telemetry exists;
-//   - the empirical worst-case market age is the CLOSED-LOOP ground truth: a system
-//     breaching its SLA has its demand RAISED beyond the static model, a comfortably-fresh
-//     one is allowed to RELEASE a probe (hysteresis prevents flapping);
+//   - the empirical (value-weighted) P90 market age is the CLOSED-LOOP ground truth (sp-r57g,
+//     superseding the tail-dominated MAX): a system whose P90 breaches its SLA has its demand
+//     RAISED beyond the static model, a comfortably-fresh one is allowed to RELEASE a probe
+//     (hysteresis prevents flapping), and the stale tail beyond the percentile is TOLERATED;
 //   - the standing post is declared (new system), promoted (a sweep_once that turned out to
 //     hold markets), resized (through the manning-preserving hull-update seam), or retired
 //     (its markets are gone — freeing its probes).
@@ -80,7 +81,27 @@ const (
 	// sizing for a proportionally worse effective age (a tighter effective SLA) when the circuit
 	// under-measures in practice; < 100 damps the response. Bounded by MaxProbesPerSystem either way.
 	defaultBreachResponsePercent = 100
-	defaultReleaseSlackPercent   = 60 // release a feedback probe only below this % of the SLA (hysteresis)
+	// defaultTargetPercentile is the sp-r57g PERCENTILE-age target: a system breaches iff its
+	// MEASURED P90 market age exceeds the SLA, NOT iff its MAX does. This SUPERSEDES sp-tor9's
+	// max-age premise (the tail-dominated OldestAgeSeconds) — the max is unachievable for big
+	// systems and mis-allocated probes to the stalest 1-10% while arb thrived on the fresh bulk.
+	// 90 explicitly TOLERATES the stale tail (DA78: P90≈62 vs max≈167), bounding big-system demand
+	// to the achievable P90. The closed-loop measurement + proportional CircuitRequiredHulls
+	// response machinery is REUSED from sp-tor9 verbatim; only the metric feeding it changed.
+	// 100 recovers the exact pre-sp-r57g max-age behavior (the live rollback lever).
+	defaultTargetPercentile = 90
+	// value_weighted is an int-mode knob (the tune registry stores ints, and 0 means "revert to
+	// default", so a plain 0/1 bool cannot express an OFF that survives a revert). 2 = ON (the
+	// value-weighted percentile, the documented default when a weight source exists), 1 = OFF
+	// (a plain count percentile). Absent/0 resolves to the launch value, then to defaultValueWeighted.
+	valueWeightedModeOff = 1
+	valueWeightedModeOn  = 2
+	// defaultValueWeighted is ON: the census carries a per-market Σ(trade_volume × price) weight,
+	// so the percentile is value-weighted by default — a high-value stale market pulls the
+	// percentile up (arb core stays tight) while a low-traffic straggler stays in the tolerated
+	// tail. `tune value_weighted 1` disables it live (falls back to a plain count percentile).
+	defaultValueWeighted       = true
+	defaultReleaseSlackPercent = 60 // release a feedback probe only below this % of the SLA (hysteresis)
 	// defaultReleaseStableWindowSecs is how long a WARM post's measured surplus (desired <
 	// current, under the SLA but past the slack line) must hold before one probe is shed to
 	// the pool (sp-iupr bug 2). It debounces the shed so a one-cycle demand dip never releases
@@ -138,16 +159,24 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	// buys no probe (the captain watches a cycle before arming it).
 	DryRun bool
 
-	SLASeconds              int            // default freshness SLA in seconds
-	SystemSLAOverrides      map[string]int // per-system SLA override (seconds)
-	SeedCycleSeconds        int            // seeded per-market cycle until telemetry exists
-	MinCycleSamples         int            // min samples to trust a measured cycle
-	WorstCycleSeconds       int            // worst-plausible per-market cycle bounding the market-count clamp (sp-iupr issue 3b)
-	CycleDampeningPercent   int            // shrinkage % of a system's own cycle toward the fleet median (sp-iupr issue 3c)
-	MaxProbesPerSystem      int            // per-system hull cap
-	BreachResponsePercent   int            // aggressiveness of the circuit-observed breach response (sp-tor9); 100 = exact measured circuit
-	ReleaseSlackPercent     int            // release hysteresis: shed a probe only below this % of the SLA
-	ReleaseStableWindowSecs int            // a warm surplus must hold this long before one probe is shed (sp-iupr)
+	SLASeconds            int            // default freshness SLA in seconds
+	SystemSLAOverrides    map[string]int // per-system SLA override (seconds)
+	SeedCycleSeconds      int            // seeded per-market cycle until telemetry exists
+	MinCycleSamples       int            // min samples to trust a measured cycle
+	WorstCycleSeconds     int            // worst-plausible per-market cycle bounding the market-count clamp (sp-iupr issue 3b)
+	CycleDampeningPercent int            // shrinkage % of a system's own cycle toward the fleet median (sp-iupr issue 3c)
+	MaxProbesPerSystem    int            // per-system hull cap
+	BreachResponsePercent int            // aggressiveness of the circuit-observed breach response (sp-tor9); 100 = exact measured circuit
+	// TargetPercentile (sp-r57g) is the age percentile the sizer sizes against (default 90): a
+	// system breaches iff its MEASURED P90 market age exceeds the SLA, not iff its MAX does. 100
+	// recovers the pre-sp-r57g max-age behavior. Live-tunable (SizerTunableDefaults).
+	TargetPercentile int
+	// ValueWeightedMode (sp-r57g) toggles value-weighting of the percentile: valueWeightedModeOn
+	// (2, the default) weights by per-market Σ(trade_volume × price); valueWeightedModeOff (1) is a
+	// plain count percentile. 0 (unset) resolves to the default ON. Live-tunable (SizerTunableDefaults).
+	ValueWeightedMode       int
+	ReleaseSlackPercent     int // release hysteresis: shed a probe only below this % of the SLA
+	ReleaseStableWindowSecs int // a warm surplus must hold this long before one probe is shed (sp-iupr)
 
 	// ReservedFrontierFloor (sp-iopd) is the count of probes the sizer treats as reserved for
 	// the frontier: it holds its aggregate demand against (supply − this) and releases the
@@ -336,6 +365,8 @@ func SizerTunableDefaults() map[string]int {
 		"max_probe_fleet":            defaultSizerMaxProbeFleet,
 		"max_probes_per_system":      defaultMaxProbesPerSystem,
 		"sla_seconds":                defaultSLASeconds,
+		"target_percentile":          defaultTargetPercentile, // sp-r57g percentile-age target
+		"value_weighted":             valueWeightedModeOn,     // sp-r57g value-weighting mode (2=on default, 1=off)
 		"worst_cycle_seconds":        defaultWorstCycleSeconds,
 		"cycle_dampening_percent":    defaultCycleDampeningPercent,
 		"breach_response_percent":    defaultBreachResponsePercent,
@@ -355,6 +386,8 @@ type sizerConfig struct {
 	CycleDampeningPercent int
 	MaxProbesPerSystem    int
 	BreachResponsePercent int
+	TargetPercentile      int  // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
+	ValueWeighted         bool // sp-r57g: weight the percentile by per-market value (default ON)
 	ReleaseSlackPercent   int
 	ReleaseStableWindow   time.Duration
 	ReservedFrontierFloor int
@@ -378,6 +411,8 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		CycleDampeningPercent: cmd.CycleDampeningPercent,
 		MaxProbesPerSystem:    cmd.MaxProbesPerSystem,
 		BreachResponsePercent: cmd.BreachResponsePercent,
+		TargetPercentile:      cmd.TargetPercentile,
+		ValueWeighted:         valueWeightedFromMode(cmd.ValueWeightedMode),
 		ReleaseSlackPercent:   cmd.ReleaseSlackPercent,
 		ReleaseStableWindow:   time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
 		ReservedFrontierFloor: cmd.ReservedFrontierFloor,
@@ -394,6 +429,10 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		c.CycleDampeningPercent = live.PositiveIntOrZero("cycle_dampening_percent")
 		c.MaxProbesPerSystem = live.PositiveIntOrZero("max_probes_per_system")
 		c.BreachResponsePercent = live.PositiveIntOrZero("breach_response_percent")
+		c.TargetPercentile = live.PositiveIntOrZero("target_percentile")
+		// value_weighted is live-authoritative both ways (2=on, 1=off, absent/0=default) — a live
+		// snapshot can re-enable weighting the launch disabled, or disable it live if it misbehaves.
+		c.ValueWeighted = valueWeightedFromMode(live.PositiveIntOrZero("value_weighted"))
 		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
 		c.ReleaseStableWindow = time.Duration(live.PositiveIntOrZero("release_stable_window_secs")) * time.Second
 		// sp-iopd reserved frontier floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
@@ -425,6 +464,11 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 	if c.BreachResponsePercent <= 0 {
 		c.BreachResponsePercent = defaultBreachResponsePercent
 	}
+	if c.TargetPercentile <= 0 {
+		c.TargetPercentile = defaultTargetPercentile
+	}
+	// ValueWeighted needs no <=0 fallback — valueWeightedFromMode already maps the unset mode (0)
+	// to defaultValueWeighted, so both the launch and live branches carry a resolved bool by here.
 	if c.ReleaseSlackPercent <= 0 {
 		c.ReleaseSlackPercent = defaultReleaseSlackPercent
 	}
@@ -457,6 +501,22 @@ func (c sizerConfig) slaFor(system string) time.Duration {
 		return sla
 	}
 	return c.DefaultSLA
+}
+
+// valueWeightedFromMode maps the int-mode value_weighted knob to a bool: valueWeightedModeOff (1)
+// → off, valueWeightedModeOn (2) → on, and anything else (0/unset, or an out-of-range value) →
+// the documented default (ON). The int encoding exists because the tune registry stores ints and
+// treats 0 as "revert to default", so a plain 0/1 bool could never express an OFF that survives a
+// revert; 1=off / 2=on keeps the toggle live-tunable in BOTH directions.
+func valueWeightedFromMode(mode int) bool {
+	switch mode {
+	case valueWeightedModeOff:
+		return false
+	case valueWeightedModeOn:
+		return true
+	default:
+		return defaultValueWeighted
+	}
 }
 
 // liveConfigSnapshot takes the tick's live-config snapshot (sp-vwek). A nil reader
@@ -600,6 +660,18 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	return nil
 }
 
+// measuredAgeSeconds is the sp-r57g closed-loop ground truth: the (value-weighted) P90 market age
+// the sizer sizes and releases against, replacing the tail-dominated max (OldestAgeSeconds). It
+// falls back to OldestAgeSeconds when the census carries NO per-market breakdown — a census that
+// predates sp-r57g, or an aggregate-only fixture — so the coordinator is byte-identical to
+// pre-sp-r57g on the fallback path (percentile 100 also equals the max, the live rollback lever).
+func measuredAgeSeconds(snap domainScouting.SystemFreshnessSnapshot, cfg sizerConfig) float64 {
+	if len(snap.Markets) == 0 {
+		return snap.OldestAgeSeconds
+	}
+	return domainScouting.WeightedPercentileAgeSeconds(snap.Markets, cfg.ValueWeighted, cfg.TargetPercentile)
+}
+
 // computeTarget is the per-system SIZE the sizer aims a post at, before release pacing. It runs
 // an ordered pipeline: (1) the cycle-driven MODEL, where telemetry noise enters; (2) the
 // sp-iupr issue-3b market-count CLAMP that bounds the noise; (3) the sp-tor9 CIRCUIT-OBSERVED
@@ -611,15 +683,21 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 //     has an age that reflects a MANNING failure, NOT a capacity shortfall — raising demand off
 //     it only strands more probes (the issue-1 pathology). It stays on the static MARKET-COUNT
 //     model (modelTarget) and is NEVER raised off the age;
-//   - a TRUSTED, FULLY MANNED system is the OPPOSITE case: its worst-case age at the CURRENT hull
+//   - a TRUSTED, FULLY MANNED system is the OPPOSITE case: its P90 market age at the CURRENT hull
 //     count is an honest circuit measurement, so the breach response sizes it straight from that
 //     circuit. Gated on !starved, so it can never fire for the starved case above.
-func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig, current int, fullyManned bool) (target int, starved bool) {
+//
+// sp-r57g SUPERSEDES sp-tor9's MAX-AGE premise: measuredAgeSeconds is now the (value-weighted) P90
+// market age, NOT the tail-dominated OldestAgeSeconds (the max). The closed-loop measurement + the
+// proportional CircuitRequiredHulls response are REUSED verbatim — only the metric feeding them
+// changed, so a big system sizes to its ACHIEVABLE P90 (tail tolerated) instead of an unachievable
+// max. A target_percentile of 100 makes measuredAgeSeconds == the max, recovering sp-tor9 exactly.
+func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig, current int, fullyManned bool, measuredAgeSeconds float64) (target int, starved bool) {
 	starved = snap.CycleSamples < cfg.MinCycleSamples
 
 	// 1. MODEL — the cycle-driven estimate (starved: static market-count; trusted: sp-orgp
-	//    closed loop corrected by empirical age).
-	target = modelTarget(snap, sla, cycle, starved)
+	//    closed loop corrected by the empirical P90 age).
+	target = modelTarget(snap, sla, cycle, starved, measuredAgeSeconds)
 
 	// 2. MARKET-COUNT CLAMP (sp-iupr issue 3b) — bound the noise-driven model to what this
 	//    market count could justify at the worst plausible cycle, capping a small-market system a
@@ -642,7 +720,9 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 	//    one); the fullyManned gate keeps the age an HONEST reading — a partially-manned post's age
 	//    reflects fewer working probes than its budget, so sizing off it would over-count.
 	if !starved && fullyManned {
-		effectiveAge := breachResponseAge(snap.OldestAgeSeconds, cfg.BreachResponsePercent)
+		// sp-r57g: the age fed to the sp-tor9 circuit response is the MEASURED P90 (value-weighted),
+		// not the max — so the tail beyond the target percentile no longer drives the raise.
+		effectiveAge := breachResponseAge(measuredAgeSeconds, cfg.BreachResponsePercent)
 		if circuitTarget := domainScouting.CircuitRequiredHulls(current, effectiveAge, sla); circuitTarget > target {
 			target = circuitTarget
 		}
@@ -657,25 +737,26 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 	return target, starved
 }
 
-// breachResponseAge scales the observed worst-case age by the breach-response aggressiveness knob
-// (sp-tor9) before it is fed to the circuit model — percent > 100 sizes for a proportionally
-// WORSE effective age (equivalently, a tighter effective SLA), buying headroom against a circuit
-// that under-measures in practice; 100 is the exact observed circuit; the coordinator's default
-// chain guarantees a positive percent so this never zeroes the age.
-func breachResponseAge(oldestAgeSeconds float64, breachResponsePercent int) time.Duration {
-	scaledSeconds := oldestAgeSeconds * float64(breachResponsePercent) / 100
+// breachResponseAge scales the measured age by the breach-response aggressiveness knob (sp-tor9)
+// before it is fed to the circuit model — percent > 100 sizes for a proportionally WORSE effective
+// age (equivalently, a tighter effective SLA), buying headroom against a circuit that under-measures
+// in practice; 100 is the exact measured circuit; the coordinator's default chain guarantees a
+// positive percent so this never zeroes the age. sp-r57g: ageSeconds is the value-weighted P90, not
+// the max — the tail beyond the target percentile no longer inflates the breach response.
+func breachResponseAge(ageSeconds float64, breachResponsePercent int) time.Duration {
+	scaledSeconds := ageSeconds * float64(breachResponsePercent) / 100
 	return time.Duration(scaledSeconds * float64(time.Second))
 }
 
 // modelTarget is the cycle-driven size estimate before the issue-3 clamp and sanity floor. A
 // telemetry-starved system uses the static market-count model (RequiredHulls) and is NOT age-
 // raised (issue 1: its age is a manning signal); a trusted system uses the sp-orgp closed loop
-// corrected by its empirical worst-case age.
-func modelTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, starved bool) int {
+// corrected by its empirical P90 age (sp-r57g — measuredAgeSeconds, not the tail-dominated max).
+func modelTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, starved bool, measuredAgeSeconds float64) int {
 	if starved {
 		return domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
 	}
-	age := time.Duration(snap.OldestAgeSeconds * float64(time.Second))
+	age := time.Duration(measuredAgeSeconds * float64(time.Second))
 	return domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
 }
 
@@ -695,7 +776,8 @@ func modelTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Du
 // needs), and lands as a resize-DOWN the scout reconciler un-mans — returning the hull to the
 // shared pool where the frontier coordinator can claim it, never sold or retired.
 func (h *RunMarketFreshnessSizerCoordinatorHandler) desiredHulls(key string, current int, fullyManned bool, snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) int {
-	target, starved := computeTarget(snap, sla, cycle, cfg, current, fullyManned)
+	measuredAge := measuredAgeSeconds(snap, cfg)
+	target, starved := computeTarget(snap, sla, cycle, cfg, current, fullyManned, measuredAge)
 
 	if current == 0 || target >= current {
 		h.clearReleasePending(key) // declaring, raising, or holding — no surplus to debounce.
@@ -703,8 +785,11 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) desiredHulls(key string, cur
 	}
 
 	// Surplus (target < current). Comfortably-fresh trusted posts and starved posts shed now.
+	// "Comfortable" is judged on the P90 (sp-r57g), so a big system whose only stale markets are
+	// the tolerated tail (its P90 sits under the slack line) is free to RELEASE the freed slug —
+	// where the max would have pinned it stale forever.
 	slackSeconds := sla.Seconds() * float64(cfg.ReleaseSlackPercent) / 100
-	if starved || snap.OldestAgeSeconds < slackSeconds {
+	if starved || measuredAge < slackSeconds {
 		h.clearReleasePending(key)
 		return stepDownToward(current, target)
 	}

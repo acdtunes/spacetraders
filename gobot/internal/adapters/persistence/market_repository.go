@@ -505,6 +505,13 @@ func (r *MarketRepositoryGORM) MaxAgeSecondsBySystem(
 // interleaved scans compress it toward interval/N, which the closed-loop age feedback then
 // corrects. Attributing scans to the specific probe that made them (for a pure single-probe
 // cycle even under multi-probe manning) needs a scanner id on the scan row and is deferred.
+//
+// sp-r57g: each market also carries a VALUE WEIGHT = Σ(trade_volume × mid-price) over its goods
+// (mid-price = (purchase+sell)/2, side-neutral), the per-market throughput proxy the sizer's
+// value-weighted percentile uses so a high-value stale arb market pulls the P90 up while a
+// low-traffic peripheral straggler stays in the tolerated tail. The percentile itself is computed
+// IN CODE (WeightedPercentileAgeSeconds), not via SQL percentile_cont, so it is dialect-agnostic
+// (the test harness is SQLite) and honors the live target_percentile / value_weighted knobs.
 func (r *MarketRepositoryGORM) SystemsFreshness(
 	ctx context.Context,
 	playerID int,
@@ -512,48 +519,71 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 	var rows []struct {
 		WaypointSymbol string
 		LastUpdated    time.Time
+		TradeVolume    int
+		PurchasePrice  int
+		SellPrice      int
 	}
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, last_updated").
+		Select("waypoint_symbol, last_updated, trade_volume, purchase_price, sell_price").
 		Where("player_id = ?", playerID).
 		Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to read system freshness: %w", err)
 	}
 
-	// Collapse per-(waypoint,good) rows to one latest scan time per waypoint (market).
-	perWaypoint := make(map[string]time.Time, len(rows))
+	// Collapse per-(waypoint,good) rows to one market: the latest scan time (defensively — a
+	// market's goods share one scan) and the summed Σ(trade_volume × mid-price) value weight.
+	type marketRollup struct {
+		latest time.Time
+		weight float64
+	}
+	perWaypoint := make(map[string]*marketRollup, len(rows))
 	for _, row := range rows {
-		if existing, ok := perWaypoint[row.WaypointSymbol]; !ok || row.LastUpdated.After(existing) {
-			perWaypoint[row.WaypointSymbol] = row.LastUpdated
+		market := perWaypoint[row.WaypointSymbol]
+		if market == nil {
+			market = &marketRollup{latest: row.LastUpdated}
+			perWaypoint[row.WaypointSymbol] = market
 		}
+		if row.LastUpdated.After(market.latest) {
+			market.latest = row.LastUpdated
+		}
+		midPrice := float64(row.PurchasePrice+row.SellPrice) / 2
+		market.weight += float64(row.TradeVolume) * midPrice
 	}
 
 	// Group markets by system.
-	scanTimesBySystem := make(map[string][]time.Time)
-	for waypoint, ts := range perWaypoint {
+	marketsBySystem := make(map[string][]marketRollup)
+	for waypoint, market := range perWaypoint {
 		system := shared.ExtractSystemSymbol(waypoint)
-		scanTimesBySystem[system] = append(scanTimesBySystem[system], ts)
+		marketsBySystem[system] = append(marketsBySystem[system], *market)
 	}
 
 	now := time.Now()
-	out := make([]domainScouting.SystemFreshnessSnapshot, 0, len(scanTimesBySystem))
-	for system, times := range scanTimesBySystem {
-		oldest := times[0]
-		for _, ts := range times {
-			if ts.Before(oldest) {
-				oldest = ts
+	out := make([]domainScouting.SystemFreshnessSnapshot, 0, len(marketsBySystem))
+	for system, markets := range marketsBySystem {
+		oldest := markets[0].latest
+		scanTimes := make([]time.Time, 0, len(markets))
+		samples := make([]domainScouting.MarketFreshnessSample, 0, len(markets))
+		for _, market := range markets {
+			if market.latest.Before(oldest) {
+				oldest = market.latest
 			}
+			scanTimes = append(scanTimes, market.latest)
+			samples = append(samples, domainScouting.MarketFreshnessSample{
+				AgeSeconds: now.Sub(market.latest).Seconds(),
+				Weight:     market.weight,
+			})
 		}
-		cycleSeconds, samples := domainScouting.MedianScanIntervalSeconds(times)
+		cycleSeconds, sampleCount := domainScouting.MedianScanIntervalSeconds(scanTimes)
 		out = append(out, domainScouting.SystemFreshnessSnapshot{
 			SystemSymbol:         system,
-			MarketCount:          len(times),
+			MarketCount:          len(markets),
 			OldestAgeSeconds:     now.Sub(oldest).Seconds(),
 			MeasuredCycleSeconds: cycleSeconds,
-			CycleSamples:         samples,
+			CycleSamples:         sampleCount,
+			Markets:              samples,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SystemSymbol < out[j].SystemSymbol })

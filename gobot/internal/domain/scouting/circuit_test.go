@@ -268,6 +268,75 @@ func TestCircuitRequiredHulls(t *testing.T) {
 	}
 }
 
+// WeightedPercentileAgeSeconds (sp-r57g) is the freshness sizer's new closed-loop ground
+// truth: the age at a target percentile across a system's markets, VALUE-WEIGHTED by
+// per-market trade throughput. It supersedes the max-age premise (the old OldestAgeSeconds),
+// which is tail-dominated and unachievable for big systems — the P90 EXPLICITLY TOLERATES the
+// stale tail (DA78: P90≈62 vs max≈167). Value-weighting is the key extension: a high-value
+// stale market pulls the percentile UP (buys it more probes), while an equal-count low-traffic
+// straggler stays in the tolerated tail — keeping the arb core tight while the periphery lags
+// cheaply. A percentile of 100 recovers the exact max (the mutation guard: reverting the metric
+// to the max re-inflates demand), and an all-zero-weight system degrades to a plain count
+// percentile so a missing weight source never divides by zero.
+func TestWeightedPercentileAgeSeconds(t *testing.T) {
+	// mkt builds one market sample (ageSeconds, valueWeight).
+	mkt := func(age, weight float64) MarketFreshnessSample {
+		return MarketFreshnessSample{AgeSeconds: age, Weight: weight}
+	}
+	// repeat builds n identical fresh markets.
+	repeat := func(n int, age, weight float64) []MarketFreshnessSample {
+		out := make([]MarketFreshnessSample, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, mkt(age, weight))
+		}
+		return out
+	}
+	// nineFreshOneStale: 9 fresh markets at 10s and one stale market at 100s, with the given
+	// fresh/stale weights — the value-weighting probe fixture.
+	nineFreshOneStale := func(freshWeight, staleWeight float64) []MarketFreshnessSample {
+		return append(repeat(9, 10, freshWeight), mkt(100, staleWeight))
+	}
+
+	cases := []struct {
+		name          string
+		markets       []MarketFreshnessSample
+		valueWeighted bool
+		percentile    int
+		want          float64
+	}{
+		// THE REFRAME: a single stale straggler in a 10-market system sits beyond P90, so the
+		// P90 age is the fresh bulk (10s) — the tail is tolerated, demand is not inflated.
+		{"unweighted P90 tolerates the single stale straggler", nineFreshOneStale(1, 1), false, 90, 10},
+		// MUTATION GUARD: reverting the percentile to 100 recovers the exact max — proving the
+		// percentile (not the max) is what drops the tail above.
+		{"P100 equals the max (reverting the metric re-inflates)", nineFreshOneStale(1, 1), false, 100, 100},
+		// VALUE-WEIGHTING, direction 1: a HIGH-VALUE stale market carries enough weight to pull
+		// the P90 up onto itself — it breaches, buying the system more probes (arb core stays tight).
+		{"value-weighted P90 is pulled up by a high-value stale market", nineFreshOneStale(1, 100), true, 90, 100},
+		// VALUE-WEIGHTING, direction 2: the SAME stale market at LOW value (the fresh bulk now
+		// out-weighs it) leaves the P90 in the fresh bulk — the straggler stays in the tolerated tail.
+		{"value-weighted P90 tolerates a low-value stale straggler", nineFreshOneStale(10, 1), true, 90, 10},
+		// The toggle honours OFF: the same low-value fixture value-weighting-OFF is a plain count
+		// percentile (weights ignored) — the straggler is still beyond P90, so the tail is tolerated.
+		{"value-weighting off ignores weight (plain count percentile)", nineFreshOneStale(10, 1), false, 90, 10},
+		// DEGRADE-TO-UNIFORM: value-weighting ON but every weight zero (no throughput signal) never
+		// divides by zero — it falls back to the count percentile.
+		{"all-zero weights degrade to a uniform percentile", nineFreshOneStale(0, 0), true, 90, 10},
+		// A single market's percentile is its own age (P90 == max == that market).
+		{"single market is its own percentile", []MarketFreshnessSample{mkt(500, 3)}, true, 90, 500},
+		// No markets is "cannot assess" (0) — the caller falls back to the aggregate max.
+		{"no markets cannot assess", nil, true, 90, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := WeightedPercentileAgeSeconds(tc.markets, tc.valueWeighted, tc.percentile); got != tc.want {
+				t.Errorf("WeightedPercentileAgeSeconds(%v, %v, %d) = %v, want %v",
+					tc.markets, tc.valueWeighted, tc.percentile, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCircuitDuration(t *testing.T) {
 	min := time.Minute
 	// 22 markets on 1 probe at 3min/hop = 66min.

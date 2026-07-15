@@ -2,6 +2,7 @@ package persistence_test
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -59,11 +60,29 @@ func TestMarketRepo_SystemsFreshness(t *testing.T) {
 	require.Equal(t, 2, aa.CycleSamples, "two consecutive-interval samples from three scans")
 	require.InDelta(t, 300, aa.OldestAgeSeconds, 5, "worst-case age is the oldest market (~300s)")
 
+	// sp-r57g: the per-market breakdown carries one (age, value-weight) sample per market — the
+	// value-weighted percentile's raw material. The weight is Σ(trade_volume × mid-price) over the
+	// market's goods: each AA market has TWO goods at trade_volume 100 and a mid-price (10+12)/2 = 11,
+	// so its weight is 2 × 100 × 11 = 2200 — proving the census sums throughput×value across goods.
+	require.Len(t, aa.Markets, 3, "one percentile sample per distinct market")
+	aaAges := make([]float64, 0, len(aa.Markets))
+	for _, m := range aa.Markets {
+		require.Equal(t, 2200.0, m.Weight, "per-market weight = Σ(trade_volume × mid-price) across the two goods")
+		aaAges = append(aaAges, m.AgeSeconds)
+	}
+	sort.Float64s(aaAges)
+	require.InDelta(t, 60, aaAges[0], 5, "the freshest market's age")
+	require.InDelta(t, 180, aaAges[1], 5)
+	require.InDelta(t, 300, aaAges[2], 5, "the stalest market's age matches OldestAgeSeconds")
+
 	bb := bySystem["X1-BB"]
 	require.Equal(t, 1, bb.MarketCount)
 	require.Equal(t, 0, bb.CycleSamples, "a single market has no interval to measure")
 	require.Equal(t, 0.0, bb.MeasuredCycleSeconds)
 	require.InDelta(t, 500, bb.OldestAgeSeconds, 5)
+	require.Len(t, bb.Markets, 1)
+	require.Equal(t, 1100.0, bb.Markets[0].Weight, "a single-good market weighs one good's trade_volume × mid-price (100 × 11)")
+	require.InDelta(t, 500, bb.Markets[0].AgeSeconds, 5)
 }
 
 // UpdateHulls resizes a live standing post's budget WITHOUT clobbering its manning: the

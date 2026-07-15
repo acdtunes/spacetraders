@@ -758,6 +758,8 @@ func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int
 		CycleDampeningPercent:   cfg.OptionalInt("cycle_dampening_percent", 0),
 		MaxProbesPerSystem:      cfg.OptionalInt("max_probes_per_system", 0),
 		BreachResponsePercent:   cfg.OptionalInt("breach_response_percent", 0),
+		TargetPercentile:        cfg.OptionalInt("target_percentile", 0), // sp-r57g percentile-age target
+		ValueWeightedMode:       cfg.OptionalInt("value_weighted", 0),    // sp-r57g value-weighting mode (2=on default, 1=off)
 		ReleaseSlackPercent:     cfg.OptionalInt("release_slack_percent", 0),
 		ReleaseStableWindowSecs: cfg.OptionalInt("release_stable_window_secs", 0),
 		ReservedFrontierFloor:   cfg.OptionalInt("reserved_frontier_floor", 0), // sp-iopd reserved frontier floor

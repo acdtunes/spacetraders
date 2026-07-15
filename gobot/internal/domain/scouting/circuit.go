@@ -158,6 +158,83 @@ func CircuitRequiredHulls(hulls int, actualAge, sla time.Duration) int {
 	return int(math.Ceil(need))
 }
 
+// WeightedPercentileAgeSeconds returns the age at `percentile` across a system's markets
+// (sp-r57g) — the freshness sizer's closed-loop ground truth, superseding the tail-dominated
+// max (OldestAgeSeconds). It is the age at which the cumulative market weight first reaches
+// `percentile`% of the total (the weighted nearest-rank percentile): walking markets
+// freshest-first, the first market whose running weight crosses the threshold sets the age.
+//
+// When valueWeighted is set each market's weight is its Σ(trade_volume × price) throughput, so
+// a HIGH-VALUE stale market carries enough cumulative weight to pull the percentile onto itself
+// (it breaches, earning more probes — the arb core stays tight), while an equal-count LOW-value
+// straggler contributes little and stays in the tolerated tail (the periphery lags cheaply).
+// With valueWeighted off every market weighs 1 — a plain count percentile that simply drops the
+// stalest (100−percentile)% of markets (DA78: P90≈62 vs an unachievable max≈167).
+//
+// Boundary behaviour, all deliberate: percentile 100 returns the exact MAX (the mutation guard —
+// reverting the metric to the max re-inflates demand); a single market returns its own age; no
+// markets returns 0 ("cannot assess", the caller then falls back to the aggregate max); and a
+// value-weighted system whose every weight is non-positive (no throughput signal) DEGRADES to the
+// uniform count percentile rather than dividing by zero. percentile is clamped to [0,100].
+func WeightedPercentileAgeSeconds(markets []MarketFreshnessSample, valueWeighted bool, percentile int) float64 {
+	count := len(markets)
+	if count == 0 {
+		return 0
+	}
+	if percentile < 0 {
+		percentile = 0
+	}
+	if percentile > 100 {
+		percentile = 100
+	}
+
+	sorted := append([]MarketFreshnessSample(nil), markets...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].AgeSeconds < sorted[j].AgeSeconds })
+
+	// Value-weight only when asked AND some market carries a positive weight; otherwise every
+	// market weighs 1 (uniform), which also handles the missing-weight-source degenerate.
+	useValue := valueWeighted && hasPositiveWeight(sorted)
+
+	total := 0.0
+	for i := range sorted {
+		total += sampleWeight(sorted[i], useValue)
+	}
+
+	threshold := float64(percentile) / 100 * total
+	cumulative := 0.0
+	for i := range sorted {
+		cumulative += sampleWeight(sorted[i], useValue)
+		if cumulative >= threshold {
+			return sorted[i].AgeSeconds
+		}
+	}
+	return sorted[count-1].AgeSeconds
+}
+
+// sampleWeight is a market's contribution to the percentile: its throughput value when value-
+// weighting is active (a negative weight is floored to 0 — a zero-value market is pure tail),
+// else the uniform 1 that makes a plain count percentile.
+func sampleWeight(sample MarketFreshnessSample, useValue bool) float64 {
+	if !useValue {
+		return 1
+	}
+	if sample.Weight < 0 {
+		return 0
+	}
+	return sample.Weight
+}
+
+// hasPositiveWeight reports whether any market carries a positive value weight — the guard that
+// keeps a no-throughput-signal system on the uniform count percentile instead of dividing by zero.
+func hasPositiveWeight(markets []MarketFreshnessSample) bool {
+	for i := range markets {
+		if markets[i].Weight > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // median returns the middle value of xs (the mean of the two middle values for an even
 // count). xs must be non-empty; the sole caller guarantees it. It sorts a copy so the
 // caller's slice order is preserved.

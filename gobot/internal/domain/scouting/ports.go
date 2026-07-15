@@ -44,6 +44,24 @@ type SystemFreshnessSnapshot struct {
 	// the coordinator trusts the measurement only once it clears a minimum sample floor,
 	// otherwise it falls back to the fleet-wide median or the seed.
 	CycleSamples int
+	// Markets is the per-market age+value-weight breakdown backing the sp-r57g PERCENTILE
+	// target: the sizer computes the (value-weighted) P90 age from these rather than reacting
+	// to the tail-dominated OldestAgeSeconds (the max). EMPTY ⇒ the sizer falls back to
+	// OldestAgeSeconds — exact pre-sp-r57g (max-age) behavior — so a census that predates the
+	// breakdown, and aggregate-only test fixtures, keep working unchanged.
+	Markets []MarketFreshnessSample
+}
+
+// MarketFreshnessSample is one market's (waypoint's) contribution to a system's freshness
+// percentile (sp-r57g): its current staleness (AgeSeconds) and its VALUE WEIGHT — the
+// census adapter sets the weight to Σ(trade_volume × mid-price) across the market's goods,
+// so a high-throughput arb market pulls the percentile up while a low-traffic peripheral
+// straggler stays in the tolerated tail. Weight is ignored when value-weighting is off (the
+// percentile is then a plain count-based nearest-rank), and an all-zero-weight system
+// degrades to uniform so a missing weight source never divides by zero.
+type MarketFreshnessSample struct {
+	AgeSeconds float64
+	Weight     float64
 }
 
 // SystemFreshnessReader supplies the per-system freshness census the market-freshness
