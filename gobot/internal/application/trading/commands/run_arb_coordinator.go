@@ -289,6 +289,18 @@ func (h *RunArbCoordinatorHandler) execute(
 		return fmt.Errorf("buy-at and sell-at must differ (both %s)", cmd.BuyAt)
 	}
 
+	// sp-ieqj: stamp this run's operation context so every ledger row AND every refuel
+	// it writes inherits operation_type="arb_run" instead of the 'manual' fallback. The
+	// one-shot buy→travel→sell delegates to the shared trade-route legs, which are
+	// ctx-transparent (they record whatever operation context rides the ctx), and
+	// travel's RouteExecutor propagates this ctx verbatim to every RefuelShipCommand it
+	// fires. Before this stamp arb's PURCHASE_CARGO/SELL_CARGO and its travel refuels
+	// landed unattributed, crediting arbitrage P&L to no engine. Mirrors how every
+	// sibling coordinator tags its writes at the boundary (trade_route/tour/stocker/…).
+	// A run built without a ContainerID (direct/CLI) yields a nil context and stays
+	// 'manual' — the honest ad-hoc default.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "arb_run"))
+
 	// Load the hull the daemon container runner claimed for this run (loadShip does
 	// not claim/release — the runner owns that lifecycle).
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
