@@ -86,6 +86,7 @@ var fleetAutosizerConfigKeys = []string{
 	"autosizer_heavy_marginal_rate_floor",
 	"autosizer_heavy_unserved_lanes_min",
 	"autosizer_heavy_treasury_pct_per_purchase",
+	"autosizer_declining_rate_unserved_floor",
 	"autosizer_api_utilization_ceiling_pct",
 	"autosizer_payback_safety_factor",
 	"autosizer_purchase_cutoff_at_era_minus_hours",
@@ -182,6 +183,9 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.HeavyTreasuryPctPerPurchase != 0 {
 		config["autosizer_heavy_treasury_pct_per_purchase"] = fa.HeavyTreasuryPctPerPurchase
 	}
+	if fa.DecliningRateUnservedFloor != 0 {
+		config["autosizer_declining_rate_unserved_floor"] = fa.DecliningRateUnservedFloor
+	}
 	if fa.APIUtilizationCeilingPct != 0 {
 		config["autosizer_api_utilization_ceiling_pct"] = fa.APIUtilizationCeilingPct
 	}
@@ -272,6 +276,7 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		HeavyMarginalRateFloor:      cfg.OptionalFloat("autosizer_heavy_marginal_rate_floor", 0),
 		HeavyUnservedLanesMin:       cfg.OptionalInt("autosizer_heavy_unserved_lanes_min", 0),
 		HeavyTreasuryPctPerPurchase: cfg.OptionalInt("autosizer_heavy_treasury_pct_per_purchase", 0),
+		DecliningRateUnservedFloor:  cfg.OptionalInt("autosizer_declining_rate_unserved_floor", 0),
 
 		APIUtilizationCeilingPct: cfg.OptionalInt("autosizer_api_utilization_ceiling_pct", 0),
 

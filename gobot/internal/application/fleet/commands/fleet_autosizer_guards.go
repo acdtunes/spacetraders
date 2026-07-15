@@ -85,6 +85,16 @@ type PurchaseRequest struct {
 	RateFloor     float64 // absolute $/hr floor the class must clear (fraction × fleet-avg, resolved upstream).
 	RateReadable  bool
 	RateDeclining bool // realized rate trending down (heavy stop-buy).
+	// UnservedDemandFloor (sp-zbe6) is the near-zero unserved-lane count — the heavy class's OWN
+	// Shortfall — at or BELOW which a DECLINING aggregate realized-rate is treated as genuine
+	// absorption saturation and STOPS the buy. ABOVE it, a declining aggregate rate is a hull-
+	// CONCENTRATION artifact (the fleet piled onto a few fat lanes and compressed their realized
+	// rate while profitable lanes sit UNFLOWN) — the next heavy flies a FRESH lane at fresh
+	// economics, so the declining signal must NOT stop the buy. For heavies Shortfall is the
+	// unserved profitable-lane count (sp-4ewi). Resolved from autosizer_declining_rate_unserved_floor
+	// (default 2); the config resolver never lets it reach 0, so the stop-buy can never be silently
+	// disabled (the demand guard already forces Shortfall>0).
+	UnservedDemandFloor int
 
 	// Treasury.
 	LiveTreasury      int64
@@ -241,10 +251,28 @@ func guardRealizedRate(req PurchaseRequest) GuardVerdict {
 		return GuardVerdict{Guard: GuardRealizedRate, Passed: false, Detail: "realized rate unreadable"}
 	}
 	if req.RateDeclining {
+		// The CONCENTRATION carve-out (sp-zbe6) applies to the TRADE (heavy) pool ONLY: for a heavy,
+		// req.Shortfall IS the count of profitable trade lanes that sit UNFLOWN (sp-4ewi). When that
+		// count is ABOVE the floor, a DECLINING aggregate tour-rate is a hull-CONCENTRATION artifact —
+		// the fleet piled onto a few fat lanes and compressed THEIR realized rate — not true absorption
+		// saturation: the next heavy flies a FRESH unserved lane at fresh economics, so the decline must
+		// NOT stop the buy. Every OTHER class keeps the unconditional declining stop-buy unchanged (a
+		// light's Shortfall is worker slots, not lanes, and carries no lane-concentration story), so
+		// this loosens NOTHING off the trade path. Either way the marginal must still clear the rate
+		// floor below (never over-loosen a capital buy). The unserved-lane count is named in the detail
+		// so the gate is auditable in the daemon log.
+		concentration := req.Class == HullClassHeavy && req.Shortfall > req.UnservedDemandFloor
+		if !concentration {
+			detail := fmt.Sprintf("marginal %.0f but rate DECLINING (absorption saturating — stop-buy)", req.MarginalRate)
+			if req.Class == HullClassHeavy {
+				detail = fmt.Sprintf("marginal %.0f, rate DECLINING with only %d unserved lanes <= floor %d (absorption saturating — stop-buy)", req.MarginalRate, req.Shortfall, req.UnservedDemandFloor)
+			}
+			return GuardVerdict{Guard: GuardRealizedRate, Passed: false, Detail: detail}
+		}
 		return GuardVerdict{
 			Guard:  GuardRealizedRate,
-			Passed: false,
-			Detail: fmt.Sprintf("marginal %.0f but rate DECLINING (absorption saturating — stop-buy)", req.MarginalRate),
+			Passed: req.MarginalRate >= req.RateFloor,
+			Detail: fmt.Sprintf("rate DECLINING but %d unserved lanes > floor %d (concentration not saturation — next heavy flies a fresh lane); marginal %.0f >= floor %.0f", req.Shortfall, req.UnservedDemandFloor, req.MarginalRate, req.RateFloor),
 		}
 	}
 	return GuardVerdict{

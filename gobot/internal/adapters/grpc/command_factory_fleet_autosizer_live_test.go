@@ -108,6 +108,21 @@ func TestAutosizerResolvesKnobsFromLiveConfig(t *testing.T) {
 	require.Equal(t, "SHIP_REFINING_FREIGHTER", cmd.ShipTypeHeavies)
 }
 
+// sp-zbe6: the declining-rate unserved floor round-trips config.yaml → the built command, so a
+// captain retunes the concentration-vs-saturation threshold by editing config.yaml and restarting
+// (the sp-ts82 live-config discipline). It also clears a stale persisted copy in favor of the
+// current config.yaml value.
+func TestAutosizerResolvesDecliningRateUnservedFloorFromLiveConfig(t *testing.T) {
+	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
+		DecliningRateUnservedFloor: 4,
+	})
+	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(map[string]interface{}{
+		"autosizer_declining_rate_unserved_floor": 99, // stale copy from a prior boot
+	}))
+	require.Equal(t, 4, cmd.DecliningRateUnservedFloor,
+		"live config.yaml value must be plumbed into the command and override the stale persisted 99")
+}
+
 // sp-ts82: a STALE persisted knob from a prior boot must be discarded for the current config.yaml
 // value on the recovery rebuild.
 func TestAutosizerLiveKnobOverridesStalePersisted(t *testing.T) {

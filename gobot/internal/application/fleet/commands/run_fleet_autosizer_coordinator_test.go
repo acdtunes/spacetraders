@@ -180,6 +180,11 @@ func TestResolveConfig_Defaults(t *testing.T) {
 	if cfg.HeavyMarginalRateFloor != defaultHeavyMarginalRateFloor {
 		t.Errorf("heavy marginal rate floor default = %v, want %v", cfg.HeavyMarginalRateFloor, defaultHeavyMarginalRateFloor)
 	}
+	// sp-zbe6: the declining-rate unserved floor must resolve to its documented default (never 0 —
+	// a 0 floor would silently disable the declining stop-buy since the demand guard forces Shortfall>0).
+	if cfg.DecliningRateUnservedFloor != defaultDecliningRateUnservedFloor {
+		t.Errorf("declining-rate unserved floor default = %d, want %d", cfg.DecliningRateUnservedFloor, defaultDecliningRateUnservedFloor)
+	}
 	if cfg.PaybackSafetyFactor != defaultPaybackSafetyFactor {
 		t.Errorf("payback safety default = %v, want %v", cfg.PaybackSafetyFactor, defaultPaybackSafetyFactor)
 	}
@@ -205,11 +210,15 @@ func TestResolveConfig_ExplicitFalseProximalYard(t *testing.T) {
 
 func TestResolveConfig_OverridesRespected(t *testing.T) {
 	cfg := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{
-		TickIntervalSecs:   60,
-		PurchaseCapPerTick: 3,
-		FleetCeilingTotal:  100,
-		LightRotationSlots: 4.0,
+		TickIntervalSecs:           60,
+		PurchaseCapPerTick:         3,
+		FleetCeilingTotal:          100,
+		LightRotationSlots:         4.0,
+		DecliningRateUnservedFloor: 5,
 	})
+	if cfg.DecliningRateUnservedFloor != 5 {
+		t.Errorf("declining-rate unserved floor override = %d, want 5", cfg.DecliningRateUnservedFloor)
+	}
 	if cfg.Tick != 60*time.Second {
 		t.Errorf("tick override = %v, want 60s", cfg.Tick)
 	}

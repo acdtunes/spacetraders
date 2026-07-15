@@ -78,6 +78,14 @@ type FleetAutosizerConfig struct {
 	// HeavyTreasuryPctPerPurchase is the analyst's 25%-treasury affordability rule for a heavy
 	// buy (a single heavy must cost ≤ this percent of live treasury). 0/absent → 25.
 	HeavyTreasuryPctPerPurchase int `mapstructure:"heavy_treasury_pct_per_purchase"`
+	// DecliningRateUnservedFloor (sp-zbe6) is the near-zero unserved-lane count at/below which a
+	// DECLINING aggregate realized tour-rate is treated as genuine absorption saturation and STOPS
+	// a heavy buy. Above it a declining aggregate is a hull-CONCENTRATION artifact (the fleet
+	// compressed a few fat lanes while profitable lanes sit unflown) and the next heavy flies a fresh
+	// lane, so the buy proceeds. Trade-scoped (keys off the heavy class's unserved-lane Shortfall);
+	// other classes keep the unconditional declining stop-buy. 0/absent → 2. The resolver forbids 0,
+	// so the stop-buy can never be silently disabled.
+	DecliningRateUnservedFloor int `mapstructure:"declining_rate_unserved_floor"`
 
 	// --- API-utilization ceiling (dynamic rate protection; fleet ceilings are the hard bound) ---
 

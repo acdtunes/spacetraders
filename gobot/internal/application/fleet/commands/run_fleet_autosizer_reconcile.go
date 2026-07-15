@@ -36,6 +36,7 @@ type autosizerRunConfig struct {
 	HeavyMarginalRateFloor      float64
 	HeavyUnservedLanesMin       int
 	HeavyTreasuryPctPerPurchase int
+	DecliningRateUnservedFloor  int
 
 	APIUtilizationCeilingPct int
 
@@ -81,6 +82,7 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 		HeavyMarginalRateFloor:           cmd.HeavyMarginalRateFloor,
 		HeavyUnservedLanesMin:            cmd.HeavyUnservedLanesMin,
 		HeavyTreasuryPctPerPurchase:      cmd.HeavyTreasuryPctPerPurchase,
+		DecliningRateUnservedFloor:       cmd.DecliningRateUnservedFloor,
 		APIUtilizationCeilingPct:         cmd.APIUtilizationCeilingPct,
 		PaybackSafetyFactor:              cmd.PaybackSafetyFactor,
 		PurchaseCutoffAtEraMinus:         time.Duration(cmd.PurchaseCutoffAtEraMinusHours * float64(time.Hour)),
@@ -134,6 +136,9 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.HeavyTreasuryPctPerPurchase <= 0 {
 		c.HeavyTreasuryPctPerPurchase = defaultHeavyTreasuryPctPerPurchase
+	}
+	if c.DecliningRateUnservedFloor <= 0 {
+		c.DecliningRateUnservedFloor = defaultDecliningRateUnservedFloor
 	}
 	if c.APIUtilizationCeilingPct <= 0 {
 		c.APIUtilizationCeilingPct = defaultAPIUtilCeilingPct

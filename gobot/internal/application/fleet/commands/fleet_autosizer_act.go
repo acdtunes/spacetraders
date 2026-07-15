@@ -310,10 +310,11 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 		EraCutoffHours: cfg.PurchaseCutoffAtEraMinus.Hours(),
 		PaybackSafety:  cfg.PaybackSafetyFactor,
 
-		MarginalRate:  d.MarginalRate,
-		RateFloor:     rateFloor,
-		RateReadable:  d.RateReadable,
-		RateDeclining: d.RateDeclining,
+		MarginalRate:        d.MarginalRate,
+		RateFloor:           rateFloor,
+		RateReadable:        d.RateReadable,
+		RateDeclining:       d.RateDeclining,
+		UnservedDemandFloor: cfg.DecliningRateUnservedFloor,
 
 		LiveTreasury:      in.treasury,
 		TreasuryReadable:  in.treasuryOK,

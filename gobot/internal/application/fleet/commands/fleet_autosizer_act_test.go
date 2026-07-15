@@ -323,3 +323,57 @@ func containsGuard(gs []GuardName, want GuardName) bool {
 	}
 	return false
 }
+
+// --- sp-zbe6: the declining-aggregate-rate stop-buy is a CONCENTRATION false-positive when
+// profitable unserved lanes sit unflown -----------------------------------------------------------
+
+// ACCEPTANCE (the live incident, 2026-07-15 player-3): a heavy-freighter buy where every other
+// guard passes and the aggregate realized tour-rate is DECLINING, but 28 profitable trade lanes are
+// UNSERVED. The declining aggregate is a hull-CONCENTRATION artifact (the fleet piled onto a few fat
+// lanes and compressed them) — the NEXT heavy flies a FRESH unserved lane at fresh economics, so the
+// buy MUST proceed. Before the fix the declining stop-buy wrongly blocked this valid capital buy.
+func TestReconcile_HeavyDecliningRateWithUnservedLanes_StillBuys(t *testing.T) {
+	// Demand 34, current 6 → shortfall 28 unserved profitable lanes; aggregate rate DECLINING;
+	// marginal 80000 clears the 0.7×fleet-avg floor (0.7 × 100000 = 70000).
+	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
+		Demand: 34, Current: 6, MarginalRate: 80000, FleetAvgRate: 100000,
+		RateDeclining: true, RateReadable: true, Readable: true,
+	}}
+	h, purchaser, _, _ := armedHandler(heavy)
+	// Streak of 1 so the anti-thrash gate is met on the first tick; the default declining-rate
+	// unserved floor (2) is far below the 28 unserved lanes, so the buy proceeds.
+	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 3, ContainerID: "c-zbe6", HeavyUnservedLanesMin: 1}
+	res, err := h.reconcileOnce(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if res.Purchased != 1 {
+		t.Fatalf("a declining aggregate rate with 28 UNSERVED lanes must NOT block the buy (concentration, not saturation), got Purchased=%d", res.Purchased)
+	}
+	if len(purchaser.orders) != 1 || purchaser.orders[0].Class != HullClassHeavy {
+		t.Fatalf("expected one HEAVY buy (the next hull flies a fresh unserved lane), got %+v", purchaser.orders)
+	}
+}
+
+// REGRESSION (critical, the guard that prevents over-buying into a saturated market): a genuinely
+// saturated heavy market — aggregate rate DECLINING and unserved demand near-zero (shortfall 1, at
+// or below the floor) — STILL stops buying. This is the whole point of the declining-rate stop-buy;
+// the sp-zbe6 fix must NOT loosen it away.
+func TestReconcile_HeavyDecliningRateSaturated_StillStops(t *testing.T) {
+	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
+		Demand: 7, Current: 6, MarginalRate: 80000, FleetAvgRate: 100000, // shortfall 1 (near-zero)
+		RateDeclining: true, RateReadable: true, Readable: true,
+	}}
+	h, purchaser, metrics, _ := armedHandler(heavy)
+	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 3, ContainerID: "c-zbe6b", HeavyUnservedLanesMin: 1}
+	res, err := h.reconcileOnce(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("a saturated market (declining + near-zero unserved) MUST still stop buying, got Purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
+	}
+	if !containsGuard(metrics.blockedGuards, GuardRealizedRate) {
+		t.Fatalf("expected a realized_rate block metered on the saturated declining market, got %v", metrics.blockedGuards)
+	}
+}

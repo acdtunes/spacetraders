@@ -30,6 +30,11 @@ const (
 	defaultHeavyMarginalRateFloor      = 0.7
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
+	// defaultDecliningRateUnservedFloor (sp-zbe6) is the near-zero unserved-lane count at/below
+	// which a DECLINING aggregate realized-rate is a genuine heavy stop-buy; above it the decline is
+	// hull concentration and the buy proceeds. "A couple of lanes" — the resolver never lets it reach
+	// 0, so the declining stop-buy can never be silently disabled (the demand guard forces Shortfall>0).
+	defaultDecliningRateUnservedFloor  = 2
 	defaultAPIUtilCeilingPct           = 85
 	defaultPaybackSafetyFactor         = 0.5
 	defaultPurchaseCutoffEraMinusHours = 3.0
@@ -112,6 +117,7 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	HeavyMarginalRateFloor      float64
 	HeavyUnservedLanesMin       int
 	HeavyTreasuryPctPerPurchase int
+	DecliningRateUnservedFloor  int
 
 	APIUtilizationCeilingPct int
 

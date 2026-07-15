@@ -34,10 +34,11 @@ func passingRequest() PurchaseRequest {
 		EraCutoffHours: 3,
 		PaybackSafety:  0.5,
 
-		MarginalRate:  80000,
-		RateFloor:     56000,
-		RateReadable:  true,
-		RateDeclining: false,
+		MarginalRate:        80000,
+		RateFloor:           56000,
+		RateReadable:        true,
+		RateDeclining:       false,
+		UnservedDemandFloor: 2,
 
 		LiveTreasury:      5000000,
 		TreasuryReadable:  true,
@@ -138,10 +139,93 @@ func TestGuard_RealizedRate_BelowFloor(t *testing.T) {
 	assertBlockedBy(t, r, GuardRealizedRate)
 }
 
-func TestGuard_RealizedRate_DecliningStopsBuy(t *testing.T) {
+// heavyRequest is a HEAVY (trade) candidate where every guard passes — the class the sp-zbe6
+// concentration carve-out applies to (its Shortfall is the unserved profitable-lane count). Based on
+// the all-pass light request with the class flipped and the rate headroom kept (marginal 80000 ≥
+// floor 56000), so flipping ONE realized-rate field pins exactly the declining-stop-buy behaviour.
+func heavyRequest() PurchaseRequest {
 	r := passingRequest()
-	r.RateDeclining = true // absorption saturating — stop buying even above the floor
+	r.Class = HullClassHeavy
+	r.ShipType = "SHIP_HEAVY_FREIGHTER"
+	return r
+}
+
+// sp-zbe6 REGRESSION (the guard that prevents over-buying into a saturated market): a genuinely
+// saturated TRADE market — realized rate DECLINING with unserved lanes AT or BELOW the floor (the
+// fleet has already spread to nearly every profitable lane) — STILL stops buying, even though the
+// marginal clears the rate floor. The concentration fix must not loosen this away.
+func TestGuard_RealizedRate_DecliningStopsBuy(t *testing.T) {
+	r := heavyRequest()
+	r.RateDeclining = true
+	r.Shortfall = 2 // == the near-zero floor: genuine saturation, no fresh lane for the next heavy
 	assertBlockedBy(t, r, GuardRealizedRate)
+}
+
+// sp-zbe6: a DECLINING aggregate tour-rate does NOT stop a HEAVY buy when unserved lanes sit ABOVE
+// the floor — that decline is hull CONCENTRATION (the fleet compressed a few fat lanes), not
+// absorption saturation; the next heavy flies a FRESH unserved lane. The buy proceeds (the marginal
+// still clears the floor). The decision-log detail names the unserved-lane count so it is auditable.
+func TestGuard_RealizedRate_DecliningWithUnservedInventory_Proceeds(t *testing.T) {
+	r := heavyRequest()
+	r.RateDeclining = true
+	r.Shortfall = 28 // the live incident: 28 profitable lanes unflown, floor 2
+	d := EvaluateGuards(r)
+	if !d.Approved {
+		t.Fatalf("a declining rate with 28 unserved lanes (> floor 2) must NOT block — concentration, not saturation; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+	arith := d.Arithmetic()
+	if !strings.Contains(arith, "28 unserved") {
+		t.Errorf("realized_rate detail must name the unserved-lane count for audit, got: %s", arith)
+	}
+	if !strings.Contains(arith, "concentration") {
+		t.Errorf("realized_rate detail must explain the decline is concentration not saturation, got: %s", arith)
+	}
+}
+
+// sp-zbe6 off-by-one boundary + mutation anchor (heavy): with the floor at 2, the declining stop-buy
+// fires for unserved lanes AT or BELOW 2 (genuine near-zero saturation) and is bypassed ABOVE 2
+// (unserved inventory present). Input variations of one behavior → one parametrized test (Mandate 5).
+func TestGuard_RealizedRate_DecliningStopBuyFloorBoundary(t *testing.T) {
+	cases := []struct {
+		shortfall  int
+		wantBlock  bool
+		wantDetail string
+	}{
+		{shortfall: 1, wantBlock: true, wantDetail: "stop-buy"},       // below floor → saturated
+		{shortfall: 2, wantBlock: true, wantDetail: "stop-buy"},       // == floor → still saturated
+		{shortfall: 3, wantBlock: false, wantDetail: "concentration"}, // floor+1 → inventory present
+		{shortfall: 28, wantBlock: false, wantDetail: "concentration"},
+	}
+	for _, tc := range cases {
+		r := heavyRequest()
+		r.RateDeclining = true
+		r.UnservedDemandFloor = 2
+		r.Shortfall = tc.shortfall
+		d := EvaluateGuards(r)
+		blocked := d.BlockedBy == GuardRealizedRate
+		if blocked != tc.wantBlock {
+			t.Errorf("shortfall %d (floor 2): realized_rate blocked=%v, want %v — arithmetic: %s", tc.shortfall, blocked, tc.wantBlock, d.Arithmetic())
+		}
+		if !strings.Contains(d.Arithmetic(), tc.wantDetail) {
+			t.Errorf("shortfall %d: detail must contain %q, got: %s", tc.shortfall, tc.wantDetail, d.Arithmetic())
+		}
+	}
+}
+
+// sp-zbe6 class-scope guard (lens 3 "no behavior change to non-trade classes" + class-gate mutation
+// anchor): the concentration carve-out is TRADE-ONLY. A NON-heavy class (light) with a declining
+// realized rate STILL stops buying even with a large shortfall — a light's Shortfall is worker slots,
+// not unserved lanes, so it carries no concentration story and keeps the unconditional stop-buy.
+// Dropping the class gate (making the carve-out generic) makes this fail — proving it trade-scoped.
+func TestGuard_RealizedRate_NonHeavyDecliningAlwaysStops(t *testing.T) {
+	r := passingRequest() // HullClassLight
+	r.RateDeclining = true
+	r.Shortfall = 28          // a large shortfall must NOT buy the light out of a declining rate
+	r.UnservedDemandFloor = 2 // the heavy floor is irrelevant to a non-heavy class
+	assertBlockedBy(t, r, GuardRealizedRate)
+	if strings.Contains(EvaluateGuards(r).Arithmetic(), "concentration") {
+		t.Errorf("a non-heavy declining rate must NOT get the concentration carve-out: %s", EvaluateGuards(r).Arithmetic())
+	}
 }
 
 func TestGuard_TreasuryPct_TooExpensive(t *testing.T) {
