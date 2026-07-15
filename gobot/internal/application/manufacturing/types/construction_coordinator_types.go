@@ -56,6 +56,26 @@ type RunConstructionCoordinatorCommand struct {
 	// stranding the laden one). Fed from [manufacturing].construction_supply_task_timeout_seconds so a
 	// captain retunes it live (RULINGS #5); a per-launch config value overrides the handler default.
 	SupplyTaskTimeoutSeconds int
+
+	// DedicatedFleet is the Ship.DedicatedFleet() tag this drain PREFERS (sp-e55b): each tick it
+	// discovers idle hulls carrying this tag — its own gate haulers (e.g. TORWIND-C/-D) — via
+	// FindIdleShipsByFleet FIRST, then supplements with opportunistic non-dedicated idle hulls. This
+	// closes the structural blind spot where the drain consulted ONLY FindIdleLightHaulers, which by
+	// design EXCLUDES every dedicated hull, so its own bought fleet was invisible and it poached
+	// opportunistic hulls instead. Empty defaults (in-handler) to the shared "manufacturing" identity,
+	// which is ALSO the ClaimShip operation string: the two MUST match, or ClaimShip's atomic no-poach
+	// guard would reject the drain claiming its own dedicated hull. Preference derives from the LIVE
+	// persisted tag read every tick, so a `fleet assign` (or a restart) re-derives it with no carried
+	// state (RULINGS #2, #5). Fed from dedicated_fleet.
+	DedicatedFleet string
+	// ExclusiveDedicatedFleet seals the drain to its dedicated fleet (contract sp-wq7r parity): when
+	// true and ANY hull carries the DedicatedFleet tag, the drain draws ONLY from idle dedicated members
+	// and never supplements from the opportunistic pool — even while a dedicated hull is busy or
+	// out-of-system. Default false = PREFER dedicated first, then fall back to opportunistic idle hulls
+	// when dedicated capacity is insufficient (the sp-e55b default). A hull pinned to ANOTHER fleet is
+	// never claimed either way — ClaimShip enforces that atomically (RULINGS #7). Fed from
+	// exclusive_dedicated_fleet.
+	ExclusiveDedicatedFleet bool
 }
 
 // RunConstructionCoordinatorResponse reports the outcome of the last drain tick.

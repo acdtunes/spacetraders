@@ -197,6 +197,18 @@ func (r *drainFakeShipRepo) ClaimShip(_ context.Context, symbol, containerID str
 	if r.claimErr != nil {
 		return r.claimErr
 	}
+	// Mirror the real repository's atomic no-poach dedication guard (ship_repository.go
+	// ClaimShip lines ~1225, RULINGS #7): a hull dedicated to a fleet OTHER than the claiming
+	// operation is rejected. This makes the fake a faithful seam so a drain that ever tried to
+	// poach a foreign-pinned hull is caught here, not silently recorded as a claim.
+	for _, s := range r.ships {
+		if s.ShipSymbol() == symbol {
+			if f := s.DedicatedFleet(); f != "" && f != operation {
+				return errors.New("ship dedicated to another fleet")
+			}
+			break
+		}
+	}
 	r.claims = append(r.claims, drainClaim{symbol: symbol, containerID: containerID, operation: operation})
 	for _, s := range r.ships {
 		if s.ShipSymbol() == symbol {

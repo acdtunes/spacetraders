@@ -929,6 +929,12 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		// sp-ubwi: the per-supplyTask timeout, from [manufacturing] via resolveConstructionUnifiedGateFill.
 		// 0/absent → the drain's raised 30m default (the old hardcoded 10m abandoned legit long hauls).
 		SupplyTaskTimeoutSeconds: cfg.OptionalInt("construction_supply_task_timeout_seconds", 0),
+		// sp-e55b: prefer the drain's OWN dedicated gate-hauler fleet (e.g. TORWIND-C/-D) before
+		// opportunistic idle hulls. Empty dedicated_fleet defaults (in-handler) to the shared
+		// "manufacturing" identity that also authorizes the claim; exclusive_dedicated_fleet seals the
+		// drain to that fleet (no opportunistic fallback). Both reload on restart (RULINGS #2).
+		DedicatedFleet:          cfg.OptionalString("dedicated_fleet"),
+		ExclusiveDedicatedFleet: cfg.OptionalBool("exclusive_dedicated_fleet"),
 	}
 }
 
