@@ -115,6 +115,14 @@ func (h *RunWarehouseHandler) Handle(ctx context.Context, request common.Request
 // register it with the coordinator. Split from the blocking hold in Handle so it
 // is testable without goroutines. Returns the hull's final location.
 func (h *RunWarehouseHandler) setup(ctx context.Context, cmd *RunWarehouseCommand, logger common.ContainerLogger) (string, error) {
+	// sp-zc8i: stamp this warehouse's operation context so the parking navigate to the
+	// home waypoint — and every refuel route_executor fires inside it — inherits
+	// operation_type="warehouse" instead of the 'manual' fallback. The navigate leg is
+	// ctx-transparent (it records whatever operation context rides the ctx), so without
+	// this stamp the parking hop's refuels landed unattributed. A warehouse built without
+	// a ContainerID yields a nil context and honestly stays 'manual'.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "warehouse"))
+
 	if _, err := h.getOrCreateWarehouseOperation(ctx, cmd, logger); err != nil {
 		return "", err
 	}

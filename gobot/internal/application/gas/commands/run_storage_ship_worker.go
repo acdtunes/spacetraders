@@ -59,6 +59,13 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 		return nil, fmt.Errorf("invalid request type")
 	}
 
+	// sp-zc8i: stamp this worker's operation context so the positioning navigate to the
+	// gas giant — and every refuel route_executor fires inside it — inherits
+	// operation_type="storage" instead of the 'manual' fallback. Same boundary tag the
+	// siphon worker carries; a worker without a CoordinatorID (direct/CLI) yields a nil
+	// context and honestly stays 'manual'.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.CoordinatorID, "storage"))
+
 	logger := common.LoggerFromContext(ctx)
 
 	result := &RunStorageShipWorkerResponse{

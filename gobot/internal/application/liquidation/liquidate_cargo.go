@@ -90,6 +90,15 @@ func (h *LiquidateCargoHandler) Handle(ctx context.Context, request common.Reque
 	}
 	logger := common.LoggerFromContext(ctx)
 
+	// sp-zc8i: stamp this worker's operation context so its SELL_CARGO row AND every
+	// refuel the sink-hop navigate fires inherit operation_type="liquidation" instead of
+	// the 'manual' fallback. The navigate/sell legs are ctx-transparent (they record
+	// whatever operation context rides the ctx), so without this stamp the loss-dump sale
+	// and its travel refuels landed unattributed. A worker spawned without a CoordinatorID
+	// (direct/CLI) yields a nil context and honestly stays 'manual'. Mirrors how every
+	// sibling coordinator tags its writes at the boundary (arb/tour/stocker/…).
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.CoordinatorID, "liquidation"))
+
 	// Reconcile against the server before touching cargo: a cached non-empty hold can
 	// be a phantom foreign-cargo desync (cluster L47), and a lot count is about to
 	// drive real sell/jettison I/O. Failing closed here is honest — better to fail the
