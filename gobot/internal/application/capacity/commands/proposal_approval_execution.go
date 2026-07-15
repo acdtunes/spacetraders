@@ -13,7 +13,8 @@ package commands
 // the money gate.
 //
 // DEPLOY-INERT: st-0h8 builds and proves the mechanism; it does NOT wire a live
-// trigger into the reconcile loop. The future arming lane (st-cpc) backs
+// trigger into the reconcile loop, and st-cpc (pre-arm cleanup) HARDENED it for
+// concurrent sweeps WITHOUT arming it. A future arming lane backs
 // ApprovedProposalSource with the real captain approval signal (a bead
 // status/label transition) and drives ExecuteApproved on a cadence. Until then
 // nothing is ever approved, so nothing executes — and the production
@@ -23,15 +24,19 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 )
 
 // ApprovedProposalSource yields the capital proposals a human/captain has
-// APPROVED and that await execution. INTEGRATION POINT for the arming lane
-// (st-cpc): back this with the captain approval signal (a bead status/label
-// transition — a proposal whose backing EventCapacityCapexProposal the captain
-// declared/approved). st-0h8 proves the execution path against this seam.
+// APPROVED and that await execution. INTEGRATION POINT for a future arming lane:
+// back this with the captain approval signal (a bead status/label transition — a
+// proposal whose backing EventCapacityCapexProposal the captain declared/approved).
+// st-0h8 proves the execution path against this seam; st-cpc serialized the sweep
+// against double-execution (see ProposalApprovalExecutor.sweep). If a future arming
+// lane ever fans execution across processes, add an atomic approved→in-flight claim
+// HERE — the in-process sweep lock cannot serialize across separate instances.
 type ApprovedProposalSource interface {
 	ApprovedProposals(ctx context.Context, playerID int) ([]capacity.Proposal, error)
 }
@@ -56,6 +61,25 @@ type ProposalApprovalExecutor struct {
 	source   ApprovedProposalSource
 	actuator capacity.Actuator
 	recorder ProposalExecutionRecorder
+
+	// sweep serializes ExecuteApproved END-TO-END (the ApprovedProposals READ
+	// included) so two OVERLAPPING sweeps can never both grab the same approved
+	// proposal before either marks it Executed — the double capital-spend hazard
+	// (st-cpc item 4). Wrapping the read is what makes it correct: a second sweep
+	// reads the approved-and-awaiting set only AFTER the first sweep's MarkExecuted
+	// has moved every executed proposal out of it, so the second finds nothing left
+	// to re-spend. Preserves every st-0h8 invariant VERBATIM — the per-proposal path
+	// (gate → verb/tier → ExecuteCapital → mark-on-success, skip-and-retry on
+	// failure) is untouched; serialization only removes the interleave, adding no
+	// per-proposal state.
+	//
+	// Assumes a SINGLE executor instance, which the ONE standing capacity reconciler
+	// guarantees (the executor is a stateless in-process helper it drives, never
+	// fanned out; double-launch is itself refused — TestCapacityReconcilerCoordinator
+	// RefusesDoubleLaunch). If a future arming lane ever fans execution across
+	// processes/instances, this in-process lock cannot serialize across them — see the
+	// atomic-claim note on ApprovedProposalSource.
+	sweep sync.Mutex
 }
 
 // NewProposalApprovalExecutor wires the executor to its approval source, the
@@ -68,7 +92,15 @@ func NewProposalApprovalExecutor(source ApprovedProposalSource, actuator capacit
 // through the gate, marking each Executed on a successful drive. A refused or
 // failed proposal is recorded in the report and skipped (never marked), so it is
 // re-attempted on the next sweep — the same statelessness the reconcile loop has.
+//
+// The whole sweep (the ApprovedProposals read through the last mark) runs under
+// x.sweep, so two overlapping calls cannot both grab and double-execute one
+// proposal — see the field doc for why serializing the read is the correctness
+// point, and for the single-instance assumption.
 func (x *ProposalApprovalExecutor) ExecuteApproved(ctx context.Context, playerID int, cal capacity.Calibration) (ProposalExecutionReport, error) {
+	x.sweep.Lock()
+	defer x.sweep.Unlock()
+
 	proposals, err := x.source.ApprovedProposals(ctx, playerID)
 	if err != nil {
 		return ProposalExecutionReport{}, fmt.Errorf("read approved proposals: %w", err)

@@ -52,11 +52,19 @@ type RunCapacityReconcilerCoordinatorCommand struct {
 	TickIntervalSecs int
 
 	// DryRun runs the loop observe-only: SENSE/PLAN/DIFF/GOVERN execute exactly
-	// as normal (all read-only), but CONVERGE actuates NOTHING — it calls no
-	// actuator verb and files no proposal. Instead it LOGS what it WOULD do and
-	// records the planned set on each TickOutcome (WouldExecute / WouldFile), so
-	// a captain can watch a live cycle before arming the engine. NOT
-	// dark-shipping: every skipped decision is logged loudly per tick.
+	// as normal, but CONVERGE actuates NOTHING — it calls no actuator verb and
+	// files no proposal. Instead it LOGS what it WOULD do and records the planned
+	// set on each TickOutcome (WouldExecute / WouldFile), so a captain can watch a
+	// live cycle before arming the engine. NOT dark-shipping: every skipped
+	// decision is logged loudly per tick.
+	//
+	// CAVEAT for a future arming lane: GOVERN still runs under DryRun, and with the
+	// thin capex emitter that means EmitCapitalDemand STILL publishes
+	// contract-delivery demand to the sp-1txd bridge every tick (DryRun gates only
+	// CONVERGE, not the emit — see capex_emitter.go Govern). DryRun is therefore NOT
+	// the thing keeping capital from being bought; the DORMANT contract_delivery
+	// class is (it stays inert until an arming lane wires it into sp-1txd's
+	// classDisabled / guards).
 	DryRun bool
 
 	// Calibration params (spec: Calibration section). 0 → documented default.

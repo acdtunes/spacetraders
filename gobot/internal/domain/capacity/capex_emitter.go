@@ -89,6 +89,18 @@ func NewCapexEmitter(sink CapitalDemandSink) *CapexEmitter {
 // Govern passes cheap tiers through to Approved and emits the summed tier-4
 // capital demand to the sink. It never mints proposals and never computes a
 // capex budget — the whole money-gating job is sp-1txd's.
+//
+// DryRun DOES NOT SUPPRESS THIS EMIT. Govern runs in the GOVERN phase, BEFORE and
+// independent of CONVERGE's DryRun branch (run_capacity_reconciler_coordinator.go:
+// reconcileTick calls Govern, THEN converge checks DryRun) — so the reconciler
+// publishes contract-delivery demand to the sp-1txd bridge every tick even in
+// observe-only mode. DryRun only silences CONVERGE's own actuation + proposal
+// filing; it is NOT what stops a capital buy. The REAL inertness is the DORMANT
+// contract_delivery class: HullClassContractDelivery sits outside the set sp-1txd's
+// classDisabled recognizes, so its "unknown class: never act" default skips this
+// demand every tick (see internal/adapters/capacity/contract_delivery_bridge.go).
+// A future arming lane MUST wire that class in deliberately — and MUST NOT rely on
+// DryRun as the safety once it does.
 func (e *CapexEmitter) Govern(_ context.Context, actions []Action, economics EconomicsSignals, _ Calibration) (GovernResult, error) {
 	result := GovernResult{}
 	capital := newCapitalAccumulator(economics.FleetPerHullCrHr)

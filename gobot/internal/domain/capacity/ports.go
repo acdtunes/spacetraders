@@ -28,11 +28,17 @@ type Differ interface {
 	Diff(ctx context.Context, desired DesiredTopology, actual TopologySignals, cal Calibration) ([]Action, error)
 }
 
-// Governor applies the capex gates to the action list (spec: GOVERN — reserve
-// floor, surplus-fraction drain, per-decision cap, ROI/payback gate). Cheap
-// tiers pass through to Approved; capital actions become Proposals (or, under
-// a future graduated autonomy, Approved). The governor lane (st-x00)
-// implements it.
+// Governor turns the DIFF action list into a GovernResult (spec: GOVERN). The
+// PRODUCTION impl is the THIN EMITTER capacity.CapexEmitter (capex_emitter.go,
+// st-x00 re-scoped by st-5le): cheap tiers (1-3) pass through to Approved verbatim,
+// and the CAPITAL tier (4) is summed into one contract-delivery CapitalDemand and
+// EMITTED to the sp-1txd fleet autosizer — which owns the SINGLE guard stack
+// (reserve floor, 25%-treasury, era payback, fleet ceilings, per-tick cap) that
+// actually spends. The emitter computes NO capex budget and mints NO proposals
+// (GovernResult.Proposals stays empty); safety invariant 4 holds structurally
+// because the reconciler neither executes nor proposes the capital action. The
+// interface still permits a future in-engine governor that gates and proposes, but
+// nothing wires one today.
 type Governor interface {
 	Govern(ctx context.Context, actions []Action, economics EconomicsSignals, cal Calibration) (GovernResult, error)
 }
