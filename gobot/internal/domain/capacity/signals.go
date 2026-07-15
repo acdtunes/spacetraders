@@ -84,6 +84,17 @@ type HubPerformance struct {
 // caps (spec SENSE: Topology). DIFF compares this against the DesiredTopology.
 type TopologySignals struct {
 	Clusters []ClusterState
+
+	// IdleHulls is the poachable idle-hull set the DIFF lane's tier-1
+	// reuse-first rung may reassign (ADDITIVE, st-zr0 — Diff receives only
+	// TopologySignals, so the reuse-eligible subset of Utilization.Hulls
+	// travels here). The SENSE lane (st-7ee) fills it with the hulls whose
+	// Idle is true, alongside Clusters. The ladder differ re-verifies
+	// eligibility per hull (Idle && DedicatedFleet == "" && not already
+	// serving a cluster role), so an over-filled slice fails SAFE: an
+	// ineligible entry is skipped, never reassigned. Empty ⇒ tier 1 has no
+	// free lever and gaps escalate up the ladder (approval-gated at tier 4).
+	IdleHulls []HullUtilization
 }
 
 // ClusterState is one live cluster: a covered hub and the capacity co-located

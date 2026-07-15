@@ -12,8 +12,15 @@ const (
 	// TierRebalance repositions/rebalances existing capacity (drives the
 	// worker-rebalancer / depot-rebalance primitives) — free → auto.
 	TierRebalance Tier = 2
-	// TierBufferAdjust adjusts the buffer whitelist + caps — cheap → auto
-	// (the DIFF lane gates it to tier 4 when it would force a NEW stocker).
+	// TierBufferAdjust adjusts the buffer whitelist + caps — cheap → auto.
+	// The spec's "gated if it forces a NEW stocker" is implemented by the
+	// DIFF lane as WITHHOLDING: while a hub's desired StockerCount exceeds
+	// its actual stockers, demand-EXPANDING adjustments (whitelist adds, cap
+	// raises) are not emitted at all — they self-heal after the stocker
+	// capacity lands (itself tier-4-gated where capital). Relabeling the
+	// buffer verbs to tier 4 is NOT the mechanism: converge's canonical
+	// verb→tier check refuses a mislabeled action. Demand-shedding
+	// adjustments (cap reductions, de-whitelists) always flow.
 	TierBufferAdjust Tier = 3
 	// TierCapital adds a cluster / autobuys a hull — capital → proposal for
 	// approval; executed only post-approval via Actuator.ExecuteCapital.
@@ -127,6 +134,26 @@ type Action struct {
 	// ProjectedPerHullCrHr is the projected fleet-wide per-hull sustained
 	// credits/hr AFTER the action — the ROI-gate input (an add must raise it).
 	ProjectedPerHullCrHr float64
+
+	// Machine-readable routing (ADDITIVE, st-zr0 fills) — the actuator
+	// (st-5ig) reads these instead of parsing Reason prose.
+	//
+	// GapKind classifies the gap this action closes. Role-bearing for hull
+	// actions: a reassign_hull/buy_hull with GapWarehouseShort /
+	// GapStockerShort / GapWorkerShort is a warehouse/stocker/worker hull.
+	GapKind GapKind
+	// WarehouseDelta/StockerDelta/WorkerDelta decompose HullDelta per role:
+	// add_cluster carries its cluster composition, buy_hull stamps 1 on the
+	// bought role, the free tiers stay 0. Invariant:
+	// WarehouseDelta+StockerDelta+WorkerDelta == HullDelta.
+	WarehouseDelta int
+	StockerDelta   int
+	WorkerDelta    int
+	// Count is the verb's subject quantity where the verb moves N of
+	// something (rebalance_workers: workers drawn from the fleet surplus
+	// toward the hub; 0 for other verbs).
+	Count int
+
 	// Reason is the human-readable audit trail (which gap, which arithmetic).
 	Reason string
 }
