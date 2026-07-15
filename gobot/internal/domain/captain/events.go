@@ -203,6 +203,24 @@ const (
 	// never itself force one. The payload carries the new state ("gagged" or
 	// "ungagged") and the operator's reason.
 	EventSupervisorGagged EventType = "captain.supervisor_gagged"
+
+	// EventCapacityCapexProposal fires when the capacity reconciler's
+	// tiered-autonomy gate (st-0h8, epic st-7zk) files a CAPITAL proposal for
+	// human approval — a tier-4 capacity add (autobuy a hull / stand up a
+	// cluster) that moves treasury and therefore NEVER auto-executes under v1
+	// tiered autonomy (approval threshold 0). It is the capacity analogue of
+	// EventScoutPostProposal: a PROPOSAL only (the captain decides and declares),
+	// so filing it spends NOTHING — capital executes only later, via the
+	// approval-execution path, past the invariant-4 capital gate. The payload
+	// carries the full ROI evidence (estimated cost, projected gain/hr, payback
+	// horizon + projected hours, before/after fleet per-hull cr/hr, and a
+	// human-readable narrative) so the approver judges from evidence, not vibes.
+	// DEFERRED class (NOT in DefaultInterruptTypes): a capex proposal is a
+	// "reconsider next wake" capital-planning signal, never worth forcing a wake
+	// on its own. Deduped per proposal (the Proposal.ID is stable per gap) over a
+	// cooldown so a gap re-proposed every reconcile tick nudges ONCE, not per
+	// tick (sp-6g96 event-spam doctrine).
+	EventCapacityCapexProposal EventType = "capacity.capex_proposal"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force

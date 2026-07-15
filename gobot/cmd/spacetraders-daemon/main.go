@@ -1141,7 +1141,14 @@ func run(cfg *config.Config) error {
 			capacityAdapters.NewWarehouseBufferConfigurator(db, shared.NewRealClock()),          // tier-3 buffer -> depot supported-goods whitelist writer
 			capacityAdapters.NewTokenPlayerResolver(apiClient, playerRepo),                      // reconciling player from the ambient auth token
 		),
-		capacity.NoOpProposalChannel{},
+		// st-0h8 CONVERGE proposal channel (tier-4 capital): files a capex proposal
+		// for human approval as a DEFERRED captain nudge carrying the full ROI
+		// evidence (reusing the EventScoutPostProposal outbox idiom). Filing spends
+		// NOTHING — capital executes only later via the approval-execution path
+		// (ProposalApprovalExecutor), past the invariant-4 gate — so this swap is
+		// deploy-inert (the contract_delivery capital class stays dormant; the
+		// arming lane st-cpc drives approvals).
+		capacityAdapters.NewProposalChannel(captainEventRepo, shared.NewRealClock()),
 		watchkeeper.NewWorkspace(cfg.Captain.WorkspaceDir),
 		nil, // nil = use RealClock
 	)
