@@ -65,7 +65,7 @@ const (
 	defaultReleaseSlackPercent = 60     // release a feedback probe only below this % of the SLA (hysteresis)
 	defaultSizerMaxProbeFleet  = 40     // total satellite cap
 	defaultSizerMaxSpend       = 100000 // max probe spend within the trailing spend window
-	defaultSizerCooldown       = 10 * time.Minute
+	defaultSizerCooldown       = 1 * time.Minute // Admiral 2026-07-15: fast ramp; spend window + treasury/fleet caps still bound total buys
 	defaultSizerSpendWindow    = 1 * time.Hour
 )
 
