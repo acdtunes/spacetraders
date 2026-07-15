@@ -45,6 +45,16 @@ export function Navigation() {
             >
               Trade Flows
             </Link>
+            <Link
+              to="/contract-ops"
+              className={`px-4 py-2 rounded transition-colors ${
+                location.pathname === '/contract-ops'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              Contract Ops
+            </Link>
           </div>
         </div>
         <div className="flex items-center gap-4">

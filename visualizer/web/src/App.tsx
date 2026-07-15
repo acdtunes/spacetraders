@@ -3,6 +3,7 @@ import { Navigation } from './components/Navigation';
 import { MapView } from './pages/MapView';
 import { FinancialDashboard } from './pages/FinancialDashboard';
 import { TradeFlowsView } from './pages/TradeFlowsView';
+import { ContractOps } from './pages/ContractOps';
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
             <Route path="/" element={<MapView />} />
             <Route path="/financial" element={<FinancialDashboard />} />
             <Route path="/trade-flows" element={<TradeFlowsView />} />
+            <Route path="/contract-ops" element={<ContractOps />} />
           </Routes>
         </div>
       </div>
