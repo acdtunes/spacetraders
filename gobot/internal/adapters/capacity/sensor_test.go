@@ -10,7 +10,7 @@ package capacity_test
 // seam (an injected report func; the real sampler only accumulates from a live
 // daemon ticker).
 //
-// Test budget: 8 distinct behaviors × 2 = 16 max tests. 8 written:
+// Test budget: 9 distinct behaviors × 2 = 18 max tests. 9 written:
 //  1. Demand      — contract history aggregates into per-hub frequency, mean
 //                   payment, and per-good mix.
 //  2. Performance — accept/fulfill ledger events aggregate into per-hub mean
@@ -26,6 +26,10 @@ package capacity_test
 //  7. Graceful    — empty sources yield empty families + no error; a failing
 //                   treasury fails CLOSED to 0; snapshot is always stamped.
 //  8. Scoping     — another player's rows never leak into the snapshot.
+//  9. Reuse       — Topology.IdleHulls carries the reuse-eligible idle subset of
+//                   the SAME Utilization.Hulls snapshot (idle && undedicated &&
+//                   not already serving a cluster role) so DIFF's tier-1 rung has
+//                   a free lever (st-780).
 
 import (
 	"context"
@@ -445,4 +449,45 @@ func TestSense_ScopesToRequestedPlayer(t *testing.T) {
 	require.Equal(t, hubWaypoint, signals.Topology.Clusters[0].HubSymbol)
 	require.Equal(t, 3, signals.Economics.FleetHullCount) // B-1 excluded
 	require.InDelta(t, 59000.0, signals.Economics.IncomeVelocityPerHour, 1e-9)
+}
+
+// Behavior 9 (st-780): the SENSE lane fills Topology.IdleHulls with the tier-1
+// REUSE-ELIGIBLE subset of the SAME hull snapshot Utilization carries — idle AND
+// undedicated AND not already serving a cluster role. Diff receives ONLY
+// TopologySignals, so an unfilled slice silently starves the reuse-first rung and
+// every hull gap escalates straight to tier-4 capital. All four eligibility cases
+// are drawn from one real snapshot:
+//
+//	(a) FREE-1 idle, undedicated, in no depot     -> PRESENT (the free lever);
+//	(b) DED-1  idle, DEDICATED, in no depot        -> absent (never poach a pin);
+//	(c) DL-1   idle, undedicated, a cluster worker -> absent (already serving);
+//	(d) WH-1   flying its container (busy)         -> absent (not idle).
+//
+// ST-1 (idle, dedicated, AND a cluster stocker) is excluded on both counts.
+func TestSense_FillsIdleHullsWithReuseEligibleSubset(t *testing.T) {
+	db := newTestDB(t)
+	playerID := seedWorld(t, db)
+	// Two hulls the base world lacks isolate the remaining cases: DED-1 is
+	// dedicated but in NO cluster (pure dedication exclusion), and FREE-1 is the
+	// sole genuinely reuse-eligible hull.
+	seedShip(t, db, playerID, "DED-1", hubWaypoint, "X1-TT77", nil, "idle", "contract")
+	seedShip(t, db, playerID, "FREE-1", sourceWaypoint, "X1-TT77", nil, "idle", "")
+
+	// A duty-cycle entry for FREE-1 proves the IdleHulls entry is the SAME struct
+	// the Utilization pass built (a second, independent read would not carry it).
+	sensor := capacityAdapters.NewSensor(db, fakeTreasury{credits: 1},
+		capacityAdapters.WithSensorClock(&shared.MockClock{CurrentTime: t0}),
+		capacityAdapters.WithDutyCycleReport(func() dutycycle.Report {
+			return dutycycle.Report{Hulls: []dutycycle.HullDutyCycle{{Hull: "FREE-1", EarningPct: 42}}}
+		}),
+	)
+	signals, err := sensor.Sense(context.Background(), playerID)
+
+	require.NoError(t, err)
+	require.Equal(t, []capacity.HullUtilization{
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Waypoint: sourceWaypoint, DutyCyclePct: 42, Idle: true},
+	}, signals.Topology.IdleHulls, "only the idle, undedicated, non-cluster hull is reuse-eligible")
+	// Same tick, same snapshot: every IdleHulls entry is field-for-field one of
+	// Utilization.Hulls (not a second DB read that could diverge).
+	require.Subset(t, signals.Utilization.Hulls, signals.Topology.IdleHulls)
 }

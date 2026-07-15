@@ -133,6 +133,13 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 	demand := s.senseDemand(contracts, now)
 	topology := s.senseTopology(ctx, playerID)
 	utilization := s.senseUtilization(ctx, playerID)
+	// IdleHulls is the ONLY channel the tier-1 reuse-first supply reaches the
+	// DIFF ladder through (Differ.Diff receives only TopologySignals). Fill it
+	// from the SAME hull snapshot Utilization carries — same tick, no second DB
+	// read — so the two can never diverge (the sibling rule to FleetHullCount
+	// below). Left empty, an idle undedicated hull is invisible and every hull
+	// gap escalates straight to tier-4 capital (st-780).
+	topology.IdleHulls = reuseEligibleIdleHulls(utilization.Hulls, topology.Clusters)
 
 	return domainCapacity.Signals{
 		PlayerID:    playerID,
@@ -152,4 +159,45 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 // engine, but the gap must be visible, never silent.
 func (s *Sensor) note(family string, err error) {
 	log.Printf("capacity sensor: %s signals degraded (family left empty): %v", family, err)
+}
+
+// reuseEligibleIdleHulls filters the utilization hull snapshot to the tier-1
+// REUSE-ELIGIBLE idle subset the DIFF ladder may reassign. Eligibility mirrors
+// the ladder's own re-verification EXACTLY (domain/capacity/ladder.go's reusable
+// guard): idle AND undedicated AND not already holding a cluster role — a
+// stationary depot hull can read idle in the ships table yet still anchor its
+// cluster, so it must never be offered as free. Reads the SAME []HullUtilization
+// the Utilization family carries (no second DB read), so the differ re-verifies
+// against a signal that cannot have drifted from Utilization.Hulls. The differ
+// re-checks per hull, so an over-inclusive slice fails safe; matching here keeps
+// the signal honest and prevents an empty slice from starving tier-1.
+func reuseEligibleIdleHulls(hulls []domainCapacity.HullUtilization, clusters []domainCapacity.ClusterState) []domainCapacity.HullUtilization {
+	serving := clusterRoleShipSymbols(clusters)
+	var eligible []domainCapacity.HullUtilization
+	for _, hull := range hulls {
+		if hull.Idle && hull.DedicatedFleet == "" && !serving[hull.ShipSymbol] {
+			eligible = append(eligible, hull)
+		}
+	}
+	return eligible
+}
+
+// clusterRoleShipSymbols indexes every hull already holding a warehouse,
+// stocker, or worker role in a live cluster — mirroring the differ's
+// servingShipSymbols guard so SENSE-side eligibility and the ladder's
+// re-verification agree on which hulls are "already serving".
+func clusterRoleShipSymbols(clusters []domainCapacity.ClusterState) map[string]bool {
+	serving := map[string]bool{}
+	for _, cluster := range clusters {
+		for _, warehouse := range cluster.Warehouses {
+			serving[warehouse.ShipSymbol] = true
+		}
+		for _, stocker := range cluster.Stockers {
+			serving[stocker.ShipSymbol] = true
+		}
+		for _, worker := range cluster.Workers {
+			serving[worker.ShipSymbol] = true
+		}
+	}
+	return serving
 }

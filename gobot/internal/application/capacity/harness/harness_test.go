@@ -43,6 +43,7 @@ const (
 
 	capitalHub    = "X1-CP88-H2" // demanded hub with NO cluster covering it (uncovered)
 	capitalSource = "X1-CP88-S2" // in-system IRON source for the uncovered hub
+	capitalDock   = "X1-CP88-D9" // where the reusable idle hulls wait (st-780)
 )
 
 // ---- test DB + seed helpers (mirroring the SENSE adapter's own harness) ------
@@ -151,6 +152,23 @@ func seedWarehouseContainer(t *testing.T, db *gorm.DB, playerID int, id, shipSym
 	entity := container.NewContainer(id, container.ContainerTypeWarehouse, playerID, -1, nil, config, nil)
 	require.NoError(t, repo.Add(context.Background(), entity, "warehouse"))
 	require.NoError(t, repo.UpdateStatus(context.Background(), id, playerID, container.ContainerStatusRunning, nil, nil, ""))
+}
+
+// seedIdleHull persists one ship that is IDLE (no container flying it),
+// UNDEDICATED, and absent from every depot — the tier-1 reuse-eligible class the
+// SENSE lane must surface on TopologySignals.IdleHulls (st-780). Left invisible,
+// the differ cannot reassign it and every role escalates to tier-4 capital.
+func seedIdleHull(t *testing.T, db *gorm.DB, playerID int, symbol, location, system string) {
+	t.Helper()
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol:     symbol,
+		PlayerID:       playerID,
+		LocationSymbol: location,
+		SystemSymbol:   system,
+		ContainerID:    nil, // idle: no container flying it
+		DedicatedFleet: "",  // undedicated: reuse may reassign it
+		CargoCapacity:  80,
+	}).Error)
 }
 
 // fakeTreasury doubles the sensor's ONLY live-API boundary (agent credit
@@ -287,6 +305,21 @@ func (c *countingSensor) count() int {
 	return c.calls
 }
 
+// idleHullsSuppressingSensor wraps the REAL sensor and blanks
+// TopologySignals.IdleHulls after each pass, reproducing the st-780 bug (the
+// SENSE lane never filling the reuse-eligible idle subset). It is the mutation
+// control for the reuse scenario: the SAME seed that closes a hull gap by
+// REUSING idle hulls (tier-1) with a real sensor escalates the whole gap to
+// tier-4 capital once the signal is blanked — proof the IdleHulls population is
+// load-bearing, not decorative.
+type idleHullsSuppressingSensor struct{ inner capacity.Sensor }
+
+func (s idleHullsSuppressingSensor) Sense(ctx context.Context, playerID int) (capacity.Signals, error) {
+	signals, err := s.inner.Sense(ctx, playerID)
+	signals.Topology.IdleHulls = nil
+	return signals, err
+}
+
 type countingPlanner struct {
 	inner capacity.Planner
 	mu    sync.Mutex
@@ -387,6 +420,14 @@ func withDiffer(d capacity.Differ) harnessOption {
 }
 
 func withKillEngaged() harnessOption { return func(h *harness) { h.kill.set(true) } }
+
+// withIdleHullsSuppressed re-empties TopologySignals.IdleHulls after a REAL
+// SENSE pass (mutation control for the st-780 tier-1 reuse scenario).
+func withIdleHullsSuppressed() harnessOption {
+	return func(h *harness) {
+		h.sensor = &countingSensor{inner: idleHullsSuppressingSensor{inner: newRealSensor(h.db)}}
+	}
+}
 
 // newHarness wires the reconciler from the REAL components over the seeded DB.
 // Defaults: real sensor/planner/differ (each behind a counting spy), the
@@ -597,5 +638,22 @@ func seedUncoveredCapitalWorld(t *testing.T, db *gorm.DB) int {
 	seedWaypoint(t, db, capitalSource, "X1-CP88", 30, 40)
 	seedMarketSelling(t, db, playerID, capitalSource, "IRON")
 
+	return playerID
+}
+
+// seedReusableIdleWorld is seedUncoveredCapitalWorld PLUS three idle,
+// undedicated, non-cluster hulls waiting in-system. The planner still wants the
+// uncovered hub stood up at 1 warehouse + 1 stocker + 1 worker — idle hulls add
+// no cluster (coverage unchanged) and no income (FleetPerHullCrHr stays 0, so the
+// add gate is unchanged) — but now the ladder can REUSE the three free hulls
+// (tier-1) instead of escalating the whole gap to a tier-4 add_cluster. This is
+// the exact st-780 regression: without the SENSE lane filling IdleHulls, these
+// free hulls are invisible and every role escalates to capital.
+func seedReusableIdleWorld(t *testing.T, db *gorm.DB) int {
+	t.Helper()
+	playerID := seedUncoveredCapitalWorld(t, db)
+	seedIdleHull(t, db, playerID, "IDLE-1", capitalDock, "X1-CP88")
+	seedIdleHull(t, db, playerID, "IDLE-2", capitalDock, "X1-CP88")
+	seedIdleHull(t, db, playerID, "IDLE-3", capitalDock, "X1-CP88")
 	return playerID
 }

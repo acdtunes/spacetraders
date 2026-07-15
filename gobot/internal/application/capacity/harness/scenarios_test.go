@@ -221,3 +221,56 @@ func TestHarness_DryRunActuatesNothing(t *testing.T) {
 		require.Equal(t, capacity.VerbAddCluster, outcomes[0].WouldFile[0].Action.Verb)
 	})
 }
+
+// Assertion 5 — TIER-1 IDLE REUSE (st-780). An uncovered demanded hub with three
+// idle, undedicated, non-cluster hulls waiting closes its WHOLE 1/1/1 shortfall
+// by REUSING those hulls (tier-1 reassign_hull), never proposing tier-4 capital.
+// Before st-780 the SENSE lane never filled Topology.IdleHulls, so the ladder
+// could not see the free hulls and escalated the entire gap to a tier-4
+// add_cluster. Every expected value traces to the seed: the planner wants 1
+// warehouse + 1 stocker + 1 worker (the same demand the capital scenario above
+// proves), and the three seeded idle hulls (IDLE-1..3, taken in ship-symbol
+// order) fill those roles, each retargeted onto the hub anchor.
+func TestHarness_ReusesIdleHullsForUncoveredHub_TierOneNotCapital(t *testing.T) {
+	db := newScenarioDB(t)
+	playerID := seedReusableIdleWorld(t, db)
+	h := newHarness(t, db, playerID) // autonomy governor: tier-1 -> Approved -> executed
+
+	outcomes := h.runTicks(t, false, 1)
+
+	require.Equal(t, []actionSummary{
+		{Tier: capacity.TierReuseIdle, Verb: capacity.VerbReassignHull, Hub: capitalHub, Ship: "IDLE-1", Target: capitalHub},
+		{Tier: capacity.TierReuseIdle, Verb: capacity.VerbReassignHull, Hub: capitalHub, Ship: "IDLE-2", Target: capitalHub},
+		{Tier: capacity.TierReuseIdle, Verb: capacity.VerbReassignHull, Hub: capitalHub, Ship: "IDLE-3", Target: capitalHub},
+	}, summarize(outcomes[0].ActionsExecuted), "the whole 1/1/1 gap must close by REUSING idle hulls (tier-1), not capital")
+
+	require.Len(t, h.actuator.calls(capacity.VerbReassignHull), 3, "each role reused one idle hull via ReuseIdleHull")
+	require.Zero(t, h.actuator.executeCapitalCount(), "the free idle hulls covered the whole gap — no capital")
+	require.Empty(t, h.proposals.all(), "tier-1 reuse is autonomous — nothing proposed")
+	require.Empty(t, outcomes[0].FailedPhase)
+	require.False(t, outcomes[0].Idle)
+}
+
+// Assertion 5b — FALSIFIABILITY / MUTATION GUARD (st-780). The SAME seed, but a
+// wrapper re-empties Topology.IdleHulls after SENSE — reproducing the bug this
+// bead fixes. With the free hulls invisible, the identical 1/1/1 gap re-escalates
+// straight to ONE tier-4 add_cluster proposal and zero reuse. This proves the
+// SENSE lane's IdleHulls population is exactly what makes tier-1 reachable
+// end-to-end: flipping only that signal flips the whole outcome tier-1 <-> tier-4.
+func TestHarness_SuppressedIdleHullsReEscalateToCapital_MutationGuard(t *testing.T) {
+	db := newScenarioDB(t)
+	playerID := seedReusableIdleWorld(t, db)
+	h := newHarness(t, db, playerID, withIdleHullsSuppressed())
+
+	outcomes := h.runTicks(t, false, 1)
+
+	require.Empty(t, h.actuator.calls(capacity.VerbReassignHull), "blanked IdleHulls => tier-1 reuse is unreachable")
+	require.Zero(t, h.actuator.total(), "the whole gap is capital again — nothing executes autonomously")
+	filed := h.proposals.all()
+	require.Len(t, filed, 1, "the entire 1/1/1 gap re-escalates to ONE tier-4 add_cluster")
+	require.Equal(t, capacity.VerbAddCluster, filed[0].Action.Verb)
+	require.Equal(t, capacity.TierCapital, filed[0].Action.Tier)
+	require.Equal(t, 3, filed[0].Action.HullDelta, "1 warehouse + 1 stocker + 1 worker, none reusable")
+	require.Len(t, outcomes[0].ProposalsFiled, 1)
+	require.Empty(t, outcomes[0].ActionsExecuted)
+}
