@@ -50,6 +50,13 @@ type RouteExecutor struct {
 	refuelStrategy      strategies.RefuelStrategy
 	waypointRepo        domainSystem.WaypointRepository
 	shipEventSubscriber domainNavigation.ShipEventSubscriber
+
+	// Off-gate warp support (sp-0xd0), attached post-construction via
+	// WithWarpSupport so every existing NewRouteExecutor call site is unchanged.
+	// Both nil until wired: ExecuteWarpRoute fails closed when warpNavigator is
+	// absent, and chart-on-arrival is skipped when systemCharter is absent.
+	warpNavigator WarpNavigator
+	systemCharter SystemCharter
 }
 
 // NewRouteExecutor creates a new route executor
@@ -91,6 +98,21 @@ func NewRouteExecutor(
 		waypointRepo:        waypointRepo,
 		shipEventSubscriber: shipEventSubscriber,
 	}
+}
+
+// WithWarpSupport attaches the off-gate warp capability (sp-0xd0) to an already
+// constructed executor and returns it for chaining. It is deliberately separate
+// from the constructor so the eight-arg NewRouteExecutor signature - and every
+// existing call site - stays untouched; warp is an additive capability, inert
+// until a caller (slice C's explorer) invokes ExecuteWarpRoute.
+//
+// warpNavigator is the API boundary a warp leg crosses. charter may be nil, in
+// which case chart-on-arrival is skipped (the warp still executes). Intended to
+// be called once at wiring time, before the executor is used concurrently.
+func (e *RouteExecutor) WithWarpSupport(warpNavigator WarpNavigator, charter SystemCharter) *RouteExecutor {
+	e.warpNavigator = warpNavigator
+	e.systemCharter = charter
+	return e
 }
 
 // ExecuteRoute executes a route step-by-step using atomic commands

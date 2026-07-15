@@ -52,3 +52,12 @@ func (m *ShipModule) Requirements() ShipRequirements {
 func (m *ShipModule) IsJumpDrive() bool {
 	return strings.HasPrefix(m.symbol, "MODULE_JUMP_DRIVE")
 }
+
+// IsWarpDrive checks if this module is a warp drive.
+// Warp drive modules have symbols starting with "MODULE_WARP_DRIVE" (e.g.
+// "MODULE_WARP_DRIVE_I"). A warp drive is the physical mechanism a SHIP_EXPLORER
+// uses to travel BETWEEN systems off the jump-gate network (sp-0xd0); it is
+// distinct from a jump drive (MODULE_JUMP_DRIVE_*), which hops gate-to-gate.
+func (m *ShipModule) IsWarpDrive() bool {
+	return strings.HasPrefix(m.symbol, "MODULE_WARP_DRIVE")
+}

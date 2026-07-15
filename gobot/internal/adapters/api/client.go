@@ -257,6 +257,55 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 	}, nil
 }
 
+// WarpShip warps a ship to a destination waypoint in ANOTHER system, off the
+// jump-gate network (sp-0xd0). Requires a MODULE_WARP_DRIVE_I; fuel is consumed
+// by inter-system distance. The wire contract mirrors NavigateShip exactly - the
+// live API's POST /my/ships/{shipSymbol}/warp takes "waypointSymbol" in the body
+// and returns the same fuel + nav.route envelope - so the parsing/return shape is
+// identical to a navigate leg (destination, arrival time, post-warp fuel state).
+func (c *SpaceTradersClient) WarpShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error) {
+	path := fmt.Sprintf("/my/ships/%s/warp", symbol)
+
+	body := map[string]string{
+		"waypointSymbol": destination,
+	}
+
+	var response struct {
+		Data struct {
+			Fuel struct {
+				Current  int `json:"current"`
+				Capacity int `json:"capacity"`
+				Consumed struct {
+					Amount int `json:"amount"`
+				} `json:"consumed"`
+			} `json:"fuel"`
+			Nav struct {
+				WaypointSymbol string `json:"waypointSymbol"`
+				Route          struct {
+					DepartureTime string `json:"departureTime"`
+					Arrival       string `json:"arrival"`
+				} `json:"route"`
+			} `json:"nav"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
+		return nil, fmt.Errorf("failed to warp ship: %w", err)
+	}
+
+	arrivalTimeStr := response.Data.Nav.Route.Arrival
+	arrivalTime := travelSeconds(response.Data.Nav.Route.DepartureTime, arrivalTimeStr)
+
+	return &navigation.Result{
+		Destination:    response.Data.Nav.WaypointSymbol,
+		ArrivalTime:    arrivalTime,
+		ArrivalTimeStr: arrivalTimeStr,
+		FuelConsumed:   response.Data.Fuel.Consumed.Amount,
+		FuelCurrent:    response.Data.Fuel.Current,
+		FuelCapacity:   response.Data.Fuel.Capacity,
+	}, nil
+}
+
 // OrbitShip puts ship into orbit
 func (c *SpaceTradersClient) OrbitShip(ctx context.Context, symbol, token string) error {
 	path := fmt.Sprintf("/my/ships/%s/orbit", symbol)

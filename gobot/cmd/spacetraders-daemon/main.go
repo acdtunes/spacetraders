@@ -793,6 +793,24 @@ func run(cfg *config.Config) error {
 		}),
 	)
 
+	// Off-gate warp support (sp-0xd0, slice A): attach the warp-execute +
+	// chart-on-arrival capability to the route executor now that gateGraphService
+	// exists (WithWarpSupport mutates the same *RouteExecutor the nav handlers
+	// already hold, so no re-wiring is needed). The charter reuses the SAME gate
+	// graph, market scanner, and shipyard scanner the gate-nav path uses, plus the
+	// graph provider as its waypoint source. INERT until a caller (slice C's
+	// explorer) invokes ExecuteWarpLeg/ExecuteWarpRoute — nothing dispatches a warp
+	// yet, so this changes no live behavior.
+	routeExecutor.WithWarpSupport(
+		ship.NewAPIWarpNavigator(apiClient),
+		ship.NewWarpSystemCharter(
+			gateGraphService,
+			ship.NewGraphWaypointSource(graphService),
+			marketScanner,
+			shipyardScanner,
+		),
+	)
+
 	// Fleet capacity autosizer (sp-1txd): the buy-side twin of the siting coordinator. It sizes the
 	// hull pool to demand and auto-buys hulls behind the fail-closed money-guard stack. LIVE BY
 	// DEFAULT once first-launched (CLI/gRPC), recovery-adopted on restart. All concrete ports —

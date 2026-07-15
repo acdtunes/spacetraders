@@ -296,6 +296,19 @@ func (s *Ship) GetJumpDriveRange() int {
 	return 0
 }
 
+// HasWarpDrive reports whether the ship has a warp drive module installed
+// (MODULE_WARP_DRIVE_*). Only a ship with a warp drive can execute an off-gate
+// warp leg between systems (sp-0xd0); RouteExecutor fails a warp request closed
+// when this is false rather than letting the live API reject it.
+func (s *Ship) HasWarpDrive() bool {
+	for _, module := range s.modules {
+		if module.IsWarpDrive() {
+			return true
+		}
+	}
+	return false
+}
+
 // IsScoutType checks if ship is suitable for scouting (SATELLITE role)
 // Excludes EXCAVATOR and other mining/hauling roles
 func (s *Ship) IsScoutType() bool {

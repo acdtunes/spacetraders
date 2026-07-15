@@ -46,6 +46,11 @@ type APIClient interface {
 	// the destination JUMP_GATE waypoint (not a bare system symbol) - the
 	// live SpaceTraders API requires "waypointSymbol" in the request body.
 	JumpShip(ctx context.Context, shipSymbol, waypointSymbol, token string) (*JumpResult, error)
+	// WarpShip warps a ship OFF the jump-gate network to a destination waypoint
+	// in another system (sp-0xd0). Requires a MODULE_WARP_DRIVE_I; fuel is
+	// consumed by inter-system distance. Mirrors NavigateShip's fuel + arrival
+	// return envelope.
+	WarpShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error)
 
 	// Jump gate operations
 	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*JumpGateData, error)
