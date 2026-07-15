@@ -159,8 +159,44 @@ export default function ContractOpsScene() {
     return links;
   }, [live, deliveryHubs, systemOffset]);
 
+  // Waypoints that carry their own operation labels skip the backdrop label.
+  const featuredWaypoints = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of live?.destinations ?? []) set.add(d.symbol);
+    for (const depot of depots) {
+      for (const e of [...depot.warehouses, ...depot.sourceHubs, ...depot.deliveryHulls]) set.add(e.waypoint);
+    }
+    return set;
+  }, [live, depots]);
+
+  // Co-located stationary ships fan out on a small parking ring (sorted, so
+  // slots are stable across polls); orbiters drift slowly around it.
+  const stationaryLayout = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const s of ships) {
+      if (s.navStatus === 'IN_TRANSIT') continue;
+      const list = groups.get(s.waypoint) ?? [];
+      list.push(s.symbol);
+      groups.set(s.waypoint, list);
+    }
+    const layout = new Map<string, { angle0: number; ring: number }>();
+    for (const [wp, symbols] of groups) {
+      symbols.sort();
+      symbols.forEach((sym, i) =>
+        layout.set(sym, {
+          angle0: (i / symbols.length) * Math.PI * 2 + wp.length * 0.7,
+          ring: 6 + Math.floor(i / 8) * 4,
+        }),
+      );
+    }
+    return layout;
+  }, [ships]);
+
   const hair = (w: number) => Math.max(0.15, w / scale);
-  const font = (f: number) => Math.max(2.2, f / scale);
+  // Labels and their offsets are SCREEN-sized (constant px at any zoom).
+  // World-sized text with a floor turns into billboards when zoomed in.
+  const font = (f: number) => f / scale;
+  const sp = (px: number) => px / scale;
 
   return (
     <div className="absolute inset-0" style={{ background: NOIR.bg0 }}>
@@ -182,8 +218,8 @@ export default function ContractOpsScene() {
                   return (
                     <Group key={w.symbol} x={p.x} y={p.y}>
                       <Circle radius={hair(6)} fill={noirAlpha(NOIR.nebulaCore, 0.75)} />
-                      {scale > 5 && (
-                        <Text text={shortName(w.symbol)} fontSize={font(7)} fill={NOIR.dim} x={hair(8)} y={-font(7) / 2} fontFamily="monospace" />
+                      {scale > 5 && !featuredWaypoints.has(w.symbol) && (
+                        <Text text={shortName(w.symbol)} fontSize={font(10)} fill={NOIR.dim} x={sp(8)} y={-font(10) / 2} fontFamily="monospace" />
                       )}
                     </Group>
                   );
@@ -215,13 +251,17 @@ export default function ContractOpsScene() {
                       <Line points={[4.5, 0, 8, 0]} stroke={NOIR.warn} strokeWidth={hair(1)} />
                       <Line points={[0, -8, 0, -4.5]} stroke={NOIR.warn} strokeWidth={hair(1)} />
                       <Line points={[0, 4.5, 0, 8]} stroke={NOIR.warn} strokeWidth={hair(1)} />
+                      {/* own lane: above the beacon, clear of the warehouse/ship lanes */}
                       <Text
                         text={`◈ ${good ?? 'DELIVERY'} → ${shortName(d.symbol)}`}
-                        fontSize={font(8.5)}
+                        fontSize={font(12)}
                         fill={NOIR.warn}
                         fontFamily="monospace"
-                        x={9 / Math.max(scale / 3, 1)}
-                        y={-font(8.5) / 2}
+                        x={-sp(10)}
+                        y={-9 - sp(22)}
+                        shadowColor={NOIR.bg0}
+                        shadowBlur={sp(4)}
+                        shadowOpacity={0.9}
                       />
                     </Group>
                   );
@@ -265,7 +305,7 @@ export default function ContractOpsScene() {
                             dash={crewed ? undefined : [hair(2), hair(2)]}
                           />
                           {scale > 3 && (
-                            <Text text="HUB" fontSize={font(6.5)} fill={noirAlpha(NOIR.accent, 0.7)} fontFamily="monospace" x={5.5} y={-font(6.5) / 2} />
+                            <Text text="HUB" fontSize={font(9)} fill={noirAlpha(NOIR.accent, 0.7)} fontFamily="monospace" x={4 + sp(5)} y={4 + sp(2)} shadowColor={NOIR.bg0} shadowBlur={sp(4)} shadowOpacity={0.9} />
                           )}
                         </Group>
                       );
@@ -298,24 +338,31 @@ export default function ContractOpsScene() {
                             angle += sweep;
                             return arc;
                           })}
+                          {/* own lane: right of the stock ring, goods stacked beneath */}
                           <Text
                             text={`⬢ ${depot.id.toUpperCase()} · ${wh.shipSymbol || 'uncrewed'}${total > 0 ? ` · ${total}u` : ' · empty'}`}
-                            fontSize={font(8)}
+                            fontSize={font(11)}
                             fill={NOIR.star}
                             fontFamily="monospace"
-                            x={10 / Math.max(scale / 3, 1)}
-                            y={-font(8) / 2}
+                            x={9.5 + sp(6)}
+                            y={-font(11) / 2}
+                            shadowColor={NOIR.bg0}
+                            shadowBlur={sp(4)}
+                            shadowOpacity={0.9}
                           />
                           {scale > 3.4 &&
                             levels.slice(0, RING_SHADES.length).map((l, li) => (
                               <Text
                                 key={`lbl-${l.good}`}
                                 text={`${l.good} ${l.units}`}
-                                fontSize={font(6.5)}
+                                fontSize={font(9.5)}
                                 fill={noirAlpha(RING_SHADES[li], 1)}
                                 fontFamily="monospace"
-                                x={10 / Math.max(scale / 3, 1)}
-                                y={font(8) / 2 + 1.5 + li * (font(6.5) + 1)}
+                                x={9.5 + sp(6)}
+                                y={font(11) / 2 + sp(4) + li * font(13)}
+                                shadowColor={NOIR.bg0}
+                                shadowBlur={sp(4)}
+                                shadowOpacity={0.9}
                               />
                             ))}
                         </Group>
@@ -335,11 +382,21 @@ export default function ContractOpsScene() {
                     const emphasized = selected || ship.role === 'worker';
                     const r = ship.role === 'worker' ? 2.6 : 2.1;
                     const cargoFrac = ship.cargoCapacity > 0 ? ship.cargoUnits / ship.cargoCapacity : 0;
+                    let gx = p.x;
+                    let gy = p.y;
+                    if (p.mode === 'stationary') {
+                      const lay = stationaryLayout.get(ship.symbol);
+                      if (lay) {
+                        const angle = lay.angle0 + (ship.navStatus === 'IN_ORBIT' ? nowMs / 30000 : 0);
+                        gx += Math.cos(angle) * lay.ring;
+                        gy += Math.sin(angle) * lay.ring;
+                      }
+                    }
                     return (
                       <Group
                         key={ship.symbol}
-                        x={p.x}
-                        y={p.y}
+                        x={gx}
+                        y={gy}
                         onClick={() => selectShip(selected ? null : ship.symbol)}
                         onTap={() => selectShip(selected ? null : ship.symbol)}
                         onMouseEnter={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; }}
@@ -387,11 +444,14 @@ export default function ContractOpsScene() {
                         {(emphasized || scale > 4.2) && (
                           <Text
                             text={`${shortName(ship.symbol)}${ship.role === 'worker' ? ' ◆ WORKER' : ''}${p.mode === 'inbound' ? ' · inbound' : ''}`}
-                            fontSize={font(7.5)}
+                            fontSize={font(10)}
                             fill={emphasized ? color : NOIR.muted}
                             fontFamily="monospace"
-                            x={r + 2.5}
-                            y={-font(7.5) / 2 - 3}
+                            x={r + sp(5)}
+                            y={-font(10) - sp(2)}
+                            shadowColor={NOIR.bg0}
+                            shadowBlur={sp(4)}
+                            shadowOpacity={0.9}
                             listening={false}
                           />
                         )}
