@@ -43,7 +43,7 @@ func newDepotDeliveryTestServer(t *testing.T) (*DaemonServer, *gorm.DB, int, *[]
 	s, db, playerID := newRecoveryTestServer(t)
 	s.shipRepo = api.NewShipRepository(nil, nil, nil, depotDeliveryFakeWaypointProvider{}, db, shared.NewRealClock())
 	navCalls := &[]depotNavCall{}
-	s.depotDeliveryNavigateOverride = func(_ context.Context, ship, dest string, pid int) (string, error) {
+	s.depotNavigateOverride = func(_ context.Context, ship, dest string, pid int) (string, error) {
 		*navCalls = append(*navCalls, depotNavCall{ship: ship, dest: dest, playerID: pid})
 		return "nav-" + ship, nil
 	}

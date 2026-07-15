@@ -77,13 +77,21 @@ type DaemonServer struct {
 	// post-construction test-seam convention as storageRecovery.
 	depotReceiptMinerOverride tradingsvc.DepositDemandMiner
 
-	// depotDeliveryNavigateOverride, when non-nil, replaces NavigateShip for the depot
-	// delivery-hull hub repositioning in launchDepotDelivery (sp-3l64). Nil in production →
-	// the real NavigateShip (which spawns a navigate container). Injected in tests so the
-	// atomic claim-release + reposition decision is unit-tested against the real ship repo
-	// WITHOUT spawning a navigate goroutine that would race the assertions. Same
+	// depotNavigateOverride, when non-nil, replaces NavigateShip for the depot element hull
+	// repositioning positionDepotElementHull performs (sp-3l64) — the delivery-hull hub and the
+	// source-hub waypoint (the two roles with no standing coordinator to park their own hull).
+	// Nil in production → the real NavigateShip (which spawns a navigate container). Injected in
+	// tests so the atomic claim-release + reposition decision is unit-tested against the real ship
+	// repo WITHOUT spawning a navigate goroutine that would race the assertions. Same
 	// post-construction test-seam convention as depotReceiptMinerOverride.
-	depotDeliveryNavigateOverride func(ctx context.Context, shipSymbol, destination string, playerID int) (string, error)
+	depotNavigateOverride func(ctx context.Context, shipSymbol, destination string, playerID int) (string, error)
+
+	// depotSinkOverride, when non-nil, replaces *DaemonServer as the depotCoordinatorSink the
+	// element-add / reload positioning routes each launch through (sp-3l64). Nil in production →
+	// s itself (the real StartWarehouse / StartStocker / navigate path). Injected in tests so the
+	// AddDepotElement → per-role positioning WIRING is proven against a spy sink WITHOUT spawning
+	// coordinator goroutines. Same post-construction test-seam convention as depotReceiptMinerOverride.
+	depotSinkOverride depotCoordinatorSink
 
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler

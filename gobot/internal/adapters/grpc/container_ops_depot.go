@@ -82,14 +82,52 @@ func (s *DaemonServer) RemoveDepot(ctx context.Context, playerID int, depotID st
 }
 
 // AddDepotElement is mode (B) at element granularity: it adds one element to a
-// depot's named role and persists it, via Store.AddElement. role is the CLI role name
-// (warehouse | stocker | delivery-hull | source-hub).
+// depot's named role, persists it via Store.AddElement, and then POSITIONS the crewing hull
+// (sp-3l64). role is the CLI role name (warehouse | stocker | delivery-hull | source-hub).
+//
+// The persist alone is the reopened bug: a warehouse/stocker/source-hub hull registered in config
+// but LEFT DOCKED where it was, because AddElement never triggered positioning (only the delivery
+// hull got the free+exclude+navigate, and only via a config apply / boot reload — never a granular
+// add). positionAddedDepotElement closes that: after the durable persist it runs the SAME
+// idempotent, fail-open, per-role launch/position path boot runs, so the added hull is freed from
+// its prior fleet, excluded from the contract grab, and navigated to its waypoint (or handed to its
+// own coordinator to park) — atomically, for EVERY role.
 func (s *DaemonServer) AddDepotElement(ctx context.Context, playerID int, depotID, role, waypoint, shipSymbol string) error {
 	parsedRole, err := depot.ParseRole(role)
 	if err != nil {
 		return err
 	}
-	return s.depotStore(playerID).AddElement(ctx, depotID, parsedRole, depot.Element{Waypoint: waypoint, ShipSymbol: shipSymbol})
+	if err := s.depotStore(playerID).AddElement(ctx, depotID, parsedRole, depot.Element{Waypoint: waypoint, ShipSymbol: shipSymbol}); err != nil {
+		return err
+	}
+	s.positionAddedDepotElement(ctx, playerID, depotID, shipSymbol)
+	return nil
+}
+
+// positionAddedDepotElement POSITIONS the single hull just added to a depot role (sp-3l64), so a
+// granular `element add` actually frees + excludes + navigates the hull instead of only persisting
+// config. It reloads the registry and dispatches the added element's launch intent through the
+// SAME per-role path boot runs (dispatchDepotLaunch), scoped to exactly the added ship so no
+// unrelated element is re-touched. Idempotent + fail-open: an uncrewed slot positions nothing, and
+// a registry-reload hiccup is logged and swallowed so it never fails the already-durable persist.
+// Routes through s.depotSink() so the wiring is unit-tested against a spy without spawning
+// coordinator goroutines.
+func (s *DaemonServer) positionAddedDepotElement(ctx context.Context, playerID int, depotID, shipSymbol string) {
+	if shipSymbol == "" {
+		return // declared-but-uncrewed slot — no hull to position
+	}
+	reg, err := s.LoadDepotRegistry(ctx, playerID)
+	if err != nil {
+		fmt.Printf("Warning: depot %q element-add positioning skipped for ship %s (registry reload failed): %v\n", depotID, shipSymbol, err)
+		return
+	}
+	sink := s.depotSink()
+	for _, intent := range planDepotLaunches(reg) {
+		if intent.depotID != depotID || intent.shipSymbol != shipSymbol {
+			continue
+		}
+		dispatchDepotLaunch(ctx, sink, intent, playerID)
+	}
 }
 
 // RemoveDepotElement is mode (B) at element granularity: it drops the element crewed by
@@ -160,8 +198,9 @@ func (s *DaemonServer) reloadDepotRegistryAtBoot(ctx context.Context, playerID i
 	// idempotent (the launch path's idle-gap discipline refuses a double-launch), so it is safe
 	// to run here after container recovery: a coordinator just re-adopted by recovery is not idle
 	// and is left alone; only a genuinely idle depot hull (freshly-applied topology, or a
-	// previously-stopped coordinator) is (re)started.
-	launchDepotCoordinators(ctx, reg, playerID, s)
+	// previously-stopped coordinator) is (re)started. Routes through s.depotSink() (the injectable
+	// seam sp-3l64 shares with the element-add positioning) — in production s itself.
+	launchDepotCoordinators(ctx, reg, playerID, s.depotSink())
 }
 
 // toDomain converts a boundary DepotSpec into a validated domain depot (the

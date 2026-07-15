@@ -17,6 +17,7 @@ type spyDepotSink struct {
 	warehouses []depotLaunchRecord
 	stockers   []depotLaunchRecord
 	deliveries []depotLaunchRecord
+	sourceHubs []depotLaunchRecord
 }
 
 type depotLaunchRecord struct {
@@ -38,6 +39,11 @@ func (s *spyDepotSink) launchDepotStocker(_ context.Context, shipSymbol, warehou
 
 func (s *spyDepotSink) launchDepotDelivery(_ context.Context, shipSymbol, hubWaypoint string, playerID int) error {
 	s.deliveries = append(s.deliveries, depotLaunchRecord{ship: shipSymbol, waypoint: hubWaypoint, playerID: playerID})
+	return nil
+}
+
+func (s *spyDepotSink) launchDepotSourceHub(_ context.Context, shipSymbol, hubWaypoint string, playerID int) error {
+	s.sourceHubs = append(s.sourceHubs, depotLaunchRecord{ship: shipSymbol, waypoint: hubWaypoint, playerID: playerID})
 	return nil
 }
 
@@ -152,8 +158,8 @@ func TestLaunchDepotCoordinators_NoLaunchCases(t *testing.T) {
 		"j58",
 		[]depot.Element{{Waypoint: "X1-J58-WH", ShipSymbol: ""}}, // declared, not yet crewed
 		[]depot.Element{{Waypoint: "X1-SRC-1", ShipSymbol: ""}},
-		[]depot.Element{{Waypoint: "X1-J58-DLV", ShipSymbol: ""}}, // declared delivery-hull slot, not yet crewed
-		nil,
+		[]depot.Element{{Waypoint: "X1-J58-DLV", ShipSymbol: ""}},  // declared delivery-hull slot, not yet crewed
+		[]depot.Element{{Waypoint: "X1-J58-SRCH", ShipSymbol: ""}}, // declared source-hub slot, not yet crewed
 	)
 	require.NoError(t, err)
 
@@ -170,6 +176,7 @@ func TestLaunchDepotCoordinators_NoLaunchCases(t *testing.T) {
 			require.Empty(t, sink.warehouses, "no crewed warehouse element -> no warehouse launch")
 			require.Empty(t, sink.stockers, "no crewed stocker element -> no stocker launch")
 			require.Empty(t, sink.deliveries, "no crewed delivery hull -> no delivery launch")
+			require.Empty(t, sink.sourceHubs, "no crewed source hub -> no source-hub launch")
 		})
 	}
 }
