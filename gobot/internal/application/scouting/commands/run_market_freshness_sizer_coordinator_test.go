@@ -689,3 +689,140 @@ func TestResolveSizerConfig_ReadsIssue3KnobsLiveWithDefaultFallback(t *testing.T
 	require.Equal(t, 1200*time.Second, got.WorstCycle, "live snapshot overrides worst cycle next tick")
 	require.Equal(t, 80, got.CycleDampeningPercent, "live snapshot overrides dampening next tick")
 }
+
+// sp-tor9 config wiring: the breach-response knob is live-tunable. resolveSizerConfig reads
+// breach_response_percent from the tick's live-config snapshot and falls back to its documented
+// default with no snapshot — guarding the registry↔overlay drift that would leave the knob
+// registered but silently ineffective.
+func TestResolveSizerConfig_ReadsBreachResponseKnobLiveWithDefaultFallback(t *testing.T) {
+	def := resolveSizerConfig(sizerCmd(), nil)
+	require.Equal(t, defaultBreachResponsePercent, def.BreachResponsePercent,
+		"no snapshot → documented breach-response default")
+
+	live := liveconfig.Snapshot{"breach_response_percent": 150}
+	got := resolveSizerConfig(sizerCmd(), live)
+	require.Equal(t, 150, got.BreachResponsePercent, "live snapshot overrides the breach response next tick")
+}
+
+// ---- sp-tor9: size from the empirical circuit, respond to breach proportionally ----
+
+// The VB74/DF86 incident: a high-market system whose MEASURED circuit exceeds the SLA at its
+// current probe count is sized UP to the N that brings the worst-case age under-SLA in ONE
+// resize, not the slow +1-per-manning-cycle nudge. 26 markets, 4 fully-manned probes, oldest
+// scan 94min (5640s) against the 60min SLA: the measured-cycle model collapses toward 1-2 probes
+// here (the pooled inter-scan interval deflates with probe count), so the old closed loop could
+// only reach current+1 = 5. Sizing from the OBSERVED circuit (ceil(4×5640/3600)=7) reaches
+// coverage at once. Flattening the response to +1 sizes it to 5 and fails this test.
+func TestSizer_ProportionallyRaisesFullyMannedBreachingHighMarketSystem(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-VB74", 26, 5640, 120, 25),
+	}}
+	pr := newSizerPostRepo(fullyMannedSizerPost("X1-VB74", 4))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 7, pr.hullUpdates["X1-VB74"],
+		"a fully-manned breaching post is sized from its observed circuit (ceil(4×5640/3600)=7), not nudged +1 to 5")
+	require.Empty(t, pr.upserts, "the raise goes through the manning-preserving UpdateHulls seam, never a clobbering Upsert")
+}
+
+// The breach response is PROPORTIONAL to severity, not a flat +1: the same fully-manned 4-probe
+// post breaching mildly is raised less than when it breaches severely. Flattening the response to
+// current+1 would size BOTH at 5 and fail the severe case (the mutation guard).
+func TestSizer_BreachResponseScalesWithSeverity(t *testing.T) {
+	cases := []struct {
+		name          string
+		oldestAgeSecs float64
+		wantHulls     int
+	}{
+		// ceil(4×3960/3600)=ceil(4.4)=5 — a mild 1.1× breach nudges a single probe.
+		{"mild breach nudges one probe", 3960, 5},
+		// ceil(4×6300/3600)=ceil(7.0)=7 — a 1.75× breach raises proportionally further.
+		{"severe breach raises proportionally further", 6300, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snap("X1-VB74", 26, tc.oldestAgeSecs, 120, 25),
+			}}
+			pr := newSizerPostRepo(fullyMannedSizerPost("X1-VB74", 4))
+			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+			h := newSizer(fr, pr, fl)
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+			require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-VB74"],
+				"the breach response scales with the age/SLA ratio, never a flat +1")
+		})
+	}
+}
+
+// DISJOINTNESS (sp-iupr issue 1 preserved): the circuit raise is for TRUSTED telemetry ONLY. The
+// SAME 26-market post, fully manned and breaching at 94min, but TELEMETRY-STARVED (its probes are
+// not producing scan intervals) is NOT circuit-raised — its age is a MANNING signal, not a
+// capacity shortfall, so it stays on the static market-count model (ceil(26×180/3600)=2) and
+// steps DOWN toward it, never up to 7. Same markets, same breaching age, opposite outcome from the
+// trusted case above — selected purely by trusted-vs-starved.
+func TestSizer_StarvedBreachingHighMarketSystemStaysOnMarketCountModel(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-VB74", 26, 5640, 0 /*no cycle*/, 0 /*starved*/),
+	}}
+	pr := newSizerPostRepo(fullyMannedSizerPost("X1-VB74", 4))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 3, pr.hullUpdates["X1-VB74"],
+		"a starved breaching post is NOT circuit-raised — it steps down toward the market-count floor (ceil(26×180/3600)=2)")
+}
+
+// NO RELEASE-FLAP: once VB74 is correctly sized to 7 probes its worst-case age settles under the
+// SLA (here 3300s at 7 probes). The static market-count model would read this as a 6-probe
+// surplus (26×120/3600=1) and, after the release window, shed toward 1 — re-breaching, then
+// re-raising: a flap. The circuit-observed fixpoint (ceil(7×3300/3600)=7) recognizes the post is
+// correctly sized and HOLDS it, even across a full release window. A just-raised, correctly-sized
+// post is never shed.
+func TestSizer_FullyMannedPostAtCircuitFixpointHoldsAcrossReleaseWindow(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-VB74", 26, 3300, 120, 25),
+	}}
+	pr := newSizerPostRepo(fullyMannedSizerPost("X1-VB74", 7))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h, clock := newSizerWithClock(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+	clock.Advance(301 * time.Second) // past the default 300s release window
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	_, resized := pr.hullUpdates["X1-VB74"]
+	require.False(t, resized, "a fully-manned post at its circuit fixpoint holds across the release window — no flap")
+}
+
+// AGGREGATE DEMAND now reflects true SLA need. Two fully-manned 26-market posts breaching at 94min,
+// each currently 4 probes. The old +1 sanity floor sized each to 5 (aggregate 10); the circuit
+// response sizes each to 7 (aggregate 14). With a supply of 10 — which COVERED the old demand —
+// the sizer now correctly sees the shortfall and buys toward the raised fleet cap.
+func TestSizer_AggregateDemandClimbsToTrueSLANeedForBreachingFleet(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-VB74", 26, 5640, 120, 25),
+		snap("X1-DF86", 26, 5640, 120, 25),
+	}}
+	pr := newSizerPostRepo(
+		fullyMannedSizerPost("X1-VB74", 4),
+		fullyMannedSizerPost("X1-DF86", 4),
+	)
+	fl := &fakeSizerFleetRepo{all: scouts(t, 10)} // supply 10 covered the OLD demand (5+5), not the new (7+7)
+	h := newSizer(fr, pr, fl)
+	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+	h.SetProbePurchaser(pu)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 7, pr.hullUpdates["X1-VB74"], "each breaching post is sized to its circuit target")
+	require.Equal(t, 7, pr.hullUpdates["X1-DF86"], "each breaching post is sized to its circuit target")
+	require.Equal(t, 1, pu.buyCalls,
+		"aggregate demand (14) now outruns the supply (10) that covered the old +1 demand (10) — the sizer buys")
+}

@@ -93,6 +93,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"sla_seconds":                {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds"], Unit: "seconds", Description: "freshness SLA the sizer sizes against"},
 			"worst_cycle_seconds":        {Type: "int", Min: 60, Max: 86_400, Default: sizer["worst_cycle_seconds"], Unit: "seconds", Description: "worst-plausible per-market cycle bounding the market-count clamp ceiling"},
 			"cycle_dampening_percent":    {Type: "int", Min: 1, Max: 100, Default: sizer["cycle_dampening_percent"], Unit: "percent", Description: "shrinkage of a system's own noisy per-market cycle toward the fleet median"},
+			"breach_response_percent":    {Type: "int", Min: 1, Max: 500, Default: sizer["breach_response_percent"], Unit: "percent", Description: "aggressiveness of the circuit-observed breach response (scales the observed age fed to the circuit sizing; 100 = exact measured circuit, >100 buys headroom)"},
 			"release_slack_percent":      {Type: "int", Min: 1, Max: 100, Default: sizer["release_slack_percent"], Unit: "percent", Description: "release hysteresis as a percent of the SLA"},
 			"release_stable_window_secs": {Type: "int", Min: 10, Max: 86_400, Default: sizer["release_stable_window_secs"], Unit: "seconds", Description: "how long a warm surplus must hold before a probe is shed"},
 		},

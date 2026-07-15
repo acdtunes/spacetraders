@@ -219,6 +219,55 @@ func TestDampenedCycleSeconds(t *testing.T) {
 	}
 }
 
+// CircuitRequiredHulls (sp-tor9) sizes a post from its DIRECTLY OBSERVED circuit period: the
+// worst-case market age at the post's CURRENT hull count. The circuit period scales inversely
+// with probe count, so the product hulls×age ≈ markets×perMarketHop is CONSERVED — a
+// system-invariant measure of total circuit work. Sizing to ceil(hulls×age/sla) is therefore a
+// STABLE fixpoint (raising to it drops the age proportionally so the next tick re-derives the
+// same target — no release-flap), proportional to the breach on the way up, and below the hull
+// count when comfortably fresh (enabling release). It is the empirical companion to
+// RequiredHulls that sidesteps the measured-cycle deflation which structurally under-sizes
+// high-market systems.
+func TestCircuitRequiredHulls(t *testing.T) {
+	min := time.Minute
+	sec := time.Second
+	cases := []struct {
+		name      string
+		hulls     int
+		actualAge time.Duration
+		sla       time.Duration
+		want      int
+	}{
+		// The VB74 pathology: 4 probes producing a 94min worst-case age against a 60min SLA are
+		// sized to the N that brings the circuit under-SLA in ONE step — ceil(4×94/60)=7 — not a
+		// slow +1 nudge. This is what the deflated measured-cycle model could not reach.
+		{"proportional raise sizes to bring the worst-case age under the SLA", 4, 94 * min, 60 * min, 7},
+		// Severity scales the response: 3 probes at 158min (2.6× the SLA) jump to ceil(3×158/60)=8.
+		{"a more severe breach raises more", 3, 158 * min, 60 * min, 8},
+		// CONSERVED circuit work: the SAME system measured at different hull counts yields the SAME
+		// target (25200 probe-seconds of work either way), so raising to it is a stable fixpoint.
+		{"conserved circuit work — 6 probes at a 70min age", 6, 4200 * sec, 3600 * sec, 7},
+		{"conserved circuit work — the same system at 7 probes holds the same target", 7, 3600 * sec, 3600 * sec, 7},
+		// A marginal breach nudges a single probe (ceil(4×61/60)=5) — the old sanity-floor behavior
+		// falls out of the proportional model at the boundary.
+		{"a marginal breach nudges one probe", 4, 61 * min, 60 * min, 5},
+		// Comfortably under the SLA sizes BELOW the current hull count (ceil(8×30/60)=4), the signal
+		// the caller reads as "release the surplus toward the fixpoint".
+		{"comfortably fresh sizes below the current hulls (enables release)", 8, 30 * min, 60 * min, 4},
+		// Degenerate inputs are "cannot assess" (0), never a spurious probe.
+		{"no hulls cannot assess", 0, 94 * min, 60 * min, 0},
+		{"no age cannot assess", 4, 0, 60 * min, 0},
+		{"no SLA cannot assess", 4, 94 * min, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CircuitRequiredHulls(tc.hulls, tc.actualAge, tc.sla); got != tc.want {
+				t.Errorf("CircuitRequiredHulls(%d, %s, %s) = %d, want %d", tc.hulls, tc.actualAge, tc.sla, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCircuitDuration(t *testing.T) {
 	min := time.Minute
 	// 22 markets on 1 probe at 3min/hop = 66min.

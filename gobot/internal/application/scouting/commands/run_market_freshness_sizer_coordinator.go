@@ -73,7 +73,13 @@ const (
 	// fleet-wide median (sp-iupr issue 3c) so equal-market systems converge instead of diverging
 	// on measurement noise. 0 disables (pre-issue-3 pass-through); 100 pools fully to the median.
 	defaultCycleDampeningPercent = 50
-	defaultMaxProbesPerSystem    = 8  // per-system hull cap (bounds a runaway feedback raise)
+	defaultMaxProbesPerSystem    = 8 // per-system hull cap (bounds a runaway feedback raise)
+	// defaultBreachResponsePercent scales the observed worst-case age fed to the sp-tor9
+	// circuit-observed breach response. 100 sizes from the exact measured circuit (a trusted,
+	// fully-manned breaching post is sized to ceil(current × age/sla)); > 100 buys headroom by
+	// sizing for a proportionally worse effective age (a tighter effective SLA) when the circuit
+	// under-measures in practice; < 100 damps the response. Bounded by MaxProbesPerSystem either way.
+	defaultBreachResponsePercent = 100
 	defaultReleaseSlackPercent   = 60 // release a feedback probe only below this % of the SLA (hysteresis)
 	// defaultReleaseStableWindowSecs is how long a WARM post's measured surplus (desired <
 	// current, under the SLA but past the slack line) must hold before one probe is shed to
@@ -123,6 +129,7 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	WorstCycleSeconds       int            // worst-plausible per-market cycle bounding the market-count clamp (sp-iupr issue 3b)
 	CycleDampeningPercent   int            // shrinkage % of a system's own cycle toward the fleet median (sp-iupr issue 3c)
 	MaxProbesPerSystem      int            // per-system hull cap
+	BreachResponsePercent   int            // aggressiveness of the circuit-observed breach response (sp-tor9); 100 = exact measured circuit
 	ReleaseSlackPercent     int            // release hysteresis: shed a probe only below this % of the SLA
 	ReleaseStableWindowSecs int            // a warm surplus must hold this long before one probe is shed (sp-iupr)
 
@@ -310,6 +317,7 @@ func SizerTunableDefaults() map[string]int {
 		"sla_seconds":                defaultSLASeconds,
 		"worst_cycle_seconds":        defaultWorstCycleSeconds,
 		"cycle_dampening_percent":    defaultCycleDampeningPercent,
+		"breach_response_percent":    defaultBreachResponsePercent,
 		"release_slack_percent":      defaultReleaseSlackPercent,
 		"release_stable_window_secs": defaultReleaseStableWindowSecs,
 	}
@@ -324,6 +332,7 @@ type sizerConfig struct {
 	WorstCycle            time.Duration
 	CycleDampeningPercent int
 	MaxProbesPerSystem    int
+	BreachResponsePercent int
 	ReleaseSlackPercent   int
 	ReleaseStableWindow   time.Duration
 	Buy                   probebuy.Config
@@ -345,6 +354,7 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		WorstCycle:            time.Duration(cmd.WorstCycleSeconds) * time.Second,
 		CycleDampeningPercent: cmd.CycleDampeningPercent,
 		MaxProbesPerSystem:    cmd.MaxProbesPerSystem,
+		BreachResponsePercent: cmd.BreachResponsePercent,
 		ReleaseSlackPercent:   cmd.ReleaseSlackPercent,
 		ReleaseStableWindow:   time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
 		Buy: probebuy.Config{
@@ -359,6 +369,7 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		c.WorstCycle = time.Duration(live.PositiveIntOrZero("worst_cycle_seconds")) * time.Second
 		c.CycleDampeningPercent = live.PositiveIntOrZero("cycle_dampening_percent")
 		c.MaxProbesPerSystem = live.PositiveIntOrZero("max_probes_per_system")
+		c.BreachResponsePercent = live.PositiveIntOrZero("breach_response_percent")
 		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
 		c.ReleaseStableWindow = time.Duration(live.PositiveIntOrZero("release_stable_window_secs")) * time.Second
 		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
@@ -383,6 +394,9 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 	}
 	if c.MaxProbesPerSystem <= 0 {
 		c.MaxProbesPerSystem = defaultMaxProbesPerSystem
+	}
+	if c.BreachResponsePercent <= 0 {
+		c.BreachResponsePercent = defaultBreachResponsePercent
 	}
 	if c.ReleaseSlackPercent <= 0 {
 		c.ReleaseSlackPercent = defaultReleaseSlackPercent
@@ -526,17 +540,18 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 
 // computeTarget is the per-system SIZE the sizer aims a post at, before release pacing. It runs
 // an ordered pipeline: (1) the cycle-driven MODEL, where telemetry noise enters; (2) the
-// sp-iupr issue-3b market-count CLAMP that bounds the noise; (3) the sp-iupr issue-3a empirical-
-// age SANITY FLOOR that overrides an under-sized model; then the floor-of-1 and per-system cap.
+// sp-iupr issue-3b market-count CLAMP that bounds the noise; (3) the sp-tor9 CIRCUIT-OBSERVED
+// BREACH RESPONSE that sizes a trusted, fully-manned post from its measured circuit; then the
+// floor-of-1 and per-system cap.
 //
 // The two age-driven branches are deliberately DISJOINT (they must never collide):
 //   - a TELEMETRY-STARVED system (its probes have not produced MinCycleSamples scan intervals)
 //     has an age that reflects a MANNING failure, NOT a capacity shortfall — raising demand off
 //     it only strands more probes (the issue-1 pathology). It stays on the static MARKET-COUNT
 //     model (modelTarget) and is NEVER raised off the age;
-//   - a TRUSTED, FULLY MANNED system still BREACHING the SLA is the OPPOSITE case: the empirical
-//     age proves it is genuinely under capacity, so the sanity floor bumps it past the model.
-//     Gated on !starved, so it can never fire for the starved case above.
+//   - a TRUSTED, FULLY MANNED system is the OPPOSITE case: its worst-case age at the CURRENT hull
+//     count is an honest circuit measurement, so the breach response sizes it straight from that
+//     circuit. Gated on !starved, so it can never fire for the starved case above.
 func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig, current int, fullyManned bool) (target int, starved bool) {
 	starved = snap.CycleSamples < cfg.MinCycleSamples
 
@@ -546,18 +561,29 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 
 	// 2. MARKET-COUNT CLAMP (sp-iupr issue 3b) — bound the noise-driven model to what this
 	//    market count could justify at the worst plausible cycle, capping a small-market system a
-	//    noisy-high cycle over-sized (ZY16: 3 markets read as 6). The sanity floor below is
+	//    noisy-high cycle over-sized (ZY16: 3 markets read as 6). The circuit response below is
 	//    ground truth and is applied AFTER, so it may exceed this ceiling.
 	target = domainScouting.ClampToMarketCount(target, snap.MarketCount, cfg.WorstCycle, sla)
 
-	// 3. SANITY FLOOR (sp-iupr issue 3a) — a TRUSTED, FULLY MANNED post whose oldest scan still
-	//    BREACHES the SLA is genuinely under capacity: the model (anchored on a noisy-low cycle)
-	//    under-sized it to AT OR BELOW its current budget (the NM33 stuck fixpoint). Bump one
-	//    probe past the budget so it escapes. DISJOINT from the starved branch by !starved; the
-	//    fullyManned gate PACES the growth — the added slot must be manned before the next bump,
-	//    so the lagging age can never wind it up.
-	if !starved && fullyManned && breachesSLA(snap, sla) && target <= current {
-		target = current + 1
+	// 3. CIRCUIT-OBSERVED BREACH RESPONSE (sp-tor9) — supersedes the issue-3a +1 sanity floor with
+	//    one coherent breach path. A TRUSTED, FULLY MANNED post's worst-case age at its CURRENT
+	//    hull count directly measures its circuit period; the measured-cycle model cannot, because
+	//    the pooled inter-scan interval deflates with probe count, collapsing the static estimate
+	//    toward 1 on exactly the high-market systems that need many probes. Size to
+	//    ceil(current × age/sla) (scaled by the breach-response knob): PROPORTIONAL to the breach
+	//    on the way up (a 158min-at-60min post jumps toward coverage in one resize, not eight),
+	//    and — because current × age ≈ markets × perMarketHop is CONSERVED as hulls change — a
+	//    STABLE fixpoint at steady state (raising to it drops the age so the next tick re-derives
+	//    the same target: no release-flap). It only RAISES here: a non-breaching post's circuit
+	//    target is ≤ current, so max() leaves the model target untouched. DISJOINT from the starved
+	//    branch by !starved (issue 1: a starved post's age is a manning signal, never a capacity
+	//    one); the fullyManned gate keeps the age an HONEST reading — a partially-manned post's age
+	//    reflects fewer working probes than its budget, so sizing off it would over-count.
+	if !starved && fullyManned {
+		effectiveAge := breachResponseAge(snap.OldestAgeSeconds, cfg.BreachResponsePercent)
+		if circuitTarget := domainScouting.CircuitRequiredHulls(current, effectiveAge, sla); circuitTarget > target {
+			target = circuitTarget
+		}
 	}
 
 	if target < 1 {
@@ -567,6 +593,16 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 		target = cfg.MaxProbesPerSystem
 	}
 	return target, starved
+}
+
+// breachResponseAge scales the observed worst-case age by the breach-response aggressiveness knob
+// (sp-tor9) before it is fed to the circuit model — percent > 100 sizes for a proportionally
+// WORSE effective age (equivalently, a tighter effective SLA), buying headroom against a circuit
+// that under-measures in practice; 100 is the exact observed circuit; the coordinator's default
+// chain guarantees a positive percent so this never zeroes the age.
+func breachResponseAge(oldestAgeSeconds float64, breachResponsePercent int) time.Duration {
+	scaledSeconds := oldestAgeSeconds * float64(breachResponsePercent) / 100
+	return time.Duration(scaledSeconds * float64(time.Second))
 }
 
 // modelTarget is the cycle-driven size estimate before the issue-3 clamp and sanity floor. A
@@ -579,13 +615,6 @@ func modelTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Du
 	}
 	age := time.Duration(snap.OldestAgeSeconds * float64(time.Second))
 	return domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
-}
-
-// breachesSLA reports whether a system's oldest market scan has aged past its SLA — the
-// empirical ground-truth signal that a fully-manned, telemetried post is genuinely under
-// capacity (sp-iupr issue 3a). A non-positive SLA ("cannot assess") never breaches.
-func breachesSLA(snap domainScouting.SystemFreshnessSnapshot, sla time.Duration) bool {
-	return sla > 0 && snap.OldestAgeSeconds > sla.Seconds()
 }
 
 // desiredHulls applies release PACING on top of computeTarget so the fleet neither flaps at

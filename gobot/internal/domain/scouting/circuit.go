@@ -129,6 +129,35 @@ func FreshnessRequiredHulls(markets int, cycle, sla, actualAge time.Duration) in
 	return raised
 }
 
+// CircuitRequiredHulls sizes a post from its DIRECTLY OBSERVED circuit period (sp-tor9): `hulls`
+// probes produced a worst-case market age of `actualAge` — the age of the oldest market, i.e.
+// how long since a probe last completed the circuit back to it. The circuit period scales
+// inversely with probe count (period ≈ markets × perMarketHop / hulls), so the product
+// hulls × actualAge ≈ markets × perMarketHop is CONSERVED as hulls change — a system-invariant
+// measure of total circuit work. To bring the worst-case age under `sla`, that work must be
+// spread over ceil(hulls × actualAge / sla) probes.
+//
+// Because the product is conserved, this target is a STABLE FIXPOINT: raising to it drops the
+// age proportionally, so the next tick re-derives the same target (no release-flap). It rises
+// proportionally with the breach on the way up, sits at the hull count when the age is exactly
+// the SLA, and falls BELOW the hull count when comfortably fresh (the caller reads that as
+// "release the surplus"). Degenerate inputs (no probes, non-positive age/sla) return 0
+// ("cannot assess"), never a spurious probe.
+//
+// This is the empirical companion to RequiredHulls. RequiredHulls(markets, measuredCycle, sla)
+// STRUCTURALLY under-sizes high-market systems: measuredCycle is the pooled inter-scan interval,
+// which shrinks as probes are added (more probes ⇒ more frequent scans ⇒ a smaller median gap),
+// so the static model collapses toward 1 exactly where a big system needs many probes. Sizing
+// from the observed age at the current hull count sidesteps that deflation entirely — the age is
+// the circuit period, measured directly.
+func CircuitRequiredHulls(hulls int, actualAge, sla time.Duration) int {
+	if hulls < 1 || actualAge <= 0 || sla <= 0 {
+		return 0
+	}
+	need := float64(hulls) * float64(actualAge) / float64(sla)
+	return int(math.Ceil(need))
+}
+
 // median returns the middle value of xs (the mean of the two middle values for an even
 // count). xs must be non-empty; the sole caller guarantees it. It sorts a copy so the
 // caller's slice order is preserved.

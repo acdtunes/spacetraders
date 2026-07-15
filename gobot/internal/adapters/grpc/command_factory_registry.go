@@ -755,6 +755,7 @@ func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int
 		WorstCycleSeconds:       cfg.OptionalInt("worst_cycle_seconds", 0),
 		CycleDampeningPercent:   cfg.OptionalInt("cycle_dampening_percent", 0),
 		MaxProbesPerSystem:      cfg.OptionalInt("max_probes_per_system", 0),
+		BreachResponsePercent:   cfg.OptionalInt("breach_response_percent", 0),
 		ReleaseSlackPercent:     cfg.OptionalInt("release_slack_percent", 0),
 		ReleaseStableWindowSecs: cfg.OptionalInt("release_stable_window_secs", 0),
 		MaxProbeFleet:           cfg.OptionalInt("max_probe_fleet", 0),
