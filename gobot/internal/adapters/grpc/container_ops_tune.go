@@ -62,11 +62,12 @@ type TuneShowOutcome struct {
 }
 
 var tuneOperationCoordinatorTypes = map[string]string{
-	"freshsizer": string(container.ContainerTypeMarketFreshnessSizer),
-	"frontier":   string(container.ContainerTypeFrontierExpansion),
-	"scoutpost":  string(container.ContainerTypeScoutPostCoordinator),
-	"contract":   string(container.ContainerTypeContractFleetCoordinator),
-	"autooutfit": string(container.ContainerTypeAutoOutfitCoordinator),
+	"freshsizer":       string(container.ContainerTypeMarketFreshnessSizer),
+	"frontier":         string(container.ContainerTypeFrontierExpansion),
+	"scoutpost":        string(container.ContainerTypeScoutPostCoordinator),
+	"contract":         string(container.ContainerTypeContractFleetCoordinator),
+	"autooutfit":       string(container.ContainerTypeAutoOutfitCoordinator),
+	"shipyardbackfill": string(container.ContainerTypeShipyardBackfillCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -75,6 +76,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	scoutPost := scoutingCmd.ScoutPostTunableDefaults()
 	contract := ContractCoordinatorTunableDefaults()
 	autoOutfit := autooutfitCmd.AutoOutfitTunableDefaults()
+	shipyardBackfill := scoutingCmd.ShipyardBackfillTunableDefaults()
 	return map[string]map[string]TuneBound{
 		string(container.ContainerTypeAutoOutfitCoordinator): {
 			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},
@@ -121,6 +123,9 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		},
 		string(container.ContainerTypeContractFleetCoordinator): {
 			"min_home_contract_workers": {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
+		},
+		string(container.ContainerTypeShipyardBackfillCoordinator): {
+			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},
 		},
 	}
 }

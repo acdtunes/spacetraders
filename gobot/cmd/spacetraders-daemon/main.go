@@ -1075,6 +1075,33 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
 	}
 
+	// Shipyard-backfill sweep (sp-rhju): the standing catch-up coordinator that closes the
+	// charted-but-unscanned shipyard blind spot the market-tour-only scan (sp-42ow) left behind.
+	// It enumerates known-shipyard systems the depth frontier reached but no market tour toured —
+	// intersecting the era-agnostic SHIPYARD-trait set (waypointRepo.ListWithTrait) with the
+	// CURRENT gate-reachable frontier (a dedicated ExpansionScanner for hop depth + reachability)
+	// minus the era-scoped scanned set (shipyardInventoryRepo.ScannedSystems) — and declares
+	// deeper-first sweep-once posts through the SAME scout-post repo the reconciler mans, bounded
+	// by min(rate knob, idle probe supply). The probe's arrival rides the sp-rhju decoupled
+	// shipyard scan and a heavy hit fires the existing heavy_yard_discovered event. It moves and
+	// claims NOTHING; self-quiescing once the blind spot drains. Registration + restart-recovery +
+	// live-tune are wired here; a thin launch verb calls DaemonServer.ShipyardBackfillCoordinator.
+	shipyardBackfillHandler := scoutingCmd.NewRunShipyardBackfillCoordinatorHandler(
+		expansionAdapters.NewChartedShipyardEnumerator(
+			expansionAdapters.NewExpansionScanner(gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo),
+			waypointRepo,
+			12, // reach bound = the expendable-probe reposition horizon (max_reposition_jumps default) so no unreachable yard is enumerated
+		),
+		shipyardInventoryRepo,
+		expansionAdapters.NewIdleProbeCounter(shipRepo),
+		scoutPostRepo,
+		nil, // nil = use RealClock
+	)
+	shipyardBackfillHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	if err := mediator.RegisterHandler[*scoutingCmd.RunShipyardBackfillCoordinatorCommand](med, shipyardBackfillHandler); err != nil {
+		return fmt.Errorf("failed to register ShipyardBackfillCoordinator handler: %w", err)
+	}
+
 	// Capacity reconciler (epic st-7zk, foundation st-fyr): the standing declarative
 	// reconciler that drives the contract-delivery machine's actual capacity topology toward
 	// a computed desired topology (SENSE → PLAN → DIFF → GOVERN → CONVERGE), maximizing

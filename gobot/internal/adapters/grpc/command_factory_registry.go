@@ -376,6 +376,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
 		{CommandType: "frontier_expansion_coordinator", build: buildFrontierExpansionCoordinatorCommand},
 		{CommandType: "market_freshness_sizer_coordinator", build: buildMarketFreshnessSizerCoordinatorCommand},
+		{CommandType: "shipyard_backfill_coordinator", build: buildShipyardBackfillCoordinatorCommand},
 		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
@@ -764,6 +765,21 @@ func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int
 		MaxSpendPerCycle:        cfg.OptionalInt("max_spend_per_cycle", 0),
 		PurchaseCooldownSecs:    cfg.OptionalInt("purchase_cooldown_secs", 0),
 		SpendWindowSecs:         cfg.OptionalInt("spend_window_secs", 0),
+	}
+}
+
+// buildShipyardBackfillCoordinatorCommand rebuilds the standing shipyard-backfill sweep from
+// its persisted launch config so restart recovery re-adopts it byte-identically (RULINGS #2,
+// sp-rhju). Like the frontier coordinator it is a reconcile-loop coordinator (NOT a
+// CoordinatorOwnsIterations type — it loops forever inside one Handle()). Every knob is
+// optional (0 → the coordinator's own default, RULINGS #5), so creation and recovery share one
+// construction and can never drift.
+func buildShipyardBackfillCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &scoutingCmd.RunShipyardBackfillCoordinatorCommand{
+		PlayerID:              shared.MustNewPlayerID(playerID),
+		ContainerID:           cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:      cfg.OptionalInt("tick_interval_secs", 0),
+		MaxDispatchesPerCycle: cfg.OptionalInt("max_dispatches_per_cycle", 0),
 	}
 }
 

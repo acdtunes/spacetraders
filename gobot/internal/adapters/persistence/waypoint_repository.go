@@ -131,6 +131,29 @@ func eraScopePredicate(openEraID *int) (string, []any) {
 	return "(era_id = ? OR era_id IS NULL)", []any{*openEraID}
 }
 
+// ListWithTrait retrieves EVERY cached waypoint bearing the given trait across ALL
+// systems, read as the IMMUTABLE physical fact it is: era-AGNOSTIC and TTL-agnostic,
+// exactly like HasWaypointTrait. This is the sp-rhju backfill's charted-shipyard
+// enumerator: an era-SCOPED read here would repeat the precise sp-42ow bug that
+// filtered out ~97 of 108 real SHIPYARD waypoints (prior-era and/or stale rows), so
+// the sweep would only ever see ~10% of the shipyards and the blind spot it exists to
+// close would stay open. A physical SHIPYARD trait never changes across eras, so a
+// prior-era row is still authoritative proof the system holds a shipyard; downstream
+// the enumerator intersects this set with the CURRENT gate-reachable frontier, which
+// filters any dead-universe symbol a probe could not actually be relayed to. A cheap
+// local read — no API budget is spent.
+func (r *GormWaypointRepository) ListWithTrait(ctx context.Context, trait string) ([]*shared.Waypoint, error) {
+	pattern := fmt.Sprintf("%%\"%s\"%%", trait)
+	var models []WaypointModel
+	result := r.db.WithContext(ctx).
+		Where("traits LIKE ?", pattern).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list waypoints with trait %s: %w", trait, result.Error)
+	}
+	return r.modelsToWaypoints(models)
+}
+
 // ListBySystemWithTrait retrieves waypoints in a system filtered by a specific trait
 func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error) {
 	var models []WaypointModel

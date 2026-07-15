@@ -583,23 +583,35 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 	}
 }
 
-// scanShipyardIfPresent piggybacks a shipyard-inventory scan on the SAME
-// marketplace arrival scanMarketIfPresent handles (sp-42ow emit-path fix). The
-// route executor is the ONLY market-scan path a standing multi-market scout tour
-// exercises — executeMultiMarketTour delegates its market scan here rather than
-// re-scanning in the handler (scout_tour.go:485) — so the shipyard scan MUST ride
-// this same route-arrival hook, or a scout that visits a SHIPYARD-trait
-// marketplace never persists a shipyard_inventory row (the live 0-rows incident
-// the prior two fixes did not close). Gated to marketplace arrivals so it fires
-// exactly where the market scan fires; the ScoutTourHandler's stationary
+// scanShipyardIfPresent piggybacks a shipyard-inventory scan on a route arrival
+// (sp-42ow emit-path fix; sp-rhju decoupling). The route executor is the ONLY
+// market-scan path a standing multi-market scout tour exercises —
+// executeMultiMarketTour delegates its market scan here rather than re-scanning in
+// the handler (scout_tour.go:485) — so the shipyard scan MUST ride this same
+// route-arrival hook, or a scout that visits a SHIPYARD-trait waypoint never
+// persists a shipyard_inventory row (the live 0-rows incident the prior two fixes
+// did not close).
+//
+// sp-rhju: the trigger is NO LONGER marketplace-arrival-only. It also fires when
+// the arrived waypoint bears the SHIPYARD trait but carries NO marketplace — the
+// charted-but-un-toured shipyard the depth frontier reaches but no MARKET tour
+// ever tours (the 45-system blind spot). A probe that CHARTS/visits such a system
+// and arrives at its shipyard now scans it on the way through, decoupling shipyard
+// discovery from the lagging market tour. Firing on the marketplace trait too
+// keeps the sp-42ow co-located-yard path byte-identical.
+//
+// No double-scan per visit: the ScoutTourHandler's stationary
 // performInitialScan/continuousMarketScanning paths scan a waypoint the executor
-// never navigates to, so no waypoint is double-scanned per visit. The scanner's
-// own immutable-SHIPYARD-trait gate is a single cached-waypoint read that no-ops
-// every non-shipyard for zero API budget; GetShipyard fires only on a real
-// shipyard. Strictly non-fatal — a shipyard failure is logged and the route
-// proceeds, mirroring scanMarketIfPresent.
+// never navigates to, and ReplaceScan is idempotent regardless. The scanner's own
+// immutable-SHIPYARD-trait gate is a single cached-waypoint read that no-ops every
+// non-shipyard for zero API budget; GetShipyard fires only on a real shipyard.
+// Strictly non-fatal — a shipyard failure is logged and the route proceeds,
+// mirroring scanMarketIfPresent.
 func (e *RouteExecutor) scanShipyardIfPresent(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) {
-	if e.shipyardScanner == nil || !segment.ToWaypoint.IsMarketplace() {
+	if e.shipyardScanner == nil {
+		return
+	}
+	if !segment.ToWaypoint.IsMarketplace() && !segment.ToWaypoint.HasTrait("SHIPYARD") {
 		return
 	}
 	if err := e.shipyardScanner.ScanAndSaveShipyard(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol); err != nil {

@@ -70,7 +70,14 @@ const (
 	// money-guard stack. Like the frontier/siting/autosizer coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeMarketFreshnessSizer     ContainerType = "MARKET_FRESHNESS_SIZER_COORDINATOR"
-	ContainerTypePurchase                 ContainerType = "PURCHASE"
+	// ContainerTypeShipyardBackfillCoordinator is the standing shipyard-backfill sweep (sp-rhju):
+	// a per-player coordinator that loops forever inside one Handle() closing the charted-but-
+	// unscanned shipyard blind spot the market-tour-only scan left behind — enumerating known-
+	// shipyard systems the depth frontier reached but no market tour toured and declaring deeper-
+	// first sweep-once posts the reconciler mans. Like the frontier/siting/autosizer coordinators
+	// it is NOT a CoordinatorOwnsIterations type.
+	ContainerTypeShipyardBackfillCoordinator ContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
+	ContainerTypePurchase                    ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"
 	// ContainerTypeSitingCoordinator is the standing factory-siting brain (sp-vdld): a
 	// per-player coordinator that loops forever inside one Handle() scanning/scoring/sizing

@@ -114,6 +114,26 @@ func (r *ShipyardInventoryRepositoryGORM) ListByTypes(ctx context.Context, playe
 	return out, nil
 }
 
+// ScannedSystems returns the DISTINCT systems the player has a live-era shipyard
+// scan for — the SCANNED set the sp-rhju backfill sweep excludes when enumerating
+// the charted-but-unscanned blind spot. Era-SCOPED (mirroring the other reads): a
+// scan booked in a DEAD era does not count as scanned in the open era, so a universe
+// reset correctly re-backfills every shipyard this era (the scanned set is empty
+// under the new era until re-scanned). A read error surfaces (fail closed) rather
+// than a spuriously-empty scanned set that would re-declare every already-known yard.
+func (r *ShipyardInventoryRepositoryGORM) ScannedSystems(ctx context.Context, playerID int) ([]string, error) {
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	var systems []string
+	if err := r.db.WithContext(ctx).Model(&ShipyardInventoryModel{}).
+		Where("player_id = ?", playerID).
+		Where(predicate, args...).
+		Distinct().
+		Pluck("system_symbol", &systems).Error; err != nil {
+		return nil, fmt.Errorf("failed to list scanned shipyard systems: %w", err)
+	}
+	return systems, nil
+}
+
 // openEraID mirrors GormGateEdgeRepository.openEraID: the open era is the
 // highest era_id with no closed_at. nil (no open era yet) scopes reads/writes
 // to NULL era_id rows, matching the pre-close transition window.

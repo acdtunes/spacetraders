@@ -109,3 +109,44 @@ func TestShipyardInventory_DeadEraRows_InvisibleToLiveReads(t *testing.T) {
 	require.NoError(t, db.Model(&persistence.ShipyardInventoryModel{}).Count(&total).Error)
 	require.Equal(t, int64(1), total, "the re-scan must have purged the dead-era row, not stacked on it")
 }
+
+// ScannedSystems returns the DISTINCT open-era systems the player has scanned (the
+// sp-rhju backfill's scanned-exclusion set): one entry per system regardless of how
+// many yards/types it holds, and a dead-era scan does NOT count as scanned (so a
+// universe reset re-backfills every shipyard this era).
+func TestShipyardInventory_ScannedSystems_DistinctAndEraScoped(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	// A dead era whose scanned system must NOT read as scanned in the new era.
+	closedAt := time.Now().Add(-24 * time.Hour)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	deadEra := 1
+	require.NoError(t, db.Create(&persistence.ShipyardInventoryModel{
+		PlayerID: 1, SystemSymbol: "X1-DEAD", WaypointSymbol: "X1-DEAD-Y1",
+		ShipType: "SHIP_PROBE", PurchasePrice: 25_000, LastScanned: time.Now(), EraID: &deadEra,
+	}).Error)
+
+	// The open era.
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+	repo := persistence.NewShipyardInventoryRepository(db)
+	ctx := context.Background()
+
+	// System X1-AA scanned with TWO types (must collapse to one distinct system);
+	// system X1-BB scanned with one; a second player's scan must not bleed in.
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-AA", "X1-AA-Y1", []shipyard.ShipTypeAvailability{
+		availability("X1-AA-Y1", "SHIP_PROBE", 25_000, "HIGH"),
+		availability("X1-AA-Y1", "SHIP_HEAVY_FREIGHTER", 1_200_000, "MODERATE"),
+	}, time.Now()))
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-BB", "X1-BB-Y1", []shipyard.ShipTypeAvailability{
+		{SystemSymbol: "X1-BB", WaypointSymbol: "X1-BB-Y1", ShipType: "SHIP_PROBE", PurchasePrice: 30_000, Supply: "HIGH"},
+	}, time.Now()))
+	require.NoError(t, repo.ReplaceScan(ctx, 2, "X1-CC", "X1-CC-Y1", []shipyard.ShipTypeAvailability{
+		{SystemSymbol: "X1-CC", WaypointSymbol: "X1-CC-Y1", ShipType: "SHIP_PROBE", PurchasePrice: 30_000, Supply: "HIGH"},
+	}, time.Now()))
+
+	systems, err := repo.ScannedSystems(ctx, 1)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"X1-AA", "X1-BB"}, systems,
+		"ScannedSystems must return each open-era system once (distinct), excluding dead-era and other-player scans")
+}
