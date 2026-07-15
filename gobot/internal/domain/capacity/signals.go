@@ -175,6 +175,14 @@ type EconomicsSignals struct {
 	// SourceDistances is the per-good distance from each hub to its nearest
 	// source market — the denominator of the buffer-selection score.
 	SourceDistances []GoodSourceDistance
+	// LocalProduction is the per-hub set of goods the hub's OWN market
+	// EXPORTS/EXCHANGES — the sp-rxrg gate-2 input the buffer selector excludes
+	// (a locally-produced good is bought on-site, never warehoused). SENSE
+	// populates it from live market trade-type; while unsensed it is empty and
+	// gate 2 fails open on this (dormant) path — the LIVE depot path senses it
+	// directly. It shares the domain/buffer.Gate with the depot path so the
+	// three gates can never drift.
+	LocalProduction []GoodLocalProduction
 	// StockerLoad is the per-hub stocker utilization.
 	StockerLoad []StockerLoad
 }
@@ -184,6 +192,13 @@ type GoodSourceDistance struct {
 	HubSymbol string
 	Good      string
 	Distance  float64
+}
+
+// GoodLocalProduction flags one good a hub produces locally (its own market
+// EXPORTS/EXCHANGES it) — the sp-rxrg gate-2 signal.
+type GoodLocalProduction struct {
+	HubSymbol string
+	Good      string
 }
 
 // StockerLoad is one hub's stocker restock pressure.

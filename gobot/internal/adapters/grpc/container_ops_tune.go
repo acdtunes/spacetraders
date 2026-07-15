@@ -125,7 +125,8 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"manning_stall_correction_cap": {Type: "int", Min: 1, Max: 100, Default: scoutPost["manning_stall_correction_cap"], Unit: "corrections", Description: "re-mans of one silent post before the watchdog backs off to the captain event"},
 		},
 		string(container.ContainerTypeContractFleetCoordinator): {
-			"min_home_contract_workers": {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
+			"min_home_contract_workers":        {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
+			"depot_buffer_min_source_distance": {Type: "int", Min: 0, Max: 5_000, Default: contract["depot_buffer_min_source_distance"], Unit: "distance", Description: "sp-rxrg gate-3 floor: a depot warehouse never buffers a good whose nearest EXTERNAL source is within this many coordinate units — near/local-sourced goods barely benefit from a warehouse slot"},
 		},
 		string(container.ContainerTypeShipyardBackfillCoordinator): {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},

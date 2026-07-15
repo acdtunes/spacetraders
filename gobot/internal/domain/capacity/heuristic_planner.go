@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"sort"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/buffer"
 )
 
 // HeuristicPlanner is the v1 deterministic PLAN implementation (epic st-7zk,
@@ -72,6 +74,13 @@ const (
 	// while typical near-sourced goods (≤30 units × ≤150 distance) clear it
 	// from ~0.09 contracts/hr up.
 	minBufferSelectionScore = 0.00002
+	// reconcilerMinSourceDistance is the sp-rxrg gate-3 source-distance floor on
+	// this (reconciler) path: a good whose nearest source sits at/below this many
+	// coordinate units is too near to warrant a warehouse slot. A documented
+	// constant here (the LIVE depot path carries the live-tunable knob); set well
+	// below the near-sourced goods the planner already buffers so it only excludes
+	// the co-located/adjacent class, never the genuine far/orphan goods.
+	reconcilerMinSourceDistance = 25.0
 	// warehouseHoldUnits sizes warehouse counts: one freighter-class hold.
 	warehouseHoldUnits = 120.0
 	// coldStartFloorPerHullCrHr is the effective universal per-hull-cr/hr
@@ -111,11 +120,13 @@ const (
 func (HeuristicPlanner) ComputeDesired(_ context.Context, signals Signals, cal Calibration) (DesiredTopology, error) {
 	walk := newCoverageWalk(cal, signals)
 	sourceDistances := sourceDistancesByHub(signals.Economics.SourceDistances)
+	localProduction := localProductionByHub(signals.Economics.LocalProduction)
+	gate := buffer.Gate{MinExternalSourceDistance: reconcilerMinSourceDistance}
 	budgetUnits := stockerBudgetUnits(cal)
 
 	var hubs []DesiredHub
 	for _, candidate := range rankHubCandidates(signals.Demand.Hubs, performanceByHub(signals.Performance.Hubs)) {
-		hub := planHub(candidate, sourceDistances[candidate.demand.HubSymbol], budgetUnits)
+		hub := planHub(candidate, sourceDistances[candidate.demand.HubSymbol], localProduction[candidate.demand.HubSymbol], gate, budgetUnits)
 		if walk.admits(candidate, hub) {
 			hubs = append(hubs, hub)
 		}
@@ -293,8 +304,8 @@ func keepRequiredPerHullCrHr(cal Calibration) float64 {
 // sized to that buffered volume and the hub's observed cycle. Positions stay
 // empty — the contract defaults them to the hub itself, and co-location IS
 // the cycle-time lever.
-func planHub(candidate hubCandidate, sourceDistances map[string]float64, budgetUnits int) DesiredHub {
-	selected := selectBufferGoods(candidate.demand.GoodMix, sourceDistances, budgetUnits)
+func planHub(candidate hubCandidate, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate, budgetUnits int) DesiredHub {
+	selected := selectBufferGoods(candidate.demand.GoodMix, sourceDistances, localProduction, gate, budgetUnits)
 	return DesiredHub{
 		HubSymbol:      candidate.demand.HubSymbol,
 		BufferedGoods:  desiredBufferedGoods(selected),
@@ -337,10 +348,10 @@ type bufferCandidate struct {
 // stocker-cost, best first, under the buffered-volume budget. A good whose
 // cap exceeds the remaining budget is skipped while smaller cheaper-to-stock
 // goods behind it still make it in.
-func selectBufferGoods(goodMix []GoodDemand, sourceDistances map[string]float64, budgetUnits int) []bufferSelection {
+func selectBufferGoods(goodMix []GoodDemand, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate, budgetUnits int) []bufferSelection {
 	remaining := budgetUnits
 	var selected []bufferSelection
-	for _, candidate := range rankBufferCandidates(goodMix, sourceDistances) {
+	for _, candidate := range rankBufferCandidates(goodMix, sourceDistances, localProduction, gate) {
 		if candidate.selection.capUnits > remaining {
 			continue
 		}
@@ -353,9 +364,12 @@ func selectBufferGoods(goodMix []GoodDemand, sourceDistances map[string]float64,
 // rankBufferCandidates scores the eligible goods and orders them best first;
 // equal scores order by good so the ranking is a total order independent of
 // input slice order. Duplicate good entries collapse to the best-ranked one.
-func rankBufferCandidates(goodMix []GoodDemand, sourceDistances map[string]float64) []bufferCandidate {
+func rankBufferCandidates(goodMix []GoodDemand, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate) []bufferCandidate {
 	candidates := make([]bufferCandidate, 0, len(goodMix))
 	for _, good := range goodMix {
+		if !admitsBufferGood(good, sourceDistances, localProduction, gate) {
+			continue // sp-rxrg: excluded by the shared candidate gate before it can be ranked
+		}
 		candidate, eligible := scoreBufferGood(good, sourceDistances)
 		if !eligible {
 			continue
@@ -364,6 +378,38 @@ func rankBufferCandidates(goodMix []GoodDemand, sourceDistances map[string]float
 	}
 	sortBufferCandidates(candidates)
 	return dedupeBufferCandidates(candidates)
+}
+
+// admitsBufferGood applies the shared sp-rxrg candidate gate to one good on the
+// reconciler path — the SAME domain/buffer.Gate the LIVE depot selector uses, so
+// the three gates cannot drift. Gate 1 is the good's H-scoped contract frequency
+// (GoodMix is already the hub's own contract demand), gate 2 is the hub's
+// local-production set, gate 3 is the source distance vs the floor.
+func admitsBufferGood(good GoodDemand, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate) bool {
+	distance, known := sourceDistances[good.Good]
+	return gate.Admits(buffer.Facts{
+		Good:                        good.Good,
+		HubContractFrequency:        good.Frequency,
+		HubProducesLocally:          localProduction[good.Good],
+		ExternalSourceDistance:      distance,
+		ExternalSourceDistanceKnown: known,
+	})
+}
+
+// localProductionByHub indexes the per-hub local-production sets by hub then good
+// (mirrors sourceDistancesByHub). A hub with no entries maps to a nil set, which
+// reads as "produces nothing locally" — gate 2 fails open there.
+func localProductionByHub(entries []GoodLocalProduction) map[string]map[string]bool {
+	byHub := make(map[string]map[string]bool, len(entries))
+	for _, entry := range entries {
+		goods := byHub[entry.HubSymbol]
+		if goods == nil {
+			goods = map[string]bool{}
+			byHub[entry.HubSymbol] = goods
+		}
+		goods[entry.Good] = true
+	}
+	return byHub
 }
 
 // scoreBufferGood applies the spec's selection score: frequency ÷ (avg_units ×

@@ -12,12 +12,12 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
-	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	"gorm.io/gorm"
@@ -178,6 +178,7 @@ const (
 	frontierContainerType         = "FRONTIER_EXPANSION_COORDINATOR"
 	scoutPostContainerType        = "SCOUT_POST_COORDINATOR"
 	shipyardBackfillContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
+	contractCoordinatorType       = "CONTRACT_FLEET_COORDINATOR"
 )
 
 // newTunedSizer wires a real freshness-sizer handler whose live-config reader reads
@@ -479,6 +480,7 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 		{frontierContainerType, expansionCmd.FrontierTunableDefaults()},
 		{scoutPostContainerType, scoutingCmd.ScoutPostTunableDefaults()},
 		{shipyardBackfillContainerType, scoutingCmd.ShipyardBackfillTunableDefaults()},
+		{contractCoordinatorType, ContractCoordinatorTunableDefaults()},
 	}
 	for _, engine := range engines {
 		knobs, ok := registry[engine.containerType]

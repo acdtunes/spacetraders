@@ -38,13 +38,50 @@ const MinHomeContractWorkersDefault = 6
 // SAME key so a `tune --operation contract` write is what the census reads back on the next launch.
 const minHomeContractWorkersConfigKey = "min_home_contract_workers"
 
+// DepotBufferMinSourceDistanceDefault is the documented default for the sp-rxrg gate-3 source-distance
+// floor: a destination-depot warehouse never buffers a good whose nearest EXTERNAL source sits at or
+// below this many coordinate units. A homed hauler buys such a near/local-sourced good on-site about
+// as cheaply as the buffer would pre-stage it, so the warehouse slot and the stocker haul are wasted
+// (the DRUGS@J58 incident: DRUGS is exported at J58, so its source is co-located — distance ~0). It
+// applies when the live contract-coordinator config carries no positive override. Live-tunable
+// without restart via `tune --operation contract --key depot_buffer_min_source_distance`.
+const DepotBufferMinSourceDistanceDefault = 25
+
+// depotBufferMinSourceDistanceConfigKey is the config-column key the gate-3 floor is tuned by. The
+// tune bounds registry (container_ops_tune.go) and the live resolver below name the SAME key so a
+// `tune --operation contract` write is what the next warehouse (re)solve reads back.
+const depotBufferMinSourceDistanceConfigKey = "depot_buffer_min_source_distance"
+
 // ContractCoordinatorTunableDefaults maps every LIVE-tunable contract-fleet-coordinator knob to
 // its documented default — mirroring SizerTunableDefaults / ScoutPostTunableDefaults so the
 // daemon's tune bounds registry reads the default-of-record from next to the const it mirrors.
 func ContractCoordinatorTunableDefaults() map[string]int {
 	return map[string]int{
-		minHomeContractWorkersConfigKey: MinHomeContractWorkersDefault,
+		minHomeContractWorkersConfigKey:       MinHomeContractWorkersDefault,
+		depotBufferMinSourceDistanceConfigKey: DepotBufferMinSourceDistanceDefault,
 	}
+}
+
+// resolveDepotBufferMinSourceDistance resolves the sp-rxrg gate-3 source-distance floor from the
+// live>default chain: a positive value on the active contract-coordinator's config column (what
+// `tune --operation contract --key depot_buffer_min_source_distance` writes) wins; else the
+// documented default. A zero/absent live value means "unset" and defers to the default, matching the
+// tune mechanism's revert-to-default semantics.
+func resolveDepotBufferMinSourceDistance(live map[string]interface{}) int {
+	if live != nil {
+		if v, ok := intValue(live[depotBufferMinSourceDistanceConfigKey]); ok && v > 0 {
+			return v
+		}
+	}
+	return DepotBufferMinSourceDistanceDefault
+}
+
+// liveDepotBufferMinSourceDistance reads the gate-3 floor at warehouse-(re)solve time, resolving
+// live>default off the active contract-fleet-coordinator container's config column (the SAME LIVE
+// tier the reserve floor reads). A missing coordinator / DB hiccup degrades to the documented
+// default — never blocks a warehouse launch.
+func (s *DaemonServer) liveDepotBufferMinSourceDistance(ctx context.Context, playerID int) int {
+	return resolveDepotBufferMinSourceDistance(s.activeContractCoordinatorConfig(ctx, playerID))
 }
 
 // deliveryPinBudget is the reserve-floor census the delivery-hull launch consults before pinning

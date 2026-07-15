@@ -215,7 +215,7 @@ func TestDepotWarehouseTargetUnits_GatesOnReceiptDemandPreferringFarSource(t *te
 	}}
 
 	// Capacity 40 fits exactly ONE 40-unit good, forcing the receipt knapsack to choose.
-	targets := depotWarehouseTargetUnits(context.Background(), miner, 40, "X1", warehouseWaypoint, coords, 7, nil)
+	targets := depotWarehouseTargetUnits(context.Background(), miner, 40, "X1", warehouseWaypoint, coords, bufferGateContext{}, 7, nil)
 
 	require.Contains(t, targets, "FAR_GOOD",
 		"receipt-demand buffers the far-sourced received good (the long haul-leg the stocker absorbs)")
@@ -256,7 +256,7 @@ func TestDepotWarehouseTargetUnits_RanksByContractRewardNotMarketAsk(t *testing.
 	}}
 
 	// Capacity 40 fits exactly ONE 40-unit good, forcing the value ranking to decide.
-	targets := depotWarehouseTargetUnits(context.Background(), miner, 40, "X1", warehouseWaypoint, coords, 7, nil)
+	targets := depotWarehouseTargetUnits(context.Background(), miner, 40, "X1", warehouseWaypoint, coords, bufferGateContext{}, 7, nil)
 
 	require.Contains(t, targets, "LOW_ASK_HIGH_REWARD",
 		"the buffer ranks by CONTRACT REWARD, so the high-reward (low-ask) good is bought")
@@ -287,11 +287,11 @@ func TestDepotColocatedWarehouseTargets_AggregateCapacityCoversWhitelistBreadth(
 	capacityOf := func(string) int { return 80 } // every warehouse hull is a standard 80-cargo frame
 
 	single := depotColocatedWarehouseTargets(context.Background(), miner,
-		[]string{"WH-1"}, capacityOf, "X1", warehouseWaypoint, coords, 7, nil)
+		[]string{"WH-1"}, capacityOf, "X1", warehouseWaypoint, coords, bufferGateContext{}, 7, nil)
 	require.Len(t, single, 2, "a single 80-cargo hull covers only two one-contract-wide goods")
 
 	aggregate := depotColocatedWarehouseTargets(context.Background(), miner,
-		[]string{"WH-1", "WH-2"}, capacityOf, "X1", warehouseWaypoint, coords, 7, nil)
+		[]string{"WH-1", "WH-2"}, capacityOf, "X1", warehouseWaypoint, coords, bufferGateContext{}, 7, nil)
 	require.Len(t, aggregate, 4,
 		"the co-located pair's AGGREGATE 160 capacity covers the full whitelist breadth (all four goods)")
 }

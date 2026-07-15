@@ -142,7 +142,7 @@ func TestDepotReceiptCaps_ScopedToCurrentUniverse(t *testing.T) {
 
 	targets := depotWarehouseTargetUnits(
 		context.Background(), miner, 200 /*capacity fits every candidate*/, "X1-J58", "X1-J58-WH",
-		nil /*coords: fail-open to the coarse residual*/, 2 /*current player*/, nil,
+		nil /*coords: fail-open to the coarse residual*/, bufferGateContext{} /*gates fail open: this test pins scope, not gating*/, 2 /*current player*/, nil,
 	)
 
 	require.Contains(t, targets, "MEDICINE", "the current universe's high-reward good must win a buffer cap")

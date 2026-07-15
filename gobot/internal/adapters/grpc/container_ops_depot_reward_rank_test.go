@@ -95,7 +95,7 @@ func TestDepotReceiptCaps_RanksByContractReward_KeepsHighRewardGoodOverSavingsCu
 	// from the caps was culled upstream of the knapsack, not evicted for capacity.
 	targets := depotWarehouseTargetUnits(
 		context.Background(), miner, 1000, "X1-J58", "X1-J58-WH",
-		nil /*coords: fail open to the coarse cross-system residual*/, 2, nil,
+		nil /*coords: fail open to the coarse cross-system residual*/, bufferGateContext{} /*gates fail open: this test pins reward ranking, not gating*/, 2, nil,
 	)
 
 	require.Contains(t, targets, "CLOTHING",

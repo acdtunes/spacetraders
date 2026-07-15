@@ -240,6 +240,7 @@ func depotWarehouseTargetUnits(
 	destinationSystem string,
 	warehouseWaypoint string,
 	coords tradingsvc.WaypointCoordsLookup,
+	gateCtx bufferGateContext,
 	playerID int,
 	params *tradingsvc.WarehouseCapParams,
 ) map[string]int {
@@ -259,6 +260,12 @@ func depotWarehouseTargetUnits(
 			candidates = rows
 		}
 	}
+
+	// sp-rxrg: gate the candidates on hub-contract-membership + local-production + source-distance
+	// BEFORE the reward knapsack, so a good never contracted to THIS hub, produced locally, or sourced
+	// too near is never even weighed — freeing that capacity for the goods the buffer actually exists
+	// to pre-stage (the far/orphan hub contract goods).
+	candidates = applyBufferGates(candidates, destinationSystem, warehouseWaypoint, gateCtx, coords)
 
 	receipts := make([]tradingsvc.ReceiptCandidate, 0, len(candidates))
 	for _, c := range candidates {
@@ -294,6 +301,7 @@ func depotColocatedWarehouseTargets(
 	destinationSystem string,
 	warehouseWaypoint string,
 	coords tradingsvc.WaypointCoordsLookup,
+	gateCtx bufferGateContext,
 	playerID int,
 	params *tradingsvc.WarehouseCapParams,
 ) map[string]int {
@@ -301,7 +309,7 @@ func depotColocatedWarehouseTargets(
 	for _, shipSymbol := range coLocatedWarehouseShips {
 		capacity += capacityOf(shipSymbol)
 	}
-	return depotWarehouseTargetUnits(ctx, miner, capacity, destinationSystem, warehouseWaypoint, coords, playerID, params)
+	return depotWarehouseTargetUnits(ctx, miner, capacity, destinationSystem, warehouseWaypoint, coords, gateCtx, playerID, params)
 }
 
 // depotReceiptPayment is the per-unit value signal for a received good in the receipt-demand
@@ -401,7 +409,7 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 	targetUnits := depotColocatedWarehouseTargets(
 		ctx, miner, group, capacityOf,
 		shared.ExtractSystemSymbol(warehouseWaypoint), warehouseWaypoint,
-		s.waypointCoords(ctx), playerID, nil,
+		s.waypointCoords(ctx), s.depotBufferGateContext(ctx, warehouseWaypoint, playerID), playerID, nil,
 	)
 	supportedGoods := sortedGoods(targetUnits)
 	if len(supportedGoods) == 0 {

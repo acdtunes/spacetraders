@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -516,6 +517,54 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 		})
 	}
 	return out, nil
+}
+
+// ContractGoodCountsForDeliveryWaypoint returns, per good, how many DISTINCT contracts delivered
+// that good specifically to deliveryWaypoint — an EXACT DestinationSymbol match, NOT the whole
+// system. It is the sp-rxrg gate-1 hub-contract-membership signal: the demand miner scopes demand to
+// the destination SYSTEM (a good contracted to ANY waypoint in the system becomes a candidate), so
+// the buffer selector needs this finer per-HUB membership to exclude a good that is contracted
+// elsewhere in the system but never to this hub (the DRUGS@J58 incident). A good absent from the
+// result is not contracted TO this hub. It reuses ContractGoodDemand's proven load-and-unmarshal
+// path; eraID scopes the same way (nil = all eras), so the caller passes the current era to confine
+// membership to the current universe (a system/waypoint symbol is reused across weekly resets).
+func (r *HistoryRepository) ContractGoodCountsForDeliveryWaypoint(ctx context.Context, eraID *int, deliveryWaypoint string) (map[string]int, error) {
+	counts := map[string]int{}
+	if deliveryWaypoint == "" {
+		return counts, nil
+	}
+	playerIDs, _, err := r.eraPlayerIDs(ctx, eraID)
+	if err != nil {
+		return nil, err
+	}
+	if len(playerIDs) == 0 {
+		return counts, nil
+	}
+
+	var rows []ContractModel
+	if err := r.db.WithContext(ctx).Where("player_id IN ?", playerIDs).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to query contracts: %w", err)
+	}
+
+	for _, row := range rows {
+		var deliveries []contractDelivery
+		_ = json.Unmarshal([]byte(row.DeliveriesJSON), &deliveries)
+		// A good is counted ONCE per contract even if a contract lists it in several deliveries to
+		// the hub — matching ContractGoodDemand's per-contract dedup.
+		seen := map[string]bool{}
+		for _, d := range deliveries {
+			if d.DestinationSymbol != deliveryWaypoint {
+				continue
+			}
+			good := strings.ToUpper(strings.TrimSpace(d.TradeSymbol))
+			if good == "" || seen[good] {
+				continue
+			}
+			seen[good] = true
+			counts[good]++
+		}
+	}
+	return counts, nil
 }
 
 func (r *HistoryRepository) PnL(ctx context.Context, eraID *int, byOperation bool) (*PnLReport, error) {

@@ -415,6 +415,44 @@ func TestHeuristicPlanner_SelectsBufferGoodsByStallPreventionPerStockerCost(t *t
 	}
 }
 
+// TestHeuristicPlanner_BufferSelectionRoutesThroughTheSharedGate proves the reconciler planner
+// applies the SAME sp-rxrg candidate gate (domain/buffer.Gate) the LIVE depot selector uses: a good
+// the hub produces LOCALLY (gate 2) and a good sourced too NEAR (gate 3) are excluded from the
+// buffer whitelist BEFORE ranking, while a remote non-local hub contract good still buffers.
+func TestHeuristicPlanner_BufferSelectionRoutesThroughTheSharedGate(t *testing.T) {
+	signals := contractMachineSignals()
+	hub := &signals.Demand.Hubs[0] // the covered hub X1-J58-A1
+	hub.GoodMix = append(hub.GoodMix,
+		capacity.GoodDemand{Good: "FAR_GOOD", Frequency: 1.0, AvgUnits: 30},   // remote, not local -> buffered
+		capacity.GoodDemand{Good: "LOCAL_GOOD", Frequency: 1.0, AvgUnits: 30}, // remote, but produced locally -> gate 2
+		capacity.GoodDemand{Good: "NEAR_GOOD", Frequency: 1.0, AvgUnits: 30},  // near-sourced -> gate 3
+	)
+	signals.Economics.SourceDistances = append(signals.Economics.SourceDistances,
+		capacity.GoodSourceDistance{HubSymbol: "X1-J58-A1", Good: "FAR_GOOD", Distance: 100},
+		capacity.GoodSourceDistance{HubSymbol: "X1-J58-A1", Good: "LOCAL_GOOD", Distance: 100}, // far, yet gate 2 still excludes it
+		capacity.GoodSourceDistance{HubSymbol: "X1-J58-A1", Good: "NEAR_GOOD", Distance: 10},
+	)
+	signals.Economics.LocalProduction = []capacity.GoodLocalProduction{
+		{HubSymbol: "X1-J58-A1", Good: "LOCAL_GOOD"},
+	}
+
+	desired := computeDesired(t, signals, plannerCalibration(1500, 0))
+	require.Equal(t, []string{"X1-J58-A1"}, hubSymbols(desired))
+
+	buffered := bufferedGoodNames(desired.Hubs[0].BufferedGoods)
+	require.Contains(t, buffered, "FAR_GOOD", "a remote, non-local hub contract good still buffers")
+	require.NotContains(t, buffered, "LOCAL_GOOD", "gate 2: a good the hub produces locally is never buffered")
+	require.NotContains(t, buffered, "NEAR_GOOD", "gate 3: a near-sourced good is never buffered")
+}
+
+func bufferedGoodNames(goods []capacity.DesiredBufferedGood) []string {
+	names := make([]string, 0, len(goods))
+	for _, good := range goods {
+		names = append(names, good.Good)
+	}
+	return names
+}
+
 // Behavior 3: every buffered good's cap ≈ avg_units + margin (policy: 50%
 // margin, minimum 1) — an uncapped whitelist over-fills the first good and
 // starves the rest.
