@@ -30,6 +30,16 @@ import (
 // atomic so tests and debuggers can read it without a registry.
 var shipVersionConflicts atomic.Int64
 
+// dedicatedFleetClobbersPrevented counts general ship Save calls that carried a
+// STALE dedicated_fleet tag (the in-memory snapshot disagreed with the persisted
+// value) and were prevented from silently overwriting a live `fleet add`/`remove`
+// dedication (sp-90a3). AssignFleet is the single write path for that tag; a
+// coordinator holding a pre-dedication Ship snapshot must never resurrect its
+// stale tag through the whole-row UpdateAll upsert. Kept as a package atomic —
+// mirroring shipVersionConflicts — so the WARN is not the only signal and tests
+// can observe the prevention without scraping logs.
+var dedicatedFleetClobbersPrevented atomic.Int64
+
 // shipListCacheTTL defines how long ship list cache is valid
 // 15 seconds is enough to prevent redundant calls across coordinators
 // while still allowing fresh data for navigation decisions
@@ -910,6 +920,7 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) (committed bool, err error) {
 	loaded := ship.PersistedVersion()
 	model := r.shipToModel(ship)
+	r.preserveDedicatedFleetTag(ctx, &model)
 	res := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
@@ -938,6 +949,7 @@ func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) 
 // (sp-01wc) — so behavior never regresses below sp-60ff's tripwire.
 func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation.Ship) error {
 	model := r.shipToModel(ship)
+	r.preserveDedicatedFleetTag(ctx, &model)
 	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
@@ -954,6 +966,58 @@ func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation
 	}
 
 	return err
+}
+
+// preserveDedicatedFleetTag defends the single-write-path invariant for the
+// dedicated_fleet tag (sp-90a3). AssignFleet is the ONLY writer of that column,
+// but every general ship upsert (Save/CAS/last-write-wins/SaveAll) rewrites the
+// WHOLE row (UpdateAll) from the domain ship's in-memory snapshot — including
+// dedicated_fleet (shipToModel). A coordinator that materialised a hull BEFORE a
+// live `fleet add`/`remove` therefore carries a stale tag and would silently
+// resurrect it over the operator's change on its next routine write-back. The
+// sp-wa7c version guard does not catch it either: AssignFleet mutates only the
+// tag column and does not bump ships.version, so the CAS `WHERE version=<loaded>`
+// still matches and clobbers. This reloads the persisted tag and, when the
+// outgoing snapshot disagrees, rewrites the model with the DB value so the upsert
+// is a no-op for that column, then counts + WARNs the prevented drop so it is
+// never silent again.
+//
+// Cost is one indexed primary-key lookup of a single column per save — the same
+// read SyncAllFromAPI already performs per ship to preserve this exact tag
+// (sp-bi75), and cheap relative to the state-changing writes a save accompanies.
+// A brand-new row (ErrRecordNotFound) has nothing persisted to protect: the
+// model's own value (a fresh insert, normally "") is authoritative, left as-is.
+// Counted per upsert attempt, mirroring shipVersionConflicts, so a rare
+// version-conflict fallback (trySaveCAS then saveLastWriteWins) may tick twice.
+func (r *ShipRepository) preserveDedicatedFleetTag(ctx context.Context, model *persistence.ShipModel) {
+	if r.db == nil {
+		return
+	}
+
+	var persisted persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Select("dedicated_fleet").
+		Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
+		First(&persisted).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return // brand-new ship insert: no persisted dedication to preserve
+	}
+	if err != nil {
+		// Fail safe: a read failure must neither drop the tag by proceeding
+		// blindly nor block the save (behavior never regresses below today's).
+		// Leave the model as-is, surface the anomaly, and let the save proceed.
+		log.Printf("WARN: ship %s dedicated_fleet preserve-read failed (%v); proceeding without stale-tag protection (sp-90a3)",
+			model.ShipSymbol, err)
+		return
+	}
+	if persisted.DedicatedFleet == model.DedicatedFleet {
+		return // snapshot agrees with the DB — nothing to protect
+	}
+
+	dedicatedFleetClobbersPrevented.Add(1)
+	log.Printf("WARN: ship %s general Save carried a stale dedicated_fleet %q while the persisted dedication is %q — preserving the live `fleet add`/`remove` value instead of silently clobbering it (sp-90a3)",
+		model.ShipSymbol, model.DedicatedFleet, persisted.DedicatedFleet)
+	model.DedicatedFleet = persisted.DedicatedFleet
 }
 
 // SaveWithRetry implements navigation.ShipRepository. See that interface for the
@@ -1032,6 +1096,7 @@ func (r *ShipRepository) SaveAll(ctx context.Context, ships []*navigation.Ship) 
 	playerIDs := make(map[int]bool)
 	for i, ship := range ships {
 		models[i] = r.shipToModel(ship)
+		r.preserveDedicatedFleetTag(ctx, &models[i])
 		playerIDs[ship.PlayerID().Value()] = true
 	}
 
