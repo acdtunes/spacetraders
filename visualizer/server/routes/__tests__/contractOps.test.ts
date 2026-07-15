@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseElements,
   parseDeliveries,
+  parseTraits,
   reduceWarehouseLevels,
   derivePhase,
   computeCycleStats,
@@ -39,6 +40,18 @@ describe('parseDeliveries', () => {
   it('returns [] for null or malformed input', () => {
     expect(parseDeliveries(null)).toEqual([]);
     expect(parseDeliveries('nope')).toEqual([]);
+  });
+});
+
+describe('parseTraits', () => {
+  it('parses the DB plain-string trait array', () => {
+    expect(parseTraits('["TEMPERATE","MARKETPLACE"]')).toEqual(['TEMPERATE', 'MARKETPLACE']);
+  });
+
+  it('returns [] for null, empty, or malformed input', () => {
+    expect(parseTraits(null)).toEqual([]);
+    expect(parseTraits('')).toEqual([]);
+    expect(parseTraits('{"nope":1}')).toEqual([]);
   });
 });
 

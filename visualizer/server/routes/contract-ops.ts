@@ -4,6 +4,7 @@ const { Pool } = pkg;
 import {
   parseElements,
   parseDeliveries,
+  parseTraits,
   reduceWarehouseLevels,
   derivePhase,
   computeCycleStats,
@@ -102,7 +103,7 @@ router.get('/topology', async (_req, res) => {
     const systems = involvedSystems(allElements, destinations);
     const waypoints = systems.length
       ? await client.query(
-          `SELECT waypoint_symbol, system_symbol, type, x, y
+          `SELECT waypoint_symbol, system_symbol, type, x, y, traits
            FROM waypoints WHERE system_symbol = ANY($1) ORDER BY waypoint_symbol`,
           [systems],
         )
@@ -118,6 +119,7 @@ router.get('/topology', async (_req, res) => {
         type: w.type,
         x: Number(w.x),
         y: Number(w.y),
+        traits: parseTraits(w.traits),
       })),
     };
     topologyCache = { payload, builtAtMs: Date.now() };
@@ -177,7 +179,7 @@ router.get('/live', async (_req, res) => {
     const shipRows = await client.query(
       `SELECT ship_symbol, nav_status, location_symbol, location_x, location_y, system_symbol,
               arrival_time, cargo_units, cargo_capacity, cargo_inventory, dedicated_fleet,
-              container_id, engine_speed
+              container_id, engine_speed, role
        FROM ships
        WHERE player_id = $1
          AND (dedicated_fleet IN ('contract', 'stocker', 'warehouse')
@@ -302,6 +304,7 @@ router.get('/live', async (_req, res) => {
           depotSets,
         ),
         navStatus: s.nav_status,
+        registrationRole: s.role ?? '',
         waypoint: s.location_symbol,
         system: s.system_symbol,
         x: Number(s.location_x),

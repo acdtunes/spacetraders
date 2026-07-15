@@ -156,6 +156,19 @@ export function classifyShip(
   return 'contract';
 }
 
+// waypoints.traits is JSON text holding an array of plain trait strings
+// (e.g. ["TEMPERATE","MARKETPLACE"]); the browser uses them for sprite biomes.
+export function parseTraits(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((t) => String(t));
+  } catch {
+    return [];
+  }
+}
+
 // 'X1-VB74-J58' → 'X1-VB74'. SpaceTraders waypoint symbols are
 // SECTOR-SYSTEM-WAYPOINT; anything without three segments is not a waypoint.
 export function systemOf(waypointSymbol: string): string | null {

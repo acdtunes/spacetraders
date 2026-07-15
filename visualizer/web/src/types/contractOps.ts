@@ -19,6 +19,7 @@ export interface OpsWaypoint {
   type: string;
   x: number;
   y: number;
+  traits: string[];
 }
 
 export interface ContractOpsTopology {
@@ -53,6 +54,7 @@ export type OpsShipRole = 'worker' | 'stocker' | 'warehouse' | 'delivery' | 'con
 export interface OpsShip {
   symbol: string;
   role: OpsShipRole;
+  registrationRole: string; // SpaceTraders hull registration (HAULER, COMMAND, …)
   navStatus: 'DOCKED' | 'IN_ORBIT' | 'IN_TRANSIT';
   waypoint: string;
   system: string;

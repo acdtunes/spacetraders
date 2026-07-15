@@ -7,7 +7,7 @@ import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import type { ShipPositionOptions } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
-import { hashString } from '../utils/hash';
+import { selectWaypointAsset as selectWaypointAssetShared, selectShipAssetByRole } from '../utils/spriteAssets';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipLayer } from './ShipLayer';
 import { MiningLaserLayer } from './MiningLaserLayer';
@@ -40,44 +40,9 @@ const SHIP_TOOLTIP_OFFSET_Y = 12;
 const WAYPOINT_TOOLTIP_OFFSET_X = 12;
 const WAYPOINT_TOOLTIP_OFFSET_Y = 12;
 
-const WAYPOINT_ASSET_BASE_PATH = '/assets/waypoints/';
-const SHIP_ASSET_BASE_PATH = '/assets/ships/';
-
-const WAYPOINT_ASSET_VARIANTS: Record<string, string[]> = {
-  asteroid: ['waypoint-asteroid-1.png', 'waypoint-asteroid-2.png'],
-  asteroidBase: ['waypoint-asteroid-base-1.png', 'waypoint-asteroid-base-2.png'],
-  engineeredAsteroid: ['waypoint-engineered-asteroid-2.png'],
-  orbitalStation: ['waypoint-orbital-station-1.png'],
-  frozenMoon: ['waypoint-frozen-moon-1.png', 'waypoint-frozen-moon-2.png'],
-  planetTemperate: ['waypoint-planet-temperate-1.png', 'waypoint-planet-temperate-2.png'],
-  planetOcean: ['waypoint-planet-ocean-1.png', 'waypoint-planet-ocean-2.png'],
-  planetFrozen: ['waypoint-planet-frozen-1.png', 'waypoint-planet-frozen-2.png'],
-  planetRocky: ['waypoint-planet-rocky-1.png', 'waypoint-planet-rocky-2.png'],
-  planetVolcanic: ['waypoint-planet-volcanic-1.png', 'waypoint-planet-volcanic-2.png'],
-  planetRadioactive: [
-    'waypoint-planet-radioactive-1.png',
-    'waypoint-planet-radioactive-2.png',
-    'waypoint-planet-radioactive-3.png',
-    'waypoint-planet-radioactive-4.png',
-  ],
-  planetSwamp: ['waypoint-planet-swamp-2.png'],
-  planetJovian: ['waypoint-planet-jovian-1.png', 'waypoint-planet-jovian-2.png'],
-  fuelStation: ['waypoint-fuel-station-1.png', 'waypoint-fuel-station-2.png'],
-  volcanicMoon: ['waypoint-volcanic-moon-1.png', 'waypoint-volcanic-moon-2.png'],
-  jumpGate: ['waytpoint-jumpgate.png'],
-};
-
-const SHIP_ASSET_VARIANTS: Record<string, string[]> = {
-  command: ['ship-command-frigate-2.png'],
-  hauler: ['ship-light-hauler-1.png'],
-  mining: ['ship-mining-drone-1.png', 'ship-mining-drone-2.png'],
-  probe: ['ship-probe-2.png'],
-  satellite: ['ship-satellite-1.png', 'ship-satellite-2.png'],
-  station: ['ship-space-station-1.png', 'ship-space-station-2.png'],
-};
-
-const DEFAULT_WAYPOINT_ASSET = 'waypoint-planet-rocky-1.png';
-const DEFAULT_SHIP_ASSET = 'ship-command-frigate-2.png';
+// Sprite-asset selection lives in utils/spriteAssets.ts (shared with the
+// Contract Ops scene, and it drops the nonexistent ship-space-station-2.png
+// this file used to reference).
 const DEFAULT_SHIP_SPRITE_SIZE = 18;
 const BASE_SHIP_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
 
@@ -1009,61 +974,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     resolveWaypointPosition: getWaypointDisplayPosition,
   });
 
-  const selectWaypointAsset = useCallback((waypoint: WaypointType): string => {
-    const traitSymbols = (waypoint.traits ?? []).map((trait) => trait.symbol.toUpperCase());
-    const hasTrait = (...keywords: string[]) =>
-      traitSymbols.some((trait) => keywords.some((keyword) => trait.includes(keyword)));
-
-    let variantKey: string;
-
-    if (waypoint.type === 'JUMP_GATE') {
-      variantKey = 'jumpGate';
-    } else if (
-      waypoint.type === 'ASTEROID' ||
-      waypoint.type === 'ASTEROID_FIELD'
-    ) {
-      variantKey = 'asteroid';
-    } else if (waypoint.type === 'ASTEROID_BASE') {
-      variantKey = 'asteroidBase';
-    } else if (waypoint.type === 'ENGINEERED_ASTEROID') {
-      variantKey = 'engineeredAsteroid';
-    } else if (
-      waypoint.type === 'GAS_GIANT' ||
-      hasTrait('GAS_GIANT') ||
-      hasTrait('JOVIAN')
-    ) {
-      variantKey = 'planetJovian';
-    } else if (hasTrait('OCEAN', 'WATER')) {
-      variantKey = 'planetOcean';
-    } else if (hasTrait('TEMPERATE', 'TROPICAL', 'FOREST')) {
-      variantKey = 'planetTemperate';
-    } else if (hasTrait('FROZEN', 'ICE')) {
-      variantKey = waypoint.type === 'MOON' ? 'frozenMoon' : 'planetFrozen';
-    } else if (hasTrait('VOLCANIC', 'INFERNO')) {
-      variantKey = waypoint.type === 'MOON' ? 'volcanicMoon' : 'planetVolcanic';
-    } else if (hasTrait('RADIOACTIVE', 'NUCLEAR')) {
-      variantKey = 'planetRadioactive';
-    } else if (waypoint.type === 'ORBITAL_STATION' || hasTrait('ORBITAL')) {
-      variantKey = 'orbitalStation';
-    } else if (waypoint.type.includes('STATION')) {
-      variantKey = 'fuelStation';
-    } else if (hasTrait('SWAMP', 'JUNGLE', 'BOG')) {
-      variantKey = 'planetSwamp';
-    } else if (waypoint.type === 'FUEL_STATION' || hasTrait('FUEL')) {
-      variantKey = 'fuelStation';
-    } else if (waypoint.type === 'MOON') {
-      variantKey = 'planetRocky';
-    } else {
-      variantKey = 'planetRocky';
-    }
-
-    const variants = WAYPOINT_ASSET_VARIANTS[variantKey] ?? WAYPOINT_ASSET_VARIANTS.planetRocky;
-    const assetIndex = variants.length > 0
-      ? hashString(`${waypoint.symbol}:${variantKey}`) % variants.length
-      : 0;
-    const filename = variants[assetIndex] ?? DEFAULT_WAYPOINT_ASSET;
-    return `${WAYPOINT_ASSET_BASE_PATH}${filename}`;
-  }, []);
+  const selectWaypointAsset = useCallback(
+    (waypoint: WaypointType): string =>
+      selectWaypointAssetShared(waypoint.symbol, waypoint.type, waypoint.traits ?? []),
+    [],
+  );
 
   const shipPositionOptions = useMemo<ShipPositionOptions>(
     () => ({
@@ -1109,38 +1024,10 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     shipPositionOptions,
   ]);
 
-  const selectShipAsset = useCallback((ship: TaggedShip): string | null => {
-    const role = ship.registration.role?.toLowerCase() ?? '';
-
-    let variantKey: string;
-    if (role.includes('satellite')) {
-      variantKey = 'satellite';
-    } else if (role.includes('station') || role.includes('platform')) {
-      variantKey = 'station';
-    } else if (role.includes('probe') || role.includes('scout') || role.includes('explorer')) {
-      variantKey = 'probe';
-    } else if (
-      role.includes('mine') ||
-      role.includes('extract') ||
-      role.includes('drone') ||
-      role.includes('excavator') ||
-      role.includes('miner')
-    ) {
-      variantKey = 'mining';
-    } else if (role.includes('haul') || role.includes('freight') || role.includes('cargo') || role.includes('transport')) {
-      variantKey = 'hauler';
-    } else {
-      variantKey = 'command';
-    }
-
-    const variants = SHIP_ASSET_VARIANTS[variantKey];
-    if (!variants || variants.length === 0) {
-      return `${SHIP_ASSET_BASE_PATH}${DEFAULT_SHIP_ASSET}`;
-    }
-
-    const filename = variants[hashString(`${ship.symbol}:${variantKey}`) % variants.length] ?? DEFAULT_SHIP_ASSET;
-    return `${SHIP_ASSET_BASE_PATH}${filename}`;
-  }, []);
+  const selectShipAsset = useCallback(
+    (ship: TaggedShip): string | null => selectShipAssetByRole(ship.symbol, ship.registration.role),
+    [],
+  );
 
   const gridLines = useGridLines(waypoints, viewportBounds.scale);
 

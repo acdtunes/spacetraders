@@ -6,6 +6,9 @@ import { useRafClock } from '../../hooks/useRafClock';
 import { CANVAS_CONSTANTS } from '../../constants/canvas';
 import { NOIR, noirAlpha } from '../../theme/noir';
 import { positionShip } from '../../utils/transitMemory';
+import { selectWaypointAsset, selectShipAssetByRole, waypointVisualRadius } from '../../utils/spriteAssets';
+import { WaypointSprite } from '../WaypointSprite';
+import { ShipSprite } from '../ShipSprite';
 import type { OpsShip, OpsShipRole } from '../../types/contractOps';
 
 // Systems get their own patch of the plane (waypoint x/y are per-system coords).
@@ -215,11 +218,20 @@ export default function ContractOpsScene() {
               <Group listening={false}>
                 {topology.waypoints.map((w) => {
                   const p = wpPos.get(w.symbol)!;
+                  const r = waypointVisualRadius(w.type);
+                  const featured = featuredWaypoints.has(w.symbol);
                   return (
-                    <Group key={w.symbol} x={p.x} y={p.y}>
-                      <Circle radius={hair(6)} fill={noirAlpha(NOIR.nebulaCore, 0.75)} />
-                      {scale > 5 && !featuredWaypoints.has(w.symbol) && (
-                        <Text text={shortName(w.symbol)} fontSize={font(10)} fill={NOIR.dim} x={sp(8)} y={-font(10) / 2} fontFamily="monospace" />
+                    <Group key={w.symbol} x={p.x} y={p.y} opacity={featured ? 1 : 0.82}>
+                      <WaypointSprite
+                        assetPath={selectWaypointAsset(w.symbol, w.type, w.traits)}
+                        type={w.type}
+                        x={0}
+                        y={0}
+                        radius={r}
+                        scale={scale}
+                      />
+                      {scale > 5 && !featured && (
+                        <Text text={shortName(w.symbol)} fontSize={font(10)} fill={NOIR.dim} x={r + sp(6)} y={-font(10) / 2} fontFamily="monospace" />
                       )}
                     </Group>
                   );
@@ -380,7 +392,10 @@ export default function ContractOpsScene() {
                     const color = ROLE_COLORS[ship.role];
                     const selected = selectedShip === ship.symbol;
                     const emphasized = selected || ship.role === 'worker';
-                    const r = ship.role === 'worker' ? 2.6 : 2.1;
+                    const reg = ship.registrationRole.toUpperCase();
+                    const isSmallHull = reg.includes('PROBE') || reg.includes('SATELLITE') || reg.includes('SURVEYOR');
+                    const spriteSize = ship.role === 'worker' ? 7.2 : isSmallHull ? 3.6 : 5.8;
+                    const r = spriteSize * 0.62; // role ring radius; adornments key off it
                     const cargoFrac = ship.cargoCapacity > 0 ? ship.cargoUnits / ship.cargoCapacity : 0;
                     let gx = p.x;
                     let gy = p.y;
@@ -403,35 +418,37 @@ export default function ContractOpsScene() {
                         onMouseLeave={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'default'; }}
                       >
                         {/* generous hit target */}
-                        <Circle radius={Math.max(6, 10 / scale)} fill="transparent" />
-                        {selected && <Circle radius={r + 3.4} stroke={NOIR.ink} strokeWidth={hair(1)} opacity={0.9} />}
+                        <Circle radius={Math.max(r + 1.5, 10 / scale)} fill="transparent" />
+                        {selected && <Circle radius={r + 2.6} stroke={NOIR.ink} strokeWidth={hair(1)} opacity={0.9} listening={false} />}
 
-                        {p.mode === 'exact' && p.headingRad !== null ? (
-                          <>
-                            {[0.05, 0.1, 0.15].map((back, ti) => (
+                        {/* engine wake while flying a reconstructed path */}
+                        {p.mode === 'exact' && p.headingRad !== null && (
+                          <Group listening={false}>
+                            {[0, 1, 2].map((ti) => (
                               <Circle
                                 key={ti}
-                                x={-Math.cos(p.headingRad!) * (3 + ti * 2.6)}
-                                y={-Math.sin(p.headingRad!) * (3 + ti * 2.6)}
+                                x={-Math.cos(p.headingRad!) * (r + 2 + ti * 2.6)}
+                                y={-Math.sin(p.headingRad!) * (r + 2 + ti * 2.6)}
                                 radius={Math.max(0.5, 0.9 - ti * 0.25)}
-                                fill={noirAlpha(color, 0.5 - back * 2)}
+                                fill={noirAlpha(color, 0.4 - ti * 0.1)}
                               />
                             ))}
-                            <RegularPolygon sides={3} radius={r + 0.6} rotation={(p.headingRad * 180) / Math.PI + 90} fill={color} />
-                          </>
-                        ) : p.mode === 'inbound' ? (
-                          <>
-                            <Circle radius={r + 2 + pulse * 1.2} stroke={noirAlpha(color, 0.55)} strokeWidth={hair(1)} dash={[hair(2), hair(2)]} />
-                            <Circle radius={r * 0.9} fill={noirAlpha(color, 0.85)} />
-                          </>
-                        ) : (
-                          <>
-                            <Circle radius={r} fill={color} />
-                            {ship.navStatus === 'IN_ORBIT' && (
-                              <Circle radius={r + 1.6} stroke={noirAlpha(color, 0.4)} strokeWidth={hair(0.8)} />
-                            )}
-                          </>
+                          </Group>
                         )}
+                        {p.mode === 'inbound' && (
+                          <Circle radius={r + 1.6 + pulse * 1.2} stroke={noirAlpha(color, 0.55)} strokeWidth={hair(1)} dash={[hair(2), hair(2)]} listening={false} />
+                        )}
+
+                        {/* role ring (the op-role encoding) around the hull sprite */}
+                        <Circle radius={r} stroke={noirAlpha(color, ship.role === 'worker' ? 0.95 : 0.65)} strokeWidth={hair(ship.role === 'worker' ? 1.4 : 1)} listening={false} />
+                        <Group rotation={p.mode === 'exact' && p.headingRad !== null ? (p.headingRad * 180) / Math.PI + 90 : 0} listening={false}>
+                          <ShipSprite
+                            assetPath={selectShipAssetByRole(ship.symbol, ship.registrationRole)}
+                            size={spriteSize}
+                            showEngineGlow={p.mode === 'exact'}
+                            frameTimestamp={nowMs}
+                          />
+                        </Group>
 
                         {/* cargo bar */}
                         {ship.cargoCapacity > 0 && (

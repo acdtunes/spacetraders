@@ -28,6 +28,9 @@ export function ShipCard({ ship, nowMs, onClose }: { ship: OpsShip; nowMs: numbe
         <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider" style={{ background: noirAlpha(color, 0.18), color }}>
           {ship.role}
         </span>
+        {ship.registrationRole && (
+          <span className="text-[10px] font-mono uppercase" style={{ color: NOIR.dim }}>{ship.registrationRole}</span>
+        )}
         <span className="text-[11px] font-mono" style={{ color: NOIR.muted }}>
           {ship.navStatus === 'IN_TRANSIT' ? `→ ${ship.waypoint}${arriving ? ` · ${arriving}` : ''}` : `${ship.navStatus} · ${ship.waypoint}`}
         </span>
