@@ -720,6 +720,11 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 		WeightHopPenalty:         cfg.OptionalInt("weight_hop_penalty", 0),
 		WeightVirginBonus:        cfg.OptionalInt("weight_virgin_bonus", 0),
 		ProximalYardHopPenalty:   cfg.OptionalInt("proximal_yard_hop_penalty", 0),
+		// sp-rjgr depth-vs-breadth balance (all live-tunable; 0 → the coordinator's own default).
+		BreadthFractionPercent: cfg.OptionalInt("breadth_fraction_percent", 0),
+		MaxDepthPathfinders:    cfg.OptionalInt("max_depth_pathfinders", 0),
+		MaxDepthHops:           cfg.OptionalInt("max_depth_hops", 0),
+		ObjectiveBiasPercent:   cfg.OptionalInt("objective_bias_percent", 0),
 	}
 }
 

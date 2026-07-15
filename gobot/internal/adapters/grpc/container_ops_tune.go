@@ -90,6 +90,11 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"purchase_cooldown_secs":    {Type: "int", Min: 10, Max: 86_400, Default: frontier["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
 			"max_probe_fleet":           {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
 			"proximal_yard_hop_penalty": {Type: "int", Min: 0, Max: 5_000_000, Default: frontier["proximal_yard_hop_penalty"], Unit: "credits", Description: "price premium accepted per gate-hop closer to the target post when picking the probe yard (sp-hej4); 0 = cheapest reachable yard"},
+			// sp-rjgr depth-vs-breadth balance — retune the outward drive live, no restart.
+			"breadth_fraction_percent": {Type: "int", Min: 1, Max: 100, Default: frontier["breadth_fraction_percent"], Unit: "percent", Description: "breadth share of frontier capacity (depth = 100 - this; 100 ⇒ pure BFS)"},
+			"max_depth_pathfinders":    {Type: "int", Min: 1, Max: 20, Default: frontier["max_depth_pathfinders"], Unit: "hulls", Description: "cap on concurrent depth-pathfinder posts"},
+			"max_depth_hops":           {Type: "int", Min: 1, Max: 12, Default: frontier["max_depth_hops"], Unit: "hops", Description: "depth scan horizon + per-pathfinder max target depth (within relay reach)"},
+			"objective_bias_percent":   {Type: "int", Min: 1, Max: 100, Default: frontier["objective_bias_percent"], Unit: "percent", Description: "points added to the depth fraction while the heavy-yard objective is unmet"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},

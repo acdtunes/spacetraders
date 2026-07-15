@@ -351,6 +351,8 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 	s.growReachableFrontierGates(ctx, playerID, adj, anchors, maxHops)
 
 	hops := bfsHops(adj, anchors, maxHops)
+	// Corridor (branch) identity per reachable system — the depth slice's bearing (sp-rjgr).
+	branchRoots := bfsBranchRoots(adj, anchors, maxHops)
 
 	candidates := make([]expansionCmd.ExpansionCandidate, 0, len(hops))
 	for sys, h := range hops {
@@ -363,6 +365,7 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 			KnownMarkets: marketCount,
 			Charted:      charted,
 			Scanned:      s.systemScanned(ctx, sys),
+			BranchRoot:   branchRoots[sys],
 		})
 	}
 	return candidates, nil

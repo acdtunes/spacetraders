@@ -49,6 +49,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
@@ -1009,6 +1010,14 @@ func run(cfg *config.Config) error {
 	// unmanned-slot demand.
 	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
 		gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo,
+	))
+	// sp-rjgr §4: the deep-resource (heavy-yard) objective the DEPTH slice biases on — heavy
+	// capacity shortfall (sp-4ewi profitable-lane surface, read-only off the market cache) AND
+	// whether a heavy-freighter yard is known yet (sp-42ow shipyard inventory). While unmet the
+	// split shifts toward depth to FIND the yard; once known it relaxes. Fails safe (no bias) when
+	// unreadable — it moves a policy split, never a spend.
+	frontierExpansionHandler.SetDepthObjectiveReader(expansionAdapters.NewDepthObjectiveReader(
+		shipyardInventoryRepo, tradingQueries.NewProfitableLaneReader(marketRepo), shipRepo,
 	))
 	frontierExpansionHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	// sp-vwek: per-tick live-config snapshots from the container's OWN config column,

@@ -83,6 +83,26 @@ const (
 	// raise it toward absolute proximity or lower it toward the cheapest reachable yard. Mirrors
 	// probebuy.DefaultHopPenaltyCredits (the freshness sizer's untuned value).
 	defaultProximalYardHopPenalty = probebuy.DefaultHopPenaltyCredits
+	// Depth-vs-breadth balance (sp-rjgr). Pure BFS scores hop-1 above hop-2 EVERY time, so with
+	// scout throughput < ring width the near ring never drains and no probe ever reaches the depth
+	// a heavy-freighter yard needs. The depth slice reserves a fraction of frontier capacity for
+	// PATHFINDERS that pick the deepest-reachable virgin (ignoring score) along distinct corridors.
+	//
+	// The BREADTH fraction is the primary knob (its complement is the depth fraction): expressing
+	// the split as breadth-percent lets 100 mean "pure BFS, 0% depth" — a real value the tune
+	// mechanism's 0-means-revert-to-default could not otherwise carry. 65 ⇒ 65/35 breadth/depth.
+	defaultBreadthFractionPercent = 65 // ⇒ 35% depth
+	// defaultMaxDepthPathfinders caps concurrent depth posts so depth never starves breadth's
+	// market coverage even under a heavy objective bias.
+	defaultMaxDepthPathfinders = 3
+	// defaultMaxDepthHops bounds how deep a pathfinder targets (and the depth scan horizon). Kept
+	// within the expendable-probe reposition reach ([scouting] max_reposition_jumps, default 12) so
+	// a declared deep post is actually man-able by a relay.
+	defaultMaxDepthHops = 8
+	// defaultObjectiveBiasPercent is the percentage points added to the depth fraction while the
+	// deep-resource objective is UNMET (heavy shortfall > 0 AND no heavy yard known) — punch
+	// outward until a yard is found, then relax back to the baseline split.
+	defaultObjectiveBiasPercent = 40
 
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
@@ -137,6 +157,16 @@ type ExpansionCandidate struct {
 	// !Scanned system stays a scout target. The scanner derives it from the waypoint
 	// catalog — a persisted non-gate waypoint proves a real sweep (adapters.go).
 	Scanned bool
+
+	// BranchRoot is the hop-1 ancestor system on the BFS path from the anchor set to this
+	// candidate — its CORRIDOR identity on the jump-gate graph (sp-rjgr). A hop-1 system is
+	// its own root; a deeper system inherits the hop-1 system it was first reached through;
+	// an anchor (hop 0) has none (""). It is the depth slice's "bearing": two deep virgins
+	// with DIFFERENT BranchRoots lie down different corridors, so fanning pathfinders across
+	// distinct BranchRoots stops the depth drive betting the whole outward push on one
+	// direction (a heavy yard could be any way out). Gate topology — not Euclidean position —
+	// is the meaningful notion of direction here: adjacent gates can be far apart in space.
+	BranchRoot string
 }
 
 // ExpansionScanner enumerates the frontier the coordinator ranks. It hides the whole
@@ -189,6 +219,11 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// ProximalYardHopPenalty is the demand-proximal probe-buy tradeoff (sp-hej4): credits of
 	// price premium accepted per gate-hop closer to the target post's system. <= 0 → default.
 	ProximalYardHopPenalty int
+	// Depth-vs-breadth balance knobs (sp-rjgr), all live-tunable (FrontierTunableDefaults).
+	BreadthFractionPercent int // breadth share; depth = 100 - this. 100 ⇒ pure BFS.
+	MaxDepthPathfinders    int // cap on concurrent depth posts
+	MaxDepthHops           int // depth scan horizon + per-pathfinder max target depth
+	ObjectiveBiasPercent   int // points added to the depth fraction while the heavy-yard objective is unmet
 }
 
 // RunFrontierExpansionCoordinatorResponse reports reconcile progress. Because the loop
@@ -216,6 +251,10 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	treasury  TreasuryReader
 	purchaser ProbePurchaser
 	scanner   ExpansionScanner
+
+	// objective is the optional deep-resource (heavy-yard) signal the depth slice biases on
+	// (sp-rjgr §4). Nil ⇒ the split runs on its baseline fraction with no objective shift.
+	objective DepthObjectiveReader
 
 	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
 	// when a reconcile pass fails with the identical error for DefaultStreakThreshold
@@ -348,6 +387,11 @@ func FrontierTunableDefaults() map[string]int {
 		"purchase_cooldown_secs":    int(defaultPurchaseCooldown / time.Second),
 		"max_probe_fleet":           defaultMaxProbeFleet,
 		"proximal_yard_hop_penalty": defaultProximalYardHopPenalty,
+		// Depth-vs-breadth balance (sp-rjgr) — retunable live with no restart.
+		"breadth_fraction_percent": defaultBreadthFractionPercent,
+		"max_depth_pathfinders":    defaultMaxDepthPathfinders,
+		"max_depth_hops":           defaultMaxDepthHops,
+		"objective_bias_percent":   defaultObjectiveBiasPercent,
 	}
 }
 
@@ -365,6 +409,10 @@ type frontierConfig struct {
 	WeightHopPenalty         int
 	WeightVirginBonus        int
 	ProximalYardHopPenalty   int
+	BreadthFractionPercent   int
+	MaxDepthPathfinders      int
+	MaxDepthHops             int
+	ObjectiveBiasPercent     int
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -388,12 +436,20 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		WeightHopPenalty:         cmd.WeightHopPenalty,
 		WeightVirginBonus:        cmd.WeightVirginBonus,
 		ProximalYardHopPenalty:   cmd.ProximalYardHopPenalty,
+		BreadthFractionPercent:   cmd.BreadthFractionPercent,
+		MaxDepthPathfinders:      cmd.MaxDepthPathfinders,
+		MaxDepthHops:             cmd.MaxDepthHops,
+		ObjectiveBiasPercent:     cmd.ObjectiveBiasPercent,
 	}
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
 		c.ProximalYardHopPenalty = live.PositiveIntOrZero("proximal_yard_hop_penalty")
+		c.BreadthFractionPercent = live.PositiveIntOrZero("breadth_fraction_percent")
+		c.MaxDepthPathfinders = live.PositiveIntOrZero("max_depth_pathfinders")
+		c.MaxDepthHops = live.PositiveIntOrZero("max_depth_hops")
+		c.ObjectiveBiasPercent = live.PositiveIntOrZero("objective_bias_percent")
 	}
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
@@ -427,6 +483,21 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	}
 	if c.ProximalYardHopPenalty <= 0 {
 		c.ProximalYardHopPenalty = defaultProximalYardHopPenalty
+	}
+	if c.BreadthFractionPercent <= 0 {
+		c.BreadthFractionPercent = defaultBreadthFractionPercent
+	}
+	if c.BreadthFractionPercent > 100 {
+		c.BreadthFractionPercent = 100 // clamp: breadth is a percent (depth = 100 - breadth)
+	}
+	if c.MaxDepthPathfinders <= 0 {
+		c.MaxDepthPathfinders = defaultMaxDepthPathfinders
+	}
+	if c.MaxDepthHops <= 0 {
+		c.MaxDepthHops = defaultMaxDepthHops
+	}
+	if c.ObjectiveBiasPercent <= 0 {
+		c.ObjectiveBiasPercent = defaultObjectiveBiasPercent
 	}
 	return c
 }
@@ -537,6 +608,15 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 	if declared != "" {
 		openSlots++
 	}
+
+	// DEPTH slice (sp-rjgr): reserve a fraction of frontier capacity for PATHFINDERS that punch
+	// OUTWARD — declaring the deepest-reachable virgin (ignoring the near-ring score) along
+	// DISTINCT corridors, so the frontier escapes the pure-BFS hop-1 starvation that never lets a
+	// probe reach the ring a heavy-freighter yard lives on. Additive to the breadth head above and
+	// bounded by the SAME in-flight cap; each depth post is an ordinary sweep-once post the
+	// reconciler mans and relays exactly like a breadth post — only the SELECTION differs. Its
+	// would-be-declared posts add to this cycle's demand so the buy decision reflects them.
+	openSlots += h.dispatchDepthPathfinders(ctx, cmd, cfg, posts, declared, frontierPosts)
 
 	// PURCHASE: buy one probe iff the fleet is short of the open manning demand and every
 	// guard passes. decideAndMaybeBuy returns the human reason for the per-cycle summary. The
