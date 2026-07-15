@@ -210,7 +210,7 @@ func TestSelectOptimalFlightMode_DowngradesPlannedBurnWhenFuelInsufficient(t *te
 	// Planned BURN leg: distance 114 -> 228 fuel required, ship holds only 180.
 	segment := domainNavigation.NewRouteSegment(from, to, 114, 228, 0, shared.FlightModeBurn, false)
 
-	executor := NewRouteExecutor(nil, nil, nil, nil, nil, nil, stubSubscriber{})
+	executor := NewRouteExecutor(nil, nil, nil, nil, nil, nil, nil, stubSubscriber{})
 
 	got := executor.selectOptimalFlightMode(context.Background(), segment, ship)
 
@@ -255,7 +255,7 @@ func TestExecuteRoute_BurnUpgradeDoesNotStrandLaterBurnLeg(t *testing.T) {
 			c.Symbol: 114,
 		},
 	}
-	executor := NewRouteExecutor(nil, fake, nil, nil, nil, nil, stubSubscriber{})
+	executor := NewRouteExecutor(nil, fake, nil, nil, nil, nil, nil, stubSubscriber{})
 
 	err = executor.ExecuteRoute(context.Background(), route, ship, shared.MustNewPlayerID(1))
 	if err != nil {
@@ -313,7 +313,7 @@ func TestExecuteRoute_ZeroFuelStrandedFailsLocallyNotWith4203(t *testing.T) {
 			c.Symbol: 90,
 		},
 	}
-	executor := NewRouteExecutor(nil, fake, nil, nil, nil, nil, stubSubscriber{})
+	executor := NewRouteExecutor(nil, fake, nil, nil, nil, nil, nil, stubSubscriber{})
 
 	err = executor.ExecuteRoute(context.Background(), route, ship, shared.MustNewPlayerID(1))
 	if err == nil {
@@ -378,7 +378,7 @@ func TestRefuelShipWithRetry_TransientFailureRetriesWithBackoffThenSucceeds(t *t
 		},
 	}
 	mockClock := &shared.MockClock{}
-	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, stubSubscriber{})
+	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, nil, stubSubscriber{})
 
 	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
 	if err != nil {
@@ -414,7 +414,7 @@ func TestRefuelShipWithRetry_NonTransientFailureFailsFastWithoutRetry(t *testing
 		},
 	}
 	mockClock := &shared.MockClock{}
-	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, stubSubscriber{})
+	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, nil, stubSubscriber{})
 
 	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
 	if err == nil {
@@ -472,7 +472,7 @@ func TestRefuelShipWithRetry_RetriesExhaustedReroutesToAlternateFuelStop(t *test
 		},
 	}
 	mockClock := &shared.MockClock{}
-	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, waypointRepo, stubSubscriber{})
+	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, waypointRepo, stubSubscriber{})
 
 	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
 	if err != nil {
@@ -530,7 +530,7 @@ func TestRefuelShipWithRetry_BothRetryAndRerouteExhaustedReturnsParkableError(t 
 		},
 	}
 	mockClock := &shared.MockClock{}
-	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, waypointRepo, stubSubscriber{})
+	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, waypointRepo, stubSubscriber{})
 
 	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
 	if err == nil {

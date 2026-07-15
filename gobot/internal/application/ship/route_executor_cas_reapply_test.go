@@ -68,7 +68,7 @@ func TestWaitForCurrentTransit_ArrivalWriteDoesNotClobberFreshCargo(t *testing.T
 	}).Error)
 
 	shipRepo := api.NewShipRepository(nil, nil, nil, transitStubWaypoints{}, db, nil)
-	executor := NewRouteExecutor(shipRepo, nil, nil, nil, nil, nil, arrivedNowSubscriber{})
+	executor := NewRouteExecutor(shipRepo, nil, nil, nil, nil, nil, nil, arrivedNowSubscriber{})
 
 	// The executor's in-memory snapshot: still IN_TRANSIT, cargo 100.
 	snapshot, err := shipRepo.FindBySymbol(context.Background(), "TRANSIT-1", pid)

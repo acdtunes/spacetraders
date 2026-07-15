@@ -279,7 +279,23 @@ func run(cfg *config.Config) error {
 		fmt.Printf("watchkeeper: deploy.completed check failed (continuing): %v\n", err)
 	}
 
-	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
+	// Shipyard scanner (sp-42ow): piggybacks a shipyard-inventory scan on the scout
+	// tour's market visits — availability + prices persisted per (player, waypoint,
+	// ship_type), era-scoped, with a one-time-per-era heavy-yard milestone event.
+	// heavy_ship_types resolves from [scouting] config; empty defers to the domain
+	// default {SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER}. Constructed BEFORE the
+	// route executor so the SAME instance is injected there too (sp-42ow emit-path
+	// fix): the standing multi-market scout tour delegates its market scan to
+	// RouteExecutor.scanMarketIfPresent, so the shipyard scan must ride that same
+	// route-arrival hook or a scout that visits a SHIPYARD-trait marketplace never
+	// persists a shipyard_inventory row.
+	shipyardInventoryRepo := persistence.NewShipyardInventoryRepository(db)
+	shipyardScanner := ship.NewShipyardScanner(
+		apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
+		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
+	)
+
+	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, shipyardScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
 
 	// NavigateRoute handler (now uses extracted services)
 	navigateRouteHandler := shipNav.NewNavigateRouteHandler(
@@ -315,18 +331,8 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ListShipModules handler: %w", err)
 	}
 
-	// Shipyard scanner (sp-42ow): piggybacks a shipyard-inventory scan on the scout
-	// tour's market visits — availability + prices persisted per (player, waypoint,
-	// ship_type), era-scoped, with a one-time-per-era heavy-yard milestone event.
-	// heavy_ship_types resolves from [scouting] config; empty defers to the domain
-	// default {SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER}.
-	shipyardInventoryRepo := persistence.NewShipyardInventoryRepository(db)
-	shipyardScanner := ship.NewShipyardScanner(
-		apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
-		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
-	)
-
-	// Market scouting handlers
+	// Market scouting handlers (shipyardScanner constructed above, next to the
+	// route executor it now also feeds — sp-42ow emit-path fix)
 	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner, shipyardScanner, nil) // nil clock = RealClock (sp-zixw)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)

@@ -46,6 +46,7 @@ type RouteExecutor struct {
 	mediator            common.Mediator
 	clock               shared.Clock
 	marketScanner       *MarketScanner
+	shipyardScanner     *ShipyardScanner
 	refuelStrategy      strategies.RefuelStrategy
 	waypointRepo        domainSystem.WaypointRepository
 	shipEventSubscriber domainNavigation.ShipEventSubscriber
@@ -54,6 +55,8 @@ type RouteExecutor struct {
 // NewRouteExecutor creates a new route executor
 // If clock is nil, uses RealClock (production behavior)
 // If marketScanner is nil, disables automatic market scanning
+// If shipyardScanner is nil, disables the piggybacked shipyard-inventory scan
+// that fires alongside the market scan at marketplace arrivals (sp-42ow)
 // If refuelStrategy is nil, uses default ConservativeRefuelStrategy (90% threshold)
 // If waypointRepo is nil, refuelShipWithRetry's alternate-fuel-stop reroute
 // (sp-vsfn) is disabled and a retry-exhausted refuel fails outright instead
@@ -64,6 +67,7 @@ func NewRouteExecutor(
 	mediator common.Mediator,
 	clock shared.Clock,
 	marketScanner *MarketScanner,
+	shipyardScanner *ShipyardScanner,
 	refuelStrategy strategies.RefuelStrategy,
 	waypointRepo domainSystem.WaypointRepository,
 	shipEventSubscriber domainNavigation.ShipEventSubscriber,
@@ -82,6 +86,7 @@ func NewRouteExecutor(
 		mediator:            mediator,
 		clock:               clock,
 		marketScanner:       marketScanner,
+		shipyardScanner:     shipyardScanner,
 		refuelStrategy:      refuelStrategy,
 		waypointRepo:        waypointRepo,
 		shipEventSubscriber: shipEventSubscriber,
@@ -270,6 +275,7 @@ func (e *RouteExecutor) executeSegment(
 	}
 
 	e.scanMarketIfPresent(ctx, segment, ship, playerID)
+	e.scanShipyardIfPresent(ctx, segment, ship, playerID)
 
 	return nil
 }
@@ -552,6 +558,35 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 				"error":       err.Error(),
 			})
 		}
+	}
+}
+
+// scanShipyardIfPresent piggybacks a shipyard-inventory scan on the SAME
+// marketplace arrival scanMarketIfPresent handles (sp-42ow emit-path fix). The
+// route executor is the ONLY market-scan path a standing multi-market scout tour
+// exercises — executeMultiMarketTour delegates its market scan here rather than
+// re-scanning in the handler (scout_tour.go:485) — so the shipyard scan MUST ride
+// this same route-arrival hook, or a scout that visits a SHIPYARD-trait
+// marketplace never persists a shipyard_inventory row (the live 0-rows incident
+// the prior two fixes did not close). Gated to marketplace arrivals so it fires
+// exactly where the market scan fires; the ScoutTourHandler's stationary
+// performInitialScan/continuousMarketScanning paths scan a waypoint the executor
+// never navigates to, so no waypoint is double-scanned per visit. The scanner's
+// own immutable-SHIPYARD-trait gate is a single cached-waypoint read that no-ops
+// every non-shipyard for zero API budget; GetShipyard fires only on a real
+// shipyard. Strictly non-fatal — a shipyard failure is logged and the route
+// proceeds, mirroring scanMarketIfPresent.
+func (e *RouteExecutor) scanShipyardIfPresent(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) {
+	if e.shipyardScanner == nil || !segment.ToWaypoint.IsMarketplace() {
+		return
+	}
+	if err := e.shipyardScanner.ScanAndSaveShipyard(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol); err != nil {
+		common.LoggerFromContext(ctx).Log("ERROR", "Shipyard scan failed (non-fatal to route)", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "scan_shipyard",
+			"waypoint":    segment.ToWaypoint.Symbol,
+			"error":       err.Error(),
+		})
 	}
 }
 
