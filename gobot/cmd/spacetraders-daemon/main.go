@@ -886,6 +886,18 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
 
+	// sp-9l4p: teach the shared navigate handler to route a CROSS-SYSTEM destination
+	// through the trade coordinator's gate-crossing travel machinery (RepositionToWaypoint)
+	// instead of fail-closing ("waypoint <dest> not found in cache for system <current>").
+	// The intra-system route planner cannot cross systems, so a bare cross-system navigate
+	// used to loud-fail — the live -90k copper-contract stall and the ceiling on the
+	// frontier depth campaign's edge probe-buys (an idle hull navigated from home to a
+	// frontier shipyard). One shared-seam wire fixes BOTH victims; it mutates the already
+	// registered handler in place so every NavigateRouteCommand dispatch sees it. Additive
+	// and inert until here — same-system navigation is untouched, and without this wire the
+	// handler keeps its exact pre-fix fail-closed behaviour.
+	navigateRouteHandler.WithCrossSystemRouter(tradeRouteCoordinatorHandler)
+
 	// sp-s232: wire the scout-post coordinator for cross-gate satellite repositioning.
 	// It shares the SAME persisted gate graph as the trade circuit (one cache/graph) to
 	// BFS-rank the fleet-wide nearest idle satellite for an unmanned frontier post, and
