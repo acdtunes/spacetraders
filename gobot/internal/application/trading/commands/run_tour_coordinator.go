@@ -231,6 +231,17 @@ type RunTourCoordinatorCommand struct {
 	// (RULINGS #5), threaded through the container config so a captain retunes it by
 	// editing config.yaml + restarting the daemon.
 	StrandedConsecutiveThreshold int
+
+	// CandidateHopDepth is the sp-jsng gate-hop radius for the tour candidate set
+	// (build-decomp #5). 0/absent → candidateHopDepthDefault (1 = today's exact
+	// behavior: home + live 1-gate-hop neighbors). Clamped to [1, maxCandidateHopDepth=3]
+	// (spec "2-3 gate hops"). EFFECT is arming-gated: a value > 1 is a NO-OP unless the
+	// solver clamp is lifted (cmd.MaxTourSystems > 2), so a lone live-config edit can
+	// never feed a non-gate-adjacent set to the flat-pricing solver.
+	CandidateHopDepth int
+	// CandidateShortlistTopN bounds how many ≥2-hop systems the profitable-edge shortlist
+	// ADDS on top of the always-present 1-hop floor. 0/absent → candidateShortlistTopNDefault (6).
+	CandidateShortlistTopN int
 }
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
@@ -1573,7 +1584,7 @@ func (h *RunTourCoordinatorHandler) plan(
 	cmd *RunTourCoordinatorCommand,
 	modelVersion string,
 ) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
-	allowedSystems := h.tourSystems(ctx, ship, cmd.PlayerID)
+	allowedSystems := h.tourSystems(ctx, ship, cmd)
 	return h.planForState(ctx, h.tourShipState(ship), allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
 }
 
@@ -1919,18 +1930,33 @@ func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, r
 
 // tourSystems is the default tour graph: the hull's current system plus every system
 // one gate hop away with fresh market data (the planner scopes each tour to
-// maxTourSystems=2 within this allowed set). Neighbor discovery fails open to
-// home-only.
-func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navigation.Ship, playerID int) []string {
-	return h.tourSystemsFrom(ctx, ship.CurrentLocation().SystemSymbol, playerID)
+// maxTourSystems within this allowed set). Neighbor discovery fails open to home-only.
+// sp-jsng threads cmd so the candidate set can be widened past 1 gate hop once the solver
+// clamp is lifted (arming-gated in tourSystemsFrom); byte-identical at the epic defaults.
+func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navigation.Ship, cmd *RunTourCoordinatorCommand) []string {
+	return h.tourSystemsFrom(ctx, ship.CurrentLocation().SystemSymbol, cmd)
 }
 
-// tourSystemsFrom is tourSystems generalized to an arbitrary home system: the given
-// system plus every system one gate hop away with fresh market data. The live tour
+// tourSystemsFrom is tourSystems generalized to an arbitrary home system. The live tour
 // centers it on the hull's current system; the sp-zhii reposition pre-flight centers it
-// on a candidate system to build that candidate's tour graph. Neighbor discovery fails
-// open to home-only.
-func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, playerID int) []string {
+// on a candidate system to build that candidate's tour graph.
+//
+// sp-jsng: at the epic default (effectiveCandidateHopDepth <= 1) it returns the VERBATIM
+// pre-jsng 1-hop set (oneHopTourSystems) with ZERO durable-graph access — byte-identical.
+// Only when the arming gate opens (a configured depth > 1 AND the solver clamp lifted) does
+// it widen, and the widened set is floored to the 1-hop set so it can never go narrower.
+func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
+	oneHop := h.oneHopTourSystems(ctx, home, cmd.PlayerID)
+	if h.effectiveCandidateHopDepth(cmd) <= 1 {
+		return oneHop // DEFAULT PATH — byte-identical, zero durable-graph access
+	}
+	return h.widenedTourSystems(ctx, home, cmd, oneHop)
+}
+
+// oneHopTourSystems is the VERBATIM pre-jsng tourSystemsFrom body: home + every live
+// 1-gate-hop neighbor with fresh data, deduped, fail-open to home-only. It is the default
+// result AND the floor the widened branch (sp-jsng) can never go below.
+func (h *RunTourCoordinatorHandler) oneHopTourSystems(ctx context.Context, home string, playerID int) []string {
 	systems := []string{home}
 	seen := map[string]bool{home: true}
 	for _, n := range h.legs.neighborSystems(ctx, home, playerID) {

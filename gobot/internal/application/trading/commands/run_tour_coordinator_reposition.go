@@ -660,7 +660,7 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	// and mirrors a fresh launch — future-proofing a fuel-aware solver at no cost.)
 	shipState.Cargo = nil
 	shipState.FuelCurrent = shipState.FuelCapacity
-	allowedSystems := h.tourSystemsFrom(ctx, cand.system, cmd.PlayerID)
+	allowedSystems := h.tourSystemsFrom(ctx, cand.system, cmd)
 	// The pre-flight only PRICES a candidate ground (it reserves nothing — no plan is
 	// committed here, sp-78ai L3); the snapshot and netted absorption the reserve/accept
 	// path would need are discarded (no plan is accepted here, so no burn-in emission).
