@@ -84,6 +84,7 @@ mode, never silent).
 Everything is pure and request-carried: no DB, no clock beyond staleness
 filtering, dict shapes mirror routing.proto snake_case 1:1.
 """
+import itertools
 import logging
 import math
 import os
@@ -109,6 +110,32 @@ INTRA_SYSTEM_TRAVEL_SECONDS = 300   # flat fallback when no coords in the reques
 INTER_SYSTEM_TRAVEL_SECONDS = 1800  # flat fallback; = 2*GATE_HOP + JUMP_COOLDOWN scale
 DWELL_SECONDS_PER_LEG = 60          # dock + transact allowance per market stop
 
+# Stage-1 sequencer selection (sp-y05b): "beam" = the proven beam search
+# (default, byte-identical); "ortools" = the OR-Tools prize-collecting
+# sequencer UNIONED with beam candidates (ortools can only ADD candidates,
+# never hide beam's — stage 2 stays the arbiter). Resolved per solve:
+# explicit `sequencer` argument > TOUR_SOLVER_SEQUENCER env > beam. Ships
+# dormant; arming is a separate replay-gated run.sh export commit, exactly
+# like TOUR_SOLVER_OBJECTIVE.
+SEQUENCER_ENV_VAR = "TOUR_SOLVER_SEQUENCER"
+SEQUENCER_BEAM = "beam"
+SEQUENCER_ORTOOLS = "ortools"
+ORTOOLS_TIME_BUDGET_SECONDS = 3        # GLOBAL per-call wall budget, env TOUR_SOLVER_ORTOOLS_BUDGET_SECONDS, clamp [2, 5]
+ORTOOLS_MIN_MODEL_MS = 250             # floor per subset model
+ORTOOLS_MAX_SUBSETS = 8                # max subset models solved per call, env TOUR_SOLVER_ORTOOLS_MAX_SUBSETS, clamp [1, 32]
+ORTOOLS_MAX_NODES = 80                 # per-model node cap after pruning
+# λ (credits per second of travel+dwell) shapes IN-MODEL visit/skip and
+# ordering only — candidate ranking and stage-2 pricing never see it. Default
+# 10.0 is a documented PLACEHOLDER pending the pre-arming replay sweep
+# (λ ∈ {0, 1, 10, 30, 100} via TOUR_SOLVER_ORTOOLS_TIME_VALUE): it sits
+# strictly BELOW the fleet's realized 28-280 cr/s band so no genuinely
+# profitable lane is stage-1-skipped, but above 0 so time orders/skips
+# junk-margin detours. NOT fleet-median cph/3600: with disjunctions, any tour
+# whose gain/time falls below λ is strictly dominated by visiting nothing, so
+# a median-priced λ would stage-1-skip every below-median lane.
+ORTOOLS_TIME_VALUE_CREDITS_PER_SECOND = 10.0  # env TOUR_SOLVER_ORTOOLS_TIME_VALUE, clamp [0, 1000]
+COST_SCALE = 100                       # integer scaling, same trick as routing_engine.py int(distance*100)
+
 # Selection objective (sp-1wp8): "profit" = max projected profit, cph tiebreak (the
 # 2026-07-09 Admiral default); "rate" = max projected cph, profit tiebreak. Resolved
 # per solve: explicit `objective` argument > TOUR_SOLVER_OBJECTIVE env > profit. The
@@ -120,6 +147,7 @@ OBJECTIVE_ENV_VAR = "TOUR_SOLVER_OBJECTIVE"
 
 _warned_tiers = set()
 _logged_objective = set()
+_logged_sequencer = set()
 
 
 def _resolve_objective(objective):
@@ -140,6 +168,36 @@ def _resolve_objective(objective):
         logger.warning("tour-solver: unrecognized %s=%r — defaulting to profit-primary",
                        OBJECTIVE_ENV_VAR, env)
     return OBJECTIVE_PROFIT
+
+
+def _log_once_sequencer(key, msg, *args):
+    """Once-per-process sequencer-path log (mirror of the _logged_objective
+    pattern) — fallback diagnostics must never spam a solve-per-tick fleet."""
+    if key in _logged_sequencer:
+        return
+    _logged_sequencer.add(key)
+    logger.warning(msg, *args)
+
+
+def _resolve_sequencer(sequencer):
+    """Resolve the stage-1 sequencer: explicit argument > env > beam default
+    (sp-y05b). An unrecognized value falls back to beam (fail toward the
+    proven default, never toward an accidental solver flip) with a
+    once-per-process log — the structural clone of _resolve_objective."""
+    if sequencer in (SEQUENCER_BEAM, SEQUENCER_ORTOOLS):
+        return sequencer
+    env = os.environ.get(SEQUENCER_ENV_VAR, "").strip().lower()
+    if env == SEQUENCER_ORTOOLS:
+        if SEQUENCER_ORTOOLS not in _logged_sequencer:
+            _logged_sequencer.add(SEQUENCER_ORTOOLS)
+            logger.info("tour-solver: stage-1 sequencer ORTOOLS (union with beam) via %s",
+                        SEQUENCER_ENV_VAR)
+        return SEQUENCER_ORTOOLS
+    if env and env != SEQUENCER_BEAM and env not in _logged_sequencer:
+        _logged_sequencer.add(env)
+        logger.warning("tour-solver: unrecognized %s=%r — defaulting to beam sequencer",
+                       SEQUENCER_ENV_VAR, env)
+    return SEQUENCER_BEAM
 
 
 def _sort_scored(scored, objective):
@@ -654,6 +712,118 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                 stock_value=stock_value)
 
 
+def _held_liquidation_value(wp, markets, initial_cargo):
+    """Value of liquidating the ship's held cargo at wp's market bids.
+
+    Mirror of beam_sequences.liquidation_gain — keep in sync (sp-y05b).
+    beam stays byte-untouched (default-safety + sibling merge pressure);
+    the T6/T7 brute-force equality tests catch semantic drift."""
+    goods = markets[wp]["goods"]
+    return sum(units * goods[g]["bid"] for g, units in initial_cargo.items()
+               if g in goods and goods[g]["bid"] > 0)
+
+
+def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp):
+    """Optimistic multi-good hold-packing value of the DIRECTED pair (buy at
+    wp_from, sell/deposit at wp_to) — directional: gain(a,b) != gain(b,a), so
+    buy-before-sell precedence is priced into the ortools arc costs.
+
+    Mirror of beam_sequences.pack_gain — keep in sync (sp-y05b). Module-level
+    TRANSCRIPTION on explicit args; beam's closure stays byte-untouched."""
+    goods_to = markets[wp_to]["goods"]
+    spreads = []
+    for good, brow in markets[wp_from]["goods"].items():
+        srow = goods_to.get(good)
+        if srow and brow["ask"] > 0 and srow["bid"] > brow["ask"]:
+            depth = MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * max(
+                1, min(brow["trade_volume"], srow["trade_volume"]))
+            spreads.append((srow["bid"] - brow["ask"], depth))
+        dsink = deposit_sinks.get((wp_to, good))
+        if dsink and brow["ask"] > 0 and dsink["bid"] > brow["ask"]:
+            spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"]))
+    for good, ssrc in stock_by_wp.get(wp_from, {}).items():
+        srow = goods_to.get(good)
+        if srow and srow["bid"] > ssrc["ask"]:
+            spreads.append((srow["bid"] - ssrc["ask"], ssrc["units_available"]))
+    spreads.sort(reverse=True)
+    gain, cap = 0, hold
+    for spread, depth in spreads:
+        if cap <= 0:
+            break
+        units = min(cap, depth)
+        gain += spread * units
+        cap -= units
+    return gain
+
+
+def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp):
+    """Two-phase node pruning for the ortools subset models (sp-y05b).
+
+    Phase 1 — cheap prefilter on per-good global max_bid/min_ask with the
+    SAME margin floor score_sequence applies (max(1, min_margin_per_unit)):
+    a positive directed pair (a, b) on good g at the floor implies
+    a.ask <= max_bid[g] - floor and b.bid >= min_ask[g] + floor, so no pair
+    participant is ever dropped (strict superset of the pair criterion).
+    Also kept: held-cargo liquidation sinks (beam's liquidation-seed parity),
+    deposit-sink/stock-source hosts, and the ship's current waypoint.
+
+    Phase 2 — if still over ORTOOLS_MAX_NODES, rank by max incident
+    _pair_gain + liquidation value and truncate, with start/deposit/stock/
+    liquidation-positive nodes EXEMPT from truncation."""
+    deposit_sinks = deposit_sinks or {}
+    stock_by_wp = stock_by_wp or {}
+    initial = {c["good_symbol"]: c["units"] for c in ship.get("cargo") or []}
+    floor = max(1, constraints.get("min_margin_per_unit", 0))  # == score_sequence's floor
+    max_bid, min_ask = {}, {}
+    for wp in markets:
+        for good, row in markets[wp]["goods"].items():
+            if row["bid"] > 0 and row["bid"] > max_bid.get(good, 0):
+                max_bid[good] = row["bid"]
+            if row["ask"] > 0 and (good not in min_ask or row["ask"] < min_ask[good]):
+                min_ask[good] = row["ask"]
+    deposit_wps = {wp for wp, _ in deposit_sinks}
+    stock_wps = set(stock_by_wp)
+    start = ship["current_waypoint"]
+
+    def keep(wp):
+        if wp == start or wp in deposit_wps or wp in stock_wps:
+            return True
+        if _held_liquidation_value(wp, markets, initial) > 0:
+            return True
+        for good, row in markets[wp]["goods"].items():
+            if row["ask"] > 0 and row["ask"] <= max_bid.get(good, 0) - floor:
+                return True   # buy-side potential
+            if good in min_ask and row["bid"] >= min_ask[good] + floor:
+                return True   # sell-side potential
+        return False
+
+    kept = [wp for wp in sorted(markets) if keep(wp)]
+    if len(kept) <= ORTOOLS_MAX_NODES:
+        return kept
+
+    exempt = {wp for wp in kept
+              if wp == start or wp in deposit_wps or wp in stock_wps
+              or _held_liquidation_value(wp, markets, initial) > 0}
+    hold = ship["hold_capacity"]
+
+    def node_potential(wp):
+        best = 0
+        for other in kept:
+            if other == wp:
+                continue
+            g = max(_pair_gain(wp, other, markets, hold, deposit_sinks, stock_by_wp),
+                    _pair_gain(other, wp, markets, hold, deposit_sinks, stock_by_wp))
+            if g > best:
+                best = g
+        return best + _held_liquidation_value(wp, markets, initial)
+
+    ranked = sorted((wp for wp in kept if wp not in exempt),
+                    key=lambda wp: (-node_potential(wp), wp))
+    room = max(0, ORTOOLS_MAX_NODES - len(exempt))
+    survivors = set(ranked[:room]) | exempt
+    return [wp for wp in kept if wp in survivors]
+
+
 def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                    stock_sources=None):
     """Beam search over hop sequences; every prefix is a candidate tour.
@@ -785,6 +955,255 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
     return [seq for seq, _, _ in pool]
 
 
+def _sequencer_env_scalar(name, default, lo, hi, cast):
+    """Env override for an ortools knob, clamped to [lo, hi]; invalid values
+    fall back to the default with a once-per-process warning."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = cast(raw)
+    except ValueError:
+        _log_once_sequencer("env:" + name,
+                            "tour-solver: invalid %s=%r — using default %s",
+                            name, raw, default)
+        return default
+    clamped = max(lo, min(val, hi))
+    if clamped != val:
+        _log_once_sequencer("envclamp:" + name,
+                            "tour-solver: %s=%r clamped to %s", name, raw, clamped)
+    return clamped
+
+
+def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
+                      stock_sources=None, stats_out=None):
+    """OR-Tools prize-collecting stage-1 sequencer (sp-y05b). Same contract as
+    beam_sequences: list of waypoint-symbol tuples, best-first. Returning []
+    is the no-solution surface; the solve_tour seam catches any exception and
+    the union with beam candidates means this can only ADD candidates.
+
+    Encoding (one open-path routing model per selected system subset):
+    - Pair values fold into ARC costs: real->real arc costs
+      int((travel + dwell) * lam * COST_SCALE) + OFFSET - gain[a][b], where
+      gain is the DIRECTED _pair_gain — a pure buy source earns its value on
+      the arc that LEAVES it toward its sink, and gain(a,b) != gain(b,a)
+      prices buy-before-sell ordering. Held-cargo liquidation is the only
+      node-intrinsic prize (disjunction penalty OFFSET + liq[v]).
+    - OFFSET wash: a route visiting k non-start nodes collects k*OFFSET on
+      arcs and pays m*OFFSET for the m skipped; k + m = N is constant, so
+      minimizing cost == maximizing sum(consecutive-arc gains) + sum(visited
+      liq) - lam*time.
+    - HONESTY NOTE (relaxation vs beam): beam's per-hop bound is the max of
+      pack_gain over the WHOLE prefix (non-consecutive pairs credited); the
+      arc encoding credits CONSECUTIVE pairs only, so source->detour->sink
+      orderings are under-credited in-model. Mitigations: stage 2 exactly
+      prices ALL i<j pairs on every emitted prefix; the solve_tour UNION
+      keeps every beam candidate in the pool; the emission re-ranking below
+      uses beam's own max-over-prefix bound so cross-subset ordering stays
+      commensurate with beam's semantics.
+    - Stop cap lives IN the model (AddConstantDimension), not in post-hoc
+      truncation. A single GLOBAL wall budget spans all subset models.
+    """
+    # Lazy import: the beam default path never calls this function, so a
+    # broken ortools wheel cannot affect default mode.
+    from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
+    started = time.monotonic()
+    deposit_sinks = deposit_sinks or {}
+    stock_sources = stock_sources or {}
+    stock_by_wp = {}
+    for (wp, good), src in stock_sources.items():
+        stock_by_wp.setdefault(wp, {})[good] = src
+
+    lam = _sequencer_env_scalar("TOUR_SOLVER_ORTOOLS_TIME_VALUE",
+                                ORTOOLS_TIME_VALUE_CREDITS_PER_SECOND,
+                                0.0, 1000.0, float)
+    budget_ms = _sequencer_env_scalar("TOUR_SOLVER_ORTOOLS_BUDGET_SECONDS",
+                                      ORTOOLS_TIME_BUDGET_SECONDS, 2, 5, int) * 1000
+    max_subsets = _sequencer_env_scalar("TOUR_SOLVER_ORTOOLS_MAX_SUBSETS",
+                                        ORTOOLS_MAX_SUBSETS, 1, 32, int)
+
+    pruned = _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp)
+    start = ship["current_waypoint"]
+    start_system = ship["current_system"]
+    start_is_market = start in markets
+    initial = {c["good_symbol"]: c["units"] for c in ship.get("cargo") or []}
+    hold = ship["hold_capacity"]
+    max_hops = constraints.get("max_hops") or MAX_HOPS_DEFAULT
+    max_hops = min(max_hops, MAX_HOPS_DEFAULT)
+    # cap read — same accessor as beam_sequences (sp-syaz)
+    cap = _effective_tour_systems(constraints)
+
+    # Precompute directed pair gains + liquidation prizes over the pruned set
+    # (start included iff it is itself a market node; arcs INTO the start are
+    # never taken so gains into it are irrelevant).
+    sys_of = {wp: markets[wp]["system"] for wp in pruned}
+    pair, liq = {}, {}
+    syspair_gain, sys_liq = {}, {}
+    for a in pruned:
+        v = _held_liquidation_value(a, markets, initial)
+        if v > 0:
+            liq[a] = v
+            sys_liq[sys_of[a]] = sys_liq.get(sys_of[a], 0) + v
+    for a in pruned:
+        for b in pruned:
+            if a == b:
+                continue
+            g = _pair_gain(a, b, markets, hold, deposit_sinks, stock_by_wp)
+            if g > 0:
+                pair[(a, b)] = g
+                key = (sys_of[a], sys_of[b])
+                syspair_gain[key] = syspair_gain.get(key, 0) + g
+
+    # Subset enumeration: S subseteq systems with start_system in S,
+    # 1 <= |S| <= cap, ranked by aggregated potential. Enumeration is cheap
+    # (C(12,5)=792 x O(cap^2)); only SOLVES are bounded by max_subsets.
+    other_systems = sorted({s for s in sys_of.values() if s != start_system})
+    subsets = []
+    for r in range(0, min(cap - 1, len(other_systems)) + 1):
+        for combo in itertools.combinations(other_systems, r):
+            in_s = frozenset((start_system,) + combo)
+            potential = sum(v for (sa, sb), v in syspair_gain.items()
+                            if sa in in_s and sb in in_s)
+            potential += sum(v for s, v in sys_liq.items() if s in in_s)
+            if potential > 0:
+                subsets.append((potential, tuple(sorted(in_s))))
+    subsets.sort(key=lambda t: (-t[0], t[1]))
+    eligible = len(subsets)
+    selected = subsets[:max_subsets]
+
+    emitted, seen = [], set()
+
+    def emit(seq):
+        if seq and seq not in seen:
+            seen.add(seq)
+            emitted.append(seq)
+
+    solved = 0
+    if selected:
+        per_model_ms = max(ORTOOLS_MIN_MODEL_MS, budget_ms // len(selected))
+        for _, subset in selected:
+            # Global wall budget (F3/F7): GLS is anytime and burns its whole
+            # per-model limit, so the aggregate tracks budget by construction;
+            # this hard short-circuit covers model-build overhead too.
+            if (time.monotonic() - started) * 1000 >= budget_ms:
+                break
+            in_s = set(subset)
+            real = [wp for wp in pruned if sys_of[wp] in in_s]
+            if start not in real:
+                real = [start] + real  # ship position routable but prize-less
+            if len(real) < 2:
+                continue  # nothing to sequence beyond the start
+            n_real = len(real)
+            start_idx = real.index(start)
+            virtual_node = n_real  # open-path terminal (sp-im74 flips end=start)
+
+            gain = [[0] * n_real for _ in range(n_real)]
+            liq_scaled = [0] * n_real
+            top = 0
+            for i, a in enumerate(real):
+                liq_scaled[i] = COST_SCALE * liq.get(a, 0)
+                top = max(top, liq_scaled[i])
+                for j, b in enumerate(real):
+                    if i != j:
+                        gain[i][j] = COST_SCALE * pair.get((a, b), 0)
+                        top = max(top, gain[i][j])
+            offset = top + 1
+            arc_cost = [[0] * n_real for _ in range(n_real)]
+            for i, a in enumerate(real):
+                for j, b in enumerate(real):
+                    if i == j:
+                        continue
+                    t = travel_fn(a, b)  # the SAME _make_travel_fn product as beam/stage 2
+                    arc_cost[i][j] = (int((t + DWELL_SECONDS_PER_LEG) * lam * COST_SCALE)
+                                      + offset - gain[i][j])
+
+            manager = pywrapcp.RoutingIndexManager(n_real + 1, 1,
+                                                   [start_idx], [virtual_node])
+            routing = pywrapcp.RoutingModel(manager)
+
+            def transit(from_index, to_index, _m=manager, _c=arc_cost,
+                        _v=virtual_node):
+                to_node = _m.IndexToNode(to_index)
+                if to_node == _v:
+                    return 0  # F10: BEFORE any travel lookup; virtual arc has no dwell
+                from_node = _m.IndexToNode(from_index)
+                if from_node == _v:
+                    return 0
+                return _c[from_node][to_node]
+
+            transit_idx = routing.RegisterTransitCallback(transit)
+            routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
+            for i in range(n_real):
+                if i != start_idx:
+                    routing.AddDisjunction([manager.NodeToIndex(i)],
+                                           offset + liq_scaled[i])
+            # In-model stop cap (F5): route start->v1->..->vk->virtual has k+1
+            # arcs => end cumul k+1; emitted length is k+1 when the start is
+            # itself a market (start included in the seq) else k.
+            stop_cap = max_hops if start_is_market else max_hops + 1
+            routing.AddConstantDimension(1, stop_cap, True, "Stops")
+
+            params = pywrapcp.DefaultRoutingSearchParameters()
+            params.first_solution_strategy = (
+                routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
+            params.local_search_metaheuristic = (
+                routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
+            try:
+                params.time_limit.FromMilliseconds(per_model_ms)
+            except AttributeError:
+                params.time_limit.seconds = per_model_ms // 1000
+                params.time_limit.nanos = (per_model_ms % 1000) * 1_000_000
+            solution = routing.SolveWithParameters(params)
+            solved += 1
+            if solution is None:
+                continue
+
+            order = []
+            index = routing.Start(0)
+            while not routing.IsEnd(index):
+                node = manager.IndexToNode(index)
+                if node < n_real:
+                    order.append(real[node])
+                index = solution.Value(routing.NextVar(index))
+            # Emission: ordered real market nodes (start included only if it
+            # is a market); every prefix is a candidate, and prefixes anchored
+            # on the start market also emit the head-dropped variant (beam
+            # sequences are not anchored to the ship's waypoint).
+            seq_nodes = [wp for wp in order if wp in markets]
+            for k in range(1, len(seq_nodes) + 1):
+                prefix = tuple(seq_nodes[:k])
+                emit(prefix)
+                if start_is_market and k > 1 and prefix[0] == start:
+                    emit(prefix[1:])
+
+    # Beam's liquidation-seed parity: the bare start-market candidate.
+    if start_is_market and liq.get(start, 0) > 0:
+        emit((start,))
+
+    # Rank by BEAM'S OWN transcribed bound (liquidation seed + max-over-prefix
+    # pack accumulation) with beam's (-score, seq) tiebreak — lam shapes
+    # IN-MODEL selection only, never this ranking, so union ordering stays
+    # commensurate with beam's semantics.
+    def beam_bound(seq):
+        score = _held_liquidation_value(seq[0], markets, initial)
+        for k in range(1, len(seq)):
+            score += max(pair.get((seq[j], seq[k]), 0) for j in range(k))
+        return score
+
+    emitted.sort(key=lambda s: (-beam_bound(s), s))
+
+    if stats_out is not None:
+        stats_out.update(subsets_eligible=eligible, subsets_solved=solved,
+                         wall_ms=int((time.monotonic() - started) * 1000),
+                         nodes=len(pruned))
+        logger.info("tour-solver: ortools stage-1 solved %d/%d subsets "
+                    "(%d nodes, %d candidates, %d ms)",
+                    solved, eligible, len(pruned), len(emitted),
+                    stats_out["wall_ms"])
+    return emitted
+
+
 def _infeasible(reason, model_version, top_rejected=None):
     return dict(feasible=False, infeasible_reason=reason, legs=[],
                 projected_profit=0, projected_credits_per_hour=0.0,
@@ -810,7 +1229,7 @@ def _index_absorption(absorption):
 
 def solve_tour(snapshot, ship, constraints, model, waypoints=None,
                deposit_candidates=None, absorption=None, objective=None,
-               stock_sources=None):
+               stock_sources=None, sequencer=None):
     """Plan the best multi-hop trade tour for one hull. Pure; proto-shaped dicts.
 
     `waypoints` mirrors OptimizeTradeTourRequest.waypoints (coords for the
@@ -830,6 +1249,13 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     module docstring's Selection section. None resolves via TOUR_SOLVER_OBJECTIVE,
     falling back to profit. Selection-only: candidate generation, tranche pricing,
     guards, and the response shape are identical under both.
+
+    `sequencer` (sp-y05b): SEQUENCER_BEAM (default) or SEQUENCER_ORTOOLS. None
+    resolves via TOUR_SOLVER_SEQUENCER, falling back to beam. Stage-1-only: in
+    ortools mode the candidate pool is the UNION of ortools and beam candidates
+    (deduped, ortools first) — stage 2 scoring, selection, guards, and every
+    reason string are identical under both; beam mode is byte-identical to
+    the pre-sp-y05b solver.
 
     Fail-loud contract: missing artifact or version mismatch are structured
     infeasible reasons, never a silent fallback (spec error-handling table).
@@ -905,14 +1331,40 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     stock_source_idx = _build_stock_sources(stock_sources, markets, allowed)
     absorption_index = _index_absorption(absorption)
     travel_fn = _make_travel_fn(constraints, markets, ship, waypoints)
-    candidates = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
+    sequencer = _resolve_sequencer(sequencer)
+    beam_cands = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
                                 stock_source_idx)
-    if not candidates:
+    if sequencer == SEQUENCER_ORTOOLS:
+        # F9: pass the BUILT indices positionally, byte-mirroring the beam call.
+        try:
+            ortools_cands = ortools_sequences(markets, ship, constraints, travel_fn,
+                                              deposit_sinks, stock_source_idx)
+        except Exception:
+            # The servicer never dies on the new path — beam carries the solve.
+            # Once-per-process with traceback (a broken wheel fails identically
+            # every call; per-solve tracebacks would spam the fleet log).
+            if "ortools_error" not in _logged_sequencer:
+                _logged_sequencer.add("ortools_error")
+                logger.exception("tour-solver: ortools sequencer failed — beam only")
+            ortools_cands = []
+        if not ortools_cands:
+            _log_once_sequencer(
+                "ortools_empty",
+                "tour-solver: ortools sequencer produced no candidates; beam only")
+        # UNION (F1/F2 safety net): a degenerate non-empty ortools pool must
+        # never hide beam's candidates — ortools can only ADD, stage 2 arbitrates.
+        pool = list(ortools_cands[:FULL_SCORE_TOP_N])
+        seen_seqs = set(pool)
+        pool += [s for s in beam_cands[:FULL_SCORE_TOP_N] if s not in seen_seqs]
+    else:
+        pool = beam_cands[:FULL_SCORE_TOP_N]
+    if not pool:
+        # Union-empty ⇒ beam-empty ⇒ today's reason string, byte-identical.
         return _infeasible("no_candidate_tours", model_version)
 
     scored = []
     seen = set()
-    for seq in candidates[:FULL_SCORE_TOP_N]:
+    for seq in pool:
         result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
                                 deposit_sinks, absorption_index, stock_source_idx)
         signature = tuple((l["waypoint_symbol"],
