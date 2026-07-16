@@ -47,6 +47,14 @@ const (
 	// mirroring the warehousecap adapter's in-system/cross-system residual
 	// tiering (a cross-system restock costs gate hops, not Euclidean units).
 	DefaultCrossSystemSourceDistance = 2500.0
+
+	// DefaultDemandWindowContracts is the recent-N COUNT window the demand miner
+	// measures contract frequency over (bead sp-lk9x): the most recent N contracts
+	// and the wall-clock span they occupy, never the ever-growing gap back to the
+	// player's first-ever contract. N≈120 tracks the era-3 analyst's 100–150
+	// recent-contract observation window; a count window is structurally immune to
+	// the dilution that aged established hubs' frequency toward zero.
+	DefaultDemandWindowContracts = 120
 )
 
 // Sensor implements domain capacity.Sensor: one read-only Signals snapshot per
@@ -55,12 +63,13 @@ const (
 // (partial real signal beats a blocked engine). The only hard error is a
 // mis-wired (nil) database.
 type Sensor struct {
-	db                  *gorm.DB
-	treasury            TreasuryReader
-	clock               shared.Clock
-	dutyCycleReport     DutyCycleReportFunc
-	incomeWindow        time.Duration
-	crossSystemDistance float64
+	db                    *gorm.DB
+	treasury              TreasuryReader
+	clock                 shared.Clock
+	dutyCycleReport       DutyCycleReportFunc
+	incomeWindow          time.Duration
+	crossSystemDistance   float64
+	demandWindowContracts int
 }
 
 var _ domainCapacity.Sensor = (*Sensor)(nil)
@@ -99,16 +108,29 @@ func WithCrossSystemSourceDistance(distance float64) SensorOption {
 	}
 }
 
+// WithDemandWindowContractCount overrides the recent-N demand COUNT window
+// (bead sp-lk9x). A positive value caps the frequency lookback at that many most
+// recent contracts; tests use a small N to exercise the cap without seeding 120
+// rows, and it doubles as the future calibration knob for the analyst's window.
+func WithDemandWindowContractCount(count int) SensorOption {
+	return func(s *Sensor) {
+		if count > 0 {
+			s.demandWindowContracts = count
+		}
+	}
+}
+
 // NewSensor builds the production SENSE collector over the daemon database and
 // the live-API treasury reader.
 func NewSensor(db *gorm.DB, treasury TreasuryReader, opts ...SensorOption) *Sensor {
 	s := &Sensor{
-		db:                  db,
-		treasury:            treasury,
-		clock:               shared.NewRealClock(),
-		dutyCycleReport:     func() dutycycle.Report { return metrics.GetGlobalDutyCycleSampler().Report() },
-		incomeWindow:        DefaultIncomeWindow,
-		crossSystemDistance: DefaultCrossSystemSourceDistance,
+		db:                    db,
+		treasury:              treasury,
+		clock:                 shared.NewRealClock(),
+		dutyCycleReport:       func() dutycycle.Report { return metrics.GetGlobalDutyCycleSampler().Report() },
+		incomeWindow:          DefaultIncomeWindow,
+		crossSystemDistance:   DefaultCrossSystemSourceDistance,
+		demandWindowContracts: DefaultDemandWindowContracts,
 	}
 	for _, opt := range opts {
 		opt(s)

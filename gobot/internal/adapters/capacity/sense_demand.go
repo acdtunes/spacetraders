@@ -61,13 +61,17 @@ func (s *Sensor) loadContracts(ctx context.Context, playerID int) ([]playerContr
 }
 
 // senseDemand aggregates contract history into per-hub demand. Frequencies are
-// contracts/hour over the observed window: earliest contract LastUpdated → now,
-// floored at 1h so a single fresh contract never reads as infinite demand.
+// contracts/hour over the recent-N COUNT window (bead sp-lk9x): the most recent
+// N contracts and the wall-clock span THEY occupy — now → the oldest of the N,
+// floored at 1h. The pre-fix window ran back to the FIRST contract the player
+// ever completed, an ever-growing denominator that aged an established hub's
+// frequency toward zero as history accumulated; a count window is structurally
+// immune to that dilution.
 func (s *Sensor) senseDemand(contracts []playerContract, now time.Time) domainCapacity.DemandSignals {
 	if len(contracts) == 0 {
 		return domainCapacity.DemandSignals{}
 	}
-	windowHours := observationWindowHours(contracts, now)
+	windowed, windowHours := recentContractWindow(contracts, now, s.demandWindowContracts)
 
 	type goodAgg struct {
 		contractCount int
@@ -79,7 +83,7 @@ func (s *Sensor) senseDemand(contracts []playerContract, now time.Time) domainCa
 		goods         map[string]*goodAgg
 	}
 	byHub := make(map[string]*hubAgg)
-	for _, c := range contracts {
+	for _, c := range windowed {
 		goodUnits := unitsByHubAndGood(c.deliveries)
 		for _, hub := range c.hubs() {
 			agg, ok := byHub[hub]
@@ -123,19 +127,50 @@ func (s *Sensor) senseDemand(contracts []playerContract, now time.Time) domainCa
 	return domainCapacity.DemandSignals{Hubs: hubs}
 }
 
-// observationWindowHours is the demand observation window: earliest contract
-// timestamp → now, floored at 1 hour.
-func observationWindowHours(contracts []playerContract, now time.Time) float64 {
-	var earliest time.Time
+// recentContractWindow selects the most recent N contracts (by LastUpdated) and
+// returns them alongside the window hours THEY span — now → the oldest of those
+// N, floored at 1h. This is the sp-lk9x COUNT window: capping the lookback at N
+// contracts keeps the denominator bounded, so an established hub's frequency no
+// longer decays toward zero as its history grows past N (the pre-fix window ran
+// back to the FIRST contract ever, an ever-growing wall-clock span). Contracts
+// with an unparseable timestamp cannot be time-ordered, so they are always
+// retained — demand we cannot order must not silently vanish — but never widen
+// the window. A non-positive windowCount disables the cap (every timed contract
+// counts), preserving the pre-fix span for that degenerate configuration.
+func recentContractWindow(contracts []playerContract, now time.Time, windowCount int) ([]playerContract, float64) {
+	timed := make([]playerContract, 0, len(contracts))
+	var untimed []playerContract
 	for _, c := range contracts {
-		if c.hasTime && (earliest.IsZero() || c.lastUpdated.Before(earliest)) {
-			earliest = c.lastUpdated
+		if c.hasTime {
+			timed = append(timed, c)
+			continue
+		}
+		untimed = append(untimed, c)
+	}
+	sort.Slice(timed, func(i, j int) bool { return timed[i].lastUpdated.After(timed[j].lastUpdated) })
+	if windowCount > 0 && len(timed) > windowCount {
+		timed = timed[:windowCount]
+	}
+	windowed := make([]playerContract, 0, len(timed)+len(untimed))
+	windowed = append(windowed, timed...)
+	windowed = append(windowed, untimed...)
+	return windowed, recentWindowHours(timed, now)
+}
+
+// recentWindowHours is now → the oldest of the recent-N timed contracts, floored
+// at 1h so a single fresh contract never reads as infinite demand and the window
+// never divides by less than an hour. No timed contracts ⇒ 1h.
+func recentWindowHours(recentTimed []playerContract, now time.Time) float64 {
+	var oldest time.Time
+	for _, c := range recentTimed {
+		if oldest.IsZero() || c.lastUpdated.Before(oldest) {
+			oldest = c.lastUpdated
 		}
 	}
-	if earliest.IsZero() {
+	if oldest.IsZero() {
 		return 1
 	}
-	hours := now.Sub(earliest).Hours()
+	hours := now.Sub(oldest).Hours()
 	if hours < 1 {
 		return 1
 	}

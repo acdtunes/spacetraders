@@ -39,13 +39,15 @@ func plannerCalibration(addThresholdPerHullCrHr float64, stockerBudgetUnits int)
 // contractMachineSignals is the two-hub scenario:
 //
 //	X1-J58-A1 — high-frequency (2.0/hr), high-payment (15000), SLOW cycle
-//	  (5400s): rank score 2.0 × (1+5400/3600) × 15000 = 75000. Good-mix:
-//	  IRON  (1.2/hr × 30u, source 60)  → selection score 1.2/1800 ≈ 6.7e-4
-//	  FUEL  (0.8/hr × 20u, source 40)  → selection score 0.8/800  = 1.0e-3
-//	  AMMONIA_ICE (0.3/hr × 59u, source 751) → 0.3/44309 ≈ 6.8e-6 — the
-//	    spec's remote/bulky/low-value example, below the never-buffer floor.
+//	  (5400s): rank score 2.0 × (1+5400/3600) × 15000 = 75000. Good-mix,
+//	  value_density = freq × (0.030·dist + 0.147·avg) ÷ avg (sp-lk9x):
+//	  IRON  (1.2/hr × 30u, source 60)  → 1.2×(1.8+4.41)/30    ≈ 0.248
+//	  FUEL  (0.8/hr × 20u, source 40)  → 0.8×(1.2+2.94)/20    ≈ 0.166
+//	  AMMONIA_ICE (0.3/hr × 59u, source 751) → 0.3×(22.53+8.673)/59 ≈ 0.159 —
+//	    the FAR-sourced good the pre-fix divide-by-distance score wrongly
+//	    floored out; value density RANKS it IN, just behind the near goods.
 //	X1-QQ7-B2 — marginal (0.2/hr × 2500, cycle 900s): rank score 625. Its
-//	  3-hull minimal plan yields 500/3 ≈ 167 cr/hr per hull.
+//	  3-hull minimal plan (COPPER buffered) yields 500/3 ≈ 167 cr/hr per hull.
 func contractMachineSignals() capacity.Signals {
 	return capacity.Signals{
 		PlayerID: 1,
@@ -135,9 +137,10 @@ func hubSymbols(desired capacity.DesiredTopology) []string {
 // a fleet with no history plans conservatively instead of covering every
 // paying hub — an explicit calibrated value overrides the cold-start floor.
 //
-// Marginal arithmetic (fixture): J58 plans 3 workers + 1 stocker + 1 warehouse
-// for 2.0/hr × 15000 = 30000 cr/hr ⇒ 6000 cr/hr per hull. QQ7 plans 3 hulls
-// for 500 cr/hr ⇒ ≈167 cr/hr per hull.
+// Marginal arithmetic (fixture): J58 plans 3 workers + 1 stocker + 2 warehouses
+// (164 buffered cap-units over two 120-holds, sp-lk9x buffer) for 2.0/hr ×
+// 15000 = 30000 cr/hr ⇒ 5000 cr/hr per hull. QQ7 plans 3 hulls for 500 cr/hr ⇒
+// ≈167 cr/hr per hull. Every case threshold below still sits clear of 5000/167.
 func TestHeuristicPlanner_CoversRankedHubsUntilMarginalHullFallsBelowRequirement(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -352,13 +355,23 @@ func TestHeuristicPlanner_ClampsCountsUnderPathologicalTelemetry(t *testing.T) {
 	})
 }
 
-// Behavior 2: buffer goods are selected per hub by stall-prevention ÷
-// stocker-cost = frequency ÷ (avg_units × source_distance), highest first,
-// under the stocker-capacity budget. Remote/bulky/low-value goods
-// (AMMONIA_ICE: 59u × 751 distance) and goods with no known source distance
-// are NEVER buffered; a good too big for the remaining budget is skipped while
-// smaller cheaper-to-stock goods still make it in.
-func TestHeuristicPlanner_SelectsBufferGoodsByStallPreventionPerStockerCost(t *testing.T) {
+// Behavior 2: buffer goods are selected per hub by VALUE DENSITY = frequency ×
+// (0.030·source_distance + 0.147·avg_units) ÷ avg_units, highest first, filling
+// the buffered-volume budget in avg_units (bead sp-lk9x). There is NO value
+// floor: the FAR-sourced good the pre-fix divide-by-distance score wrongly
+// deleted (AMMONIA_ICE: 59u × 751 distance) now RANKS IN. Goods with no known
+// source distance still cannot be costed and are dropped; a good too big for the
+// remaining budget is skipped while smaller lower-ranked goods still make it in.
+//
+// Value densities for the X1-J58-A1 mix (see contractMachineSignals):
+//
+//	IRON  → 1.2×(0.030·60 + 0.147·30)/30 = 1.2×6.21/30    ≈ 0.2484
+//	FUEL  → 0.8×(0.030·40 + 0.147·20)/20 = 0.8×4.14/20    ≈ 0.1656
+//	AMMONIA_ICE → 0.3×(0.030·751 + 0.147·59)/59 = 0.3×31.203/59 ≈ 0.1587
+//
+// so the rank order is IRON ≻ FUEL ≻ AMMONIA_ICE (near goods lead, but the far
+// bulky good is IN, not floored out).
+func TestHeuristicPlanner_SelectsBufferGoodsByValueDensity(t *testing.T) {
 	cases := []struct {
 		name         string
 		mutate       func(signals *capacity.Signals)
@@ -366,12 +379,13 @@ func TestHeuristicPlanner_SelectsBufferGoodsByStallPreventionPerStockerCost(t *t
 		wantBuffered []capacity.DesiredBufferedGood
 	}{
 		{
-			name:        "picks near-sourced frequent goods in score order and skips the remote bulky good",
+			name:        "ranks near goods first but the far bulky good is now IN (no floor), whole mix fits the default budget",
 			mutate:      func(*capacity.Signals) {},
-			budgetUnits: 0, // planner's documented default budget
+			budgetUnits: 0, // planner's documented default budget (240 avg-units); 30+20+59=109 all fit
 			wantBuffered: []capacity.DesiredBufferedGood{
-				{Good: "FUEL", UnitsCap: 30}, // 0.8/(20×40)=1.0e-3 outranks IRON's 6.7e-4
-				{Good: "IRON", UnitsCap: 45},
+				{Good: "IRON", UnitsCap: 45},        // vd 0.2484 — highest
+				{Good: "FUEL", UnitsCap: 30},        // vd 0.1656
+				{Good: "AMMONIA_ICE", UnitsCap: 89}, // vd 0.1587 — FAR good recovered, ceil(59×1.5)
 			},
 		},
 		{
@@ -383,20 +397,26 @@ func TestHeuristicPlanner_SelectsBufferGoodsByStallPreventionPerStockerCost(t *t
 					{HubSymbol: "X1-QQ7-B2", Good: "COPPER", Distance: 120},
 				}
 			},
-			budgetUnits:  0,
-			wantBuffered: []capacity.DesiredBufferedGood{{Good: "FUEL", UnitsCap: 30}},
+			budgetUnits: 0,
+			wantBuffered: []capacity.DesiredBufferedGood{ // IRON dropped (uncostable); FUEL ≻ AMMONIA_ICE, both fit
+				{Good: "FUEL", UnitsCap: 30},
+				{Good: "AMMONIA_ICE", UnitsCap: 89},
+			},
 		},
 		{
-			name: "a tight budget skips the good that does not fit but still admits a smaller lower-ranked one",
+			name: "a tight budget skips the goods that do not fit but still admits a smaller lower-ranked one",
 			mutate: func(signals *capacity.Signals) {
 				signals.Demand.Hubs[0].GoodMix = append(signals.Demand.Hubs[0].GoodMix,
-					capacity.GoodDemand{Good: "COPPER", Frequency: 0.5, AvgUnits: 18}) // 0.5/1620≈3.1e-4, cap 27
+					capacity.GoodDemand{Good: "COPPER", Frequency: 0.5, AvgUnits: 18}) // vd 0.5×(2.7+2.646)/18≈0.1485, cap 27
 				signals.Economics.SourceDistances = append(signals.Economics.SourceDistances,
 					capacity.GoodSourceDistance{HubSymbol: "X1-J58-A1", Good: "COPPER", Distance: 90})
 			},
-			budgetUnits: 60, // FUEL(30) fits; IRON(45) no longer does; COPPER(27) still does
+			// Budget 48 avg-units. Rank IRON(30) ≻ FUEL(20) ≻ AMMONIA_ICE(59) ≻ COPPER(18):
+			// IRON fits (rem 18); FUEL(20) and AMMONIA_ICE(59) exceed the 18 left and are
+			// skipped; COPPER(18) still fits — the knapsack skips past the too-big goods.
+			budgetUnits: 48,
 			wantBuffered: []capacity.DesiredBufferedGood{
-				{Good: "FUEL", UnitsCap: 30},
+				{Good: "IRON", UnitsCap: 45},
 				{Good: "COPPER", UnitsCap: 27},
 			},
 		},
@@ -410,7 +430,7 @@ func TestHeuristicPlanner_SelectsBufferGoodsByStallPreventionPerStockerCost(t *t
 
 			require.Equal(t, []string{"X1-J58-A1"}, hubSymbols(desired))
 			require.Equal(t, testCase.wantBuffered, desired.Hubs[0].BufferedGoods,
-				"AMMONIA_ICE-class goods (59u × 751 distance) must never appear in a buffer whitelist")
+				"value density ranks the mix and only the volume budget bounds it — no value floor deletes the far good")
 		})
 	}
 }
@@ -493,8 +513,8 @@ func TestHeuristicPlanner_SizesCountsToBufferedVolumeAndRestockCadence(t *testin
 		require.Len(t, desired.Hubs, 1)
 		hub := desired.Hubs[0]
 		require.Equal(t, 3, hub.WorkerCount, "2.0 contracts/hr × 1.5h cycle = 3 concurrent deliveries")
-		require.Equal(t, 1, hub.WarehouseCount, "75 buffered units fit one warehouse hold")
-		require.Equal(t, 1, hub.StockerCount, "52 units/hr over ≈54 mean distance is one stocker's cadence")
+		require.Equal(t, 2, hub.WarehouseCount, "IRON+FUEL+AMMONIA_ICE = 45+30+89 = 164 cap-units need two 120-holds (sp-lk9x recovers the far good)")
+		require.Equal(t, 1, hub.StockerCount, "≈69.7 units/hr over ≈231 mean distance is still one stocker's cadence")
 	})
 
 	t.Run("buffered volume above one hold adds a warehouse", func(t *testing.T) {

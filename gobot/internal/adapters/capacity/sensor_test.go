@@ -295,6 +295,58 @@ func TestSense_AggregatesHubDemandFromContractHistory(t *testing.T) {
 	}, hub.GoodMix)
 }
 
+// Behavior 1 (anti-dilution, bead sp-lk9x): demand frequency is measured over
+// the recent-N COUNT window — the most recent N contracts and the span THEY
+// occupy — not the ever-growing wall-clock gap back to the player's first-ever
+// contract. An established hub whose ancient history has accumulated far past N
+// keeps a healthy, un-diluted frequency: the old contracts age out of both the
+// numerator and the denominator instead of stretching the window toward zero.
+//
+// Seed 3 recent IRON contracts spanning 2h plus 2 ANCIENT (t0−1000h) OLD_GOOD
+// contracts, and cap the window at N=3. The recent 3 define a 2h window ⇒
+// 3/2h = 1.5/hr; the ancient pair is excluded entirely (OLD_GOOD never appears).
+// The pre-fix wall-clock window would have spanned 1000h+ ⇒ ≈0.005/hr and still
+// listed OLD_GOOD — so this asserts the count window is load-bearing, not cosmetic.
+func TestSense_MeasuresDemandOverRecentContractCountWindow_NotDilutedByAncientHistory(t *testing.T) {
+	db := newTestDB(t)
+	playerID := createPlayer(t, db, "AGENT-ESTABLISHED")
+
+	ironTo := func(id string, at time.Time) {
+		seedContract(t, db, playerID, id,
+			[]contract.Delivery{{TradeSymbol: "IRON", DestinationSymbol: hubWaypoint, UnitsRequired: 30, UnitsFulfilled: 30}},
+			5000, 10000, at)
+	}
+	ironTo("recent-0", t0) // newest
+	ironTo("recent-1", t0.Add(-1*time.Hour))
+	ironTo("recent-2", t0.Add(-2*time.Hour)) // oldest of the recent 3 ⇒ 2h window
+	// Ancient history far beyond the count window — the old wall-clock denominator.
+	for _, ancient := range []struct {
+		id string
+		at time.Time
+	}{
+		{"ancient-0", t0.Add(-1000 * time.Hour)},
+		{"ancient-1", t0.Add(-1001 * time.Hour)},
+	} {
+		seedContract(t, db, playerID, ancient.id,
+			[]contract.Delivery{{TradeSymbol: "OLD_GOOD", DestinationSymbol: hubWaypoint, UnitsRequired: 30, UnitsFulfilled: 30}},
+			5000, 10000, ancient.at)
+	}
+
+	sensor := capacityAdapters.NewSensor(db, fakeTreasury{credits: 1},
+		capacityAdapters.WithSensorClock(&shared.MockClock{CurrentTime: t0}),
+		capacityAdapters.WithDemandWindowContractCount(3),
+	)
+	signals, err := sensor.Sense(context.Background(), playerID)
+
+	require.NoError(t, err)
+	require.Len(t, signals.Demand.Hubs, 1)
+	hub := signals.Demand.Hubs[0]
+	require.InDelta(t, 1.5, hub.ContractFrequency, 1e-9,
+		"3 recent contracts over their own 2h span = 1.5/hr — NOT 5 contracts over 1000h+ ≈ 0.005/hr")
+	require.Equal(t, []capacity.GoodDemand{{Good: "IRON", Frequency: 1.5, AvgUnits: 30}}, hub.GoodMix,
+		"the ancient OLD_GOOD contracts aged out of the count window entirely")
+}
+
 // Behavior 2: CONTRACT_ACCEPTED→CONTRACT_FULFILLED ledger pairs aggregate into
 // the hub's mean cycle time (c1: 1800s, c2: 900s → 1350s).
 func TestSense_MeasuresAcceptToFulfillCycleTimePerHub(t *testing.T) {
