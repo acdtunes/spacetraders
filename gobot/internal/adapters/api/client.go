@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -45,6 +46,16 @@ const (
 	errCodeAgentHasContract = 4511
 	errCodeShipMustBeDocked = 4214
 	errCodeShipNotDocked    = 4244
+
+	// defaultAgentCacheTTL is how long GetAgent may serve a cached agent before
+	// re-reading it live (sp-oszc). GetAgent was the #2 API consumer (343 calls /
+	// 1306s rate-limit wait); agent data (credits/HQ/ship-count) changes rarely,
+	// so a short TTL cuts the redundant reads. It is a floor on staleness, NOT a
+	// safety mechanism: the SAFETY invariant is that every credit-DECREASING call
+	// invalidates the cache immediately (see invalidateAgentCache), so a money
+	// guard can never read a pre-spend (stale-HIGH) balance after we have spent.
+	// Overridable at boot via SetAgentCacheTTL (config: agent_cache_ttl_seconds).
+	defaultAgentCacheTTL = 15 * time.Second
 )
 
 // APIMetricsRecorder defines the interface for recording API metrics
@@ -65,6 +76,19 @@ type SpaceTradersClient struct {
 	clock            shared.Clock
 	metricsCollector APIMetricsRecorder
 	budgetTracker    *metrics.APIBudgetTracker
+
+	// Agent cache (sp-oszc). All GetAgent callers share this one client instance,
+	// so caching here transparently cuts the redundant live reads for every money
+	// guard and monitor at once. agentCacheMu guards ALL four fields below AND is
+	// held across the live fetch, so a concurrent invalidation (from a spend) can
+	// never interleave between a fetch and its store — the invalidation is forced
+	// to run strictly after the store, guaranteeing the post-spend cache is EMPTY
+	// (the over-spend safety proof). agentCache==nil means empty/invalidated.
+	agentCacheMu    sync.Mutex
+	agentCache      *player.AgentData
+	agentCachedAt   time.Time
+	agentCacheToken string        // token that produced agentCache (cross-agent guard)
+	agentCacheTTL   time.Duration // 0 => defaultAgentCacheTTL
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
@@ -137,6 +161,19 @@ func (c *SpaceTradersClient) getMetricsCollector() APIMetricsRecorder {
 // mirroring SetMetricsCollector.
 func (c *SpaceTradersClient) SetBudgetTracker(tracker *metrics.APIBudgetTracker) {
 	c.budgetTracker = tracker
+}
+
+// SetAgentCacheTTL overrides how long GetAgent may serve a cached agent before
+// re-reading it live (sp-oszc). ttl<=0 selects defaultAgentCacheTTL. Wired at
+// daemon boot from DaemonConfig.AgentCacheTTLSeconds via setter injection, so the
+// many NewSpaceTradersClient call sites stay untouched. Thread-safe: the cache
+// mutex guards the knob because SetAgentCacheTTL can race concurrent GetAgent
+// reads. Shortening the TTL is always safe; the credit-DECREASING-call
+// invalidation is what protects money guards, not the TTL.
+func (c *SpaceTradersClient) SetAgentCacheTTL(ttl time.Duration) {
+	c.agentCacheMu.Lock()
+	c.agentCacheTTL = ttl
+	c.agentCacheMu.Unlock()
 }
 
 // getBudgetTracker returns the budget tracker for this client. If no local
@@ -364,6 +401,7 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
+	c.invalidateAgentCache() // refuel spends credits -> drop the stale-high cache (sp-oszc)
 
 	result := &navigation.RefuelResult{
 		FuelAdded:    response.Data.Transaction.Units,
@@ -429,6 +467,7 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to jump ship: %w", err)
 	}
+	c.invalidateAgentCache() // jump charges a gate fee (transaction.totalPrice) -> drop the stale-high cache (sp-oszc)
 
 	return &domainPorts.JumpResult{
 		DestinationSystem:   response.Data.Nav.SystemSymbol,
@@ -484,8 +523,72 @@ func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, wayp
 	}, nil
 }
 
-// GetAgent retrieves agent information
+// GetAgent retrieves agent information, served from a short-TTL cache to cut the
+// redundant live reads that made it the #2 API consumer (sp-oszc).
+//
+// Safety (money-critical): the cache mutex is held ACROSS the live fetch. That
+// serializes GetAgent against invalidateAgentCache (a spend), so an invalidation
+// can never interleave between a fetch and its store — it is forced to run either
+// entirely before the fetch (which then reads post-spend state) or entirely after
+// the store (which it then clears). Either way, after any spend the cache is
+// EMPTY, so the next money-guard read cannot be answered with a pre-spend
+// (stale-HIGH) balance; it re-reads live. Concurrent cold readers collapse to
+// exactly one live fetch (the first fills the cache, the rest hit it).
+//
+// A defensive copy is returned so a caller mutating the AgentData can never
+// poison the shared cache. The token is part of the cache key so a client reused
+// across agents/tokens (era rotation) never serves one agent's balance to another.
 func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
+	c.agentCacheMu.Lock()
+	defer c.agentCacheMu.Unlock()
+
+	if c.agentCache != nil &&
+		c.agentCacheToken == token &&
+		c.clock.Now().Sub(c.agentCachedAt) < c.resolvedAgentCacheTTLLocked() {
+		cached := *c.agentCache // copy: never hand out the cached pointer
+		return &cached, nil
+	}
+
+	agent, err := c.fetchAgentLive(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	c.agentCache = agent
+	c.agentCachedAt = c.clock.Now()
+	c.agentCacheToken = token
+	fresh := *agent
+	return &fresh, nil
+}
+
+// resolvedAgentCacheTTLLocked reports the effective agent-cache TTL. The caller
+// MUST hold agentCacheMu. A zero/negative configured value selects the built-in
+// default, mirroring ShipRepository.resolvedCASRetries.
+func (c *SpaceTradersClient) resolvedAgentCacheTTLLocked() time.Duration {
+	if c.agentCacheTTL <= 0 {
+		return defaultAgentCacheTTL
+	}
+	return c.agentCacheTTL
+}
+
+// invalidateAgentCache clears the cached agent. It is called AFTER every
+// successful credit-DECREASING API call (purchase/refuel/ship-buy/jump/module
+// install) so a subsequent money-guard read re-fetches the true post-spend
+// balance instead of a stale-HIGH cached one — the over-spend safety invariant
+// (sp-oszc). Also invalidated on obvious income (sell) as a cheap bonus so an
+// affordable buy becomes visible sooner. Cheap and idempotent: a redundant
+// invalidation only costs one extra live read.
+func (c *SpaceTradersClient) invalidateAgentCache() {
+	c.agentCacheMu.Lock()
+	c.agentCache = nil
+	c.agentCacheToken = ""
+	c.agentCacheMu.Unlock()
+}
+
+// fetchAgentLive performs the raw GET /my/agent read (no caching). Callers go
+// through GetAgent; this is split out so GetAgent can hold the cache mutex across
+// the fetch without embedding the HTTP shape in the locking logic.
+func (c *SpaceTradersClient) fetchAgentLive(ctx context.Context, token string) (*player.AgentData, error) {
 	path := "/my/agent"
 
 	var response struct {
@@ -789,6 +892,7 @@ func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, good
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
 	}
+	c.invalidateAgentCache() // buy cargo spends credits -> drop the stale-high cache (sp-oszc)
 
 	result := &domainPorts.PurchaseResult{
 		TotalCost:  response.Data.Transaction.TotalPrice,
@@ -858,6 +962,7 @@ func (c *SpaceTradersClient) modifyShipModule(ctx context.Context, action, shipS
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to %s ship module: %w", action, err)
 	}
+	c.invalidateAgentCache() // module install/remove charges a shipyard fee -> drop the stale-high cache (sp-oszc)
 
 	result := &domainPorts.ModuleModificationResult{
 		Fee:           response.Data.Transaction.TotalPrice,
@@ -946,6 +1051,7 @@ func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymb
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to sell cargo: %w", err)
 	}
+	c.invalidateAgentCache() // income bonus (sp-oszc): sell raises the balance; drop the stale-low cache so an affordable buy is visible sooner. Conservative either way — income never over-spends.
 
 	result := &domainPorts.SellResult{
 		TotalRevenue: response.Data.Transaction.TotalPrice,
@@ -1334,6 +1440,7 @@ func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypoin
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to purchase ship: %w", err)
 	}
+	c.invalidateAgentCache() // buy ship spends credits (the biggest spend) -> drop the stale-high cache (sp-oszc)
 
 	// Convert agent data
 	agentData := &player.AgentData{

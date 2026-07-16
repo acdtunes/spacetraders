@@ -164,6 +164,11 @@ func run(cfg *config.Config) error {
 
 	// 4. Initialize API client
 	apiClient := api.NewSpaceTradersClient()
+	// sp-oszc: cache Get Agent (the #2 API consumer) with a short TTL. Every
+	// GetAgent caller shares this one client, so the money guards and monitors all
+	// benefit at once; safety comes from invalidating on every credit-decreasing
+	// call inside the client. 0/unset -> the client's built-in 15s default.
+	apiClient.SetAgentCacheTTL(time.Duration(cfg.Daemon.AgentCacheTTLSeconds) * time.Second)
 	fmt.Println("API client initialized")
 
 	// 4. Initialize ship repository (adapts API responses to domain entities)

@@ -38,6 +38,15 @@ type DaemonConfig struct {
 	// to the legacy last-write-wins-on-conflict behavior (sp-60ff), disabling
 	// re-apply retry entirely. Absent/false = retry ACTIVE.
 	CASRetryDisabled bool `mapstructure:"cas_retry_disabled"`
+
+	// AgentCacheTTLSeconds bounds how long the shared API client may serve a
+	// cached agent before re-reading /my/agent live (sp-oszc): GetAgent was the
+	// #2 API consumer (343 calls / 1306s rate-limit wait) and agent data changes
+	// rarely, so a short TTL cuts the redundant reads. 0/unset selects the
+	// built-in default (15s). This is only a staleness FLOOR — money safety comes
+	// from invalidating the cache on every credit-decreasing call, not the TTL —
+	// so tuning it never risks an over-spend. Sticky across restart via config.
+	AgentCacheTTLSeconds int `mapstructure:"agent_cache_ttl_seconds"`
 }
 
 // RestartPolicyConfig holds container restart policy configuration
