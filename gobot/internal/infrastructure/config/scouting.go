@@ -91,4 +91,14 @@ type ScoutingConfig struct {
 	// trade hulls of it. 0/absent => defaultGateReconcileMaxDispatch (2), mirroring
 	// MaxRepositionJumps' 0 => default idiom.
 	GateReconcileMaxDispatch int `mapstructure:"gate_reconcile_max_dispatch"`
+
+	// GateReconcileMarketlessDisabled is the sp-ywh1 disable-escape: it reverts the widened
+	// gate-reconcile sweep to the market-only sp-bcsu backlog, dropping the traffic-markered
+	// MARKETLESS transit gates from the target set. false/absent => LIVE (the widened scope is
+	// ON whenever gate_reconcile_enabled arms the sweep): the sweep also charts uncharted transit
+	// systems a stale backoff marker proves traffic jumps THROUGH — the residual GetJumpGate-400
+	// source the market-scoped enumeration structurally cannot reach. Set true to pin market-only
+	// without a redeploy. RULINGS #5 disable escape, mirroring coverage_spread_disabled /
+	// respawn_cap_disabled (bool ⇒ liveconfig-only; the tune registry is int-typed).
+	GateReconcileMarketlessDisabled bool `mapstructure:"gate_reconcile_marketless_disabled"`
 }

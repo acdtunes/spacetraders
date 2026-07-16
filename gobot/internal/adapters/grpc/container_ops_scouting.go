@@ -362,6 +362,12 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	if sc.GateReconcileMaxDispatch != 0 {
 		config["gate_reconcile_max_dispatch"] = sc.GateReconcileMaxDispatch
 	}
+	// sp-ywh1 marketless-widening disable-escape: true-only injection (mirrors coverage_spread /
+	// respawn_cap) — false/absent leaves the widened scope LIVE (marketless transit gates charted)
+	// whenever the sweep is armed.
+	if sc.GateReconcileMarketlessDisabled {
+		config["gate_reconcile_marketless_disabled"] = true
+	}
 }
 
 // AssignScoutingFleet creates a scout-fleet-assignment container for async VRP optimization

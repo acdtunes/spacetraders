@@ -801,8 +801,12 @@ func run(cfg *config.Config) error {
 	// the trade-route circuit, the one-shot arb, and (sp-42ow) the autosizer's
 	// reachable-yard ranking so they all see one cache/graph. Constructed here,
 	// ahead of the autosizer wiring that consumes it.
+	// Captured so the sp-ywh1 gate-reconcile widening can read backoff markers straight from
+	// the SAME store the gate graph routes over (one cache/graph, era-scoped) — see
+	// scoutPostCoordinatorHandler.SetUnreadableGateProvider below.
+	gateEdgeRepo := persistence.NewGormGateEdgeRepository(db)
 	gateGraphService := gategraph.NewService(
-		persistence.NewGormGateEdgeRepository(db), apiClient, graphService, playerRepo,
+		gateEdgeRepo, apiClient, graphService, playerRepo,
 		// sp-ikx1: back off re-probing an unreadable jump gate (5m→30m→2h) instead of
 		// re-fetching it every reconcile tick — the negative-result backoff is persisted
 		// on the gate_edges row so a restart resumes it rather than re-storming the API.
@@ -984,6 +988,13 @@ func run(cfg *config.Config) error {
 	// extra DB connection or cache. nil (the pre-dp92 default) leaves the gauge unrecorded;
 	// this is pure OBSERVATION and never affects manning (RULINGS #4).
 	scoutPostCoordinatorHandler.SetMarketFreshnessProvider(marketRepo)
+	// sp-ywh1: wire the traffic-marker enumeration that widens the gate-reconcile sweep onto
+	// MARKETLESS transit gates (uncharted systems a stale backoff marker proves traffic jumps
+	// THROUGH — the residual GetJumpGate-400 source the market-scoped sweep structurally cannot
+	// reach). The SAME GORM gate-edge store the gate graph routes over, so one cache/graph and
+	// era scoping. nil (the pre-ywh1 default) leaves the sweep market-only; the widening also
+	// self-guards on GateReconcileEnabled and is reversible live via gate_reconcile_marketless_disabled.
+	scoutPostCoordinatorHandler.SetUnreadableGateProvider(gateEdgeRepo)
 	// sp-5les manning watchdog: wire the SAME SystemsFreshness census the freshness sizer
 	// (sp-iupr) reconciles against, so the watchdog re-mans a fully-manned-but-silent standing
 	// post the sizer stopped hoarding probes for — detected via the census's worst-case market

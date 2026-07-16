@@ -244,6 +244,17 @@ type RunScoutPostCoordinatorCommand struct {
 	// mirroring TickIntervalSecs' 0 => default idiom.
 	GateReconcileMaxDispatch int
 
+	// GateReconcileMarketlessDisabled is the sp-ywh1 disable-escape: it reverts the widened
+	// gate-reconcile sweep to the market-only sp-bcsu backlog, dropping the traffic-markered
+	// MARKETLESS transit gates from the target set. false/absent => LIVE (the widened scope is
+	// ON whenever GateReconcileEnabled arms the sweep): the sweep also charts uncharted transit
+	// systems a stale backoff marker proves traffic jumps THROUGH, clearing the residual
+	// GetJumpGate-400 source the market-scoped enumeration structurally cannot reach. Set true
+	// to pin market-only without a redeploy (RULINGS #5 disable escape, mirroring
+	// CoverageSpreadDisabled/RespawnCapDisabled). Requires SetUnreadableGateProvider wired to
+	// have any effect; an unwired provider is already market-only regardless of this flag.
+	GateReconcileMarketlessDisabled bool
+
 	// CoverageSpreadDisabled reverts the sp-6ovd coverage-first manning order to the legacy
 	// depth-first order (all of a post's slots before the next post's). Default false = LIVE:
 	// unmannedSlotTargets interleaves by slot tier so a scarce idle-probe pool spreads
@@ -342,6 +353,21 @@ type MarketFreshnessProvider interface {
 	MaxAgeSecondsBySystem(ctx context.Context, playerID int) (map[string]float64, error)
 }
 
+// UnreadableGateProvider enumerates the persisted negative-result backoff markers (sp-ywh1):
+// every era-scoped UNCHARTED gate a hull's live GetJumpGate 400'd on, mapped to the gate
+// waypoint the marker recorded. A marker row exists ONLY because fleet traffic actually
+// tried to route THROUGH that gate (MarkUnreadable is written on a real 400), so the set is
+// intrinsically bounded to traffic-touched gates — a marketless dead-end no route crosses is
+// never markered, never charted. This is the "an active route traverses this uncharted gate"
+// signal the gate-reconcile sweep widens onto: it no longer needs the target to bear a market
+// (a system's market status is unknowable until its gate is charted, the chicken-and-egg the
+// market-scoped enumeration could never escape). Satisfied by the GORM gate-edge repository
+// (GormGateEdgeRepository.UnreadableGates). Optional: nil leaves the sweep market-only
+// (pre-sp-ywh1), so every caller/test that never wires it behaves exactly as before.
+type UnreadableGateProvider interface {
+	UnreadableGates(ctx context.Context) (map[string]string, error)
+}
+
 // RunScoutPostCoordinatorHandler reconciles the desired-state posts table every
 // tick. Each post has HullBudget() manning SLOTS — one for a single-hull post, N for
 // a multi-probe post (sp-enry) — and every slot is manned, repaired, and repositioned
@@ -394,6 +420,15 @@ type RunScoutPostCoordinatorHandler struct {
 	// rather than the constructor, mirroring SetGateGraph/SetRoutingClient; every
 	// pre-dp92 caller/test that never wires it is unaffected.
 	marketFreshnessProvider MarketFreshnessProvider
+
+	// unreadableGateProvider widens the gate-reconcile sweep from market-only to any
+	// traffic-markered uncharted gate (sp-ywh1): it lists the era-scoped backoff markers so
+	// the sweep also charts marketless TRANSIT systems traders jump THROUGH — the residual
+	// GetJumpGate-400 source the sp-bcsu market-scoped sweep structurally cannot reach. nil
+	// (the default) leaves the sweep market-only, so it is wired via SetUnreadableGateProvider
+	// rather than the constructor, mirroring SetGateGraph/SetMarketFreshnessProvider; every
+	// caller/test that never wires it is unaffected.
+	unreadableGateProvider UnreadableGateProvider
 
 	// repositionBackoffUntil rate-limits reposition DISPATCH per post slot (key
 	// playerID|system[|slotIndex] → earliest next dispatch time) so a relay that fails
@@ -586,6 +621,15 @@ func (h *RunScoutPostCoordinatorHandler) SetEventStore(s captain.EventStore) {
 // never wires it behaves exactly as before.
 func (h *RunScoutPostCoordinatorHandler) SetMarketFreshnessProvider(p MarketFreshnessProvider) {
 	h.marketFreshnessProvider = p
+}
+
+// SetUnreadableGateProvider wires the sp-ywh1 traffic-marker enumeration that widens the
+// gate-reconcile sweep onto marketless transit gates. The daemon injects the SAME GORM
+// gate-edge repository the gate graph reads through — one store, era-scoped. Optional-injection
+// (like SetGateGraph): nil (the default) leaves the sweep market-only (pre-sp-ywh1), so every
+// caller/test that never wires it behaves exactly as before.
+func (h *RunScoutPostCoordinatorHandler) SetUnreadableGateProvider(p UnreadableGateProvider) {
+	h.unreadableGateProvider = p
 }
 
 // SetSystemFreshnessReader wires the sp-5les manning watchdog's per-system freshness census
@@ -2405,24 +2449,60 @@ func gateUnchartedMarketSystems(marketAges map[string]float64, charted map[strin
 	return uncharted
 }
 
-// reconcileGateChartSweep is the sp-bcsu RETROACTIVE gate-reconcile pass (Part 2): it
-// dispatches up to a BOUNDED number of LEFTOVER idle probes to market-known-but-gate-
-// uncharted frontier systems, so each probe lands on that system's jump gate and Part 1's
-// chart-on-arrival (chartArrivedGate -> ChartPresentGate) fills its gate_edges — clearing
-// the chicken-and-egg where a market-swept system with empty gate_edges is never revisited
-// (the manual UF64 procedure, automated). It reuses the existing scout_reposition machinery:
-// the probe is aimed at any market waypoint in the target (Part 1 charts the GATE on the
-// pre-market arrival hop, so no jump-gate waypoint resolution is needed).
+// gateChartSweepTargets GENERALIZES the sp-bcsu enumeration to the sp-ywh1 widened target set:
+// the UNION of the market-known-but-gate-uncharted backlog (gateUnchartedMarketSystems) and the
+// traffic-markered uncharted TRANSIT systems (markeredGates — the era-scoped backoff markers a
+// stale route-through 400 left behind), each minus the already-charted set. Deduped (a system
+// that is BOTH market-known and markered is one target, drawing one probe) and sorted for the
+// same deterministic, stable dispatch order the market-only sweep had. markeredGates nil (an
+// unwired provider or the disable-escape) collapses this to exactly gateUnchartedMarketSystems,
+// so the pre-sp-ywh1 market-only behavior is preserved byte-for-byte. Pure — no store, no API.
+func gateChartSweepTargets(marketAges map[string]float64, markeredGates map[string]string, charted map[string][]system.GateEdge) []string {
+	seen := make(map[string]struct{}, len(marketAges)+len(markeredGates))
+	for _, systemSymbol := range gateUnchartedMarketSystems(marketAges, charted) {
+		seen[systemSymbol] = struct{}{}
+	}
+	for systemSymbol := range markeredGates {
+		if len(charted[systemSymbol]) > 0 {
+			continue // its jump gate is already charted — a lingering marker is not a target
+		}
+		seen[systemSymbol] = struct{}{}
+	}
+	targets := make([]string, 0, len(seen))
+	for systemSymbol := range seen {
+		targets = append(targets, systemSymbol)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+// reconcileGateChartSweep is the sp-bcsu RETROACTIVE gate-reconcile pass (Part 2), WIDENED by
+// sp-ywh1: it dispatches up to a BOUNDED number of LEFTOVER idle probes to UNCHARTED frontier
+// gates so each probe lands on that system's jump gate and Part 1's chart-on-arrival
+// (chartArrivedGate -> ChartPresentGate) fills its gate_edges. The target set is the UNION of
+// two sources (gateChartSweepTargets):
+//   - the sp-bcsu market-known-but-gate-uncharted backlog (a market-swept system with empty
+//     gate_edges the strict pathfinder strands hulls on — the manual UF64 procedure, automated);
+//   - the sp-ywh1 traffic-markered MARKETLESS transit gates: uncharted systems a stale backoff
+//     marker proves fleet traffic jumps THROUGH (MarkUnreadable is written on a real GetJumpGate
+//     400). The market-scoped enumeration structurally could NEVER reach these — a system's
+//     market status is unknown until its gate is charted — so they were the residual 400 source.
+//     A marketless dead-end no route crosses is never markered, so the scope stays bounded to
+//     traffic-touched gates (NOT all reachable uncharted gates — that over-exploration is rejected).
+//
+// A market target is aimed at any market waypoint (Part 1 charts the GATE on the pre-market
+// arrival hop); a marketless target is aimed at the gate WAYPOINT the marker recorded.
 //
 // SAFETY (the Admiral's HARD API-budget constraint):
-//   - DEFAULT OFF (self-guards on GateReconcileEnabled): deploy-inert until armed.
+//   - DEFAULT OFF (self-guards on GateReconcileEnabled): deploy-inert until armed. The marketless
+//     widening is additionally reversible live via GateReconcileMarketlessDisabled (default ON).
 //   - HARD-CAPPED at resolveGateReconcileMaxDispatch relays per tick — never a burst.
 //   - Runs on the LEFTOVER idle pool AFTER manning (idleSats already drained by Pass 2),
 //     so it never starves a post of a probe; a dispatched probe is spliced out of the pool.
 //   - Idempotent: ChartPresentGate's store-first guard (Part 1) makes an arrival on an
 //     already-charted system cost ZERO API, so a redundant relay is cheap.
 //   - Fail-closed at every gap (no gate graph / no freshness provider / read error / no
-//     routable satellite / no markets), and the per-target dispatch backoff prevents churn.
+//     routable satellite / no destination), and the per-target dispatch backoff prevents churn.
 func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, idleSats *[]*navigation.Ship) {
 	if !cmd.GateReconcileEnabled || h.gateGraph == nil || h.marketFreshnessProvider == nil {
 		return
@@ -2447,7 +2527,9 @@ func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Con
 		return
 	}
 
-	targets := gateUnchartedMarketSystems(marketAges, charted)
+	markeredGates := h.markeredUnchartedGates(ctx, cmd)
+
+	targets := gateChartSweepTargets(marketAges, markeredGates, charted)
 	if len(targets) == 0 {
 		return // frontier fully charted — nothing to reconcile
 	}
@@ -2470,11 +2552,10 @@ func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Con
 		if !ok {
 			continue // no idle probe can jump-route to this frontier system this tick
 		}
-		markets, err := h.discoverMarkets(ctx, target)
-		if err != nil || len(markets) == 0 {
-			continue // market-known per the freshness read, but no waypoint to aim at right now
+		destWaypoint, ok := h.resolveGateChartDestination(ctx, target, markeredGates)
+		if !ok {
+			continue // no market waypoint AND no recorded gate to aim at right now — fail closed
 		}
-		destWaypoint := pickRepositionDestination(markets)
 
 		sat := (*idleSats)[idx]
 		*idleSats = append((*idleSats)[:idx], (*idleSats)[idx+1:]...)
@@ -2504,6 +2585,44 @@ func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Con
 			"relay":         relayID,
 		})
 	}
+}
+
+// markeredUnchartedGates reads the sp-ywh1 traffic-marker set (system -> recorded gate waypoint)
+// the widened sweep charts alongside the market backlog. It fails SAFE to the pre-sp-ywh1
+// market-only sweep at every gap: an unwired provider (nil) or the GateReconcileMarketlessDisabled
+// escape returns nil (no marketless targets), and a provider read error is logged and swallowed
+// (market-only this tick, never an aborted sweep) — mirroring the marketFreshnessProvider's
+// fail-open contract. nil is a valid, empty markered set for gateChartSweepTargets.
+func (h *RunScoutPostCoordinatorHandler) markeredUnchartedGates(ctx context.Context, cmd *RunScoutPostCoordinatorCommand) map[string]string {
+	if h.unreadableGateProvider == nil || cmd.GateReconcileMarketlessDisabled {
+		return nil // widening unwired or pinned off — market-only, exactly as before sp-ywh1
+	}
+	gates, err := h.unreadableGateProvider.UnreadableGates(ctx)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("gate-reconcile: marker enumeration failed — charting market-only this tick: %v", err), map[string]interface{}{
+			"action": "gate_reconcile_marker_enumeration_failed",
+		})
+		return nil
+	}
+	return gates
+}
+
+// resolveGateChartDestination picks the waypoint to aim a charting probe at: any market in the
+// target (the sp-bcsu path — Part 1 charts the GATE on the pre-market arrival hop) when one
+// exists, else the gate WAYPOINT the backoff marker recorded (the sp-ywh1 marketless-transit
+// path). Trying markets FIRST keeps a market target's destination byte-for-byte what the
+// pre-sp-ywh1 sweep chose. ok=false when neither is available — no market waypoint yet AND no
+// recorded gate (or an empty-string marker) — so the caller fails closed for this target without
+// consuming a probe, exactly as the old empty-markets skip did.
+func (h *RunScoutPostCoordinatorHandler) resolveGateChartDestination(ctx context.Context, target string, markeredGates map[string]string) (string, bool) {
+	markets, err := h.discoverMarkets(ctx, target)
+	if err == nil && len(markets) > 0 {
+		return pickRepositionDestination(markets), true
+	}
+	if gateWaypoint := markeredGates[target]; gateWaypoint != "" {
+		return gateWaypoint, true
+	}
+	return "", false
 }
 
 // gateReconcileBackoffKey is the per-target dispatch-backoff key for the sp-bcsu sweep. It

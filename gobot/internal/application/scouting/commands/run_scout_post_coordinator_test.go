@@ -2885,3 +2885,106 @@ func TestReconcileGateChartSweep_ZeroHopDispatch_FlagsChartOnArrival(t *testing.
 	require.False(t, byShip["SAT-1"].ChartGateOnArrival,
 		"a multi-hop dispatch must NOT flag it — the jump-arrival hop already charts the gate")
 }
+
+// --- sp-ywh1: widen the sweep onto marketless traffic-markered transit gates ---
+
+// fakeUnreadableGateProvider stands in for GormGateEdgeRepository.UnreadableGates (sp-ywh1):
+// the era-scoped backoff markers (system -> the gate waypoint the marker recorded) that fleet
+// traffic's route-through 400s left behind. err simulates a read failure the sweep must fail
+// CLOSED on (degrade to market-only this tick, never a panic). calls counts invocations so a
+// test can pin the read is batched once per sweep.
+type fakeUnreadableGateProvider struct {
+	gates map[string]string
+	err   error
+	calls int
+}
+
+func (f *fakeUnreadableGateProvider) UnreadableGates(_ context.Context) (map[string]string, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.gates, nil
+}
+
+// gateChartSweepTargets UNIONS the market-known-but-gate-uncharted backlog with the
+// traffic-markered uncharted transit systems, DEDUPES a system that is BOTH, and EXCLUDES
+// already-charted systems from EITHER source. MUTATION GUARDS: drop the charted skip and the
+// already-charted markered gate (X1-CHARTEDMKR) leaks in; drop the dedup and X1-BOTH double-counts.
+func TestGateChartSweepTargets_UnionsMarketAndMarkeredMinusCharted(t *testing.T) {
+	marketAges := map[string]float64{"X1-MKT": 100, "X1-BOTH": 200, "X1-CHARTEDMKT": 300}
+	markeredGates := map[string]string{
+		"X1-TRANSIT":    "X1-TRANSIT-GATE", // marketless + markered → included (THE sp-ywh1 widening)
+		"X1-BOTH":       "X1-BOTH-GATE",    // also market-known → deduped to a single target
+		"X1-CHARTEDMKR": "X1-CG",           // markered BUT already charted → excluded
+	}
+	charted := map[string][]system.GateEdge{
+		"X1-CHARTEDMKT": {{ConnectedSystem: "X1-Z"}}, // charted market system → excluded
+		"X1-CHARTEDMKR": {{ConnectedSystem: "X1-Y"}}, // charted markered system → excluded
+	}
+
+	got := gateChartSweepTargets(marketAges, markeredGates, charted)
+
+	require.Equal(t, []string{"X1-BOTH", "X1-MKT", "X1-TRANSIT"}, got,
+		"union of market-backlog {MKT,BOTH} and markered {TRANSIT,BOTH}, deduped (BOTH once), minus charted {CHARTEDMKT,CHARTEDMKR}; sorted")
+}
+
+// sp-ywh1: the widened sweep charts a MARKETLESS transit gate a stale backoff marker proves
+// traffic jumps THROUGH — the residual GetJumpGate-400 source the sp-bcsu market-scoped sweep
+// structurally could never reach (a system's market status is unknown until its gate is
+// charted, the chicken-and-egg). Because the target bears no market, the dispatch aims the
+// probe at the gate WAYPOINT the marker recorded (discoverMarkets finds nothing). The BOUNDING
+// half: a marketless gate with NO marker draws nothing — no traffic ever 400'd it, so no active
+// route crosses it. RED on the pre-fix market-only enumeration: neither system is in marketAges,
+// so the sweep dispatches zero relays.
+func TestReconcileGateChartSweep_MarkerlessTransitGate_DispatchesToGateWaypoint(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	sats := []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1")}
+	gg := &fakeGateGraph{hops: map[string]int{
+		"X1-HUB->X1-TRANSIT": 1, // markered marketless transit gate, within the reposition bound
+		"X1-HUB->X1-DEADEND": 1, // marketless with NO marker → must stay untouched (bounding)
+	}} // no adjacency → both are gate-uncharted
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats, map[string]float64{}, gg)
+	// Both targets are MARKETLESS: discoverMarkets returns nothing, so the market-only sweep
+	// ignores them AND has no destination to aim at — the widening must fall back to the marker.
+	handler.marketProvider = &fakeMarketProvider{emptySystems: map[string]bool{"X1-TRANSIT": true, "X1-DEADEND": true}}
+	handler.SetUnreadableGateProvider(&fakeUnreadableGateProvider{
+		gates: map[string]string{"X1-TRANSIT": "X1-TRANSIT-GATE"}, // only X1-TRANSIT is traffic-markered
+	})
+
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), gateReconcileTestCmd(5), &idle)
+
+	require.Len(t, daemonClient.persistedRepositionCmds, 1,
+		"exactly the markered transit gate draws a relay; the unmarkered dead-end (no traffic ever 400'd it) is bounded out")
+	relay := daemonClient.persistedRepositionCmds[0]
+	require.Equal(t, "SAT-1", relay.ShipSymbol)
+	require.Equal(t, "X1-TRANSIT-GATE", relay.DestinationWaypoint,
+		"a marketless target has no market to aim at — the probe is sent to the gate waypoint the backoff marker recorded")
+	require.Len(t, idle, 0, "the one dispatched probe is consumed; the dead-end never draws a second")
+}
+
+// sp-ywh1 disable-escape: GateReconcileMarketlessDisabled reverts the widened scope to the
+// sp-bcsu market-only backlog. The same markered marketless transit gate the test above
+// dispatched to now draws NOTHING — proving the safety knob pins market-only without a redeploy,
+// and (falsifiability) that the WIDENING is what produced that dispatch, not some other path.
+func TestReconcileGateChartSweep_MarketlessWidening_DisabledByKnob_NoDispatch(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	sats := []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1")}
+	gg := &fakeGateGraph{hops: map[string]int{"X1-HUB->X1-TRANSIT": 1}}
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats, map[string]float64{}, gg)
+	handler.marketProvider = &fakeMarketProvider{emptySystems: map[string]bool{"X1-TRANSIT": true}}
+	handler.SetUnreadableGateProvider(&fakeUnreadableGateProvider{gates: map[string]string{"X1-TRANSIT": "X1-TRANSIT-GATE"}})
+
+	cmd := &RunScoutPostCoordinatorCommand{
+		PlayerID: shared.MustNewPlayerID(1), ContainerID: "scoutpost-1",
+		GateReconcileEnabled: true, GateReconcileMaxDispatch: 5,
+		GateReconcileMarketlessDisabled: true, // pin market-only
+	}
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), cmd, &idle)
+
+	require.Empty(t, daemonClient.repositioned,
+		"the disable-escape pins the sweep market-only — the marketless transit gate is dropped from the target set")
+	require.Len(t, idle, 1, "no probe consumed when the widened scope is disabled")
+}

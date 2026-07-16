@@ -253,6 +253,32 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 	return adjacency, nil
 }
 
+// UnreadableGates returns every era-scoped negative-result backoff marker (sp-ywh1): the
+// UNCHARTED systems whose live GetJumpGate keeps 400ing, mapped to the gate waypoint the marker
+// recorded (may be "" when the gate was not yet known at mark time). These are exactly the
+// traffic-touched frontier gates the gate-reconcile sweep widens onto — a marker exists ONLY
+// because a hull actually tried to route THROUGH the gate (MarkUnreadable writes on a real 400),
+// so a marketless dead-end no route crosses is never in this set. Selects only marker rows
+// (connected_system = unreadableMarker); real edges are excluded, the mirror of Adjacency's
+// filter. Pure read; era-scoped exactly like Edges/Adjacency (openEraID + eraScopePredicate) so
+// a dead-era marker never leaks a stale target into the live sweep. A successful Replace clears
+// a system's marker (self-heal), so a since-charted system naturally drops out of this set.
+func (r *GormGateEdgeRepository) UnreadableGates(ctx context.Context) (map[string]string, error) {
+	var models []GateEdgeModel
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	if err := r.db.WithContext(ctx).
+		Where("connected_system = ?", unreadableMarker).
+		Where(predicate, args...).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list unreadable gate markers: %w", err)
+	}
+	gates := make(map[string]string, len(models))
+	for _, m := range models {
+		gates[m.SystemSymbol] = m.GateWaypoint
+	}
+	return gates, nil
+}
+
 // anyStale reports whether any row is stale. A system's edges are written in one
 // Replace() with a single timestamp, so any stale row means the whole set is stale
 // (the lazy-refresh signal that forces a full re-fetch + re-probe before routing

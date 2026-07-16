@@ -335,6 +335,66 @@ func TestGateEdgeRepository_MarkerRow_ExcludedFromEdgesAndAdjacency(t *testing.T
 	require.NotContains(t, adjacency, "X1-XX56", "a backoff marker must not surface as an edge in the overview")
 }
 
+// sp-ywh1: UnreadableGates returns every era-scoped backoff MARKER (system -> the gate waypoint
+// the marker recorded) and NOTHING else — a real charted edge set is not a marker, so it is
+// excluded (the mirror of Adjacency's filter, verifying the empty-string connected_system bind
+// selects markers, not real edges). This is the traffic-touched frontier-gate set the widened
+// gate-reconcile sweep charts.
+func TestGateEdgeRepository_UnreadableGates_ReturnsMarkersWithGateWaypoints(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	// Two traffic-markered uncharted gates (a route-through 400 left each behind, recording its
+	// gate waypoint)...
+	_, err = repo.MarkUnreadable(ctx, "X1-TRANSIT", "X1-TRANSIT-GATE", time.Now())
+	require.NoError(t, err)
+	_, err = repo.MarkUnreadable(ctx, "X1-DARK", "X1-DARK-GATE", time.Now())
+	require.NoError(t, err)
+	// ...and one CHARTED system with real edges — the marker query must never surface it.
+	require.NoError(t, repo.Replace(ctx, "X1-CHARTED", []system.GateEdge{
+		{ConnectedSystem: "X1-NBR", GateWaypoint: "X1-NBR-GATE"},
+	}))
+
+	gates, err := repo.UnreadableGates(ctx)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"X1-TRANSIT": "X1-TRANSIT-GATE",
+		"X1-DARK":    "X1-DARK-GATE",
+	}, gates, "only the backoff markers, each mapped to the gate waypoint it recorded; the charted system is excluded")
+}
+
+// Era filtering (sp-vapw + sp-ywh1): a dead-era backoff marker must never leak a stale charting
+// target into the live sweep — UnreadableGates is era-scoped exactly like Edges/Adjacency, so a
+// CLOSED era's marker is out of scope even though its row still exists.
+func TestGateEdgeRepository_UnreadableGates_DeadEraMarkerExcluded(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	closedAt := time.Now().Add(-24 * time.Hour)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 2}).Error)
+
+	repo := persistence.NewGormGateEdgeRepository(db)
+	ctx := context.Background()
+
+	// A dead-era marker row (the CLOSED torwind era's id) directly seeded...
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-DEADERA", ConnectedSystem: "", GateWaypoint: "X1-DEADERA-GATE",
+		EraID: intPtr(1), UnreadableSince: freshTS(), AttemptCount: 1,
+	}).Error)
+	// ...and a live-era marker via the normal path.
+	_, err = repo.MarkUnreadable(ctx, "X1-LIVE", "X1-LIVE-GATE", time.Now())
+	require.NoError(t, err)
+
+	gates, err := repo.UnreadableGates(ctx)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"X1-LIVE": "X1-LIVE-GATE"}, gates,
+		"only the open-era marker; the dead-era marker is scoped out, never a stale charting target")
+}
+
 // Item 4/self-heal: when an unreadable gate becomes readable, Replace writes its edges
 // AND clears the backoff marker, so the gate rejoins the normal TTL instead of the
 // backoff clock.
