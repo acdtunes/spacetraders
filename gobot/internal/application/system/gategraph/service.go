@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
@@ -29,6 +30,11 @@ import (
 type gateAPI interface {
 	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.JumpGateData, error)
 	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.WaypointDetail, error)
+	// CreateChart PUBLICLY charts the ship's current waypoint (sp-lv2n). Charting a gate once
+	// makes every future GetJumpGate on it succeed WITHOUT a ship present, so an uncharted
+	// frontier gate stops being live-re-read (and 400ing) on each jump-out. Best-effort: the
+	// ChartPresentGate caller swallows an already-charted (4230) or any other failure.
+	CreateChart(ctx context.Context, shipSymbol, token string) error
 }
 
 // MaxJumpPath bounds how many jumps a strict (fetch-through) Path route may contain —
@@ -189,16 +195,79 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 //     backoff unchanged via fetchAndStore's enterBackoff, so this never defeats sp-4bm3;
 //     only genuine ship-present success heals the latch.
 //
+// On that same store-miss (uncharted-to-us) branch it ALSO PUBLICLY charts the gate from the
+// present hull (sp-lv2n): reading the gate stores OUR edge copy but leaves the gate uncharted-
+// public, so every future jump-OUT re-reads it live (GetJumpGate) and 400s whenever no hull is
+// on the gate. CreateChart makes the gate GetJumpGate-readable forever without a ship present,
+// collapsing that re-read storm. Charting is best-effort and idempotent-by-GUARD-1 (a later
+// arrival on a now-charted system store-hits and never re-charts) — see chartPresentWaypoint.
+//
 // It is best-effort from the caller's side: charting must never fail a trade/nav leg, so
 // callers (travelWithJumpBound.chartArrivedGate, the sp-bcsu reconcile sweep) log and
 // swallow the error. The error is surfaced here so those callers can log the cause.
-func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error) {
+func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error) {
 	if edges, ok, err := s.store.Edges(ctx, systemSymbol); err != nil {
 		return nil, err
 	} else if ok && len(edges) > 0 {
 		return edges, nil
 	}
+	// Store MISS ⇒ this gate is UNCHARTED-to-us. PUBLICLY chart it from the present hull BEFORE
+	// the edge read, so the durable public chart (the sp-lv2n win) is not contingent on the read
+	// succeeding. Best-effort and gated to THIS present-ship branch only — the remote fetch-
+	// through path (Connections) has no hull on the gate and must never attempt a chart. GUARD 1
+	// above is the idempotence key: a later arrival on a now-charted-by-us system returns there
+	// and never re-charts, so each gate is charted at most once (no wasted call, no error-spam).
+	s.chartPresentWaypoint(ctx, shipSymbol, playerID)
 	return s.fetchAndStore(ctx, systemSymbol, playerID)
+}
+
+// chartPresentWaypoint best-effort PUBLICLY charts the waypoint the present hull is standing on
+// (POST /my/ships/{ship}/chart, sp-lv2n) so the gate becomes GetJumpGate-readable forever without
+// a ship present. NON-FATAL by contract (mirrors travelWithJumpBound.chartArrivedGate): every
+// failure — an already-charted gate (4230, the benign no-op when another agent already charted
+// it, or a race) OR any other error — is swallowed and can NEVER fail the present-gate read or
+// the trade/nav leg that drove it. Only a genuine (non-benign) failure is logged, so an
+// already-charted gate produces no error-spam. Called ONLY from ChartPresentGate's store-miss
+// branch (an uncharted-to-us gate a present hull can chart); an empty ship symbol (no present
+// hull to chart with) is skipped rather than posting a malformed /my/ships//chart.
+func (s *Service) chartPresentWaypoint(ctx context.Context, shipSymbol string, playerID int) {
+	if shipSymbol == "" {
+		return
+	}
+	logger := logging.LoggerFromContext(ctx)
+	token, err := s.token(ctx, playerID)
+	if err != nil {
+		logger.Log("INFO", fmt.Sprintf("chart-present: token unresolved, cannot public-chart from %s (non-fatal): %v", shipSymbol, err), map[string]interface{}{
+			"action": "gate_public_chart_skipped",
+			"ship":   shipSymbol,
+			"error":  err.Error(),
+		})
+		return
+	}
+	if err := s.apiClient.CreateChart(ctx, shipSymbol, token); err != nil {
+		if isAlreadyCharted(err) {
+			return // benign: the gate is already publicly charted — nothing to do, nothing to log
+		}
+		logger.Log("INFO", fmt.Sprintf("chart-present: CreateChart from %s failed (non-fatal): %v", shipSymbol, err), map[string]interface{}{
+			"action": "gate_public_chart_failed",
+			"ship":   shipSymbol,
+			"error":  err.Error(),
+		})
+	}
+}
+
+// isAlreadyCharted reports whether a CreateChart failure is the API's benign "waypoint already
+// charted" verdict (HTTP 400, code 4230): the gate is ALREADY publicly charted (another agent
+// beat us to it, or a race), so there is nothing to do and nothing to log. Matching the code and
+// message substrings mirrors the jump_ship.go classifiers (isNotInOrbitError et al.) and is
+// robust to the *APIError being %w-wrapped by the adapter's CreateChart. Every OTHER failure is
+// a genuine (still non-fatal) chart failure the caller logs.
+func isAlreadyCharted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "4230") || strings.Contains(msg, "already charted")
 }
 
 // fetchAndStore resolves systemSymbol's own gate, fetches its live connections,

@@ -342,6 +342,11 @@ func (f *fakeGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*po
 	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: f.underConstruction[wp]}, nil
 }
 
+// CreateChart is inert for fakeGateAPI's construction-focused tests (they exercise
+// GetJumpGate/GetWaypoint, not the present-ship public chart) — it exists only to satisfy the
+// extended gateAPI interface (sp-lv2n). The chart behavior is exercised via perSystemGateAPI.
+func (f *fakeGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error { return nil }
+
 type stubPlayerRepo struct{ token string }
 
 func (s *stubPlayerRepo) FindByID(ctx context.Context, id shared.PlayerID) (*player.Player, error) {
@@ -548,6 +553,12 @@ type perSystemGateAPI struct {
 	jumpGateErr         map[string]error    // gate waypoint -> live-fetch error (unreadable)
 	underConstruction   map[string]bool
 	jumpGateCalls       map[string]int // gate waypoint -> number of GetJumpGate probes
+	// chartCalls records every CreateChart(shipSymbol) call IN ORDER (sp-lv2n) so a test can
+	// prove the present-ship PUBLIC chart fired exactly once and carried the right hull symbol.
+	// chartErr, when set, makes CreateChart fail — proving the chart is best-effort/non-fatal
+	// and (with a 4230 body) that an already-charted gate is swallowed without error-spam.
+	chartCalls []string
+	chartErr   error
 }
 
 func (f *perSystemGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
@@ -562,6 +573,10 @@ func (f *perSystemGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string)
 }
 func (f *perSystemGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
 	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: f.underConstruction[wp]}, nil
+}
+func (f *perSystemGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
+	f.chartCalls = append(f.chartCalls, shipSymbol)
+	return f.chartErr
 }
 
 // captureLogger records log messages so a test can assert the honest skip line.
@@ -1092,7 +1107,7 @@ func TestService_ChartPresentGate_BypassesBackoff_HealsLatchedSystem(t *testing.
 	}
 
 	// ChartPresentGate bypasses the live latch: it probes, succeeds, persists the edges.
-	edges, err := svc.ChartPresentGate(ctx, "X1-QF75", 1)
+	edges, err := svc.ChartPresentGate(ctx, "X1-QF75", "PROBE-1", 1)
 	if err != nil {
 		t.Fatalf("a present-ship read must succeed and heal, got %v", err)
 	}
@@ -1118,7 +1133,7 @@ func TestService_ChartPresentGate_AlreadyCharted_NoAPI(t *testing.T) {
 	store := &freshStore{adjacency: map[string][]system.GateEdge{"X1-QF75": edgesTo("X1-NBR")}}
 	svc := NewService(store, nil, nil, nil) // nil API: any fetch-through would panic, proving none happens
 
-	edges, err := svc.ChartPresentGate(context.Background(), "X1-QF75", 1)
+	edges, err := svc.ChartPresentGate(context.Background(), "X1-QF75", "PROBE-1", 1)
 	if err != nil {
 		t.Fatalf("an already-charted system must early-return cleanly, got %v", err)
 	}
@@ -1136,11 +1151,122 @@ func TestService_ChartPresentGate_StillFailing_ReentersBackoff(t *testing.T) {
 	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-QF75-GATE": apiErr400("no ship present")}}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
 
-	_, err := svc.ChartPresentGate(context.Background(), "X1-QF75", 1)
+	_, err := svc.ChartPresentGate(context.Background(), "X1-QF75", "PROBE-1", 1)
 	if !errors.Is(err, ErrGateUnreadable) {
 		t.Fatalf("a still-failing present read must surface ErrGateUnreadable, got %v", err)
 	}
 	if _, backedOff, _ := backoffOf(store, "X1-QF75"); !backedOff {
 		t.Fatal("a still-failing present read must (re-)enter the negative-result backoff")
+	}
+}
+
+// --- sp-lv2n: ChartPresentGate PUBLICLY charts an uncharted gate from the present hull ---
+
+// The fix: a hull standing on a system's jump gate is the ONE chance to PUBLICLY chart it (POST
+// /my/ships/{ship}/chart) so every FUTURE GetJumpGate resolving a jump-out's destination waypoint
+// succeeds WITHOUT a ship present — collapsing the ~49% GetJumpGate-400 re-read storm and
+// unblocking frontier jump-outs. On an uncharted-to-us gate (store MISS → the fetch-through
+// branch) ChartPresentGate must fire exactly ONE CreateChart carrying the PRESENT hull's symbol,
+// and still return the freshly-read edges. MUTATION GUARD: drop the chartPresentWaypoint call and
+// chartCalls stays empty; thread the wrong/empty ship symbol and the symbol assertion fails.
+func TestService_ChartPresentGate_UnchartedGate_PublicChartsOnce(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{connectionsBySystem: map[string][]string{"X1-DA78": {"X1-GQ22-GATE"}}}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	edges, err := svc.ChartPresentGate(context.Background(), "X1-DA78", "TORWIND-16", 1)
+	if err != nil {
+		t.Fatalf("a present-ship read on an uncharted gate must succeed, got %v", err)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-GQ22" {
+		t.Fatalf("expected the read to still return the one real edge to X1-GQ22, got %v", edges)
+	}
+	if !reflect.DeepEqual(api.chartCalls, []string{"TORWIND-16"}) {
+		t.Fatalf("an uncharted gate must be PUBLICLY charted exactly once by the present hull, got chartCalls=%v", api.chartCalls)
+	}
+}
+
+// GUARD 1 is the idempotence key: a system we have ALREADY charted (Edges is a fresh, non-empty
+// hit) short-circuits with ZERO API AND ZERO CreateChart — a later arrival on a known gate never
+// re-charts, so each gate costs at most one chart (no wasted call, no error-spam). MUTATION GUARD:
+// move chartPresentWaypoint before the GUARD-1 early return and this fails (chartCalls non-empty).
+func TestService_ChartPresentGate_AlreadyChartedByUs_NoPublicChart(t *testing.T) {
+	store := &freshStore{adjacency: map[string][]system.GateEdge{"X1-DA78": edgesTo("X1-GQ22")}}
+	api := &perSystemGateAPI{}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	if _, err := svc.ChartPresentGate(context.Background(), "X1-DA78", "TORWIND-16", 1); err != nil {
+		t.Fatalf("an already-charted system must early-return cleanly, got %v", err)
+	}
+	if len(api.chartCalls) != 0 {
+		t.Fatalf("an already-charted-by-us gate must NOT be re-charted, got chartCalls=%v", api.chartCalls)
+	}
+}
+
+// SAFETY: the public chart is NON-FATAL — a CreateChart failure is swallowed and can NEVER fail
+// the present-gate read (or the trade/nav leg that drove it). The gate is still read and its
+// edges returned; a genuine (non-benign) failure is surfaced in the LOGS (no silent error), not
+// to the caller. MUTATION GUARD: propagate the CreateChart error instead of swallowing it and the
+// read returns that error, failing this test.
+func TestService_ChartPresentGate_PublicChartFailure_IsNonFatal(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{
+		connectionsBySystem: map[string][]string{"X1-DA78": {"X1-GQ22-GATE"}},
+		chartErr:            apiErr400("no ship present"),
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+	logger := &captureLogger{}
+	ctx := logging.WithLogger(context.Background(), logger)
+
+	edges, err := svc.ChartPresentGate(ctx, "X1-DA78", "TORWIND-16", 1)
+	if err != nil {
+		t.Fatalf("a public-chart failure must be swallowed (non-fatal), not fail the read; got %v", err)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-GQ22" {
+		t.Fatalf("the read must still return the edge to X1-GQ22 when charting fails, got %v", edges)
+	}
+	if !reflect.DeepEqual(api.chartCalls, []string{"TORWIND-16"}) {
+		t.Fatalf("the chart must have been ATTEMPTED (swallow, not skip), got chartCalls=%v", api.chartCalls)
+	}
+	logged := false
+	for _, m := range logger.messages {
+		if strings.Contains(m, "CreateChart") && strings.Contains(m, "failed") {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Fatalf("a genuine chart failure must be surfaced in the logs (no silent error), got %v", logger.messages)
+	}
+}
+
+// An ALREADY-CHARTED gate response (400 code 4230 — another agent charted it, or a race) is a
+// benign no-op: swallowed like any failure (non-fatal, edges still returned) BUT logged as a
+// FAILURE by neither branch — no error-spam for the common already-charted case. MUTATION GUARD:
+// drop the isAlreadyCharted check and the 4230 is logged as a failure, failing the no-spam
+// assertion below (the exact contrast to the generic-failure test above, which DOES log).
+func TestService_ChartPresentGate_AlreadyChartedResponse_SwallowedNoSpam(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{
+		connectionsBySystem: map[string][]string{"X1-DA78": {"X1-GQ22-GATE"}},
+		chartErr:            apiErr400(`{"error":{"code":4230,"message":"Waypoint X1-DA78-C24B already charted."}}`),
+	}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+	logger := &captureLogger{}
+	ctx := logging.WithLogger(context.Background(), logger)
+
+	edges, err := svc.ChartPresentGate(ctx, "X1-DA78", "TORWIND-16", 1)
+	if err != nil {
+		t.Fatalf("an already-charted (4230) response must be swallowed (non-fatal), got %v", err)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-GQ22" {
+		t.Fatalf("the read must still return the edge to X1-GQ22, got %v", edges)
+	}
+	if !reflect.DeepEqual(api.chartCalls, []string{"TORWIND-16"}) {
+		t.Fatalf("the chart must have been ATTEMPTED then swallowed, got chartCalls=%v", api.chartCalls)
+	}
+	for _, m := range logger.messages {
+		if strings.Contains(m, "CreateChart") && strings.Contains(m, "failed") {
+			t.Fatalf("an already-charted (4230) gate must NOT be logged as a failure (no error-spam), got %q", m)
+		}
 	}
 }

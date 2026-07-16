@@ -401,8 +401,10 @@ type GateGraph interface {
 	// skipping it. Idempotent: an already-charted system early-returns with zero API. Called
 	// best-effort on gate arrivals (travelWithJumpBound) so gate_edges is charted at the one
 	// moment it can be, then kept current forever; a read failure is logged and swallowed and
-	// never fails the leg. *gategraph.Service satisfies this.
-	ChartPresentGate(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error)
+	// never fails the leg. It also PUBLICLY charts the gate (POST /chart) from the present hull
+	// on the first (uncharted-to-us) visit, so every future GetJumpGate resolves it WITHOUT a
+	// ship present (sp-lv2n) — hence the shipSymbol. *gategraph.Service satisfies this.
+	ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error)
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. It does not own a

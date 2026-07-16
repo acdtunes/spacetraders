@@ -477,6 +477,31 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 	}, nil
 }
 
+// CreateChart PUBLICLY charts the ship's CURRENT waypoint (POST /my/ships/{shipSymbol}/chart).
+// Once a waypoint is charted, every future read of it — notably the GetJumpGate that resolves a
+// jump's destination WAYPOINT — succeeds WITHOUT a ship physically present. An UNcharted frontier
+// jump gate otherwise 400s that read unless a hull is sitting on it, so an our-ships-only gate
+// stays uncharted-public forever and every jump-OUT re-reads it live and 400s (the ~49% of
+// GetJumpGate calls that fail, sp-lv2n). Charting it once from a present hull collapses that
+// re-read storm and unblocks frontier jump-outs.
+//
+// The ship must be AT the waypoint (the API 400s otherwise); a waypoint that is already charted
+// 400s with code 4230 "waypoint already charted" — a benign no-op the gate-graph caller detects
+// and swallows. Mirrors JumpShip/OrbitShip's shape: an empty-body POST through the rate-limited
+// request() path, with a typed *APIError surfaced on any non-2xx so the caller can classify the
+// already-charted case (charting is free, so there is no agent-cache to invalidate).
+func (c *SpaceTradersClient) CreateChart(ctx context.Context, shipSymbol, token string) error {
+	path := fmt.Sprintf("/my/ships/%s/chart", shipSymbol)
+
+	// Send an empty JSON object {} (not nil) to satisfy the API, exactly as OrbitShip/DockShip do.
+	emptyBody := map[string]interface{}{}
+	if err := c.request(ctx, "POST", path, token, emptyBody, nil); err != nil {
+		return fmt.Errorf("failed to chart waypoint: %w", err)
+	}
+
+	return nil
+}
+
 // GetJumpGate retrieves information about a jump gate waypoint
 func (c *SpaceTradersClient) GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.JumpGateData, error) {
 	path := fmt.Sprintf("/systems/%s/waypoints/%s/jump-gate", systemSymbol, waypointSymbol)

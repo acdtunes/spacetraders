@@ -533,9 +533,12 @@ type fakeGateGraph struct {
 
 	// chartPresentCalls records every ChartPresentGate(systemSymbol) call IN ORDER (sp-bcsu),
 	// so a test can assert travel() charted the gate of each system the hull arrived on (and
-	// in what sequence). chartPresentErr, when set, makes ChartPresentGate fail — proving the
-	// charting is NON-FATAL (the leg still completes, the same discipline as chartOnArrival).
+	// in what sequence). chartPresentShips records the shipSymbol threaded on each call (sp-lv2n)
+	// so a test can prove the PRESENT hull's symbol reaches the public-chart seam (a "" or wrong
+	// symbol would silently no-op the CreateChart). chartPresentErr, when set, makes
+	// ChartPresentGate fail — proving the charting is NON-FATAL (the leg still completes).
 	chartPresentCalls []string
+	chartPresentShips []string
 	chartPresentErr   error
 }
 
@@ -565,8 +568,9 @@ func (f *fakeGateGraph) Connections(ctx context.Context, from string, playerID i
 	return f.edges[from], nil
 }
 
-func (f *fakeGateGraph) ChartPresentGate(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error) {
+func (f *fakeGateGraph) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error) {
 	f.chartPresentCalls = append(f.chartPresentCalls, systemSymbol)
+	f.chartPresentShips = append(f.chartPresentShips, shipSymbol)
 	if f.chartPresentErr != nil {
 		return nil, f.chartPresentErr
 	}
@@ -926,6 +930,11 @@ func TestTravel_MultiJump_ChartsEachArrivedGateInOrder(t *testing.T) {
 	want := []string{"X1-PA3", "X1-UQ16", "X1-JP61"}
 	if !reflect.DeepEqual(fake.chartPresentCalls, want) {
 		t.Fatalf("expected charts %v (intermediates per-hop + dest on arrival, no terminal dup), got %v", want, fake.chartPresentCalls)
+	}
+	// sp-lv2n: each arrival must thread the PRESENT hull's symbol to the public-chart seam — a
+	// "" or wrong symbol would silently no-op the CreateChart and leave the frontier gate uncharted.
+	if wantShips := []string{"HAULER-1", "HAULER-1", "HAULER-1"}; !reflect.DeepEqual(fake.chartPresentShips, wantShips) {
+		t.Fatalf("every arrival must carry the present hull symbol to ChartPresentGate, got %v", fake.chartPresentShips)
 	}
 }
 

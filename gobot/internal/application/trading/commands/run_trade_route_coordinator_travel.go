@@ -362,7 +362,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		// is charted from the authoritative reloaded pointer below (chartArrivedGate), so
 		// skip it here to avoid a redundant re-chart of the destination.
 		if i < len(path)-1 {
-			h.chartSystemGate(ctx, nextSystem, playerID)
+			h.chartSystemGate(ctx, nextSystem, ship.ShipSymbol(), playerID)
 		}
 	}
 
@@ -409,7 +409,7 @@ func (h *RunTradeRouteCoordinatorHandler) chartArrivedGate(ctx context.Context, 
 	if loc == nil || !loc.IsJumpGate() {
 		return
 	}
-	h.chartSystemGate(ctx, loc.SystemSymbol, playerID)
+	h.chartSystemGate(ctx, loc.SystemSymbol, ship.ShipSymbol(), playerID)
 }
 
 // chartSystemGate is the shared best-effort present-ship gate chart used by BOTH the
@@ -422,11 +422,11 @@ func (h *RunTradeRouteCoordinatorHandler) chartArrivedGate(ctx context.Context, 
 // API) and backoff-honest (a still-failing read re-enters backoff, never defeating
 // sp-4bm3). Errors are logged and SWALLOWED — the same non-fatal discipline as
 // route_executor_warp.go chartOnArrival — so charting can never fail the leg.
-func (h *RunTradeRouteCoordinatorHandler) chartSystemGate(ctx context.Context, systemSymbol string, playerID int) {
+func (h *RunTradeRouteCoordinatorHandler) chartSystemGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) {
 	if !h.chartGateOnArrival || h.gateGraph == nil {
 		return
 	}
-	if _, err := h.gateGraph.ChartPresentGate(ctx, systemSymbol, playerID); err != nil {
+	if _, err := h.gateGraph.ChartPresentGate(ctx, systemSymbol, shipSymbol, playerID); err != nil {
 		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
 			"chart-on-arrival: gate read for %s failed (non-fatal): %v", systemSymbol, err), map[string]interface{}{
 			"action": "gate_chart_on_arrival_failed",

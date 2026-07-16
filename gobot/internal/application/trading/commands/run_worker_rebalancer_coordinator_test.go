@@ -184,8 +184,8 @@ func (g *fakeHopGraph) Connections(_ context.Context, _ string, _ int) ([]system
 }
 
 // ChartPresentGate is inert here — the rebalancer never charts on arrival; it exists only
-// to satisfy the extended GateGraph interface (sp-bcsu).
-func (g *fakeHopGraph) ChartPresentGate(_ context.Context, _ string, _ int) ([]system.GateEdge, error) {
+// to satisfy the extended GateGraph interface (sp-bcsu; shipSymbol added sp-lv2n).
+func (g *fakeHopGraph) ChartPresentGate(_ context.Context, _, _ string, _ int) ([]system.GateEdge, error) {
 	return nil, nil
 }
 
