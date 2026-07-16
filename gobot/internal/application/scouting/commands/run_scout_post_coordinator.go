@@ -104,6 +104,22 @@ const (
 	defaultMarketDriftThreshold = 2
 	defaultMarketDriftMaxAge    = 60 * time.Minute
 
+	// defaultBudgetChangeDebounceCycles bounds the DEBOUNCED hull-budget re-partition when
+	// the launch config leaves it unset (sp-itr5, RULINGS #5). The freshness sizer's per-post
+	// hull budget is a partition input exactly like the market set: it oscillates ±1 cycle to
+	// cycle on normal P90-age re-measurement noise (measured live: 156↔151 probes over 46
+	// systems, over-subscribed against the 80-satellite supply cap), and an UNCONDITIONAL
+	// re-partition on every swing stops the post's tours and RE-SCANS its markets every ~30s —
+	// the API burn that drove this bug to ~90% of budget. An already-materialized post now
+	// re-partitions on a budget change only once the SAME new budget has PERSISTED this many
+	// consecutive reconcile cycles; a transient swing that reverts (or a budget that keeps
+	// flapping to different values) never reaches it and is absorbed. 3 cycles (~90s at the
+	// 30s cadence) absorbs the per-tick noise while still acting on a genuine change well
+	// inside the 1h freshness SLA — deliberately SHORTER than the market-drift age ceiling,
+	// which waits for MORE drift to accumulate rather than for noise to settle. Mirrors the
+	// sp-5les manning-stall cycle debounce, not the sp-ykhl age debounce.
+	defaultBudgetChangeDebounceCycles = 3
+
 	// defaultUndersizedAvgHop and defaultUndersizedRewarnCooldown bound the sp-k7q5
 	// undersized-post warning (layer 1) when the launch config leaves them unset
 	// (RULINGS #5). avgHop (~3min) is the Admiral circuit-model average per-market
@@ -157,6 +173,17 @@ type RunScoutPostCoordinatorCommand struct {
 	// site) — mirrors TickIntervalSecs.
 	MarketDriftThreshold  int
 	MarketDriftMaxAgeSecs int
+
+	// BudgetChangeDebounceCycles bounds the DEBOUNCED hull-budget re-partition (sp-itr5):
+	// an already-materialized post re-partitions on a HULL-BUDGET change only once the new
+	// budget has PERSISTED this many consecutive reconcile cycles — absorbing the freshness
+	// sizer's ±1 demand-noise budget swings (156↔151 probes at the supply cap) that would
+	// otherwise stop the post's tours and RE-SCAN its markets every tick (the API burn). A
+	// transient swing that reverts (or a budget that keeps flapping to yet another value)
+	// never reaches the threshold, so it is ignored; a genuine PERSISTENT change still
+	// re-partitions (once, after the debounce). <= 0 uses the coordinator's own default
+	// (RULINGS #5: parametrized, not hardcoded), mirroring MarketDriftThreshold.
+	BudgetChangeDebounceCycles int
 
 	// UndersizedAvgHopSecs and UndersizedRewarnCooldownSecs tune the sp-k7q5
 	// undersized-post warning (layer 1, RULINGS #5): the circuit-model average
@@ -375,6 +402,22 @@ type RunScoutPostCoordinatorHandler struct {
 	driftMu           sync.Mutex
 	driftPendingSince map[string]time.Time
 
+	// budgetChangePending tracks, per already-materialized post (driftKey shape), the new
+	// hull budget the freshness sizer wants that DIFFERS from the post's currently-cut
+	// partition, and how many CONSECUTIVE reconcile cycles that SAME new budget has persisted
+	// (sp-itr5) — the debounce that absorbs the sizer's ±1 demand-noise budget swings so a
+	// transient oscillation no longer tears down the post's tours and re-scans its markets
+	// every tick (the API burn). A new/changed target restarts the count, so a budget that
+	// keeps flapping to different values never accumulates toward the re-partition threshold;
+	// only a STABLE new budget does. Cleared the moment the budget matches the cut partition
+	// again (a swing reverted) or the re-partition fires. In-memory and reset on restart,
+	// mirroring driftPendingSince/stallCycles: a lost count only re-earns the debounce, never
+	// a spurious re-partition — a post whose budget matches its partition never populates it,
+	// so the sp-enry "stable ⇒ zero re-cuts" guarantee is untouched. Guarded by budgetChangeMu
+	// for the same singleton-handler concurrency reason as driftMu.
+	budgetChangeMu      sync.Mutex
+	budgetChangePending map[string]budgetChangeState
+
 	// singleHullMarketSnapshot and singleHullDriftPendingSince give a SINGLE-hull
 	// standing post the same debounced market-set-drift respawn ykhl gave partitioned
 	// posts (sp-tzqv). A single-hull tour's market list is frozen at spawn time
@@ -464,6 +507,7 @@ func NewRunScoutPostCoordinatorHandler(
 		repositionFailures:           make(map[string]int),
 		repositionBackoffLoggedUntil: make(map[string]time.Time),
 		driftPendingSince:            make(map[string]time.Time),
+		budgetChangePending:          make(map[string]budgetChangeState),
 		singleHullMarketSnapshot:     make(map[string][]string),
 		singleHullDriftPendingSince:  make(map[string]time.Time),
 		stallLastAgeSeconds:          make(map[string]float64),
@@ -1571,6 +1615,41 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 	budget := post.HullBudget()
 	key := driftKey(cmd.PlayerID.Value(), post.SystemSymbol)
 
+	// sp-itr5 HULL-BUDGET DEBOUNCE. The freshness sizer's per-post budget oscillates ±1 on
+	// normal P90-age re-measurement noise (156↔151 probes over-subscribed against the 80-probe
+	// supply cap); re-partitioning on every swing stops the post's tours and RE-SCANS its
+	// markets — the API burn. Absorb a transient swing: on an already-MATERIALIZED post (one
+	// with live slots/tours a re-cut would disrupt) act on a budget that differs from the
+	// currently-cut partition only once the SAME new budget has PERSISTED the debounce window;
+	// until then hold the current cut (budget := physicalBudget), so the downstream logic keeps
+	// touring the existing partition and still honors an independent market-set drift. A FIRST
+	// partition (a fresh, un-materialized post) is never debounced — its budget lands
+	// immediately. A genuine PERSISTENT change re-partitions once the window closes; a swing
+	// that reverts clears the pending count and never re-cuts.
+	physicalBudget := len(post.ExtraSlots) + 1
+	materialized := len(post.ExtraSlots) > 0 || post.AssignedHull != "" || post.TourContainerID != "" || post.RepositionContainerID != ""
+	switch {
+	case budget == physicalBudget:
+		h.clearBudgetChangePending(key) // stable, or a swing reverted — forget any pending change.
+	case materialized:
+		debounceCycles := cmd.BudgetChangeDebounceCycles
+		if debounceCycles <= 0 {
+			debounceCycles = defaultBudgetChangeDebounceCycles
+		}
+		if cycles := h.noteBudgetChangePending(key, budget); cycles < debounceCycles {
+			logger.Log("INFO", fmt.Sprintf("Scout post %s hull budget %d→%d — below re-partition debounce (%d/%d cycles), holding current partition", post.SystemSymbol, physicalBudget, budget, cycles, debounceCycles), map[string]interface{}{
+				"action":         "scout_post_budget_change_pending",
+				"system_symbol":  post.SystemSymbol,
+				"current_budget": physicalBudget,
+				"pending_budget": budget,
+				"pending_cycles": cycles,
+			})
+			budget = physicalBudget // hold this tick: keep touring the existing cut.
+		} else {
+			h.clearBudgetChangePending(key) // persisted — act on the change and reset the debounce.
+		}
+	}
+
 	if budget <= 1 {
 		// Single-hull (or sweep-once): a genuine single-hull post carries no partition
 		// state and this is a no-op (byte-identical to pre-enry). But a post REDUCED from
@@ -2476,6 +2555,48 @@ func (h *RunScoutPostCoordinatorHandler) clearDriftPending(key string) {
 	h.driftMu.Lock()
 	defer h.driftMu.Unlock()
 	delete(h.driftPendingSince, key)
+}
+
+// budgetChangeState is one post's pending hull-budget change (sp-itr5): the new budget the
+// sizer wants (differing from the post's cut partition) and how many consecutive reconcile
+// cycles it has persisted. The re-partition fires only when cycles reaches the debounce.
+type budgetChangeState struct {
+	budget int
+	cycles int
+}
+
+// noteBudgetChangePending records that the sizer wants newBudget for a post whose cut
+// partition is a DIFFERENT size, and returns how many CONSECUTIVE reconcile cycles that SAME
+// new budget has now persisted (sp-itr5). A first sighting — or a change to yet another budget
+// — restarts the count at 1, so a budget that keeps flapping between values never accumulates
+// toward the re-partition threshold; only a STABLE new budget does. The single-value dedupe
+// (state.budget != newBudget resets) is what makes the debounce absorb an OSCILLATION, not
+// just a one-shot blip. Lazily initializes the map so the struct-literal test handlers (which
+// never call the constructor) are safe, mirroring noteDriftPending.
+func (h *RunScoutPostCoordinatorHandler) noteBudgetChangePending(key string, newBudget int) int {
+	h.budgetChangeMu.Lock()
+	defer h.budgetChangeMu.Unlock()
+	if h.budgetChangePending == nil {
+		h.budgetChangePending = make(map[string]budgetChangeState)
+	}
+	state, ok := h.budgetChangePending[key]
+	if !ok || state.budget != newBudget {
+		h.budgetChangePending[key] = budgetChangeState{budget: newBudget, cycles: 1}
+		return 1
+	}
+	state.cycles++
+	h.budgetChangePending[key] = state
+	return state.cycles
+}
+
+// clearBudgetChangePending forgets a post's pending budget change (sp-itr5): called the moment
+// its budget matches the cut partition again (a swing reverted, or a real change was applied),
+// so a later change starts a FRESH count rather than inheriting a stale one. A nil/absent entry
+// is a harmless no-op.
+func (h *RunScoutPostCoordinatorHandler) clearBudgetChangePending(key string) {
+	h.budgetChangeMu.Lock()
+	defer h.budgetChangeMu.Unlock()
+	delete(h.budgetChangePending, key)
 }
 
 // singleHullSnapshot returns the market set a single-hull post was last (re-)manned

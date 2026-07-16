@@ -583,6 +583,8 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 // CoordinatorOwnsIterations type. tick_interval_secs, market_drift_threshold, and
 // market_drift_max_age_secs are all optional (0 → the coordinator's own default) —
 // the latter two bound the debounced market-set re-cut (sp-ykhl, RULINGS #5).
+// budget_change_debounce_cycles (0 → default) bounds the debounced hull-budget
+// re-partition that absorbs the freshness sizer's ±1 demand-noise swings (sp-itr5).
 func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.RunScoutPostCoordinatorCommand{
 		PlayerID:                      shared.MustNewPlayerID(playerID),
@@ -590,6 +592,7 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		TickIntervalSecs:              cfg.OptionalInt("tick_interval_secs", 0),
 		MarketDriftThreshold:          cfg.OptionalInt("market_drift_threshold", 0),
 		MarketDriftMaxAgeSecs:         cfg.OptionalInt("market_drift_max_age_secs", 0),
+		BudgetChangeDebounceCycles:    cfg.OptionalInt("budget_change_debounce_cycles", 0),
 		UndersizedAvgHopSecs:          cfg.OptionalInt("undersized_avg_hop_secs", 0),
 		UndersizedRewarnCooldownSecs:  cfg.OptionalInt("undersized_rewarn_cooldown_secs", 0),
 		StartJitterMaxSecs:            cfg.OptionalInt("tour_start_jitter_max_seconds", 0),

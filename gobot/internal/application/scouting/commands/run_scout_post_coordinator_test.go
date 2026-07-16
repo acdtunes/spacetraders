@@ -1720,10 +1720,15 @@ func TestScoutPost_SingleHull_NeverPartitions(t *testing.T) {
 	require.Equal(t, []string{"X1-GZ7-A1"}, daemonClient.persistedTourCmds[0].Markets, "the single probe tours ALL markets, not a partition")
 }
 
-// A hull-budget CHANGE re-partitions (requirement #1: "N changing recomputes"). A
-// running 2-hull post whose budget is raised to 3 tears down its old tours and
-// rebuilds 3 disjoint partitions, then re-mans them.
-func TestScoutPost_MultiHull_BudgetChangeRepartitions(t *testing.T) {
+// A GENUINE, PERSISTENT hull-budget change re-partitions — but ONLY after it survives the
+// sp-itr5 debounce window (requirement #1: "N changing recomputes", now debounced against
+// freshness-sizer demand noise). A running 2-hull post whose budget is raised to 3 and STAYS
+// 3 holds its old tours for the debounce cycles, then — once the new budget has persisted —
+// tears them down and rebuilds 3 disjoint partitions exactly ONCE. (Updated openly for
+// sp-itr5: the pre-fix behavior re-partitioned on the FIRST tick, unconditionally, which is
+// exactly the ±1-noise thrash this bead fixes; correctness — a real change still acts — is
+// preserved, just debounced.)
+func TestScoutPost_MultiHull_PersistentBudgetChangeRepartitionsOnceAfterDebounce(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	// Reloaded post: budget now 3, but only 1 extra slot materialized (was 2-hull).
 	post := &domainScouting.ScoutPost{
@@ -1746,16 +1751,31 @@ func TestScoutPost_MultiHull_BudgetChangeRepartitions(t *testing.T) {
 	mp := &fakeMultiMarketProvider{markets: map[string][]string{
 		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
 	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-0", Status: "RUNNING"}, {ID: "live-1", Status: "RUNNING"}},
+	}}
 	rc := &fakeScoutRoutingClient{}
 	handler := &RunScoutPostCoordinatorHandler{
 		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
-		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		containerQuery: cq, marketProvider: mp, clock: clock,
 		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
 	}
+	cmd := scoutPostTestCmd()
+	cmd.BudgetChangeDebounceCycles = 3
 
-	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	// The new budget (3) has not yet persisted the debounce window: hold the existing 2-way
+	// partition, do NOT re-partition or stop the running tours.
+	for i := 0; i < 2; i++ {
+		require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+		require.Equal(t, 0, rc.calls, "a not-yet-persisted budget change must NOT re-partition")
+		require.Empty(t, daemonClient.stopped, "the running tours are not torn down during the debounce")
+		require.Len(t, postRepo.find("X1-KA42").ExtraSlots, 1, "the post still holds its 2-way partition")
+	}
 
-	require.Equal(t, 1, rc.calls, "the budget change re-partitions exactly once")
+	// Third consecutive tick at budget 3: the change has now persisted — re-partition once.
+	require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+
+	require.Equal(t, 1, rc.calls, "the persistent budget change re-partitions exactly once, after the debounce")
 	require.Contains(t, daemonClient.stopped, "live-0", "the old primary tour is stopped for re-partition")
 	require.Contains(t, daemonClient.stopped, "live-1", "the old extra tour is stopped for re-partition")
 	got := postRepo.find("X1-KA42")
@@ -1765,10 +1785,133 @@ func TestScoutPost_MultiHull_BudgetChangeRepartitions(t *testing.T) {
 	for _, p := range perSlot {
 		require.Len(t, p, 2, "6 markets now split across 3 probes")
 	}
+
+	// And it settles: further ticks at the stable budget never re-partition again.
+	require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+	require.Equal(t, 1, rc.calls, "a settled budget re-partitions no further")
+}
+
+// sp-itr5 STABILITY UNDER NOISE (the core fix): a materialized, running post whose
+// freshness-sizer budget OSCILLATES ±1 every tick (the measured 156↔151-probes-at-the-80-cap
+// demand noise) must NOT re-partition and must NOT stop its tours — the physical partition
+// stays put across the whole oscillation. This is the RED→GREEN acceptance for the bead AND
+// the mutation proof: with the debounce removed the coordinator re-partitions on every swing
+// (~every 30s), which is exactly the API burn.
+func TestScoutPost_MultiHull_BudgetOscillationDoesNotThrash(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	// A fully materialized, RUNNING 3-hull post (physical partition = 3 disjoint tours).
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute,
+		AssignedHull: "SAT-1", TourContainerID: "live-0", PrimaryPartition: []string{"X1-KA42-M1", "X1-KA42-M4"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-2", TourContainerID: "live-1", Partition: []string{"X1-KA42-M2", "X1-KA42-M5"}},
+			{AssignedHull: "SAT-3", TourContainerID: "live-2", Partition: []string{"X1-KA42-M3", "X1-KA42-M6"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	require.NoError(t, sats[0].AssignToContainer("live-0", clock))
+	require.NoError(t, sats[1].AssignToContainer("live-1", clock))
+	require.NoError(t, sats[2].AssignToContainer("live-2", clock))
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-0", Status: "RUNNING"}, {ID: "live-1", Status: "RUNNING"}, {ID: "live-2", Status: "RUNNING"}},
+	}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+	cmd := scoutPostTestCmd()
+	cmd.BudgetChangeDebounceCycles = 3
+
+	// The sizer's per-post budget flaps 3→2→3→2… every tick (demand noise at the supply cap).
+	for i := 0; i < 8; i++ {
+		if i%2 == 0 {
+			postRepo.find("X1-KA42").Hulls = 2
+		} else {
+			postRepo.find("X1-KA42").Hulls = 3
+		}
+		require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+	}
+
+	require.Equal(t, 0, rc.calls, "an oscillating ±1 budget must NEVER re-partition — the noise is absorbed")
+	require.Empty(t, daemonClient.stopped, "no tour is ever torn down and re-scanned on the noise")
+	require.Empty(t, shipRepo.releases, "no hull is reclaimed either — the held partition causes zero manning churn")
+	got := postRepo.find("X1-KA42")
+	require.Len(t, got.ExtraSlots, 2, "the physical 3-way partition is stable across the whole oscillation")
+	all, _ := partitionOf(got)
+	require.Equal(t, []string{"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"}, all,
+		"every market stays covered by its original partition — freshness is preserved, just not re-scanned")
+}
+
+// sp-itr5 TRANSIENT: a single-tick budget swing that reverts before the debounce window
+// closes never re-partitions — the classic 1-tick noise blip is fully absorbed.
+func TestScoutPost_MultiHull_TransientBudgetSwingIgnored(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KA42", Kind: domainScouting.PostKindStanding, Hulls: 3, FreshnessTarget: 30 * time.Minute,
+		AssignedHull: "SAT-1", TourContainerID: "live-0", PrimaryPartition: []string{"X1-KA42-M1", "X1-KA42-M4"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-2", TourContainerID: "live-1", Partition: []string{"X1-KA42-M2", "X1-KA42-M5"}},
+			{AssignedHull: "SAT-3", TourContainerID: "live-2", Partition: []string{"X1-KA42-M3", "X1-KA42-M6"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-KA42-A1"),
+		newScoutTestSatellite(t, "SAT-2", "X1-KA42-A2"),
+		newScoutTestSatellite(t, "SAT-3", "X1-KA42-A3"),
+	}
+	require.NoError(t, sats[0].AssignToContainer("live-0", clock))
+	require.NoError(t, sats[1].AssignToContainer("live-1", clock))
+	require.NoError(t, sats[2].AssignToContainer("live-2", clock))
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
+	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-0", Status: "RUNNING"}, {ID: "live-1", Status: "RUNNING"}, {ID: "live-2", Status: "RUNNING"}},
+	}}
+	rc := &fakeScoutRoutingClient{}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
+	}
+	cmd := scoutPostTestCmd()
+	cmd.BudgetChangeDebounceCycles = 3
+
+	// One tick with a spurious spike to 4, then it reverts to 3 and stays there.
+	postRepo.find("X1-KA42").Hulls = 4
+	require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+	require.Equal(t, 0, rc.calls, "the spike is pending, not yet acted on")
+
+	postRepo.find("X1-KA42").Hulls = 3
+	for i := 0; i < 4; i++ {
+		require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+	}
+
+	require.Equal(t, 0, rc.calls, "a transient swing that reverted never re-partitions")
+	require.Empty(t, daemonClient.stopped, "no tour torn down for a reverted transient")
+	require.Len(t, postRepo.find("X1-KA42").ExtraSlots, 2, "the physical partition is untouched")
 }
 
 // Reducing a multi-probe post to a single hull reverts it to the pre-enry single-slot
-// shape and frees the surplus probes to the pool (no stale extra slots linger).
+// shape and frees the surplus probes to the pool (no stale extra slots linger) — but, like
+// every other hull-budget change, only once the reduction has PERSISTED the sp-itr5 debounce
+// window (so a transient noise dip to 1 does not free-then-re-buy a probe every tick).
+// Updated openly for sp-itr5: the pre-fix behavior reverted on the FIRST tick.
 func TestScoutPost_MultiHull_RevertToSingleHullFreesSurplus(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{
@@ -1790,17 +1933,29 @@ func TestScoutPost_MultiHull_RevertToSingleHullFreesSurplus(t *testing.T) {
 	mp := &fakeMultiMarketProvider{markets: map[string][]string{
 		"X1-KA42": {"X1-KA42-M1", "X1-KA42-M2", "X1-KA42-M3", "X1-KA42-M4", "X1-KA42-M5", "X1-KA42-M6"},
 	}}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "live-0", Status: "RUNNING"}, {ID: "live-1", Status: "RUNNING"}},
+	}}
 	rc := &fakeScoutRoutingClient{}
 	handler := &RunScoutPostCoordinatorHandler{
 		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
-		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		containerQuery: cq, marketProvider: mp, clock: clock,
 		routingClient: rc, repositionBackoffUntil: map[string]time.Time{},
 	}
+	cmd := scoutPostTestCmd()
+	cmd.BudgetChangeDebounceCycles = 3
 
-	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+	// The reduction to 1 hull must persist the debounce window before the surplus is freed.
+	for i := 0; i < 2; i++ {
+		require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
+		require.NotContains(t, shipRepo.releases, "SAT-2", "the surplus probe is NOT freed until the reduction persists")
+		require.Len(t, postRepo.find("X1-KA42").ExtraSlots, 1, "the second slot is still held during the debounce")
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
 
 	require.Equal(t, 0, rc.calls, "reverting to single-hull needs no VRP")
-	require.Contains(t, shipRepo.releases, "SAT-2", "the surplus probe is freed to the pool")
+	require.Contains(t, shipRepo.releases, "SAT-2", "the surplus probe is freed to the pool once the reduction persists")
 	got := postRepo.find("X1-KA42")
 	require.Empty(t, got.ExtraSlots, "no stale extra slots linger after the revert")
 	require.Empty(t, got.PrimaryPartition, "the primary reverts to touring all markets")
