@@ -446,6 +446,40 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 	return waypoints, nil
 }
 
+// ChartedMarketSystemCounts returns every CHARTED market system (current era) mapped to its
+// count of real marketplace waypoints — the sp-jide scan-only backlog's charted side. It applies
+// the IDENTICAL filter as FindAllMarketsInSystem (a non-FUEL_STATION waypoint bearing the
+// MARKETPLACE trait, era-scoped so a dead-era row can never surface as a live market), only global
+// and grouped by system instead of scoped to one, so it enumerates the FULL discovered market set
+// in a single query. The scan-only adapter subtracts the player's already-scanned systems
+// (MaxAgeSecondsBySystem keys) from this to get the "dark" backlog, so the two views share the same
+// era-scoped, fuel-excluded notion of a market and cannot drift.
+func (r *MarketRepositoryGORM) ChartedMarketSystemCounts(ctx context.Context) (map[string]int, error) {
+	var rows []struct {
+		SystemSymbol string
+		Cnt          int
+	}
+
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	err := r.db.WithContext(ctx).
+		Table("waypoints").
+		Select("system_symbol, count(*) as cnt").
+		Where("type != ?", "FUEL_STATION").
+		Where("traits LIKE ?", "%MARKETPLACE%").
+		Where(predicate, args...).
+		Group("system_symbol").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to count charted market systems: %w", err)
+	}
+
+	counts := make(map[string]int, len(rows))
+	for _, row := range rows {
+		counts[row.SystemSymbol] = row.Cnt
+	}
+	return counts, nil
+}
+
 // MaxAgeSecondsBySystem returns, for every system with at least one cached
 // market row for playerID, the current worst-case staleness in seconds —
 // MAX(now - last_updated) across that system's markets, i.e. the age of the

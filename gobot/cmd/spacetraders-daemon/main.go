@@ -1093,6 +1093,12 @@ func run(cfg *config.Config) error {
 	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
 		gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo,
 	))
+	// sp-jide: the scan-only backlog enumerator — the FULL charted-but-unscanned MARKET set (every
+	// system with MARKETPLACE waypoints but zero player market_data), unbounded by gate hops. When
+	// `tune --operation frontier scan_only 1` is set the coordinator sweeps this whole discovered
+	// backlog and declares no depth post / buys no probe; scan_only=0 never consults it. Reads the
+	// raw market repo (charted-market counts + the player's already-scanned systems).
+	frontierExpansionHandler.SetDarkMarketScanner(expansionAdapters.NewDarkMarketScanner(marketRepo))
 	// sp-rjgr §4: the deep-resource (heavy-yard) objective the DEPTH slice biases on — heavy
 	// capacity shortfall (sp-4ewi profitable-lane surface, read-only off the market cache) AND
 	// whether a heavy-freighter yard is known yet (sp-42ow shipyard inventory). While unmet the

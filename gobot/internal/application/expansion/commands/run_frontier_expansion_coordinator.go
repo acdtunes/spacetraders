@@ -121,6 +121,15 @@ const (
 	// for the MVP; the full allocator sizes it to hold known markets under a RELAXED SLA).
 	defaultReservedFreshnessFloor = 0
 
+	// defaultScanOnly is the sp-jide scan_only knob's default: 0 (OFF) = today's behavior,
+	// BYTE-IDENTICAL. When tuned to 1 the coordinator DECOUPLES scanning the discovered-market
+	// backlog from expanding to virgin — it declares NO depth pathfinder, buys NO probe, and
+	// restricts its sweep-once declarations to the FULL charted-but-unscanned MARKET backlog (every
+	// system with MARKETPLACE waypoints but zero player market_data), draining it to zero then
+	// idling. Like reserved_freshness_floor, 0 IS the default here, so resolveConfig applies NO
+	// <=0 fallback for it (a `tune scan_only 0` must revert to OFF, not read as "unset → default").
+	defaultScanOnly = 0
+
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
 	rankingLogLimit = 10
@@ -279,6 +288,12 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// own demand, so it never cannibalizes scanning's baseline. 0 → the floor is off (pre-sp-iopd
 	// behavior). Live-tunable (FrontierTunableDefaults).
 	ReservedFreshnessFloor int
+
+	// ScanOnly (sp-jide) decouples SCANNING the discovered-market backlog from EXPANDING to virgin.
+	// 0 (default) is byte-identical to today. 1 = declare no depth pathfinder, buy no probe, and
+	// sweep only the FULL charted-but-unscanned MARKET backlog (drain it, then idle). Live-tunable
+	// (FrontierTunableDefaults); overrides breadth_fraction / max_depth_pathfinders when set.
+	ScanOnly int
 }
 
 // RunFrontierExpansionCoordinatorResponse reports reconcile progress. Because the loop
@@ -306,6 +321,12 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	treasury  TreasuryReader
 	purchaser ProbePurchaser
 	scanner   ExpansionScanner
+
+	// darkScanner (sp-jide) enumerates the FULL charted-but-unscanned MARKET backlog the scan_only
+	// mode sweeps — every system with MARKETPLACE waypoints and zero player market_data, unbounded
+	// by gate hops (unlike scanner's expansion-frontier BFS). Optional-injection via
+	// SetDarkMarketScanner; nil (or scan_only=0) leaves the coordinator byte-identical to pre-sp-jide.
+	darkScanner DarkMarketScanner
 
 	// objective is the optional deep-resource (heavy-yard) signal the depth slice biases on
 	// (sp-rjgr §4). Nil ⇒ the split runs on its baseline fraction with no objective shift.
@@ -472,6 +493,8 @@ func FrontierTunableDefaults() map[string]int {
 		"off_gate_value_weight":            defaultOffGateValueWeight,
 		"off_gate_fuel_weight":             defaultOffGateFuelWeight,
 		"reserved_freshness_floor":         defaultReservedFreshnessFloor,
+		// Scan-only mode (sp-jide): drain the discovered-market backlog, expand to no virgin.
+		"scan_only": defaultScanOnly,
 	}
 }
 
@@ -500,6 +523,8 @@ type frontierConfig struct {
 	OffGateValueWeight           int
 	OffGateFuelWeight            int
 	ReservedFreshnessFloor       int
+	// ScanOnly (sp-jide): 1 ⇒ scan-only mode (no depth, no probe buy, sweep the full dark backlog).
+	ScanOnly int
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -534,6 +559,7 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		OffGateValueWeight:           cmd.OffGateValueWeight,
 		OffGateFuelWeight:            cmd.OffGateFuelWeight,
 		ReservedFreshnessFloor:       cmd.ReservedFreshnessFloor,
+		ScanOnly:                     cmd.ScanOnly,
 	}
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
@@ -552,6 +578,10 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		// sp-iopd reserved freshness floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
 		// the documented default — no <=0 fallback, since 0 IS the default here.
 		c.ReservedFreshnessFloor = live.PositiveIntOrZero("reserved_freshness_floor")
+		// sp-jide scan_only: live-authoritative, same "0 IS the default" discipline as the floor.
+		// A live snapshot present ⇒ its value governs, so `tune scan_only 0` reverts to OFF even
+		// over a launch value that set it ON (no <=0 fallback below strands it).
+		c.ScanOnly = live.PositiveIntOrZero("scan_only")
 	}
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
@@ -677,6 +707,14 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {
 		return fmt.Errorf("failed to list scout posts: %w", err)
+	}
+
+	// SCAN-ONLY (sp-jide): drain the discovered-market backlog, reach for no virgin. This branch
+	// declares NO depth pathfinder and buys NO probe; it sweeps only the FULL charted-unscanned
+	// MARKET set. It returns before any of the expansion path below runs, so scan_only=0 (the
+	// default) leaves everything from here down BYTE-IDENTICAL to pre-sp-jide.
+	if cfg.ScanOnly > 0 {
+		return h.reconcileScanOnly(ctx, cmd, cfg, posts)
 	}
 
 	openSlots := countUnmannedSlots(posts)

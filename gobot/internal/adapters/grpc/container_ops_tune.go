@@ -119,6 +119,8 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"off_gate_value_weight":            {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_value_weight"], Unit: "weight", Description: "weight on exploration value (promising-type unexplored systems) in off-gate target ranking"},
 			"off_gate_fuel_weight":             {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_fuel_weight"], Unit: "weight", Description: "weight on warp fuel (distance from the frontier edge) in off-gate target ranking"},
 			"reserved_freshness_floor":         {Type: "int", Min: 0, Max: 200, Default: frontier["reserved_freshness_floor"], Unit: "hulls", Description: "sp-iopd MVP: idle probes the frontier reserves for freshness — discounted from the supply covering its demand (buys rather than cannibalize scanning); 0 = off (pre-sp-iopd)"},
+			// sp-jide scan-only mode: decouple scanning the discovered backlog from expanding to virgin.
+			"scan_only": {Type: "int", Min: 0, Max: 1, Default: frontier["scan_only"], Unit: "flag", Description: "scan discovered markets only; declare no expansion/depth posts and buy no probes (drain the charted-but-unscanned market backlog, then idle); 0 = off (full expansion)"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},
