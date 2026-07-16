@@ -199,10 +199,19 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 	if err != nil {
 		// A per-system fetch failure (a frontier gate the API refuses, 400 "no ship
 		// present") is NOT a whole-route failure: tag it ErrGateUnreadable so the BFS
-		// excludes just this node and continues (sp-qxa4). Record/extend the persisted
-		// negative-result backoff so this doomed gate is not re-probed every tick
-		// (sp-ikx1) — the enter/extend INFO line is logged there, once per transition.
-		s.enterBackoff(ctx, systemSymbol, gateWaypoint, err)
+		// excludes just this node and continues (sp-qxa4).
+		//
+		// Only a PERMANENT client error (a terminal 4xx — the API's verdict that this
+		// waypoint has no readable gate: uncharted / no ship present / not a gate)
+		// records/extends the persisted negative-result backoff, so a doomed gate is not
+		// re-probed every tick (sp-ikx1) — the enter/extend INFO line is logged there, once
+		// per transition. A TRANSIENT failure (5xx / network / retry-exhausted, which never
+		// surfaces as a *ports.APIError) must NOT poison the cache: leaving it un-backed-off
+		// lets the next miss re-probe it, so a momentary API blip never suppresses a real
+		// gate for the whole 5m→30m→2h window (sp-4bm3).
+		if isPermanentGateAbsence(err) {
+			s.enterBackoff(ctx, systemSymbol, gateWaypoint, err)
+		}
 		return nil, fmt.Errorf("%w for %s (%s): %v", ErrGateUnreadable, systemSymbol, gateWaypoint, err)
 	}
 
@@ -226,6 +235,17 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		return nil, err
 	}
 	return edges, nil
+}
+
+// isPermanentGateAbsence reports whether a GetJumpGate failure is the API's PERMANENT verdict
+// that this waypoint has no readable gate — a terminal 4xx (uncharted / no ship present / not a
+// gate). Only such a permanent failure is negative-cached (sp-4bm3): a TRANSIENT failure (5xx /
+// network / retry-exhausted) never surfaces as a *ports.APIError, so it declines the cache and is
+// re-probed on the next miss instead of being suppressed for the whole backoff window. Matching a
+// typed status (not the error string) keeps the classification robust against message wording.
+func isPermanentGateAbsence(err error) bool {
+	var apiErr *ports.APIError
+	return errors.As(err, &apiErr) && apiErr.IsClientError()
 }
 
 // enterBackoff persists (or extends) the negative-result backoff for an unreadable gate

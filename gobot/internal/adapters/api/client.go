@@ -1525,7 +1525,11 @@ func addJitter(d time.Duration) time.Duration {
 func (c *SpaceTradersClient) request(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
 	return c.doWithRetry(ctx, method, path, token, body, func(statusCode int, respBody []byte) error {
 		if statusCode < 200 || statusCode >= 300 {
-			return fmt.Errorf("API error (status %d): %s", statusCode, string(respBody))
+			// Typed so callers can classify a permanent 4xx apart from a transient failure via
+			// errors.As (sp-4bm3 — negative-cache a 400'd jump gate). APIError.Error() preserves
+			// the exact "API error (status %d): %s" string, so every existing message/JSON
+			// string-parser (cooldown, insufficient-credits, dock/orbit classifiers) is unaffected.
+			return &domainPorts.APIError{StatusCode: statusCode, Body: string(respBody)}
 		}
 		if result == nil {
 			return nil

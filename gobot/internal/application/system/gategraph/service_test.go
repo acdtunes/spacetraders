@@ -571,6 +571,15 @@ func (l *captureLogger) Log(_, message string, _ map[string]interface{}) {
 	l.messages = append(l.messages, message)
 }
 
+// apiErr400 is the typed terminal client error the real SpaceTraders adapter now returns for a
+// non-2xx GetJumpGate response (sp-4bm3): a *ports.APIError carrying StatusCode 400. The fakes
+// use it so they model a GENUINE HTTP 400 (uncharted / no ship present / not a gate) — the
+// permanent verdict the negative-result backoff is meant to suppress — rather than an untyped
+// stand-in a transient blip could masquerade as.
+func apiErr400(body string) error {
+	return &ports.APIError{StatusCode: 400, Body: body}
+}
+
 // The incident (TORWIND-21 DP51→KA42): DP51 gates to BOTH X1-XX56 (an unswept
 // frontier system whose live gate fetch 400s — "no ship present") and X1-MID (which
 // reaches KA42). One unreadable sibling gate must NOT abort the route — the BFS
@@ -585,7 +594,7 @@ func TestService_Path_UnreadableSiblingGate_RoutesAround(t *testing.T) {
 			"X1-MID":  {"X1-KA42-GATE"},
 		},
 		jumpGateErr: map[string]error{
-			"X1-XX56-GATE": errors.New("api 400: waypoint X1-XX56-GATE not accessible, no ship present"),
+			"X1-XX56-GATE": apiErr400("waypoint X1-XX56-GATE not accessible, no ship present"),
 		},
 	}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
@@ -636,7 +645,7 @@ func TestService_Path_UnreadableGateRequired_Unroutable(t *testing.T) {
 			"X1-DP51": {"X1-XX56-GATE"}, // the only way out of DP51 is the unreadable gate
 		},
 		jumpGateErr: map[string]error{
-			"X1-XX56-GATE": errors.New("api 400: not accessible, no ship present"),
+			"X1-XX56-GATE": apiErr400("not accessible, no ship present"),
 		},
 	}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
@@ -651,7 +660,7 @@ func TestService_Path_UnreadableGateRequired_Unroutable(t *testing.T) {
 func TestService_Connections_GetJumpGateFailure_UnreadableAndMarked(t *testing.T) {
 	store := &perSystemMissStore{}
 	api := &perSystemGateAPI{
-		jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("api 400: no ship present")},
+		jumpGateErr: map[string]error{"X1-XX56-GATE": apiErr400("no ship present")},
 	}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
 
@@ -674,7 +683,7 @@ func TestService_Connections_GetJumpGateFailure_UnreadableAndMarked(t *testing.T
 // window elapses. This is the 1 req/s of guaranteed 400s the fix reclaims.
 func TestService_Connections_UnreadableGate_BacksOffNoReprobe(t *testing.T) {
 	store := &perSystemMissStore{}
-	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("400 no ship present")}}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": apiErr400("no ship present")}}
 	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	clock := &shared.MockClock{CurrentTime: base}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
@@ -698,12 +707,52 @@ func TestService_Connections_UnreadableGate_BacksOffNoReprobe(t *testing.T) {
 	}
 }
 
+// The distinction (sp-4bm3): a TRANSIENT gate-fetch failure — a 5xx / network / retry-exhausted
+// error, which never surfaces as a *ports.APIError — must NOT be negative-cached. It still
+// reports ErrGateUnreadable (so the BFS routes around it this tick), but because it was not
+// backed off it is RE-PROBED on the very next miss, so a momentary API blip never suppresses a
+// real gate for the whole 5m→30m→2h window. Contrast the 400 above, which IS suppressed. This is
+// also the mutation guard for the carve-out: drop the 4xx classification (back off every error
+// again) and the second miss stops re-probing, failing this test.
+func TestService_Connections_TransientError_NotCached_Reprobes(t *testing.T) {
+	store := &perSystemMissStore{}
+	// The shape a retry-exhausted transient surfaces as (doWithRetry wraps *retryableError):
+	// a plain error, NOT a *ports.APIError — exactly what the classifier must decline to cache.
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("max retries exceeded: server error (503)")}}
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	clock := &shared.MockClock{CurrentTime: base}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
+	ctx := context.Background()
+
+	// First miss: a real probe that fails transiently → still ErrGateUnreadable (route around).
+	if _, err := svc.Connections(ctx, "X1-XX56", 1); !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("a transient failure must still surface ErrGateUnreadable, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-XX56-GATE"]; got != 1 {
+		t.Fatalf("first miss must probe once, got %d", got)
+	}
+	// It must NOT have been negative-cached (no backoff marker recorded).
+	if _, backedOff, _ := backoffOf(store, "X1-XX56"); backedOff {
+		t.Fatal("a transient failure must NOT enter the negative-result backoff")
+	}
+
+	// Next miss only 1s later (a 400 would still be suppressed here): because it was not cached,
+	// the gate is RE-PROBED — transient failures keep retrying.
+	clock.Advance(time.Second)
+	if _, err := svc.Connections(ctx, "X1-XX56", 1); !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("second miss still unreadable, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-XX56-GATE"]; got != 2 {
+		t.Fatalf("a transient (uncached) gate must be re-probed on the next miss (want 2, got %d)", got)
+	}
+}
+
 // The re-probe interval follows the ruled 5m → 30m → 2h schedule, driven end-to-end
 // through the service and store with a controllable clock: a probe fires only once its
 // window has elapsed, and the window escalates then caps.
 func TestService_Connections_BackoffEscalatesThenCaps(t *testing.T) {
 	store := &perSystemMissStore{}
-	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("400 no ship present")}}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": apiErr400("no ship present")}}
 	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	clock := &shared.MockClock{CurrentTime: base}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
@@ -809,7 +858,7 @@ func TestService_Connections_ReadableGate_NeverBacksOff(t *testing.T) {
 // replaces the old ~23k-line per-tick spam).
 func TestService_Backoff_LogsOnceWithNextProbe_SilentBetween(t *testing.T) {
 	store := &perSystemMissStore{}
-	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": errors.New("400 no ship present")}}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-XX56-GATE": apiErr400("no ship present")}}
 	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	clock := &shared.MockClock{CurrentTime: base}
 	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
