@@ -23,6 +23,17 @@ type RoutingConfig struct {
 	// UNREADABLE jump gate (one whose live fetch 400s, "no ship present") waits before it
 	// is re-probed, so a doomed frontier gate is not re-fetched every reconcile tick.
 	GateBackoff GateBackoffConfig `mapstructure:"gate_backoff"`
+
+	// ChartGateOnArrival is the sp-bcsu chart-on-gate-arrival switch (default ON). A hull
+	// jumping into a system lands on that system's jump gate — the ONE moment its outbound
+	// edges are readable (a remote read with no ship present 400s) — so the gate-crosser
+	// charts+persists gate_edges there, before flying to market. Without it a market-swept
+	// system's gate stays empty, the strict pathfinder fails closed on it, and hulls routed
+	// through it strand. Charting is best-effort (never fails a leg) and idempotent (a
+	// charted system is a store hit, zero API), so it is safe on by default; this knob is
+	// the reversibility switch (set false to restore the pre-sp-bcsu hot path exactly). A
+	// *bool so an absent [routing] section defaults ON while an explicit false is preserved.
+	ChartGateOnArrival *bool `mapstructure:"chart_gate_on_arrival"`
 }
 
 // GateBackoffConfig is the exponential schedule for re-probing an unreadable jump gate

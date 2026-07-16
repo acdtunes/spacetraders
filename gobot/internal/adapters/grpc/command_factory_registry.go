@@ -603,6 +603,8 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		RespawnCapDisabled:            cfg.OptionalBool("respawn_cap_disabled"),
 		ManningStallCycles:            cfg.OptionalInt("manning_stall_cycles", 0),
 		ManningStallCorrectionCap:     cfg.OptionalInt("manning_stall_correction_cap", 0),
+		GateReconcileEnabled:          cfg.OptionalBool("gate_reconcile_enabled"),
+		GateReconcileMaxDispatch:      cfg.OptionalInt("gate_reconcile_max_dispatch", 0),
 	}
 }
 

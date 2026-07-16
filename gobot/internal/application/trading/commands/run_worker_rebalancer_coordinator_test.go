@@ -183,6 +183,12 @@ func (g *fakeHopGraph) Connections(_ context.Context, _ string, _ int) ([]system
 	return nil, nil
 }
 
+// ChartPresentGate is inert here — the rebalancer never charts on arrival; it exists only
+// to satisfy the extended GateGraph interface (sp-bcsu).
+func (g *fakeHopGraph) ChartPresentGate(_ context.Context, _ string, _ int) ([]system.GateEdge, error) {
+	return nil, nil
+}
+
 // fakeRebalancerDaemonClient records the ferry worker lifecycle calls.
 type fakeRebalancerDaemonClient struct {
 	daemon.DaemonClient

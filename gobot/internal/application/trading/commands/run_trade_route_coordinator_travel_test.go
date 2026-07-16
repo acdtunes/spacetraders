@@ -530,6 +530,13 @@ type fakeGateGraph struct {
 	repositionPath    []string
 	repositionPathErr error
 	repositionBound   int
+
+	// chartPresentCalls records every ChartPresentGate(systemSymbol) call IN ORDER (sp-bcsu),
+	// so a test can assert travel() charted the gate of each system the hull arrived on (and
+	// in what sequence). chartPresentErr, when set, makes ChartPresentGate fail — proving the
+	// charting is NON-FATAL (the leg still completes, the same discipline as chartOnArrival).
+	chartPresentCalls []string
+	chartPresentErr   error
 }
 
 func (f *fakeGateGraph) Path(ctx context.Context, from, to string, playerID int) ([]string, error) {
@@ -556,6 +563,14 @@ func (f *fakeGateGraph) Connections(ctx context.Context, from string, playerID i
 		return nil, f.connErr
 	}
 	return f.edges[from], nil
+}
+
+func (f *fakeGateGraph) ChartPresentGate(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error) {
+	f.chartPresentCalls = append(f.chartPresentCalls, systemSymbol)
+	if f.chartPresentErr != nil {
+		return nil, f.chartPresentErr
+	}
+	return f.edges[systemSymbol], nil
 }
 
 // A THREE-jump destination (the incident: JP61 is KA42→PA3→UQ16→JP61, not one
@@ -860,5 +875,109 @@ func TestJumpPath_BoundSelectsRepositionResolver(t *testing.T) {
 	}
 	if fake.repositionBound != 9 {
 		t.Fatalf("the bound must reach the resolver, got %d", fake.repositionBound)
+	}
+}
+
+// --- sp-bcsu: chart-on-gate-arrival ---
+
+// The core prospective fix: a hull jumping into a system lands on that system's jump
+// gate — the ONE moment its outbound edges are readable (a remote read with no ship
+// present 400s) — so travel() must chart exactly that system on arrival, before flying
+// to market. Without this the gate stays uncharted, the strict pathfinder fails closed
+// on it, and hulls routed through it strand. MUTATION GUARD: remove the chartArrivedGate
+// call and chartPresentCalls is empty.
+func TestTravel_CrossSystem_ChartsArrivedGate_WhenEnabled(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")     // on source gate → departure hop skipped
+	reloaded := newTravelShipAtGate(t, "HAULER-1", "X1-BBB-GATE") // jump lands on dest gate (== destination)
+	mediator := &travelMediator{
+		jumpResp: &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
+	}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	fake := &fakeGateGraph{path: []string{"X1-AAA", "X1-BBB"}}
+	handler.SetGateGraph(fake)
+	handler.SetChartGateOnArrival(true)
+
+	if _, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !reflect.DeepEqual(fake.chartPresentCalls, []string{"X1-BBB"}) {
+		t.Fatalf("expected a single chart of the arrival system X1-BBB, got %v", fake.chartPresentCalls)
+	}
+}
+
+// A multi-jump route charts EACH system the hull lands on, in path order: the two
+// intermediates per-hop (the hull is on nextSystem's gate after each jump) and the
+// destination from the reloaded arrival pointer — with NO duplicate re-chart of the
+// terminal system (the loop skips the terminal hop; the arrival charts it once).
+func TestTravel_MultiJump_ChartsEachArrivedGateInOrder(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-KA42-GATE")
+	reloaded := newTravelShipAtGate(t, "HAULER-1", "X1-JP61-GATE")
+	mediator := &travelMediator{jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60}}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	fake := &fakeGateGraph{path: []string{"X1-KA42", "X1-PA3", "X1-UQ16", "X1-JP61"}}
+	handler.SetGateGraph(fake)
+	handler.SetChartGateOnArrival(true)
+
+	if _, err := handler.travel(context.Background(), ship, "X1-JP61-GATE", 1); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	want := []string{"X1-PA3", "X1-UQ16", "X1-JP61"}
+	if !reflect.DeepEqual(fake.chartPresentCalls, want) {
+		t.Fatalf("expected charts %v (intermediates per-hop + dest on arrival, no terminal dup), got %v", want, fake.chartPresentCalls)
+	}
+}
+
+// The reversibility knob is load-bearing: with chart_gate_on_arrival OFF (the handler's
+// zero value, the byte-for-byte-unchanged hot path), a cross-system jump charts NOTHING.
+// MUTATION GUARD: drop the !h.chartGateOnArrival check in chartSystemGate and this fails.
+func TestTravel_CrossSystem_ChartOnArrivalDisabled_NoCharting(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
+	reloaded := newTravelShipAtGate(t, "HAULER-1", "X1-BBB-GATE")
+	mediator := &travelMediator{
+		jumpResp: &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
+	}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	fake := &fakeGateGraph{path: []string{"X1-AAA", "X1-BBB"}}
+	handler.SetGateGraph(fake) // knob deliberately left OFF
+
+	if _, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(fake.chartPresentCalls) != 0 {
+		t.Fatalf("chart_gate_on_arrival OFF must chart nothing, got %v", fake.chartPresentCalls)
+	}
+}
+
+// SAFETY: a gate-chart failure is NON-FATAL — it is swallowed and can never fail the trade
+// leg, strand the hull, or change the nav outcome (the same discipline as
+// route_executor_warp.go chartOnArrival). The chart WAS attempted (proving a genuine
+// swallow, not a skip), yet travel() returns the reloaded hull with no error.
+func TestTravel_CrossSystem_ChartFailure_IsNonFatal(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
+	reloaded := newTravelShipAtGate(t, "HAULER-1", "X1-BBB-GATE")
+	mediator := &travelMediator{
+		jumpResp: &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
+	}
+	clock := &travelFakeClock{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	fake := &fakeGateGraph{path: []string{"X1-AAA", "X1-BBB"}, chartPresentErr: errors.New("API error (status 400): no ship present")}
+	handler.SetGateGraph(fake)
+	handler.SetChartGateOnArrival(true)
+
+	got, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1)
+	if err != nil {
+		t.Fatalf("a gate-chart failure must be swallowed (non-fatal), not fail the leg; got %v", err)
+	}
+	if got != reloaded {
+		t.Fatal("travel must still return the reloaded hull when charting fails")
+	}
+	if !reflect.DeepEqual(fake.chartPresentCalls, []string{"X1-BBB"}) {
+		t.Fatalf("charting must have been ATTEMPTED for X1-BBB (swallow, not skip), got %v", fake.chartPresentCalls)
+	}
+	if len(mediator.jumps) != 1 {
+		t.Fatalf("the jump must still fire normally, got %d", len(mediator.jumps))
 	}
 }

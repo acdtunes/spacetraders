@@ -221,6 +221,13 @@ func (h *RunArbCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
+// SetChartGateOnArrival propagates the sp-bcsu chart-on-gate-arrival knob to the movement
+// legs, so this coordinator's cross-system arrivals chart the gate they land on too.
+// Mirrors the SetGateGraph delegation.
+func (h *RunArbCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
+	h.legs.SetChartGateOnArrival(enabled)
+}
+
 // SetEventSubscriber wires the ship-arrival event bus into the delegated movement
 // handler so the resume path waits out a hull re-adopted mid-transit before
 // attempting the jump (sp-8l3o) instead of 4214'ing and burning the restart budget.

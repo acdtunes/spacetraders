@@ -137,6 +137,12 @@ const (
 	// reposition class, which routes past unreadable frontier gates, reaches this far.
 	defaultMaxRepositionJumps = 12
 
+	// defaultGateReconcileMaxDispatch bounds the sp-bcsu gate-reconcile sweep to a SMALL
+	// number of relays per tick when GateReconcileMaxDispatch is unset — the conservative
+	// rate-budget default (a handful of frontier gates charted per cycle, never a burst),
+	// mirroring defaultMaxRepositionJumps' 0 => default idiom.
+	defaultGateReconcileMaxDispatch = 2
+
 	// defaultManningStallCycles and defaultManningStallCorrectionCap bound the sp-5les
 	// manning watchdog when the launch/live config leaves them unset (RULINGS #5). The
 	// watchdog re-mans a standing post that reads IsFullyManned() yet has produced no new
@@ -223,6 +229,21 @@ type RunScoutPostCoordinatorCommand struct {
 	// defaultRepositionFailureCooldown, mirroring TickIntervalSecs.
 	RepositionFailureCooldownSecs int
 
+	// GateReconcileEnabled arms the sp-bcsu RETROACTIVE gate-reconcile sweep (Part 2): a
+	// bounded pass that dispatches LEFTOVER idle probes to market-known-but-gate-uncharted
+	// frontier systems so Part 1's chart-on-arrival fills their gate_edges — automating the
+	// manual UF64 procedure that clears the market-swept-but-gate-empty backlog the strict
+	// pathfinder strands hulls on. DEFAULT OFF (deploy-inert): the sweep moves probes and
+	// spends API budget, so it is opt-in — armed once the frontier backlog needs clearing.
+	// Off => reconcileOnce is byte-for-byte the pre-sp-bcsu tick.
+	GateReconcileEnabled bool
+
+	// GateReconcileMaxDispatch HARD-CAPS how many gate-reconcile relays the sweep may
+	// dispatch per tick (sp-bcsu) — the rate-budget guard so the sweep can never burst the
+	// limiter or starve trade hulls of it. <= 0 uses defaultGateReconcileMaxDispatch,
+	// mirroring TickIntervalSecs' 0 => default idiom.
+	GateReconcileMaxDispatch int
+
 	// CoverageSpreadDisabled reverts the sp-6ovd coverage-first manning order to the legacy
 	// depth-first order (all of a post's slots before the next post's). Default false = LIVE:
 	// unmannedSlotTargets interleaves by slot tier so a scarce idle-probe pool spreads
@@ -301,8 +322,13 @@ type GateGraph interface {
 	// a probe can't reach the frontier because the gate is unreadable, and the gate is
 	// unreadable because no probe reached it), and reaches the 6-12-jump posts the strict
 	// MaxJumpPath=5 rejects. Safe for the expendable scout class only; every arrival
-	// re-reads its gate, so the relaxation retires itself.
+	// re-reads its gate (sp-bcsu chart-on-arrival), so the relaxation retires itself.
 	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
+	// Adjacency returns every gate-CHARTED system's stored neighbor edges (era-scoped, a
+	// pure store read — no live fetch). The sp-bcsu gate-reconcile sweep reads its KEY SET
+	// as "systems whose jump gate is already charted", and enumerates the retroactive
+	// backlog as the market-known systems MINUS this set. *gategraph.Service satisfies it.
+	Adjacency(ctx context.Context) (map[string][]system.GateEdge, error)
 }
 
 // MarketFreshnessProvider computes, per POSTED system, the worst-case cached
@@ -812,7 +838,11 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// backoff window is skipped here so a persistently-crashing tour is not respawned every tick.
 	_, respawnCapEnabled := resolveRespawnCap(cmd)
 	targets := h.unmannedSlotTargets(posts, removed, cmd.CoverageSpreadDisabled, respawnCapEnabled)
-	if len(targets) == 0 {
+	// sp-bcsu: the gate-reconcile sweep (Pass 3) also spends the LEFTOVER idle pool, so the
+	// pre-sp-bcsu fast exit ("no unmanned slots => done") is preserved ONLY when the sweep is
+	// OFF. With it armed the tick continues (fetching the idle pool) even when every slot is
+	// manned — which is exactly when leftover probes are available to chart the backlog.
+	if len(targets) == 0 && !cmd.GateReconcileEnabled {
 		return nil
 	}
 
@@ -875,6 +905,12 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	for _, tgt := range stillUnmanned {
 		h.repositionUnmannedSlot(ctx, cmd, tgt.post, tgt.slot, &idleSats)
 	}
+
+	// Pass 3 (sp-bcsu): bounded retroactive gate-reconcile over the LEFTOVER idle probes —
+	// dispatch a capped few to chart market-known-but-gate-uncharted frontier systems (Part 1
+	// charts the gate on arrival). Self-guards on GateReconcileEnabled (default OFF), so this
+	// is a no-op until armed; runs LAST so manning always has first claim on the idle pool.
+	h.reconcileGateChartSweep(ctx, cmd, &idleSats)
 
 	return nil
 }
@@ -2335,6 +2371,141 @@ func resolveMaxRepositionJumps(cmd *RunScoutPostCoordinatorCommand) int {
 		return defaultMaxRepositionJumps
 	}
 	return cmd.MaxRepositionJumps
+}
+
+// resolveGateReconcileMaxDispatch returns the sp-bcsu gate-reconcile per-tick relay cap:
+// the launch config's GateReconcileMaxDispatch when positive, else defaultGateReconcileMaxDispatch
+// (RULINGS #5, the <= 0 => default idiom). This is the rate-budget guard on the sweep.
+func resolveGateReconcileMaxDispatch(cmd *RunScoutPostCoordinatorCommand) int {
+	if cmd.GateReconcileMaxDispatch <= 0 {
+		return defaultGateReconcileMaxDispatch
+	}
+	return cmd.GateReconcileMaxDispatch
+}
+
+// gateUnchartedMarketSystems is the sp-bcsu retroactive-backlog enumeration: the systems
+// that are MARKET-KNOWN (a key in marketAges — the market repository swept at least one of
+// its markets) but GATE-UNCHARTED (NOT a key with real edges in charted — the Adjacency
+// key set is exactly the systems whose jump gate is charted). This is the market-swept-but-
+// gate-empty set the strict pathfinder fails closed on, that chart-on-arrival alone cannot
+// reach (such a system is never revisited once swept — the chicken-and-egg). A system with
+// an empty edge slice is treated as uncharted (a "connects nowhere" set is not a charted
+// gate). Sorted for deterministic, stable dispatch order. Pure — no store, no API.
+func gateUnchartedMarketSystems(marketAges map[string]float64, charted map[string][]system.GateEdge) []string {
+	uncharted := make([]string, 0, len(marketAges))
+	for systemSymbol := range marketAges {
+		if len(charted[systemSymbol]) > 0 {
+			continue // its jump gate is already charted — not part of the backlog
+		}
+		uncharted = append(uncharted, systemSymbol)
+	}
+	sort.Strings(uncharted)
+	return uncharted
+}
+
+// reconcileGateChartSweep is the sp-bcsu RETROACTIVE gate-reconcile pass (Part 2): it
+// dispatches up to a BOUNDED number of LEFTOVER idle probes to market-known-but-gate-
+// uncharted frontier systems, so each probe lands on that system's jump gate and Part 1's
+// chart-on-arrival (chartArrivedGate -> ChartPresentGate) fills its gate_edges — clearing
+// the chicken-and-egg where a market-swept system with empty gate_edges is never revisited
+// (the manual UF64 procedure, automated). It reuses the existing scout_reposition machinery:
+// the probe is aimed at any market waypoint in the target (Part 1 charts the GATE on the
+// pre-market arrival hop, so no jump-gate waypoint resolution is needed).
+//
+// SAFETY (the Admiral's HARD API-budget constraint):
+//   - DEFAULT OFF (self-guards on GateReconcileEnabled): deploy-inert until armed.
+//   - HARD-CAPPED at resolveGateReconcileMaxDispatch relays per tick — never a burst.
+//   - Runs on the LEFTOVER idle pool AFTER manning (idleSats already drained by Pass 2),
+//     so it never starves a post of a probe; a dispatched probe is spliced out of the pool.
+//   - Idempotent: ChartPresentGate's store-first guard (Part 1) makes an arrival on an
+//     already-charted system cost ZERO API, so a redundant relay is cheap.
+//   - Fail-closed at every gap (no gate graph / no freshness provider / read error / no
+//     routable satellite / no markets), and the per-target dispatch backoff prevents churn.
+func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, idleSats *[]*navigation.Ship) {
+	if !cmd.GateReconcileEnabled || h.gateGraph == nil || h.marketFreshnessProvider == nil {
+		return
+	}
+	if len(*idleSats) == 0 {
+		return // no leftover probe to spend on the backlog this tick
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	marketAges, err := h.marketFreshnessProvider.MaxAgeSecondsBySystem(ctx, cmd.PlayerID.Value())
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("gate-reconcile: market enumeration failed — skipping sweep this tick: %v", err), map[string]interface{}{
+			"action": "gate_reconcile_enumeration_failed",
+		})
+		return
+	}
+	charted, err := h.gateGraph.Adjacency(ctx)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("gate-reconcile: gate adjacency read failed — skipping sweep this tick: %v", err), map[string]interface{}{
+			"action": "gate_reconcile_adjacency_failed",
+		})
+		return
+	}
+
+	targets := gateUnchartedMarketSystems(marketAges, charted)
+	if len(targets) == 0 {
+		return // frontier fully charted — nothing to reconcile
+	}
+
+	maxDispatch := resolveGateReconcileMaxDispatch(cmd)
+	maxJumps := resolveMaxRepositionJumps(cmd)
+	dispatched := 0
+	for _, target := range targets {
+		if dispatched >= maxDispatch {
+			break // rate-budget cap reached — the rest waits for the next tick
+		}
+		if len(*idleSats) == 0 {
+			break // idle pool exhausted
+		}
+		key := gateReconcileBackoffKey(cmd.PlayerID.Value(), target)
+		if h.repositionBackedOff(key) {
+			continue // a relay for this target is already in flight / recently dispatched
+		}
+		idx, hops, ok := h.selectNearestSatelliteByHops(ctx, *idleSats, target, maxJumps)
+		if !ok {
+			continue // no idle probe can jump-route to this frontier system this tick
+		}
+		markets, err := h.discoverMarkets(ctx, target)
+		if err != nil || len(markets) == 0 {
+			continue // market-known per the freshness read, but no waypoint to aim at right now
+		}
+		destWaypoint := pickRepositionDestination(markets)
+
+		sat := (*idleSats)[idx]
+		*idleSats = append((*idleSats)[:idx], (*idleSats)[idx+1:]...)
+
+		relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint, maxJumps)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("gate-reconcile: failed to dispatch %s to chart %s: %v", sat.ShipSymbol(), target, err), map[string]interface{}{
+				"action":        "gate_reconcile_dispatch_failed",
+				"system_symbol": target,
+				"ship_symbol":   sat.ShipSymbol(),
+			})
+			continue
+		}
+		h.noteRepositionDispatch(key)
+		dispatched++
+		logger.Log("INFO", fmt.Sprintf("gate-reconcile: repositioning %s → %s (%d jump(s), ≤%d bound, relay %s) to chart its jump gate on arrival", sat.ShipSymbol(), target, hops, maxJumps, relayID), map[string]interface{}{
+			"action":        "gate_reconcile_dispatch",
+			"system_symbol": target,
+			"ship_symbol":   sat.ShipSymbol(),
+			"jumps":         hops,
+			"max_jumps":     maxJumps,
+			"destination":   destWaypoint,
+			"relay":         relayID,
+		})
+	}
+}
+
+// gateReconcileBackoffKey is the per-target dispatch-backoff key for the sp-bcsu sweep. It
+// is DISTINCT from a post slot's backoffKey (a "gatereconcile|" prefix) so a gate-reconcile
+// relay and a post reposition to the same system never share a backoff window — the two are
+// independent dispatch decisions that happen to reuse the shared repositionBackoffUntil map.
+func gateReconcileBackoffKey(playerID int, systemSymbol string) string {
+	return fmt.Sprintf("gatereconcile|%d|%s", playerID, systemSymbol)
 }
 
 // repositionFailureCooldown resolves the FAILED-relay cooldown (sp-o34q): the launch config's

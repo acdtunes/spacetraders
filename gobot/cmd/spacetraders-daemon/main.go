@@ -901,6 +901,14 @@ func run(cfg *config.Config) error {
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
 	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-bcsu: chart every jump gate a hull lands on (the one moment its outbound edges are
+	// readable — a remote read with no ship present 400s) so a market-swept frontier system
+	// never strands hulls on empty gate_edges. Default ON; [routing] chart_gate_on_arrival
+	// (nil => on) is the reversibility switch. Wired on this SHARED instance (trade circuits +
+	// scout reposition + worker ferry + route-ship) and delegated to the arb/tour/stocker legs
+	// below, so ALL cross-system gate arrivals chart. Best-effort + idempotent: no new burst.
+	chartGateOnArrival := cfg.Routing.ChartGateOnArrival == nil || *cfg.Routing.ChartGateOnArrival
+	tradeRouteCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival)
 	// sp-3vg8: now that the shared stored-adjacency gate graph exists (built just above), wire
 	// the siting scorer's worker-reachability signal. The provider reuses the fleet's idle-worker
 	// locator + RepositionPath (no reinvented routing), so vdld deprioritizes far-cluster chains it
@@ -1231,6 +1239,7 @@ func run(cfg *config.Config) error {
 	// before-spend guard that would have refused the JP61 buy at the source instead of
 	// crashing laden at the home gate.
 	arbCoordinatorHandler.SetGateGraph(gateGraphService)
+	arbCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-system arrivals
 	// sp-8l3o: wait out a mid-transit re-adoption before the resume path's jump — the
 	// exact incident (arb-run-TORWIND-21 re-adopted mid in-system hop, jumped, 4214'd,
 	// then rode out the 5s/30s/120s restart backoff to self-heal, consuming the whole
@@ -1259,6 +1268,7 @@ func run(cfg *config.Config) error {
 		routingClient, marketScanner, nil, apiClient,
 	)
 	tourCoordinatorHandler.SetGateGraph(gateGraphService)
+	tourCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-gate tour arrivals
 	// sp-mtvg: wire the global best-sink reader so the tour coordinator can SEE (and count
 	// on tour_candidates_dropped_total) the profitable exotic lanes whose sink is beyond the
 	// 1-gate-hop tour graph. The raw GORM repo carries BestSinksAcrossSystems; read-only.
@@ -1434,6 +1444,7 @@ func run(cfg *config.Config) error {
 		waypointRepo, // sp-9274: cache-only coords for the distance-aware residual buy-leg (fail-open)
 	)
 	stockerCoordinatorHandler.SetGateGraph(gateGraphService)
+	stockerCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-system haul arrivals
 	stockerCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// sp-j6uz: emit a structured stock-IN event on each CONFIRMED stocker→warehouse deposit so
 	// downstream analysis can measure depot throughput/coverage (the stock-IN mirror of the

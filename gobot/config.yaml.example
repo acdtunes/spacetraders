@@ -61,6 +61,14 @@ routing:
   # be readable regardless of the daemon's working directory.
   # model_artifact_path: ""
 
+  # sp-bcsu: chart every jump gate a hull lands on — the ONE moment its outbound edges are
+  # readable (a remote read with no ship present 400s) — so a market-swept frontier system
+  # never strands hulls on empty gate_edges (the strict pathfinder fails closed on them).
+  # Default ON; set false to restore the pre-sp-bcsu hot path exactly (the reversibility
+  # switch). Charting is best-effort (never fails a leg) and idempotent (a charted system is
+  # a store hit, zero API), so on-by-default adds no rate-limit burst.
+  # chart_gate_on_arrival: true
+
   # Operation timeouts
   timeout:
     connect: 10s        # Connection timeout
@@ -432,6 +440,18 @@ scouting:
   # heavy_ship_types:
   #   - SHIP_HEAVY_FREIGHTER
   #   - SHIP_BULK_FREIGHTER
+
+  # gate_reconcile_enabled (sp-bcsu) arms the RETROACTIVE gate-reconcile sweep: a bounded pass
+  # in the standing scout_post_coordinator that dispatches LEFTOVER idle probes (after manning)
+  # to market-known-but-gate-uncharted frontier systems, so each probe lands on that system's
+  # jump gate and the chart-on-arrival (routing.chart_gate_on_arrival) fills its gate_edges —
+  # automating the manual UF64 procedure that clears the market-swept-but-gate-empty backlog the
+  # strict pathfinder strands hulls on. DEFAULT OFF (deploy-inert): the sweep moves probes and
+  # spends API budget, so arm it only when the frontier backlog needs clearing. gate_reconcile_max_dispatch
+  # HARD-CAPS relays per tick (the rate-budget guard; 0/absent => 2) so it can never burst the
+  # limiter or starve trade hulls. Already-charted systems cost zero API (store-first idempotency).
+  # gate_reconcile_enabled: false
+  # gate_reconcile_max_dispatch: 2
 
 # fleet_autosizer (sp-1txd): the standing fleet capacity autosizer — the buy-side twin of the
 # siting coordinator. It sizes the hull pool to demand each slow tick and AUTO-BUYS hulls when

@@ -298,6 +298,11 @@ func (m *fakeMarketProvider) ListBySystemWithTrait(_ context.Context, systemSymb
 // hops+1 systems; only its length feeds the coordinator's nearest-by-hops selection.
 type fakeGateGraph struct {
 	hops map[string]int // "FROM->TO" → jump hops
+	// adjacency is the canned CHARTED-system set for Adjacency (sp-bcsu): a system present
+	// as a key (with >=1 edge) reads as gate-charted, so the gate-reconcile sweep excludes
+	// it. Absent => gate-uncharted. adjErr forces the read to fail (the sweep must skip).
+	adjacency map[string][]system.GateEdge
+	adjErr    error
 }
 
 // RepositionPath mirrors the hop map but HONORS the maxJumps bound (sp-8k9m): a route
@@ -318,6 +323,13 @@ func (g *fakeGateGraph) RepositionPath(_ context.Context, from, to string, maxJu
 	}
 	path[0], path[n] = from, to
 	return path, nil
+}
+
+func (g *fakeGateGraph) Adjacency(_ context.Context) (map[string][]system.GateEdge, error) {
+	if g.adjErr != nil {
+		return nil, g.adjErr
+	}
+	return g.adjacency, nil
 }
 
 // fakeGraphProvider stands in for the presence-free graph service (sp-nn0y). GetGraph
@@ -2706,4 +2718,135 @@ func TestScoutPostWaitStartJitter_CtxCancelled_ReturnsPromptly(t *testing.T) {
 
 	require.False(t, completed, "a cancelled context must interrupt the jitter wait")
 	require.Less(t, elapsed, 1*time.Second, "expected cancellation to interrupt a 5s-ceiling jitter wait promptly")
+}
+
+// --- sp-bcsu Part 2: gate-reconcile sweep ---
+
+// (iii) the gate-reconcile enumeration selects EXACTLY the market-known systems whose jump
+// gate is not yet charted — market systems MINUS the Adjacency (charted) key set — and
+// excludes already-charted systems. Deterministically ordered so dispatch is stable across
+// ticks. MUTATION GUARD: drop the "already charted" skip and B/D (charted) leak in.
+func TestGateUnchartedMarketSystems_SelectsMarketKnownMinusCharted(t *testing.T) {
+	marketAges := map[string]float64{"X1-A": 100, "X1-B": 200, "X1-C": 300, "X1-D": 400}
+	charted := map[string][]system.GateEdge{
+		"X1-B": {{ConnectedSystem: "X1-Z"}}, // gate-charted → excluded
+		"X1-D": {{ConnectedSystem: "X1-Y"}}, // gate-charted → excluded
+		"X1-Q": {{ConnectedSystem: "X1-R"}}, // charted but NOT market-known → irrelevant
+	}
+
+	got := gateUnchartedMarketSystems(marketAges, charted)
+
+	require.Equal(t, []string{"X1-A", "X1-C"}, got,
+		"only market-known-but-gate-uncharted systems, sorted; charted B/D excluded, non-market charted Q ignored")
+}
+
+// A system with an EMPTY edge slice in Adjacency is treated as gate-uncharted (a "connects
+// nowhere" set is not a charted gate), and an empty/nil charted map yields every market
+// system — the initial backlog when nothing is charted yet.
+func TestGateUnchartedMarketSystems_EmptyEdgesAndEmptyCharted(t *testing.T) {
+	marketAges := map[string]float64{"X1-A": 1, "X1-B": 2}
+
+	require.Equal(t, []string{"X1-A", "X1-B"}, gateUnchartedMarketSystems(marketAges, nil),
+		"no charted systems => every market system is a backlog target")
+	require.Equal(t, []string{"X1-A", "X1-B"}, gateUnchartedMarketSystems(marketAges, map[string][]system.GateEdge{"X1-A": {}}),
+		"an empty edge slice is not a charted gate")
+}
+
+// gateReconcileTestHandler wires the minimal collaborators the sweep touches: an idle-probe
+// roster, the daemon client (counts scout_reposition relays), a market provider (destination
+// waypoints), the gate graph (hops + charted adjacency), and the market-freshness provider
+// (the market-known set). postRepo is unused by the sweep but required by the constructor.
+func gateReconcileTestHandler(t *testing.T, clock shared.Clock, sats []*navigation.Ship, ages map[string]float64, gg *fakeGateGraph) (*RunScoutPostCoordinatorHandler, *fakeScoutDaemonClient) {
+	t.Helper()
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	handler := newTestScoutPostHandler(&fakeScoutPostRepo{}, shipRepo, daemonClient, &fakeContainerStatusQuery{}, &fakeMarketProvider{}, clock)
+	handler.SetMarketFreshnessProvider(&fakeMarketFreshnessProvider{ages: ages})
+	handler.gateGraph = gg
+	return handler, daemonClient
+}
+
+func gateReconcileTestCmd(maxDispatch int) *RunScoutPostCoordinatorCommand {
+	return &RunScoutPostCoordinatorCommand{
+		PlayerID: shared.MustNewPlayerID(1), ContainerID: "scoutpost-1",
+		GateReconcileEnabled: true, GateReconcileMaxDispatch: maxDispatch,
+	}
+}
+
+// (iv) the sweep is BOUNDED: with 5 backlog targets and 5 idle probes it dispatches at most
+// GateReconcileMaxDispatch (2) relays this tick — the rate-budget guard so it can never
+// burst the limiter. MUTATION GUARD: remove the `dispatched >= maxDispatch` break and all 5
+// dispatch, failing this.
+func TestReconcileGateChartSweep_RespectsDispatchCap(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1"), newScoutTestSatellite(t, "SAT-2", "X1-HUB-A1"),
+		newScoutTestSatellite(t, "SAT-3", "X1-HUB-A1"), newScoutTestSatellite(t, "SAT-4", "X1-HUB-A1"),
+		newScoutTestSatellite(t, "SAT-5", "X1-HUB-A1"),
+	}
+	gg := &fakeGateGraph{hops: map[string]int{
+		"X1-HUB->X1-U1": 1, "X1-HUB->X1-U2": 1, "X1-HUB->X1-U3": 1, "X1-HUB->X1-U4": 1, "X1-HUB->X1-U5": 1,
+	}} // no adjacency → all 5 are gate-uncharted backlog targets
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats,
+		map[string]float64{"X1-U1": 1, "X1-U2": 2, "X1-U3": 3, "X1-U4": 4, "X1-U5": 5}, gg)
+
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), gateReconcileTestCmd(2), &idle)
+
+	require.Len(t, daemonClient.repositioned, 2, "the sweep must dispatch at most the cap (2), never all 5 backlog targets")
+	require.Len(t, idle, 3, "only the 2 dispatched probes are consumed from the idle pool")
+}
+
+// Default OFF: with GateReconcileEnabled false (the zero value) the sweep is a no-op even
+// with a backlog and an idle probe — deploy-inert until armed. MUTATION GUARD: drop the
+// !cmd.GateReconcileEnabled guard and this dispatches.
+func TestReconcileGateChartSweep_DisabledByDefault_NoDispatch(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	sats := []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1")}
+	gg := &fakeGateGraph{hops: map[string]int{"X1-HUB->X1-U1": 1}}
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats, map[string]float64{"X1-U1": 1}, gg)
+
+	cmd := &RunScoutPostCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), ContainerID: "scoutpost-1"} // enabled = false
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), cmd, &idle)
+
+	require.Empty(t, daemonClient.repositioned, "the sweep must be a no-op when disabled (default OFF)")
+	require.Len(t, idle, 1, "no probe consumed when the sweep is off")
+}
+
+// The sweep dispatches ONLY to gate-uncharted systems: an already-charted market system
+// (present in Adjacency) is excluded, and the relay targets the dark system's market. This
+// is the behavioral counterpart of the enumeration mutation guard, end to end.
+func TestReconcileGateChartSweep_SkipsChartedSystems(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	sats := []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1")}
+	gg := &fakeGateGraph{
+		hops:      map[string]int{"X1-HUB->X1-CHARTED": 1, "X1-HUB->X1-DARK": 1},
+		adjacency: map[string][]system.GateEdge{"X1-CHARTED": {{ConnectedSystem: "X1-NBR"}}}, // charted
+	}
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats,
+		map[string]float64{"X1-CHARTED": 1, "X1-DARK": 2}, gg)
+
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), gateReconcileTestCmd(5), &idle)
+
+	require.Len(t, daemonClient.repositioned, 1, "only the gate-uncharted system gets a relay")
+	require.Len(t, daemonClient.persistedRepositionCmds, 1)
+	require.Equal(t, "X1-DARK-A1", daemonClient.persistedRepositionCmds[0].DestinationWaypoint,
+		"the relay targets the UNCHARTED X1-DARK's market, never the already-charted X1-CHARTED")
+}
+
+// Fail-closed: a gate-adjacency read failure skips the sweep entirely — no dispatch, no
+// panic — so a transient DB hiccup can never mis-fire relays into the rate limiter.
+func TestReconcileGateChartSweep_AdjacencyError_FailsClosed(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	sats := []*navigation.Ship{newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1")}
+	gg := &fakeGateGraph{hops: map[string]int{"X1-HUB->X1-U1": 1}, adjErr: fmt.Errorf("db down")}
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats, map[string]float64{"X1-U1": 1}, gg)
+
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), gateReconcileTestCmd(5), &idle)
+
+	require.Empty(t, daemonClient.repositioned, "a gate-adjacency read failure must fail closed — no dispatch")
+	require.Len(t, idle, 1, "no probe consumed when the sweep fails closed")
 }

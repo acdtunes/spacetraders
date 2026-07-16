@@ -76,4 +76,19 @@ type ScoutingConfig struct {
 	// HZ30/PD44/YP16/FQ55 stayed dark. RULINGS #5 disable escape: a captain can pin
 	// depth-first without a redeploy; not expected to be set in normal operation.
 	CoverageSpreadDisabled bool `mapstructure:"coverage_spread_disabled"`
+
+	// GateReconcileEnabled arms the sp-bcsu RETROACTIVE gate-reconcile sweep in the standing
+	// scout_post_coordinator: a bounded pass that dispatches leftover idle probes to chart
+	// market-known-but-gate-uncharted frontier systems (Part 1 charts the gate on arrival),
+	// automating the manual UF64 procedure that clears the market-swept-but-gate-empty backlog
+	// the strict pathfinder strands hulls on. false/absent => OFF (deploy-inert): the sweep
+	// moves probes and spends API budget, so it is opt-in — armed once the backlog needs
+	// clearing. RULINGS #5 opt-in escape, mirroring the disable-escape bools.
+	GateReconcileEnabled bool `mapstructure:"gate_reconcile_enabled"`
+
+	// GateReconcileMaxDispatch HARD-CAPS how many gate-reconcile relays the sweep dispatches
+	// per tick (sp-bcsu) — the rate-budget guard so it can never burst the limiter or starve
+	// trade hulls of it. 0/absent => defaultGateReconcileMaxDispatch (2), mirroring
+	// MaxRepositionJumps' 0 => default idiom.
+	GateReconcileMaxDispatch int `mapstructure:"gate_reconcile_max_dispatch"`
 }

@@ -174,6 +174,33 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 	return s.fetchAndStore(ctx, systemSymbol, playerID)
 }
 
+// ChartPresentGate is the PRESENCE-FORCED gate read (sp-bcsu): a hull physically
+// standing on systemSymbol's own jump gate is the ONE moment its outbound connections
+// are readable (a remote read with no ship present 400s, code 4001). It deliberately
+// BYPASSES the sp-ikx1 negative-result backoff short-circuit that Connections honors —
+// a plain Connections would skip an already-latched system even with a ship on its gate,
+// the exact catch-22 that leaves a frontier gate uncharted forever. On a now-succeeding
+// present read, fetchAndStore -> store.Replace deletes every row for the system INCLUDING
+// the backoff marker (self-heal, gate_edge_repository.go), so the latch clears itself. It
+// stays honest at the two boundaries that matter:
+//   - GUARD 1 (idempotent): an already-charted system (Edges is a fresh, non-empty hit)
+//     early-returns with ZERO API — an arrival on a known system costs one store read.
+//   - GUARD 2 (negative cache intact): a present read that STILL fails re-enters the
+//     backoff unchanged via fetchAndStore's enterBackoff, so this never defeats sp-4bm3;
+//     only genuine ship-present success heals the latch.
+//
+// It is best-effort from the caller's side: charting must never fail a trade/nav leg, so
+// callers (travelWithJumpBound.chartArrivedGate, the sp-bcsu reconcile sweep) log and
+// swallow the error. The error is surfaced here so those callers can log the cause.
+func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error) {
+	if edges, ok, err := s.store.Edges(ctx, systemSymbol); err != nil {
+		return nil, err
+	} else if ok && len(edges) > 0 {
+		return edges, nil
+	}
+	return s.fetchAndStore(ctx, systemSymbol, playerID)
+}
+
 // fetchAndStore resolves systemSymbol's own gate, fetches its live connections,
 // persists the fresh edge set, and returns it. The gate is resolved from the
 // store first (a neighbor may have recorded it — this is the path that expands an
@@ -381,11 +408,14 @@ func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerI
 //     but a probe's whole purpose is to REACH that frontier, and a frontier gate is
 //     unreadable precisely because no probe has arrived to read it — the catch-22 a
 //     fail-closed router can never re-admit. Routing over the stored adjacency (which
-//     retains an unreadable gate's last-known edges) breaks it: the probe hops the
-//     known topology, and every arrival re-reads its gate, so each successful reposition
-//     SHRINKS the unreadable set (the relaxation retires itself). Crucially it does this
-//     WITHOUT any live probe — Adjacency is a store read, so the sp-ikx1 negative-result
-//     backoff is fully honored; we route past unreadable gates, we never re-probe them.
+//     retains an unreadable gate's last-known edges) breaks it: the probe hops the known
+//     topology, and the coordinator's chart-on-arrival re-reads each gate the hull lands
+//     on (sp-bcsu — travelWithJumpBound.chartArrivedGate -> ChartPresentGate, a PRESENT-ship
+//     read that self-heals the latch), so each successful reposition SHRINKS the unreadable
+//     set. RepositionPath ITSELF does this WITHOUT any live probe — Adjacency is a store
+//     read, so the sp-ikx1 negative-result backoff is fully honored here; we route PAST
+//     unreadable gates over stored edges, and the present-ship arrival read (never a remote
+//     re-probe) is what actually re-charts them.
 //   - It takes a caller-supplied bound (the [scouting] max_reposition_jumps config,
 //     default 12) rather than the shared MaxJumpPath=5, because the expanded frontier's
 //     posts sit 6–12 gate-jumps from the probe supply.

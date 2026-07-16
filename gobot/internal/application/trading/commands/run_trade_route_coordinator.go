@@ -324,6 +324,14 @@ type RunTradeRouteCoordinatorHandler struct {
 	// unaffected. The daemon injects a real, fetch-through GateGraph via
 	// SetGateGraph so a multi-hop gap (KA42→PA3→UQ16→JP61) is actually crossed.
 	gateGraph GateGraph
+	// chartGateOnArrival is the sp-bcsu reversibility knob ([routing] chart_gate_on_arrival,
+	// default ON in prod): when true, travelWithJumpBound best-effort charts the jump gate of
+	// every system a hull arrives on (the one moment its outbound edges are readable), which
+	// unstrands the frontier the strict pathfinder fails closed on. Off (the handler zero
+	// value, so every existing test is byte-for-byte unchanged) skips it entirely — the hot
+	// trade path stays identical. The daemon wires it on from config via SetChartGateOnArrival;
+	// a nil gateGraph disables it regardless (nothing to chart with).
+	chartGateOnArrival bool
 	// eventSubscriber lets travel() wait out a hull that is already IN_TRANSIT
 	// before any movement (sp-8l3o): a run re-adopted mid-hop must ride the
 	// arrival out as a WAIT state, not attempt the jump/navigate now (which the
@@ -385,6 +393,16 @@ type GateGraph interface {
 	// edge carries its build state so an under-construction neighbor is rejected, not
 	// silently pre-flighted into a hop-time crash.
 	Connections(ctx context.Context, fromSystem string, playerID int) ([]system.GateEdge, error)
+	// ChartPresentGate is the PRESENCE-FORCED gate read (sp-bcsu): a hull physically on
+	// systemSymbol's own jump gate is the ONE moment its outbound connections are readable
+	// (a remote read with no ship present 400s). It BYPASSES the sp-ikx1 negative-result
+	// backoff short-circuit Connections honors — so a present-ship arrival HEALS an
+	// already-latched system (fetchAndStore -> store.Replace clears the marker) instead of
+	// skipping it. Idempotent: an already-charted system early-returns with zero API. Called
+	// best-effort on gate arrivals (travelWithJumpBound) so gate_edges is charted at the one
+	// moment it can be, then kept current forever; a read failure is logged and swallowed and
+	// never fails the leg. *gategraph.Service satisfies this.
+	ChartPresentGate(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error)
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. It does not own a
@@ -428,6 +446,14 @@ func NewRunTradeRouteCoordinatorHandler(
 // optional-injection idiom rather than churning the constructor signature.
 func (h *RunTradeRouteCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.gateGraph = g
+}
+
+// SetChartGateOnArrival wires the sp-bcsu chart-on-arrival reversibility knob
+// ([routing] chart_gate_on_arrival, default ON). The daemon passes the resolved config
+// value; left unset (false) the handler never charts on arrival, so every existing
+// caller/test is byte-for-byte unchanged. Mirrors the SetGateGraph optional-injection idiom.
+func (h *RunTradeRouteCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
+	h.chartGateOnArrival = enabled
 }
 
 // gateGraphResolver exposes the wired resolver (or nil) so the composing arb

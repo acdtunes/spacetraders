@@ -299,6 +299,8 @@ var scoutingConfigKeys = []string{
 	"coverage_spread_disabled",
 	"respawn_attempt_cap",
 	"respawn_cap_disabled",
+	"gate_reconcile_enabled",
+	"gate_reconcile_max_dispatch",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -344,6 +346,15 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	// respawn-loop cap live-by-default.
 	if sc.RespawnCapDisabled {
 		config["respawn_cap_disabled"] = true
+	}
+	// Gate-reconcile opt-in (sp-bcsu): true-only injection — false/absent leaves the sweep OFF
+	// (deploy-inert). The cap is written only when the captain set a non-zero override; 0 defers
+	// to defaultGateReconcileMaxDispatch.
+	if sc.GateReconcileEnabled {
+		config["gate_reconcile_enabled"] = true
+	}
+	if sc.GateReconcileMaxDispatch != 0 {
+		config["gate_reconcile_max_dispatch"] = sc.GateReconcileMaxDispatch
 	}
 }
 

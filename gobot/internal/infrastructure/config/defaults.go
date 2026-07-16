@@ -84,6 +84,16 @@ func SetDefaults(cfg *Config) {
 	if cfg.Routing.GateBackoff.Max == 0 {
 		cfg.Routing.GateBackoff.Max = 2 * time.Hour
 	}
+	// Chart-on-gate-arrival (sp-bcsu): default ON. A nil switch means the captain has not
+	// configured [routing] chart_gate_on_arrival, and its intent is to chart every jump gate
+	// a hull lands on (the one moment it is readable) so the frontier never strands hulls on
+	// empty gate_edges. An explicit `chart_gate_on_arrival: false` is preserved as the
+	// reversibility off-switch (restores the pre-sp-bcsu hot path). Charting is best-effort +
+	// idempotent, so default-on adds no burst (RULINGS #5: a knob, not a code literal).
+	if cfg.Routing.ChartGateOnArrival == nil {
+		chartGateOnArrivalDefault := true
+		cfg.Routing.ChartGateOnArrival = &chartGateOnArrivalDefault
+	}
 
 	// Daemon defaults
 	if cfg.Daemon.Address == "" {

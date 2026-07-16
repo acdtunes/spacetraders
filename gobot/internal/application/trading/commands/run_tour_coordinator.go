@@ -503,6 +503,13 @@ func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
+// SetChartGateOnArrival propagates the sp-bcsu chart-on-gate-arrival knob to the movement
+// legs, so this coordinator's cross-gate tour arrivals chart the gate they land on too.
+// Mirrors the SetGateGraph delegation.
+func (h *RunTourCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
+	h.legs.SetChartGateOnArrival(enabled)
+}
+
 // SetScanPolicy wires the sp-v34b tour-scan load policy (recent-scan freshness gate +
 // impact-sample rate, resolved from cfg.TradeImpact on restart). Stamped onto ctx at run
 // start so the shared arrival + post-trade scans throttle the deliberate price-impact

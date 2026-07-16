@@ -357,12 +357,27 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		if werr := h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds); werr != nil {
 			return ship, werr
 		}
+		// sp-bcsu: the hop landed the hull ON nextSystem's jump gate — the one moment its
+		// outbound edges are readable. Chart it now (best-effort). The TERMINAL hop's system
+		// is charted from the authoritative reloaded pointer below (chartArrivedGate), so
+		// skip it here to avoid a redundant re-chart of the destination.
+		if i < len(path)-1 {
+			h.chartSystemGate(ctx, nextSystem, playerID)
+		}
 	}
 
 	freshShip, err := h.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))
 	if err != nil {
 		return ship, fmt.Errorf("failed to reload ship %s after jump to %s: %w", ship.ShipSymbol(), destSystem, err)
 	}
+
+	// sp-bcsu: the hull is physically on destSystem's JUMP GATE — the one moment its
+	// outbound connections are readable (a remote read with no ship present 400s, code
+	// 4001). Chart + persist now, BEFORE flying the gate->market hop, so gate_edges for
+	// destSystem is filled at the only chance it can be and the strict pathfinder stops
+	// failing closed on it (unstranding hulls routed through the frontier). Best-effort:
+	// a read failure is logged and swallowed, never failing this leg (chartArrivedGate).
+	h.chartArrivedGate(ctx, freshShip, playerID)
 
 	// The jump lands the hull on destSystem's JUMP GATE, not on
 	// destinationWaypoint's market. Fly the final gate->waypoint hop so the
@@ -378,6 +393,47 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		}
 	}
 	return freshShip, nil
+}
+
+// chartArrivedGate best-effort charts the outbound gate connections of the system the
+// hull is physically standing on (its jump-gate arrival) — the ONE moment those edges are
+// readable, since a remote read with NO ship present 400s (code 4001). This is the sp-bcsu
+// prospective fix: without it the gate-crosser flies straight to market and destSystem's
+// gate_edges stays empty, so the strict pathfinder fails closed on it and hulls routed
+// through it strand. It mirrors route_executor_warp.go chartOnArrival exactly in
+// discipline: NON-FATAL — a gate-read failure is logged and swallowed and can never fail a
+// trade/nav leg, strand the hull, or change the nav outcome. Guarded on the hull actually
+// being on a jump gate; the knob + nil-gate-graph gate lives in chartSystemGate.
+func (h *RunTradeRouteCoordinatorHandler) chartArrivedGate(ctx context.Context, ship *navigation.Ship, playerID int) {
+	loc := ship.CurrentLocation()
+	if loc == nil || !loc.IsJumpGate() {
+		return
+	}
+	h.chartSystemGate(ctx, loc.SystemSymbol, playerID)
+}
+
+// chartSystemGate is the shared best-effort present-ship gate chart used by BOTH the
+// destination arrival (chartArrivedGate, keyed off the reloaded hull's authoritative
+// location) and each intermediate hop (keyed off nextSystem — a successful jump is
+// guaranteed to have landed the hull ON that system's gate). The reversibility knob and
+// the nil-gate-graph guard live here so both call sites honor them. The read goes through
+// ChartPresentGate, which BYPASSES the sp-ikx1 backoff (a present ship heals a latched
+// system) yet stays idempotent (an already-charted system is a single store read, zero
+// API) and backoff-honest (a still-failing read re-enters backoff, never defeating
+// sp-4bm3). Errors are logged and SWALLOWED — the same non-fatal discipline as
+// route_executor_warp.go chartOnArrival — so charting can never fail the leg.
+func (h *RunTradeRouteCoordinatorHandler) chartSystemGate(ctx context.Context, systemSymbol string, playerID int) {
+	if !h.chartGateOnArrival || h.gateGraph == nil {
+		return
+	}
+	if _, err := h.gateGraph.ChartPresentGate(ctx, systemSymbol, playerID); err != nil {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+			"chart-on-arrival: gate read for %s failed (non-fatal): %v", systemSymbol, err), map[string]interface{}{
+			"action": "gate_chart_on_arrival_failed",
+			"system": systemSymbol,
+			"error":  err.Error(),
+		})
+	}
 }
 
 // RepositionToWaypoint moves shipSymbol to destinationWaypoint, crossing system
@@ -409,8 +465,10 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypoint(ctx context.Conte
 // over the PERSISTED stored adjacency bounded to maxJumps (RepositionPath) rather than the
 // strict fetch-through Path. This is the ONE call site that relaxes the sp-qxa4 fail-closed
 // unreadable-gate discipline — and only for a scout satellite, whose whole purpose is to
-// reach an unreadable frontier and whose arrival re-reads the gate it crossed (the
-// relaxation retires itself). Heavies/trade/arb keep RepositionToWaypoint (strict). maxJumps
+// reach an unreadable frontier and whose arrival NOW re-reads the gate it crossed via the
+// coordinator's chart-on-arrival (sp-bcsu chartArrivedGate -> ChartPresentGate, a present-
+// ship read that self-heals the latch), so the relaxation retires itself. Heavies/trade/arb
+// keep RepositionToWaypoint (strict). maxJumps
 // <= 0 degrades to the strict resolver, so a mis-wired caller can never accidentally relax.
 func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypointWithinJumps(ctx context.Context, shipSymbol, destinationWaypoint string, playerID, maxJumps int) error {
 	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))

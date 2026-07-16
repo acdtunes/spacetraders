@@ -1061,3 +1061,86 @@ func TestRepositionPath_ZeroBound_FallsBackToMaxJumpPath(t *testing.T) {
 		t.Fatalf("a 6-jump route must exceed the MaxJumpPath fallback, got %v", err)
 	}
 }
+
+// --- sp-bcsu: ChartPresentGate (the present-ship gate read that heals the frontier) ---
+
+// A hull physically on a system's jump gate is the ONE moment its outbound connections
+// are readable. ChartPresentGate BYPASSES the sp-ikx1 negative-result backoff — a plain
+// Connections would skip an already-latched system even with a ship standing on its gate
+// — so a now-succeeding present read HEALS the latch: it probes past the backoff, persists
+// the edges, and store.Replace clears the marker. MUTATION GUARD: implement ChartPresentGate
+// as a plain Connections (honoring the latch) and this fails — the probe never fires
+// (jumpGateCalls stays 0), the edges are never written, and the latch is never cleared.
+func TestService_ChartPresentGate_BypassesBackoff_HealsLatchedSystem(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{connectionsBySystem: map[string][]string{"X1-QF75": {"X1-NBR-GATE"}}}
+	base := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	clock := &shared.MockClock{CurrentTime: base}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"}, WithClock(clock))
+	ctx := context.Background()
+
+	// Seed QF75 as backed off with the last probe JUST now — the latch is live (well
+	// within the 5m window), so the plain path is suppressed and never probes.
+	if _, err := store.MarkUnreadable(ctx, "X1-QF75", "X1-QF75-GATE", base); err != nil {
+		t.Fatalf("seed backoff: %v", err)
+	}
+	if _, err := svc.Connections(ctx, "X1-QF75", 1); !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("precondition: a live latch must suppress Connections, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-QF75-GATE"]; got != 0 {
+		t.Fatalf("precondition: the suppressed Connections must NOT probe, got %d", got)
+	}
+
+	// ChartPresentGate bypasses the live latch: it probes, succeeds, persists the edges.
+	edges, err := svc.ChartPresentGate(ctx, "X1-QF75", 1)
+	if err != nil {
+		t.Fatalf("a present-ship read must succeed and heal, got %v", err)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-NBR" {
+		t.Fatalf("expected the one real edge to X1-NBR, got %v", edges)
+	}
+	if got := api.jumpGateCalls["X1-QF75-GATE"]; got != 1 {
+		t.Fatalf("ChartPresentGate must probe past the latch exactly once, got %d", got)
+	}
+	if _, persisted := store.replaced["X1-QF75"]; !persisted {
+		t.Fatal("the healed system's edges must be written as an edge set")
+	}
+	if _, backedOff, _ := backoffOf(store, "X1-QF75"); backedOff {
+		t.Fatal("a successful present-ship read must clear the backoff latch (self-heal via Replace)")
+	}
+}
+
+// ChartPresentGate is idempotent (GUARD 1): a system that is ALREADY charted (Edges is a
+// fresh, non-empty hit) short-circuits with ZERO API — an arrival on a known system costs
+// one store lookup, never a GetJumpGate. MUTATION GUARD: drop the len>0 early return and
+// the nil API client panics on the needless fetch.
+func TestService_ChartPresentGate_AlreadyCharted_NoAPI(t *testing.T) {
+	store := &freshStore{adjacency: map[string][]system.GateEdge{"X1-QF75": edgesTo("X1-NBR")}}
+	svc := NewService(store, nil, nil, nil) // nil API: any fetch-through would panic, proving none happens
+
+	edges, err := svc.ChartPresentGate(context.Background(), "X1-QF75", 1)
+	if err != nil {
+		t.Fatalf("an already-charted system must early-return cleanly, got %v", err)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-NBR" {
+		t.Fatalf("expected the stored edge to X1-NBR returned as-is, got %v", edges)
+	}
+}
+
+// GUARD 2 (the negative cache stays intact): a present-ship read that STILL 400s (the gate
+// genuinely refuses even with the ship there) must re-enter the sp-4bm3 negative-result
+// backoff unchanged — ChartPresentGate must not defeat the negative cache. It surfaces
+// ErrGateUnreadable and records the marker, exactly as an ordinary fetch would.
+func TestService_ChartPresentGate_StillFailing_ReentersBackoff(t *testing.T) {
+	store := &perSystemMissStore{}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-QF75-GATE": apiErr400("no ship present")}}
+	svc := NewService(store, api, nil, &stubPlayerRepo{token: "tok"})
+
+	_, err := svc.ChartPresentGate(context.Background(), "X1-QF75", 1)
+	if !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("a still-failing present read must surface ErrGateUnreadable, got %v", err)
+	}
+	if _, backedOff, _ := backoffOf(store, "X1-QF75"); !backedOff {
+		t.Fatal("a still-failing present read must (re-)enter the negative-result backoff")
+	}
+}
