@@ -381,6 +381,26 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 	if ship == nil {
 		return fmt.Errorf("depot warehouse hull %s not found", shipSymbol)
 	}
+	// Buffer-authority HANDOFF (sp-j4mc, prereq to arming epic st-7zk): when an ARMED capacity
+	// reconciler owns this player's buffers, STAND DOWN the depot's buffer re-solve for an
+	// ALREADY-RUNNING warehouse — the reconciler is then the sole writer of supported_goods, and
+	// re-solving here would thrash the live buffer every reload (the depot ranks receipt goods by
+	// VALUE, the reconciler by FREQUENCY). Two invariants keep this safe:
+	//   - Scoped to the NON-IDLE (already-running) hull ONLY. A FRESH launch (idle hull) falls
+	//     through to persistAndRunWarehouse below and STILL establishes the warehouse's initial
+	//     whitelist — the reconciler only adjusts it via deltas thereafter, so there is no gap
+	//     where nobody writes supported_goods.
+	//   - The hull positioning above (positionDepotElementHull: free / re-dedicate / park) already
+	//     ran, so unrelated warehouse bookkeeping is untouched — only the supported_goods re-solve
+	//     and overwrite stand down.
+	// armedCapacityReconcilerOwnsBuffers fails toward depot-owns on ANY repo/parse error, so a
+	// query failure can never strand the buffer (default = depot owns; INERT while the live
+	// reconciler is DryRun).
+	if !ship.IsIdle() && s.armedCapacityReconcilerOwnsBuffers(ctx, playerID) {
+		fmt.Printf("depot buffer re-solve deferred to armed reconciler (player %d): warehouse %s at %s left to the reconciler's supported_goods\n",
+			playerID, shipSymbol, warehouseWaypoint)
+		return nil
+	}
 	// Re-solve the receipt caps with the CURRENT selector on EVERY reload (sp-94du) — BEFORE the
 	// idle gate, so the gate governs only the coordinator LAUNCH, never the cap re-solve. A
 	// redeployed selector must reach the buffer whether the hull is idle (fresh launch below) or

@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	capacityCmd "github.com/andrescamacho/spacetraders-go/internal/application/capacity/commands"
@@ -180,8 +181,10 @@ func buildCapacityReconcilerCoordinatorCommand(cfg *configReader, playerID int, 
 		// DryRun ORs the live config.yaml knob (capacity_dry_run, re-injected each
 		// build) with the persisted launch-time --dry-run flag (capacity_launch_dry_run,
 		// preserved across restart) — either source arms observe-only, and a dry-run
-		// launch stays dry-run through recovery (mirrors buildBootstrapCommand).
-		DryRun:           cfg.OptionalBool("capacity_dry_run") || cfg.OptionalBool("capacity_launch_dry_run"),
+		// launch stays dry-run through recovery (mirrors buildBootstrapCommand). The
+		// predicate is factored into capacityReconcilerDryRun so the depot buffer-authority
+		// handoff (armedCapacityReconcilerOwnsBuffers) reads "armed" the SAME way.
+		DryRun:           capacityReconcilerDryRun(cfg),
 		TickIntervalSecs: cfg.OptionalInt("capacity_tick_interval_secs", 0),
 		// Money floor reads with PresentOrFail semantics (sp-ggk2 doctrine):
 		// a PRESENT-but-unparseable reserve floor must fail the build, never
@@ -194,4 +197,55 @@ func buildCapacityReconcilerCoordinatorCommand(cfg *configReader, playerID int, 
 		StockerCapacityBudget:    cfg.OptionalInt("capacity_stocker_capacity_budget", 0),
 		ApprovalThresholdCredits: int64(cfg.OptionalInt("capacity_approval_threshold", 0)),
 	}
+}
+
+// capacityReconcilerDryRun is the SINGLE arming predicate for the reconciler: DryRun is TRUE
+// (observe-only, NOT armed) when EITHER the live config knob (capacity_dry_run) OR the persisted
+// launch-time flag (capacity_launch_dry_run) is set — either source arms observe-only. It is
+// SHARED by buildCapacityReconcilerCoordinatorCommand (what the reconciler itself runs as) and by
+// armedCapacityReconcilerOwnsBuffers (the depot buffer-authority handoff, sp-j4mc), so the two can
+// never drift on what "armed" means — a divergence would either strand the depot buffer or let it
+// fight a live armed reconciler.
+func capacityReconcilerDryRun(cfg *configReader) bool {
+	return cfg.OptionalBool("capacity_dry_run") || cfg.OptionalBool("capacity_launch_dry_run")
+}
+
+// armedCapacityReconcilerOwnsBuffers reports whether an ARMED capacity reconciler (epic st-7zk)
+// owns this player's depot buffers: a RUNNING CAPACITY_RECONCILER container for the player whose
+// DryRun is FALSE (capacityReconcilerDryRun — capacity_dry_run AND capacity_launch_dry_run both
+// false). When TRUE, the depot buffer re-solve stands down (container_ops_depot_launch.go) so the
+// depot and the reconciler never both write supported_goods.
+//
+// FAIL-SAFE toward depot-owns — a query failure must NEVER strand buffers. Every uncertainty
+// yields FALSE (the depot keeps its current buffer authority): a nil repo (degraded/test), an
+// erroring/unreadable repo, a corrupt config, no reconciler, a DryRun reconciler (the current live
+// state), or a not-RUNNING reconciler. The check is scoped to the player via ListByStatus.
+func (s *DaemonServer) armedCapacityReconcilerOwnsBuffers(ctx context.Context, playerID int) bool {
+	if s.containerRepo == nil {
+		return false // repo unreadable (degraded/test) → depot owns
+	}
+	running, err := s.containerRepo.ListByStatus(ctx, container.ContainerStatusRunning, &playerID)
+	if err != nil {
+		return false // container query failed → never strand buffers, depot owns
+	}
+	for _, model := range running {
+		if model == nil || model.ContainerType != string(container.ContainerTypeCapacityReconciler) {
+			continue
+		}
+		if capacityReconcilerConfigArmed(model.Config) {
+			return true
+		}
+	}
+	return false
+}
+
+// capacityReconcilerConfigArmed decodes a persisted reconciler container config (JSON) and reports
+// whether it is ARMED — DryRun FALSE per capacityReconcilerDryRun. A config that will not parse
+// fails toward NOT-armed (depot owns), so a corrupt row can never stand the depot down.
+func capacityReconcilerConfigArmed(configJSON string) bool {
+	var values map[string]interface{}
+	if err := json.Unmarshal([]byte(configJSON), &values); err != nil {
+		return false // unparseable config → treat as not-armed (fail-safe toward depot-owns)
+	}
+	return !capacityReconcilerDryRun(newConfigReader(values))
 }
