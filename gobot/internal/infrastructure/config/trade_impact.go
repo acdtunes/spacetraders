@@ -3,6 +3,7 @@ package config
 import (
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -40,7 +41,35 @@ type TradeImpactConfig struct {
 	// AbsorptionConfig.TradeRouteConsultDisabled. Absent/false = model ON (the analyst's
 	// era-3 fit is the intended default posture, the whole point of the bead).
 	Disabled bool `mapstructure:"disabled"`
+
+	// ScanMaxAgeSeconds is the sp-v34b recent-scan freshness window: an arrival or
+	// post-trade decision scan whose cached market was refreshed within this many seconds
+	// reuses the cache instead of re-calling GetMarket — the redundant re-scan killer that
+	// takes tour market scanning off the ~80%-of-API wall. 0 → the 75s default. Seconds
+	// because the operational window is tens of seconds (a hull's scan→buy→scan round trip).
+	// This governs COLLECTION load only; the sp-tl68 ranker reads whatever cached data
+	// exists (slightly-older-but-fresh-enough), so guards/capital/ranking are untouched.
+	ScanMaxAgeSeconds int `mapstructure:"scan_max_age_seconds"`
+	// ImpactSampleRate is the FRACTION of trades on which the deliberate post-trade impact
+	// scan (the paired before/after that records dP/P) still fires, so the analyst keeps
+	// enough consecutive-leg pairs to REFIT the model per era (~1 day at 0.15 suffices). A
+	// non-sampled trade falls back to the freshness gate (one fresh decision scan, no extra
+	// measurement scan). 0 → the 0.15 default; DIAL UP toward 1.0 to gather a fresh refit
+	// corpus before an era transition, DOWN to shed more API. Clamped to [0,1].
+	ImpactSampleRate float64 `mapstructure:"impact_sample_rate"`
+	// ScanSamplingDisabled reverts sp-v34b entirely: the trade coordinators stamp NO scan
+	// policy, so every arrival and post-trade scan is unconditional (pre-sp-v34b behavior,
+	// byte-for-byte). The operator's instant revert for the scan-load change — flip it and
+	// restart — mirroring Disabled's kill-switch convention. Absent/false = sp-v34b ON.
+	ScanSamplingDisabled bool `mapstructure:"scan_sampling_disabled"`
 }
+
+// sp-v34b scan-load defaults (config package locals, not domain constants — they govern
+// telemetry COLLECTION cadence, not the model's numeric form).
+const (
+	defaultScanMaxAgeSeconds = 75
+	defaultImpactSampleRate  = 0.15
+)
 
 // ResolvedBuyImpact returns the configured buy-impact coefficient or the era-3 default
 // when unset (non-positive). Centralizes default resolution so the ranker and the
@@ -67,4 +96,39 @@ func (c TradeImpactConfig) ResolvedCooldownTau() time.Duration {
 		return time.Duration(c.CooldownTauMinutes) * time.Minute
 	}
 	return trading.DefaultCooldownTau
+}
+
+// ResolvedScanMaxAge returns the sp-v34b recent-scan freshness window as a Duration, or
+// the 75s default when unset (non-positive).
+func (c TradeImpactConfig) ResolvedScanMaxAge() time.Duration {
+	if c.ScanMaxAgeSeconds > 0 {
+		return time.Duration(c.ScanMaxAgeSeconds) * time.Second
+	}
+	return defaultScanMaxAgeSeconds * time.Second
+}
+
+// ResolvedImpactSampleRate returns the configured impact-sample fraction clamped to
+// [0,1], or the 0.15 default when unset (non-positive). A value >1 clamps to 1 (every
+// trade instrumented — the pre-sp-v34b full-collection posture).
+func (c TradeImpactConfig) ResolvedImpactSampleRate() float64 {
+	if c.ImpactSampleRate <= 0 {
+		return defaultImpactSampleRate
+	}
+	if c.ImpactSampleRate > 1 {
+		return 1
+	}
+	return c.ImpactSampleRate
+}
+
+// ResolvedScanPolicy bundles the two sp-v34b knobs into the ctx policy a trade
+// coordinator stamps, or reports ok=false when ScanSamplingDisabled reverts the feature
+// (the coordinator then stamps nothing → pre-sp-v34b full-scan behavior everywhere).
+func (c TradeImpactConfig) ResolvedScanPolicy() (shared.ScanPolicy, bool) {
+	if c.ScanSamplingDisabled {
+		return shared.ScanPolicy{}, false
+	}
+	return shared.ScanPolicy{
+		MaxScanAge:       c.ResolvedScanMaxAge(),
+		ImpactSampleRate: c.ResolvedImpactSampleRate(),
+	}, true
 }

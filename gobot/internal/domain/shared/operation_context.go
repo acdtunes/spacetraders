@@ -1,6 +1,9 @@
 package shared
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // contextKey is a type for context keys to avoid collisions
 type contextKey int
@@ -10,6 +13,7 @@ const (
 	skipMarketRefreshKey             // Skip market refresh after cargo transactions (optimization)
 	selectorBranchKey                // Factory input-source selector branch, tagged onto the buy's ledger row (sp-br0m)
 	constructionSupplyKey            // Marks a ProduceGood run as construction supply, exempt from resale-margin guards (sp-qmp8)
+	scanPolicyKey                    // Tour-scan load policy: recent-scan freshness gate + impact-sample rate (sp-v34b)
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -175,4 +179,45 @@ func SelectorBranchFromContext(ctx context.Context) (string, bool) {
 		return branch, true
 	}
 	return "", false
+}
+
+// ScanPolicy is the sp-v34b tour-scan load policy a TRADE coordinator (tour /
+// trade-route) threads onto ctx to throttle the deliberate price-impact
+// instrumentation the sp-tl68 model is fitted from. It governs two API-reducing
+// gates on the SHARED scan path WITHOUT touching the freshness-scout recovery path
+// (which never stamps a policy, so its scans stay ungated — the recovery/decay
+// dataset is unaffected) or the shipyard scan:
+//
+//   - MaxScanAge: an arrival/decision scan whose CACHED market was updated within
+//     this window reuses the cache instead of re-calling GetMarket — the redundant
+//     re-scan killer (the measured "same hull re-scanning a market 4s apart"). 0
+//     disables the gate (always scan — pre-sp-v34b behavior).
+//   - ImpactSampleRate: the FRACTION of trades on which the deliberate post-trade
+//     impact scan (the paired before/after that records dP/P) still fires so the
+//     analyst can refit the model per era (~1 day of pairs at 0.15 is plenty). A
+//     non-sampled trade falls back to the MaxScanAge gate — one fresh scan for the
+//     decision, no extra measurement scan. 1.0 = every trade instrumented
+//     (pre-sp-v34b behavior); 0 = never (max API saving, no refit data).
+//
+// The zero value is INERT: absent from ctx, ScanPolicyFromContext returns ok=false
+// and every scan caller runs its pre-sp-v34b path byte-for-byte (deploy-safe: only a
+// coordinator that stamps a policy changes behavior).
+type ScanPolicy struct {
+	MaxScanAge       time.Duration
+	ImpactSampleRate float64
+}
+
+// WithScanPolicy stamps the sp-v34b scan-load policy onto ctx. Only the trade
+// coordinators stamp it; the scout tour deliberately does NOT, so its recovery scans
+// remain ungated.
+func WithScanPolicy(ctx context.Context, policy ScanPolicy) context.Context {
+	return context.WithValue(ctx, scanPolicyKey, policy)
+}
+
+// ScanPolicyFromContext returns the stamped scan-load policy and ok=true, or the
+// zero policy and ok=false when no trade coordinator stamped one (the default for
+// every scout/CLI/other caller — pre-sp-v34b behavior).
+func ScanPolicyFromContext(ctx context.Context) (ScanPolicy, bool) {
+	policy, ok := ctx.Value(scanPolicyKey).(ScanPolicy)
+	return policy, ok
 }

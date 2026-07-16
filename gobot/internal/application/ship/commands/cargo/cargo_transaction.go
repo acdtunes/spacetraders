@@ -3,7 +3,10 @@ package cargo
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
@@ -129,6 +132,13 @@ type CargoTransactionHandler struct {
 	apiClient       domainPorts.APIClient
 	mediator        common.Mediator
 	marketRefresher MarketRefresher // Optional: refreshes market data after transactions
+
+	// impactNonce is the per-trade counter that spreads the sp-v34b impact-scan
+	// sampling evenly across every market and hull this shared handler serves: each
+	// post-trade scan decision consumes the next value, so no single lane is ever
+	// permanently sampled-in or -out. Atomic because the handler is a daemon singleton
+	// dispatched concurrently across hulls.
+	impactNonce atomic.Uint64
 }
 
 // NewCargoTransactionHandler creates a new cargo transaction handler with the given strategy.
@@ -393,7 +403,7 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 	// Refresh market data once after all batches complete (not per-batch)
 	// This reduces API calls from 2N to N+1 for N batches
-	h.refreshMarketData(ctx, cmd.PlayerID, waypointSymbol)
+	h.refreshMarketData(ctx, cmd, waypointSymbol)
 
 	return &CargoTransactionResponse{
 		TotalAmount:        totalAmount,
@@ -568,13 +578,20 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 	}
 }
 
-// refreshMarketData triggers a market data refresh after a successful transaction.
-// This ensures that price data remains up-to-date after buy/sell operations.
-// The refresh is non-blocking - errors are logged but don't fail the transaction.
+// refreshMarketData triggers the deliberate post-trade market scan (the "after" half
+// of the scan→buy→scan impact pair the sp-tl68 model is fitted from). It is non-blocking
+// — errors are logged but never fail the transaction.
 //
 // OPTIMIZATION: Skip refresh when called from manufacturing operations (context flag).
 // Manufacturing scans markets separately and doesn't need immediate refresh after each sell.
-func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, playerID shared.PlayerID, waypointSymbol string) {
+//
+// sp-v34b: this scan is the top API consumer, so under a trade coordinator's ScanPolicy
+// it is SAMPLED — the full paired scan fires on only a config fraction of trades (enough
+// to refit the model per era), and every other trade falls back to the recent-scan
+// freshness gate (reuse a cache scanned within MaxScanAge, scan a stale/never-scanned
+// market). A caller that stamps no policy (manufacturing, contract delivery, refuel, CLI,
+// every pre-sp-v34b path) is byte-for-byte unchanged: the scan always fires.
+func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *CargoTransactionCommand, waypointSymbol string) {
 	// Skip if no market refresher is configured
 	if h.marketRefresher == nil {
 		return
@@ -588,7 +605,16 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, playerI
 
 	logger := logging.LoggerFromContext(ctx)
 
-	err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID.Value()), waypointSymbol)
+	// sp-v34b sampling + recent-scan freshness gate: a non-sampled trade at a
+	// freshly-scanned market reuses the cache instead of re-scanning.
+	if !h.impactScanWanted(ctx, cmd, waypointSymbol) {
+		logger.Log("DEBUG", "Post-trade impact scan sampled out (cache fresh) - skipping", map[string]interface{}{
+			"action": "impact_scan_skipped", "waypoint": waypointSymbol, "ship": cmd.ShipSymbol,
+		})
+		return
+	}
+
+	err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), waypointSymbol)
 	if err != nil {
 		// Log error but don't fail the transaction - market refresh is non-critical
 		logger.Log("WARN", "Failed to refresh market data after transaction", map[string]interface{}{
@@ -600,4 +626,74 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, playerI
 			"waypoint": waypointSymbol,
 		})
 	}
+}
+
+// impactScanWanted decides whether this trade's deliberate post-trade impact scan should
+// fire, under the ctx ScanPolicy (sp-v34b):
+//   - no policy stamped (every pre-sp-v34b / non-tour caller) → always scan (unchanged);
+//   - the trade is SAMPLED (per ImpactSampleRate) → scan, to record the impact pair the
+//     analyst refits the model from;
+//   - otherwise the recent-scan freshness gate governs: a cache scanned within MaxScanAge
+//     is reused (skip the scan), a stale or never-scanned market is still scanned so the
+//     next decision has fresh-enough prices.
+func (h *CargoTransactionHandler) impactScanWanted(ctx context.Context, cmd *CargoTransactionCommand, waypointSymbol string) bool {
+	policy, ok := shared.ScanPolicyFromContext(ctx)
+	if !ok {
+		return true
+	}
+	nonce := h.impactNonce.Add(1)
+	key := fmt.Sprintf("%s|%s|%s|%d", cmd.ShipSymbol, cmd.GoodSymbol, waypointSymbol, nonce)
+	if sampleImpact(key, policy.ImpactSampleRate) {
+		return true
+	}
+	return !h.marketFreshWithin(ctx, cmd.PlayerID, waypointSymbol, policy.MaxScanAge)
+}
+
+// marketFreshWithin reports whether the cached market at waypoint was scanned within
+// maxAge (the recent-scan gate). maxAge<=0 disables the gate (never "fresh" → always
+// scans), and an unreadable/missing cache is NOT fresh (scan for safety).
+func (h *CargoTransactionHandler) marketFreshWithin(ctx context.Context, playerID shared.PlayerID, waypoint string, maxAge time.Duration) bool {
+	if maxAge <= 0 {
+		return false
+	}
+	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
+	if err != nil {
+		return false
+	}
+	return shipPkg.MarketFreshWithin(mkt, maxAge, time.Now())
+}
+
+// sampleImpact deterministically decides whether a trade identified by key is
+// instrumented for price impact: an FNV hash of the key yields a uniform draw in
+// [0,1), sampled iff draw < rate. rate<=0 never samples, rate>=1 always samples. The
+// hash spreads evenly, so keys that vary only by the per-trade nonce (same ship/good/
+// market) are ~rate sampled — no lane is ever permanently in or out.
+func sampleImpact(key string, rate float64) bool {
+	if rate <= 0 {
+		return false
+	}
+	if rate >= 1 {
+		return true
+	}
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(key))
+	// FNV-1a has weak avalanche on keys sharing a long prefix (a hull re-trading one
+	// lane differs only in the trailing nonce), so finalize with a splitmix64 mixer for a
+	// uniform draw — otherwise sequential nonces skew the sampled fraction well off rate.
+	mixed := splitmix64Finalize(hasher.Sum64())
+	// Top 53 bits → a uniform double in [0,1); < rate samples this trade.
+	draw := float64(mixed>>11) / float64(uint64(1)<<53)
+	return draw < rate
+}
+
+// splitmix64Finalize is the splitmix64 finalizing mix — a bijective avalanche that turns
+// a low-entropy 64-bit value into uniformly distributed bits, so sampleImpact's draw is
+// unbiased regardless of the underlying hash's mixing quality.
+func splitmix64Finalize(x uint64) uint64 {
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31
+	return x
 }

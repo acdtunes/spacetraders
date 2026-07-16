@@ -1273,6 +1273,15 @@ func run(cfg *config.Config) error {
 	// the shared PlannedTTLSlack sizes reservation lifetimes.
 	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TourConsultDisabled, cfg.Absorption.PlannedTTLSlack)
 	tourCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop event when the dynamic-budget resolve stays unreadable
+	// sp-v34b: stamp the tour-scan load policy so the shared arrival + post-trade scans
+	// SAMPLE the deliberate price-impact instrumentation (the top API consumer, ~80% of
+	// API) instead of scanning every market around every trade. Resolved from [trade_impact]
+	// config (scan_max_age_seconds / impact_sample_rate; restart to apply — the same
+	// refit-per-era path the model's coefficients already use). scan_sampling_disabled
+	// reverts to pre-sp-v34b full-scan behavior.
+	if scanPolicy, on := cfg.TradeImpact.ResolvedScanPolicy(); on {
+		tourCoordinatorHandler.SetScanPolicy(scanPolicy)
+	}
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

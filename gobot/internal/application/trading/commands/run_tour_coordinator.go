@@ -326,6 +326,15 @@ type RunTourCoordinatorHandler struct {
 	// cmd.ModelArtifactPath (tests) still wins over this.
 	modelArtifactPath string
 
+	// scanPolicy is the sp-v34b tour-scan load policy stamped onto ctx at run start so the
+	// shared scan path (arrival scan + post-trade impact scan) SAMPLES the deliberate
+	// price-impact instrumentation that had become the top API consumer, instead of
+	// scanning every market around every trade. scanPolicySet gates the stamp: unset (the
+	// default for every test and any daemon that does not wire it) stamps NOTHING and every
+	// scan runs its pre-sp-v34b path. Injected via SetScanPolicy from cfg.TradeImpact at boot.
+	scanPolicy    shared.ScanPolicy
+	scanPolicySet bool
+
 	// repositionPersister durably records an in-flight margins-death reposition (its
 	// target system+waypoint) into the container config so a daemon restart mid-jump
 	// resumes toward the SAME ground (sp-zhii, RULINGS #2). Optional; nil disables
@@ -494,6 +503,16 @@ func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
+// SetScanPolicy wires the sp-v34b tour-scan load policy (recent-scan freshness gate +
+// impact-sample rate, resolved from cfg.TradeImpact on restart). Stamped onto ctx at run
+// start so the shared arrival + post-trade scans throttle the deliberate price-impact
+// instrumentation. Left unset, the coordinator stamps no policy and every scan runs its
+// pre-sp-v34b path (deploy-safe). Mirrors the SetGateGraph optional-injection idiom.
+func (h *RunTourCoordinatorHandler) SetScanPolicy(policy shared.ScanPolicy) {
+	h.scanPolicy = policy
+	h.scanPolicySet = true
+}
+
 // SetModelArtifactPath injects the daemon-configured (absolute) market-model artifact
 // path this coordinator reads at launch (sp-wj0h: resolved from cfg.Routing.ModelArtifactPath
 // so it is cwd-independent). Left unset, the coordinator falls back to the repo-relative
@@ -613,6 +632,16 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// baseline filters operation_type <> 'tour'). Mirrors how every coordinator
 	// tags its writes at the boundary (run_trade_route_coordinator.go's "trade_route").
 	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "tour_run"))
+
+	// sp-v34b: stamp the tour-scan load policy so the shared arrival + post-trade scans
+	// SAMPLE the deliberate price-impact instrumentation (the top API consumer) rather than
+	// scanning every market around every trade. It rides the SAME ctx the operation context
+	// above already threads to the delegated travel + cargo legs (proven by sp-lgnh), so the
+	// arrival scan (RouteExecutor) and the post-trade scan (cargo transactions) both see it.
+	// Unset (tests / scan_sampling_disabled) → no stamp → pre-sp-v34b full-scan behavior.
+	if h.scanPolicySet {
+		ctx = shared.WithScanPolicy(ctx, h.scanPolicy)
+	}
 
 	// sp-78ai L3: release this container's PLANNED reservations on EVERY exit path
 	// (clean completion, error, ctx-cancel) so a finished tour stops occupying sink/ask

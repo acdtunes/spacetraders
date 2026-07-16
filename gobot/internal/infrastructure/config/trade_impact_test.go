@@ -44,3 +44,43 @@ func TestTradeImpactConfig_ExplicitValuesOverrideDefaults(t *testing.T) {
 		t.Fatalf("refit cooldown tau: got %v, want 900m", got)
 	}
 }
+
+// sp-v34b: the scan-load knobs resolve to their operational defaults when unset, honor an
+// explicit dial (up before a refit, down to save API), clamp a >1 rate to full collection,
+// and the kill switch reverts the feature (ResolvedScanPolicy ok=false → the coordinator
+// stamps nothing → pre-sp-v34b full-scan behavior).
+func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
+	var zero config.TradeImpactConfig
+	if got := zero.ResolvedScanMaxAge(); got != 75*time.Second {
+		t.Fatalf("unset scan max age: got %v, want 75s default", got)
+	}
+	if got := zero.ResolvedImpactSampleRate(); got != 0.15 {
+		t.Fatalf("unset impact sample rate: got %v, want 0.15 default", got)
+	}
+	policy, on := zero.ResolvedScanPolicy()
+	if !on {
+		t.Fatalf("absent [trade_impact] section must default to sp-v34b ON")
+	}
+	if policy.MaxScanAge != 75*time.Second || policy.ImpactSampleRate != 0.15 {
+		t.Fatalf("default scan policy: got %+v, want {75s, 0.15}", policy)
+	}
+
+	// Explicit dial: raise the sample rate before an era refit, tighten the freshness window.
+	dialed := config.TradeImpactConfig{ScanMaxAgeSeconds: 120, ImpactSampleRate: 0.5}
+	if got := dialed.ResolvedScanMaxAge(); got != 120*time.Second {
+		t.Fatalf("dialed scan max age: got %v, want 120s", got)
+	}
+	if got := dialed.ResolvedImpactSampleRate(); got != 0.5 {
+		t.Fatalf("dialed impact sample rate: got %v, want 0.5", got)
+	}
+
+	// A rate over 1 clamps to full collection (never > 1).
+	if got := (config.TradeImpactConfig{ImpactSampleRate: 2.0}).ResolvedImpactSampleRate(); got != 1.0 {
+		t.Fatalf("over-unit sample rate must clamp to 1.0, got %v", got)
+	}
+
+	// Kill switch reverts sp-v34b: the coordinator stamps NO policy (pre-sp-v34b behavior).
+	if _, on := (config.TradeImpactConfig{ScanSamplingDisabled: true}).ResolvedScanPolicy(); on {
+		t.Fatalf("scan_sampling_disabled must yield ok=false so the coordinator stamps no policy")
+	}
+}

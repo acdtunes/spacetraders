@@ -105,6 +105,48 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	return nil
 }
 
+// MarketFreshWithin reports whether the cached market m was last updated within maxAge
+// of now — the sp-v34b recent-scan freshness test SHARED by the arrival scan
+// (RouteExecutor) and the post-trade impact scan (cargo transactions), so both gates
+// agree on one definition of "fresh". A nil market (never scanned) or a zero/unknown
+// timestamp is NOT fresh, so the caller scans: a trade must never proceed on prices it
+// cannot confirm exist. maxAge<=0 ("gate disabled") is the caller's concern, not this
+// pure predicate's.
+func MarketFreshWithin(m *market.Market, maxAge time.Duration, now time.Time) bool {
+	if m == nil {
+		return false
+	}
+	observed := m.LastUpdated()
+	if observed.IsZero() {
+		return false
+	}
+	return now.Sub(observed) <= maxAge
+}
+
+// ScanAndSaveMarketFresh is the sp-v34b recent-scan freshness gate over
+// ScanAndSaveMarket: when maxAge>0 AND the cached market for waypointSymbol was scanned
+// within maxAge, it SKIPS the GetMarket API call and reuses the cache (returns
+// scanned=false) — killing the redundant re-scan (the measured "same hull re-scanning a
+// market 4s apart"). A stale, never-scanned, or unknown-age market still scans (returns
+// scanned=true) so the trade sees fresh-enough prices. maxAge<=0 disables the gate
+// entirely (always scans — pre-sp-v34b behavior), so the freshness-scout recovery path
+// (which stamps no policy, hence maxAge 0) and every other caller are byte-for-byte
+// unaffected. Non-fatal like ScanAndSaveMarket: the returned error is the underlying
+// scan error, never the gate.
+func (s *MarketScanner) ScanAndSaveMarketFresh(ctx context.Context, playerID uint, waypointSymbol string, maxAge time.Duration) (bool, error) {
+	if maxAge > 0 {
+		existing, _ := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
+		if MarketFreshWithin(existing, maxAge, time.Now()) {
+			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+				"[MarketScanner] Skipping scan at %s - cached market fresh (< %s old)", waypointSymbol, maxAge), map[string]interface{}{
+				"action": "scan_skipped_fresh", "waypoint": waypointSymbol, "max_age_seconds": int(maxAge.Seconds()),
+			})
+			return false, nil
+		}
+	}
+	return true, s.ScanAndSaveMarket(ctx, playerID, waypointSymbol)
+}
+
 func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGoodData, logger common.ContainerLogger) ([]market.TradeGood, error) {
 	tradeGoods := make([]market.TradeGood, 0, len(apiGoods))
 	for _, apiGood := range apiGoods {

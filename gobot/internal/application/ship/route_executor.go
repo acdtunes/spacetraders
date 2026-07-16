@@ -572,7 +572,16 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
 
-		if err := e.marketScanner.ScanAndSaveMarket(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol); err != nil {
+		// sp-v34b recent-scan freshness gate: a trade coordinator stamps a ScanPolicy
+		// with MaxScanAge>0, so an arrival at a market scanned within that window reuses
+		// the cache instead of re-calling GetMarket (the redundant re-scan killer). The
+		// freshness-scout recovery path stamps NO policy (maxAge 0), so ScanAndSaveMarketFresh
+		// always scans and its recovery/decay dataset is untouched.
+		var maxScanAge time.Duration
+		if policy, ok := shared.ScanPolicyFromContext(ctx); ok {
+			maxScanAge = policy.MaxScanAge
+		}
+		if _, err := e.marketScanner.ScanAndSaveMarketFresh(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol, maxScanAge); err != nil {
 			logger.Log("ERROR", "Market scan failed", map[string]interface{}{
 				"ship_symbol": ship.ShipSymbol(),
 				"action":      "scan_market",
