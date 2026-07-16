@@ -637,12 +637,19 @@ func staleListingSummary(stale []trading.GoodListing) string {
 // disables the weight, matching trading.RankSpreadsForHold's "zero disables"
 // convention). It is also the equal-rate tie-break: at the same $/hr, the bigger
 // absolute earner wins (sp-1wp8).
-func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int) float64 {
+func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpactModel) float64 {
 	weight := 1.0
 	if shipCapacity > 0 {
 		weight = trading.HoldFitWeight(l.VolumeCap, shipCapacity)
 	}
-	return float64(l.SpreadPerUnit*l.VolumeCap) * weight
+	// sp-tl68: rank on the EFFECTIVE spread, not the snapshot. plannedUnits = shipCapacity
+	// (the units this hull would move on the lane); effectiveSpreadPerUnit nets out the
+	// self-compression that volume would cause plus the live shared cooldown debt, so a
+	// lane this hull would compress (high units/tv) or one the fleet has hammered scores
+	// below its snapshot spread. An inert model (no coefficients, no ledger) returns the
+	// snapshot spread, so this is byte-identical to the pre-sp-tl68 value for every caller
+	// that supplies no model.
+	return model.effectiveSpreadPerUnit(l, shipCapacity) * float64(l.VolumeCap) * weight
 }
 
 // laneCircuitRatePerHour is the sp-1wp8 ranking score: the lane's hold-fit-weighted
@@ -653,10 +660,10 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int) float64 {
 // — the same waiver contract the retired subtractive penalty kept (sp-xwa1), narrowed
 // to the one lane asked for. Exposed to the selection log so the captain reads the
 // exact score a lane won or lost on.
-func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDest string) float64 {
+func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) float64 {
 	crossSystem := shared.ExtractSystemSymbol(l.SourceWaypoint) != shared.ExtractSystemSymbol(l.DestWaypoint)
 	charged := crossSystem && !laneMatchesTarget(l, targetDest)
-	return laneCircuitValue(l, shipCapacity) / (estimatedCircuitSeconds(charged) / 3600)
+	return laneCircuitValue(l, shipCapacity, model) / (estimatedCircuitSeconds(charged) / 3600)
 }
 
 // rankLanesByCircuitRate re-orders lanes already ranked by trading.RankSpreads by
@@ -674,6 +681,14 @@ func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDes
 //   - hold-fit weighting (sp-pnx0): a lane's VolumeCap is a market-absorption
 //     bound, not a hold-sized one — a hull far bigger than VolumeCap will not
 //     clear a single tranche at that depth before moving the price.
+//   - price-impact + cooldown (sp-tl68): the score uses each lane's EFFECTIVE
+//     per-unit spread (laneImpactModel.effectiveSpreadPerUnit), not its snapshot
+//     spread — the snapshot less the self-compression this hull's own volume would
+//     cause (era-3 fitted impact, half-terminal average fill) and the live shared
+//     cooldown debt from the fleet's recent trades on the lane. So a lane this hull
+//     would compress, or one the fleet has hammered, ranks below its snapshot spread
+//     and hulls rotate to fresh lanes. An inert model (no coefficients, no ledger)
+//     returns the snapshot spread, keeping every model-less caller byte-identical.
 //
 // These adjustments MUST stay folded into a single score computation rather than
 // chained as two sequential re-rankings: this function and
@@ -696,7 +711,7 @@ func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDes
 // in-system baseline (laneCircuitRatePerHour's waiver); every other cross-system
 // lane still pays the surcharge. targetDest=="" (the undirected auto-scan path)
 // matches nothing.
-func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, targetDest string) []trading.ArbitrageLane {
+func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) []trading.ArbitrageLane {
 	type scoredLane struct {
 		lane  trading.ArbitrageLane
 		rate  float64
@@ -707,8 +722,8 @@ func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, tar
 	for i, lane := range lanes {
 		scored[i] = scoredLane{
 			lane:  lane,
-			rate:  laneCircuitRatePerHour(lane, shipCapacity, targetDest),
-			value: laneCircuitValue(lane, shipCapacity),
+			rate:  laneCircuitRatePerHour(lane, shipCapacity, targetDest, model),
+			value: laneCircuitValue(lane, shipCapacity, model),
 		}
 	}
 

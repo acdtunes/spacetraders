@@ -121,7 +121,10 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	ranked := trading.RankSpreads(listings)
 	consult := h.readAbsorption(ctx, playerID)
 	ranked = h.filterShadowedLanes(ctx, ranked, consult, shipCapacity, playerID)
-	return rankLanesByCircuitRate(ranked, shipCapacity, targetDest), nil
+	// sp-tl68: rank on the effective spread (snapshot less self-compression + live shared
+	// cooldown debt), so a lane this hull would compress or the fleet has hammered ranks
+	// lower and hulls rotate to fresh lanes. buildLaneImpactModel is inert when unwired.
+	return rankLanesByCircuitRate(ranked, shipCapacity, targetDest, h.buildLaneImpactModel()), nil
 }
 
 // collectSystemListings reads every cached market in one system into flat

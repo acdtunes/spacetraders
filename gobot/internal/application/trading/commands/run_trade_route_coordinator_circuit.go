@@ -305,6 +305,16 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		circuitNetMargin += sellResp.TotalRevenue
 		response.Visits++
 
+		// sp-tl68 wire-in #2: record this leg's compression debt on the SHARED cooldown
+		// ledger so the ranker down-weights this lane for ~tau (hours, not the old ~30min
+		// assumption) and the fleet rotates to fresh lanes instead of re-hammering it.
+		// Keyed by lane (buy, sell, good); U = units sold this visit, tv = the lane's
+		// absorption cap (the same tv the ranker charges self-impact against). Best-effort:
+		// a nil ledger (unwired) or non-positive units/cap is a no-op inside Accrue.
+		if h.laneLedger != nil {
+			h.laneLedger.Accrue(laneCooldownKey(lane), sellResp.UnitsSold, lane.VolumeCap, h.clock.Now())
+		}
+
 		// Per-circuit negative-margin abort (sp-bp6f fix #2): this circuit's own
 		// realized fills - not the stale ranked spread - are what matter once
 		// trading has actually started. Gate on i+1 (visit count) so one noisy

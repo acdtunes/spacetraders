@@ -28,6 +28,11 @@ type Config struct {
 	Contract   ContractConfig   `mapstructure:"contract"`
 	Absorption AbsorptionConfig `mapstructure:"absorption"`
 	TradeFleet TradeFleetConfig `mapstructure:"trade_fleet"`
+	// TradeImpact holds the era-3 price-impact + cooldown lane-ranking coefficients
+	// (sp-tl68), read at daemon start into the trade-route coordinator's ranker + shared
+	// cooldown ledger. Refit per era: the FORM is stable, the NUMBERS are re-fitted, so
+	// they are config (edit config.yaml + restart), never consts.
+	TradeImpact TradeImpactConfig `mapstructure:"trade_impact"`
 	// WorkerRebalancer holds the worker-rebalancer coordinator's knobs (sp-f5pr),
 	// injected live into the coordinator container on every build.
 	WorkerRebalancer WorkerRebalancerConfig `mapstructure:"worker_rebalancer"`

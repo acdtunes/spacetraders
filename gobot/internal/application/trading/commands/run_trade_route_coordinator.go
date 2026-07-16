@@ -343,6 +343,19 @@ type RunTradeRouteCoordinatorHandler struct {
 	// absorption.trade_route_consult_disabled): true skips the consult read entirely
 	// and restores pre-L4 ranking byte-identically, even with a ledger wired.
 	absorptionConsultDisabled bool
+	// --- sp-tl68 era-3 price-impact + cooldown ranking model (config, refit-per-era) ---
+	// buyImpactCoeff/sellImpactCoeff are the analyst-fitted price-impact slopes the
+	// ranker charges a candidate lane's effective spread (the self-compression this
+	// hull's own volume would cause). Zero => inert self-impact (snapshot ranking, the
+	// pre-sp-tl68 behavior). The daemon injects the resolved cfg.TradeImpact values.
+	buyImpactCoeff  float64
+	sellImpactCoeff float64
+	// laneLedger is the SHARED, decaying, per-lane compression ledger every hull's trade
+	// Accrues to (circuit.go, after a completed sell) and every rank Debt-reads
+	// (buildLaneImpactModel). Optional; nil => no cooldown term, the same optional-port
+	// contract gateGraph/absorptionLedger use. The daemon injects one shared instance
+	// across the trade-route/arb/tour/stocker coordinators so the ledger is fleet-wide.
+	laneLedger *trading.LaneCooldownLedger
 }
 
 // GateGraph resolves multi-jump routes over the persisted cross-system gate
@@ -443,6 +456,36 @@ func (h *RunTradeRouteCoordinatorHandler) SetEventSubscriber(subscriber navigati
 func (h *RunTradeRouteCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool) {
 	h.absorptionLedger = ledger
 	h.absorptionConsultDisabled = consultDisabled
+}
+
+// SetLaneImpactModel wires the era-3 price-impact coefficients and the shared cooldown
+// ledger into lane ranking (sp-tl68), the same optional-injection idiom as the other
+// setters. buyImpact/sellImpact are the resolved cfg.TradeImpact coefficients the
+// effective-spread self-compression uses; ledger is the fleet-shared decaying
+// compression ledger the ranker subtracts (read) and the circuit accrues to (write).
+// Left unset (0, 0, nil) keeps snapshot ranking byte-for-byte (the inert model) — most
+// tests leave it unset; the daemon injects all three from config.
+func (h *RunTradeRouteCoordinatorHandler) SetLaneImpactModel(buyImpact, sellImpact float64, ledger *trading.LaneCooldownLedger) {
+	h.buyImpactCoeff = buyImpact
+	h.sellImpactCoeff = sellImpact
+	h.laneLedger = ledger
+}
+
+// buildLaneImpactModel snapshots the ranking-time impact model: the configured impact
+// coefficients plus a debt closure that reads the shared cooldown ledger at a SINGLE
+// `now`, fixed for the whole ranking pass so every lane is decayed to the same instant.
+// A nil ledger yields a nil debt closure (no cooldown term); zero coefficients yield no
+// self-compression — together the inert model that ranks on the snapshot spread.
+func (h *RunTradeRouteCoordinatorHandler) buildLaneImpactModel() laneImpactModel {
+	model := laneImpactModel{buyImpact: h.buyImpactCoeff, sellImpact: h.sellImpactCoeff}
+	if h.laneLedger != nil {
+		now := h.clock.Now()
+		ledger := h.laneLedger
+		model.debt = func(l trading.ArbitrageLane) float64 {
+			return ledger.Debt(laneCooldownKey(l), now)
+		}
+	}
+	return model
 }
 
 // Handle executes the trade-route command.
@@ -622,7 +665,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 
 		// Publish the committed circuit lane to the read-only flow feed (fire-and-forget;
 		// a missed publish never touches the trade path — RULINGS #4).
-		flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
+		flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
 
 		// sp-q1ca: this line used to print no structured payload — the captain could
 		// not tell which lane a daemon picked, or whether cross-system lanes were even
@@ -638,7 +681,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		// sp-149h: put the payload in the MESSAGE TEXT, not just the metadata map the
 		// `container logs` renderer drops — the captain greps the CLI output to verify
 		// which lane (and whether a cross-system one) was picked and at what margin.
-		logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest), selectionPayload)
+		logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), selectionPayload)
 
 		visitsBefore := response.Visits
 		ship = h.runCircuit(ctx, cmd, lane, ship, response, runMaxVisits)

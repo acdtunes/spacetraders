@@ -26,7 +26,7 @@ func TestLaneRateRanking_FastHomeLaneBeatsSlowBiggerCrossLane(t *testing.T) {
 		{Good: "HOME_FAST", SourceWaypoint: "X1-HOME-2", DestWaypoint: "X1-HOME-3", SpreadPerUnit: 800, VolumeCap: 400, CappedSpread: 320000},
 	}
 
-	got := rankLanesByCircuitRate(lanes, 400, "")
+	got := rankLanesByCircuitRate(lanes, 400, "", laneImpactModel{})
 
 	// HOME_FAST: 800×400×1.0 = 320,000 / (4000s/3600) = 288,000/hr.
 	// CROSS_BIG: 750×460×1.0 = 345,000 / (4704s/3600) = 264,031/hr.
@@ -51,7 +51,7 @@ func TestLaneRateRanking_EqualRateTieBreaksOnAbsoluteValue(t *testing.T) {
 	// capacity 400: HOME_EVEN weight min(400,400)/400=1 → value 300,000, rate
 	// 300,000×3600/4000 = 270,000/hr exactly. CROSS_EVEN weight min(480,400)/400=1
 	// → value 352,800, rate 352,800×3600/4704 = 270,000/hr exactly.
-	got := rankLanesByCircuitRate(lanes, 400, "")
+	got := rankLanesByCircuitRate(lanes, 400, "", laneImpactModel{})
 
 	if got[0].Good != "CROSS_EVEN" {
 		t.Fatalf("equal-rate tie must break on absolute per-circuit value (352,800 > 300,000), got order %v", laneOrder(got))
@@ -68,7 +68,7 @@ func TestLaneRateRanking_DirectedLaneRanksAtInSystemBaseline(t *testing.T) {
 		{Good: "CROSS_B", SourceWaypoint: "X1-HOME-2", DestWaypoint: "X1-FARB-8", SpreadPerUnit: 800, VolumeCap: 400, CappedSpread: 320000},
 	}
 
-	got := rankLanesByCircuitRate(lanes, 400, "X1-FARB-8")
+	got := rankLanesByCircuitRate(lanes, 400, "X1-FARB-8", laneImpactModel{})
 
 	if got[0].Good != "CROSS_B" {
 		t.Fatalf("the directed lane must rank at the in-system baseline (surcharge waived) and beat its identical undirected twin, got order %v", laneOrder(got))

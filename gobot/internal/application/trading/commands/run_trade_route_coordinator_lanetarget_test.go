@@ -34,14 +34,14 @@ func TestRankLanesByCircuitRate_TargetDest_WaivesSurchargeOnlyForTargetedLane(t 
 	}
 
 	t.Run("undirected: the gate surcharge still applies, same-system lane wins", func(t *testing.T) {
-		ranked := rankLanesByCircuitRate(lanes, 0, "")
+		ranked := rankLanesByCircuitRate(lanes, 0, "", laneImpactModel{})
 		if ranked[0].Good != "Y" {
 			t.Fatalf("expected Y first (X's 9,000 over the surcharged circuit ~6,886/hr < Y's 7,200/hr), got %q first", ranked[0].Good)
 		}
 	})
 
 	t.Run("directed at X: surcharge waived for X only, X wins", func(t *testing.T) {
-		ranked := rankLanesByCircuitRate(lanes, 0, "X1-BBB-1")
+		ranked := rankLanesByCircuitRate(lanes, 0, "X1-BBB-1", laneImpactModel{})
 		if ranked[0].Good != "X" {
 			t.Fatalf("expected X first once ranked at the in-system baseline (8,100/hr > 7,200/hr), got %q first", ranked[0].Good)
 		}

@@ -61,6 +61,7 @@ import (
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainShipyard "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
+	domainTrading "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -578,6 +579,17 @@ func run(cfg *config.Config) error {
 		persistence.NewContainerLiveness(db),
 	)
 
+	// sp-tl68: ONE shared, decaying, per-lane compression ledger for the whole fleet. Every
+	// trade-route/arb/tour/stocker leg Accrues its compression debt to it and every lane
+	// rank Debt-reads it, so once the fleet hammers a lane it stays down-weighted for ~tau
+	// (hours) and hulls rotate to fresh lanes. Coefficients are era-3 config (refit per
+	// era); an absent [trade_impact] section resolves to the analyst's era-3 fit.
+	laneCooldownLedger := domainTrading.NewLaneCooldownLedger(
+		cfg.TradeImpact.ResolvedBuyImpact(),
+		cfg.TradeImpact.ResolvedSellImpact(),
+		cfg.TradeImpact.ResolvedCooldownTau(),
+	)
+
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// First-boot seed marker (sp-86vb): persist "the --dedicated-ships seed has
@@ -902,6 +914,18 @@ func run(cfg *config.Config) error {
 	// L2 (idle-arb) writes to, above; TradeRouteConsultDisabled is the independent
 	// operator kill-switch for this read path only.
 	tradeRouteCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TradeRouteConsultDisabled)
+	// sp-tl68: wire the era-3 price-impact coefficients + the shared cooldown ledger into
+	// lane ranking. scanLanes now ranks on the EFFECTIVE spread (snapshot less the
+	// self-compression this hull's volume would cause + the live shared cooldown debt), and
+	// runCircuit accrues each completed leg's debt back to the shared ledger. The operator
+	// kill-switch [trade_impact].disabled leaves the handler on the inert (snapshot) model.
+	if !cfg.TradeImpact.Disabled {
+		tradeRouteCoordinatorHandler.SetLaneImpactModel(
+			cfg.TradeImpact.ResolvedBuyImpact(),
+			cfg.TradeImpact.ResolvedSellImpact(),
+			laneCooldownLedger,
+		)
+	}
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}

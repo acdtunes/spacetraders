@@ -56,7 +56,7 @@ func TestCrossSystemRate_DP51ClassFrontierWinsAutonomousSelection(t *testing.T) 
 		{Good: "BETTER_HOME", SourceWaypoint: "X1-HOME-4", DestWaypoint: "X1-HOME-5", SpreadPerUnit: 820, VolumeCap: 480, CappedSpread: 393600},
 	}
 
-	got := rankLanesByCircuitRate(lanes, heavyHullCapacity, "")
+	got := rankLanesByCircuitRate(lanes, heavyHullCapacity, "", laneImpactModel{})
 
 	pos := laneRankPositions(got)
 	// Property 2: a genuinely-better home lane still wins the autonomous scan.
@@ -94,7 +94,7 @@ func TestLaneSelectionOneLiner_CarriesCircuitRate(t *testing.T) {
 	same := trading.ArbitrageLane{Good: "LOCAL", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-AAA-2", SpreadPerUnit: 1500, VolumeCap: 480}
 
 	t.Run("cross-system token carries the surcharged rate, m stays the raw spread", func(t *testing.T) {
-		got := laneSelectionOneLiner(cross, heavyHullCapacity, "")
+		got := laneSelectionOneLiner(cross, heavyHullCapacity, "", laneImpactModel{})
 		// 1700×480×1.0 = 816,000 / (4704s/3600) = 624,489.8 → rate=624490/hr.
 		for _, want := range []string{"m=1700", "cross", "rate=624490/hr"} {
 			if !strings.Contains(got, want) {
@@ -107,7 +107,7 @@ func TestLaneSelectionOneLiner_CarriesCircuitRate(t *testing.T) {
 	})
 
 	t.Run("same-system token carries its baseline rate", func(t *testing.T) {
-		got := laneSelectionOneLiner(same, heavyHullCapacity, "")
+		got := laneSelectionOneLiner(same, heavyHullCapacity, "", laneImpactModel{})
 		// 1500×480×1.0 = 720,000 / (4000s/3600) = 648,000/hr.
 		for _, want := range []string{"m=1500", "same", "rate=648000/hr"} {
 			if !strings.Contains(got, want) {
@@ -117,7 +117,7 @@ func TestLaneSelectionOneLiner_CarriesCircuitRate(t *testing.T) {
 	})
 
 	t.Run("directed target lane reads its waived (baseline) rate", func(t *testing.T) {
-		got := laneSelectionOneLiner(cross, heavyHullCapacity, "X1-BBB-2")
+		got := laneSelectionOneLiner(cross, heavyHullCapacity, "X1-BBB-2", laneImpactModel{})
 		// 816,000 / (4000s/3600) = 734,400/hr at the in-system baseline.
 		if !strings.Contains(got, "rate=734400/hr(x-waived)") {
 			t.Fatalf("expected the directed lane's rate at the in-system baseline with the x-waived marker, got: %s", got)
