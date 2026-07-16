@@ -318,7 +318,75 @@ type neighborRejection struct {
 // an aborted reposition. An EMPTY result logs WHY per rejected neighbor (requirement #3).
 func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string) []repositionCandidate {
 	now := h.clock.Now()
+	// 1-hop scan first — the origin's DIRECT gated neighbors (the pre-sp-jeou behavior, unchanged).
 	neighbors, originReason := h.legs.repositionNeighbors(ctx, currentSystem, cmd.PlayerID)
+	candidates, rejections := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, neighbors, now)
+
+	// sp-jeou: an OFF-CIRCUIT hull (bought at a far yard like X1-UF64) whose 1-gate-hop neighbors
+	// carry no fresh cached market yields ZERO candidates above, so maybeReposition would exit and
+	// the hull would strand — never reaching the circuit the auto-reposition machinery exists to
+	// reach. ONLY when the 1-hop scan is empty, broaden discovery to every cached-market system
+	// within the SAME jump bound the flight (RepositionToWaypointWithinJumps) already routes over,
+	// so a profitable circuit system 2-4 gate hops away becomes a candidate (discovery reach ==
+	// travel reach). An on-circuit hull with ANY 1-hop candidate never enters this branch — its
+	// behavior is byte-for-byte unchanged. Empty here too (a genuinely stranded hull) falls through
+	// to the same empty-discovery diagnostic + stranded detector below, reading the 1-hop signal.
+	if len(candidates) == 0 {
+		jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
+		farNeighbors, _ := h.legs.repositionNeighborsWithinJumps(ctx, currentSystem, cmd.PlayerID, jumpBound)
+		if broadened, _ := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, farNeighbors, now); len(broadened) > 0 {
+			candidates = broadened
+			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Reposition discovery broadened from %s: no fresh-market 1-hop neighbor, found %d cached-market candidate(s) within %d jumps (sp-jeou off-circuit rescue)", currentSystem, len(candidates), jumpBound), map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem, "candidates": len(candidates), "jump_bound": jumpBound, "bead": "sp-jeou",
+			})
+		}
+	}
+	// Cheap pre-rank: highest cached in-system capped spread first (a proxy for tour
+	// margin), system symbol as a stable tie-break so the top-K bound is deterministic.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].system < candidates[j].system
+	})
+	// sp-1ki5 #3: an empty discovery must name WHY — the origin-level reason when no gated
+	// neighbor resolved at all (the X1-DP51 shape), or the per-neighbor rejection reasons when
+	// neighbors were found but each fell out. Emitted ONLY on empty; a populated scan logs its
+	// ranking table downstream (logRepositionRanking).
+	if len(candidates) == 0 {
+		logRepositionDiscoveryEmpty(common.LoggerFromContext(ctx), cmd.ShipSymbol, currentSystem, neighbors, rejections, originReason)
+	}
+	// sp-686e stranded-hull detection: the TORWIND-2C shape is an ORIGIN-level empty — zero
+	// candidates because the origin has NO resolvable gated neighbor (len(neighbors)==0) and the
+	// reason is no-durable-adjacency or gate-inaccessible, so BOTH discovery paths return empty
+	// and the hull can never self-reposition. Counted per hull; N consecutive (config, default 3)
+	// with no successful discovery in between emits ONE WARN + the fleet_hull_stranded_total
+	// counter so the watch is paged (StrandedHull alert) instead of the hull silently
+	// relaunch-looping. A populated discovery, or an empty with reachable-but-unusable neighbors
+	// (the per-neighbor rejection path, len(neighbors)>0), resets the streak — that hull is not
+	// structurally stranded. Observation only (RULINGS #4): never gates the reposition decision.
+	qualifying := len(candidates) == 0 && len(neighbors) == 0 && isStrandedOriginReason(originReason)
+	if h.noteRepositionStrandedDiscovery(cmd.ShipSymbol, currentSystem, qualifying, cmd.StrandedConsecutiveThreshold) {
+		n := resolveStrandedThreshold(cmd.StrandedConsecutiveThreshold)
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("hull stranded: %s at %s — no durable adjacency + gate inaccessible for %d consecutive launches (sp-686e)", cmd.ShipSymbol, currentSystem, n), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "system": currentSystem, "consecutive_empties": n, "bead": "sp-686e",
+		})
+		metrics.RecordHullStranded(cmd.ShipSymbol, currentSystem)
+	}
+	return candidates
+}
+
+// scoreRepositionNeighbors is the per-neighbor candidate scorer shared by the 1-hop scan and the
+// sp-jeou multi-hop broadening (repositionNeighborsWithinJumps): for each distinct, BUILT neighbor
+// system it reads the cached market listings, drops stale rows (the same maxListingAge cap the
+// solver's tour snapshot applies), and — when a fresh in-system lane remains — emits a
+// repositionCandidate carrying that lane's source waypoint (where the hull lands and the planner
+// prices the candidate tour from) plus its capped spread (the pre-rank score). A neighbor that is
+// unbuilt, market-unreadable, uncached, all-stale, or waypoint-less is dropped with a NAMED
+// rejection reason (the empty-discovery diagnostic reads these). It is a pure extraction of the
+// pre-sp-jeou loop, so the 1-hop path's per-neighbor behavior and stale-lane counter are unchanged;
+// the fresh `seen` per call is harmless because the broadening BFS already de-dups systems.
+func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string, neighbors []repositionNeighborEdge, now time.Time) ([]repositionCandidate, []neighborRejection) {
 	seen := map[string]bool{currentSystem: true} // exclude the current (dead) ground
 	var candidates []repositionCandidate
 	var rejections []neighborRejection
@@ -370,39 +438,7 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 		}
 		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score})
 	}
-	// Cheap pre-rank: highest cached in-system capped spread first (a proxy for tour
-	// margin), system symbol as a stable tie-break so the top-K bound is deterministic.
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].system < candidates[j].system
-	})
-	// sp-1ki5 #3: an empty discovery must name WHY — the origin-level reason when no gated
-	// neighbor resolved at all (the X1-DP51 shape), or the per-neighbor rejection reasons when
-	// neighbors were found but each fell out. Emitted ONLY on empty; a populated scan logs its
-	// ranking table downstream (logRepositionRanking).
-	if len(candidates) == 0 {
-		logRepositionDiscoveryEmpty(common.LoggerFromContext(ctx), cmd.ShipSymbol, currentSystem, neighbors, rejections, originReason)
-	}
-	// sp-686e stranded-hull detection: the TORWIND-2C shape is an ORIGIN-level empty — zero
-	// candidates because the origin has NO resolvable gated neighbor (len(neighbors)==0) and the
-	// reason is no-durable-adjacency or gate-inaccessible, so BOTH discovery paths return empty
-	// and the hull can never self-reposition. Counted per hull; N consecutive (config, default 3)
-	// with no successful discovery in between emits ONE WARN + the fleet_hull_stranded_total
-	// counter so the watch is paged (StrandedHull alert) instead of the hull silently
-	// relaunch-looping. A populated discovery, or an empty with reachable-but-unusable neighbors
-	// (the per-neighbor rejection path, len(neighbors)>0), resets the streak — that hull is not
-	// structurally stranded. Observation only (RULINGS #4): never gates the reposition decision.
-	qualifying := len(candidates) == 0 && len(neighbors) == 0 && isStrandedOriginReason(originReason)
-	if h.noteRepositionStrandedDiscovery(cmd.ShipSymbol, currentSystem, qualifying, cmd.StrandedConsecutiveThreshold) {
-		n := resolveStrandedThreshold(cmd.StrandedConsecutiveThreshold)
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("hull stranded: %s at %s — no durable adjacency + gate inaccessible for %d consecutive launches (sp-686e)", cmd.ShipSymbol, currentSystem, n), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "system": currentSystem, "consecutive_empties": n, "bead": "sp-686e",
-		})
-		metrics.RecordHullStranded(cmd.ShipSymbol, currentSystem)
-	}
-	return candidates
+	return candidates, rejections
 }
 
 // logRepositionDiscoveryEmpty explains WHY the reposition candidate scan came up empty, so a "no

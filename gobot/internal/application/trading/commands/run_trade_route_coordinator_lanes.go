@@ -222,6 +222,83 @@ func (h *RunTradeRouteCoordinatorHandler) repositionNeighbors(ctx context.Contex
 	return nil, "no-neighbors"
 }
 
+// repositionBfsMaxSystems caps how many distinct systems the sp-jeou multi-hop reposition
+// discovery (repositionNeighborsWithinJumps) will surface — a breadth backstop so a dense gate
+// cluster can never turn the depth-bounded walk into a runaway fan-out (each surfaced system costs
+// one cached-market read downstream in scoreRepositionNeighbors). 64 comfortably spans a 12-jump
+// cluster's worth of grounds — the circuit systems sit 2-4 hops out, well inside it — while
+// bounding the cost of the rare margins-death rescue. Breadth-first, so the nearest (cheapest to
+// reach) systems are always surfaced first when the cap bites.
+const repositionBfsMaxSystems = 64
+
+// repositionNeighborsWithinJumps broadens repositionNeighbors from the origin's DIRECT (1-gate-hop)
+// neighbours to every system reachable within maxJumps gate hops, discovered by a BOUNDED
+// breadth-first walk of the DURABLE gate graph (gateGraph.Connections) — the sp-jeou off-circuit
+// fix. maybeReposition's candidate discovery was 1-hop, so a trade hull spawned at a far yard
+// (X1-UF64) whose only 1-hop neighbour carries no fresh cached market found ZERO candidates and
+// stranded, even though a profitable circuit system sat 2-4 gate hops away — well within the 12-jump
+// bound the reposition flight (RepositionToWaypointWithinJumps) already routes over. Walking the
+// DURABLE adjacency (never per-node LIVE gate lookups) keeps discovery origin-independent (the
+// sp-1ki5 uncharted-origin resilience) and cheap, and makes discovery reach == travel reach.
+//
+// It is a FALLBACK, never a replacement: a nil gate graph, a trivial bound, or an already-empty
+// 1-hop probe returns the plain repositionNeighbors result, so a graph-less/mis-wired caller can
+// never fan out over live lookups and a genuinely no-adjacency origin still surfaces its diagnostic
+// reason unchanged. Traversal crosses only BUILT gates (an under-construction edge is impassable),
+// is bounded by maxJumps (depth) and repositionBfsMaxSystems (breadth), and excludes the origin. A
+// per-node Connections error simply contributes no deeper systems (fail-open). The origin-level
+// reason from the 1-hop probe is threaded back unchanged for the caller's empty-discovery
+// diagnostics and stranded detector.
+func (h *RunTradeRouteCoordinatorHandler) repositionNeighborsWithinJumps(ctx context.Context, originSystem string, playerID, maxJumps int) ([]repositionNeighborEdge, string) {
+	first, originReason := h.repositionNeighbors(ctx, originSystem, playerID)
+	// No durable graph to walk, a trivial bound, or nothing at 1 hop → no broadening. Walking a
+	// BFS over per-node LIVE lookups is exactly the expensive, uncharted-refusing path to avoid;
+	// with no durable graph the 1-hop live fallback inside repositionNeighbors already stands.
+	if h.gateGraph == nil || maxJumps <= 1 || len(first) == 0 {
+		return first, originReason
+	}
+	visited := map[string]bool{originSystem: true}
+	out := make([]repositionNeighborEdge, 0, len(first))
+	type frontier struct {
+		system string
+		depth  int
+	}
+	queue := make([]frontier, 0, len(first))
+	enqueue := func(nextSystem string, depth int) {
+		if nextSystem == "" || visited[nextSystem] || len(out) >= repositionBfsMaxSystems {
+			return
+		}
+		visited[nextSystem] = true
+		out = append(out, repositionNeighborEdge{system: nextSystem})
+		queue = append(queue, frontier{system: nextSystem, depth: depth})
+	}
+	// Seed from the 1-hop probe already in hand, over BUILT gates only.
+	for _, e := range first {
+		if e.underConstruction {
+			continue
+		}
+		enqueue(e.system, 1)
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.depth >= maxJumps {
+			continue // reached the jump bound — do not expand deeper
+		}
+		edges, err := h.gateGraph.Connections(ctx, cur.system, playerID)
+		if err != nil {
+			continue // an unreadable interior node contributes no deeper systems (fail-open)
+		}
+		for _, e := range edges {
+			if e.UnderConstruction {
+				continue // impassable gate — cannot route through it
+			}
+			enqueue(e.ConnectedSystem, cur.depth+1)
+		}
+	}
+	return out, originReason
+}
+
 // liveNeighborEdges adapts the live jump-gate scan's bare system list into neighbor edges. The
 // live connections carry no build state, so each is treated as built here; the pre-buy gate
 // graph's own under-construction guard still protects the actual jump, and any unbuilt neighbor
