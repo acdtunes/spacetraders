@@ -177,6 +177,12 @@ def test_arming_verdict_win():
     assert verdict["cases"] == 30
     assert math.isclose(verdict["baseline_cph"], 1000.0, rel_tol=1e-9)
     assert math.isclose(verdict["candidate_cph"], 2000.0, rel_tol=1e-9)
+    # sp-db0n: pin the TRUE live-prod baseline the operator must read — cap=2 at the RATE
+    # objective (sp-1wp8's launch-path TOUR_SOLVER_OBJECTIVE=rate default), NOT the cap=2
+    # PROFIT fail-safe. Traced to the _win_cases (2, RATE)=_res(1100, 1100) cell: at zero
+    # overhead that plan is 1100 cr over 1.0 h = 1100 cr/hr. This is the value now surfaced
+    # in the --arm console, so ljh5 arms against the config prod ACTUALLY runs today.
+    assert math.isclose(verdict["baseline_cap_rate_cph"], 1100.0, rel_tol=1e-9)
     # isolation column present and non-trivial (candidate rate vs candidate-cap profit).
     assert math.isclose(verdict["objective_delta_pct"],
                         (2000.0 - 1500.0) / 1500.0 * 100, rel_tol=1e-9)
