@@ -93,6 +93,10 @@ class TourHandlerMixin:
                 # int32 default) -> the solver's `0 or MAX_TOUR_SYSTEMS` fallback (2),
                 # so an old caller that never sets it is byte-identical.
                 max_tour_systems=request.constraints.max_tour_systems,
+                # sp-im74: closure mode. Proto3 zero-values (false/"") are the dormant
+                # default — solve_tour treats them as a strict no-op (open tour).
+                closed=request.constraints.closed,
+                anchor_system=request.constraints.anchor_system,
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

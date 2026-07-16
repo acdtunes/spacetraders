@@ -439,6 +439,10 @@ func buildTourRequest(
 			MaxSnapshotAgeMinutes: int32(cons.MaxSnapshotAgeMinutes),
 			ExpectedModelVersion:  cons.ExpectedModelVersion,
 			MaxTourSystems:        int32(cons.MaxTourSystems),
+			// sp-im74: closure mode. Zero-values (false/"") serialize to nothing —
+			// an open request is byte-identical to a pre-closure binary's.
+			Closed:       cons.Closed,
+			AnchorSystem: cons.AnchorSystem,
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,

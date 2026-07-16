@@ -373,6 +373,15 @@ message TourConstraints {
   // int32 default) => the solver falls back to that module default (2), so a caller
   // that never sets it is byte-identical to today (the default-safety hinge).
   int32 max_tour_systems = 8;
+  // sp-im74: closure mode. closed=true makes the planned tour END at an anchor —
+  // the priced return leg is appended and charged into projected time/cph.
+  // Proto3 zero-values (false/"") are the dormant default: absent on the wire,
+  // byte-identical to an open tour.
+  bool closed = 9;
+  // Anchor override: "" = floating (return to the ship's current waypoint);
+  // an explicit system symbol = return to that system's lexicographically-first
+  // fresh market waypoint (must be inside allowed_systems, else infeasible).
+  string anchor_system = 10;
 }
 
 // TourTrade is one buy or sell tranche at a leg (execution order preserved).

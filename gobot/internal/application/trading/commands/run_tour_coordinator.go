@@ -154,9 +154,17 @@ type RunTourCoordinatorCommand struct {
 	// neighbors). 0 → the solver's MAX_TOUR_SYSTEMS default (2), byte-identical to
 	// today; a positive value sweeps tour length without a redeploy (sp-syaz).
 	MaxTourSystems int
-	MaxSpend       int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
-	MinMargin      int
-	ReplanLimit    int // 0 → tourMaxReplansDefault (PER TOUR)
+	// ClosedTours + AnchorSystem opt this run into closed-tour mode (sp-im74): every
+	// planned tour ENDS at the anchor via an appended, honestly-priced no-trade
+	// return leg. AnchorSystem "" floats the anchor to the ship's waypoint at plan
+	// time; an explicit system symbol pins the return to that system's first fresh
+	// market. Zero-values = open tours, byte-identical to today. Deliberately no CLI
+	// flag yet — arming is governance-owned (epic sp-fguo, later wave).
+	ClosedTours  bool
+	AnchorSystem string
+	MaxSpend     int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
+	MinMargin    int
+	ReplanLimit  int // 0 → tourMaxReplansDefault (PER TOUR)
 	// Iterations is the tour count (sp-m5kv), unifying the container iteration
 	// semantics (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new
 	// position, tour again — until margins die/starvation/stop), N>0 = exactly N
@@ -1649,6 +1657,11 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// default (2), so the wire and plan are byte-identical to today; a positive
 		// knob raises the per-tour distinct-system cap.
 		MaxTourSystems: cmd.MaxTourSystems,
+		// sp-im74: closed-tour mode. false/"" (every current caller) => the solver
+		// plans an OPEN tour byte-identical to today; true makes each planned tour
+		// end at the anchor via an appended, honestly-priced no-trade return leg.
+		Closed:       cmd.ClosedTours,
+		AnchorSystem: cmd.AnchorSystem,
 	}
 	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {

@@ -232,6 +232,38 @@ def _effective_tour_systems(constraints):
     return max(MAX_TOUR_SYSTEMS, min(requested, MAX_HOPS_DEFAULT))
 
 
+def _resolve_anchor(constraints, ship, rows, allowed):
+    """Resolve the sp-im74 closure anchor ONCE per solve into the constraints stash
+    (underscore convention, like `_travel_fn`): `_anchor_return_wp` is the waypoint a
+    CLOSED tour must end at, `_anchor_system` its system. Returns None on success or
+    the structured infeasible reason when the anchor cannot be resolved.
+
+    R1 closed falsey         -> no-op, nothing stashed (open tours never consult it).
+    R2 anchor_system ""      -> FLOATING: return to the ship's current waypoint.
+    R3 anchor == ship's own  -> floating semantics (R2), not a lexicographic pick.
+    R4 anchor not in scope   -> "anchor_system_not_in_scope" (allowed_systems gate).
+    R5 no fresh market rows  -> "anchor_system_no_return_waypoint".
+    R6 in-scope foreign      -> that system's lexicographically-FIRST fresh market
+                                waypoint, computed from the filtered market rows
+                                BEFORE deposit/stock synthesis adds non-market nodes.
+    """
+    if not constraints.get("closed"):
+        return None
+    anchor = (constraints.get("anchor_system") or "").strip()
+    if not anchor or anchor == ship["current_system"]:
+        constraints["_anchor_return_wp"] = ship["current_waypoint"]
+        constraints["_anchor_system"] = ship["current_system"]
+        return None
+    if anchor not in allowed:
+        return "anchor_system_not_in_scope"
+    wps = sorted(r["waypoint_symbol"] for r in rows if r["system_symbol"] == anchor)
+    if not wps:
+        return "anchor_system_no_return_waypoint"
+    constraints["_anchor_return_wp"] = wps[0]
+    constraints["_anchor_system"] = anchor
+    return None
+
+
 def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
     """Piecewise price schedule: list of (units, unit_price) tranches.
 
@@ -455,6 +487,11 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     no A-cap, and a withdrawal leg competes with real market buys on margin so the
     allocator draws from stock only when it is the cheaper acquisition. Empty/None -> no
     stock legs, plans against market buys unchanged.
+
+    Closure (sp-im74): when constraints carry closed=True and the solve_tour-resolved
+    `_anchor_return_wp` stash, a priced NO-TRADE return hop is appended after the
+    prune unless the tour already ends at the anchor — travel + dwell charged into
+    seconds/cph, profit untouched. Absent/False -> byte-identical open scoring.
     """
     deposit_sinks = deposit_sinks or {}
     absorption_index = absorption_index or {}
@@ -705,6 +742,23 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
         leg["travel_seconds_from_prev"] = hop
         seconds += hop + DWELL_SECONDS_PER_LEG
         prev = leg["waypoint_symbol"]
+
+    # sp-im74 closure epilogue: a CLOSED tour ends at the anchor solve_tour resolved
+    # into the `_anchor_return_wp` stash — append the priced NO-TRADE return hop and
+    # charge its travel + dwell into time/cph, never profit. Living here (after the
+    # no-trade prune, before cph) makes EVERY stage-1 sequencer closure-correct.
+    # Guards: E1 empty legs stay a 0-second degenerate (the _sort_scored zero-time
+    # pin, and a bare-seed candidate must never crash the pool); E2 a tour already
+    # ending at the anchor appends nothing (open-equal by construction).
+    return_wp = constraints.get("_anchor_return_wp")
+    if constraints.get("closed") and return_wp and legs \
+            and legs[-1]["waypoint_symbol"] != return_wp:
+        hop = int(travel_fn(prev, return_wp))
+        legs.append(dict(waypoint_symbol=return_wp,
+                         system_symbol=constraints["_anchor_system"],
+                         trades=[], projected_leg_profit=0,
+                         travel_seconds_from_prev=hop))
+        seconds += hop + DWELL_SECONDS_PER_LEG
 
     cph = profit / (seconds / 3600.0) if seconds > 0 else 0.0
     return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs,
@@ -1024,6 +1078,11 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                                         ORTOOLS_MAX_SUBSETS, 1, 32, int)
 
     pruned = _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp)
+    # sp-im74: CLOSED mode prices the return-to-anchor on the virtual END arc, so the
+    # in-model route optimum is a closed circuit. Open (closed falsey, or a direct
+    # caller without the solve_tour stash) keeps all end arcs at 0 — byte-identical.
+    closed_return_wp = (constraints.get("_anchor_return_wp")
+                        if constraints.get("closed") else None)
     start = ship["current_waypoint"]
     start_system = ship["current_system"]
     start_is_market = start in markets
@@ -1096,7 +1155,7 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                 continue  # nothing to sequence beyond the start
             n_real = len(real)
             start_idx = real.index(start)
-            virtual_node = n_real  # open-path terminal (sp-im74 flips end=start)
+            virtual_node = n_real  # terminal; sp-im74 CLOSED prices its inbound arc
 
             gain = [[0] * n_real for _ in range(n_real)]
             liq_scaled = [0] * n_real
@@ -1118,15 +1177,29 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                     arc_cost[i][j] = (int((t + DWELL_SECONDS_PER_LEG) * lam * COST_SCALE)
                                       + offset - gain[i][j])
 
+            # sp-im74 end arcs: closed -> each node's priced hop home (0 at the
+            # anchor itself, mirroring the stage-2 no-op); open -> all zeros, so the
+            # transit values below stay byte-identical to the free F10 terminal.
+            end_cost = [0] * n_real
+            if closed_return_wp:
+                for i, a in enumerate(real):
+                    if a != closed_return_wp:
+                        t = travel_fn(a, closed_return_wp)
+                        end_cost[i] = int((t + DWELL_SECONDS_PER_LEG)
+                                          * lam * COST_SCALE)
+
             manager = pywrapcp.RoutingIndexManager(n_real + 1, 1,
                                                    [start_idx], [virtual_node])
             routing = pywrapcp.RoutingModel(manager)
 
             def transit(from_index, to_index, _m=manager, _c=arc_cost,
-                        _v=virtual_node):
+                        _v=virtual_node, _e=end_cost):
                 to_node = _m.IndexToNode(to_index)
                 if to_node == _v:
-                    return 0  # F10: BEFORE any travel lookup; virtual arc has no dwell
+                    # F10: BEFORE any travel lookup. Open: free terminal (0).
+                    # Closed (sp-im74): the priced return-to-anchor arc.
+                    from_node = _m.IndexToNode(from_index)
+                    return _e[from_node] if from_node < _v else 0
                 from_node = _m.IndexToNode(from_index)
                 if from_node == _v:
                     return 0
@@ -1257,6 +1330,15 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     reason string are identical under both; beam mode is byte-identical to
     the pre-sp-y05b solver.
 
+    Closure (sp-im74): constraints `closed` / `anchor_system` make the planned tour
+    END at an anchor. The anchor is resolved once per solve (see _resolve_anchor,
+    R1-R6) into the `_anchor_return_wp`/`_anchor_system` stash; score_sequence
+    appends the priced no-trade return hop (every sequencer closure-correct) and the
+    ortools model additionally prices the return on its virtual end arc. Unresolvable
+    anchors fail structured: "anchor_system_not_in_scope" /
+    "anchor_system_no_return_waypoint". closed unset/False + anchor_system "" (the
+    proto3 zero-values) are a strict no-op — byte-identical open planning.
+
     Fail-loud contract: missing artifact or version mismatch are structured
     infeasible reasons, never a silent fallback (spec error-handling table).
     """
@@ -1318,6 +1400,12 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
         return _infeasible("no_fresh_market_data", model_version)
 
     markets = _build_markets(rows)
+    # sp-im74: resolve the closure anchor ONCE per solve, from the fresh in-scope
+    # MARKET rows (before deposit/stock synthesis adds non-market storage nodes).
+    # Open requests (closed falsey) are a strict no-op here — default safety.
+    anchor_error = _resolve_anchor(constraints, ship, rows, allowed)
+    if anchor_error:
+        return _infeasible(anchor_error, model_version)
     # Deposit sinks (sp-dchv Lane C): index the candidates and make each storage
     # waypoint a routable node in `markets` (as an empty-goods node when it is not
     # itself a scanned market). The deposit goods live in the sink map, NOT in

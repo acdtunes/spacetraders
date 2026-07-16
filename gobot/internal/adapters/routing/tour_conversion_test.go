@@ -29,6 +29,7 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		domainRouting.TourConstraints{
 			MaxHops: 6, MinMarginPerUnit: 5, MaxSnapshotAgeMinutes: 75,
 			MaxSpend: 250000, WorkingCapitalReserve: 50000, MaxTourSystems: 5,
+			Closed: true, AnchorSystem: "X1-GQ92",
 			AllowedSystems: []string{"X1-NK36", "X1-GQ92"}, ExpectedModelVersion: "1@torwind-2026-07-05",
 		},
 		[]domainRouting.TourDepositCandidate{
@@ -77,6 +78,11 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		c.ExpectedModelVersion != "1@torwind-2026-07-05" {
 		t.Fatalf("constraints wrong: %+v", c)
 	}
+	// sp-im74: the closure request fields cross the wire verbatim — a dropped Closed
+	// silently plans an open tour forever.
+	if !c.Closed || c.AnchorSystem != "X1-GQ92" {
+		t.Fatalf("closure constraints wrong: closed=%v anchor=%q, want true/%q", c.Closed, c.AnchorSystem, "X1-GQ92")
+	}
 	if len(c.AllowedSystems) != 2 || c.AllowedSystems[0] != "X1-NK36" || c.AllowedSystems[1] != "X1-GQ92" {
 		t.Fatalf("allowed systems wrong: %+v", c.AllowedSystems)
 	}
@@ -116,6 +122,19 @@ func TestBuildTourRequest_MaxTourSystemsDefaultsZero(t *testing.T) {
 	if req.Constraints.MaxTourSystems != 0 {
 		t.Fatalf("unset MaxTourSystems must map to 0 (proto3 default), got %d",
 			req.Constraints.MaxTourSystems)
+	}
+}
+
+// sp-im74 default-safety hinge: a tour built WITHOUT closure must put the proto3
+// zero-values (false/"") on the wire — which serialize to ZERO BYTES, so an open
+// request is byte-identical to a pre-sp-im74 binary's. Pins that no mapping ever
+// fabricates a closed/anchored request the caller didn't ask for.
+func TestBuildTourRequest_ClosureDefaultsZero(t *testing.T) {
+	req := buildTourRequest(nil, nil, domainRouting.TourShipState{},
+		domainRouting.TourConstraints{MaxHops: 6, ExpectedModelVersion: "1@e"}, nil, nil)
+	if req.Constraints.Closed || req.Constraints.AnchorSystem != "" {
+		t.Fatalf("unset closure must map to false/\"\" (proto3 defaults, absent on the wire), got closed=%v anchor=%q",
+			req.Constraints.Closed, req.Constraints.AnchorSystem)
 	}
 }
 

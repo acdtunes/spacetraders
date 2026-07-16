@@ -365,6 +365,11 @@ type tourFakeRoutingClient struct {
 	// pin that the request-driven distinct-system cap rides cmd.MaxTourSystems onto the
 	// TourConstraints the planner receives (unset → 0, the solver's default-2 hinge).
 	maxTourSystems []int
+	// closed + anchorSystems capture the sp-im74 closure fields on each call: the
+	// cmd→cons hop that arms closed-tour mode on the planner request. Unset must reach
+	// the planner as false/"" — the dormant proto3 default, byte-identical to today.
+	closed        []bool
+	anchorSystems []string
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
@@ -373,6 +378,8 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
 	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
+	c.closed = append(c.closed, cons.Closed)
+	c.anchorSystems = append(c.anchorSystems, cons.AnchorSystem)
 	c.absorptions = append(c.absorptions, absorption)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {

@@ -137,6 +137,36 @@ def test_handler_forwards_max_tour_systems(tmp_path):
         [(l.waypoint_symbol, l.system_symbol) for l in resp_default.legs]
 
 
+def test_handler_forwards_closure_fields(tmp_path):
+    # sp-im74: the pb closed/anchor_system fields must be BRIDGED into the solver
+    # constraints dict. Golden board: the open winner is A->D->E (ends at E).
+    # closed floating => a no-trade return hop to the ship's waypoint A is appended;
+    # an explicit S2 anchor => the return targets S2's lexicographically-first fresh
+    # market waypoint (D, the only S2 market).
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+
+    req = request()
+    req.constraints.closed = True
+    resp = handler.OptimizeTradeTour(req, None)
+    assert resp.feasible
+    last = resp.legs[-1]
+    assert (last.waypoint_symbol, last.system_symbol) == ("A", "S1")
+    assert len(last.trades) == 0
+
+    req2 = request()
+    req2.constraints.closed = True
+    req2.constraints.anchor_system = "S2"
+    resp2 = handler.OptimizeTradeTour(req2, None)
+    assert resp2.feasible
+    last2 = resp2.legs[-1]
+    assert (last2.waypoint_symbol, last2.system_symbol) == ("D", "S2")
+
+    # Companion (default-safe): an untouched request still plans the OPEN golden
+    # tour ending at E — the absent pb fields (false/"") change nothing on the wire.
+    resp_open = handler.OptimizeTradeTour(request(), None)
+    assert resp_open.legs[-1].waypoint_symbol == "E"
+
+
 def test_deposit_candidate_round_trips_to_deposit_leg(tmp_path):
     # sp-dchv Lane C: a request carrying a deposit candidate produces a DEPOSIT leg
     # at the storage waypoint (is_deposit=True, priced at the synthetic bid) and a

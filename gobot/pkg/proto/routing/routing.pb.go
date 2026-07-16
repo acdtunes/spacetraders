@@ -1653,8 +1653,17 @@ type TourConstraints struct {
 	// int32 default) => the solver falls back to that module default (2), so a caller
 	// that never sets it is byte-identical to today (the default-safety hinge).
 	MaxTourSystems int32 `protobuf:"varint,8,opt,name=max_tour_systems,json=maxTourSystems,proto3" json:"max_tour_systems,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// sp-im74: closure mode. closed=true makes the planned tour END at an anchor —
+	// the priced return leg is appended and charged into projected time/cph.
+	// Proto3 zero-values (false/"") are the dormant default: absent on the wire,
+	// byte-identical to an open tour.
+	Closed bool `protobuf:"varint,9,opt,name=closed,proto3" json:"closed,omitempty"`
+	// Anchor override: "" = floating (return to the ship's current waypoint);
+	// an explicit system symbol = return to that system's lexicographically-first
+	// fresh market waypoint (must be inside allowed_systems, else infeasible).
+	AnchorSystem  string `protobuf:"bytes,10,opt,name=anchor_system,json=anchorSystem,proto3" json:"anchor_system,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TourConstraints) Reset() {
@@ -1741,6 +1750,20 @@ func (x *TourConstraints) GetMaxTourSystems() int32 {
 		return x.MaxTourSystems
 	}
 	return 0
+}
+
+func (x *TourConstraints) GetClosed() bool {
+	if x != nil {
+		return x.Closed
+	}
+	return false
+}
+
+func (x *TourConstraints) GetAnchorSystem() string {
+	if x != nil {
+		return x.AnchorSystem
+	}
+	return ""
 }
 
 // TourTrade is one buy or sell tranche at a leg (execution order preserved).
@@ -2706,7 +2729,7 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\rTourCargoItem\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
-	"\x05units\x18\x02 \x01(\x05R\x05units\"\xf2\x02\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\"\xaf\x03\n" +
 	"\x0fTourConstraints\x12\x19\n" +
 	"\bmax_hops\x18\x01 \x01(\x05R\amaxHops\x12\x1b\n" +
 	"\tmax_spend\x18\x02 \x01(\x03R\bmaxSpend\x12-\n" +
@@ -2715,7 +2738,10 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x0fallowed_systems\x18\x05 \x03(\tR\x0eallowedSystems\x127\n" +
 	"\x18max_snapshot_age_minutes\x18\x06 \x01(\x05R\x15maxSnapshotAgeMinutes\x124\n" +
 	"\x16expected_model_version\x18\a \x01(\tR\x14expectedModelVersion\x12(\n" +
-	"\x10max_tour_systems\x18\b \x01(\x05R\x0emaxTourSystems\"\xc3\x01\n" +
+	"\x10max_tour_systems\x18\b \x01(\x05R\x0emaxTourSystems\x12\x16\n" +
+	"\x06closed\x18\t \x01(\bR\x06closed\x12#\n" +
+	"\ranchor_system\x18\n" +
+	" \x01(\tR\fanchorSystem\"\xc3\x01\n" +
 	"\tTourTrade\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +

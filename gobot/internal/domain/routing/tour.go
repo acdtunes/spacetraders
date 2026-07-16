@@ -61,6 +61,13 @@ type TourShipState struct {
 // the Python solver falls back to its MAX_TOUR_SYSTEMS module default (2), so a caller
 // that leaves it 0 is byte-identical to today. A positive value sweeps tour length
 // without a redeploy.
+//
+// Closed + AnchorSystem select closure mode (sp-im74, epic sp-fguo): Closed=true makes
+// the solver END the tour at an anchor via an appended, honestly-priced no-trade return
+// leg. AnchorSystem "" floats the anchor to the ship's current waypoint; an explicit
+// system symbol returns to that system's lexicographically-first fresh market waypoint.
+// Zero-values (false/"") are the dormant default — absent on the proto3 wire, so an
+// open tour is byte-identical to today.
 type TourConstraints struct {
 	MaxHops               int
 	MinMarginPerUnit      int
@@ -70,6 +77,8 @@ type TourConstraints struct {
 	AllowedSystems        []string
 	ExpectedModelVersion  string
 	MaxTourSystems        int
+	Closed                bool
+	AnchorSystem          string
 }
 
 // TourTrade is one buy or sell tranche at a leg. ExpectedUnitPrice is the
