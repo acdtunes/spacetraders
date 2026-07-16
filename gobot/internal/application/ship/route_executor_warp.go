@@ -244,7 +244,8 @@ func (e *RouteExecutor) ensureWarpFuelSafety(
 		"required":     required,
 		"fuel_current": ship.Fuel().Current,
 	})
-	if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
+	// A warp leg follows and requires orbit, so return to orbit after topping off.
+	if err := e.refuelShipWithRetry(ctx, ship, playerID, true); err != nil {
 		return fmt.Errorf("warp fuel-safety refuel at %s failed: %w", origin.Symbol, err)
 	}
 

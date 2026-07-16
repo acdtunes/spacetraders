@@ -148,7 +148,7 @@ func (e *RouteExecutor) ExecuteRoute(
 
 	// 2. Refuel before departure if needed (ship at fuel station with low fuel)
 	if route.HasRefuelAtStart() {
-		if err := e.refuelBeforeDeparture(ctx, ship, playerID); err != nil {
+		if err := e.refuelBeforeDeparture(ctx, route, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -323,7 +323,8 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 			"reason":          "strategy_decision",
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
+		// A navigate follows this refuel, so return to orbit.
+		if err := e.refuelShipWithRetry(ctx, ship, playerID, true); err != nil {
 			return err
 		}
 	}
@@ -434,7 +435,8 @@ func (e *RouteExecutor) ensureAffordableFlightMode(
 		"waypoint":     segment.FromWaypoint.Symbol,
 	})
 
-	if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
+	// A navigate follows this affordability backstop, so return to orbit.
+	if err := e.refuelShipWithRetry(ctx, ship, playerID, true); err != nil {
 		return flightMode, err
 	}
 
@@ -543,7 +545,11 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"waypoint":        segment.ToWaypoint.Symbol,
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
+		// CUT 2 (sp-yd84): stay docked after a post-arrival refuel. The next
+		// action at this waypoint is a trade that docks; staying docked makes
+		// that dock a CUT-1 no-op skip. A following segment re-orbits via
+		// ensureShipInOrbit, so this is never a wrong state for a later navigate.
+		if err := e.refuelShipWithRetry(ctx, ship, playerID, false); err != nil {
 			return err
 		}
 	}
@@ -555,7 +561,8 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"action":      "planned_refuel",
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
-		if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
+		// CUT 2 (sp-yd84): stay docked after a post-arrival refuel (see above).
+		if err := e.refuelShipWithRetry(ctx, ship, playerID, false); err != nil {
 			return err
 		}
 	}
@@ -721,17 +728,66 @@ func (e *RouteExecutor) waitForCurrentTransit(
 // the same retry/reroute behavior instead of drifting apart.
 func (e *RouteExecutor) refuelBeforeDeparture(
 	ctx context.Context,
+	route *domainNavigation.Route,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	return e.refuelShipWithRetry(ctx, ship, playerID)
+	// CUT 3 (sp-yd84): skip the whole dock/refuel/orbit trio when the ship
+	// already holds enough fuel for the first leg plus the safety margin. This
+	// reuses the exact proven fuel-cost primitive from ensureAffordableFlightMode
+	// (route_executor.go:422) rather than inventing a new threshold, so a ship
+	// that can already make the next leg does not pay three redundant API verbs.
+	if e.hasSufficientFuelForFirstLeg(route, ship) {
+		common.LoggerFromContext(ctx).Log("INFO", "Skipping pre-departure refuel - sufficient fuel for first leg", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"action":       "pre_departure_refuel_skipped",
+			"fuel_current": ship.Fuel().Current,
+		})
+		return nil
+	}
+	// A navigate (the first segment) follows, so return to orbit.
+	return e.refuelShipWithRetry(ctx, ship, playerID, true)
 }
 
-// refuelShip refuels ship at current location
+// hasSufficientFuelForFirstLeg reports whether the ship can already fly the
+// route's first leg with the safety margin intact — the CUT 3 skip predicate.
+//
+// It is deliberately CONSERVATIVE: it reuses the exact FuelCost primitive the
+// affordability guard uses (segment.FlightMode.FuelCost over the leg distance)
+// plus DefaultFuelSafetyMargin, and returns false (i.e. DO refuel) on any
+// uncertainty — a nil segment. A zero-capacity ship (probe) never consumes fuel,
+// so it is always "sufficient". A wrong true here would strand a ship, so the
+// margin buffer and the fail-safe-to-refuel default are load-bearing safety.
+func (e *RouteExecutor) hasSufficientFuelForFirstLeg(route *domainNavigation.Route, ship *domainNavigation.Ship) bool {
+	if ship.Fuel().Capacity == 0 {
+		return true
+	}
+	segment := route.NextSegment()
+	if segment == nil {
+		return false
+	}
+	distance := segment.FromWaypoint.DistanceTo(segment.ToWaypoint)
+	required := segment.FlightMode.FuelCost(distance) + domainNavigation.DefaultFuelSafetyMargin
+	return ship.Fuel().Current >= required
+}
+
+// refuelShip refuels ship at current location.
+//
+// returnToOrbit controls the final transition (sp-yd84 CUT 2). When true the
+// ship is returned to orbit after refuelling — the correct choice when a
+// navigate immediately follows (pre-departure / affordability backstop /
+// alternate-stop reroute), since a navigate requires orbit. When false the ship
+// STAYS DOCKED — the correct choice after a post-arrival refuel, because the
+// very next action at the same waypoint is a trade that docks: leaving the ship
+// docked turns that trade's DockShipCommand into a CUT-1 no-op skip and drops
+// one orbit + one dock per stop. A subsequent segment (if any) re-orbits via
+// ensureShipInOrbit, so staying docked is never left in a wrong state for a
+// following navigate.
 func (e *RouteExecutor) refuelShip(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
+	returnToOrbit bool,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -766,6 +822,12 @@ func (e *RouteExecutor) refuelShip(
 	}
 	if _, err := e.mediator.Send(ctx, refuelCmd); err != nil {
 		return fmt.Errorf("failed to refuel: %w", err)
+	}
+
+	// CUT 2: only return to orbit when a navigate follows. When a trade at the
+	// same waypoint follows we deliberately stay docked (see doc comment).
+	if !returnToOrbit {
+		return nil
 	}
 
 	// Return to orbit (via OrbitShipCommand)

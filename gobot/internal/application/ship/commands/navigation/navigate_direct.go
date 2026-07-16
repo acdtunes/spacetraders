@@ -60,7 +60,7 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("failed to ensure ship in orbit: %w", err)
 	}
 
-	navResult, err := h.shipRepo.Navigate(ctx, ship, destination, cmd.PlayerID)
+	navResult, err := h.navigateWithOrbitSelfHeal(ctx, ship, destination, cmd.PlayerID)
 	if err != nil {
 		// The server reports error 4204 ("ship is currently located at the
 		// destination") when the daemon's cached position lags the game server
@@ -83,6 +83,36 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		FuelCurrent:    navResult.FuelCurrent,
 		FuelCapacity:   navResult.FuelCapacity,
 	}, nil
+}
+
+// navigateWithOrbitSelfHeal navigates, self-healing a wrong idempotent-orbit
+// skip (sp-yd84 SAFETY item 2). The idempotent orbit optimization (CUT 1) trusts
+// the in-memory NavStatus; if that has drifted from server reality the skipped
+// orbit leaves the ship docked, and the navigate is rejected with the live API's
+// 4236 "not currently in orbit". Rather than fail the leg, issue a REAL orbit
+// (h.shipRepo.Orbit fires the API unconditionally, correcting the drift) and
+// retry the navigate exactly once. Any other error — including 4204
+// already-at-destination, handled by the caller — is propagated unchanged so a
+// genuine failure is never masked. Mirrors jumpWithOrbitRetry (sp-28n2).
+func (h *NavigateDirectHandler) navigateWithOrbitSelfHeal(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID shared.PlayerID) (*navigation.Result, error) {
+	navResult, err := h.shipRepo.Navigate(ctx, ship, destination, playerID)
+	if err == nil {
+		return navResult, nil
+	}
+	if !isNotInOrbitError(err) {
+		return nil, err
+	}
+
+	common.LoggerFromContext(ctx).Log("WARNING", "Navigate rejected as not-in-orbit (4236) - orbiting live and retrying (idempotent-skip drift self-heal, sp-yd84)", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "navigate_orbit_self_heal",
+		"destination": destination.Symbol,
+	})
+
+	if oerr := h.shipRepo.Orbit(ctx, ship, playerID); oerr != nil {
+		return nil, fmt.Errorf("self-heal orbit after a not-in-orbit navigate rejection failed: %w", oerr)
+	}
+	return h.shipRepo.Navigate(ctx, ship, destination, playerID)
 }
 
 // reconcileAtDestination handles a server-reported "already at destination"

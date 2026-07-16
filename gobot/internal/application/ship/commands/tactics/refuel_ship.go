@@ -3,6 +3,7 @@ package tactics
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -60,7 +61,7 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 
 	fuelBefore := ship.Fuel().Current
 
-	refuelResult, err := h.refuelShipViaAPI(ctx, ship, cmd)
+	refuelResult, err := h.refuelWithDockSelfHeal(ctx, ship, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +111,51 @@ func (h *RefuelShipHandler) refuelShipViaAPI(ctx context.Context, ship *navigati
 		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
 	return result, nil
+}
+
+// refuelWithDockSelfHeal refuels, self-healing a wrong idempotent-dock skip
+// (sp-yd84 SAFETY item 2). The idempotent dock optimization (CUT 1) trusts the
+// in-memory NavStatus; if that has drifted from server reality, the skipped dock
+// leaves the ship undocked and the refuel is rejected with the API's 4214/4244
+// "must be docked". Rather than fail the leg, issue a REAL dock (h.shipRepo.Dock
+// fires the API unconditionally, correcting the drift) and retry the refuel
+// exactly once. Any other error — or a second failure after re-docking — is
+// propagated unchanged so a genuine failure (no fuel station, insufficient
+// credits) is never masked. Mirrors the codebase's existing recover-then-retry
+// idioms (production_executor.isTransientDockStateError, jump_ship's orbit retry).
+func (h *RefuelShipHandler) refuelWithDockSelfHeal(ctx context.Context, ship *navigation.Ship, cmd *types.RefuelShipCommand) (*navigation.RefuelResult, error) {
+	result, err := h.refuelShipViaAPI(ctx, ship, cmd)
+	if err == nil {
+		return result, nil
+	}
+	if !isMustBeDockedError(err) {
+		return nil, err
+	}
+
+	logging.LoggerFromContext(ctx).Log("WARNING", "Refuel rejected as not-docked (4214/4244) - docking live and retrying (idempotent-skip drift self-heal, sp-yd84)", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "refuel_dock_self_heal",
+		"waypoint":    ship.CurrentLocation().Symbol,
+	})
+
+	if derr := h.shipRepo.Dock(ctx, ship, cmd.PlayerID); derr != nil {
+		return nil, fmt.Errorf("self-heal dock after a not-docked refuel rejection failed: %w", derr)
+	}
+	return h.refuelShipViaAPI(ctx, ship, cmd)
+}
+
+// isMustBeDockedError reports whether err is the recoverable "ship must be
+// docked" precondition — the live API's 4214/4244 codes — rather than a genuine
+// failure (insufficient credits, no fuel station). Only these are safe to retry
+// after re-docking. Mirrors production_executor.isTransientDockStateError.
+func isMustBeDockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "must be docked") ||
+		strings.Contains(msg, "4214") ||
+		strings.Contains(msg, "4244")
 }
 
 func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefore int, refuelResult *navigation.RefuelResult) *types.RefuelShipResponse {

@@ -380,7 +380,7 @@ func TestRefuelShipWithRetry_TransientFailureRetriesWithBackoffThenSucceeds(t *t
 	mockClock := &shared.MockClock{}
 	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, nil, stubSubscriber{})
 
-	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
+	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), true)
 	if err != nil {
 		t.Fatalf("expected refuel to succeed after retrying the transient 500s, got error: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestRefuelShipWithRetry_NonTransientFailureFailsFastWithoutRetry(t *testing
 	mockClock := &shared.MockClock{}
 	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, nil, stubSubscriber{})
 
-	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
+	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), true)
 	if err == nil {
 		t.Fatalf("expected refuel to fail fast on a non-transient error, got nil")
 	}
@@ -474,7 +474,7 @@ func TestRefuelShipWithRetry_RetriesExhaustedReroutesToAlternateFuelStop(t *test
 	mockClock := &shared.MockClock{}
 	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, waypointRepo, stubSubscriber{})
 
-	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
+	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), true)
 	if err != nil {
 		t.Fatalf("expected reroute to the alternate fuel stop to succeed, got error: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestRefuelShipWithRetry_BothRetryAndRerouteExhaustedReturnsParkableError(t 
 	mockClock := &shared.MockClock{}
 	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, waypointRepo, stubSubscriber{})
 
-	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1))
+	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), true)
 	if err == nil {
 		t.Fatalf("expected an error when both retry and reroute are exhausted, got nil")
 	}

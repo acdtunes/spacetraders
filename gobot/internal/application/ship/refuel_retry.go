@@ -96,27 +96,36 @@ func (e *RouteExecutor) refuelShipWithRetry(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
+	returnToOrbit bool,
 ) error {
-	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelMaxAttempts, DefaultRefuelBackoffBase)
+	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelMaxAttempts, DefaultRefuelBackoffBase, returnToOrbit)
 }
 
 // refuelShipWithRetryCore is refuelShipWithRetry's configurable core. Tests
 // can inject a smaller maxAttempts to keep fixtures short; backoffBase does
 // not need to be shrunk for tests since e.clock is expected to be a
 // shared.MockClock whose Sleep advances time instantly without blocking.
+//
+// returnToOrbit is threaded straight to refuelShip (sp-yd84 CUT 2): the
+// same-waypoint retry loop honours the caller's stay-docked choice. The
+// alternate-stop reroute below always returns to orbit — after a reroute the
+// ship has moved to a different waypoint, so the stay-docked optimization (whose
+// point is to let a co-located trade skip its dock) no longer applies and the
+// caller still needs orbit for the leg it was preparing.
 func (e *RouteExecutor) refuelShipWithRetryCore(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 	maxAttempts int,
 	backoffBase time.Duration,
+	returnToOrbit bool,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 	origin := ship.CurrentLocation()
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err := e.refuelShip(ctx, ship, playerID)
+		err := e.refuelShip(ctx, ship, playerID, returnToOrbit)
 		if err == nil {
 			return nil
 		}
@@ -224,7 +233,9 @@ func (e *RouteExecutor) refuelAtAlternateStop(
 		return fmt.Errorf("failed to navigate to alternate fuel waypoint %s: %w", alt.Symbol, err)
 	}
 
-	return e.refuelShip(ctx, ship, playerID)
+	// Return to orbit after the reroute refuel: the ship has moved, so the
+	// stay-docked optimization does not apply and the caller still needs orbit.
+	return e.refuelShip(ctx, ship, playerID, true)
 }
 
 // navigateShipDirect sends ship directly to dest and waits for arrival if the
