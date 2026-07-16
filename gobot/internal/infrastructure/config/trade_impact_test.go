@@ -84,3 +84,40 @@ func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
 		t.Fatalf("scan_sampling_disabled must yield ok=false so the coordinator stamps no policy")
 	}
 }
+
+// sp-0dat: impact_sampling_disabled zeroes the deliberate post-trade impact instrumentation
+// (behavior 2) while the recent-scan freshness gate (behavior 1) stays fully ON. This is the
+// distinct middle ground the rate knob alone can't express: impact_sample_rate follows the
+// struct-wide "0 → era-3 default 0.15" convention, so it can never resolve to a literal 0 —
+// an operator asking for "instrumentation to 0" flips this switch instead. It differs from
+// scan_sampling_disabled, which reverts BOTH behaviors (ok=false → unconditional scanning).
+func TestTradeImpactConfig_ImpactSamplingDisabled_KeepsFreshnessGate(t *testing.T) {
+	// Switch alone: policy is still STAMPED (ok=true, freshness gate governs), but the
+	// impact-sample rate is a hard 0 — sampleImpact(_, 0) never fires an instrumentation scan.
+	off := config.TradeImpactConfig{ImpactSamplingDisabled: true}
+	policy, on := off.ResolvedScanPolicy()
+	if !on {
+		t.Fatalf("impact_sampling_disabled must KEEP the policy stamped (ok=true) so the freshness gate stays live")
+	}
+	if policy.ImpactSampleRate != 0 {
+		t.Fatalf("impact_sampling_disabled must zero the sample rate: got %v, want 0", policy.ImpactSampleRate)
+	}
+	if policy.MaxScanAge != 75*time.Second {
+		t.Fatalf("impact_sampling_disabled must LEAVE the freshness window intact: got %v, want 75s", policy.MaxScanAge)
+	}
+
+	// Composes with an explicit freshness window: the operator can zero instrumentation AND
+	// tune the dedup window in the same section.
+	tuned := config.TradeImpactConfig{ImpactSamplingDisabled: true, ScanMaxAgeSeconds: 120}
+	tp, on := tuned.ResolvedScanPolicy()
+	if !on || tp.ImpactSampleRate != 0 || tp.MaxScanAge != 120*time.Second {
+		t.Fatalf("disabled+tuned: got ok=%v %+v, want ok=true {120s, 0}", on, tp)
+	}
+
+	// A non-zero configured rate is OVERRIDDEN by the switch — the kill switch wins, so an
+	// operator can hold a refit rate in config yet still cut instrumentation instantly.
+	both := config.TradeImpactConfig{ImpactSamplingDisabled: true, ImpactSampleRate: 0.5}
+	if bp, _ := both.ResolvedScanPolicy(); bp.ImpactSampleRate != 0 {
+		t.Fatalf("kill switch must override a configured rate: got %v, want 0", bp.ImpactSampleRate)
+	}
+}

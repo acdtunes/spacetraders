@@ -62,6 +62,15 @@ type TradeImpactConfig struct {
 	// byte-for-byte). The operator's instant revert for the scan-load change — flip it and
 	// restart — mirroring Disabled's kill-switch convention. Absent/false = sp-v34b ON.
 	ScanSamplingDisabled bool `mapstructure:"scan_sampling_disabled"`
+	// ImpactSamplingDisabled zeroes JUST the deliberate post-trade impact instrumentation
+	// (sp-v34b behavior 2 — the paired before/after scans the analyst refits from) while the
+	// recent-scan freshness gate (behavior 1) stays fully live. This is the middle ground the
+	// ImpactSampleRate knob alone cannot express (sp-0dat): that field follows the struct-wide
+	// "0 → era-3 default 0.15" convention, so it can never resolve to a literal 0 — an operator
+	// who wants instrumentation OFF but the redundant-scan dedup kept ON flips this switch. It
+	// differs from ScanSamplingDisabled, which reverts BOTH behaviors (unconditional scanning).
+	// Absent/false = the resolved ImpactSampleRate governs (sp-v34b unchanged).
+	ImpactSamplingDisabled bool `mapstructure:"impact_sampling_disabled"`
 }
 
 // sp-v34b scan-load defaults (config package locals, not domain constants — they govern
@@ -127,8 +136,15 @@ func (c TradeImpactConfig) ResolvedScanPolicy() (shared.ScanPolicy, bool) {
 	if c.ScanSamplingDisabled {
 		return shared.ScanPolicy{}, false
 	}
+	// The impact-sampling kill switch (sp-0dat) forces the rate to a hard 0 — sampleImpact
+	// never fires an instrumentation scan, so the freshness gate (MaxScanAge, untouched)
+	// governs every trade. The policy is still STAMPED (ok=true) so behavior 1 stays live.
+	sampleRate := c.ResolvedImpactSampleRate()
+	if c.ImpactSamplingDisabled {
+		sampleRate = 0
+	}
 	return shared.ScanPolicy{
 		MaxScanAge:       c.ResolvedScanMaxAge(),
-		ImpactSampleRate: c.ResolvedImpactSampleRate(),
+		ImpactSampleRate: sampleRate,
 	}, true
 }
