@@ -2454,6 +2454,17 @@ func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Con
 
 	maxDispatch := resolveGateReconcileMaxDispatch(cmd)
 	maxJumps := resolveMaxRepositionJumps(cmd)
+
+	// sp-pix3: chart BFS-OUTWARD from the charted frontier. Rank the backlog by each target's hop
+	// distance to the NEAREST idle probe over CURRENT stored adjacency and dispatch the nearest
+	// routable ring first; a target not routable over stored adjacency this tick is DEFERRED (it
+	// sits behind an as-yet-uncharted gate and becomes routable only once a nearer ring charts). So
+	// the charted frontier expands one reachable ring per cycle instead of burning the bounded
+	// budget on deep multi-hop relays that fail-close at live jump time on an uncharted transit
+	// gate (the 5–9-jump SCOUT_REPOSITION storm). Pure REORDERING — every dispatch guard below is
+	// unchanged, and the loop re-selects the probe per target as the idle pool drains.
+	targets = h.rankGateReconcileTargetsNearestFirst(ctx, targets, *idleSats, maxJumps)
+
 	dispatched := 0
 	for _, target := range targets {
 		if dispatched >= maxDispatch {
@@ -2504,6 +2515,45 @@ func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Con
 			"relay":         relayID,
 		})
 	}
+}
+
+// rankGateReconcileTargetsNearestFirst orders the gate-uncharted backlog BFS-OUTWARD from the
+// charted frontier (sp-pix3): each target is ranked by the FEWEST jump hops from any idle probe
+// over CURRENT stored adjacency (selectNearestSatelliteByHops), nearest first. A target NOT
+// routable over stored adjacency this tick is DROPPED — it sits behind an as-yet-uncharted gate
+// and becomes routable only once a nearer ring charts (a later cycle picks it up). This is what
+// turns the sweep from "poke alphabetically at the backlog, firing deep relays that fail-close on
+// an uncharted transit gate" into "extend the charted boundary one reachable ring at a time." The
+// input is symbol-sorted (gateUnchartedMarketSystems) and the sort is STABLE, so equal-hop targets
+// keep symbol order — deterministic dispatch. Pure ranking: it READS the idle pool to measure
+// distance but never consumes it (the dispatch loop owns consumption and re-selects the probe
+// per target as the pool drains).
+func (h *RunScoutPostCoordinatorHandler) rankGateReconcileTargetsNearestFirst(
+	ctx context.Context,
+	targets []string,
+	idleSats []*navigation.Ship,
+	maxJumps int,
+) []string {
+	type rankedTarget struct {
+		system string
+		hops   int
+	}
+	routable := make([]rankedTarget, 0, len(targets))
+	for _, target := range targets {
+		_, hops, ok := h.selectNearestSatelliteByHops(ctx, idleSats, target, maxJumps)
+		if !ok {
+			continue // behind an uncharted gate — defer to a later cycle once a nearer ring charts
+		}
+		routable = append(routable, rankedTarget{system: target, hops: hops})
+	}
+	sort.SliceStable(routable, func(i, j int) bool {
+		return routable[i].hops < routable[j].hops
+	})
+	ordered := make([]string, len(routable))
+	for i, r := range routable {
+		ordered[i] = r.system
+	}
+	return ordered
 }
 
 // gateReconcileBackoffKey is the per-target dispatch-backoff key for the sp-bcsu sweep. It
