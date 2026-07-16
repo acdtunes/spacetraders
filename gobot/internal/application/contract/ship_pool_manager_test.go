@@ -464,6 +464,34 @@ func TestFindIdleShipsByFleet_ReturnsOnlyIdleMembersOfNamedFleet(t *testing.T) {
 	}
 }
 
+// sp-7zoq (GRABBER 2 — the arb/trade dispatcher): the idle-arb dispatcher harvests idle-gap legs from
+// its OWN dedicated fleet via FindIdleShipsByFleet(d.fleet). Whatever fleet an arb/trade dispatcher
+// runs (here "arb"), a hull dedicated to the "contract" fleet — the reserve floor's stamp — is NEVER
+// surfaced to it: FindIdleShipsByFleet returns only members whose tag equals the queried fleet, so a
+// contract-dedicated reserve hull is invisible to an arb dispatcher and can never be dispatched on an
+// arb leg. (The contract coordinator's OWN idle-arb runs d.fleet=="contract" and legitimately uses the
+// reserve between contract legs — dedication is TO contract, exclusive only against OTHER fleets.)
+func TestFindIdleShipsByFleet_ArbDispatcherNeverSurfacesContractDedicatedHull(t *testing.T) {
+	contractReserve := newCandidateShip(t, "TORWIND-6", "HAULER", 30, 10, 0)
+	contractReserve.SetDedicatedFleet("contract")
+	arbHull := newCandidateShip(t, "TORWIND-7", "HAULER", 30, 20, 0)
+	arbHull.SetDedicatedFleet("arb")
+	repo := &stubShipRepo{ships: []*navigation.Ship{contractReserve, arbHull}}
+
+	// The arb dispatcher's exact discovery call: FindIdleShipsByFleet(<its own fleet>).
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "arb")
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if containsSymbol(symbols, "TORWIND-6") {
+		t.Fatalf("the contract-dedicated reserve hull TORWIND-6 must be invisible to the arb dispatcher, got %v", symbols)
+	}
+	if len(symbols) != 1 || symbols[0] != "TORWIND-7" {
+		t.Fatalf("expected only the arb dispatcher's own hull [TORWIND-7], got %v", symbols)
+	}
+}
+
 // A fleet member mid-flight is not dispatchable even without an active
 // assignment - mirroring FindIdleLightHaulers' in-transit exclusion.
 func TestFindIdleShipsByFleet_SkipsInTransitMembers(t *testing.T) {

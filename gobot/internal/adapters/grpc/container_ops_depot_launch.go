@@ -162,6 +162,13 @@ type depotCoordinatorSink interface {
 	// + the live min_home_contract_workers knob; a spy returns a canned budget. A zero value reserves
 	// nothing (regression-safe: the pre-sp-mzdk pin-everything behavior).
 	homeContractWorkerReserve(ctx context.Context, reg *depot.Registry, playerID int) deliveryPinBudget
+	// dedicateContractReserve fleet-ASSIGNS a reserved (or reclaimed) home general hauler to the
+	// exclusive "contract" fleet (bead sp-7zoq) — the write that makes the reserve poach-proof. It
+	// routes through the SAME single AssignShipFleet dedication path the CLI `fleet assign` and the
+	// coordinator's own reconcile use, so the exclusion (FindIdleLightHaulers / SENSE / ClaimShip's
+	// atomic guard) takes effect for free. *DaemonServer sends the automated AssignShipFleetCommand; a
+	// spy records the symbol. Idempotent: re-dedicating a hull already tagged "contract" writes nothing.
+	dedicateContractReserve(ctx context.Context, shipSymbol string, playerID int) error
 }
 
 // depotSourceHubFleet is the DedicatedFleet tag a depot source-hub hull carries (sp-3l64). Like
@@ -179,18 +186,53 @@ const depotSourceHubFleet = "depot-source-hub"
 // refuses a double-launch). It is the same shape as ensureBootStandingCoordinators.
 func launchDepotCoordinators(ctx context.Context, reg *depot.Registry, playerID int, sink depotCoordinatorSink) {
 	intents := planDepotLaunches(reg)
-	// Reserve floor (sp-mzdk): before pinning, consult the census of undedicated home general
-	// haulers and RESERVE min_home_contract_workers of them so an unbuffered-good contract always
-	// has a general sourcing worker. A reserved delivery hull is left undedicated + home + available
-	// to the contract grab — not pinned to its hub.
-	reserved := reserveHomeContractWorkers(intents, sink.homeContractWorkerReserve(ctx, reg, playerID))
+	// Reserve floor (sp-mzdk + sp-7zoq): before pinning, consult the census of home general haulers
+	// and RESERVE min_home_contract_workers of them so an unbuffered-good contract always has a
+	// sourcing worker. sp-7zoq: a reserved delivery hull is not left undedicated (poachable) but
+	// DEDICATED to the exclusive "contract" fleet — held back from its hub pin and fleet-assigned so
+	// no other coordinator can grab it, while the contract coordinator still sources with it via its
+	// own FindIdleShipsByFleet("contract") lookup.
+	budget := sink.homeContractWorkerReserve(ctx, reg, playerID)
+	reserved := reserveHomeContractWorkers(intents, budget)
+	// Reclaim (sp-7zoq, the deferred sp-mzdk temp-un-pin): when too few undedicated hulls remained to
+	// reach the floor, ALSO re-dedicate already-pinned delivery hulls to "contract" — computed UP FRONT
+	// so the pin loop below skips them (never re-pins a hull it is about to reclaim, no churn). Capped
+	// at the exact shortfall, so the reserve lands at the floor and no more.
+	reclaim := reclaimPinnedForFloor(budget, len(reserved))
+	toDedicate := map[string]bool{}
+	for shipSymbol := range reserved {
+		toDedicate[shipSymbol] = true
+	}
+	for _, shipSymbol := range reclaim {
+		toDedicate[shipSymbol] = true
+	}
+	handled := map[string]bool{}
 	for _, intent := range intents {
-		if intent.role == depot.RoleDeliveryHull && reserved[intent.shipSymbol] {
-			fmt.Printf("Reserve floor (sp-mzdk): keeping home general hauler %s undedicated as a contract-worker reserve instead of pinning it to hub %s\n",
+		if intent.role == depot.RoleDeliveryHull && toDedicate[intent.shipSymbol] {
+			if err := sink.dedicateContractReserve(ctx, intent.shipSymbol, playerID); err != nil {
+				fmt.Printf("Reserve floor (sp-7zoq): failed to dedicate home general hauler %s to the contract fleet (left in prior state): %v\n",
+					intent.shipSymbol, err)
+				continue // never pin a hull the floor meant to reserve — leave it as-is on failure
+			}
+			handled[intent.shipSymbol] = true
+			fmt.Printf("Reserve floor (sp-7zoq): dedicated home general hauler %s to the exclusive contract fleet (poach-proof reserve) instead of pinning it to hub %s\n",
 				intent.shipSymbol, intent.targetWaypoint)
 			continue
 		}
 		dispatchDepotLaunch(ctx, sink, intent, playerID)
+	}
+	// A reclaim target that is no longer a declared delivery intent (declared-removed but still pinned)
+	// never passes through the loop above, so dedicate it directly — still a re-dedication TO contract,
+	// never an un-dedication to the poachable pool.
+	for _, shipSymbol := range reclaim {
+		if handled[shipSymbol] {
+			continue
+		}
+		if err := sink.dedicateContractReserve(ctx, shipSymbol, playerID); err != nil {
+			fmt.Printf("Reserve floor (sp-7zoq): failed to reclaim hull %s to the contract fleet: %v\n", shipSymbol, err)
+			continue
+		}
+		fmt.Printf("Reserve floor (sp-7zoq): reclaimed hull %s to the exclusive contract fleet to restore the sourcing floor\n", shipSymbol)
 	}
 }
 

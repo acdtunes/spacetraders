@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
@@ -22,10 +23,17 @@ import (
 // for EVERY home hauler, pinning them all leaves ZERO general workers, so an unbuffered contract
 // starves while idle hulls sit hub-locked (the live incident: COPPER_ORE -> H51, 0/60 for 80min).
 //
-// The floor RESERVES min_home_contract_workers undedicated home general haulers that are NEVER
-// converted to a depot-delivery pin. It is PREVENTIVE: it caps a FRESH pin (a hull undedicated at
-// launch time), leaving the reserve undedicated + home + available to the contract grab. Delivery
-// hulls ABOVE the floor still pin, so buffered delivery is unaffected (regression-safe).
+// The floor RESERVES min_home_contract_workers home general haulers that are NEVER converted to a
+// depot-delivery pin, and — the sp-7zoq fix — DEDICATES each of them to the exclusive "contract"
+// fleet. Merely leaving the reserve undedicated (the sp-mzdk behavior) left it in the shared idle pool
+// where ANY coordinator could poach it: the live incident was the goods_factory eating 4 of 6 reserve
+// workers as opportunistic idle hulls. An exclusive "contract" dedication removes a hull from that pool
+// (FindIdleLightHaulers, the reconciler SENSE filter, and ClaimShip's atomic guard all skip any hull
+// dedicated to another fleet), so the reserve is poach-proof while STILL serving contracts through the
+// coordinator's own FindIdleShipsByFleet("contract") lookup. Delivery hulls ABOVE the floor still pin,
+// so buffered delivery is unaffected (regression-safe). A reload that finds too few undedicated hulls
+// to reach the floor RECLAIMS the shortfall from already-pinned delivery hulls, re-dedicating them to
+// "contract" (the deferred sp-mzdk temp-un-pin — a re-dedication, not an un-dedication to the pool).
 
 // MinHomeContractWorkersDefault is the documented default reserve: the number of undedicated home
 // general haulers kept out of depot-delivery pinning so the contract coordinator always has a
@@ -85,31 +93,70 @@ func (s *DaemonServer) liveDepotBufferMinSourceDistance(ctx context.Context, pla
 }
 
 // deliveryPinBudget is the reserve-floor census the delivery-hull launch consults before pinning
-// (bead sp-mzdk). Available is the count of undedicated home general haulers currently backing the
-// contract coordinator's grab (the FindIdleLightHaulers pool); Floor is min_home_contract_workers,
-// the number of them to keep undedicated; InPool[ship] reports whether that ship is one of them
-// right now — so pinning it is what draws the pool down. The zero value (Available 0, Floor 0, nil
-// InPool) reserves nothing: the regression-safe, pre-sp-mzdk pin-everything behavior for a launch
-// with no census (feature off / degraded).
+// (bead sp-mzdk / sp-7zoq). Available is the count of UNDEDICATED home general haulers currently in
+// the shared idle pool; Floor is min_home_contract_workers, the number of home haulers to hold as
+// the contract sourcing reserve; InPool[ship] reports whether that ship is one of the undedicated
+// pool right now — so pinning it is what draws the pool down.
+//
+// sp-7zoq additions (make the reserve poach-proof, not merely undedicated): ContractDedicated is how
+// many home general haulers ALREADY carry the exclusive "contract" tag (they already satisfy the
+// floor, so the fresh reserve only tops UP to Floor — never over-dedicates past it); Pinned lists the
+// home general haulers currently pinned to depot-delivery (depot.DeliveryHullFleet), in stable order,
+// the reclaim pool the floor re-dedicates to "contract" when too few undedicated hulls remain to reach
+// the floor (the deferred sp-mzdk "temp-un-pin", done as a re-dedication TO contract rather than an
+// un-dedication back to the poachable pool).
+//
+// The zero value (all zero, nil maps/slices) reserves + reclaims nothing: the regression-safe,
+// pre-sp-mzdk pin-everything behavior for a launch with no census (feature off / degraded).
 type deliveryPinBudget struct {
-	Available int
-	Floor     int
-	InPool    map[string]bool
+	Available         int
+	Floor             int
+	InPool            map[string]bool
+	ContractDedicated int
+	Pinned            []string
 }
 
 // remaining is how many home general haulers may still be converted to delivery pins before the
-// floor binds: Available - Floor, clamped at 0 so a pool already at/under the floor converts none
-// (and a negative never "owes" pins — degrade gracefully when there are fewer haulers than floor).
+// floor binds: Available - need, where need = Floor - ContractDedicated is how many MORE home haulers
+// must be dedicated to "contract" to reach the floor (sp-7zoq). Clamped at 0 so a pool already at/under
+// the outstanding need converts none, and a negative never "owes" pins. Subtracting ContractDedicated
+// is what stops a reload from OVER-dedicating: once C home haulers already carry the "contract" tag
+// only Floor-C more are held back from pinning, never a fresh Floor on top of them.
 func (b deliveryPinBudget) remaining() int {
-	if b.Available <= b.Floor {
+	need := b.Floor - b.ContractDedicated
+	if need < 0 {
+		need = 0
+	}
+	if b.Available <= need {
 		return 0
 	}
-	return b.Available - b.Floor
+	return b.Available - need
 }
 
-// reserveHomeContractWorkers returns the set of delivery-hull ship symbols to RESERVE — left
-// undedicated + home + available to the contract coordinator's grab instead of pinned — so the
-// undedicated home general pool never drops below the floor (bead sp-mzdk). It walks the launch
+// reclaimPinnedForFloor returns the depot-delivery-pinned home haulers to RECLAIM by re-dedicating
+// them to the exclusive "contract" fleet — the deferred sp-mzdk "temp-un-pin", done correctly
+// (sp-7zoq): a reclaimed hull is dedicated TO contract, never un-dedicated back to the poachable pool.
+//
+// It fires only when the fresh undedicated reserve cannot reach the floor on its own: outstanding =
+// Floor - ContractDedicated - freshlyReserved is the shortfall AFTER the already-contract hulls and the
+// hulls freshly dedicated this launch are counted. The shortfall is drawn from Pinned in stable order
+// and CAPPED at the shortfall (never past it) and at how many pinned hulls exist — so the floor lands
+// at exactly Floor contract-dedicated home haulers, never more (the "don't over-dedicate" guardrail),
+// and reclaims the fewest buffered-delivery pins needed to restore the sourcing floor.
+func reclaimPinnedForFloor(budget deliveryPinBudget, freshlyReserved int) []string {
+	outstanding := budget.Floor - budget.ContractDedicated - freshlyReserved
+	if outstanding <= 0 {
+		return nil
+	}
+	if outstanding > len(budget.Pinned) {
+		outstanding = len(budget.Pinned)
+	}
+	return budget.Pinned[:outstanding]
+}
+
+// reserveHomeContractWorkers returns the set of delivery-hull ship symbols to RESERVE — held back
+// from depot-delivery pinning and (sp-7zoq) dedicated by the caller to the exclusive "contract" fleet
+// instead — so the contract sourcing reserve reaches the floor (bead sp-mzdk). It walks the launch
 // intents in stable order; a delivery hull currently IN the home general pool (InPool) consumes
 // one unit of the Available-Floor budget, and once that budget is spent every FURTHER in-pool
 // delivery hull is reserved. A delivery hull NOT in the pool — already depot-delivery pinned,
@@ -134,7 +181,7 @@ func reserveHomeContractWorkers(intents []depotLaunchIntent, budget deliveryPinB
 			remaining-- // within the Available-Floor budget — pin it
 			continue
 		}
-		reserved[intent.shipSymbol] = true // floor binds — keep this hull undedicated + available
+		reserved[intent.shipSymbol] = true // floor binds — hold this hull back to dedicate to "contract"
 	}
 	return reserved
 }
@@ -203,14 +250,46 @@ func (s *DaemonServer) homeContractWorkerReserve(ctx context.Context, reg *depot
 		return budget
 	}
 	inPool := map[string]bool{}
+	var pinned []string
+	contractDedicated := 0
 	for _, ship := range ships {
-		if isUndedicatedHomeGeneralHauler(ship, homeSystems) {
-			inPool[ship.ShipSymbol()] = true
+		fleet, ok := homeGeneralHaulerFleet(ship, homeSystems)
+		if !ok {
+			continue // not a home general hauler — not the floor's concern
+		}
+		switch fleet {
+		case "":
+			inPool[ship.ShipSymbol()] = true // undedicated — the fresh reserve pool
+		case contractDedicatedFleet:
+			contractDedicated++ // already poach-proof — counts toward the floor (sp-7zoq)
+		case depot.DeliveryHullFleet:
+			pinned = append(pinned, ship.ShipSymbol()) // reclaim pool when the fresh reserve is short
 		}
 	}
 	budget.Available = len(inPool)
 	budget.InPool = inPool
+	budget.ContractDedicated = contractDedicated
+	budget.Pinned = pinned
 	return budget
+}
+
+// dedicateContractReserve (depotCoordinatorSink) fleet-ASSIGNS a reserved or reclaimed home general
+// hauler to the exclusive "contract" fleet (bead sp-7zoq) — the write that makes the reserve
+// poach-proof. It writes through the SAME single AssignFleet dedication column the whole depot
+// launch already re-dedicates warehouse/stocker/delivery hulls through (positionDepotElementHull),
+// so every idle-grab exclusion built on that tag — FindIdleLightHaulers, the reconciler SENSE
+// filter, and ClaimShip's atomic no-poach guard — takes effect for free. The census only ever
+// selects cargo-capable haulers, so no cargo-floor gate is needed here; the underlying AssignFleet
+// is idempotent (a hull already tagged "contract" performs zero DB writes), so a reload re-dedicating
+// the converged reserve churns nothing.
+func (s *DaemonServer) dedicateContractReserve(ctx context.Context, shipSymbol string, playerID int) error {
+	if s.shipRepo == nil {
+		return fmt.Errorf("dedicate contract reserve %s: no ship repository wired", shipSymbol)
+	}
+	if err := s.shipRepo.AssignFleet(ctx, shipSymbol, contractDedicatedFleet, shared.MustNewPlayerID(playerID)); err != nil {
+		return fmt.Errorf("dedicate contract reserve %s: %w", shipSymbol, err)
+	}
+	return nil
 }
 
 // deliveryHubSystems is the set of systems the registry's declared delivery-hull hubs sit in — the
@@ -234,29 +313,34 @@ func deliveryHubSystems(reg *depot.Registry) map[string]bool {
 	return systems
 }
 
-// isUndedicatedHomeGeneralHauler reports whether a ship is a member of the contract coordinator's
-// general grab pool that the reserve floor protects: an UNDEDICATED (no DedicatedFleet tag), cargo-
-// capable HAULER — never the command frigate (last-resort only) — currently in one of the depot's
-// home hub systems. A pinned/dedicated hull, a probe (0 cargo), or an out-of-home-system hull is
-// not in the pool, so pinning it never draws the reserve down.
-func isUndedicatedHomeGeneralHauler(ship *navigation.Ship, homeSystems map[string]bool) bool {
-	if ship == nil || ship.DedicatedFleet() != "" {
-		return false
+// homeGeneralHaulerFleet reports whether a ship is a home general hauler the reserve floor governs —
+// a cargo-capable HAULER, never the command frigate (last-resort only), currently in one of the
+// depot's home hub systems — and if so returns its current DedicatedFleet tag ("" = undedicated). A
+// probe (0 cargo), the command hull, or an out-of-home-system hull yields ok=false: it is not the
+// floor's concern, so it is neither counted toward the reserve nor eligible to be pinned/reclaimed.
+// The census partitions the home haulers by the returned tag: "" is the fresh reserve pool,
+// "contract" already satisfies the floor, depot.DeliveryHullFleet is the reclaim pool (sp-7zoq).
+func homeGeneralHaulerFleet(ship *navigation.Ship, homeSystems map[string]bool) (string, bool) {
+	if ship == nil {
+		return "", false
 	}
 	if domainContract.IsCommandHull(ship) {
-		return false
+		return "", false
 	}
 	if ship.Role() != roleHaulerRegistration {
-		return false
+		return "", false
 	}
 	if ship.CargoCapacity() == 0 {
-		return false
+		return "", false
 	}
 	loc := ship.CurrentLocation()
 	if loc == nil || loc.Symbol == "" {
-		return false
+		return "", false
 	}
-	return homeSystems[shared.ExtractSystemSymbol(loc.Symbol)]
+	if !homeSystems[shared.ExtractSystemSymbol(loc.Symbol)] {
+		return "", false
+	}
+	return ship.DedicatedFleet(), true
 }
 
 // roleHaulerRegistration is the registration role of a general haul hull — the same "HAULER" tag

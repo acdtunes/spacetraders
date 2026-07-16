@@ -102,10 +102,107 @@ func TestReserveHomeContractWorkers_DegenerateBudgets(t *testing.T) {
 	}
 }
 
-// sp-mzdk wiring (port-to-port through launchDepotCoordinators + spy sink): the launch consults the
-// reserve census and dispatches launchDepotDelivery for ONLY the within-budget delivery hulls — the
-// reserved ones are never handed to the delivery-pin sink at all, so they stay undedicated. The
-// warehouse/stocker launches are untouched by the floor.
+// sp-7zoq reclaim planner (Mandate 5, parametrized): reclaimPinnedForFloor re-dedicates already-pinned
+// delivery hulls to "contract" ONLY for the shortfall the fresh reserve could not cover — Floor minus
+// the already-contract hulls minus the hulls freshly reserved this launch — drawn from Pinned in stable
+// order, capped at the shortfall (never over-dedicates past the floor) and at how many pinned hulls
+// exist. It NEVER un-dedicates a hull to the pool; every returned symbol is one to fleet-assign to
+// "contract". This is the deferred sp-mzdk temp-un-pin, done as a re-dedication.
+func TestReclaimPinnedForFloor_ReclaimsOnlyTheShortfallToContract(t *testing.T) {
+	cases := []struct {
+		name            string
+		budget          deliveryPinBudget
+		freshlyReserved int
+		want            []string
+	}{
+		{
+			name:            "fresh reserve already meets the floor reclaims nothing",
+			budget:          deliveryPinBudget{Floor: 2, ContractDedicated: 0, Pinned: []string{"P-1", "P-2"}},
+			freshlyReserved: 2,
+			want:            nil,
+		},
+		{
+			name:            "already-contract hulls count toward the floor so nothing is reclaimed",
+			budget:          deliveryPinBudget{Floor: 3, ContractDedicated: 3, Pinned: []string{"P-1"}},
+			freshlyReserved: 0,
+			want:            nil,
+		},
+		{
+			name:            "shortfall reclaims exactly that many pinned hulls in stable order",
+			budget:          deliveryPinBudget{Floor: 6, ContractDedicated: 1, Pinned: []string{"P-1", "P-2", "P-3", "P-4"}},
+			freshlyReserved: 2, // need 6-1-2 = 3 more; reclaim the first 3 pinned
+			want:            []string{"P-1", "P-2", "P-3"},
+		},
+		{
+			name:            "shortfall larger than the pinned pool reclaims every pinned hull, no more",
+			budget:          deliveryPinBudget{Floor: 6, ContractDedicated: 0, Pinned: []string{"P-1", "P-2"}},
+			freshlyReserved: 0, // need 6, only 2 pinned exist
+			want:            []string{"P-1", "P-2"},
+		},
+		{
+			name:            "no pinned hulls to reclaim yields nothing even under shortfall",
+			budget:          deliveryPinBudget{Floor: 6, ContractDedicated: 0, Pinned: nil},
+			freshlyReserved: 0,
+			want:            nil,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, reclaimPinnedForFloor(tc.budget, tc.freshlyReserved))
+		})
+	}
+}
+
+// sp-7zoq reclaim wiring (port-to-port through launchDepotCoordinators + spy sink): when the census
+// reports too few undedicated hulls to reach the floor but home hulls are already pinned to
+// depot-delivery, the launch RECLAIMS the shortfall — re-dedicating the pinned hulls to the exclusive
+// "contract" fleet (dedicated TO contract, NEVER un-dedicated to the poachable pool). Here Floor 4 with
+// 1 undedicated in-pool hull (freshly reserved) + 2 already pinned: the 1 fresh reserve plus both
+// reclaimed pins reach 3, capped by the pinned pool; the reclaim never re-pins the hulls it dedicates.
+func TestLaunchDepotCoordinators_ReclaimsPinnedHullsToContractWhenReserveShort(t *testing.T) {
+	c, err := depot.NewContractDepot(
+		"j58",
+		[]depot.Element{{Waypoint: "X1-J58-WH", ShipSymbol: "WH-1"}},
+		nil,
+		[]depot.Element{
+			{Waypoint: "X1-J58-H1", ShipSymbol: "FREE-1"},   // undedicated in-pool → freshly reserved
+			{Waypoint: "X1-J58-H2", ShipSymbol: "PINNED-1"}, // already pinned → reclaim candidate
+			{Waypoint: "X1-J58-H3", ShipSymbol: "PINNED-2"}, // already pinned → reclaim candidate
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	reg := depot.NewRegistry([]*depot.ContractDepot{c})
+	// Undedicated pool holds only FREE-1 (Available 1 < Floor 4); PINNED-1/2 are the reclaim pool.
+	sink := &spyDepotSink{reserve: deliveryPinBudget{
+		Available:         1,
+		Floor:             4,
+		InPool:            inPool("FREE-1"),
+		ContractDedicated: 0,
+		Pinned:            []string{"PINNED-1", "PINNED-2"},
+	}}
+
+	launchDepotCoordinators(context.Background(), reg, 7, sink)
+
+	// FREE-1 is the fresh reserve; PINNED-1/2 are reclaimed — all THREE dedicated to "contract",
+	// none re-pinned (the reclaimed hulls never reach the delivery-pin sink).
+	require.ElementsMatch(t, []string{"FREE-1", "PINNED-1", "PINNED-2"}, sink.dedicated,
+		"the fresh reserve AND the reclaimed pins are all dedicated to the contract fleet")
+	pinnedShips := map[string]bool{}
+	for _, d := range sink.deliveries {
+		pinnedShips[d.ship] = true
+	}
+	require.False(t, pinnedShips["PINNED-1"] || pinnedShips["PINNED-2"],
+		"a reclaimed hull is re-dedicated to contract, never re-pinned to depot-delivery (no churn)")
+	require.False(t, pinnedShips["FREE-1"], "the fresh reserve hull is dedicated, never pinned")
+}
+
+// sp-mzdk + sp-7zoq wiring (port-to-port through launchDepotCoordinators + spy sink): the launch
+// consults the reserve census and dispatches launchDepotDelivery for ONLY the within-budget delivery
+// hulls (regression: pin cap Available-Floor still holds) — the reserved ones are never handed to the
+// delivery-pin sink but are instead DEDICATED to the exclusive "contract" fleet (sp-7zoq), so they are
+// poach-proof rather than left in the shared idle pool. The warehouse/stocker launches are untouched.
 func TestLaunchDepotCoordinators_ReservesFloorFromDeliveryPinning(t *testing.T) {
 	c, err := depot.NewContractDepot(
 		"j58",
@@ -128,9 +225,13 @@ func TestLaunchDepotCoordinators_ReservesFloorFromDeliveryPinning(t *testing.T) 
 	for _, d := range sink.deliveries {
 		pinned[d.ship] = true
 	}
-	require.Len(t, sink.deliveries, 3, "only Available-Floor = 3 delivery hulls are pinned; the floor of 2 is reserved")
+	require.Len(t, sink.deliveries, 3, "only Available-Floor = 3 delivery hulls are pinned; the floor of 2 is reserved (regression)")
 	require.True(t, pinned["DLV-1"] && pinned["DLV-2"] && pinned["DLV-3"], "within-budget delivery hulls still pin")
 	require.False(t, pinned["DLV-4"] || pinned["DLV-5"], "the reserved delivery hulls are never dispatched to the pin sink")
+	// sp-7zoq: the reserved hulls are DEDICATED to the exclusive "contract" fleet (poach-proof), not
+	// merely left undedicated — the floor count N=2 is dedicated, and the within-budget pins are not.
+	require.ElementsMatch(t, []string{"DLV-4", "DLV-5"}, sink.dedicated,
+		"exactly the reserved floor hulls are dedicated to the contract fleet — not the pinned ones, not more")
 	require.Len(t, sink.warehouses, 1, "the warehouse launch is untouched by the reserve floor")
 	require.Len(t, sink.stockers, 1, "the stocker launch is untouched by the reserve floor")
 }
@@ -167,10 +268,12 @@ func TestHomeContractWorkerReserve_CountsOnlyUndedicatedHomeGeneralHaulers(t *te
 	s, db, playerID, _ := newDepotDeliveryTestServer(t)
 	s.contractConfig.MinHomeContractWorkers = 3
 
-	insertDepotDeliveryHull(t, db, "HOME-A", playerID, "", "X1-J58-A", false)                        // undedicated, home
-	insertDepotDeliveryHull(t, db, "HOME-B", playerID, "", "X1-J58-B", false)                        // undedicated, home
-	insertDepotDeliveryHull(t, db, "FOREIGN-C", playerID, "", "X1-ZZ99-C", false)                    // undedicated but FOREIGN system
-	insertDepotDeliveryHull(t, db, "PINNED-D", playerID, depot.DeliveryHullFleet, "X1-J58-D", false) // already depot-delivery pinned
+	insertDepotDeliveryHull(t, db, "HOME-A", playerID, "", "X1-J58-A", false)                         // undedicated, home
+	insertDepotDeliveryHull(t, db, "HOME-B", playerID, "", "X1-J58-B", false)                         // undedicated, home
+	insertDepotDeliveryHull(t, db, "FOREIGN-C", playerID, "", "X1-ZZ99-C", false)                     // undedicated but FOREIGN system
+	insertDepotDeliveryHull(t, db, "PINNED-D", playerID, depot.DeliveryHullFleet, "X1-J58-D", false)  // already depot-delivery pinned (reclaim pool)
+	insertDepotDeliveryHull(t, db, "CONTRACT-E", playerID, contractDedicatedFleet, "X1-J58-E", false) // already contract-dedicated (counts toward floor)
+	insertDepotDeliveryHull(t, db, "CONTRACT-F", playerID, "depot-delivery", "X1-ZZ99-F", false)      // pinned but FOREIGN — not home cover
 
 	// Registry whose delivery hubs sit in X1-J58, so the home region is X1-J58.
 	c, err := depot.NewContractDepot("j58", []depot.Element{{Waypoint: "X1-J58-WH"}}, nil,
@@ -185,15 +288,23 @@ func TestHomeContractWorkerReserve_CountsOnlyUndedicatedHomeGeneralHaulers(t *te
 	require.True(t, budget.InPool["HOME-A"] && budget.InPool["HOME-B"], "both home haulers are in the pool")
 	require.False(t, budget.InPool["FOREIGN-C"], "a foreign-system hauler is not home cover (NOT a cross-gate grab)")
 	require.False(t, budget.InPool["PINNED-D"], "an already depot-delivery pinned hull is not in the undedicated pool")
+	// sp-7zoq census additions: an already-contract-dedicated HOME hauler counts toward the floor (so
+	// the fresh reserve tops UP, never over-dedicates); a HOME depot-delivery pin is a reclaim
+	// candidate; a FOREIGN pin is neither counted nor reclaimable (a reclaim must keep a HOME worker).
+	require.Equal(t, 1, budget.ContractDedicated, "the home contract-dedicated hull counts toward the floor")
+	require.Equal(t, []string{"PINNED-D"}, budget.Pinned, "only the HOME depot-delivery pin is a reclaim candidate — never the foreign one")
 }
 
-// sp-mzdk ACCEPTANCE (real ship repo): after a depot topology that declares EVERY home hauler as a
-// delivery hull is launched with a floor of 2, the REAL census counts the undedicated home general
-// pool, the reserve floor keeps 2 of them undedicated, and those 2 remain grabbable by the contract
-// coordinator's own pool (FindIdleLightHaulers) to source an unbuffered-good contract — NOT starved,
-// NOT a cross-gate foreign grab. The delivery hulls ABOVE the floor ARE pinned to depot-delivery, so
-// buffered delivery still routes to them (regression). This is the live incident, inverted.
-func TestLaunchDepotCoordinators_ReservedHaulerStaysAvailableToContractGrab(t *testing.T) {
+// sp-7zoq ACCEPTANCE (real ship repo, was sp-mzdk): after a depot topology that declares EVERY home
+// hauler as a delivery hull is launched with a floor of 2, the reserve floor DEDICATES 2 (== floor)
+// of them to the exclusive "contract" fleet instead of merely leaving them undedicated. The dedicated
+// reserve is POACH-PROOF — it drops OUT of the shared idle pool (FindIdleLightHaulers) that the goods
+// factory / arb / reconciler-tier1 draw from — yet STILL serves contracts through the coordinator's
+// OWN dedicated lookup (FindIdleShipsByFleet("contract")): dedication is TO contract, not a freeze, so
+// there is no self-starvation. The delivery hulls ABOVE the floor ARE pinned to depot-delivery
+// (regression: the pin cap Available-Floor still holds). This is the live poaching incident, fixed:
+// the factory ate 4 of 6 reserve workers precisely because they were undedicated.
+func TestLaunchDepotCoordinators_ReservedHaulerDedicatedToContractPoachProof(t *testing.T) {
 	s, db, playerID, _ := newDepotDeliveryTestServer(t)
 	s.contractConfig.MinHomeContractWorkers = 2
 	pid := shared.MustNewPlayerID(playerID)
@@ -207,11 +318,11 @@ func TestLaunchDepotCoordinators_ReservedHaulerStaysAvailableToContractGrab(t *t
 		insertDepotDeliveryHull(t, db, sym, playerID, "", hub, false) // undedicated, idle, AT its hub
 		deliveryHulls = append(deliveryHulls, depot.Element{Waypoint: hub, ShipSymbol: sym})
 	}
-	// Precondition: all five are in the contract coordinator's general grab pool.
+	// Precondition: all five are in the shared grab pool (the poachable set) — undedicated is poachable.
 	_, before, err := appContract.FindIdleLightHaulers(context.Background(), pid, s.shipRepo, "")
 	require.NoError(t, err)
 	require.Subset(t, before, allHulls,
-		"precondition: every undedicated home hauler is grabbable by the contract coordinator")
+		"precondition: every undedicated home hauler is in the shared idle pool ANY coordinator can grab")
 
 	// Uncrewed warehouse anchor (satisfies the depot invariant without launching a coordinator) + the
 	// five declared delivery hulls that WOULD pin the whole pool.
@@ -221,22 +332,36 @@ func TestLaunchDepotCoordinators_ReservedHaulerStaysAvailableToContractGrab(t *t
 
 	launchDepotCoordinators(context.Background(), reg, playerID, s)
 
-	// The reserve floor kept 2 home haulers undedicated and grabbable (the LAST two declared: D, E).
-	_, generalPool, err := appContract.FindIdleLightHaulers(context.Background(), pid, s.shipRepo, "")
-	require.NoError(t, err)
-	require.Subset(t, generalPool, []string{"DLV-D", "DLV-E"},
-		"the reserved home haulers stay in the contract grab pool for unbuffered-good sourcing")
-	require.NotContains(t, generalPool, "DLV-A", "a pinned delivery hull is excluded from the grab pool")
-
-	// The delivery hulls ABOVE the floor were pinned to depot-delivery (buffered delivery routes to them).
-	pinnedCount := 0
+	// Count the reserve floor's result directly off the persisted dedication tags.
+	contractDedicated, pinnedCount := 0, 0
 	for _, sym := range allHulls {
 		var got struct{ DedicatedFleet string }
 		require.NoError(t, db.Table("ships").Select("dedicated_fleet").
 			Where("ship_symbol = ? AND player_id = ?", sym, playerID).Scan(&got).Error)
-		if got.DedicatedFleet == depot.DeliveryHullFleet {
+		switch got.DedicatedFleet {
+		case contractDedicatedFleet:
+			contractDedicated++
+		case depot.DeliveryHullFleet:
 			pinnedCount++
 		}
 	}
-	require.Equal(t, 3, pinnedCount, "Available(5) - Floor(2) = 3 delivery hulls are pinned; 2 stay reserved")
+	// ACCEPTANCE 1: >= min_home_contract_workers hulls are DedicatedFleet="contract" (exclusive), NOT undedicated.
+	require.GreaterOrEqual(t, contractDedicated, 2, "the floor dedicates >= min_home_contract_workers hulls to the contract fleet")
+	require.Equal(t, 2, contractDedicated, "exactly the floor count N=2 is dedicated — no over-dedication")
+	// REGRESSION: the floor still caps depot-delivery pinning at Available(5) - Floor(2) = 3.
+	require.Equal(t, 3, pinnedCount, "Available(5) - Floor(2) = 3 delivery hulls are pinned; 2 are the contract reserve")
+
+	// POACH-PROOF: the dedicated reserve is OUT of the shared idle pool the factory/arb/reconciler draw from.
+	_, generalPool, err := appContract.FindIdleLightHaulers(context.Background(), pid, s.shipRepo, "")
+	require.NoError(t, err)
+	require.NotContains(t, generalPool, "DLV-D", "a contract-dedicated reserve hull is excluded from the shared idle pool (poach-proof)")
+	require.NotContains(t, generalPool, "DLV-E", "a contract-dedicated reserve hull is excluded from the shared idle pool (poach-proof)")
+	require.NotContains(t, generalPool, "DLV-A", "a pinned delivery hull is excluded from the shared idle pool")
+
+	// NO SELF-STARVATION: the reserve is dedicated TO contract, so the contract coordinator's OWN
+	// dedicated lookup still surfaces it to source an unbuffered-good contract.
+	_, contractPool, err := appContract.FindIdleShipsByFleet(context.Background(), pid, s.shipRepo, contractDedicatedFleet)
+	require.NoError(t, err)
+	require.Subset(t, contractPool, []string{"DLV-D", "DLV-E"},
+		"the dedicated reserve still serves contracts via the coordinator's own FindIdleShipsByFleet(\"contract\") lookup")
 }

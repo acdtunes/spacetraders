@@ -185,3 +185,39 @@ func TestConstructionDrain_ExclusiveModeNeverDraftsOpportunistic(t *testing.T) {
 		t.Fatalf("expected the no-idle-hauler reason under a sealed dedicated fleet, got %q", resp.NoWorkReason)
 	}
 }
+
+// sp-7zoq (GRABBER 1 — the goods factory, the live poacher): a hull dedicated to the "contract" fleet
+// — exactly what the reserve floor now stamps its reserve with — is NEVER claimed by the goods
+// factory's construction drain, even when it is the only idle in-system hull and a task waits. This is
+// the direct regression lock for the live incident (goods_factory-ADVANCED_CIRCUITRY ate 4 of 6
+// reserve workers): the drain draws from FindIdleShipsByFleet(own fleet) + FindIdleLightHaulers, both
+// of which exclude a hull tagged to ANOTHER fleet, and ClaimShip's atomic guard is the backstop. The
+// reserve is poachable ONLY while undedicated — dedicating it to "contract" is what shuts the drain out.
+func TestConstructionDrain_NeverPoachesContractDedicatedHull(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+
+	// The only idle in-system hull is the contract reserve — dedicated to "contract" by the floor.
+	contractReserve := newTestHaulerInFleet(t, "TORWIND-6", "contract")
+	shipRepo := newDrainShipRepo(contractReserve)
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	if err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if got := shipRepo.claimCount(); got != 0 {
+		t.Fatalf("a contract-dedicated reserve hull must never be poached by the goods factory, got %d claims", got)
+	}
+	if len(producer.produceGoods) != 0 {
+		t.Fatalf("no claim means nothing sourced, got %v", producer.produceGoods)
+	}
+	if resp.NoWorkReason != noWorkNoIdleHauler {
+		t.Fatalf("expected the no-idle-hauler reason (contract reserve excluded), got %q", resp.NoWorkReason)
+	}
+}
