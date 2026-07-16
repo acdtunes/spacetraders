@@ -120,7 +120,41 @@ def plan_seconds(result):
     return result["projected_profit"] / result["projected_credits_per_hour"] * 3600
 
 
-def run_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve, version):
+def _plan_hours(result, overhead_seconds):
+    """Projected wall-clock HOURS incl. per-tour overhead, or None if infeasible/zero-time."""
+    seconds = plan_seconds(result)
+    if seconds is None:
+        return None
+    return (seconds + overhead_seconds) / 3600
+
+
+def _fleet_totals(results, overhead_seconds):
+    """(sum projected_profit, sum hours) over feasible, positive-time results — the shared
+    accumulation behind fleet_cph. Kept private so the ratio is computed one way only."""
+    total_profit = 0.0
+    total_hours = 0.0
+    for result in results:
+        hours = _plan_hours(result, overhead_seconds)
+        if hours is None:
+            continue
+        total_profit += result["projected_profit"]
+        total_hours += hours
+    return total_profit, total_hours
+
+
+def fleet_cph(results, overhead_seconds):
+    """THE single fleet-$/hr definition: sum(projected_profit) / sum(projected hours incl
+    per-tour overhead) over feasible results with a positive plan_seconds. Objective- and
+    cap-AGNOSTIC — the caller passes the right list of solver-result dicts. Both the human
+    sanity-check (summarize) and the machine arming gate (arming_verdict) delegate here so
+    the analyst's eyeball and ljh5's armed:bool can never drift (resolves the dual-math
+    finding). Empty / zero-time input -> 0.0."""
+    total_profit, total_hours = _fleet_totals(results, overhead_seconds)
+    return total_profit / total_hours if total_hours > 0 else 0.0
+
+
+def run_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve, version,
+             max_tour_systems=None):
     home_markets = sorted({s["waypoint_symbol"] for s in snapshot
                            if s["system_symbol"] == home})
     if not home_markets:
@@ -132,6 +166,12 @@ def run_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve, versi
     cons = dict(max_hops=6, min_margin_per_unit=1, max_snapshot_age_minutes=STALENESS_MINUTES,
                 max_spend=max_spend, working_capital_reserve=reserve,
                 allowed_systems=sorted(allowed), expected_model_version=version)
+    # sp-syaz per-tour distinct-system cap (proto field 8). Threaded ONLY when requested;
+    # None OMITS the key so the default DB run is byte-identical (the solver resolves an
+    # absent/0 cap to MAX_TOUR_SYSTEMS=2 via _effective_tour_systems). Solver clamps to
+    # [2, 6], so candidate caps > 6 silently collapse to 6.
+    if max_tour_systems is not None:
+        cons["max_tour_systems"] = max_tour_systems
     scoped = [s for s in snapshot if s["system_symbol"] in allowed]
     wps = [w for w in waypoints if w["system"] in allowed]
     out = {}
@@ -143,19 +183,22 @@ def run_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve, versi
 
 
 def summarize(cases, overhead_seconds):
-    agg = {OBJECTIVE_PROFIT: [0.0, 0.0], OBJECTIVE_RATE: [0.0, 0.0]}  # [profit, hours]
+    # Joint-feasible filter (both objectives recover a plan_seconds), identical to the
+    # historical inline `if sp is None or sr is None: continue`. Pre-filtering to the
+    # shared set, THEN delegating each objective to fleet_cph's accumulator, keeps the
+    # printed aggregate byte-identical while removing the second, drift-prone math path.
+    joint = [c for c in cases
+             if plan_seconds(c["results"][OBJECTIVE_PROFIT]) is not None
+             and plan_seconds(c["results"][OBJECTIVE_RATE]) is not None]
+    agg = {objective: list(_fleet_totals([c["results"][objective] for c in joint],
+                                         overhead_seconds))
+           for objective in (OBJECTIVE_PROFIT, OBJECTIVE_RATE)}  # [profit, hours]
     diverged = 0
     diverged_rate_wins = 0
     per_case = []
-    for c in cases:
+    for c in joint:
         p, r = c["results"][OBJECTIVE_PROFIT], c["results"][OBJECTIVE_RATE]
         sp, sr = plan_seconds(p), plan_seconds(r)
-        if sp is None or sr is None:
-            continue
-        agg[OBJECTIVE_PROFIT][0] += p["projected_profit"]
-        agg[OBJECTIVE_PROFIT][1] += (sp + overhead_seconds) / 3600
-        agg[OBJECTIVE_RATE][0] += r["projected_profit"]
-        agg[OBJECTIVE_RATE][1] += (sr + overhead_seconds) / 3600
         differs = (p["projected_profit"], round(plan_seconds(p))) != \
                   (r["projected_profit"], round(plan_seconds(r)))
         if differs:
@@ -175,6 +218,92 @@ def summarize(cases, overhead_seconds):
     return agg, diverged, diverged_rate_wins, per_case
 
 
+def arming_pass(samples, rows, neighbors, coords, hulls, version,
+                baseline_cap, candidate_cap, max_spend, reserve):
+    """Assemble the two-cap arming matrix (resolves the arming data-model finding).
+
+    Per (sample, home, hull) it solves the SAME reconstructed snapshot at BOTH the
+    baseline and the candidate distinct-system cap, and collects all four
+    (cap, objective) cells:
+        (baseline_cap,  profit) (baseline_cap,  rate)
+        (candidate_cap, profit) (candidate_cap, rate)
+    A case is emitted only when every cell solved (both run_case calls returned) so the
+    verdict below always finds a full matrix. Returns a list of
+    dict(sample, home, hold, results_by_cell={(cap, objective): result}).
+    """
+    cases = []
+    for sample_t in samples:
+        snapshot = reconstruct_snapshot(rows, sample_t)
+        waypoints = [dict(symbol=wp, system=sys_, x=int(x), y=int(y))
+                     for wp, (sys_, x, y) in coords.items()]
+        by_system = defaultdict(set)
+        for s in snapshot:
+            by_system[s["system_symbol"]].add(s["waypoint_symbol"])
+        for home, markets in sorted(by_system.items()):
+            if len(markets) < 2:
+                continue
+            allowed = {home} | (neighbors.get(home, set()) & set(by_system))
+            for hold in hulls:
+                cells = {}
+                for cap in (baseline_cap, candidate_cap):
+                    res = run_case(snapshot, waypoints, home, allowed, hold,
+                                   max_spend, reserve, version, max_tour_systems=cap)
+                    if res is None:
+                        break
+                    _, out = res
+                    for objective in (OBJECTIVE_PROFIT, OBJECTIVE_RATE):
+                        cells[(cap, objective)] = out[objective]
+                if len(cells) == 4:
+                    cases.append(dict(sample=str(sample_t), home=home, hold=hold,
+                                      results_by_cell=cells))
+    return cases
+
+
+def arming_verdict(cases, baseline, candidate, overhead_seconds, min_delta_pct, min_cases):
+    """The deterministic fleet-$/hr arming gate (resolves the cap+objective confound +
+    unlocked-thresholds findings).
+
+    `baseline`/`candidate` are (cap, objective) cell keys. The PRIMARY verdict gates the
+    JOINT cap+rate package governance rolls out together (cap->candidate via syaz/jsng AND
+    objective->rate via ljh5); `armed` is True iff the candidate cell's fleet-$/hr beats the
+    baseline cell's by >= min_delta_pct over >= min_cases cases feasible in BOTH cells.
+
+    `objective_delta_pct` is an OBSERVABILITY column (never gates): candidate-cap rate vs
+    candidate-cap profit isolates the standalone objective effect ljh5 flips at fixed cap,
+    so "cap widened" and "rate helped" are never conflated invisibly. All cph delegate to
+    fleet_cph — the same definition summarize prints."""
+    baseline_cap, _ = baseline
+    candidate_cap, _ = candidate
+    joint = [c for c in cases
+             if plan_seconds(c["results_by_cell"][baseline]) is not None
+             and plan_seconds(c["results_by_cell"][candidate]) is not None]
+
+    def cph(cell):
+        return fleet_cph([c["results_by_cell"][cell] for c in joint], overhead_seconds)
+
+    baseline_cph = cph(baseline)
+    candidate_cph = cph(candidate)
+    candidate_cap_profit_cph = cph((candidate_cap, OBJECTIVE_PROFIT))
+    baseline_cap_rate_cph = cph((baseline_cap, OBJECTIVE_RATE))
+    delta_pct = ((candidate_cph - baseline_cph) / baseline_cph * 100
+                 if baseline_cph > 0 else float("nan"))
+    objective_delta_pct = ((candidate_cph - candidate_cap_profit_cph)
+                           / candidate_cap_profit_cph * 100
+                           if candidate_cap_profit_cph > 0 else float("nan"))
+    n = len(joint)
+    return dict(
+        baseline_cph=baseline_cph,
+        candidate_cph=candidate_cph,
+        delta_pct=delta_pct,
+        cases=n,
+        candidate_cap_profit_cph=candidate_cap_profit_cph,
+        baseline_cap_rate_cph=baseline_cap_rate_cph,
+        objective_delta_pct=objective_delta_pct,
+        # NaN >= min_delta_pct is False -> a degenerate/empty pass fails safe (never armed).
+        armed=bool(delta_pct >= min_delta_pct and n >= min_cases),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--hours", type=int, default=48)
@@ -187,6 +316,18 @@ def main():
     ap.add_argument("--deep", action="store_true",
                     help="also replay with FULL_SCORE_TOP_N=100 (beam-cut ceiling)")
     ap.add_argument("--json", default="", help="write per-case results to this file")
+    # sp-f1yk arming gate (opt-in, offline). Bare invocation NEVER runs the arming pass,
+    # so default output is byte-identical to the profit-vs-rate replay above.
+    ap.add_argument("--arm", action="store_true",
+                    help="also run the two-cap fleet-$/hr ARMING gate (baseline vs candidate)")
+    ap.add_argument("--baseline-cap", type=int, default=2,
+                    help="baseline per-tour distinct-system cap (live prod default = 2)")
+    ap.add_argument("--candidate-cap", type=int, default=6,
+                    help="candidate cap to arm toward (solver clamps to <= 6)")
+    ap.add_argument("--arm-min-delta-pct", type=float, default=5.0,
+                    help="min fleet-$/hr gain (candidate rate vs baseline profit) to arm")
+    ap.add_argument("--arm-min-cases", type=int, default=30,
+                    help="min cases feasible in BOTH cells required to arm")
     args = ap.parse_args()
 
     global MODEL
@@ -263,6 +404,36 @@ def main():
         with open(args.json, "w") as f:
             json.dump(results, f, indent=1, default=str)
         print(f"\nper-case detail written to {args.json}")
+
+    if args.arm:
+        # NOTE(W4): this operational firing is meaningful once sp-y05b's OR-Tools cap-6
+        # sequencer has landed so the candidate cap is solved on the real longer-tour path.
+        # The gate's pure logic is unit-pinned in tests/test_replay_objective.py.
+        baseline = (args.baseline_cap, OBJECTIVE_PROFIT)   # today's live prod default
+        candidate = (args.candidate_cap, OBJECTIVE_RATE)   # the cap+rate package ljh5 arms
+        cases = arming_pass(samples, rows, neighbors, coords, hulls, version,
+                            args.baseline_cap, args.candidate_cap,
+                            args.max_spend, args.reserve)
+        verdict = arming_verdict(cases, baseline, candidate, args.tour_overhead_seconds,
+                                 args.arm_min_delta_pct, args.arm_min_cases)
+        print(f"\n=== ARMING GATE (cap {args.baseline_cap} profit -> cap "
+              f"{args.candidate_cap} rate) ===")
+        print("legend: `armed` gates the JOINT cap+rate package; objective_delta_pct "
+              "isolates the rate objective at the candidate cap (the variable ljh5 flips)")
+        print(f"cases (feasible both cells): {verdict['cases']}  (min {args.arm_min_cases})")
+        print(f"baseline  cph (cap {args.baseline_cap}, profit): "
+              f"{verdict['baseline_cph']:>10,.0f} cr/hr")
+        print(f"candidate cph (cap {args.candidate_cap}, rate)  : "
+              f"{verdict['candidate_cph']:>10,.0f} cr/hr")
+        print(f"fleet-$/hr delta (JOINT package): {verdict['delta_pct']:+.2f}%  "
+              f"(min {args.arm_min_delta_pct:+.2f}%)")
+        print(f"  objective_delta_pct (rate vs profit @cap {args.candidate_cap}): "
+              f"{verdict['objective_delta_pct']:+.2f}%")
+        print(f"ARMED: {verdict['armed']}")
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump(dict(profit_vs_rate=results, arming=verdict), f,
+                          indent=1, default=str)
     return 0
 
 
