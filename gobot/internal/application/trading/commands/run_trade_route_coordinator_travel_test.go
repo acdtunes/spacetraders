@@ -230,9 +230,20 @@ type travelShipRepo struct {
 	// syncCalls counts the resyncs so a test can prove the departure hop re-confirmed.
 	syncedShip *navigation.Ship
 	syncCalls  int
+	// reloadShip, when set, is returned by every FindBySymbol call AFTER the first (sp-4yse):
+	// the 0-hop gate-chart reposition loads the probe (at a market), flies it, then RELOADS to
+	// read the freshly-persisted ON-GATE position for the chart guard. Modelling those as two
+	// distinct instances lets a test prove the probe was routed market->gate AND charts the gate.
+	// Unset, every call returns `ship`, so every pre-sp-4yse test (a single reload) is unchanged.
+	reloadShip *navigation.Ship
+	findCalls  int
 }
 
 func (r *travelShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	r.findCalls++
+	if r.findCalls > 1 && r.reloadShip != nil {
+		return r.reloadShip, nil
+	}
 	return r.ship, nil
 }
 
@@ -988,5 +999,97 @@ func TestTravel_CrossSystem_ChartFailure_IsNonFatal(t *testing.T) {
 	}
 	if len(mediator.jumps) != 1 {
 		t.Fatalf("the jump must still fire normally, got %d", len(mediator.jumps))
+	}
+}
+
+// --- sp-4yse: the 0-hop gate-reconcile charting path ---
+
+// THE FIX: a probe ALREADY in a market-known-but-gate-dark system (the 0-hop reconcile case)
+// must be routed ONTO that system's jump gate and chart it — not left at a market as
+// travelWithJumpBound's same-system branch would leave it. RepositionToSystemGateAndChart
+// resolves the gate (FindNearestJumpGate), navigates the present probe onto it, then charts.
+// MUTATION GUARD: drop the chartArrivedGate call in RepositionToSystemGateAndChart and
+// chartPresentCalls is empty — the backlog never drains (VH23/TD90), proving the call load-bearing.
+func TestRepositionToSystemGateAndChart_ZeroHop_RoutesToGateAndCharts(t *testing.T) {
+	atMarket := newTravelShipAt(t, "PROBE-1", "X1-VH23-B12")    // idle probe stranded at a market
+	onGate := newTravelShipAtGate(t, "PROBE-1", "X1-VH23-GATE") // after the navigate it sits ON the gate
+	mediator := &travelMediator{gateResp: gateResponseAt(t, "X1-VH23-GATE")}
+	shipRepo := &travelShipRepo{ship: atMarket, reloadShip: onGate}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, &travelFakeClock{}, nil)
+	fake := &fakeGateGraph{}
+	handler.SetGateGraph(fake)
+	handler.SetChartGateOnArrival(true)
+
+	if err := handler.RepositionToSystemGateAndChart(context.Background(), "PROBE-1", 1, 12); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	// Routed the present probe ONTO the gate (not left at a market), with no jump (0-hop).
+	if len(mediator.navigates) != 1 || mediator.navigates[0].Destination != "X1-VH23-GATE" {
+		t.Fatalf("expected a single navigate to the jump gate X1-VH23-GATE, got %v", mediator.navigates)
+	}
+	if len(mediator.jumps) != 0 {
+		t.Fatalf("a 0-hop charting reposition must never jump, got %d", len(mediator.jumps))
+	}
+	// The dark system's gate was charted on arrival — the sp-4yse fix.
+	if !reflect.DeepEqual(fake.chartPresentCalls, []string{"X1-VH23"}) {
+		t.Fatalf("expected the dark system X1-VH23 to be charted on arrival, got %v", fake.chartPresentCalls)
+	}
+	// The PRESENT probe symbol must reach the public-chart seam (sp-lv2n) — a "" or wrong symbol
+	// would silently no-op the CreateChart and leave the frontier gate uncharted.
+	if !reflect.DeepEqual(fake.chartPresentShips, []string{"PROBE-1"}) {
+		t.Fatalf("the present probe symbol must reach ChartPresentGate, got %v", fake.chartPresentShips)
+	}
+}
+
+// SCOPING GUARD (sp-4yse's non-negotiable constraint): a NORMAL same-system trade leg must NEVER
+// chart or detour to the gate — even with chart_gate_on_arrival ON and a gate graph wired. The
+// fix lives in a SEPARATE method (RepositionToSystemGateAndChart), never in travelWithJumpBound's
+// shared same-system branch, so trade travel is byte-for-byte unchanged. MUTATION GUARD: move the
+// chart into travelWithJumpBound's same-system branch (the naive wrong fix) and this fails —
+// diverting trade hulls to the gate and burning API, the one unacceptable regression.
+func TestTravel_SameSystemTradeLeg_ChartsNothing_EvenWithChartEnabled(t *testing.T) {
+	ship := newTravelShipAt(t, "HAULER-1", "X1-AAA-DOCK")
+	mediator := &travelMediator{}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{}, nil, nil, &travelFakeClock{}, nil)
+	fake := &fakeGateGraph{path: []string{"X1-AAA"}}
+	handler.SetGateGraph(fake)
+	handler.SetChartGateOnArrival(true) // knob ON — a normal same-system trade leg must STILL chart nothing
+
+	got, err := handler.travel(context.Background(), ship, "X1-AAA-MARKET", 1)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got != ship {
+		t.Fatalf("same-system trade travel must return the same ship pointer (byte-for-byte unchanged)")
+	}
+	if len(fake.chartPresentCalls) != 0 {
+		t.Fatalf("SCOPING GUARD: normal same-system trade travel must never chart/detour, got %v", fake.chartPresentCalls)
+	}
+	if len(mediator.jumps) != 0 {
+		t.Fatalf("same-system trade travel must never jump, got %d", len(mediator.jumps))
+	}
+	if len(mediator.navigates) != 1 || mediator.navigates[0].Destination != "X1-AAA-MARKET" {
+		t.Fatalf("same-system trade travel must navigate straight to its market, got %v", mediator.navigates)
+	}
+}
+
+// SAFETY: a gate-chart failure on the 0-hop path is NON-FATAL — swallowed like the multi-hop
+// arrival chart (chartArrivedGate), never failing the relay. The chart WAS attempted (a genuine
+// swallow, not a skip), yet RepositionToSystemGateAndChart returns no error.
+func TestRepositionToSystemGateAndChart_ChartFailure_IsNonFatal(t *testing.T) {
+	atMarket := newTravelShipAt(t, "PROBE-1", "X1-VH23-B12")
+	onGate := newTravelShipAtGate(t, "PROBE-1", "X1-VH23-GATE")
+	mediator := &travelMediator{gateResp: gateResponseAt(t, "X1-VH23-GATE")}
+	shipRepo := &travelShipRepo{ship: atMarket, reloadShip: onGate}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, &travelFakeClock{}, nil)
+	fake := &fakeGateGraph{chartPresentErr: errors.New("API error (status 400): no ship present")}
+	handler.SetGateGraph(fake)
+	handler.SetChartGateOnArrival(true)
+
+	if err := handler.RepositionToSystemGateAndChart(context.Background(), "PROBE-1", 1, 12); err != nil {
+		t.Fatalf("a gate-chart failure on the 0-hop path must be swallowed (non-fatal), got %v", err)
+	}
+	if !reflect.DeepEqual(fake.chartPresentCalls, []string{"X1-VH23"}) {
+		t.Fatalf("charting must have been ATTEMPTED for X1-VH23 (swallow, not skip), got %v", fake.chartPresentCalls)
 	}
 }

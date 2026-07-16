@@ -13,14 +13,22 @@ import (
 // fakeRepositioner records the travel delegation and can inject a failure — the reposition
 // worker must forward exactly one move to the shared travel machinery and surface its error.
 type fakeRepositioner struct {
-	calls  []string // "ship->destination"
-	bounds []int    // the maxJumps forwarded per call (sp-8k9m)
-	err    error
+	calls       []string // "ship->destination" via the plain market reposition
+	bounds      []int    // the maxJumps forwarded per plain call (sp-8k9m)
+	chartCalls  []string // ship symbols routed via the 0-hop gate-chart path (sp-4yse)
+	chartBounds []int    // the maxJumps forwarded to the gate-chart path
+	err         error
 }
 
 func (f *fakeRepositioner) RepositionToWaypointWithinJumps(_ context.Context, shipSymbol, destinationWaypoint string, _ int, maxJumps int) error {
 	f.calls = append(f.calls, shipSymbol+"->"+destinationWaypoint)
 	f.bounds = append(f.bounds, maxJumps)
+	return f.err
+}
+
+func (f *fakeRepositioner) RepositionToSystemGateAndChart(_ context.Context, shipSymbol string, _ int, maxJumps int) error {
+	f.chartCalls = append(f.chartCalls, shipSymbol)
+	f.chartBounds = append(f.chartBounds, maxJumps)
 	return f.err
 }
 
@@ -79,4 +87,46 @@ func TestScoutReposition_ForwardsMaxRepositionJumps(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []int{9}, rep.bounds, "the relay forwards its configured reposition reach to travel()")
+}
+
+// sp-4yse: the worker routes a ChartGateOnArrival relay to the 0-hop gate-chart path (route the
+// present probe onto its OWN system's gate and chart it), and a plain relay to the market
+// reposition — EXACTLY ONE move fires per relay. This is the scoping seam: a manning reposition
+// (flag unset) must never chart, and the charting relay must never also run the plain move.
+func TestScoutReposition_ChartGateOnArrival_SelectsPath(t *testing.T) {
+	t.Run("flag set routes to the 0-hop gate-chart path", func(t *testing.T) {
+		rep := &fakeRepositioner{}
+		handler := NewScoutRepositionHandler(rep)
+		cmd := &ScoutRepositionCommand{
+			PlayerID:            shared.MustNewPlayerID(1),
+			ShipSymbol:          "SAT-1",
+			DestinationWaypoint: "X1-DARK-A1",
+			MaxRepositionJumps:  12,
+			ChartGateOnArrival:  true,
+		}
+
+		_, err := handler.Handle(context.Background(), cmd)
+
+		require.NoError(t, err)
+		require.Equal(t, []string{"SAT-1"}, rep.chartCalls, "a charting relay routes the probe to its gate and charts (sp-4yse 0-hop)")
+		require.Equal(t, []int{12}, rep.chartBounds, "the reposition reach is forwarded to the gate-chart path")
+		require.Empty(t, rep.calls, "the plain market reposition must NOT also fire on the charting path")
+	})
+
+	t.Run("flag unset routes to the plain market reposition", func(t *testing.T) {
+		rep := &fakeRepositioner{}
+		handler := NewScoutRepositionHandler(rep)
+		cmd := &ScoutRepositionCommand{
+			PlayerID:            shared.MustNewPlayerID(1),
+			ShipSymbol:          "SAT-1",
+			DestinationWaypoint: "X1-DARK-A1",
+			MaxRepositionJumps:  12,
+		}
+
+		_, err := handler.Handle(context.Background(), cmd)
+
+		require.NoError(t, err)
+		require.Equal(t, []string{"SAT-1->X1-DARK-A1"}, rep.calls, "a plain relay takes the market reposition unchanged")
+		require.Empty(t, rep.chartCalls, "SCOPING GUARD: a plain (manning) reposition must never chart the gate")
+	})
 }

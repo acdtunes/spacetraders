@@ -172,6 +172,7 @@ func (s *DaemonServer) PersistScoutRepositionWorker(
 	playerID int,
 	coordinatorID string,
 	maxRepositionJumps int,
+	chartGateOnArrival bool,
 ) error {
 	config := map[string]interface{}{
 		"ship_symbol":    shipSymbol,
@@ -184,6 +185,11 @@ func (s *DaemonServer) PersistScoutRepositionWorker(
 		// decision the coordinator already made, and dropping a 0 would silently re-introduce the
 		// strict-cap regression. A 0 here is an explicit "use the strict resolver" fallback.
 		"max_reposition_jumps": maxRepositionJumps,
+		// sp-4yse: persist the 0-hop gate-charting intent so the worker's start-path rebuild
+		// (StartScoutReposition -> buildScoutRepositionCommand) charts the target gate on arrival.
+		// Dropping it here would silently degrade the relay to a plain market navigate that never
+		// charts — exactly the boundary the sp-o34q bound was lost across.
+		"chart_gate_on_arrival": chartGateOnArrival,
 	}
 
 	containerEntity := container.NewContainer(

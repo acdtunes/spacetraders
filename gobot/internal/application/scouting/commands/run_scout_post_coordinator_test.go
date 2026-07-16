@@ -2850,3 +2850,38 @@ func TestReconcileGateChartSweep_AdjacencyError_FailsClosed(t *testing.T) {
 	require.Empty(t, daemonClient.repositioned, "a gate-adjacency read failure must fail closed — no dispatch")
 	require.Len(t, idle, 1, "no probe consumed when the sweep fails closed")
 }
+
+// sp-4yse: the sweep flags a 0-HOP dispatch (probe ALREADY in the target system) to chart the
+// gate on arrival, but leaves a MULTI-hop dispatch unflagged (the jump-arrival hop already
+// charts it). This is THE fix scoping: a 0-hop relay is exactly the one travelWithJumpBound's
+// same-system branch would leave at a market uncharted, so the backlog never drained (VH23/TD90).
+// MUTATION GUARD: change `hops == 0` to `false` and SAT-0 stops flagging — the 0-hop hole reopens.
+func TestReconcileGateChartSweep_ZeroHopDispatch_FlagsChartOnArrival(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	// SAT-0 is ALREADY in the dark target X1-U0 (0-hop); SAT-1 is one hop from the dark target X1-U1.
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "SAT-0", "X1-U0-A1"),
+		newScoutTestSatellite(t, "SAT-1", "X1-HUB-A1"),
+	}
+	gg := &fakeGateGraph{hops: map[string]int{
+		"X1-U0->X1-U0":  0, // SAT-0 already in X1-U0 → 0-hop
+		"X1-HUB->X1-U1": 1, // SAT-1 one hop from X1-U1 → multi-hop
+	}} // no adjacency → both U0 and U1 are gate-uncharted backlog targets
+	handler, daemonClient := gateReconcileTestHandler(t, clock, sats,
+		map[string]float64{"X1-U0": 1, "X1-U1": 2}, gg)
+
+	idle := append([]*navigation.Ship(nil), sats...)
+	handler.reconcileGateChartSweep(context.Background(), gateReconcileTestCmd(5), &idle)
+
+	require.Len(t, daemonClient.persistedRepositionCmds, 2, "each dark target draws its own probe")
+	byShip := map[string]*ScoutRepositionCommand{}
+	for _, c := range daemonClient.persistedRepositionCmds {
+		byShip[c.ShipSymbol] = c
+	}
+	require.NotNil(t, byShip["SAT-0"])
+	require.NotNil(t, byShip["SAT-1"])
+	require.True(t, byShip["SAT-0"].ChartGateOnArrival,
+		"a 0-hop dispatch MUST flag chart-on-arrival — the probe is already in the dark system and travel's same-system branch would otherwise never chart it (sp-4yse)")
+	require.False(t, byShip["SAT-1"].ChartGateOnArrival,
+		"a multi-hop dispatch must NOT flag it — the jump-arrival hop already charts the gate")
+}

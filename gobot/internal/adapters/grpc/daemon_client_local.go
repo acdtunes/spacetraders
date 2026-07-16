@@ -91,7 +91,9 @@ func (c *DaemonClientLocal) PersistContainer(
 		}
 		// sp-o34q: forward MaxRepositionJumps — the segment that dropped the bound on the way to
 		// the persisted config, degrading the live relay to the strict 5-jump resolver.
-		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID, cmd.MaxRepositionJumps)
+		// sp-4yse: forward ChartGateOnArrival for the same reason — the worker's start path rebuilds
+		// the command FROM config (StartScoutReposition), so a flag dropped here never charts.
+		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID, cmd.MaxRepositionJumps, cmd.ChartGateOnArrival)
 	case daemon.ContainerKindWorkerFerry:
 		cmd, ok := command.(*tradingCmd.WorkerFerryCommand)
 		if !ok {

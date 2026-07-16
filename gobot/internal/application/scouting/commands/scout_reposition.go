@@ -22,6 +22,13 @@ type Repositioner interface {
 	// expendable probe can reach a post the strict fetch-through cap rejects. maxJumps
 	// <= 0 degrades to the strict resolver.
 	RepositionToWaypointWithinJumps(ctx context.Context, shipSymbol, destinationWaypoint string, playerID, maxJumps int) error
+
+	// RepositionToSystemGateAndChart flies shipSymbol onto its CURRENT system's jump gate and
+	// charts that gate on arrival (sp-4yse). It is the 0-hop gate-reconcile path: a probe already
+	// IN a market-known-but-gate-dark system that the plain same-system reposition would leave at
+	// a market, never charting the gate. Scoped to the reconcile's charting intent — normal
+	// same-system travel never reaches it — and best-effort (a chart failure never fails the relay).
+	RepositionToSystemGateAndChart(ctx context.Context, shipSymbol string, playerID, maxJumps int) error
 }
 
 // ScoutRepositionCommand is a one-shot cross-gate relay: jump-route a claimed idle
@@ -50,6 +57,16 @@ type ScoutRepositionCommand struct {
 	// the strict fetch-through cap; <= 0 degrades to the strict resolver. Persisted with
 	// the container so a restart re-dispatches at the same reach.
 	MaxRepositionJumps int
+
+	// ChartGateOnArrival marks a gate-reconcile relay that must chart the TARGET system's jump
+	// gate on arrival (sp-4yse). The gate-reconcile sweep sets it for 0-hop dispatches only — a
+	// probe already IN the market-known-but-gate-dark system, which travelWithJumpBound's
+	// same-system branch would otherwise leave at a market, never charting the gate (the
+	// VH23/TD90 stuck-marker hole). Set false, the relay is the plain manning/reposition move
+	// (byte-for-byte the pre-sp-4yse behavior), so a normal reposition never detours to the gate.
+	// Persisted so the flag survives the persist->config->rebuild boundary the worker's start
+	// path runs through (StartScoutReposition rebuilds the command from config, not from memory).
+	ChartGateOnArrival bool
 }
 
 // ScoutRepositionResponse reports the completed relay. Because the relay is one-shot
@@ -89,7 +106,17 @@ func (h *ScoutRepositionHandler) Handle(ctx context.Context, request common.Requ
 		"destination": cmd.DestinationWaypoint,
 	})
 
-	if err := h.repositioner.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.DestinationWaypoint, cmd.PlayerID.Value(), cmd.MaxRepositionJumps); err != nil {
+	// sp-4yse: a gate-reconcile relay flagged ChartGateOnArrival routes the present probe onto
+	// its OWN system's jump gate and charts it (the 0-hop path travelWithJumpBound's same-system
+	// branch leaves uncharted); every other relay takes the plain market reposition unchanged.
+	// Exactly ONE move fires — the charting path must never also run the plain reposition.
+	relayMove := func() error {
+		if cmd.ChartGateOnArrival {
+			return h.repositioner.RepositionToSystemGateAndChart(ctx, cmd.ShipSymbol, cmd.PlayerID.Value(), cmd.MaxRepositionJumps)
+		}
+		return h.repositioner.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.DestinationWaypoint, cmd.PlayerID.Value(), cmd.MaxRepositionJumps)
+	}
+	if err := relayMove(); err != nil {
 		return nil, fmt.Errorf("scout reposition of %s to %s failed: %w", cmd.ShipSymbol, cmd.DestinationWaypoint, err)
 	}
 

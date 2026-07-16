@@ -481,6 +481,62 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypointWithinJumps(ctx co
 	return nil
 }
 
+// RepositionToSystemGateAndChart flies shipSymbol ONTO its current system's jump gate and
+// charts that gate on arrival — the sp-4yse fix for the 0-hop gate-reconcile hole. The
+// gate-reconcile sweep (sp-bcsu Part 2) dispatches idle probes to market-known-but-gate-dark
+// systems to chart them; a MULTI-hop dispatch charts fine (the jump lands the hull ON the
+// destination gate and travelWithJumpBound's arrival hop calls chartArrivedGate). But the
+// COMMON case is a 0-hop dispatch — the nearest idle probe is usually the one already STRANDED
+// in the backed-off system — and travelWithJumpBound's same-system branch navigates such a
+// probe straight to its MARKET destination and returns BEFORE chartArrivedGate, so the gate
+// never charts and the backlog never drains (the VH23/TD90 stuck-marker incident). This method
+// is the scoped 0-hop path: it resolves the probe's own system's jump gate from the waypoint
+// catalog (FindNearestJumpGate — readable even when the gate's EDGES are still uncharted, which
+// is exactly the systems this targets), flies the probe onto that gate via the shared
+// travelWithJumpBound (a same-system navigate; a navigate to the hull's current waypoint is a
+// benign 4204 no-op, and any in-transit leg is ridden out first), then charts it via the SAME
+// best-effort ChartPresentGate path the multi-hop arrival uses (chartArrivedGate).
+//
+// SCOPING (sp-4yse's non-negotiable constraint): travelWithJumpBound and its shared same-system
+// branch are UNTOUCHED, so every normal same-system trade/reposition leg is byte-for-byte
+// unchanged and never detours to the gate. Only a relay the reconcile explicitly flagged for
+// charting (ScoutRepositionCommand.ChartGateOnArrival, set for 0-hop dispatches only) reaches
+// this method. The chart is best-effort/non-fatal (chartArrivedGate swallows read failures),
+// mirroring the multi-hop arrival chart — a chart failure never fails the relay.
+func (h *RunTradeRouteCoordinatorHandler) RepositionToSystemGateAndChart(ctx context.Context, shipSymbol string, playerID, maxJumps int) error {
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return fmt.Errorf("failed to load ship %s for gate-chart reposition: %w", shipSymbol, err)
+	}
+
+	gateResp, gerr := h.mediator.Send(ctx, &shipQueries.FindNearestJumpGateQuery{
+		ShipSymbol: shipSymbol,
+		PlayerID:   &playerID,
+	})
+	if gerr != nil {
+		return fmt.Errorf("resolve jump gate for gate-chart reposition of %s failed: %w", shipSymbol, gerr)
+	}
+	gate, ok := gateResp.(*shipQueries.FindNearestJumpGateResponse)
+	if !ok || gate.JumpGate == nil {
+		return fmt.Errorf("no jump gate resolved for gate-chart reposition of %s (response %T)", shipSymbol, gateResp)
+	}
+
+	if _, terr := h.travelWithJumpBound(ctx, ship, gate.JumpGate.Symbol, playerID, maxJumps); terr != nil {
+		return fmt.Errorf("gate-chart reposition of %s onto gate %s failed: %w", shipSymbol, gate.JumpGate.Symbol, terr)
+	}
+
+	// Reload so the chart guard reads the hull's freshly-persisted ON-GATE location — navigate
+	// does not mutate the passed pointer, so charting the stale pre-navigate pointer would fail
+	// chartArrivedGate's IsJumpGate guard and silently skip. Mirrors the multi-hop arrival's
+	// reload-before-chart discipline.
+	onGate, rerr := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if rerr != nil {
+		return fmt.Errorf("reload %s after gate-chart reposition failed: %w", shipSymbol, rerr)
+	}
+	h.chartArrivedGate(ctx, onGate, playerID)
+	return nil
+}
+
 // waitForInTransitArrival rides out a hull that is still IN_TRANSIT before any
 // movement leg (sp-8l3o). It is the pre-movement mirror of the RouteExecutor's own
 // waitForCurrentTransit idempotency wait: the arb resume path re-adopts a hull mid

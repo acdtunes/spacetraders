@@ -841,6 +841,10 @@ func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID st
 		// unreadable gates. resolveScoutingConfig deliberately does NOT run for scout_reposition
 		// (only scout_tour/scout_post_coordinator), so this per-relay value is never clobbered.
 		MaxRepositionJumps: cfg.OptionalInt("max_reposition_jumps", 0),
+		// sp-4yse: reload the 0-hop gate-charting intent. Absent (false) is the plain market
+		// reposition — a legacy/manning relay never charts the gate; only a relay the sweep
+		// explicitly flagged charts on arrival.
+		ChartGateOnArrival: cfg.OptionalBool("chart_gate_on_arrival"),
 	}
 }
 

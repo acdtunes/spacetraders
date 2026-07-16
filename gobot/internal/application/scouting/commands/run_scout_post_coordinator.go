@@ -2281,7 +2281,9 @@ func (h *RunScoutPostCoordinatorHandler) repositionUnmannedSlot(
 	sat := (*idleSats)[idx]
 	*idleSats = append((*idleSats)[:idx], (*idleSats)[idx+1:]...)
 
-	relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint, maxJumps)
+	// A manning reposition never charts the gate (sp-4yse ChartGateOnArrival=false) — it only
+	// moves the hull into the post's system; the gate-reconcile sweep owns gate charting.
+	relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint, maxJumps, false)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to dispatch reposition of %s to post %s: %v", sat.ShipSymbol(), post.SystemSymbol, err), nil)
 		return
@@ -2477,7 +2479,11 @@ func (h *RunScoutPostCoordinatorHandler) reconcileGateChartSweep(ctx context.Con
 		sat := (*idleSats)[idx]
 		*idleSats = append((*idleSats)[:idx], (*idleSats)[idx+1:]...)
 
-		relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint, maxJumps)
+		// sp-4yse: a 0-hop dispatch (the probe is ALREADY in the target system) must chart the
+		// gate itself — travelWithJumpBound's same-system branch would otherwise navigate it to a
+		// market and return before charting, so the backlog never drains (VH23/TD90). A multi-hop
+		// dispatch (hops>0) already charts on the jump-arrival hop, so it stays the plain relay.
+		relayID, err := h.spawnReposition(ctx, cmd, sat.ShipSymbol(), destWaypoint, maxJumps, hops == 0)
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("gate-reconcile: failed to dispatch %s to chart %s: %v", sat.ShipSymbol(), target, err), map[string]interface{}{
 				"action":        "gate_reconcile_dispatch_failed",
@@ -2571,6 +2577,7 @@ func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 	hullSymbol string,
 	destinationWaypoint string,
 	maxJumps int,
+	chartGateOnArrival bool,
 ) (string, error) {
 	workerID := utils.GenerateContainerID("scout_reposition", hullSymbol)
 	repoCmd := &ScoutRepositionCommand{
@@ -2579,6 +2586,9 @@ func (h *RunScoutPostCoordinatorHandler) spawnReposition(
 		DestinationWaypoint: destinationWaypoint,
 		CoordinatorID:       cmd.ContainerID,
 		MaxRepositionJumps:  maxJumps,
+		// sp-4yse: a gate-reconcile 0-hop dispatch charts the target gate on arrival; a plain
+		// manning reposition (false) never detours to the gate.
+		ChartGateOnArrival: chartGateOnArrival,
 	}
 
 	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindScoutReposition, workerID, uint(cmd.PlayerID.Value()), repoCmd); err != nil {

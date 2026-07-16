@@ -81,3 +81,46 @@ func TestPersistScoutReposition_NoBound_RebuildsStrictFallback(t *testing.T) {
 	repoCmd := rebuilt.(*scoutingCmd.ScoutRepositionCommand)
 	require.Equal(t, 0, repoCmd.MaxRepositionJumps, "an omitted bound rebuilds at 0 — the strict-resolver fallback, never an accidental relaxation")
 }
+
+// sp-4yse CRITICAL-PATH PIN. The worker's start path rebuilds the command FROM the persisted
+// config (StartScoutReposition -> buildScoutRepositionCommand), NOT from the in-memory command,
+// so the 0-hop gate-charting intent must survive the serialize->config->rebuild boundary — the
+// exact boundary the sp-o34q bound was dropped across. Without this round-trip the LIVE relay
+// rebuilds with ChartGateOnArrival=false and charts nothing even on the initial dispatch, so
+// the 0-hop backlog (VH23/TD90) never drains despite the coordinator flagging it. A default
+// relay (no flag) rebuilds to the plain non-charting reposition — a manning relay never charts.
+func TestPersistScoutReposition_ChartGateOnArrival_RoundTripsThroughRebuild(t *testing.T) {
+	client, server, db, playerID := newLocalClientHarness(t)
+
+	cmd := &scoutingCmd.ScoutRepositionCommand{
+		PlayerID:            shared.MustNewPlayerID(playerID),
+		ShipSymbol:          "SAT-0",
+		DestinationWaypoint: "X1-DARK-A1",
+		CoordinatorID:       "scout-coord-1",
+		MaxRepositionJumps:  12,
+		ChartGateOnArrival:  true,
+	}
+	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindScoutReposition, "relay-chart", uint(playerID), cmd))
+
+	config := containerConfig(t, loadContainerRow(t, db, "relay-chart"))
+	require.Equal(t, true, config["chart_gate_on_arrival"], "the persisted relay config must carry the 0-hop charting intent")
+
+	rebuilt, err := server.buildCommandForType("scout_reposition", config, playerID, "relay-chart")
+	require.NoError(t, err)
+	repoCmd, ok := rebuilt.(*scoutingCmd.ScoutRepositionCommand)
+	require.True(t, ok, "scout_reposition must rebuild a ScoutRepositionCommand")
+	require.True(t, repoCmd.ChartGateOnArrival, "the rebuilt relay must reload the charting intent — else the live worker degrades to a plain market navigate that never charts (sp-4yse)")
+
+	// A default relay (no flag) rebuilds to the plain non-charting reposition.
+	plain := &scoutingCmd.ScoutRepositionCommand{
+		PlayerID:            shared.MustNewPlayerID(playerID),
+		ShipSymbol:          "SAT-2",
+		DestinationWaypoint: "X1-NEAR-A1",
+		CoordinatorID:       "scout-coord-1",
+	}
+	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindScoutReposition, "relay-plain", uint(playerID), plain))
+	plainConfig := containerConfig(t, loadContainerRow(t, db, "relay-plain"))
+	plainRebuilt, err := server.buildCommandForType("scout_reposition", plainConfig, playerID, "relay-plain")
+	require.NoError(t, err)
+	require.False(t, plainRebuilt.(*scoutingCmd.ScoutRepositionCommand).ChartGateOnArrival, "an omitted flag rebuilds to a plain non-charting reposition — a manning relay never charts")
+}
