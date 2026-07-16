@@ -28,7 +28,7 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		},
 		domainRouting.TourConstraints{
 			MaxHops: 6, MinMarginPerUnit: 5, MaxSnapshotAgeMinutes: 75,
-			MaxSpend: 250000, WorkingCapitalReserve: 50000,
+			MaxSpend: 250000, WorkingCapitalReserve: 50000, MaxTourSystems: 5,
 			AllowedSystems: []string{"X1-NK36", "X1-GQ92"}, ExpectedModelVersion: "1@torwind-2026-07-05",
 		},
 		[]domainRouting.TourDepositCandidate{
@@ -73,7 +73,8 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 
 	c := req.Constraints
 	if c.MaxHops != 6 || c.MinMarginPerUnit != 5 || c.MaxSnapshotAgeMinutes != 75 ||
-		c.MaxSpend != 250000 || c.WorkingCapitalReserve != 50000 || c.ExpectedModelVersion != "1@torwind-2026-07-05" {
+		c.MaxSpend != 250000 || c.WorkingCapitalReserve != 50000 || c.MaxTourSystems != 5 ||
+		c.ExpectedModelVersion != "1@torwind-2026-07-05" {
 		t.Fatalf("constraints wrong: %+v", c)
 	}
 	if len(c.AllowedSystems) != 2 || c.AllowedSystems[0] != "X1-NK36" || c.AllowedSystems[1] != "X1-GQ92" {
@@ -102,6 +103,19 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 	if a := req.Absorption[1]; a.WaypointSymbol != "X1-NK36-D39" || a.GoodSymbol != "MEDICINE" ||
 		a.Side != "sell" || a.UnitsPlanned != 20 || a.UnitsRecovering != 12.5 {
 		t.Fatalf("absorption[1] mapping wrong: %+v", a)
+	}
+}
+
+// sp-syaz: the default-safety hinge. A tour built WITHOUT MaxTourSystems must put
+// the proto3 int32 zero on the wire (never a fabricated 2). Zero is what the solver
+// reads as "fall back to the module default (2)", so an unset cap is byte-identical
+// to today. This pins that the wire carries 0, not a stray non-zero, when unset.
+func TestBuildTourRequest_MaxTourSystemsDefaultsZero(t *testing.T) {
+	req := buildTourRequest(nil, nil, domainRouting.TourShipState{},
+		domainRouting.TourConstraints{MaxHops: 6, ExpectedModelVersion: "1@e"}, nil, nil)
+	if req.Constraints.MaxTourSystems != 0 {
+		t.Fatalf("unset MaxTourSystems must map to 0 (proto3 default), got %d",
+			req.Constraints.MaxTourSystems)
 	}
 }
 

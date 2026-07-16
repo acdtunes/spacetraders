@@ -56,6 +56,11 @@ type TourShipState struct {
 // the expected model version. ExpectedModelVersion MUST be set to "<fit_version>@<era>"
 // (read from the checked-in artifact at launch) — the solver FAILS CLOSED when it
 // is unset, and errors loudly on a mismatch rather than silently using a stale model.
+// MaxTourSystems caps the DISTINCT systems one tour may touch (INCLUDING the ship's
+// start system) — the per-tour length lever (sp-syaz, epic sp-fguo). 0 means "unset":
+// the Python solver falls back to its MAX_TOUR_SYSTEMS module default (2), so a caller
+// that leaves it 0 is byte-identical to today. A positive value sweeps tour length
+// without a redeploy.
 type TourConstraints struct {
 	MaxHops               int
 	MinMarginPerUnit      int
@@ -64,6 +69,7 @@ type TourConstraints struct {
 	WorkingCapitalReserve int64
 	AllowedSystems        []string
 	ExpectedModelVersion  string
+	MaxTourSystems        int
 }
 
 // TourTrade is one buy or sell tranche at a leg. ExpectedUnitPrice is the

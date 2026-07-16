@@ -80,3 +80,47 @@ func TestTour_ExplicitMaxSpend_PlannerKeepsCashContractReserve(t *testing.T) {
 		t.Fatalf("planner reserves = %v, want first = 120,000 — an explicit --max-spend keeps the cash-contract subtraction (spend_cap = 80,000)", planner.reserves)
 	}
 }
+
+// sp-syaz (review minor 1): the request-driven per-tour distinct-system cap must ride
+// cmd.MaxTourSystems onto the TourConstraints the planner receives — the cmd→cons hop in
+// planForState that was wired but untested. A positive cmd value reaches the planner
+// verbatim (here 5); the companion below pins the unset default.
+func TestTour_PlannerReceivesMaxTourSystems(t *testing.T) {
+	fx := dynamicCapFixture()
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{roundTripPlan()}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+
+	_, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-MTS", PlayerID: 1, ContainerID: "ctr-mts",
+		MaxSpend:          200_000, // explicit cap keeps this off the dynamic-treasury path
+		MaxTourSystems:    5,       // the operator's raised per-tour system cap
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	if len(planner.maxTourSystems) == 0 || planner.maxTourSystems[0] != 5 {
+		t.Fatalf("planner max-tour-systems = %v, want first = 5 (cmd.MaxTourSystems must ride cons.MaxTourSystems to the solver)", planner.maxTourSystems)
+	}
+}
+
+// sp-syaz default-safety companion: an UNSET MaxTourSystems reaches the planner as 0 —
+// which the Python solver resolves to its MAX_TOUR_SYSTEMS default (2), so a tour that
+// never sets the cap is byte-identical to today.
+func TestTour_PlannerReceivesZeroMaxTourSystemsWhenUnset(t *testing.T) {
+	fx := dynamicCapFixture()
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{roundTripPlan()}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+
+	_, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-MTS0", PlayerID: 1, ContainerID: "ctr-mts0",
+		MaxSpend:          200_000, // MaxTourSystems deliberately left unset (0)
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	if len(planner.maxTourSystems) == 0 || planner.maxTourSystems[0] != 0 {
+		t.Fatalf("planner max-tour-systems = %v, want first = 0 (unset → the solver's default 2)", planner.maxTourSystems)
+	}
+}

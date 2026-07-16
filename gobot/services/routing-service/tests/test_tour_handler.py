@@ -116,6 +116,27 @@ def test_golden_tour(tmp_path):
     assert all(r.summary for r in resp.top_rejected)
 
 
+def test_handler_forwards_max_tour_systems(tmp_path):
+    # sp-syaz: the pb TourConstraints.max_tour_systems must be BRIDGED into the solver
+    # constraints dict (the handler dropped it before this bead, so the raised cap was
+    # inert on the wire). On the same S1/S2/S3 board test_golden_tour clamps to 2, a
+    # request cap of 3 unlocks the S3 sink F (H bid 990, far fatter than E's 160), so
+    # the winning tour spans all three systems.
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+    req = request()
+    req.constraints.max_tour_systems = 3
+    resp = handler.OptimizeTradeTour(req, None)
+    assert resp.feasible
+    assert {l.system_symbol for l in resp.legs} == {"S1", "S2", "S3"}, \
+        [(l.waypoint_symbol, l.system_symbol) for l in resp.legs]
+
+    # Companion (default-safe): omitting the field keeps the 2-system clamp — the pb
+    # int32 defaults to 0, which the solver reads as the module default (2).
+    resp_default = handler.OptimizeTradeTour(request(), None)
+    assert len({l.system_symbol for l in resp_default.legs}) <= 2, \
+        [(l.waypoint_symbol, l.system_symbol) for l in resp_default.legs]
+
+
 def test_deposit_candidate_round_trips_to_deposit_leg(tmp_path):
     # sp-dchv Lane C: a request carrying a deposit candidate produces a DEPOSIT leg
     # at the storage waypoint (is_deposit=True, priced at the synthetic bid) and a

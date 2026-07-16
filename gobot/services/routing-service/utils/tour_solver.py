@@ -160,6 +160,20 @@ def _sort_scored(scored, objective):
     return OBJECTIVE_PROFIT
 
 
+def _effective_tour_systems(constraints):
+    """Resolve the per-tour DISTINCT-system cap (sp-syaz), clamped to a sane range.
+
+    Falsy-zero/absent -> the MAX_TOUR_SYSTEMS module default (2): the default-safety
+    hinge, byte-identical to the pre-sp-syaz clamp. The result is then clamped to
+    [MAX_TOUR_SYSTEMS, MAX_HOPS_DEFAULT] — the floor turns the degenerate 1 (a
+    single-system, no-trade tour) back into the tradable default, and the ceiling stops
+    an over-large request from exploding the beam's branching factor. Mirrors the
+    `max_hops = min(max_hops, MAX_HOPS_DEFAULT)` clamp already in beam_sequences.
+    """
+    requested = constraints.get("max_tour_systems") or MAX_TOUR_SYSTEMS
+    return max(MAX_TOUR_SYSTEMS, min(requested, MAX_HOPS_DEFAULT))
+
+
 def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
     """Piecewise price schedule: list of (units, unit_price) tranches.
 
@@ -674,6 +688,12 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
         stock_by_wp.setdefault(wp, {})[good] = src
     max_hops = constraints.get("max_hops") or MAX_HOPS_DEFAULT
     max_hops = min(max_hops, MAX_HOPS_DEFAULT)
+    # sp-syaz: the per-tour distinct-system cap is now request-carried, resolved +
+    # clamped to [MAX_TOUR_SYSTEMS, MAX_HOPS_DEFAULT] by _effective_tour_systems. The
+    # falsy-zero fallback is the default-safety hinge — a missing key OR an unset proto3
+    # int32 (0) resolves to the module default (2), byte-identical to the pre-sp-syaz
+    # clamp; a positive request value sweeps tour length (bounded) with no redeploy.
+    max_tour_systems = _effective_tour_systems(constraints)
     start_system = ship["current_system"]
     initial = {c["good_symbol"]: c["units"] for c in ship.get("cargo") or []}
     wps = sorted(markets)
@@ -722,7 +742,7 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
         return gain
 
     def within_cap(*systems):
-        return len(frozenset((start_system, *systems))) <= MAX_TOUR_SYSTEMS
+        return len(frozenset((start_system, *systems))) <= max_tour_systems
 
     def seed_lookahead(wp):
         best = 0
@@ -751,7 +771,7 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                 if wp == seq[-1]:
                     continue
                 new_systems = systems | {markets[wp]["system"]}
-                if len(new_systems) > MAX_TOUR_SYSTEMS:
+                if len(new_systems) > max_tour_systems:
                     continue
                 gain = max(pack_gain(prev_wp, wp) for prev_wp in seq)
                 nxt.append((seq + (wp,), new_systems, score + gain))

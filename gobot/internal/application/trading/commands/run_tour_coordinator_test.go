@@ -361,6 +361,10 @@ type tourFakeRoutingClient struct {
 	// each call (sp-78ai L3): a netting integration test asserts the tour nets the ledger's
 	// outstanding depth into its plan request.
 	absorptions [][]routing.TourMarketAbsorption
+	// maxTourSystems captures cons.MaxTourSystems on each call (sp-syaz): a coordinator-level
+	// pin that the request-driven distinct-system cap rides cmd.MaxTourSystems onto the
+	// TourConstraints the planner receives (unset → 0, the solver's default-2 hinge).
+	maxTourSystems []int
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
@@ -368,6 +372,7 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
+	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
 	c.absorptions = append(c.absorptions, absorption)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {

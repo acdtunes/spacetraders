@@ -438,6 +438,7 @@ func buildTourRequest(
 			AllowedSystems:        cons.AllowedSystems,
 			MaxSnapshotAgeMinutes: int32(cons.MaxSnapshotAgeMinutes),
 			ExpectedModelVersion:  cons.ExpectedModelVersion,
+			MaxTourSystems:        int32(cons.MaxTourSystems),
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,

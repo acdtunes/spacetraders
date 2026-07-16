@@ -1337,9 +1337,15 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 		MaxHops:     cfg.OptionalInt("max_hops", 0),
-		MaxSpend:    int64(cfg.OptionalInt("max_spend", 0)),
-		MinMargin:   cfg.OptionalInt("min_margin", 0),
-		ReplanLimit: cfg.OptionalInt("replan_limit", 0),
+		// sp-syaz: reload the per-tour distinct-system cap StartTourRun stamped from
+		// [trade_fleet].max_tour_systems (the read side of the launch/rebuild boundary,
+		// mirroring reposition_jump_bound). Absent → 0 → the solver's MAX_TOUR_SYSTEMS
+		// default (2), so a tour launched without the knob is byte-identical to today;
+		// a positive value sweeps tour length.
+		MaxTourSystems: cfg.OptionalInt("max_tour_systems", 0),
+		MaxSpend:       int64(cfg.OptionalInt("max_spend", 0)),
+		MinMargin:      cfg.OptionalInt("min_margin", 0),
+		ReplanLimit:    cfg.OptionalInt("replan_limit", 0),
 		// sp-ggk2 RULINGS #4: the reserve is a money guard — a PRESENT-but-unparseable
 		// value fails the build (fail closed), never a silent 0 → 50k floor. An absent key
 		// still defers to the coordinator's own default (0 → defaultWorkingCapitalReserve),

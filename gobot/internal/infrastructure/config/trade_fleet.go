@@ -107,6 +107,17 @@ type TradeFleetConfig struct {
 	// (RULINGS #5, no code redeploy). The buy-side (arb pre-buy, trade-route lane commits, cargo
 	// delivery) keeps the strict Path — money-commitment vs hull-movement is the guard line.
 	RepositionJumpBound int `mapstructure:"reposition_jump_bound"`
+
+	// MaxTourSystems is the sp-syaz per-tour DISTINCT-system cap (start system + gate
+	// neighbors) — the fleet-wide tour-length lever that reverses the 2026-07-09 clamp
+	// SAFELY. Like RepositionJumpBound/StrandedConsecutiveThreshold it is a daemon-global
+	// tour tuning: StartTourRun stamps it from here into every tour container's launch
+	// config, buildTourCoordinatorCommand reads it back, and it rides TourConstraints to
+	// the Python solver. 0/absent → the solver's own MAX_TOUR_SYSTEMS default (2), so an
+	// unset knob is byte-identical to today; the default lives in the consumer (the solver),
+	// not this config layer. A positive value sweeps tour length by editing config.yaml +
+	// restarting the daemon (RULINGS #5, no code redeploy).
+	MaxTourSystems int `mapstructure:"max_tour_systems"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

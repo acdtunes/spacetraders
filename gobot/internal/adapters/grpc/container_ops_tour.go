@@ -105,7 +105,16 @@ func (s *DaemonServer) StartTourRun(
 		// the launch config here, where PersistRepositionState's read-modify-write preserves it and
 		// buildTourCoordinatorCommand reads it back, is what makes the bound survive the round-trip.
 		"reposition_jump_bound": s.tradeFleetConfig.RepositionJumpBound,
-		"iterations":            iterations,
+		// sp-syaz: the per-tour distinct-system cap, sourced from the daemon's live
+		// [trade_fleet] config (a daemon-global tour tuning, same for every tour — the
+		// mirror of reposition_jump_bound/stranded_consecutive_threshold above). Persisted
+		// as-is (0 too, so an absent knob survives a recovery rebuild unchanged);
+		// buildTourCoordinatorCommand reads it back into cmd.MaxTourSystems, which rides
+		// TourConstraints to the solver, resolving 0/absent → the MAX_TOUR_SYSTEMS default
+		// (2). This WRITE is what makes the request-driven cap take effect in production —
+		// without it the knob is inert and every tour silently clamps to 2.
+		"max_tour_systems": s.tradeFleetConfig.MaxTourSystems,
+		"iterations":       iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

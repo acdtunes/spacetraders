@@ -49,6 +49,75 @@ def test_solver_respects_two_system_cap():
     systems = {l["system_symbol"] for l in out["legs"]}
     assert len(systems) <= 2  # maxTourSystems enforced even when 3 allowed
 
+def _cap_sweep_board():
+    # sp-syaz: a cheap source in S1 and two comparably-fat sinks in S2 and S3. The
+    # source fills the hold with 80u G (A-cap 2*tv=80); each sink's UNDECAYED first
+    # tranche (40u) pays more than the source's second tranche pays anywhere decayed,
+    # so the profit optimum SPLITS 40u/40u across B(S2) and C(S3) — which structurally
+    # requires touching 3 systems. With only 2 systems reachable the tour can dump into
+    # a single sink and must eat the 0.9 decay on its 2nd tranche. The raised cap is
+    # therefore exactly what unlocks the strictly-higher 3-system optimum.
+    snapshot = [
+        snap("A", "S1", "G", ask=100, bid=90, tv=40),   # cheap source (80u via A-cap)
+        snap("B", "S2", "G", ask=999, bid=300, tv=40),  # fat sink 1
+        snap("C", "S3", "G", ask=999, bid=290, tv=40),  # fat sink 2 (comparable)
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+
+    def cons(**over):
+        base = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+                    working_capital_reserve=0, allowed_systems=["S1", "S2", "S3"],
+                    max_snapshot_age_minutes=75, expected_model_version="1@e")
+        base.update(over)
+        return base
+
+    return snapshot, ship, cons
+
+def test_solver_request_raises_system_cap():
+    # The RED for sp-syaz: promoting MAX_TOUR_SYSTEMS to a request field lets the
+    # caller RAISE the per-tour distinct-system cap. objective is pinned to profit
+    # (the plan's "profit optimum REQUIRES 3 systems" framing) so the assertion is
+    # deterministic regardless of the deploy-time TOUR_SOLVER_OBJECTIVE.
+    snapshot, ship, cons = _cap_sweep_board()
+
+    # Baseline: the default 2-system cap forces a single-sink dump — spans 2 systems.
+    baseline = solve_tour(snapshot, ship, cons(), MODEL, objective="profit")
+    assert baseline["feasible"], baseline
+    assert len({l["system_symbol"] for l in baseline["legs"]}) == 2, baseline
+
+    # Flip the field to 3: splitting across BOTH sinks now wins, spanning all 3 systems.
+    raised = solve_tour(snapshot, ship, cons(max_tour_systems=3), MODEL,
+                        objective="profit")
+    assert raised["feasible"], raised
+    assert {l["system_symbol"] for l in raised["legs"]} == {"S1", "S2", "S3"}, raised
+
+def test_solver_max_tour_systems_zero_falls_back_to_default():
+    # sp-syaz default-safety hinge (the falsy-zero path): max_tour_systems=0 — the
+    # proto3 int32 default, indistinguishable from unset — must behave EXACTLY like the
+    # MAX_TOUR_SYSTEMS module default (2). The SAME board the raised-cap test spans in 3
+    # systems stays clamped to 2 here, because `0 or MAX_TOUR_SYSTEMS` resolves to 2.
+    snapshot, ship, cons = _cap_sweep_board()
+    out = solve_tour(snapshot, ship, cons(max_tour_systems=0), MODEL,
+                     objective="profit")
+    assert out["feasible"], out
+    assert len({l["system_symbol"] for l in out["legs"]}) <= 2, out
+
+def test_effective_tour_systems_clamps_to_sane_range():
+    # sp-syaz robustness (review minor 2): the EFFECTIVE per-tour system cap is clamped
+    # to [MAX_TOUR_SYSTEMS, MAX_HOPS_DEFAULT] AFTER the falsy-zero fallback, mirroring the
+    # existing `max_hops = min(max_hops, MAX_HOPS_DEFAULT)` clamp. 0/absent -> the default
+    # 2 (byte-identical); the degenerate 1 (a single-system, no-trade tour) FLOORS to 2;
+    # an over-large request is CAPPED at the ceiling so it can't blow up the beam's
+    # branching factor.
+    from utils.tour_solver import _effective_tour_systems, MAX_HOPS_DEFAULT
+    assert _effective_tour_systems({}) == 2                            # absent -> default
+    assert _effective_tour_systems({"max_tour_systems": 0}) == 2       # falsy zero -> default
+    assert _effective_tour_systems({"max_tour_systems": 1}) == 2       # degenerate 1 -> floored
+    assert _effective_tour_systems({"max_tour_systems": 3}) == 3       # in-range -> passthrough
+    assert _effective_tour_systems({"max_tour_systems": 10_000}) == MAX_HOPS_DEFAULT  # huge -> ceiling
+
 def test_out_of_horizon_lane_invisible_until_sink_system_allowed():
     # sp-mtvg mechanism lock (the live-replay result, distilled): a good sourced cheap
     # in S1 with its ONLY rich sink in S2. This is NOT dropped by any good/price/volume

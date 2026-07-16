@@ -363,9 +363,16 @@ message TourConstraints {
   int64 max_spend = 2;
   int32 min_margin_per_unit = 3;
   int64 working_capital_reserve = 4;
-  repeated string allowed_systems = 5;   // <=2, gate-adjacent (maxTourSystems)
+  repeated string allowed_systems = 5;   // gate-adjacent candidate systems
   int32 max_snapshot_age_minutes = 6;    // 75
   string expected_model_version = 7;     // "1@<era>"; mismatch -> error
+  // max_tour_systems is the per-tour cap on DISTINCT systems the tour may touch,
+  // INCLUDING the ship's start system (sp-syaz, epic sp-fguo). It promotes the
+  // solver's hard MAX_TOUR_SYSTEMS module constant to the wire so the Go caller /
+  // replay harness can sweep tour length with no redeploy. 0/unset (the proto3
+  // int32 default) => the solver falls back to that module default (2), so a caller
+  // that never sets it is byte-identical to today (the default-safety hinge).
+  int32 max_tour_systems = 8;
 }
 
 // TourTrade is one buy or sell tranche at a leg (execution order preserved).

@@ -39,9 +39,12 @@ const (
 	// tourMaxReplansDefault bounds re-plans per tour when the captain leaves
 	// --replan-limit at 0.
 	tourMaxReplansDefault = 2
-	// maxTourHops / maxTourSystems bound the planner's search (spec: ≤6 hops,
-	// ≤2 gate-adjacent systems). The planner enforces the system cap; the executor
-	// caps hops in the constraint it sends.
+	// maxTourHops bounds the planner's search (spec: ≤6 hops); the executor caps hops in
+	// the constraint it sends. The per-tour distinct-system cap is now REQUEST-DRIVEN
+	// (sp-syaz): it rides cmd.MaxTourSystems → TourConstraints.MaxTourSystems to the Python
+	// solver, which clamps it to [2, MAX_HOPS_DEFAULT] and falls back to its own
+	// MAX_TOUR_SYSTEMS default (2) when unset. maxTourSystems here is therefore only the
+	// documented default, not a code-enforced bound.
 	maxTourHops    = 6
 	maxTourSystems = 2
 	// unreachableLaneReason labels the sp-mtvg drop counter: a good with a cheap source
@@ -144,12 +147,16 @@ func isPlannerInternalError(reason string) bool {
 // with no captain in the loop, turning capital velocity from captain-cadence into
 // engine-cadence. See Iterations for the loop semantics.
 type RunTourCoordinatorCommand struct {
-	ShipSymbol  string
-	PlayerID    int
-	MaxHops     int   // 0 → maxTourHops
-	MaxSpend    int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
-	MinMargin   int
-	ReplanLimit int // 0 → tourMaxReplansDefault (PER TOUR)
+	ShipSymbol string
+	PlayerID   int
+	MaxHops    int // 0 → maxTourHops
+	// MaxTourSystems caps the DISTINCT systems one tour may touch (start + gate
+	// neighbors). 0 → the solver's MAX_TOUR_SYSTEMS default (2), byte-identical to
+	// today; a positive value sweeps tour length without a redeploy (sp-syaz).
+	MaxTourSystems int
+	MaxSpend       int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
+	MinMargin      int
+	ReplanLimit    int // 0 → tourMaxReplansDefault (PER TOUR)
 	// Iterations is the tour count (sp-m5kv), unifying the container iteration
 	// semantics (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new
 	// position, tour again — until margins die/starvation/stop), N>0 = exactly N
@@ -1627,6 +1634,10 @@ func (h *RunTourCoordinatorHandler) planForState(
 		WorkingCapitalReserve: plannerReserve,
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
+		// sp-syaz: 0 (the daemon/CLI default) => the solver's MAX_TOUR_SYSTEMS
+		// default (2), so the wire and plan are byte-identical to today; a positive
+		// knob raises the per-tour distinct-system cap.
+		MaxTourSystems: cmd.MaxTourSystems,
 	}
 	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {

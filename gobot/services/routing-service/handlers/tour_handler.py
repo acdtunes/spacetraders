@@ -89,6 +89,10 @@ class TourHandlerMixin:
                 working_capital_reserve=request.constraints.working_capital_reserve,
                 allowed_systems=list(request.constraints.allowed_systems),
                 max_snapshot_age_minutes=request.constraints.max_snapshot_age_minutes,
+                # sp-syaz: forward the per-tour distinct-system cap. 0/unset (proto3
+                # int32 default) -> the solver's `0 or MAX_TOUR_SYSTEMS` fallback (2),
+                # so an old caller that never sets it is byte-identical.
+                max_tour_systems=request.constraints.max_tour_systems,
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

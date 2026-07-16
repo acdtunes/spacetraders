@@ -1643,11 +1643,18 @@ type TourConstraints struct {
 	MaxSpend              int64                  `protobuf:"varint,2,opt,name=max_spend,json=maxSpend,proto3" json:"max_spend,omitempty"`
 	MinMarginPerUnit      int32                  `protobuf:"varint,3,opt,name=min_margin_per_unit,json=minMarginPerUnit,proto3" json:"min_margin_per_unit,omitempty"`
 	WorkingCapitalReserve int64                  `protobuf:"varint,4,opt,name=working_capital_reserve,json=workingCapitalReserve,proto3" json:"working_capital_reserve,omitempty"`
-	AllowedSystems        []string               `protobuf:"bytes,5,rep,name=allowed_systems,json=allowedSystems,proto3" json:"allowed_systems,omitempty"`                           // <=2, gate-adjacent (maxTourSystems)
+	AllowedSystems        []string               `protobuf:"bytes,5,rep,name=allowed_systems,json=allowedSystems,proto3" json:"allowed_systems,omitempty"`                           // gate-adjacent candidate systems
 	MaxSnapshotAgeMinutes int32                  `protobuf:"varint,6,opt,name=max_snapshot_age_minutes,json=maxSnapshotAgeMinutes,proto3" json:"max_snapshot_age_minutes,omitempty"` // 75
 	ExpectedModelVersion  string                 `protobuf:"bytes,7,opt,name=expected_model_version,json=expectedModelVersion,proto3" json:"expected_model_version,omitempty"`       // "1@<era>"; mismatch -> error
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// max_tour_systems is the per-tour cap on DISTINCT systems the tour may touch,
+	// INCLUDING the ship's start system (sp-syaz, epic sp-fguo). It promotes the
+	// solver's hard MAX_TOUR_SYSTEMS module constant to the wire so the Go caller /
+	// replay harness can sweep tour length with no redeploy. 0/unset (the proto3
+	// int32 default) => the solver falls back to that module default (2), so a caller
+	// that never sets it is byte-identical to today (the default-safety hinge).
+	MaxTourSystems int32 `protobuf:"varint,8,opt,name=max_tour_systems,json=maxTourSystems,proto3" json:"max_tour_systems,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TourConstraints) Reset() {
@@ -1727,6 +1734,13 @@ func (x *TourConstraints) GetExpectedModelVersion() string {
 		return x.ExpectedModelVersion
 	}
 	return ""
+}
+
+func (x *TourConstraints) GetMaxTourSystems() int32 {
+	if x != nil {
+		return x.MaxTourSystems
+	}
+	return 0
 }
 
 // TourTrade is one buy or sell tranche at a leg (execution order preserved).
@@ -2692,7 +2706,7 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\rTourCargoItem\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
-	"\x05units\x18\x02 \x01(\x05R\x05units\"\xc8\x02\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\"\xf2\x02\n" +
 	"\x0fTourConstraints\x12\x19\n" +
 	"\bmax_hops\x18\x01 \x01(\x05R\amaxHops\x12\x1b\n" +
 	"\tmax_spend\x18\x02 \x01(\x03R\bmaxSpend\x12-\n" +
@@ -2700,7 +2714,8 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x17working_capital_reserve\x18\x04 \x01(\x03R\x15workingCapitalReserve\x12'\n" +
 	"\x0fallowed_systems\x18\x05 \x03(\tR\x0eallowedSystems\x127\n" +
 	"\x18max_snapshot_age_minutes\x18\x06 \x01(\x05R\x15maxSnapshotAgeMinutes\x124\n" +
-	"\x16expected_model_version\x18\a \x01(\tR\x14expectedModelVersion\"\xc3\x01\n" +
+	"\x16expected_model_version\x18\a \x01(\tR\x14expectedModelVersion\x12(\n" +
+	"\x10max_tour_systems\x18\b \x01(\x05R\x0emaxTourSystems\"\xc3\x01\n" +
 	"\tTourTrade\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
