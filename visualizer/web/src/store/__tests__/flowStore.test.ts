@@ -56,11 +56,13 @@ describe('galaxy view state', () => {
     s.clearFocus();
     expect(useFlowStore.getState().focusFlowId).toBeNull();
 
-    expect(useFlowStore.getState().layerToggles).toEqual({ lanes: true, paths: true, ships: true });
+    expect(useFlowStore.getState().layerToggles).toEqual({ lanes: true, paths: true, ships: true, freshness: true });
     s.toggleLayer('lanes');
     expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
     s.toggleLayer('lanes');
     expect(useFlowStore.getState().layerToggles.lanes).toBe(true);
+    s.toggleLayer('freshness');
+    expect(useFlowStore.getState().layerToggles.freshness).toBe(false);
   });
 
   it('freezes the last live flows across feed loss and clears on recovery', () => {
@@ -75,5 +77,21 @@ describe('galaxy view state', () => {
     s.setLive(mk(false, []) as any);
     expect(useFlowStore.getState().staleFlows).toBeNull();
     expect(useFlowStore.getState().freezeAtMs).toBeNull();
+  });
+});
+
+describe('freshness state', () => {
+  beforeEach(() => {
+    useFlowStore.setState(useFlowStore.getInitialState());
+  });
+
+  it('stores responses and resets the missed-poll counter', () => {
+    const s = useFlowStore.getState();
+    s.freshnessPollFailed();
+    s.freshnessPollFailed();
+    expect(useFlowStore.getState().freshnessMissedPolls).toBe(2);
+    s.setFreshness({ systems: [], staleAfterMinutes: 75, generatedAt: 'x' });
+    expect(useFlowStore.getState().freshnessMissedPolls).toBe(0);
+    expect(useFlowStore.getState().freshness?.staleAfterMinutes).toBe(75);
   });
 });

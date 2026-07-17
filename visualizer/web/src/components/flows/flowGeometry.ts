@@ -70,8 +70,8 @@ export function laneProfitColor(profit: number): string {
 // Log-scaled stroke width, divided by the current stage scale so lanes hold a
 // roughly constant on-screen weight while zooming (the TradeRouteLayer idiom).
 export function laneWidth(profit: number, scale: number): number {
-  const mag = Math.min(6, Math.max(0.5, Math.log10(Math.abs(profit) + 10) - 1));
-  return Math.max(0.5, mag / scale);
+  const mag = Math.min(3, Math.max(0.5, Math.log10(Math.abs(profit) + 10) - 1));
+  return Math.max(0.35, mag / scale);
 }
 
 // Shift a segment sideways by `offsetPx` along its right-hand unit normal

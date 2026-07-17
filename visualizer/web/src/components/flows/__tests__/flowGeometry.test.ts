@@ -80,6 +80,10 @@ describe('laneProfitColor / laneWidth', () => {
     expect(laneWidth(500000, 1)).toBeGreaterThan(laneWidth(100, 1));
     expect(laneWidth(500000, 4)).toBeLessThan(laneWidth(500000, 1));
   });
+  it('holds lane weight to the thinner cap (3) and on-screen floor (0.35)', () => {
+    expect(laneWidth(1e9, 1)).toBeCloseTo(3, 6);      // magnitude cap halved 6 -> 3
+    expect(laneWidth(100, 100)).toBeCloseTo(0.35, 6); // on-screen floor 0.5 -> 0.35
+  });
 });
 
 describe('planPathPoints', () => {

@@ -28,6 +28,7 @@ export function TradeFlowsView() {
   const drilldownSystem = useFlowStore((s) => s.drilldownSystem);
   const closeDrilldown = useFlowStore((s) => s.closeDrilldown);
   const error = useFlowStore((s) => s.error);
+  const freshness = useFlowStore((s) => s.freshness);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -62,7 +63,7 @@ export function TradeFlowsView() {
 
       {/* Layer toggles */}
       <div className="absolute bottom-4 left-44 flex gap-1 rounded p-1" style={{ background: NOIR.panel }}>
-        {(['lanes', 'paths', 'ships'] as const).map((k) => (
+        {(['lanes', 'paths', 'ships', 'freshness'] as const).map((k) => (
           <button
             key={k}
             onClick={() => toggleLayer(k)}
@@ -94,6 +95,7 @@ export function TradeFlowsView() {
           selectedFlowId={selectedFlowId}
           onSelectFlow={selectFlow}
           onClose={closeDrilldown}
+          freshness={freshness?.systems.find((s) => s.system === drilldownSystem) ?? null}
         />
       )}
       <FeedLostChip feedLost={live?.feedLost ?? false} lastPlanAt={lastPlanAt} nowMs={nowMs} />

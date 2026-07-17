@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LaneRecord, LiveFlow } from '../../types/flows';
+import type { LaneRecord, LiveFlow, SystemFreshnessRecord } from '../../types/flows';
 import type { Waypoint } from '../../types/spacetraders';
 import { NOIR } from '../../theme/noir';
+import { freshnessColor } from './freshness';
 import { getWaypoints } from '../../services/api/systems';
 import { useRafClock } from '../../hooks/useRafClock';
 import { classifyLaneForSystem, residentFlows } from './drilldownGeometry';
@@ -17,6 +18,7 @@ interface Props {
   selectedFlowId: string | null;
   onSelectFlow: (containerId: string) => void;
   onClose: () => void;
+  freshness?: SystemFreshnessRecord | null;
 }
 
 // System drilldown v2: fetches the clicked system's waypoints (real intra-system
@@ -24,7 +26,7 @@ interface Props {
 // with the actual realized trade routes, resident hulls, and daemon intent. The
 // fetch/compose lives here; the geometry is pure (drilldownGeometry) and the canvas
 // is DrilldownScene (Konva). The HOME badge shows when this is the headquarters.
-export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLost, selectedFlowId, onSelectFlow, onClose }: Props) {
+export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLost, selectedFlowId, onSelectFlow, onClose, freshness }: Props) {
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +78,16 @@ export function SystemDrilldown({ systemSymbol, lanes, flows, homeSystem, feedLo
         feedLost={feedLost}
         onClose={onClose}
       />
+
+      {/* Sensor line: solver visibility for this system (freshness endpoint). */}
+      {freshness && (
+        <div className="px-4 pb-1 text-xs" style={{ color: NOIR.muted, background: NOIR.bg0 }}>
+          Sensor: <span style={{ color: freshnessColor(freshness.freshnessPct) }}>{freshness.freshnessPct}%</span> fresh
+          {' '}({freshness.freshListings}/{freshness.totalListings} listings
+          {freshness.freshestAt ? `, freshest ${Math.round((Date.now() - Date.parse(freshness.freshestAt)) / 60000)}m ago` : ''})
+          {freshness.scoutPost ? ` · post: ${freshness.scoutPost.status}${freshness.scoutPost.hull ? ` (${freshness.scoutPost.hull})` : ''}` : ''}
+        </div>
+      )}
 
       <div ref={bodyRef} className="relative flex-1" style={{ background: NOIR.bg0 }}>
         {hasScene && (

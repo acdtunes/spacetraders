@@ -4,6 +4,7 @@ import type {
   LiveFlowsResponse,
   LiveFlow,
   FlowWindow,
+  FreshnessResponse,
 } from '../types/flows';
 import type { Waypoint, WaypointType } from '../types/spacetraders';
 
@@ -184,6 +185,24 @@ export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
 // The feed-loss scenario: no flows, no intent, flagged.
 export function mockFeedLostResponse(nowMs: number): LiveFlowsResponse {
   return { flows: [], generatedAt: new Date(nowMs).toISOString(), feedLost: true, lastPlanAt: null };
+}
+
+// Ramp-spanning freshness demo (spec §6): three sensed systems staggered along
+// the 0-100% solver-visibility ramp with distinct scout-post states, plus one
+// demo system (X1-UU57) deliberately omitted so it renders dark/unsensed —
+// no halo, no marker. freshestAt is anchored to the caller clock so the "Nm ago"
+// drilldown line reads plausibly.
+export function mockFreshness(): FreshnessResponse {
+  return {
+    systems: [
+      { system: 'X1-NK36', totalListings: 42, freshListings: 40, freshnessPct: 95, freshestAt: new Date(Date.now() - 4 * 60_000).toISOString(), scoutPost: { status: 'manned', hull: 'TORWIND-9', kind: 'standing' } },
+      { system: 'X1-KA42', totalListings: 60, freshListings: 30, freshnessPct: 50, freshestAt: new Date(Date.now() - 38 * 60_000).toISOString(), scoutPost: { status: 'relay', hull: null, kind: 'standing' } },
+      { system: 'X1-ZC66', totalListings: 31, freshListings: 3, freshnessPct: 10, freshestAt: new Date(Date.now() - 71 * 60_000).toISOString(), scoutPost: { status: 'unmanned', hull: null, kind: 'standing' } },
+      // X1-UU57 deliberately absent: unsensed — no halo, no marker.
+    ],
+    staleAfterMinutes: 75,
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 // Per-system waypoints with real intra-system x/y (±~500), so the demo drilldown
