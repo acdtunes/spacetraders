@@ -2084,10 +2084,69 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 		}
 	}
 
+	// sp-wn8u: reconcile the persisted fleet to the live source of truth. The
+	// upsert above only ADDS/UPDATES the ships GET /my/ships returned; it never
+	// removed rows the live API no longer reports, so stale rows lingered forever:
+	//   (1) a hull sold/destroyed within the current era, and
+	//   (2) — the sp-wn8u incident — a PRIOR ERA's fleet. The agent re-registers
+	//       on every server reset under a NEW players row (new player_id) for the
+	//       SAME agent_symbol, and ship symbols are REUSED across eras (TORWIND-2B
+	//       was a heavy freighter last era, a probe this era). A dead-era player
+	//       row carries a dead token, so its own SyncAllFromAPI fails and its ship
+	//       rows are never revisited — they persist as ghosts. Any read that
+	//       aggregates by agent_symbol (not the exact live player_id) then unions
+	//       the live fleet with dead-era rows and reads a stale frame_symbol (the
+	//       operator's "19 heavies" = 9 live + 10 dead-era). ListShips is fully
+	//       paginated and returns error-or-complete, so a successful, non-empty
+	//       response IS the authoritative fleet: every ships row for this agent
+	//       that is not one we just upserted under playerID is stale. At most one
+	//       player_id per agent_symbol can hold a live token at a time
+	//       (re-registration invalidates the old one), so deleting the agent's
+	//       other-era rows is safe. FK-safe: nothing references ships (assignment
+	//       data is denormalized into the row).
+	if err := r.reconcileFleetToLive(ctx, playerID, shipsData); err != nil {
+		// Non-fatal: the upsert already persisted the live fleet correctly; a
+		// failed prune merely leaves ghosts for the next sync to clear, so it must
+		// not fail the whole sync. Logged loudly so a persistent failure surfaces.
+		log.Printf("Warning: failed to reconcile stale ships for player %d: %v", playerID.Value(), err)
+	}
+
 	// Invalidate cache
 	r.shipListCache.Delete(playerID.Value())
 
 	return len(models), nil
+}
+
+// reconcileFleetToLive deletes every ships row belonging to playerID's agent
+// that is NOT part of the live fleet just synced under playerID — the durable
+// half of the sp-wn8u fix (see the call-site comment for the full root cause).
+// The keep-set is derived from the raw live API response, not the post-convert
+// models, so a transient per-ship conversion failure can never delete a
+// genuinely-live hull. Guarded to never prune on an empty live fleet: a live
+// agent always has >=1 ship, so an empty set signals a bad/partial fetch we
+// refuse to act on destructively.
+func (r *ShipRepository) reconcileFleetToLive(ctx context.Context, playerID shared.PlayerID, live []*navigation.ShipData) error {
+	if len(live) == 0 {
+		return nil
+	}
+	liveSymbols := make([]string, 0, len(live))
+	for _, d := range live {
+		liveSymbols = append(liveSymbols, d.Symbol)
+	}
+	// Delete everything for this agent (all eras) except the live rows we just
+	// wrote under playerID. The agent is resolved from the DB, not the caller,
+	// so it stays correct even when the player token/struct is supplied by a
+	// thin caller that only carries the id.
+	return r.db.WithContext(ctx).Exec(
+		`DELETE FROM ships
+		 WHERE player_id IN (
+		     SELECT id FROM players WHERE agent_symbol = (
+		         SELECT agent_symbol FROM players WHERE id = ?
+		     )
+		 )
+		 AND NOT (player_id = ? AND ship_symbol IN (?))`,
+		playerID.Value(), playerID.Value(), liveSymbols,
+	).Error
 }
 
 // SyncShipFromAPI fetches a single ship from API and persists to database
