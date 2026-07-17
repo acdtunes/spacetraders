@@ -84,10 +84,11 @@ func buildTourFlow(cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, curre
 			from = plan.Legs[currentLegIdx-1].Waypoint
 		}
 		currentLeg = &flowfeed.Leg{
-			From:       from,
-			To:         plan.Legs[currentLegIdx].Waypoint,
-			DepartedAt: now,
-			ArrivesAt:  arrivesAt,
+			From:          from,
+			To:            plan.Legs[currentLegIdx].Waypoint,
+			DepartedAt:    now,
+			ArrivesAt:     arrivesAt,
+			TravelSeconds: plan.Legs[currentLegIdx].TravelSecondsFromPrev,
 		}
 		remaining = plan.Legs[currentLegIdx+1:]
 	}

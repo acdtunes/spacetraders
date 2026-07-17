@@ -3,6 +3,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import { computeGalaxyLayout, layoutWithAnchors, type AnchoredNode } from '../utils/galaxyLayout.js';
 import { aggregateLanes, rollupSystemLanes, rollupSystemActivity } from '../utils/laneAggregation.js';
+import { mergeFills } from '../utils/fills.js';
 import { homeSystemFromHeadquarters } from '../utils/homeSystem.js';
 import { currentEraId, resolveSystemCoords } from '../utils/systemCoords.js';
 import { shapeFreshnessResponse } from '../utils/freshness.js';
@@ -175,14 +176,14 @@ router.get('/lanes', async (req, res) => {
 
     const telemetryResult = await client.query(`
       SELECT tour_id, ship_symbol, leg_index, waypoint, is_buy,
-             realized_units, realized_unit_price, realized_at
+             realized_units, realized_unit_price, realized_at, good
       FROM tour_leg_telemetry
       WHERE realized_at IS NOT NULL AND realized_at >= $1
       ORDER BY tour_id, ship_symbol, leg_index, realized_at
     `, [sinceIso]);
 
     const arbResult = await client.query(`
-      SELECT buy_market, sell_market, units_sold, actual_net_profit, executed_at
+      SELECT buy_market, sell_market, units_sold, actual_net_profit, executed_at, good_symbol
       FROM arbitrage_execution_logs
       WHERE success = true AND executed_at >= $1
     `, [sinceIso]);
@@ -196,6 +197,7 @@ router.get('/lanes', async (req, res) => {
       realizedUnits: Number(r.realized_units) || 0,
       realizedUnitPrice: Number(r.realized_unit_price) || 0,
       realizedAt: new Date(r.realized_at).toISOString(),
+      good: r.good,
     }));
     const arb = arbResult.rows.map((r: any) => ({
       buyMarket: r.buy_market,
@@ -203,6 +205,7 @@ router.get('/lanes', async (req, res) => {
       unitsSold: Number(r.units_sold) || 0,
       actualNetProfit: Number(r.actual_net_profit) || 0,
       executedAt: new Date(r.executed_at).toISOString(),
+      goodSymbol: r.good_symbol,
     }));
 
     const lanes = aggregateLanes(telemetry, arb, windowStartMs, windowEndMs);
@@ -276,7 +279,7 @@ router.get('/live', async (_req, res) => {
       const result = await client.query(`
         SELECT ship_symbol, nav_status, system_symbol, location_symbol,
                location_x, location_y, arrival_time,
-               origin_symbol, origin_x, origin_y, departure_time
+               origin_symbol, origin_x, origin_y, departure_time, cargo_capacity
         FROM ships
         WHERE ship_symbol = ANY($1)
       `, [shipSymbols]);
@@ -322,6 +325,7 @@ router.get('/live', async (_req, res) => {
               originX: nav.origin_x !== null && nav.origin_x !== undefined ? Number(nav.origin_x) : null,
               originY: nav.origin_y !== null && nav.origin_y !== undefined ? Number(nav.origin_y) : null,
               departureTime: nav.departure_time ? new Date(nav.departure_time).toISOString() : null,
+              cargoCapacity: nav.cargo_capacity !== null && nav.cargo_capacity !== undefined ? Number(nav.cargo_capacity) : null,
             }
           : null,
       };
@@ -383,6 +387,37 @@ router.get('/freshness', async (_req, res) => {
     });
   } catch (error: any) {
     console.error('Failed to build flows freshness:', error?.message ?? error);
+    res.status(503).json({ error: 'db_unavailable' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// ---- GET /api/flows/fills?limit=30 -------------------------------------------
+// Recent realized trades (tour-leg fills + arb executions), newest first — the
+// galaxy view's ambient ticker. Read-only, tiny LIMIT, no window param.
+router.get('/fills', async (req, res) => {
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
+  let client;
+  try {
+    client = await pool.connect();
+    const tele = await client.query(`
+      SELECT id, ship_symbol, good, is_buy, realized_units, realized_unit_price, waypoint, realized_at
+      FROM tour_leg_telemetry
+      WHERE realized_at IS NOT NULL
+      ORDER BY realized_at DESC
+      LIMIT $1
+    `, [limit]);
+    const arb = await client.query(`
+      SELECT id, ship_symbol, good_symbol, units_sold, actual_net_profit, sell_market, executed_at
+      FROM arbitrage_execution_logs
+      WHERE success = true
+      ORDER BY executed_at DESC
+      LIMIT $1
+    `, [limit]);
+    res.json({ fills: mergeFills(tele.rows, arb.rows, limit), generatedAt: new Date().toISOString() });
+  } catch (error: any) {
+    console.error('Failed to build flows fills:', error?.message ?? error);
     res.status(503).json({ error: 'db_unavailable' });
   } finally {
     if (client) client.release();

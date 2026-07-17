@@ -217,3 +217,18 @@ func TestBuildArbAndTradeRouteFlows_DeriveHopSystem(t *testing.T) {
 		t.Errorf("trade-route hop = %q/%d, want X1-DD/0", tf.RemainingHops[0].System, tf.RemainingHops[0].TravelSeconds)
 	}
 }
+
+func TestBuildTourFlow_CurrentLegCarriesPlannedTravelSeconds(t *testing.T) {
+	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	arrives := now.Add(7 * time.Minute)
+
+	f := buildTourFlow(cmd, tourPlanFixture(), 1, arrives, nil, now)
+
+	if f.CurrentLeg == nil {
+		t.Fatal("leg 1 in progress must yield a currentLeg")
+	}
+	if f.CurrentLeg.TravelSeconds != 420 {
+		t.Errorf("currentLeg.travelSeconds = %d, want 420 (leg 1's TravelSecondsFromPrev)", f.CurrentLeg.TravelSeconds)
+	}
+}

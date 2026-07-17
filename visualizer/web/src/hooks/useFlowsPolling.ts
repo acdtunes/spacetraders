@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { useFlowStore } from '../store/flowStore';
-import { getFlowsLive, getFlowLanes, getFlowTopology, getFlowFreshness } from '../services/api/flows';
+import { getFlowsLive, getFlowLanes, getFlowTopology, getFlowFreshness, getFlowFills } from '../services/api/flows';
 
 const LIVE_INTERVAL_MS = 5000;
 const LANES_INTERVAL_MS = 30000;
 const FRESHNESS_INTERVAL_MS = 60000;
+const FILLS_INTERVAL_MS = 15000;
 
 export function useFlowsPolling() {
   const window = useFlowStore((s) => s.window);
@@ -14,6 +15,7 @@ export function useFlowsPolling() {
   const setError = useFlowStore((s) => s.setError);
   const setFreshness = useFlowStore((s) => s.setFreshness);
   const freshnessPollFailed = useFlowStore((s) => s.freshnessPollFailed);
+  const setFills = useFlowStore((s) => s.setFills);
 
   // Topology once per mount.
   useEffect(() => {
@@ -63,4 +65,18 @@ export function useFlowsPolling() {
     const id = setInterval(tick, FRESHNESS_INTERVAL_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [setFreshness, freshnessPollFailed]);
+
+  // Fills every 15s — the ambient ticker. Purely decorative, so a failed poll is
+  // silently skipped: no setError, no counter, no honest-degradation signalling.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      getFlowFills()
+        .then((f) => { if (!cancelled) setFills(f); })
+        .catch(() => { /* silent skip — the ticker just misses this beat */ });
+    };
+    tick();
+    const id = setInterval(tick, FILLS_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [setFills]);
 }

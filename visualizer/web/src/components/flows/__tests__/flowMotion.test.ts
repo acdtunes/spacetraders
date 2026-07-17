@@ -28,7 +28,7 @@ const iso = (deltaSec: number) => new Date(NOW + deltaSec * 1000).toISOString();
 
 const nav = (over: Partial<NonNullable<LiveFlow['shipNav']>>): NonNullable<LiveFlow['shipNav']> => ({
   status: 'IN_ORBIT', systemSymbol: 'X1-AA', waypointSymbol: 'X1-AA-M1', x: 0, y: 0,
-  arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null, ...over,
+  arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null, cargoCapacity: null, ...over,
 });
 const flow = (over: Partial<LiveFlow>): LiveFlow => ({
   containerId: 'tour-1', program: 'tour', ship: 'SHIP-1', tourId: 'tour-1', closed: false,
@@ -50,7 +50,7 @@ describe('graph helpers', () => {
   });
   it('buildStops puts the current leg destination first, then remaining hops', () => {
     const f = flow({
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-60), arrivesAt: iso(60) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-60), arrivesAt: iso(60), travelSeconds: 0 },
       remainingHops: [hop('X1-CC-M1', 'X1-CC', 900, [])],
     });
     expect(buildStops(f)).toEqual([
@@ -77,7 +77,7 @@ describe('projectFlowMotion', () => {
 
   it('outbound half: in-transit toward own gate maps to [0, 0.5]', () => {
     const f = flow({
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-60), arrivesAt: iso(60) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-60), arrivesAt: iso(60), travelSeconds: 0 },
       remainingHops: [hop('X1-BB-M1', 'X1-BB', 420)],
       shipNav: nav({ status: 'IN_TRANSIT', waypointSymbol: 'X1-AA-G1', departureTime: iso(-60), arrivalTime: iso(60) }),
     });
@@ -91,7 +91,7 @@ describe('projectFlowMotion', () => {
 
   it('holds at 0.47 parked at own gate pre-jump', () => {
     const f = flow({
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-120), arrivesAt: iso(-10) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-120), arrivesAt: iso(-10), travelSeconds: 0 },
       remainingHops: [hop('X1-BB-M1', 'X1-BB', 420)],
       shipNav: nav({ status: 'IN_ORBIT', waypointSymbol: 'X1-AA-G1' }),
     });
@@ -101,7 +101,7 @@ describe('projectFlowMotion', () => {
 
   it('arrival half: in-transit FROM own gate completes the incoming edge [0.5, 1]', () => {
     const f = flow({
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(100) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(100), travelSeconds: 0 },
       remainingHops: [hop('X1-BB-M1', 'X1-BB', 420)],
       shipNav: nav({
         status: 'IN_TRANSIT', systemSymbol: 'X1-BB', waypointSymbol: 'X1-BB-M1',
@@ -116,7 +116,7 @@ describe('projectFlowMotion', () => {
 
   it('holds at 0.53 on the incoming edge during post-jump cooldown', () => {
     const f = flow({
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-CC-M1', departedAt: iso(-300), arrivesAt: iso(600) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-CC-M1', departedAt: iso(-300), arrivesAt: iso(600), travelSeconds: 0 },
       remainingHops: [hop('X1-CC-M1', 'X1-CC', 900)],
       shipNav: nav({ status: 'IN_ORBIT', systemSymbol: 'X1-BB', waypointSymbol: 'X1-BB-G1' }),
     });
@@ -133,7 +133,7 @@ describe('projectFlowMotion', () => {
     // forward teleport to the node then a backward teleport to the midpoint
     // when the gate→market flight started).
     const f = flow({
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(120) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(120), travelSeconds: 0 },
       shipNav: nav({ status: 'IN_ORBIT', systemSymbol: 'X1-BB', waypointSymbol: 'X1-BB-G1' }),
     });
     const m = projectFlowMotion(f, adj, gates, pos, NOW, 1)!;
@@ -146,7 +146,7 @@ describe('projectFlowMotion', () => {
     // Parked at our own gate but the current leg is intra-system: no jump
     // occurred, so a dwell at the node is correct (no phantom cooldown).
     const f = flow({
-      currentLeg: { from: 'X1-BB-M2', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(-10) },
+      currentLeg: { from: 'X1-BB-M2', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(-10), travelSeconds: 0 },
       shipNav: nav({ status: 'IN_ORBIT', systemSymbol: 'X1-BB', waypointSymbol: 'X1-BB-G1' }),
     });
     const m = projectFlowMotion(f, adj, gates, pos, NOW, 1)!;
@@ -171,7 +171,7 @@ describe('projectFlowMotion', () => {
   it('falls back to currentLeg timestamp lerp when shipNav is missing', () => {
     const f = flow({
       shipNav: null,
-      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-50), arrivesAt: iso(50) },
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-50), arrivesAt: iso(50), travelSeconds: 0 },
     });
     const m = projectFlowMotion(f, adj, gates, pos, NOW, 1)!;
     expect(m.mode).toBe('glide');

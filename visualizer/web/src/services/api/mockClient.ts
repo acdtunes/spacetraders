@@ -7,7 +7,7 @@ import {
   demoGateProgress,
   isSignalLossWindow,
 } from '../../mocks/demoEvents';
-import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse, mockFreshness, mockSystemWaypoints } from '../../mocks/mockFlows';
+import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse, mockFreshness, mockSystemWaypoints, mockFills, mockDenseGalaxy } from '../../mocks/mockFlows';
 import type { FlowWindow } from '../../types/flows';
 
 const DEFAULT_LIMIT = 20;
@@ -157,15 +157,22 @@ function demoBotRequest<T>(path: string, searchParams: URLSearchParams, nowMs: n
 // and lanes — which are PG-backed in production and survive daemon loss — keep
 // serving, so the tab degrades exactly as designed.
 function demoFlowsRequest<T>(path: string, searchParams: URLSearchParams, nowMs: number): T {
-  if (path === '/flows/topology') return mockTopology as T;
+  // VITE_MOCK_DENSE=1 swaps in the dense hairball galaxy for topology/lanes/live so the
+  // fleet-scale declutter (top-N artery lanes, whisper capillaries) can be exercised.
+  const dense = import.meta.env.VITE_MOCK_DENSE === '1';
+  if (path === '/flows/topology') return (dense ? mockDenseGalaxy(nowMs).topology : mockTopology) as T;
   if (path === '/flows/lanes') {
+    if (dense) return mockDenseGalaxy(nowMs).lanes as T;
     const w = (searchParams.get('window') as FlowWindow) || '6h';
     const window: FlowWindow = w === '1h' || w === '6h' || w === '24h' ? w : '6h';
     return mockLanes(window) as T;
   }
   if (path === '/flows/live') {
-    return (isSignalLossWindow(nowMs) ? mockFeedLostResponse(nowMs) : mockLiveFlows(nowMs)) as T;
+    if (isSignalLossWindow(nowMs)) return mockFeedLostResponse(nowMs) as T;
+    return (dense ? mockDenseGalaxy(nowMs).live : mockLiveFlows(nowMs)) as T;
   }
+  // The ambient ticker feed is served in both demo modes.
+  if (path === '/flows/fills') return mockFills(nowMs) as T;
   if (path === '/flows/freshness') return mockFreshness() as T;
   return {} as T;
 }

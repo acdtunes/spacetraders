@@ -54,6 +54,10 @@ type Leg struct {
 	To         string    `json:"to"`
 	DepartedAt time.Time `json:"departedAt"`
 	ArrivesAt  time.Time `json:"arrivesAt"`
+	// TravelSeconds is the planner's projected duration for THIS leg (0 = no
+	// plan-time estimate). With PlannedAt (stamped at leg-start publish) it
+	// anchors the galaxy view's schedule-drift glyph.
+	TravelSeconds int `json:"travelSeconds"`
 }
 
 // Projection is the run's projected economics.

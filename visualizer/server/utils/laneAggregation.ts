@@ -7,6 +7,7 @@ export interface TelemetryRow {
   realizedUnits: number;
   realizedUnitPrice: number;
   realizedAt: string; // ISO
+  good: string;
 }
 
 export interface ArbRow {
@@ -15,6 +16,7 @@ export interface ArbRow {
   unitsSold: number;
   actualNetProfit: number;
   executedAt: string; // ISO
+  goodSymbol: string;
 }
 
 export interface LaneRecord {
@@ -23,9 +25,24 @@ export interface LaneRecord {
   realizedUnits: number;
   realizedProfit: number;
   legCount: number;
+  // Per-good signed realized credits carried on this lane (sells +, buys −;
+  // arb credits its net). Internal accumulation, additive on the wire.
+  goods: Record<string, number>;
+}
+
+// Galaxy edge with a top-goods rollup for the shared hover tooltip.
+export interface SystemLaneRecord extends LaneRecord {
+  topGoods: { good: string; credits: number }[];
 }
 
 const key = (from: string, to: string) => `${from} ${to}`;
+
+// Fold one per-good signed delta into a running goods accumulator (in place).
+function mergeGoods(target: Record<string, number>, delta: Record<string, number>): void {
+  for (const [good, credits] of Object.entries(delta)) {
+    target[good] = (target[good] ?? 0) + credits;
+  }
+}
 
 // Fold telemetry legs + arb executions into directed waypoint lanes within the
 // window. Telemetry: per (tour, ship), rows collapse to one representative
@@ -39,12 +56,19 @@ export function aggregateLanes(
   windowEndMs: number,
 ): LaneRecord[] {
   const lanes = new Map<string, LaneRecord>();
-  const bump = (from: string, to: string, units: number, profit: number) => {
+  const bump = (
+    from: string,
+    to: string,
+    units: number,
+    profit: number,
+    goodsDelta: Record<string, number>,
+  ) => {
     const k = key(from, to);
-    const rec = lanes.get(k) ?? { from, to, realizedUnits: 0, realizedProfit: 0, legCount: 0 };
+    const rec = lanes.get(k) ?? { from, to, realizedUnits: 0, realizedProfit: 0, legCount: 0, goods: {} };
     rec.realizedUnits += units;
     rec.realizedProfit += profit;
     rec.legCount += 1;
+    mergeGoods(rec.goods, goodsDelta);
     lanes.set(k, rec);
   };
 
@@ -59,16 +83,17 @@ export function aggregateLanes(
   }
 
   for (const rows of groups.values()) {
-    const byLeg = new Map<number, { waypoint: string; value: number; units: number; firstAt: number }>();
+    const byLeg = new Map<number, { waypoint: string; value: number; units: number; firstAt: number; goods: Record<string, number> }>();
     for (const r of rows) {
       const signed = (r.isBuy ? -1 : 1) * r.realizedUnits * r.realizedUnitPrice;
       const at = Date.parse(r.realizedAt);
       const cur = byLeg.get(r.legIndex);
       if (!cur) {
-        byLeg.set(r.legIndex, { waypoint: r.waypoint, value: signed, units: r.realizedUnits, firstAt: at });
+        byLeg.set(r.legIndex, { waypoint: r.waypoint, value: signed, units: r.realizedUnits, firstAt: at, goods: { [r.good]: signed } });
       } else {
         cur.value += signed;
         cur.units += r.realizedUnits;
+        cur.goods[r.good] = (cur.goods[r.good] ?? 0) + signed;
         if (at < cur.firstAt) {
           cur.firstAt = at;
           cur.waypoint = r.waypoint;
@@ -80,7 +105,8 @@ export function aggregateLanes(
       const from = legs[i - 1].waypoint;
       const to = legs[i].waypoint;
       if (from === to) continue;
-      bump(from, to, legs[i].units, legs[i].value);
+      // The destination leg carries the lane's realized value and its goods map.
+      bump(from, to, legs[i].units, legs[i].value, legs[i].goods);
     }
   }
 
@@ -88,7 +114,7 @@ export function aggregateLanes(
     const at = Date.parse(a.executedAt);
     if (Number.isNaN(at) || at < windowStartMs || at > windowEndMs) continue;
     if (!a.buyMarket || !a.sellMarket || a.buyMarket === a.sellMarket) continue;
-    bump(a.buyMarket, a.sellMarket, a.unitsSold, a.actualNetProfit);
+    bump(a.buyMarket, a.sellMarket, a.unitsSold, a.actualNetProfit, { [a.goodSymbol]: a.actualNetProfit });
   }
 
   return [...lanes.values()].sort((a, b) => b.realizedProfit - a.realizedProfit);
@@ -108,20 +134,30 @@ export function systemOfWaypoint(wp: string): string {
 
 // Galaxy-level rollup: directed system→system lanes. Intra-system realizations
 // are excluded — they light the node (see rollupSystemActivity), not an edge.
-export function rollupSystemLanes(lanes: LaneRecord[]): LaneRecord[] {
-  const out = new Map<string, LaneRecord>();
+// Each edge carries a merged goods map and a top-3-by-|credits| topGoods list
+// for the shared hover tooltip.
+export function rollupSystemLanes(lanes: LaneRecord[]): SystemLaneRecord[] {
+  const out = new Map<string, SystemLaneRecord>();
   for (const l of lanes) {
     const from = systemOfWaypoint(l.from);
     const to = systemOfWaypoint(l.to);
     if (from === to) continue;
     const k = key(from, to);
-    const rec = out.get(k) ?? { from, to, realizedUnits: 0, realizedProfit: 0, legCount: 0 };
+    const rec = out.get(k) ?? { from, to, realizedUnits: 0, realizedProfit: 0, legCount: 0, goods: {}, topGoods: [] };
     rec.realizedUnits += l.realizedUnits;
     rec.realizedProfit += l.realizedProfit;
     rec.legCount += l.legCount;
+    mergeGoods(rec.goods, l.goods ?? {});
     out.set(k, rec);
   }
-  return [...out.values()].sort((a, b) => b.realizedProfit - a.realizedProfit);
+  const records = [...out.values()];
+  for (const rec of records) {
+    rec.topGoods = Object.entries(rec.goods)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .slice(0, 3)
+      .map(([good, credits]) => ({ good, credits }));
+  }
+  return records.sort((a, b) => b.realizedProfit - a.realizedProfit);
 }
 
 // Per-system realized activity in the window, credited to the system where the

@@ -25,7 +25,7 @@ describe('systemOf', () => {
 describe('projectFlowShip', () => {
   const baseFlow = (overrides: Partial<LiveFlow>): LiveFlow => ({
     containerId: 'c', program: 'tour', ship: 'S', tourId: null, closed: false,
-    currentLeg: { from: 'X1-NK36-A', to: 'X1-KA42-B', departedAt: '2026-07-11T00:00:00Z', arrivesAt: '2026-07-11T00:10:00Z' },
+    currentLeg: { from: 'X1-NK36-A', to: 'X1-KA42-B', departedAt: '2026-07-11T00:00:00Z', arrivesAt: '2026-07-11T00:10:00Z', travelSeconds: 0 },
     cargo: [], remainingHops: [], projected: null, plannedAt: '2026-07-11T00:00:00Z', shipNav: null,
     realized: { net: 0, lastEventAt: null },
     ...overrides,
@@ -51,7 +51,7 @@ describe('projectFlowShip', () => {
 
   it('returns the origin position for an intra-system leg', () => {
     const p = projectFlowShip(
-      baseFlow({ currentLeg: { from: 'X1-NK36-A', to: 'X1-NK36-B', departedAt: '2026-07-11T00:00:00Z', arrivesAt: '2026-07-11T00:10:00Z' } }),
+      baseFlow({ currentLeg: { from: 'X1-NK36-A', to: 'X1-NK36-B', departedAt: '2026-07-11T00:00:00Z', arrivesAt: '2026-07-11T00:10:00Z', travelSeconds: 0 } }),
       idx, Date.parse('2026-07-11T00:05:00Z'),
     );
     expect(p).toEqual(idx.get('X1-NK36'));
@@ -59,7 +59,7 @@ describe('projectFlowShip', () => {
 
   it('falls back to last-known shipNav system when no current leg', () => {
     const p = projectFlowShip(
-      baseFlow({ currentLeg: null, shipNav: { status: 'DOCKED', systemSymbol: 'X1-ZC66', waypointSymbol: 'X1-ZC66-C', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null } }),
+      baseFlow({ currentLeg: null, shipNav: { status: 'DOCKED', systemSymbol: 'X1-ZC66', waypointSymbol: 'X1-ZC66-C', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null, cargoCapacity: null } }),
       idx, Date.now(),
     );
     expect(p).toEqual(idx.get('X1-ZC66'));

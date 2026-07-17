@@ -95,3 +95,19 @@ describe('freshness state', () => {
     expect(useFlowStore.getState().freshness?.staleAfterMinutes).toBe(75);
   });
 });
+
+describe('fills + tooltip state', () => {
+  beforeEach(() => {
+    useFlowStore.setState(useFlowStore.getInitialState());
+  });
+
+  it('stores fills and tooltip round-trips', () => {
+    const s = useFlowStore.getState();
+    s.setFills({ fills: [{ id: 't-1', at: 'x', ship: 'S', good: 'IRON', isBuy: false, units: 1, credits: 5, waypoint: 'W' }], generatedAt: 'x' });
+    expect(useFlowStore.getState().fills?.fills[0].id).toBe('t-1');
+    s.setTooltip({ kind: 'system', key: 'X1-AA', x: 10, y: 20 });
+    expect(useFlowStore.getState().tooltip?.key).toBe('X1-AA');
+    s.setTooltip(null);
+    expect(useFlowStore.getState().tooltip).toBeNull();
+  });
+});
