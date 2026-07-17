@@ -19,7 +19,7 @@ describe('mockClient /flows dispatch', () => {
     const res = await mockRequest<LiveFlowsResponse>('/flows/live');
     expect(typeof res.feedLost).toBe('boolean');
     if (res.feedLost) expect(res.flows).toEqual([]);
-    else expect(res.flows.length).toBe(3);
+    else expect(res.flows.length).toBe(4);
   });
 
   it('serves the demo drilldown system waypoints to scale (incl. the jump gate)', async () => {

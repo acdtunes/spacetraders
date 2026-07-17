@@ -46,9 +46,9 @@ describe('TradeFlowsView layout (demo, fleet-stopped)', () => {
     render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
     act(() => {
       seed();
-      useFlowStore.getState().selectFlow('tour-run-TORWIND-19-086680f9');
+      useFlowStore.getState().selectFlow('tour-run-TORWIND-3-galaxyA');
     });
-    await waitFor(() => expect(screen.getByText('TORWIND-19')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('TORWIND-3')).toBeInTheDocument());
     expect(screen.getByText(/ADVANCED_CIRCUITRY/)).toBeInTheDocument();
   });
 

@@ -30,10 +30,15 @@ type Tranche struct {
 	ExpectedUnitPrice int    `json:"expectedUnitPrice"`
 }
 
-// Hop is a planned future stop with its intended tranches.
+// Hop is a planned future stop with its intended tranches. System tags the
+// stop's system so the galaxy view can chain cross-system glides;
+// TravelSeconds is the planner's projected travel time from the previous stop
+// (0 = no plan-time estimate — viewers fall back to nav-truth interpolation).
 type Hop struct {
-	Waypoint string    `json:"waypoint"`
-	Tranches []Tranche `json:"tranches"`
+	Waypoint      string    `json:"waypoint"`
+	System        string    `json:"system"`
+	TravelSeconds int       `json:"travelSeconds"`
+	Tranches      []Tranche `json:"tranches"`
 }
 
 // CargoItem is one good currently aboard the hull.
@@ -64,6 +69,7 @@ type Flow struct {
 	Program       string      `json:"program"`
 	Ship          string      `json:"ship"`
 	TourID        *string     `json:"tourId"`
+	Closed        bool        `json:"closed"` // closed-tour mode: the plan returns to its anchor (sp-im74)
 	CurrentLeg    *Leg        `json:"currentLeg"`
 	Cargo         []CargoItem `json:"cargo"`
 	RemainingHops []Hop       `json:"remainingHops"`

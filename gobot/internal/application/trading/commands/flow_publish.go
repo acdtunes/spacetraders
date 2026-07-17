@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
@@ -9,6 +10,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
+
+// waypointSystem derives "X1-AA" from "X1-AA-B2" (SECTOR-SYSTEM-WAYPOINT).
+// Non-conforming symbols pass through unchanged.
+func waypointSystem(wp string) string {
+	parts := strings.Split(wp, "-")
+	if len(parts) < 2 {
+		return wp
+	}
+	return parts[0] + "-" + parts[1]
+}
 
 // shipCargoItems maps the hull's current hold into the flow-feed cargo shape,
 // skipping empty slots. Returns a non-nil (possibly empty) slice.
@@ -44,6 +55,7 @@ func buildArbFlow(cmd *RunArbCoordinatorCommand, cargo []flowfeed.CargoItem, now
 		Cargo:       cargo,
 		RemainingHops: []flowfeed.Hop{{
 			Waypoint: cmd.SellAt,
+			System:   waypointSystem(cmd.SellAt),
 			Tranches: []flowfeed.Tranche{{
 				Good:              cmd.Good,
 				IsBuy:             false,
@@ -90,13 +102,19 @@ func buildTourFlow(cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, curre
 				ExpectedUnitPrice: tr.ExpectedUnitPrice,
 			})
 		}
-		hops = append(hops, flowfeed.Hop{Waypoint: leg.Waypoint, Tranches: tranches})
+		hops = append(hops, flowfeed.Hop{
+			Waypoint:      leg.Waypoint,
+			System:        leg.System,
+			TravelSeconds: leg.TravelSecondsFromPrev,
+			Tranches:      tranches,
+		})
 	}
 	return flowfeed.Flow{
 		ContainerID:   cmd.ContainerID,
 		Program:       flowfeed.ProgramTour,
 		Ship:          cmd.ShipSymbol,
 		TourID:        &tourID,
+		Closed:        cmd.ClosedTours,
 		CurrentLeg:    currentLeg,
 		Cargo:         cargo,
 		RemainingHops: hops,
@@ -124,6 +142,7 @@ func buildTradeRouteFlow(cmd *RunTradeRouteCoordinatorCommand, lane trading.Arbi
 		Cargo: cargo,
 		RemainingHops: []flowfeed.Hop{{
 			Waypoint: lane.DestWaypoint,
+			System:   waypointSystem(lane.DestWaypoint),
 			Tranches: []flowfeed.Tranche{{
 				Good:              lane.Good,
 				IsBuy:             false,

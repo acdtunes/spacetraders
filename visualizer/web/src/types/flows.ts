@@ -13,6 +13,8 @@ export interface FlowTranche {
 
 export interface FlowHop {
   waypoint: string;
+  system: string;          // hop's system (daemon-tagged; galaxy glide chaining)
+  travelSeconds: number;   // planned travel from previous stop; 0 = no estimate
   tranches: FlowTranche[];
 }
 
@@ -39,6 +41,7 @@ export interface DaemonFlow {
   program: FlowProgram;
   ship: string;
   tourId: string | null;
+  closed: boolean;
   currentLeg: FlowLeg | null;
   cargo: FlowCargoItem[];
   remainingHops: FlowHop[];
@@ -54,10 +57,22 @@ export interface FlowShipNav {
   x: number;               // ships.location_x
   y: number;               // ships.location_y
   arrivalTime: string | null; // ships.arrival_time
+  originSymbol: string | null;   // ships.origin_symbol (migration 040)
+  originX: number | null;
+  originY: number | null;
+  departureTime: string | null;  // ships.departure_time
+}
+
+// Signed realized-so-far from the container-attributed transaction ledger
+// (purchases negative, sells positive, refuels negative).
+export interface FlowRealized {
+  net: number;
+  lastEventAt: string | null;
 }
 
 export interface LiveFlow extends DaemonFlow {
   shipNav: FlowShipNav | null;
+  realized: FlowRealized;
 }
 
 export interface LiveFlowsResponse {
@@ -77,8 +92,16 @@ export interface LaneRecord {
   legCount: number;
 }
 
+export interface SystemActivityRecord {
+  system: string;
+  realizedProfit: number;
+  legCount: number;
+}
+
 export interface LanesResponse {
   lanes: LaneRecord[];
+  systemLanes: LaneRecord[];              // directed system→system (galaxy layer)
+  systemActivity: SystemActivityRecord[]; // node sizing/brightness
   window: FlowWindow;
   generatedAt: string;
 }
@@ -87,6 +110,7 @@ export interface TopologySystem {
   symbol: string;
   x: number;             // galaxy-scale layout coordinate (server-computed)
   y: number;
+  layout: 'real' | 'force';
 }
 
 export interface TopologyEdge {

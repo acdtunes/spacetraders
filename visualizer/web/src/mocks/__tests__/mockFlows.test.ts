@@ -22,14 +22,27 @@ describe('mockFlows fixtures', () => {
     }
   });
 
-  it('live fixture covers all three programs, each with a current leg', () => {
+  it('live fixture is the 4-flow galaxy demo (glide, closed loop, arb, deadhead)', () => {
     const res = mockLiveFlows(Date.parse('2026-07-11T00:00:00Z'));
     expect(res.feedLost).toBe(false);
+    expect(res.flows).toHaveLength(4);
     const programs = res.flows.map((f) => f.program).sort();
-    expect(programs).toEqual(['arb', 'tour', 'trade-route']);
-    for (const f of res.flows) {
-      expect(f.currentLeg).not.toBeNull();
-      expect(typeof f.plannedAt).toBe('string');
+    expect(programs).toEqual(['arb', 'tour', 'tour', 'tour']);
+    // A closed-tour loop is present, and a pure deadhead (all remaining hops trade-empty).
+    expect(res.flows.some((f) => f.closed)).toBe(true);
+    expect(
+      res.flows.some((f) => f.remainingHops.length > 0 && f.remainingHops.every((h) => h.tranches.length === 0)),
+    ).toBe(true);
+    for (const f of res.flows) expect(typeof f.plannedAt).toBe('string');
+  });
+
+  it('lanes fixture carries galaxy-layer rollups (directed systemLanes + destination-credited activity)', () => {
+    const res = mockLanes('6h');
+    expect(res.systemLanes.length).toBeGreaterThan(0);
+    expect(res.systemLanes.every((l) => systemOf(l.from) !== systemOf(l.to))).toBe(true); // no intra self-loops
+    expect(res.systemActivity.length).toBeGreaterThan(0);
+    for (let i = 1; i < res.systemActivity.length; i++) {
+      expect(res.systemActivity[i - 1].realizedProfit).toBeGreaterThanOrEqual(res.systemActivity[i].realizedProfit);
     }
   });
 

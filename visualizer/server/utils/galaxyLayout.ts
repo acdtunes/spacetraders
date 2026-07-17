@@ -92,3 +92,58 @@ export function computeGalaxyLayout(
 
   return sorted.map((s) => ({ symbol: s, x: Math.round(pos.get(s)!.x), y: Math.round(pos.get(s)!.y) }));
 }
+
+export type AnchoredNode = LayoutNode & { layout: 'real' | 'force' };
+
+// Place systems with real coordinates verbatim; anchor each unknown at the
+// centroid of its gate neighbours' REAL positions (deterministic hash jitter
+// so siblings sharing a neighbour set don't stack), or on a hash ring outside
+// the real spread when no neighbour is known. All-unknown degenerates to the
+// classic force layout.
+export function layoutWithAnchors(
+  real: Map<string, { x: number; y: number }>,
+  systems: string[],
+  edges: LayoutEdge[],
+): AnchoredNode[] {
+  const sorted = [...new Set(systems)].sort();
+  if (real.size === 0) {
+    return computeGalaxyLayout(sorted, edges).map((n) => ({ ...n, layout: 'force' as const }));
+  }
+
+  const neighbours = new Map<string, string[]>();
+  const push = (k: string, v: string) => {
+    const arr = neighbours.get(k);
+    if (arr) arr.push(v);
+    else neighbours.set(k, [v]);
+  };
+  for (const e of edges) {
+    if (e.from === e.to) continue;
+    push(e.from, e.to);
+    push(e.to, e.from);
+  }
+
+  const reals = [...real.values()];
+  const cx = reals.reduce((s, p) => s + p.x, 0) / reals.length;
+  const cy = reals.reduce((s, p) => s + p.y, 0) / reals.length;
+  let spread = 0;
+  for (const p of reals) spread = Math.max(spread, Math.hypot(p.x - cx, p.y - cy));
+  if (spread === 0) spread = 1000;
+
+  return sorted.map((sym) => {
+    const r = real.get(sym);
+    if (r) return { symbol: sym, x: Math.round(r.x), y: Math.round(r.y), layout: 'real' as const };
+    const h = hashSymbol(sym);
+    const angle = ((h % 360) / 360) * Math.PI * 2;
+    const anchored = (neighbours.get(sym) ?? [])
+      .map((n) => real.get(n))
+      .filter((p): p is { x: number; y: number } => Boolean(p));
+    if (anchored.length > 0) {
+      const ax = anchored.reduce((s, p) => s + p.x, 0) / anchored.length;
+      const ay = anchored.reduce((s, p) => s + p.y, 0) / anchored.length;
+      const jr = spread * 0.06 + ((h >>> 9) % 100);
+      return { symbol: sym, x: Math.round(ax + Math.cos(angle) * jr), y: Math.round(ay + Math.sin(angle) * jr), layout: 'force' as const };
+    }
+    const ring = spread * 1.15 + ((h >>> 9) % 200);
+    return { symbol: sym, x: Math.round(cx + Math.cos(angle) * ring), y: Math.round(cy + Math.sin(angle) * ring), layout: 'force' as const };
+  });
+}

@@ -10,7 +10,7 @@ describe('flowStore', () => {
   it('setLive stores flows and updates sticky lastPlanAt on a live feed', () => {
     const res = mockLiveFlows(Date.parse('2026-07-11T00:00:00Z'));
     useFlowStore.getState().setLive(res);
-    expect(useFlowStore.getState().live?.flows).toHaveLength(3);
+    expect(useFlowStore.getState().live?.flows).toHaveLength(4);
     expect(useFlowStore.getState().lastPlanAt).toBe(res.lastPlanAt);
   });
 
