@@ -1131,6 +1131,23 @@ func run(cfg *config.Config) error {
 	// so `spacetraders tune` retunes the spend/cooldown/cap knobs on the next tick —
 	// no restart, no rebuild.
 	frontierExpansionHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	// sp-6vep reuse-before-buy the deep frontier (DEFAULT-OFF until armed next era). The
+	// ProbeReuseRelayer hops an EXISTING edge probe onto a target virgin instead of buying at an
+	// unreachable deep yard: it selects the nearest scout probe within edge_relay_max_hops sitting in
+	// a below-ceiling system (never cannibalizing a high-value core market — the depth-vs-freshness
+	// guard) and relays it over the SAME reposition path the scout reconciler uses
+	// (tradeRouteCoordinatorHandler). The FrontierNeighborScanner feeds the snowball walk — a charted
+	// system's uncharted gate-neighbors. Both are inert while probe_reuse_enabled / snowball_neighbors
+	// stay at their default 0, so a merge is byte-identical to today's buy-only path.
+	frontierExpansionHandler.SetProbeReuseRelayer(expansionAdapters.NewProbeReuseRelayer(
+		shipRepo,
+		gateGraphService,
+		expansionAdapters.NewMarketSystemValueReader(marketRepoAdapter),
+		expansionAdapters.NewRepositionerRelayDispatcher(tradeRouteCoordinatorHandler, gateGraphService),
+	))
+	frontierExpansionHandler.SetFrontierNeighborReader(expansionAdapters.NewFrontierNeighborScanner(
+		gateGraphService, marketRepoAdapter,
+	))
 	// sp-a3yn slice C: connect the off-gate BUY seam (mirror each tick's signal into the bridge the
 	// autosizer's explorer provider reads) and the explorer DISPATCH seam (warp a bought+dedicated
 	// idle explorer to the off-gate target via slice-A ExecuteWarpRoute; on arrival slice A charts the

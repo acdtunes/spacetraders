@@ -140,6 +140,44 @@ const (
 	// <=0 fallback for it (a `tune scan_only 0` must revert to OFF, not read as "unset → default").
 	defaultScanOnly = 0
 
+	// --- sp-6vep: reuse-before-buy the deep frontier (edge-probe relay) ------------------
+	// The coordinator is PURCHASE-ANCHORED: it staffs a frontier post by BUYING a probe at a
+	// yard near the target and relaying a BUYER there. At the deep edge no yard/buyer is
+	// reachable ("no jump-gate route from VB74 to BK75 within 5 jumps"), so the posts jam the
+	// in-flight cap with NO timeout — permanent deadlock, discovery 0. The retrofit teaches
+	// the coordinator to REUSE an existing edge probe (relay it ~1 hop from the charted edge
+	// to the virgin) before buying, anchors relay-reach to the nearest usable probe (not the
+	// far fixed buyer home), snowballs onto the freshly-charted system's neighbors, and reaps
+	// wedged posts on a timeout. EVERY knob below is DEFAULT-SAFE: it resolves to today's
+	// buy-only behavior, so a merge is byte-identical until armed next era.
+	//
+	// defaultProbeReuseEnabled is the reuse master switch. 0 (OFF) = today's buy-only path,
+	// byte-identical; next era arms it to 1. NO <=0 fallback (0 IS the default, like scan_only
+	// / max_probe_price), so `tune probe_reuse_enabled 0` genuinely disarms.
+	defaultProbeReuseEnabled = 0
+	// defaultEdgeRelayMaxHops bounds how far an EXISTING probe may be relayed to a post — the
+	// reach measured FROM the nearest edge probe TO the target (~1 for the queued virgins),
+	// replacing the fixed 5-jump-from-buyer wall. ~3 (the bead). It is INERT while reuse is
+	// off, so the nonzero default is safe; it takes a <=0 fallback like proximal_yard_hop_penalty.
+	defaultEdgeRelayMaxHops = 3
+	// defaultReuseValueCeiling is the depth-vs-freshness judgment: reuse BORROWS a probe only
+	// off a system whose trade-value is BELOW this, cannibalizing low-value deep-edge freshness
+	// to fund exploration and NEVER stripping a probe off a high-value core market. 0 (the
+	// default) = borrow off NO system, so an armed-but-unceilinged reuse is a safe no-op until
+	// the operator sets a real ceiling. NO <=0 fallback (0 IS the default).
+	defaultReuseValueCeiling = 0
+	// defaultSnowballNeighbors toggles the walk-outward: after a relayed probe charts a virgin
+	// S, auto-enqueue S's uncharted gate-neighbors as the next targets, so one probe walks the
+	// frontier outward. 0 (OFF) = today's one-head-per-cycle behavior. NO <=0 fallback.
+	defaultSnowballNeighbors = 0
+	// defaultPostInflightTimeoutSecs is the NO-TIMEOUT deadlock fix (also a live bug on its own):
+	// an unmanned, relay-free in-flight sweep-once post older than this is ABANDONED (removed),
+	// freeing its in-flight slot so declaration never jams permanently at the cap. 0 (the
+	// default) = DISABLED — no post is ever reaped, byte-identical to today. It is INDEPENDENT
+	// of probe_reuse_enabled (its own gate), so the reap applies regardless of reuse. NO <=0
+	// fallback (0 IS the default).
+	defaultPostInflightTimeoutSecs = 0
+
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
 	rankingLogLimit = 10
@@ -315,6 +353,51 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// default). resolveConfig folds it into DiscoveryShare; nothing else reads it. Prefer
 	// discovery_share.
 	ScanOnly int
+
+	// sp-6vep reuse-before-buy knobs, all live-tunable (FrontierTunableDefaults) and DEFAULT-SAFE
+	// (0 => today's buy-only behavior). ProbeReuseEnabled and SnowballNeighbors are 0/1 flags;
+	// EdgeRelayMaxHops is a hop bound (~3); ReuseValueCeiling is credits; PostInflightTimeoutSecs
+	// is seconds. Resolved in resolveConfig, threaded from persisted config in the command factory.
+	ProbeReuseEnabled       int // 0 = OFF (buy-only, byte-identical), 1 = armed (reuse before buy)
+	EdgeRelayMaxHops        int // max hops to relay an EXISTING probe to a post (reach from the nearest probe)
+	ReuseValueCeiling       int // only borrow a probe off a system whose trade-value is BELOW this (0 = none)
+	SnowballNeighbors       int // 0 = OFF, 1 = walk outward: enqueue a charted system's uncharted neighbors
+	PostInflightTimeoutSecs int // abandon an unmanned in-flight sweep-once post older than this (0 = disabled)
+}
+
+// ProbeReuseTarget is the reuse-relay request (sp-6vep): relay the nearest EXISTING probe to
+// System, bounded by MaxHops (reach measured from the probe, not the buyer home), borrowing only
+// off a system whose trade-value is below ValueCeiling. It mirrors probebuy.ProbeTarget — the
+// caller bundles its tunables into the target so the port stays a single narrow call.
+type ProbeReuseTarget struct {
+	System       string
+	MaxHops      int
+	ValueCeiling int
+}
+
+// ProbeReuseRelayer relays an EXISTING probe from the charted frontier edge to a target virgin,
+// the reuse-before-buy path that fixes the deep-frontier deadlock (sp-6vep): instead of buying a
+// probe at an unreachable deep yard and relaying a BUYER there, it hops a probe already parked at
+// the edge (~1 gate) onto the target. Relay-reach is anchored to the nearest usable probe, so
+// "unreachable within 5 jumps of the buyer home" becomes "one hop from the edge". A nil relayer
+// (unwired, or reuse disarmed) leaves the coordinator byte-identical to the buy-only path.
+type ProbeReuseRelayer interface {
+	// RelayNearestProbe relays the nearest reusable probe to target.System within target.MaxHops,
+	// borrowing only off a system whose trade-value is below target.ValueCeiling. It returns
+	// (shipSymbol, true, nil) on a committed relay; ("", false, nil) when no reusable probe is
+	// within reach / under the ceiling (the coordinator then falls back to buying); a non-nil
+	// error fails the staffing closed for this target (the coordinator logs and does not buy blind).
+	RelayNearestProbe(ctx context.Context, playerID shared.PlayerID, target ProbeReuseTarget) (shipSymbol string, ok bool, err error)
+}
+
+// FrontierNeighborReader answers the snowball walk (sp-6vep): the uncharted gate-neighbors of a
+// system the frontier has CHARTED. A still-virgin system has no persisted gate edges, so it yields
+// none — the reader self-gates the walk to genuinely-charted systems. A nil reader (unwired, or
+// snowball disarmed) makes the walk a no-op.
+type FrontierNeighborReader interface {
+	// UnchartedNeighbors returns systemSymbol's gate-adjacent systems that are NOT yet charted —
+	// the next ring a probe walks onto after charting systemSymbol.
+	UnchartedNeighbors(ctx context.Context, playerID int, systemSymbol string) ([]string, error)
 }
 
 // RunFrontierExpansionCoordinatorResponse reports reconcile progress. Because the loop
@@ -383,6 +466,13 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	// unwired. Wired + driven in off_gate_dispatch.go.
 	offGateSink      OffGateDemandSink
 	explorerDispatch ExplorerDispatchPort
+
+	// sp-6vep reuse-before-buy. reuseRelayer hops an EXISTING edge probe onto a target virgin
+	// (the deadlock fix); neighborReader answers the snowball walk. BOTH optional-injection: a nil
+	// relayer/reader — or the DEFAULT-SAFE knobs (reuse/snowball OFF) — makes their hooks no-ops, so
+	// the coordinator is byte-identical to the buy-only path until armed next era. Wired in main.go.
+	reuseRelayer   ProbeReuseRelayer
+	neighborReader FrontierNeighborReader
 }
 
 // NewRunFrontierExpansionCoordinatorHandler wires the coordinator. clock defaults to
@@ -437,6 +527,19 @@ func (h *RunFrontierExpansionCoordinatorHandler) SetEventRecorder(rec captain.Ev
 // tick. Leaving it unset keeps every knob launch-frozen (the pre-sp-vwek behavior).
 func (h *RunFrontierExpansionCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
 	h.liveConfig = r
+}
+
+// SetProbeReuseRelayer wires the reuse-before-buy edge-probe relayer (sp-6vep). Leaving it unset
+// — or leaving probe_reuse_enabled at its default 0 — keeps the coordinator on the buy-only path,
+// byte-identical to today.
+func (h *RunFrontierExpansionCoordinatorHandler) SetProbeReuseRelayer(r ProbeReuseRelayer) {
+	h.reuseRelayer = r
+}
+
+// SetFrontierNeighborReader wires the snowball walk's uncharted-neighbor source (sp-6vep). Leaving
+// it unset — or leaving snowball_neighbors at its default 0 — makes the walk a no-op.
+func (h *RunFrontierExpansionCoordinatorHandler) SetFrontierNeighborReader(r FrontierNeighborReader) {
+	h.neighborReader = r
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -522,6 +625,12 @@ func FrontierTunableDefaults() map[string]int {
 		// scan_only (sp-jide) is the DEPRECATED binary alias, superseded by discovery_share. Kept so
 		// a persisted scan_only value still resolves to the equivalent share; prefer discovery_share.
 		"scan_only": defaultScanOnly,
+		// sp-6vep reuse-before-buy the deep frontier. All DEFAULT-SAFE (0 => today's buy-only path).
+		"probe_reuse_enabled":        defaultProbeReuseEnabled,
+		"edge_relay_max_hops":        defaultEdgeRelayMaxHops,
+		"reuse_value_ceiling":        defaultReuseValueCeiling,
+		"snowball_neighbors":         defaultSnowballNeighbors,
+		"post_inflight_timeout_secs": defaultPostInflightTimeoutSecs,
 	}
 }
 
@@ -554,6 +663,14 @@ type frontierConfig struct {
 	// DiscoveryShare (sp-pvw3) is the effective 0-100 discovery/scan split for this tick, already
 	// folded from the discovery_share knob and the deprecated scan_only alias by resolveConfig.
 	DiscoveryShare int
+
+	// sp-6vep reuse-before-buy, resolved to the tick's effective values. The flags land as bools,
+	// the timeout as a Duration. All DEFAULT-SAFE (reuse/snowball OFF, ceiling 0, timeout 0).
+	ProbeReuseEnabled   bool
+	EdgeRelayMaxHops    int
+	ReuseValueCeiling   int
+	SnowballNeighbors   bool
+	PostInflightTimeout time.Duration
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -594,6 +711,12 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	// command; a live snapshot (below) overrides both. They fold to one effective share after.
 	discoveryShare := cmd.DiscoveryShare
 	scanOnly := cmd.ScanOnly
+	// sp-6vep reuse-before-buy knobs, seeded from the launch command; a live snapshot overrides.
+	probeReuseEnabled := cmd.ProbeReuseEnabled
+	edgeRelayMaxHops := cmd.EdgeRelayMaxHops
+	reuseValueCeiling := cmd.ReuseValueCeiling
+	snowballNeighbors := cmd.SnowballNeighbors
+	postInflightTimeoutSecs := cmd.PostInflightTimeoutSecs
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
@@ -619,9 +742,26 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		// next tick with no restart.
 		discoveryShare = live.PositiveIntOrZero("discovery_share")
 		scanOnly = live.PositiveIntOrZero("scan_only")
+		// sp-6vep reuse knobs: live-authoritative. Absent/zeroed => the DEFAULT-SAFE value (reuse
+		// OFF, snowball OFF, ceiling 0, timeout 0) — NO <=0 fallback for the flags/ceiling/timeout,
+		// since 0 IS the default there (the `tune <key> 0` revert). edge_relay_max_hops keeps its
+		// <=0 fallback below (a nonzero reach default that is inert while reuse is off).
+		probeReuseEnabled = live.PositiveIntOrZero("probe_reuse_enabled")
+		edgeRelayMaxHops = live.PositiveIntOrZero("edge_relay_max_hops")
+		reuseValueCeiling = live.PositiveIntOrZero("reuse_value_ceiling")
+		snowballNeighbors = live.PositiveIntOrZero("snowball_neighbors")
+		postInflightTimeoutSecs = live.PositiveIntOrZero("post_inflight_timeout_secs")
 	}
 	// Fold the knob + deprecated alias into one effective share in [0,100] (the default when unset).
 	c.DiscoveryShare = resolveDiscoveryShare(discoveryShare, scanOnly)
+	// sp-6vep: the flags land as bools (0 => false => OFF), the ceiling as raw credits (0 => borrow
+	// off no system), the timeout as a Duration (0 => never reap). edge_relay_max_hops takes its
+	// <=0 fallback below.
+	c.ProbeReuseEnabled = probeReuseEnabled > 0
+	c.EdgeRelayMaxHops = edgeRelayMaxHops
+	c.ReuseValueCeiling = reuseValueCeiling
+	c.SnowballNeighbors = snowballNeighbors > 0
+	c.PostInflightTimeout = time.Duration(postInflightTimeoutSecs) * time.Second
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
 	}
@@ -684,6 +824,11 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	}
 	if c.OffGateFuelWeight <= 0 {
 		c.OffGateFuelWeight = defaultOffGateFuelWeight
+	}
+	// sp-6vep: only edge_relay_max_hops takes a <=0 fallback (a nonzero reach default, inert while
+	// reuse is off). The flags/ceiling/timeout deliberately DO NOT — 0 IS their default.
+	if c.EdgeRelayMaxHops <= 0 {
+		c.EdgeRelayMaxHops = defaultEdgeRelayMaxHops
 	}
 	return c
 }
@@ -748,6 +893,11 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 		return fmt.Errorf("failed to list scout posts: %w", err)
 	}
 
+	// NO-TIMEOUT DEADLOCK FIX (sp-6vep): reap wedged in-flight posts BEFORE measuring demand, so a
+	// freed slot opens declaration capacity THIS cycle rather than staying jammed at the cap. It is
+	// independent of reuse and a no-op on the default (timeout 0). Survivors drive the rest of the tick.
+	posts = h.abandonStalePosts(ctx, cmd, cfg, posts)
+
 	// sp-pvw3 DISCOVERY/SCAN SPLIT (replacing the sp-jide binary scan_only): each cycle declares BOTH
 	// discovery posts (chart virgin) AND scan posts (drain the dark-market backlog), dividing the
 	// per-cycle post-declaration capacity by discovery_share with GRACEFUL DEGRADATION. The plan
@@ -776,6 +926,14 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 		// still detected — over the plan's already-ranked queue (no re-scan).
 		h.evaluateOffGateDemand(ctx, cmd, cfg, len(plan.discoveryQueue))
 		h.dispatchOffGateExplorer(ctx, cmd)
+		// SNOWBALL (sp-6vep): walk outward from CHARTED frontier posts — a relayed probe charts a
+		// virgin S, then S's uncharted neighbors become the next targets. Additive to the breadth
+		// head and bounded by the SAME in-flight cap; its declarations count toward this cycle's
+		// demand. Runs on any discovery-capable (non-pure-scan) cycle, so the walk continues even
+		// when the ranked expansion queue is momentarily empty. No-op on the default (disarmed).
+		snowballed := h.snowballFromChartedPosts(ctx, cmd, cfg, posts, frontierPosts)
+		frontierPosts += snowballed
+		openSlots += snowballed
 	}
 	if plan.discoveryBudget > 0 {
 		// DEPLOY: declare the top uncovered frontier system as a sweep-once post, bounded by the
@@ -829,6 +987,80 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 	return nil
 }
 
+// abandonStalePosts is the NO-TIMEOUT deadlock fix (sp-6vep): it REMOVES every unmanned, relay-free
+// in-flight sweep-once post older than cfg.PostInflightTimeout, returning the survivors. Today
+// nothing reaps a post the reconciler cannot man — at the deep edge no yard/buyer is reachable — so
+// the in-flight cap jams permanently at 5/5 and discovery stalls at 0. Reaping the wedged posts frees
+// their slots so declaration rotates and RETRIES targets, turning the permanent jam into a queue. It
+// is INDEPENDENT of reuse (gated only on the timeout knob), so the safety net applies whether or not
+// reuse is armed. Timeout 0 (the default) reaps nothing — byte-identical to today. A post being
+// SERVED (manned, or a relay airborne) and a STANDING freshness post are never reaped; only a
+// genuinely wedged frontier sweep-once qualifies. Dry-run reports the reap but removes nothing.
+func (h *RunFrontierExpansionCoordinatorHandler) abandonStalePosts(
+	ctx context.Context,
+	cmd *RunFrontierExpansionCoordinatorCommand,
+	cfg frontierConfig,
+	posts []*domainScouting.ScoutPost,
+) []*domainScouting.ScoutPost {
+	if cfg.PostInflightTimeout <= 0 {
+		return posts // disabled — no post is ever reaped, byte-identical to today
+	}
+	logger := common.LoggerFromContext(ctx)
+	now := h.clock.Now()
+	survivors := make([]*domainScouting.ScoutPost, 0, len(posts))
+	for _, post := range posts {
+		if !isStaleInFlightPost(post, now, cfg.PostInflightTimeout) {
+			survivors = append(survivors, post)
+			continue
+		}
+		age := now.Sub(post.CreatedAt).Round(time.Second)
+		if cmd.DryRun {
+			logger.Log("INFO", fmt.Sprintf("DRY-RUN: would abandon wedged in-flight frontier post %s (unmanned %s, past %s timeout) to free its slot", post.SystemSymbol, age, cfg.PostInflightTimeout), map[string]interface{}{
+				"action":        "frontier_abandon_dryrun",
+				"system_symbol": post.SystemSymbol,
+			})
+			survivors = append(survivors, post) // dry-run acts on nothing
+			continue
+		}
+		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to abandon wedged frontier post %s: %v", post.SystemSymbol, err), nil)
+			survivors = append(survivors, post) // could not remove — keep it in this cycle's view
+			continue
+		}
+		logger.Log("INFO", fmt.Sprintf("Abandoned wedged in-flight frontier post %s (unmanned %s, past %s timeout) — slot freed, target will be retried", post.SystemSymbol, age, cfg.PostInflightTimeout), map[string]interface{}{
+			"action":        "frontier_post_abandoned",
+			"system_symbol": post.SystemSymbol,
+			"age_seconds":   int(now.Sub(post.CreatedAt).Seconds()),
+		})
+	}
+	return survivors
+}
+
+// isStaleInFlightPost reports whether post is a genuinely-wedged frontier target: a SWEEP-ONCE post
+// (never a standing freshness post) whose EVERY slot is open — no hull AND no relay airborne (not
+// being served) — and whose age exceeds the timeout.
+func isStaleInFlightPost(post *domainScouting.ScoutPost, now time.Time, timeout time.Duration) bool {
+	if post.Kind != domainScouting.PostKindSweepOnce {
+		return false
+	}
+	if !postFullyUnmanned(post) {
+		return false
+	}
+	return now.Sub(post.CreatedAt) > timeout
+}
+
+// postFullyUnmanned reports whether every one of post's slots is open (no hull AND no relay in
+// flight) — the same open-slot predicate countUnmannedSlots uses, so a post being served by a relay
+// is never treated as wedged.
+func postFullyUnmanned(post *domainScouting.ScoutPost) bool {
+	for _, slot := range post.Slots() {
+		if slot.AssignedHull() != "" || slot.RepositionContainerID() != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // declareBreadthHead declares the top-ranked uncovered frontier system from the discovery queue as a
 // single-hull sweep-once post (the breadth head), bounded by the in-flight cap so declaration never
 // outruns what the fleet can man (pin #3). It returns the declared system ("" when the queue is empty,
@@ -872,6 +1104,67 @@ func (h *RunFrontierExpansionCoordinatorHandler) declareBreadthHead(
 	return head.SystemSymbol
 }
 
+// snowballFromChartedPosts is the walk-outward (sp-6vep): after a relayed probe CHARTS a frontier
+// virgin S, S's uncharted gate-neighbors become the next targets, so ONE probe walks the frontier
+// outward instead of the ranked queue backfilling inward. For each CHARTED frontier (sweep-once)
+// post it declares sweep-once posts for that system's uncharted neighbors, deduped against covered
+// systems and bounded by the in-flight cap. The neighbor reader SELF-GATES — a still-virgin system
+// has no persisted gate edges and yields no neighbors — so iterating every frontier post is safe:
+// only genuinely-charted systems snowball. Returns the number of posts declared (0 in dry-run, which
+// logs intent only). Armed + wired only; disarmed (the default) or unwired is a pure no-op.
+func (h *RunFrontierExpansionCoordinatorHandler) snowballFromChartedPosts(
+	ctx context.Context,
+	cmd *RunFrontierExpansionCoordinatorCommand,
+	cfg frontierConfig,
+	posts []*domainScouting.ScoutPost,
+	frontierPosts int,
+) int {
+	if !cfg.SnowballNeighbors || h.neighborReader == nil {
+		return 0
+	}
+	logger := common.LoggerFromContext(ctx)
+	covered := postSystemSet(posts)
+	declared := 0
+	for _, post := range posts {
+		if post.Kind != domainScouting.PostKindSweepOnce {
+			continue // walk outward from FRONTIER posts — the virgins a probe just charted
+		}
+		neighbors, err := h.neighborReader.UnchartedNeighbors(ctx, cmd.PlayerID.Value(), post.SystemSymbol)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Snowball neighbor read for %s failed: %v", post.SystemSymbol, err), nil)
+			continue
+		}
+		for _, neighbor := range neighbors {
+			if frontierPosts+declared >= cfg.MaxFrontierPostsInFlight {
+				return declared // in-flight cap reached — the walk never floods past breadth's allowance
+			}
+			if covered[neighbor] {
+				continue // already has a post (dedup)
+			}
+			covered[neighbor] = true
+			if cmd.DryRun {
+				logger.Log("INFO", fmt.Sprintf("DRY-RUN: would snowball frontier post %s (uncharted neighbor of charted %s)", neighbor, post.SystemSymbol), map[string]interface{}{
+					"action":        "frontier_snowball_dryrun",
+					"system_symbol": neighbor,
+					"from_system":   post.SystemSymbol,
+				})
+				continue // dry-run acts on nothing (declares no post, adds no demand)
+			}
+			if err := h.declareSweepOncePost(ctx, cmd, cfg, neighbor); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to snowball frontier post %s: %v", neighbor, err), nil)
+				continue
+			}
+			declared++
+			logger.Log("INFO", fmt.Sprintf("Snowball declared frontier post %s — uncharted neighbor of charted %s, walking the frontier outward", neighbor, post.SystemSymbol), map[string]interface{}{
+				"action":        "frontier_snowball_declared",
+				"system_symbol": neighbor,
+				"from_system":   post.SystemSymbol,
+			})
+		}
+	}
+	return declared
+}
+
 // decideAndMaybeBuy runs the fail-closed purchase gate stack and, when every gate
 // passes, buys exactly one probe (or, in dry-run, logs the intent). It returns a short
 // human reason for the per-cycle summary — either "bought ..." / "would buy ..." or
@@ -913,6 +1206,20 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	// the reconciler will relay them — buying while an idle probe can serve the target is the bug (pin #2).
 	if effectiveAvailable >= openSlots {
 		return fmt.Sprintf("no purchase: supply covers demand (%d idle − %d reserved-freshness = %d >= %d open slots)", availableCount, cfg.ReservedFreshnessFloor, effectiveAvailable, openSlots)
+	}
+
+	// REUSE-BEFORE-BUY (sp-6vep): the fleet is short of open manning demand. Before GROWING it with
+	// a buy — which deadlocks at the deep edge where no yard/buyer is reachable ("no jump-gate route
+	// from VB74 to BK75 within 5 jumps") — try to RELAY an EXISTING probe from the charted frontier
+	// edge onto the target, anchoring reach to the nearest usable probe (~1 hop) rather than the far
+	// buyer home. It is best-effort BEFORE the buy: a committed relay ends the cycle (0 purchases);
+	// no reusable probe within reach / under the ceiling falls straight through to the unchanged buy
+	// path. Armed + wired only — disarmed (the default) or unwired skips the whole block, so the
+	// coordinator is byte-identical to today's buy-only behavior until armed next era.
+	if cfg.ProbeReuseEnabled && h.reuseRelayer != nil {
+		if reason, done := h.maybeReuseExistingProbe(ctx, cmd, cfg, targetSystem, openSlots); done {
+			return reason
+		}
 	}
 
 	// Fleet cap (RULINGS #5 ceiling): never grow the satellite fleet past the cap.
@@ -1019,6 +1326,52 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		"open_slots":  openSlots,
 	})
 	return fmt.Sprintf("bought probe %s for %d at %s", sym, paid, yard)
+}
+
+// maybeReuseExistingProbe runs the reuse-before-buy relay (sp-6vep) for targetSystem. It returns
+// (reason, done): done=true ends the staffing decision this cycle (a committed relay — 0 purchases
+// — or the dry-run intent); done=false tells decideAndMaybeBuy to fall through to the unchanged buy
+// path (no reusable probe within reach / under the ceiling, or a relay error — never buy blind on a
+// relay failure, but never strand the target either). Only reached when reuse is armed AND a
+// relayer is wired, so it is a pure no-op path on the default byte-identical configuration.
+func (h *RunFrontierExpansionCoordinatorHandler) maybeReuseExistingProbe(
+	ctx context.Context,
+	cmd *RunFrontierExpansionCoordinatorCommand,
+	cfg frontierConfig,
+	targetSystem string,
+	openSlots int,
+) (string, bool) {
+	logger := common.LoggerFromContext(ctx)
+	if cmd.DryRun {
+		logger.Log("INFO", fmt.Sprintf("DRY-RUN: would relay an existing edge probe to %s within %d hops (value ceiling %d) to serve %d unmanned slot(s)", targetSystem, cfg.EdgeRelayMaxHops, cfg.ReuseValueCeiling, openSlots), map[string]interface{}{
+			"action":        "frontier_reuse_dryrun",
+			"system_symbol": targetSystem,
+			"max_hops":      cfg.EdgeRelayMaxHops,
+			"value_ceiling": cfg.ReuseValueCeiling,
+		})
+		return fmt.Sprintf("would reuse an existing probe for %s (dry-run)", targetSystem), true
+	}
+
+	target := ProbeReuseTarget{System: targetSystem, MaxHops: cfg.EdgeRelayMaxHops, ValueCeiling: cfg.ReuseValueCeiling}
+	sym, ok, err := h.reuseRelayer.RelayNearestProbe(ctx, cmd.PlayerID, target)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Frontier probe reuse relay for %s failed (falling back to buy): %v", targetSystem, err), map[string]interface{}{
+			"action":        "frontier_reuse_failed",
+			"system_symbol": targetSystem,
+			"error":         err.Error(),
+		})
+		return "", false // fall through to the buy path
+	}
+	if !ok {
+		return "", false // no reusable probe within reach / under the ceiling — fall through to buy
+	}
+	logger.Log("INFO", fmt.Sprintf("Frontier reused existing probe %s to serve %s (0 purchases) — relayed from the charted edge, not a deep-yard buy", sym, targetSystem), map[string]interface{}{
+		"action":        "frontier_probe_reused",
+		"ship_symbol":   sym,
+		"system_symbol": targetSystem,
+		"open_slots":    openSlots,
+	})
+	return fmt.Sprintf("reused probe %s to %s (0 purchases)", sym, targetSystem), true
 }
 
 // buildExpansionQueue ranks the uncovered gate-reachable frontier and logs the ranking

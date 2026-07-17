@@ -742,6 +742,13 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 		MaxDepthHops:           cfg.OptionalInt("max_depth_hops", 0),
 		ObjectiveBiasPercent:   cfg.OptionalInt("objective_bias_percent", 0),
 		ReservedFreshnessFloor: cfg.OptionalInt("reserved_freshness_floor", 0), // sp-iopd symmetric floor
+		// sp-6vep reuse-before-buy the deep frontier (all live-tunable; 0 ⇒ the coordinator's own
+		// DEFAULT-SAFE value, so a merge is byte-identical to today until armed next era).
+		ProbeReuseEnabled:       cfg.OptionalInt("probe_reuse_enabled", 0),
+		EdgeRelayMaxHops:        cfg.OptionalInt("edge_relay_max_hops", 0),
+		ReuseValueCeiling:       cfg.OptionalInt("reuse_value_ceiling", 0),
+		SnowballNeighbors:       cfg.OptionalInt("snowball_neighbors", 0),
+		PostInflightTimeoutSecs: cfg.OptionalInt("post_inflight_timeout_secs", 0),
 	}
 }
 
