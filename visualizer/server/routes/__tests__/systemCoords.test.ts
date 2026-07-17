@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { currentEraId, resolveSystemCoords } from '../../utils/systemCoords.js';
+import {
+  currentEraId,
+  resolveSystemCoords,
+  FETCH_CONCURRENCY,
+  MAX_FETCHES_PER_CALL,
+} from '../../utils/systemCoords.js';
 
 const client = (impl: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }>) => ({ query: vi.fn(impl) });
 
@@ -60,5 +65,71 @@ describe('resolveSystemCoords', () => {
     );
     const real = await resolveSystemCoords(c, vi.fn(async () => null), ['X1-EE'], 7);
     expect(real.size).toBe(0);
+  });
+});
+
+// Regression: the first build after deploy/era reset misses the whole gate
+// graph (~130+ systems). Serially awaiting one live GET per system under the
+// API's ~2 req/s limit blocked /api/flows/topology for minutes (holding a pg
+// client), and a second tab started a duplicate fetch storm.
+describe('resolveSystemCoords rate-limit hardening', () => {
+  const emptySnapshotClient = () =>
+    client(async (sql) => (/FROM system_coords/.test(sql) ? { rows: [] } : { rows: [] }));
+
+  it('caps live fetches per call; overflow stays absent for force placement', async () => {
+    const fetcher = vi.fn(async (sym: string) => ({ x: 1, y: 2 }));
+    const symbols = Array.from({ length: MAX_FETCHES_PER_CALL + 10 }, (_, i) => `X1-B${i}`);
+    const real = await resolveSystemCoords(emptySnapshotClient(), fetcher, symbols, 7);
+    expect(fetcher).toHaveBeenCalledTimes(MAX_FETCHES_PER_CALL);
+    expect(real.size).toBe(MAX_FETCHES_PER_CALL);
+  });
+
+  it('runs fetches through a bounded worker pool (concurrent, capped, not serial)', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const fetcher = vi.fn(async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+      return { x: 1, y: 2 };
+    });
+    const symbols = Array.from({ length: 12 }, (_, i) => `X1-P${i}`);
+    const real = await resolveSystemCoords(emptySnapshotClient(), fetcher, symbols, 7);
+    expect(real.size).toBe(12);
+    expect(maxActive).toBeGreaterThan(1); // not serial
+    expect(maxActive).toBeLessThanOrEqual(FETCH_CONCURRENCY); // capped
+  });
+
+  it('dedupes concurrent in-flight fetches for the same system (second-tab storm)', async () => {
+    let resolveFetch!: (v: { x: number; y: number } | null) => void;
+    const fetcher = vi.fn(
+      () => new Promise<{ x: number; y: number } | null>((r) => { resolveFetch = r; }),
+    );
+    const a = resolveSystemCoords(emptySnapshotClient(), fetcher, ['X1-DUP'], 7);
+    const b = resolveSystemCoords(emptySnapshotClient(), fetcher, ['X1-DUP'], 7);
+    await new Promise((r) => setTimeout(r, 0)); // both calls reach the fetch stage
+    resolveFetch({ x: 9, y: 8 });
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(ra.get('X1-DUP')).toEqual({ x: 9, y: 8 });
+    expect(rb.get('X1-DUP')).toEqual({ x: 9, y: 8 });
+  });
+
+  it('clears the in-flight entry after settle so a later cache miss retries', async () => {
+    const fetcher = vi.fn(async () => null);
+    await resolveSystemCoords(emptySnapshotClient(), fetcher, ['X1-RE'], 7);
+    await resolveSystemCoords(emptySnapshotClient(), fetcher, ['X1-RE'], 7);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throwing fetch inside the pool stays per-system (others still resolve)', async () => {
+    const fetcher = vi.fn(async (sym: string) => {
+      if (sym === 'X1-BAD') throw new Error('429 storm');
+      return { x: 3, y: 4 };
+    });
+    const real = await resolveSystemCoords(emptySnapshotClient(), fetcher, ['X1-BAD', 'X1-OK'], 7);
+    expect(real.has('X1-BAD')).toBe(false);
+    expect(real.get('X1-OK')).toEqual({ x: 3, y: 4 });
   });
 });

@@ -72,11 +72,37 @@ router.get('/topology', async (_req, res) => {
   let client;
   try {
     client = await pool.connect();
-    const result = await client.query(`
-      SELECT system_symbol, connected_system, gate_waypoint, under_construction
-      FROM gate_edges
-      WHERE connected_system <> ''
-    `);
+
+    // Era-scope the gate graph, mirroring gobot's eraScopePredicate
+    // (era_id = current OR era_id IS NULL for the transition window). Dead-era
+    // rows persist in gate_edges after a universe reset (gobot only deletes
+    // per rescanned system_symbol); unscoped, their ghost systems can never
+    // resolve in the current-era system_coords snapshot, so every 5-minute
+    // cache rebuild would refetch them from the live API forever and warp the
+    // layout with mixed-era anchors. Era resolution failure (pre-AutoMigrate
+    // transition) degrades to the unscoped query + force layout — never a 503.
+    let eraId: number | null = null;
+    try {
+      eraId = await currentEraId(client);
+    } catch (eraError: any) {
+      console.error(
+        'era resolution failed, serving unscoped gate_edges:',
+        eraError?.message ?? eraError,
+      );
+    }
+
+    const result = eraId !== null
+      ? await client.query(
+          `SELECT system_symbol, connected_system, gate_waypoint, under_construction
+           FROM gate_edges
+           WHERE connected_system <> '' AND (era_id = $1 OR era_id IS NULL)`,
+          [eraId],
+        )
+      : await client.query(`
+          SELECT system_symbol, connected_system, gate_waypoint, under_construction
+          FROM gate_edges
+          WHERE connected_system <> ''
+        `);
 
     const edges = result.rows.map((r: any) => ({
       from: r.system_symbol as string,
@@ -92,10 +118,11 @@ router.get('/topology', async (_req, res) => {
     }
     // Real coordinates, era-scoped, lazily filled from the live API. ANY
     // failure in this block (e.g. system_coords not yet AutoMigrated by the
-    // daemon) degrades to the classic all-force layout — never a 503.
+    // daemon, or no resolvable era — the snapshot is era-keyed) degrades to
+    // the classic all-force layout — never a 503.
     let systems: AnchoredNode[];
     try {
-      const eraId = await currentEraId(client);
+      if (eraId === null) throw new Error('no resolvable era for system_coords');
       const real = await resolveSystemCoords(client, fetchSystemXY, [...systemSet], eraId);
       systems = layoutWithAnchors(real, [...systemSet], edges.map((e) => ({ from: e.from, to: e.to })));
     } catch (coordError: any) {

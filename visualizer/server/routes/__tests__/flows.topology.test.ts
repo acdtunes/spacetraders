@@ -38,11 +38,12 @@ const GATE_ROWS = {
 };
 const ERA_ROW = { rows: [{ era_id: 3 }] };
 
+// Query order under test: eras -> gate_edges -> system_coords -> (inserts) -> players.
 describe('GET /api/flows/topology', () => {
   it('serves real snapshot coordinates with layout=real', async () => {
     const query = vi.fn()
-      .mockResolvedValueOnce(GATE_ROWS) // gate_edges
       .mockResolvedValueOnce(ERA_ROW)   // eras
+      .mockResolvedValueOnce(GATE_ROWS) // gate_edges
       .mockResolvedValueOnce({          // system_coords: all known
         rows: [
           { symbol: 'X1-NK36', x: -100, y: 0 },
@@ -64,10 +65,66 @@ describe('GET /api/flows/topology', () => {
     expect(stGet).not.toHaveBeenCalledWith(expect.stringMatching(/^\/systems\//));
   });
 
+  it('era-scopes the gate_edges query so dead-era rows never enter the topology', async () => {
+    // Regression (review finding): gate_edges rows from a dead era persist in
+    // PG after a universe reset (gobot only deletes per rescanned system). An
+    // unscoped SELECT dragged those ghost systems into systemSet; they can
+    // never exist in the current-era system_coords snapshot, so every cache
+    // rebuild refetched them from the live API forever. The SELECT must carry
+    // gobot's eraScopePredicate: era_id = current OR era_id IS NULL.
+    const query = vi.fn()
+      .mockResolvedValueOnce(ERA_ROW)
+      .mockResolvedValueOnce(GATE_ROWS)
+      .mockResolvedValueOnce({
+        rows: [
+          { symbol: 'X1-NK36', x: -100, y: 0 },
+          { symbol: 'X1-KA42', x: 250, y: 40 },
+          { symbol: 'X1-ZC66', x: 120, y: 380 },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // players token
+
+    connect.mockResolvedValue({ query, release: vi.fn() });
+
+    const app = await makeApp();
+    const res = await request(app).get('/api/flows/topology');
+
+    expect(res.status).toBe(200);
+    const gateCall = query.mock.calls.find((c) => /FROM gate_edges/.test(c[0]));
+    expect(gateCall).toBeDefined();
+    expect(gateCall![0]).toMatch(/era_id = \$1 OR era_id IS NULL/);
+    expect(gateCall![1]).toEqual([3]);
+  });
+
+  it('serves an unscoped gate_edges query + force layout when era resolution fails (no 503)', async () => {
+    // eras table missing/unreadable is the pre-AutoMigrate transition window:
+    // topology must still render (unscoped gates, all-force layout), never 503.
+    const query = vi.fn()
+      .mockRejectedValueOnce(new Error('relation "eras" does not exist'))
+      .mockResolvedValueOnce(GATE_ROWS)
+      .mockResolvedValueOnce({ rows: [] }); // players token
+    connect.mockResolvedValue({ query, release: vi.fn() });
+
+    const app = await makeApp();
+    const res = await request(app).get('/api/flows/topology');
+
+    expect(res.status).toBe(200);
+    expect(res.body.systems).toHaveLength(3);
+    for (const s of res.body.systems) {
+      expect(s.layout).toBe('force');
+      expect(Number.isFinite(s.x) && Number.isFinite(s.y)).toBe(true);
+    }
+    const gateCall = query.mock.calls.find((c) => /FROM gate_edges/.test(c[0]));
+    expect(gateCall![0]).not.toMatch(/era_id/);
+    // No system_coords read happened — the coord snapshot is era-keyed and
+    // meaningless without an era.
+    expect(query.mock.calls.some((c) => /FROM system_coords/.test(c[0]))).toBe(false);
+  });
+
   it('lazily fetches a missing system from the live API and upserts it', async () => {
     const query = vi.fn()
-      .mockResolvedValueOnce(GATE_ROWS)
       .mockResolvedValueOnce(ERA_ROW)
+      .mockResolvedValueOnce(GATE_ROWS)
       .mockResolvedValueOnce({ rows: [
         { symbol: 'X1-NK36', x: -100, y: 0 },
         { symbol: 'X1-KA42', x: 250, y: 40 },
@@ -91,8 +148,8 @@ describe('GET /api/flows/topology', () => {
 
   it('force-places a system the live API cannot supply (still 200, finite coords)', async () => {
     const query = vi.fn()
-      .mockResolvedValueOnce(GATE_ROWS)
       .mockResolvedValueOnce(ERA_ROW)
+      .mockResolvedValueOnce(GATE_ROWS)
       .mockResolvedValueOnce({ rows: [
         { symbol: 'X1-NK36', x: -100, y: 0 },
         { symbol: 'X1-KA42', x: 250, y: 40 },
@@ -112,8 +169,8 @@ describe('GET /api/flows/topology', () => {
 
   it('degrades to an all-force layout when system_coords is unavailable (pre-AutoMigrate deploy order)', async () => {
     const query = vi.fn()
-      .mockResolvedValueOnce(GATE_ROWS)
       .mockResolvedValueOnce(ERA_ROW)
+      .mockResolvedValueOnce(GATE_ROWS)
       .mockRejectedValueOnce(new Error('relation "system_coords" does not exist'))
       .mockResolvedValueOnce({ rows: [] }); // players token
     connect.mockResolvedValue({ query, release: vi.fn() });
@@ -131,8 +188,8 @@ describe('GET /api/flows/topology', () => {
 
   it('stamps homeSystem from players.token -> GET /my/agent headquarters', async () => {
     const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [GATE_ROWS.rows[0]] })
       .mockResolvedValueOnce(ERA_ROW)
+      .mockResolvedValueOnce({ rows: [GATE_ROWS.rows[0]] })
       .mockResolvedValueOnce({ rows: [
         { symbol: 'X1-NK36', x: 0, y: 0 },
         { symbol: 'X1-KA42', x: 100, y: 0 },

@@ -189,15 +189,19 @@ export function projectFlowMotion(
   const ownGate = systemGates.get(hullSystem);
 
   const target = stops.length > 0 ? stops[0].system : hullSystem;
+  // The crossing runs from the previous stop's system to the target.
+  const crossingStart = flow.currentLeg ? systemOf(flow.currentLeg.from) : hullSystem;
   // Arrival half of a completed crossing: still gliding from our own gate to
   // the stop — finish the incoming edge before dwelling.
   const arrivingThroughGate = inTransit && nav.originSymbol === ownGate;
-  if (target === hullSystem && !arrivingThroughGate) {
+  // Post-jump cooldown at the crossing's FINAL system: parked at our own gate
+  // with the leg's origin in another system — the incoming edge isn't done
+  // yet, so hold at POST_JUMP_HOLD instead of teleporting to the node.
+  const coolingAtOwnGate = !inTransit && nav.waypointSymbol === ownGate && crossingStart !== hullSystem;
+  if (target === hullSystem && !arrivingThroughGate && !coolingAtOwnGate) {
     return dwell(hullSystem, hullPos, flow.ship, nowMs, scale);
   }
 
-  // The crossing runs from the previous stop's system to the target.
-  const crossingStart = flow.currentLeg ? systemOf(flow.currentLeg.from) : hullSystem;
   let path = gatePath(adj, crossingStart, target);
   let i = path ? path.indexOf(hullSystem) : -1;
   if (!path || i === -1) {
@@ -227,13 +231,14 @@ export function projectFlowMotion(
     return dwell(hullSystem, hullPos, flow.ship, nowMs, scale);
   }
 
-  // Parked while a crossing is pending.
+  // Parked while a crossing is pending or just completed. The cooldown check
+  // runs BEFORE the end-of-path dwell so it also covers the final system.
+  if (nav.waypointSymbol === ownGate && i > 0) {
+    const e = edgeOf(i - 1); // cooldown: just arrived through our gate
+    if (e) return glide(e.a, e.b, POST_JUMP_HOLD, e.from, e.to);
+  }
   if (i >= path.length - 1) return dwell(hullSystem, hullPos, flow.ship, nowMs, scale);
   if (nav.waypointSymbol === ownGate) {
-    if (i > 0) {
-      const e = edgeOf(i - 1); // cooldown: just arrived through our gate
-      if (e) return glide(e.a, e.b, POST_JUMP_HOLD, e.from, e.to);
-    }
     const e = edgeOf(i); // first hop of the journey: jump pending
     return e ? glide(e.a, e.b, PRE_JUMP_HOLD, e.from, e.to) : null;
   }

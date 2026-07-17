@@ -126,6 +126,34 @@ describe('projectFlowMotion', () => {
     expect(m.phase).toBeCloseTo(0.53, 5);
   });
 
+  it('holds at 0.53 when parked at the DESTINATION system\'s own gate (single-hop cooldown)', () => {
+    // Regression: A→B jump just completed, ship IN_ORBIT at B's own gate,
+    // currentLeg still points at a market in B. This must render the
+    // POST_JUMP_HOLD on the A→B edge — not dwell at B's node (which caused a
+    // forward teleport to the node then a backward teleport to the midpoint
+    // when the gate→market flight started).
+    const f = flow({
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(120) },
+      shipNav: nav({ status: 'IN_ORBIT', systemSymbol: 'X1-BB', waypointSymbol: 'X1-BB-G1' }),
+    });
+    const m = projectFlowMotion(f, adj, gates, pos, NOW, 1)!;
+    expect(m.mode).toBe('glide');
+    expect(m).toMatchObject({ fromSystem: 'X1-AA', toSystem: 'X1-BB' });
+    expect(m.phase).toBeCloseTo(0.53, 5);
+  });
+
+  it('still dwells when parked at own gate with no crossing behind it', () => {
+    // Parked at our own gate but the current leg is intra-system: no jump
+    // occurred, so a dwell at the node is correct (no phantom cooldown).
+    const f = flow({
+      currentLeg: { from: 'X1-BB-M2', to: 'X1-BB-M1', departedAt: iso(-300), arrivesAt: iso(-10) },
+      shipNav: nav({ status: 'IN_ORBIT', systemSymbol: 'X1-BB', waypointSymbol: 'X1-BB-G1' }),
+    });
+    const m = projectFlowMotion(f, adj, gates, pos, NOW, 1)!;
+    expect(m.mode).toBe('dwell');
+    expect(m.fromSystem).toBe('X1-BB');
+  });
+
   it('true warp renders directly on the origin→destination edge', () => {
     const f = flow({
       remainingHops: [hop('X1-BB-M1', 'X1-BB', 0)],
