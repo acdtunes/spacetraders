@@ -48,6 +48,12 @@ type gateAPI interface {
 // through BFS deeper than this over unreadable frontier gates is exactly the storm it guards.
 const MaxJumpPath = 5
 
+// unchartedTrait is the waypoint trait the SpaceTraders API stamps on an unswept waypoint.
+// A JUMP_GATE that still carries it has no readable /jump-gate endpoint without a ship
+// present — a no-ship GetJumpGate on it 400s — so it is the is-charted precondition the
+// doomed-call fix reads off the system graph before deciding to make the live call (sp-jgcache).
+const unchartedTrait = "UNCHARTED"
+
 // ErrUnroutable wraps every "no path exists within the bound" outcome so callers
 // can distinguish a DEFINITIVE unroutable verdict (refuse the buy cleanly) from a
 // store/fetch FAILURE (fail closed for a different reason). Both refuse a spend;
@@ -108,6 +114,17 @@ type Service struct {
 	playerRepo    player.PlayerRepository
 	clock         shared.Clock
 	backoff       BackoffSchedule
+	// skipUnchartedFetch is the doomed-call precondition (sp-jgcache): when true (default),
+	// a remote, no-ship Connections read whose OWN gate is still UNCHARTED (per the system
+	// graph we already hold) SKIPS the live GetJumpGate — that call is guaranteed to 400
+	// ("uncharted, no ship present"), so issuing it is pure rate-limit waste. The gate is
+	// entered into the sp-ikx1 backoff exactly as a real 400 would, so routing behaviour is
+	// unchanged (the BFS excludes it either way); only the wasted 400 disappears. Set false
+	// (WithSkipUnchartedFetch) to restore the pre-fix probe-then-backoff behaviour byte-for-
+	// byte — the staged-rollout escape hatch. The precondition applies ONLY to the graph-
+	// resolved gate on the no-present-ship path: ChartPresentGate (a hull IS on the gate, so
+	// it reads fine) always bypasses it, preserving the sp-lv2n/sp-bcsu frontier self-heal.
+	skipUnchartedFetch bool
 }
 
 // Option customizes a Service at construction (functional options keep the 4-arg
@@ -126,6 +143,14 @@ func WithClock(c shared.Clock) Option {
 	return func(s *Service) { s.clock = c }
 }
 
+// WithSkipUnchartedGateFetch toggles the doomed-call precondition (sp-jgcache). Default is
+// ON (skip the live GetJumpGate on an UNCHARTED origin gate — it would only 400). Passing
+// false restores the legacy probe-then-backoff behaviour, wired from config as the staged-
+// rollout reversibility switch. See Service.skipUnchartedFetch.
+func WithSkipUnchartedFetch(skip bool) Option {
+	return func(s *Service) { s.skipUnchartedFetch = skip }
+}
+
 // NewService wires the gate-graph service. Without options it uses the real clock and
 // DefaultBackoffSchedule; the daemon passes WithBackoff(config) and tests pass WithClock.
 func NewService(
@@ -136,12 +161,13 @@ func NewService(
 	opts ...Option,
 ) *Service {
 	s := &Service{
-		store:         store,
-		apiClient:     apiClient,
-		graphProvider: graphProvider,
-		playerRepo:    playerRepo,
-		clock:         shared.NewRealClock(),
-		backoff:       DefaultBackoffSchedule,
+		store:              store,
+		apiClient:          apiClient,
+		graphProvider:      graphProvider,
+		playerRepo:         playerRepo,
+		clock:              shared.NewRealClock(),
+		backoff:            DefaultBackoffSchedule,
+		skipUnchartedFetch: true, // doomed-call precondition ON by default (sp-jgcache)
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -177,7 +203,9 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 			return nil, fmt.Errorf("%w for %s (backing off, next probe %s)", ErrGateUnreadable, systemSymbol, nextProbe.Format(time.RFC3339))
 		}
 	}
-	return s.fetchAndStore(ctx, systemSymbol, playerID)
+	// presentShip=false: this is the REMOTE read (no hull on the gate), so an uncharted
+	// origin gate is subject to the doomed-call precondition (sp-jgcache).
+	return s.fetchAndStore(ctx, systemSymbol, playerID, false)
 }
 
 // ChartPresentGate is the PRESENCE-FORCED gate read (sp-bcsu): a hull physically
@@ -218,7 +246,10 @@ func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol
 	// above is the idempotence key: a later arrival on a now-charted-by-us system returns there
 	// and never re-charts, so each gate is charted at most once (no wasted call, no error-spam).
 	s.chartPresentWaypoint(ctx, shipSymbol, playerID)
-	return s.fetchAndStore(ctx, systemSymbol, playerID)
+	// presentShip=true: a hull IS on the gate, so the read succeeds even for an
+	// UNCHARTED gate (and we just charted it). BYPASS the doomed-call precondition —
+	// applying it here would defeat the sp-lv2n/sp-bcsu frontier self-heal.
+	return s.fetchAndStore(ctx, systemSymbol, playerID, true)
 }
 
 // chartPresentWaypoint best-effort PUBLICLY charts the waypoint the present hull is standing on
@@ -274,7 +305,7 @@ func isAlreadyCharted(err error) bool {
 // persists the fresh edge set, and returns it. The gate is resolved from the
 // store first (a neighbor may have recorded it — this is the path that expands an
 // UNCHARTED system), falling back to the charted system's graph.
-func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error) {
+func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, playerID int, presentShip bool) ([]system.GateEdge, error) {
 	token, err := s.token(ctx, playerID)
 	if err != nil {
 		return nil, err
@@ -285,9 +316,21 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		return nil, err
 	}
 	if !ok {
-		gateWaypoint, err = s.gateFromGraph(ctx, systemSymbol, playerID)
+		var charted bool
+		gateWaypoint, charted, err = s.gateFromGraph(ctx, systemSymbol, playerID)
 		if err != nil {
 			return nil, err
+		}
+		// Doomed-call precondition (sp-jgcache): a graph-resolved gate that is still
+		// UNCHARTED will 400 a no-ship GetJumpGate ("uncharted, no ship present"). On the
+		// REMOTE read (no hull present) skip that guaranteed-failing call entirely and enter
+		// the sp-ikx1 backoff exactly as a real 400 would — 0 API, identical routing outcome
+		// (the BFS excludes the node either way). The present-ship path (charted==irrelevant,
+		// a hull makes it readable) passes presentShip=true and never reaches here.
+		if s.skipUnchartedFetch && !presentShip && !charted {
+			cause := fmt.Errorf("gate %s is uncharted (no ship present) — a live GetJumpGate would 400", gateWaypoint)
+			s.enterBackoff(ctx, systemSymbol, gateWaypoint, cause)
+			return nil, fmt.Errorf("%w for %s (%s): uncharted, skipped doomed live fetch", ErrGateUnreadable, systemSymbol, gateWaypoint)
 		}
 	}
 
@@ -395,18 +438,21 @@ func (s *Service) gateUnderConstruction(ctx context.Context, connSystem, gateWay
 
 // gateFromGraph finds systemSymbol's own jump-gate waypoint via its system graph
 // — the charted-system path (mirrors GetJumpGateConnectionsHandler). Only used
-// when no stored neighbor edge has already recorded the gate.
-func (s *Service) gateFromGraph(ctx context.Context, systemSymbol string, playerID int) (string, error) {
+// when no stored neighbor edge has already recorded the gate. It also reports whether
+// that gate is CHARTED (no UNCHARTED trait): the graph builder populates each waypoint's
+// traits[] from the API, so this is the same is-charted precondition the server itself
+// checks — read for free from data we already hold, before any live call (sp-jgcache).
+func (s *Service) gateFromGraph(ctx context.Context, systemSymbol string, playerID int) (string, bool, error) {
 	graphResult, err := s.graphProvider.GetGraph(ctx, systemSymbol, false, playerID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get system graph for %s: %w", systemSymbol, err)
+		return "", false, fmt.Errorf("failed to get system graph for %s: %w", systemSymbol, err)
 	}
 	for _, waypoint := range graphResult.Graph.Waypoints {
 		if waypoint.IsJumpGate() {
-			return waypoint.Symbol, nil
+			return waypoint.Symbol, !waypoint.HasTrait(unchartedTrait), nil
 		}
 	}
-	return "", fmt.Errorf("no jump gate found in system %s", systemSymbol)
+	return "", false, fmt.Errorf("no jump gate found in system %s", systemSymbol)
 }
 
 // token loads the player's API token for the live gate fetch.

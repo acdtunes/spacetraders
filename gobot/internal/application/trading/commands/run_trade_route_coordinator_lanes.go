@@ -57,7 +57,11 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		return nil, err
 	}
 
-	for _, neighbor := range h.neighborSystems(ctx, systemSymbol, playerID) {
+	// sp-jgcache prong 2: read neighbors DURABLE-FIRST (persisted gate_edges, 24h TTL +
+	// backoff + uncharted-skip) instead of a fresh uncached GetJumpGate every lane pass — the
+	// per-tick redundant reads and doomed 400s collapse to the shared cache. Graph-less
+	// callers still get the live query (gatedNeighborSystems falls back).
+	for _, neighbor := range h.gatedNeighborSystems(ctx, systemSymbol, playerID) {
 		neighborListings, err := h.collectSystemListings(ctx, neighbor, playerID)
 		if err != nil {
 			continue // fail-open: an unreadable neighbor system just yields fewer lanes
@@ -184,6 +188,34 @@ func (h *RunTradeRouteCoordinatorHandler) neighborSystems(ctx context.Context, s
 		return nil
 	}
 	return conn.ConnectedSystems
+}
+
+// gatedNeighborSystems returns systemSymbol's directly-gated neighbors DURABLE-FIRST (sp-jgcache
+// prong 2). When a gate graph is wired (the daemon always wires one) it reads the persisted,
+// era-scoped adjacency via gateGraph.Connections — a cache hit within the 24h gate_edges
+// freshness window (0 API), a single fetch-through on a cold miss, and the sp-ikx1 backoff +
+// sp-jgcache uncharted-skip on a doomed gate. This REPLACES the per-tick uncached live
+// GetJumpGate the scan used to issue on every lane pass — the redundant successful reads
+// (topology is near-static once charted) and the recurring 400s (an uncharted/no-ship gate) both
+// collapse to the shared cache. A durable read ERROR (uncharted origin skipped, or gate backed
+// off) fails OPEN to no neighbors — the scan degrades to home-only, exactly as the old
+// live-scan-failure did — and deliberately does NOT re-issue the doomed live query (that would
+// defeat the precondition and the backoff). With no gate graph wired (graph-less tests, or a
+// daemon pre-wiring) it falls back to the uncached live query so every existing caller is
+// byte-for-byte unchanged.
+func (h *RunTradeRouteCoordinatorHandler) gatedNeighborSystems(ctx context.Context, systemSymbol string, playerID int) []string {
+	if h.gateGraph == nil {
+		return h.neighborSystems(ctx, systemSymbol, playerID)
+	}
+	edges, err := h.gateGraph.Connections(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil
+	}
+	systems := make([]string, 0, len(edges))
+	for _, e := range edges {
+		systems = append(systems, e.ConnectedSystem)
+	}
+	return systems
 }
 
 // repositionNeighbors resolves originSystem's directly-gated neighbors for the sp-zhii

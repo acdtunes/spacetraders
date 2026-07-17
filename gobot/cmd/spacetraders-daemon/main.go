@@ -809,7 +809,14 @@ func run(cfg *config.Config) error {
 	// Captured so the sp-ywh1 gate-reconcile widening can read backoff markers straight from
 	// the SAME store the gate graph routes over (one cache/graph, era-scoped) — see
 	// scoutPostCoordinatorHandler.SetUnreadableGateProvider below.
-	gateEdgeRepo := persistence.NewGormGateEdgeRepository(db)
+	// sp-jgcache: the healthy-edge freshness window is the configured topology-cache TTL
+	// ([routing] gate_cache_ttl, 24h default) — the per-tick lane/reposition neighbor scan
+	// hits this cache instead of re-reading gate topology live.
+	gateEdgeRepo := persistence.NewGormGateEdgeRepository(db, persistence.WithFreshWindow(cfg.Routing.GateCacheTTL))
+	// sp-jgcache: skip the guaranteed-400 live GetJumpGate on an uncharted origin gate
+	// (default ON; an explicit [routing] skip_uncharted_gate_fetch:false restores probe-
+	// then-backoff). A nil switch defaults ON, matching SetDefaults.
+	skipUnchartedGateFetch := cfg.Routing.SkipUnchartedGateFetch == nil || *cfg.Routing.SkipUnchartedGateFetch
 	gateGraphService := gategraph.NewService(
 		gateEdgeRepo, apiClient, graphService, playerRepo,
 		// sp-ikx1: back off re-probing an unreadable jump gate (5m→30m→2h) instead of
@@ -820,6 +827,7 @@ func run(cfg *config.Config) error {
 			Multiplier: cfg.Routing.GateBackoff.Multiplier,
 			Max:        cfg.Routing.GateBackoff.Max,
 		}),
+		gategraph.WithSkipUnchartedFetch(skipUnchartedGateFetch),
 	)
 
 	// Off-gate warp support (sp-0xd0, slice A): attach the warp-execute +

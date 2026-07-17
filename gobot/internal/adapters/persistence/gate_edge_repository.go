@@ -16,7 +16,9 @@ import (
 // WaypointModel's own 24h TTL: the jump-gate topology is effectively static
 // within an era (a gate's connection set does not churn hour-to-hour), so a day
 // is a comfortable freshness bound that keeps the graph self-healing across a
-// long-running daemon without hammering the API on every routing lookup.
+// long-running daemon without hammering the API on every routing lookup. This is
+// the DEFAULT; the daemon overrides it from config ([routing] gate_cache_ttl, the
+// sp-jgcache topology-cache knob) via WithFreshWindow.
 const gateEdgeFreshWindow = 24 * time.Hour
 
 // gateEdgeUnderConstructionFreshWindow is the SHORTER freshness bound for an edge
@@ -41,11 +43,37 @@ const unreadableMarker = ""
 // REPLACED atomically on each sync so a since-severed connection cannot linger.
 type GormGateEdgeRepository struct {
 	db *gorm.DB
+	// freshWindow is the healthy-edge freshness bound (sp-jgcache topology-cache TTL). It
+	// defaults to gateEdgeFreshWindow (24h) and is overridden from config via WithFreshWindow.
+	// The SHORTER under-construction window is a separate correctness bound (a build completes
+	// on its own clock) and stays a const, not tuned here.
+	freshWindow time.Duration
 }
 
-// NewGormGateEdgeRepository creates a new GORM-backed gate edge repository.
-func NewGormGateEdgeRepository(db *gorm.DB) *GormGateEdgeRepository {
-	return &GormGateEdgeRepository{db: db}
+// GateEdgeOption customizes a GormGateEdgeRepository at construction (functional option so the
+// single-arg constructor stays stable for the many existing call sites while the daemon injects
+// the configured freshness TTL).
+type GateEdgeOption func(*GormGateEdgeRepository)
+
+// WithFreshWindow sets the healthy-edge freshness window (the sp-jgcache topology-cache TTL),
+// wired from [routing] gate_cache_ttl. A non-positive value is ignored (keeps the 24h default),
+// so a zero/unset config can never collapse the cache to "always stale".
+func WithFreshWindow(d time.Duration) GateEdgeOption {
+	return func(r *GormGateEdgeRepository) {
+		if d > 0 {
+			r.freshWindow = d
+		}
+	}
+}
+
+// NewGormGateEdgeRepository creates a new GORM-backed gate edge repository. Without options the
+// healthy-edge freshness window is the 24h default; WithFreshWindow overrides it from config.
+func NewGormGateEdgeRepository(db *gorm.DB, opts ...GateEdgeOption) *GormGateEdgeRepository {
+	r := &GormGateEdgeRepository{db: db, freshWindow: gateEdgeFreshWindow}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Edges returns systemSymbol's stored neighbor edges, era-scoped. ok is false on
@@ -242,7 +270,7 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 			UnderConstruction: m.UnderConstruction,
 			// Adjacency is a raw dump — flag a stale row so the verb marks it as
 			// unverified (its UnderConstruction value is re-probed on next route).
-			Stale: rowStale(m),
+			Stale: r.rowStale(m),
 		})
 	}
 	for sys := range adjacency {
@@ -285,7 +313,7 @@ func (r *GormGateEdgeRepository) UnreadableGates(ctx context.Context) (map[strin
 // trusts the set).
 func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
 	for _, m := range models {
-		if rowStale(m) {
+		if r.rowStale(m) {
 			return true
 		}
 	}
@@ -299,7 +327,7 @@ func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
 // EMPTY synced_at is always stale: this is what the deploy-time cache invalidation
 // (AutoMigrate clearing synced_at on the column's introduction) relies on to force
 // a re-probe of pre-tracking rows before they are ever trusted for routing.
-func rowStale(m GateEdgeModel) bool {
+func (r *GormGateEdgeRepository) rowStale(m GateEdgeModel) bool {
 	if m.SyncedAt == "" {
 		return true
 	}
@@ -307,17 +335,17 @@ func rowStale(m GateEdgeModel) bool {
 	if err != nil {
 		return true
 	}
-	return time.Since(syncedAt) >= freshWindowFor(m)
+	return time.Since(syncedAt) >= r.freshWindowFor(m)
 }
 
 // freshWindowFor is the freshness bound for one edge: the shorter
-// under-construction window when the neighbor gate is still building, the standard
-// window otherwise.
-func freshWindowFor(m GateEdgeModel) time.Duration {
+// under-construction window when the neighbor gate is still building, the configured
+// healthy window (sp-jgcache [routing] gate_cache_ttl, 24h default) otherwise.
+func (r *GormGateEdgeRepository) freshWindowFor(m GateEdgeModel) time.Duration {
 	if m.UnderConstruction {
 		return gateEdgeUnderConstructionFreshWindow
 	}
-	return gateEdgeFreshWindow
+	return r.freshWindow
 }
 
 // openEraID mirrors GormWaypointRepository.openEraID: the open era is the highest

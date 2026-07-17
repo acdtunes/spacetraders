@@ -447,3 +447,42 @@ func TestGateEdgeRepository_Backoff_ResetOnEraClose(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok, "an era close must reset the backoff — the new era re-probes fresh")
 }
+
+// sp-jgcache: the healthy-edge freshness window is a configurable knob (WithFreshWindow), so
+// the topology-cache TTL is tunable from config without a rebuild. A 3h-old edge is FRESH
+// under the default 24h window (a hit) but STALE under a custom 2h window (a miss) — proving
+// the option actually drives the staleness decision rather than a hardcoded const. The default
+// (no option) stays 24h so every existing caller is byte-for-byte unchanged.
+func TestGateEdgeRepository_FreshWindow_Configurable(t *testing.T) {
+	seed := func(t *testing.T) *persistence.GormGateEdgeRepository {
+		t.Helper()
+		db, err := database.NewTestConnection()
+		require.NoError(t, err)
+		require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+		require.NoError(t, db.Create(&persistence.GateEdgeModel{
+			SystemSymbol: "X1-KA42", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
+			EraID: intPtr(1), SyncedAt: agoTS(3 * time.Hour),
+		}).Error)
+		return persistence.NewGormGateEdgeRepository(db)
+	}
+
+	t.Run("default 24h window keeps a 3h-old edge fresh", func(t *testing.T) {
+		_, ok, err := seed(t).Edges(context.Background(), "X1-KA42")
+		require.NoError(t, err)
+		require.True(t, ok, "a 3h-old edge must be fresh under the default 24h window")
+	})
+
+	t.Run("custom 2h window makes a 3h-old edge stale", func(t *testing.T) {
+		db, err := database.NewTestConnection()
+		require.NoError(t, err)
+		require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+		require.NoError(t, db.Create(&persistence.GateEdgeModel{
+			SystemSymbol: "X1-KA42", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
+			EraID: intPtr(1), SyncedAt: agoTS(3 * time.Hour),
+		}).Error)
+		repo := persistence.NewGormGateEdgeRepository(db, persistence.WithFreshWindow(2*time.Hour))
+		_, ok, err := repo.Edges(context.Background(), "X1-KA42")
+		require.NoError(t, err)
+		require.False(t, ok, "a 3h-old edge must be stale under a custom 2h window")
+	})
+}

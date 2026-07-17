@@ -500,6 +500,10 @@ func TestService_Path_InvalidatedOriginRow_ReprobesBeforeRouting(t *testing.T) {
 type perSystemMissStore struct {
 	replaced map[string][]system.GateEdge
 	backoff  map[string]backoffEntry
+	// gateWaypointMiss forces GateWaypointOf to MISS (ok=false) so fetchAndStore falls
+	// through to gateFromGraph — the branch the charted precondition (sp-jgcache) guards.
+	// Default false keeps the legacy "<system>-GATE" hit every existing test relies on.
+	gateWaypointMiss bool
 }
 
 // backoffEntry is one system's in-memory marker: consecutive failures + last-probe time.
@@ -512,6 +516,9 @@ func (m *perSystemMissStore) Edges(ctx context.Context, s string) ([]system.Gate
 	return nil, false, nil
 }
 func (m *perSystemMissStore) GateWaypointOf(ctx context.Context, s string) (string, bool, error) {
+	if m.gateWaypointMiss {
+		return "", false, nil
+	}
 	return s + "-GATE", true, nil
 }
 func (m *perSystemMissStore) Replace(ctx context.Context, s string, e []system.GateEdge) error {
@@ -1268,5 +1275,127 @@ func TestService_ChartPresentGate_AlreadyChartedResponse_SwallowedNoSpam(t *test
 		if strings.Contains(m, "CreateChart") && strings.Contains(m, "failed") {
 			t.Fatalf("an already-charted (4230) gate must NOT be logged as a failure (no error-spam), got %q", m)
 		}
+	}
+}
+
+// --- charted precondition: never issue the doomed GetJumpGate that is guaranteed to 400 ---
+
+// fakeGraphProvider serves a fixed system graph so gateFromGraph can resolve a system's own
+// jump gate AND read its charted state. The charted precondition (below) reads the UNCHARTED
+// trait straight off this graph — the same data the graph builder already populates from the
+// API's traits[] — to decide whether a live GetJumpGate would 400 ("uncharted, no ship present").
+type fakeGraphProvider struct {
+	waypointsBySystem map[string][]*shared.Waypoint
+	err               error
+}
+
+func (g *fakeGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool, playerID int) (*system.GraphLoadResult, error) {
+	if g.err != nil {
+		return nil, g.err
+	}
+	wps := map[string]*shared.Waypoint{}
+	for _, w := range g.waypointsBySystem[systemSymbol] {
+		wps[w.Symbol] = w
+	}
+	return &system.GraphLoadResult{Graph: &system.NavigationGraph{SystemSymbol: systemSymbol, Waypoints: wps}}, nil
+}
+
+// jumpGateWaypoint builds a JUMP_GATE graph waypoint that is either charted (no UNCHARTED
+// trait) or uncharted (carries UNCHARTED, exactly as the API lists an unswept frontier gate).
+func jumpGateWaypoint(symbol string, charted bool) *shared.Waypoint {
+	w := &shared.Waypoint{Symbol: symbol, Type: "JUMP_GATE", SystemSymbol: shared.ExtractSystemSymbol(symbol)}
+	if !charted {
+		w.Traits = []string{"UNCHARTED"}
+	}
+	return w
+}
+
+// The doomed-call fix: a system whose own jump gate is still UNCHARTED (per the graph we
+// already hold) is guaranteed to 400 a no-ship GetJumpGate ("uncharted, no ship present").
+// The precondition must SKIP that live call entirely — 0 API — and record the sp-ikx1 backoff
+// so the next tick also skips it. The api serves the gate as a 400 so that WITHOUT the
+// precondition the call count would be 1 (the doomed 400): the 0-call assertion is the
+// mutation-sensitive guard (remove the precondition and this test fails).
+func TestService_Connections_UnchartedGraphGate_SkipsDoomedFetch_ZeroAPI(t *testing.T) {
+	store := &perSystemMissStore{gateWaypointMiss: true}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-FRONT-GATE": apiErr400("waypoint X1-FRONT-GATE uncharted, no ship present")}}
+	graph := &fakeGraphProvider{waypointsBySystem: map[string][]*shared.Waypoint{
+		"X1-FRONT": {jumpGateWaypoint("X1-FRONT-GATE", false)}, // uncharted → a live read would 400
+	}}
+	svc := NewService(store, api, graph, &stubPlayerRepo{token: "tok"})
+
+	_, err := svc.Connections(context.Background(), "X1-FRONT", 1)
+	if !errors.Is(err, ErrGateUnreadable) {
+		t.Fatalf("an uncharted gate must be reported unreadable, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-FRONT-GATE"]; got != 0 {
+		t.Fatalf("an uncharted gate must NOT be live-probed (0 API — the doomed 400 avoided), got %d calls", got)
+	}
+	if _, backedOff, _ := backoffOf(store, "X1-FRONT"); !backedOff {
+		t.Fatal("a skipped uncharted gate must be recorded as backed off so the next tick also skips it")
+	}
+}
+
+// The positive case: a CHARTED graph gate is a legitimate read — it IS live-fetched exactly
+// once, then persisted. This is the falsifiability twin of the skip test: the precondition
+// must not suppress a real, readable gate.
+func TestService_Connections_ChartedGraphGate_FetchesOnce(t *testing.T) {
+	store := &perSystemMissStore{gateWaypointMiss: true}
+	api := &perSystemGateAPI{connectionsBySystem: map[string][]string{"X1-HOME": {"X1-NBR-GATE"}}}
+	graph := &fakeGraphProvider{waypointsBySystem: map[string][]*shared.Waypoint{
+		"X1-HOME": {jumpGateWaypoint("X1-HOME-GATE", true)}, // charted → a live read succeeds
+	}}
+	svc := NewService(store, api, graph, &stubPlayerRepo{token: "tok"})
+
+	edges, err := svc.Connections(context.Background(), "X1-HOME", 1)
+	if err != nil {
+		t.Fatalf("a charted gate must fetch cleanly, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-HOME-GATE"]; got != 1 {
+		t.Fatalf("a charted gate must be read exactly once, got %d", got)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-NBR" {
+		t.Fatalf("expected the edge to X1-NBR, got %v", edges)
+	}
+}
+
+// The staged-rollout escape hatch: WithSkipUnchartedFetch(false) restores the pre-fix behavior
+// byte-for-byte — the uncharted gate is still probed (400s, then backs off). This proves the
+// precondition is genuinely config-gated, not hardwired.
+func TestService_Connections_UnchartedGate_PreconditionDisabled_StillProbes(t *testing.T) {
+	store := &perSystemMissStore{gateWaypointMiss: true}
+	api := &perSystemGateAPI{jumpGateErr: map[string]error{"X1-FRONT-GATE": apiErr400("uncharted")}}
+	graph := &fakeGraphProvider{waypointsBySystem: map[string][]*shared.Waypoint{
+		"X1-FRONT": {jumpGateWaypoint("X1-FRONT-GATE", false)},
+	}}
+	svc := NewService(store, api, graph, &stubPlayerRepo{token: "tok"}, WithSkipUnchartedFetch(false))
+
+	_, _ = svc.Connections(context.Background(), "X1-FRONT", 1)
+	if got := api.jumpGateCalls["X1-FRONT-GATE"]; got != 1 {
+		t.Fatalf("with the precondition disabled the gate must still be probed once (legacy behavior), got %d", got)
+	}
+}
+
+// The self-heal guard (sp-lv2n/sp-bcsu): ChartPresentGate is the PRESENT-SHIP read — a hull on
+// the gate makes it readable EVEN when the graph still says UNCHARTED (and it charts it first).
+// The precondition must therefore NOT block the present-ship path; it applies only to the
+// remote, no-ship Connections read. Without this carve-out the fix would break frontier charting.
+func TestService_ChartPresentGate_UnchartedGate_BypassesPreconditionAndFetches(t *testing.T) {
+	store := &perSystemMissStore{gateWaypointMiss: true}
+	api := &perSystemGateAPI{connectionsBySystem: map[string][]string{"X1-FRONT": {"X1-NBR-GATE"}}}
+	graph := &fakeGraphProvider{waypointsBySystem: map[string][]*shared.Waypoint{
+		"X1-FRONT": {jumpGateWaypoint("X1-FRONT-GATE", false)}, // graph still says uncharted
+	}}
+	svc := NewService(store, api, graph, &stubPlayerRepo{token: "tok"})
+
+	edges, err := svc.ChartPresentGate(context.Background(), "X1-FRONT", "SHIP-1", 1)
+	if err != nil {
+		t.Fatalf("a present-ship read must not be blocked by the uncharted precondition, got %v", err)
+	}
+	if got := api.jumpGateCalls["X1-FRONT-GATE"]; got != 1 {
+		t.Fatalf("ChartPresentGate must still read the gate (a present ship makes it readable), got %d calls", got)
+	}
+	if len(edges) != 1 || edges[0].ConnectedSystem != "X1-NBR" {
+		t.Fatalf("expected the edge to X1-NBR, got %v", edges)
 	}
 }

@@ -94,6 +94,20 @@ func SetDefaults(cfg *Config) {
 		chartGateOnArrivalDefault := true
 		cfg.Routing.ChartGateOnArrival = &chartGateOnArrivalDefault
 	}
+	// Gate topology-cache TTL (sp-jgcache): default 24h — the near-static gate graph is a
+	// comfortable day-long freshness bound (per-tick neighbor scans hit the cache, the graph
+	// still self-heals). Zero => unset => the safe default.
+	if cfg.Routing.GateCacheTTL == 0 {
+		cfg.Routing.GateCacheTTL = 24 * time.Hour
+	}
+	// Doomed-call precondition (sp-jgcache): default ON. A nil switch means [routing]
+	// skip_uncharted_gate_fetch is unconfigured; its intent is to skip the guaranteed-400
+	// live read on an uncharted origin gate. An explicit `false` is preserved as the
+	// staged-rollout off-switch (restores probe-then-backoff).
+	if cfg.Routing.SkipUnchartedGateFetch == nil {
+		skipUnchartedDefault := true
+		cfg.Routing.SkipUnchartedGateFetch = &skipUnchartedDefault
+	}
 
 	// Daemon defaults
 	if cfg.Daemon.Address == "" {
