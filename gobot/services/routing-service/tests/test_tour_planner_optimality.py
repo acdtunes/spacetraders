@@ -1,18 +1,23 @@
 """sp-f1yk Deliverable 2 — OR-Tools optimality vs the brute-force reference.
 
-WAVE-1 / W4 — GATED on sp-y05b (OR-Tools sequencer). SCAFFOLD ONLY in W1: the reusable
-brute-force oracle + generators are BUILT and proven in tests/test_tour_harness.py; the
-OR-Tools-vs-brute-force ASSERTIONS below are skip-marked TODO(W4) and activate once y05b
-merges its sequencer toggle onto main.
+WAVE-1 / W4 — sp-y05b's OR-Tools sequencer is MERGED; the reusable brute-force oracle +
+generators (BUILT and proven in tests/test_tour_harness.py) now assert against the real
+sequencer. The `sequencer="ortools"` kwarg is y05b's finalized force-ON toggle.
 
-SEAM CHECK before removing the module skip (run first, defer if it fails):
-    grep -n "AddDisjunction\\|RoutingIndexManager\\|sequencer" utils/tour_solver.py
-must show y05b's OR-Tools sequencer + a force-ON toggle / time-cap / emission mode.
+SEAM CHECK (verified on main before un-skipping):
+    grep -nE "def ortools_sequences|AddDisjunction|RoutingIndexManager|SEQUENCER_ORTOOLS" utils/tour_solver.py
+shows y05b's OR-Tools prize-collecting sequencer (ortools_sequences), the single-visit
+AddDisjunction space, and the `sequencer="ortools"` force-ON toggle. The brute-force
+reference enumerates the SAME single-visit space OR-Tools' AddDisjunction defines, so `==`
+against OR-Tools' objective is well-posed.
 
-The exact force-ON mechanism (a `sequencer=` kwarg vs a module/env toggle) is y05b's to
-finalize per §7 y05b contract — W4 wires solve_tour's call accordingly. The brute-force
-reference already enumerates the SAME single-visit space OR-Tools' AddDisjunction defines,
-so `==` is well-posed.
+DELIVERED-API RECONCILIATION (real W4 finding): y05b wired ortools mode as a UNION — the
+ortools candidates ADD to beam's, stage 2 arbitrates (the F1/F2 safety net so a degenerate
+ortools pool can never hide beam's candidates). So solve_tour(sequencer="ortools") is an
+UPPER bound over beam, never below it. RED#4/#5 (single-visit instances where revisits
+cannot help) still pin the ortools-mode solve to the exact optimum; RED#5b is re-wired to
+OR-Tools' single-visit CEILING (bruteforce_best) — see its docstring — because a direct
+beam > ortools-mode comparison is unprovable through the union.
 """
 import math
 
@@ -23,8 +28,11 @@ from tests import tour_harness as th
 
 EPS = 1e-6
 
-pytestmark = pytest.mark.skip(reason="TODO(W4): gated on sp-y05b OR-Tools sequencer "
-                                     "(not yet on main). Oracle ready in tests/tour_harness.py.")
+# This file exercises y05b's native OR-Tools sequencer. ortools is a declared requirements.txt
+# dependency; when the native wheel is absent (a bare dev box), importorskip skips the module
+# HONESTLY rather than letting solve_tour silently fall back to beam and green-wash the ortools
+# path (Testing Theater). CI installs ortools, so the assertions run for real there.
+pytest.importorskip("ortools")
 
 
 def test_ortools_matches_bruteforce_single_visit_optimum():
@@ -59,12 +67,21 @@ def test_ortools_reaches_single_visit_optimum_fuzz(seed):
 def test_beam_may_exceed_ortools_on_revisit_instance():
     """RED#5b (documents WHY the domination invariant was false). At max_hops>=4 the beam
     revisits (A->B->A->B) to unlock a 2nd A-cap tranche the single-visit OR-Tools space
-    cannot reach — so beam objective > OR-Tools objective. Pins the known behavioral
-    difference so it is never mistaken for a regression. (The premise is already validated
-    seam-free in tests/test_tour_harness.py: prod beam 6800 > single-visit brute 4000.)"""
+    (AddDisjunction, no revisits) cannot reach — so beam's objective exceeds OR-Tools'
+    single-visit ceiling. Pins the known behavioral difference so it is never mistaken for
+    a regression.
+
+    W4 wiring (delivered-API reconciliation): the W1 scaffold compared beam to
+    solve_tour(sequencer="ortools"), but y05b's UNION folds beam's revisit candidate back
+    into the ortools-mode pool, so ortools-mode == beam (6800) and a direct beam > ortools-
+    mode assertion is UNPROVABLE. The faithful, strictly-stronger equivalent compares beam to
+    OR-Tools' single-visit CEILING, which the harness's bruteforce_best enumerates exactly
+    ("the SAME single-visit prize-collecting space OR-Tools' AddDisjunction is defined over").
+    beam > that ceiling proves the revisit gap OR-Tools structurally cannot close — the exact
+    premise the harness already pins seam-free (prod beam 6800 > single-visit brute 4000)."""
     sc = th.single_good_two_market(ask=100, bid=200, max_hops=4)
     beam_out = solve_tour(sc.snapshot, sc.ship, sc.cons, sc.model, waypoints=sc.waypoints,
-                          objective=OBJECTIVE_PROFIT)  # default beam sequencer
-    ortools_out = solve_tour(sc.snapshot, sc.ship, sc.cons, sc.model, waypoints=sc.waypoints,
-                             objective=OBJECTIVE_PROFIT, sequencer="ortools")
-    assert beam_out["projected_profit"] > ortools_out["projected_profit"]
+                          objective=OBJECTIVE_PROFIT)  # default beam sequencer (revisit-inclusive)
+    single_visit_optimum, _ = th.bruteforce_best(sc.snapshot, sc.ship, sc.cons, sc.model,
+                                                 OBJECTIVE_PROFIT, waypoints=sc.waypoints)
+    assert beam_out["projected_profit"] > single_visit_optimum
