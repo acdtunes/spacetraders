@@ -118,7 +118,18 @@ DEFAULT_SELL_DECAY = 0.9      # conservative fallback when tier not fitted
 DEFAULT_BUY_GROWTH = 1.1
 # Planned-depth ladder cap (harbormaster A-capped ruling 2026-07-09): interim
 # stand-in for phase-2 recovery-externality pricing — see module docstring.
-MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE = 2
+# sp-acb8 Tune 1: the DEFAULT for the now env-overridable throughput knob. It caps
+# how deep a hull loads per (market, good, side) — the economy-analyst's dominant
+# $/hr lever — so the replay can sweep it {2,3,4} and run.sh arm the winner later,
+# exactly like TOUR_SOLVER_ORTOOLS_TIME_VALUE. Resolved ONCE per solve_tour call
+# (_resolve_max_planned_tranches) and threaded to every read site so a single solve
+# is internally consistent. DEFAULT-SAFE: absent/unset/invalid env -> 2 -> byte-
+# identical to the pre-sp-acb8 hardcode (the governance gate — nothing moves until
+# TOUR_SOLVER_MAX_PLANNED_TRANCHES is explicitly set).
+MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE = 2  # env TOUR_SOLVER_MAX_PLANNED_TRANCHES, clamp [1, 6]
+MAX_PLANNED_TRANCHES_ENV_VAR = "TOUR_SOLVER_MAX_PLANNED_TRANCHES"
+MAX_PLANNED_TRANCHES_MIN = 1   # floor: 1 tranche still trades; 0 would plan no loads
+MAX_PLANNED_TRANCHES_MAX = 6   # ceiling: well above the analyst's {2,3,4} sweep
 CRUISE_TIME_MULTIPLIER = 31   # mirrors utils/routing_engine.FlightMode.CRUISE
 GATE_HOP_ALLOWANCE_SECONDS = 450   # to-gate / from-gate hop (gate coords not carried)
 JUMP_COOLDOWN_SECONDS = 900        # gate jump + cooldown
@@ -513,7 +524,7 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
 
 def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None,
-                   absorption_index=None, stock_sources=None):
+                   absorption_index=None, stock_sources=None, max_planned_tranches=None):
     """Greedy tranche allocation over one hop sequence (the LP stage).
 
     Returns dict(profit, spend, seconds, cph, legs, held_liquidation,
@@ -549,6 +560,8 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     deposit_sinks = deposit_sinks or {}
     absorption_index = absorption_index or {}
     stock_sources = stock_sources or {}
+    if max_planned_tranches is None:   # sp-acb8: env-resolve for direct callers; solve_tour threads it
+        max_planned_tranches = _resolve_max_planned_tranches()
     n = len(seq)
     hold_cap = ship["hold_capacity"]
     initial = {}
@@ -573,7 +586,7 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             # tranches per (market, good, side) across the whole tour,
             # revisits included (A-capped ruling — see module docstring).
             capped = min(pool_ceiling,
-                         MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * tv)
+                         max_planned_tranches * tv)
             tranches = tranche_prices(quote, tv, _tier_of(row), model, is_buy, capped)
             # sp-78ai L3: net outstanding cross-container absorption on this
             # (waypoint, good, side) out of available depth. The A-cap ladder is now
@@ -830,7 +843,8 @@ def _held_liquidation_value(wp, markets, initial_cargo):
                if g in goods and goods[g]["bid"] > 0)
 
 
-def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp):
+def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp,
+               max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE):
     """Optimistic multi-good hold-packing value of the DIRECTED pair (buy at
     wp_from, sell/deposit at wp_to) — directional: gain(a,b) != gain(b,a), so
     buy-before-sell precedence is priced into the ortools arc costs.
@@ -842,7 +856,7 @@ def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp):
     for good, brow in markets[wp_from]["goods"].items():
         srow = goods_to.get(good)
         if srow and brow["ask"] > 0 and srow["bid"] > brow["ask"]:
-            depth = MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * max(
+            depth = max_planned_tranches * max(
                 1, min(brow["trade_volume"], srow["trade_volume"]))
             spreads.append((srow["bid"] - brow["ask"], depth))
         dsink = deposit_sinks.get((wp_to, good))
@@ -863,7 +877,8 @@ def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp):
     return gain
 
 
-def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp):
+def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
+                 max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE):
     """Two-phase node pruning for the ortools subset models (sp-y05b).
 
     Phase 1 — cheap prefilter on per-good global max_bid/min_ask with the
@@ -918,8 +933,10 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp):
         for other in kept:
             if other == wp:
                 continue
-            g = max(_pair_gain(wp, other, markets, hold, deposit_sinks, stock_by_wp),
-                    _pair_gain(other, wp, markets, hold, deposit_sinks, stock_by_wp))
+            g = max(_pair_gain(wp, other, markets, hold, deposit_sinks, stock_by_wp,
+                               max_planned_tranches),
+                    _pair_gain(other, wp, markets, hold, deposit_sinks, stock_by_wp,
+                               max_planned_tranches))
             if g > best:
                 best = g
         return best + _held_liquidation_value(wp, markets, initial)
@@ -932,7 +949,7 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp):
 
 
 def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
-                   stock_sources=None):
+                   stock_sources=None, max_planned_tranches=None):
     """Beam search over hop sequences; every prefix is a candidate tour.
 
     Ranking uses an optimistic MULTI-GOOD hold-packing bound (sp-gm00): for
@@ -958,6 +975,8 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
     never crowds the top-N scoring pool on lookahead credit it can't realize.
     Returns candidate sequences (tuples) sorted best-bound-first.
     """
+    if max_planned_tranches is None:   # sp-acb8: env-resolve for direct callers; solve_tour threads it
+        max_planned_tranches = _resolve_max_planned_tranches()
     deposit_sinks = deposit_sinks or {}
     stock_sources = stock_sources or {}
     stock_by_wp = {}
@@ -988,7 +1007,7 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
         for good, brow in markets[wp_from]["goods"].items():
             srow = goods_to.get(good)
             if srow and brow["ask"] > 0 and srow["bid"] > brow["ask"]:
-                depth = MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE * max(
+                depth = max_planned_tranches * max(
                     1, min(brow["trade_volume"], srow["trade_volume"]))
                 spreads.append((srow["bid"] - brow["ask"], depth))
             # Deposit sink at wp_to (sp-dchv): a synthetic sink priced at home_ask
@@ -1082,8 +1101,25 @@ def _sequencer_env_scalar(name, default, lo, hi, cast):
     return clamped
 
 
+def _resolve_max_planned_tranches():
+    """Per-solve env override for the planned-tranche ladder cap
+    (TOUR_SOLVER_MAX_PLANNED_TRANCHES, sp-acb8 Tune 1). Delegates to
+    _sequencer_env_scalar, so it clamps to [MAX_PLANNED_TRANCHES_MIN,
+    MAX_PLANNED_TRANCHES_MAX] and falls back to the
+    MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE default (2) on absent/unset/non-int
+    — byte-identical to the pre-sp-acb8 hardcode when the env is not set. The floor
+    is 1 (NEVER 0: a 0 cap plans no loads and would silently halt trading). Resolved
+    ONCE at the top of solve_tour and threaded to every read site (score_sequence,
+    beam_sequences, ortools_sequences -> _prune_nodes/_pair_gain) so a single solve
+    is internally consistent — the same discipline as the ORTOOLS_TIME_VALUE lambda."""
+    return _sequencer_env_scalar(MAX_PLANNED_TRANCHES_ENV_VAR,
+                                 MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE,
+                                 MAX_PLANNED_TRANCHES_MIN,
+                                 MAX_PLANNED_TRANCHES_MAX, int)
+
+
 def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
-                      stock_sources=None, stats_out=None):
+                      stock_sources=None, stats_out=None, max_planned_tranches=None):
     """OR-Tools prize-collecting stage-1 sequencer (sp-y05b). Same contract as
     beam_sequences: list of waypoint-symbol tuples, best-first. Returning []
     is the no-solution surface; the solve_tour seam catches any exception and
@@ -1129,8 +1165,11 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                                       ORTOOLS_TIME_BUDGET_SECONDS, 2, 5, int) * 1000
     max_subsets = _sequencer_env_scalar("TOUR_SOLVER_ORTOOLS_MAX_SUBSETS",
                                         ORTOOLS_MAX_SUBSETS, 1, 32, int)
+    if max_planned_tranches is None:   # sp-acb8: env-resolve for direct callers; solve_tour threads it
+        max_planned_tranches = _resolve_max_planned_tranches()
 
-    pruned = _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp)
+    pruned = _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
+                          max_planned_tranches)
     # sp-im74: CLOSED mode prices the return-to-anchor on the virtual END arc, so the
     # in-model route optimum is a closed circuit. Open (closed falsey, or a direct
     # caller without the solve_tour stash) keeps all end arcs at 0 — byte-identical.
@@ -1161,7 +1200,8 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
         for b in pruned:
             if a == b:
                 continue
-            g = _pair_gain(a, b, markets, hold, deposit_sinks, stock_by_wp)
+            g = _pair_gain(a, b, markets, hold, deposit_sinks, stock_by_wp,
+                           max_planned_tranches)
             if g > 0:
                 pair[(a, b)] = g
                 key = (sys_of[a], sys_of[b])
@@ -1479,13 +1519,19 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     absorption_index = _index_absorption(absorption)
     travel_fn = _make_travel_fn(constraints, markets, ship, waypoints)
     sequencer = _resolve_sequencer(sequencer)
+    # sp-acb8 Tune 1: resolve the planned-tranche ladder cap ONCE per solve (env
+    # TOUR_SOLVER_MAX_PLANNED_TRANCHES, default 2 == byte-identical) and thread the
+    # single value to every stage so this solve is internally consistent.
+    max_planned_tranches = _resolve_max_planned_tranches()
     beam_cands = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
-                                stock_source_idx)
+                                stock_source_idx,
+                                max_planned_tranches=max_planned_tranches)
     if sequencer == SEQUENCER_ORTOOLS:
         # F9: pass the BUILT indices positionally, byte-mirroring the beam call.
         try:
             ortools_cands = ortools_sequences(markets, ship, constraints, travel_fn,
-                                              deposit_sinks, stock_source_idx)
+                                              deposit_sinks, stock_source_idx,
+                                              max_planned_tranches=max_planned_tranches)
         except Exception:
             # The servicer never dies on the new path — beam carries the solve.
             # Once-per-process with traceback (a broken wheel fails identically
@@ -1513,7 +1559,8 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     seen = set()
     for seq in pool:
         result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
-                                deposit_sinks, absorption_index, stock_source_idx)
+                                deposit_sinks, absorption_index, stock_source_idx,
+                                max_planned_tranches=max_planned_tranches)
         signature = tuple((l["waypoint_symbol"],
                            tuple((t["good_symbol"], t["units"], t["is_buy"],
                                   t["is_deposit"], t["is_stock"], t["expected_unit_price"])

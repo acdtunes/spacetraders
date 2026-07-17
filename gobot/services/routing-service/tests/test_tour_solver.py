@@ -1039,3 +1039,83 @@ def test_env_profit_silent_bogus_warns_once(monkeypatch, caplog):
         assert ts._resolve_objective(None, long_tour=False) == ts.OBJECTIVE_PROFIT
     warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
     assert len(warnings) == 1, "unrecognized env must warn exactly once per process"
+
+
+# ── sp-acb8 Tune 1: TOUR_SOLVER_MAX_PLANNED_TRANCHES env override ──────────────
+# The planned-tranche ladder cap (MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE — the
+# D39-incident anti-concentration throttle) is the economy-analyst's dominant
+# throughput lever (76% of the per-tour $/hr spread). This makes it an
+# env-overridable knob so the replay can sweep {2,3,4} and run.sh can arm the
+# winner later — mirroring TOUR_SOLVER_ORTOOLS_TIME_VALUE / _sequencer_env_scalar.
+# DEFAULT-SAFE: absent/unset/invalid env resolves to the hardcoded 2, byte-identical.
+
+@pytest.mark.parametrize("env_value,expected", [
+    (None, 2),     # absent/unset -> the module default (byte-identical to pre-sp-acb8)
+    ("", 2),       # empty/unset -> the default
+    ("2", 2),      # explicit default
+    ("3", 3),      # the analyst's mid sweep point
+    ("4", 4),      # the analyst's top sweep point
+    ("6", 6),      # ceiling, in-range
+    ("0", 1),      # "1 floors it" -> floored to the sane minimum, NEVER 0 (0 = no loads)
+    ("-5", 1),     # negative -> floored to 1, never 0
+    ("9", 6),      # above the sane range -> clamped to the ceiling
+    ("abc", 2),    # non-int -> falls back to the default
+    ("2.5", 2),    # non-int (float string) -> falls back to the default
+])
+def test_resolve_max_planned_tranches_env_override(monkeypatch, env_value, expected):
+    # sp-acb8 Tune 1: the env resolver mirrors _sequencer_env_scalar — clamp to the
+    # sane range [1, 6], fall back to the MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE
+    # default (2) on absent/unset/non-int. The floor is 1 (never 0), so a 0/negative
+    # operator typo can never plan zero loads and silently halt trading.
+    from utils.tour_solver import (_resolve_max_planned_tranches,
+                                   MAX_PLANNED_TRANCHES_ENV_VAR,
+                                   MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE)
+    if env_value is None:
+        monkeypatch.delenv(MAX_PLANNED_TRANCHES_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(MAX_PLANNED_TRANCHES_ENV_VAR, env_value)
+    resolved = _resolve_max_planned_tranches()
+    assert resolved == expected
+    assert resolved >= 1, "the ladder cap must never resolve to 0 (0 tranches = no loads)"
+    if env_value in (None, ""):
+        # governance gate: an absent env is byte-identical to the pre-sp-acb8 hardcode
+        assert resolved == MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE
+
+
+def test_max_planned_tranches_env_deepens_planned_load(monkeypatch):
+    # sp-acb8 Tune 1 (the point of the knob): a HIGHER cap must let one hull load a
+    # DEEPER tranche stack at a single (market, good, side) — the ladder cap in the
+    # score_sequence `pool` closure is MAX_PLANNED_TRANCHES * trade_volume. One cheap
+    # source (A) feeding one fat sink (B), with a big hold and budget so the ONLY
+    # binding throttle is the tranche cap (not hold/spend/market depth). objective is
+    # pinned to profit so the assertion is deterministic under any deploy-time default.
+    snapshot = [
+        snap("A", "S1", "G", ask=100, bid=90, tv=20),    # cheap source
+        snap("B", "S1", "G", ask=999, bid=500, tv=20),   # fat sink; deep tranches stay profitable
+    ]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=400, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(max_hops=4, max_spend=10_000_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+
+    def buy_units(env_value):
+        if env_value is None:
+            monkeypatch.delenv("TOUR_SOLVER_MAX_PLANNED_TRANCHES", raising=False)
+        else:
+            monkeypatch.setenv("TOUR_SOLVER_MAX_PLANNED_TRANCHES", env_value)
+        out = solve_tour(snapshot, ship, cons, MODEL, objective="profit")
+        assert out["feasible"], out
+        return sum(t["units"] for l in out["legs"]
+                   for t in l["trades"] if t["is_buy"])
+
+    baseline = buy_units(None)      # default cap 2
+    deeper = buy_units("3")         # cap 3
+    deepest = buy_units("4")        # cap 4
+
+    assert baseline > 0, "sanity: the default-cap tour must load SOMETHING"
+    # The knob's whole purpose: raising the cap raises acquisition depth (throughput).
+    # Mutation guard: hardcode the resolver to 2 and baseline == deeper == deepest here.
+    assert deeper > baseline, (baseline, deeper)
+    assert deepest > deeper, (deeper, deepest)
