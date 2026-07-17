@@ -20,6 +20,10 @@ export function deriveScoutStatus(row: { assigned_hull?: string | null; repositi
 // Merge the grouped market aggregation with scout_posts rows. Systems with
 // zero listings are omitted (dark = unsensed) UNLESS they carry a scout post —
 // the actuator marker must render even before its first scan lands.
+// Contract: both inputs MUST already be era-scoped by the caller
+// (`era_id = $current OR era_id IS NULL`, ScoutPostModel invariant sp-njpu);
+// this shaper emits a record for every post row it receives, so an unscoped
+// scout query would surface dead-era posts as phantom zero-listing systems.
 export function shapeFreshnessResponse(
   marketRows: { system: unknown; total: unknown; fresh: unknown; freshest_at: unknown }[],
   scoutRows: { system_symbol: string; assigned_hull?: string | null; reposition_container_id?: string | null; kind?: string | null }[],

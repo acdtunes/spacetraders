@@ -365,8 +365,16 @@ router.get('/freshness', async (_req, res) => {
        GROUP BY w.system_symbol`,
       [eraId, cutoffIso],
     );
+    // Era-scoped, matching the market join above and ScoutPostModel's contract
+    // (gobot models.go: reads MUST be era-scoped so a universe reset never
+    // resurrects dead-era posts, sp-njpu). Dead-era rows persist in scout_posts
+    // after a reset; unscoped, they'd paint phantom manned diamonds on any
+    // recurring system symbol.
     const scoutResult = await client.query(
-      `SELECT system_symbol, assigned_hull, reposition_container_id, kind FROM scout_posts`,
+      `SELECT system_symbol, assigned_hull, reposition_container_id, kind
+       FROM scout_posts
+       WHERE era_id = $1 OR era_id IS NULL`,
+      [eraId],
     );
     res.json({
       systems: shapeFreshnessResponse(marketResult.rows, scoutResult.rows),

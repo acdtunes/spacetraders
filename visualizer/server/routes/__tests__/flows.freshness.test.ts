@@ -58,6 +58,23 @@ describe('GET /api/flows/freshness', () => {
     expect(Date.now() - cutoff).toBeLessThan(76 * 60 * 1000);
   });
 
+  it('era-scopes the scout_posts read so dead-era posts are never resurrected', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ era_id: 7 }] }) // eras
+      .mockResolvedValueOnce({ rows: [] }) // market aggregation
+      .mockResolvedValueOnce({ rows: [] }); // scout_posts (era-scoped => dead-era row excluded)
+    connect.mockResolvedValue({ query, release: vi.fn() });
+
+    const app = await makeApp();
+    const res = await request(app).get('/api/flows/freshness');
+
+    expect(res.status).toBe(200);
+    const scoutSql = query.mock.calls[2][0] as string;
+    expect(scoutSql).toMatch(/FROM scout_posts/i);
+    expect(scoutSql).toMatch(/era_id = \$1 OR era_id IS NULL/);
+    expect(query.mock.calls[2][1]).toEqual([7]);
+  });
+
   it('degrades to 503 db_unavailable when the pool cannot connect', async () => {
     connect.mockRejectedValue(new Error('ECONNREFUSED'));
     const app = await makeApp();
