@@ -266,7 +266,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		if perr == nil && plan != nil && plan.Feasible {
 			s.feasible = true
 			s.freshProfit = plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
-			s.rate, s.hasRate = repositionCandidateRate(s.freshProfit, plan)
+			s.rate, s.hasRate = repositionCandidateRate(s.freshProfit, plan, cand.hops)
 		} else {
 			// sp-lxwn: capture WHY this candidate is not a contender so the ranking log names
 			// it. The solver returns "no_profitable_tour" for a tapped/depleted ground (it built
@@ -524,13 +524,28 @@ func repositionDecayedScore(candidate repositionCandidate, decay float64) float6
 
 // excludeHerdedSystems drops any candidate system already served by >= the configured per-system
 // hull cap (sp-uf64 anti-herd), returning the survivors and how many were excluded (for the log).
-// Fail-open: an unreadable/unwired fleet snapshot excludes NOTHING (RULINGS #4 — the margins-death
-// rescue must never be blocked by a telemetry miss), so a nil ship repo or a read error leaves the
-// set intact.
+// The cap counts LANDED trade hulls (activeTradeHullsBySystem) PLUS rate-floor relocations currently
+// IN FLIGHT to each system (pendingRelocationsBySystem, epic sp-fguo Part 2) — so a concurrent
+// evaluator respects the cap while early movers are still mid-jump and their landed location lags a
+// full multi-hop flight (the atomic-cap fix for the restart-cohort overshoot). The pending map is
+// empty whenever the rate-floor trigger has committed nothing, so this is byte-identical to the
+// pre-atomic anti-herd when the trigger is off.
+//
+// Fail-open: an unreadable/unwired fleet snapshot with NOTHING in flight excludes NOTHING (RULINGS
+// #4 — the margins-death rescue must never be blocked by a telemetry miss). But when relocations ARE
+// in flight (pending > 0) the cap still applies on the pending count alone, so a cohort cannot
+// overshoot a system it is already piling into even if the live fleet read blips.
 func (h *RunTourCoordinatorHandler) excludeHerdedSystems(ctx context.Context, cmd *RunTourCoordinatorCommand, candidates []repositionCandidate) ([]repositionCandidate, int) {
 	counts, ok := h.activeTradeHullsBySystem(ctx, cmd.PlayerID)
-	if !ok {
-		return candidates, 0
+	pending := h.snapshotPendingRelocations()
+	if !ok && len(pending) == 0 {
+		return candidates, 0 // nothing readable, nothing in flight → fail open (byte-identical)
+	}
+	if counts == nil {
+		counts = make(map[string]int, len(pending))
+	}
+	for system, inFlight := range pending {
+		counts[system] += inFlight // add in-flight movers to the landed count (atomic cap)
 	}
 	maxHulls := resolveRepositionReachMaxHulls(cmd.RepositionReachMaxHullsPerSystem)
 	kept := make([]repositionCandidate, 0, len(candidates))
@@ -696,20 +711,29 @@ func freshListings(listings []trading.GoodListing, now time.Time, maxAge time.Du
 }
 
 // repositionCandidateRate prices a candidate as projected FRESH credits/HOUR over its
-// full time-to-value (sp-1wp8): the one-way jump (crossSystemHopSeconds — reposition
-// candidates are one gate hop away by construction, buildRepositionCandidates), the
-// post-jump re-plan allowance, and the candidate plan's own projected wall-clock,
-// recovered by inverting the solver's cph (cph = profit/(seconds/3600) ⇒ seconds =
-// profit/cph×3600 — pure algebra on the response, no proto change). ok=false when the
-// plan carries no usable time estimate (cph<=0, e.g. a degenerate/mocked planner);
-// callers then fall back to absolute-fresh ordering rather than ranking a real rate
-// against a guess (the sp-1wp8 divide-by-zero regression pin).
-func repositionCandidateRate(freshProfit int64, plan *routing.TourPlan) (float64, bool) {
+// full time-to-value (sp-1wp8): the one-way jump (hops·crossSystemHopSeconds — the candidate's
+// ACTUAL gate-hop distance, not a single hop), the post-jump re-plan allowance, and the candidate
+// plan's own projected wall-clock, recovered by inverting the solver's cph (cph = profit/(seconds/
+// 3600) ⇒ seconds = profit/cph×3600 — pure algebra on the response, no proto change). ok=false when
+// the plan carries no usable time estimate (cph<=0, e.g. a degenerate/mocked planner); callers then
+// fall back to absolute-fresh ordering rather than ranking a real rate against a guess (the sp-1wp8
+// divide-by-zero regression pin).
+//
+// hops is charged PER-HOP (matching evaluateForeignPlacement's D_x formula) with a hops<1→1 floor:
+// the pre-fix single-hop charge under-stated a reach candidate's deadhead by (hops−1)·crossSystemHop
+// (~25% at 2-4 hops), over-stating a distant ground's rate and making the rate-floor improvement gate
+// over-permissive for far grounds. NOTE: this is the LIVE reach / margins-death rate too (sp-uf64 /
+// sp-zhii); a more honest deadhead cost ranks distant candidates slightly lower ⇒ marginally less
+// eager distant repositioning. It does NOT change the absolute fresh-profit floor gate.
+func repositionCandidateRate(freshProfit int64, plan *routing.TourPlan, hops int) (float64, bool) {
 	if plan == nil || plan.ProjectedProfit <= 0 || plan.ProjectedCreditsPerHour <= 0 {
 		return 0, false
 	}
+	if hops < 1 {
+		hops = 1 // defensive floor: an unstamped candidate is charged one hop, never a free deadhead
+	}
 	planSeconds := float64(plan.ProjectedProfit) / plan.ProjectedCreditsPerHour * 3600
-	hours := (crossSystemHopSeconds + repositionReplanAllowanceSeconds + planSeconds) / 3600
+	hours := (float64(hops)*crossSystemHopSeconds + repositionReplanAllowanceSeconds + planSeconds) / 3600
 	return float64(freshProfit) / hours, true
 }
 

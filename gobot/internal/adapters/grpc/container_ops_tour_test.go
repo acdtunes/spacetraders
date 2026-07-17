@@ -418,3 +418,73 @@ func TestStartTourRun_RepositionReachDefaultsWhenUnset(t *testing.T) {
 	require.Equal(t, 0, cmd.RepositionReachHopDecayPct, "an unset hop_decay_pct must rebuild to the sentinel 0 (consumer resolves -> 85)")
 	require.Equal(t, 0, cmd.RepositionReachMaxHullsPerSystem, "an unset max_hulls_per_system must rebuild to the sentinel 0 (consumer resolves -> 5)")
 }
+
+// rate-floor THE CONFIG-KNOB PROPAGATION PIN (epic sp-fguo Part 2). The rate-floor early-reposition
+// trigger is a daemon-global [trade_fleet] tuning (exactly like reposition_reach_* / placement_*), so
+// — mirroring TestStartTourRun_StampsRepositionReachFromTradeFleetConfig — StartTourRun must STAMP the
+// flag + the three int knobs into the launch config from tradeFleetConfig and buildTourCoordinatorCommand
+// must READ them back onto the command. Without both writes the knob is INERT: the operator's
+// config.yaml value never reaches maybeRepositionRateFloor and the trigger stays dormant.
+func TestStartTourRun_StampsRepositionRateFloorFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.RepositionRateFloorEnabled = true // the captain's [trade_fleet] arming
+	s.tradeFleetConfig.RepositionRateFloorPct = 35
+	s.tradeFleetConfig.RepositionRateFloorImprovementPct = 250
+	s.tradeFleetConfig.RepositionRateFloorDwellMinutes = 20
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"reposition_rate_floor_enabled":true`, "StartTourRun must stamp the [trade_fleet] reposition_rate_floor_enabled so the launch/rebuild reads it back — otherwise the trigger can never be armed")
+
+	// The whole boundary round-trips: the rebuild reloads the stamped knobs onto the command, which
+	// maybeRepositionRateFloor reads to gate the early-reposition decision.
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.True(t, cmd.RepositionRateFloorEnabled)
+	require.Equal(t, 35, cmd.RepositionRateFloorPct)
+	require.Equal(t, 250, cmd.RepositionRateFloorImprovementPct)
+	require.Equal(t, 20, cmd.RepositionRateFloorDwellMinutes)
+}
+
+// rate-floor default-safety companion (epic sp-fguo Part 2): an UNSET [trade_fleet] reposition_rate_floor
+// block rebuilds to RepositionRateFloorEnabled=false + the three int knobs at 0 — which the coordinator
+// reads as the dormant trigger, so a daemon that never arms the knobs is byte-identical to today.
+func TestStartTourRun_RepositionRateFloorDefaultsWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig rate-floor fields left at their zero values (the operator never armed them).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.False(t, cmd.RepositionRateFloorEnabled, "an unset reposition_rate_floor_enabled must rebuild to false (trigger dormant, byte-identical to today)")
+	require.Equal(t, 0, cmd.RepositionRateFloorPct, "an unset reposition_rate_floor_pct must rebuild to the sentinel 0 (consumer resolves -> 40)")
+	require.Equal(t, 0, cmd.RepositionRateFloorImprovementPct, "an unset reposition_rate_floor_improvement_pct must rebuild to the sentinel 0 (consumer resolves -> 200)")
+	require.Equal(t, 0, cmd.RepositionRateFloorDwellMinutes, "an unset reposition_rate_floor_dwell_minutes must rebuild to the sentinel 0 (consumer resolves -> 15)")
+}

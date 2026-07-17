@@ -145,6 +145,17 @@ func (s *DaemonServer) StartTourRun(
 		"reposition_reach_enabled":              s.tradeFleetConfig.RepositionReachEnabled,
 		"reposition_reach_hop_decay_pct":        s.tradeFleetConfig.RepositionReachHopDecayPct,
 		"reposition_reach_max_hulls_per_system": s.tradeFleetConfig.RepositionReachMaxHullsPerSystem,
+		// epic sp-fguo Part 2: the rate-floor early-reposition knobs, sourced from the daemon's live
+		// [trade_fleet] config (daemon-global tour tuning, the mirror of reposition_reach_* above).
+		// Persisted as-is (false/0 too, so an absent knob survives a recovery rebuild unchanged and
+		// the default-OFF dormancy is stable in BOTH directions); buildTourCoordinatorCommand reads
+		// them back via OptionalBool/OptionalInt, which yield the zero values for absent keys.
+		// reposition_rate_floor_enabled=false keeps the trigger dormant. This WRITE is what lets the
+		// knob take effect — without it cmd.RepositionRateFloorEnabled is inert and false.
+		"reposition_rate_floor_enabled":         s.tradeFleetConfig.RepositionRateFloorEnabled,
+		"reposition_rate_floor_pct":             s.tradeFleetConfig.RepositionRateFloorPct,
+		"reposition_rate_floor_improvement_pct": s.tradeFleetConfig.RepositionRateFloorImprovementPct,
+		"reposition_rate_floor_dwell_minutes":   s.tradeFleetConfig.RepositionRateFloorDwellMinutes,
 		"iterations":                            iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that

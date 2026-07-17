@@ -143,3 +143,58 @@ func TestLoadConfig_RepositionReach_AbsentIsDefaults(t *testing.T) {
 	require.Equal(t, 0, cfg.TradeFleet.RepositionReachMaxHullsPerSystem,
 		"an absent max_hulls_per_system must be the sentinel 0 (the consumer resolves 0 -> default 5), never a config-layer default")
 }
+
+// epic sp-fguo Part 2 round-trip pin: the rate-floor early-reposition knobs must travel from
+// config.yaml's [trade_fleet] section into the loaded config unchanged, so the captain can arm and
+// tune the trigger by editing config.yaml + restarting (no code redeploy). Exercises the REAL viper
+// mapstructure pipeline.
+func TestLoadConfig_RepositionRateFloor_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  reposition_rate_floor_enabled: true\n"+
+			"  reposition_rate_floor_pct: 35\n"+
+			"  reposition_rate_floor_improvement_pct: 250\n"+
+			"  reposition_rate_floor_dwell_minutes: 20\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.True(t, cfg.TradeFleet.RepositionRateFloorEnabled,
+		"reposition_rate_floor_enabled must reach the config struct so the captain can arm the rate-floor trigger by editing config.yaml + restarting")
+	require.Equal(t, 35, cfg.TradeFleet.RepositionRateFloorPct,
+		"reposition_rate_floor_pct must round-trip so the under-earner threshold is operator-tunable")
+	require.Equal(t, 250, cfg.TradeFleet.RepositionRateFloorImprovementPct,
+		"reposition_rate_floor_improvement_pct must round-trip so the anti-thrash improvement bar is operator-tunable")
+	require.Equal(t, 20, cfg.TradeFleet.RepositionRateFloorDwellMinutes,
+		"reposition_rate_floor_dwell_minutes must round-trip so the per-hull dwell cadence is operator-tunable")
+}
+
+// epic sp-fguo Part 2 default-safety companion: an ABSENT reposition_rate_floor block resolves to the
+// Go zero values viper leaves untouched (false + 0 + 0 + 0) — so a daemon that never sets the knobs
+// runs with the trigger DORMANT, byte-identical to today. The three int sentinels (0) are the
+// consumer's "resolve to default" signal (resolveRateFloorPct -> 40, resolveRateFloorImprovementPct
+// -> 200, resolveRateFloorDwellMinutes -> 15), so the defaults live in ONE place (the coordinator).
+func TestLoadConfig_RepositionRateFloor_AbsentIsDefaults(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.False(t, cfg.TradeFleet.RepositionRateFloorEnabled,
+		"an absent reposition_rate_floor_enabled must default false (trigger dormant), never a config-layer default that silently arms the trigger")
+	require.Equal(t, 0, cfg.TradeFleet.RepositionRateFloorPct,
+		"an absent reposition_rate_floor_pct must be the sentinel 0 (the consumer resolves 0 -> default 40)")
+	require.Equal(t, 0, cfg.TradeFleet.RepositionRateFloorImprovementPct,
+		"an absent reposition_rate_floor_improvement_pct must be the sentinel 0 (the consumer resolves 0 -> default 200)")
+	require.Equal(t, 0, cfg.TradeFleet.RepositionRateFloorDwellMinutes,
+		"an absent reposition_rate_floor_dwell_minutes must be the sentinel 0 (the consumer resolves 0 -> default 15)")
+}

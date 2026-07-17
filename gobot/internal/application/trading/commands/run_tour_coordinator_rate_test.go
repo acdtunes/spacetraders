@@ -239,20 +239,41 @@ func TestSelectRepositionWinner_NoFloorClearingCandidate_ReportsBestFeasible(t *
 
 // repositionCandidateRate inverts the solver's own cph to recover the plan's
 // projected wall-clock (seconds = profit/cph×3600) and prices the candidate as
-// fresh/(jump + replan + plan) hours. No estimate (cph<=0) → ok=false.
+// fresh/(hops·jump + replan + plan) hours. No estimate (cph<=0) → ok=false.
 func TestRepositionCandidateRate_InvertsSolverCphAndAddsOverhead(t *testing.T) {
-	// planSeconds = 345000/230000×3600 = 5400s; hours = (352+60+5400)/3600 = 1.61444;
+	// planSeconds = 345000/230000×3600 = 5400s; 1 hop: hours = (352+60+5400)/3600 = 1.61444;
 	// rate = 345000/1.61444 = 213,695.6/hr.
 	plan := &routing.TourPlan{Feasible: true, ProjectedProfit: 345000, ProjectedCreditsPerHour: 230000}
-	rate, ok := repositionCandidateRate(345000, plan)
+	rate, ok := repositionCandidateRate(345000, plan, 1)
 	if !ok {
 		t.Fatalf("a plan with positive cph must yield a rate")
 	}
 	if rate < 213000 || rate > 214500 {
-		t.Fatalf("expected ~213.7k/hr (345k over jump+replan+5400s plan), got %.1f", rate)
+		t.Fatalf("expected ~213.7k/hr (345k over 1·jump+replan+5400s plan), got %.1f", rate)
 	}
 
-	if _, ok := repositionCandidateRate(90000, &routing.TourPlan{Feasible: true, ProjectedProfit: 90000}); ok {
+	// THE multi-hop deadhead pin (the far-ground under-charge fix): the SAME plan 3 gate hops away
+	// is charged 3·352s, not 1·352 — hours = (1056+60+5400)/3600 = 1.81; rate = 345000/1.81 =
+	// ~190.6k/hr, materially BELOW the 1-hop rate. If hops were ignored (single-hop charge), a
+	// distant candidate's rate would be over-stated back to ~213.7k and the improvement gate would
+	// be over-permissive for far grounds.
+	rate3, ok := repositionCandidateRate(345000, plan, 3)
+	if !ok {
+		t.Fatalf("a 3-hop plan with positive cph must yield a rate")
+	}
+	if rate3 < 190000 || rate3 > 191500 {
+		t.Fatalf("expected ~190.6k/hr (345k over 3·jump+replan+5400s plan), got %.1f", rate3)
+	}
+	if rate3 >= rate {
+		t.Fatalf("a 3-hop candidate must be charged MORE deadhead than a 1-hop one (rate3 %.1f < rate1 %.1f)", rate3, rate)
+	}
+
+	// hops<1 defensive floor: charged as one hop, never a free deadhead.
+	if r0, _ := repositionCandidateRate(345000, plan, 0); r0 != rate {
+		t.Fatalf("hops<1 must be charged as one hop (got %.1f, want the 1-hop rate %.1f)", r0, rate)
+	}
+
+	if _, ok := repositionCandidateRate(90000, &routing.TourPlan{Feasible: true, ProjectedProfit: 90000}, 1); ok {
 		t.Fatalf("cph=0 carries no time estimate — ok must be false (the divide-by-zero pin)")
 	}
 }

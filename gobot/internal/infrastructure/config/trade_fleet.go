@@ -156,6 +156,20 @@ type TradeFleetConfig struct {
 	RepositionReachEnabled           bool `mapstructure:"reposition_reach_enabled"`
 	RepositionReachHopDecayPct       int  `mapstructure:"reposition_reach_hop_decay_pct"`
 	RepositionReachMaxHullsPerSystem int  `mapstructure:"reposition_reach_max_hulls_per_system"`
+
+	// --- Rate-floor early-reposition (epic sp-fguo, Part 2) ---
+	// Daemon-global tour tunings, same for every tour container (the mirror of reposition_reach_*
+	// above): StartTourRun stamps them into every tour launch config, buildTourCoordinatorCommand
+	// reads them back onto the command. RepositionRateFloorEnabled defaults FALSE, so the trigger is
+	// dormant and the productive-tour path is byte-identical to today (the governance gate — nothing
+	// arms without an explicit captain config change). The three int knobs default to 0 ⇒ the
+	// coordinator's own reposition_rate_floor_{pct,improvement_pct,dwell_minutes} default (40, 200,
+	// 15), so an absent knob is byte-identical to today; the default lives in the consumer, not here.
+	// Arm/retune by editing config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
+	RepositionRateFloorEnabled        bool `mapstructure:"reposition_rate_floor_enabled"`
+	RepositionRateFloorPct            int  `mapstructure:"reposition_rate_floor_pct"`
+	RepositionRateFloorImprovementPct int  `mapstructure:"reposition_rate_floor_improvement_pct"`
+	RepositionRateFloorDwellMinutes   int  `mapstructure:"reposition_rate_floor_dwell_minutes"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

@@ -256,6 +256,36 @@ type RunTourCoordinatorCommand struct {
 	// repositionReachMaxHullsPerSystemDefault (5). Only read when RepositionReachEnabled is true.
 	RepositionReachMaxHullsPerSystem int
 
+	// --- Rate-floor early-reposition (epic sp-fguo, Part 2 — always-relocate chronic under-earners) ---
+	// The margins-death reposition only fires when a continuous tour's margins DIE. A hull earning
+	// mediocre-but-profitable local arb (say 80k/hr while frontier pays 360-480k/hr) never
+	// margin-dies, so it never relocates. This trigger, evaluated AFTER a PRODUCTIVE continuous tour,
+	// relocates a hull whose realized rate is far below the fleet median to a meaningfully better
+	// reachable ground via part-1's reach discovery. DEFAULT-OFF and heavily gated (thrash is the
+	// failure mode); the whole trigger lives inside RepositionRateFloorEnabled.
+
+	// RepositionRateFloorEnabled is the master gate. false (the zero value / absent config) → the
+	// trigger never runs and the productive-tour path is byte-identical to today; true → after a
+	// productive continuous tour the coordinator evaluates the rate-floor relocation (still subject
+	// to the shared RepositionDisabled kill-switch, the fail-closed median, the improvement gate,
+	// anti-herd, and the dwell window). Governance-owned arming (config + restart).
+	RepositionRateFloorEnabled bool
+	// RepositionRateFloorPct is the under-earner threshold as a percent of the fleet-median realized
+	// tour $/hr: a hull earning < this % of the median is a relocation candidate. 0/absent →
+	// repositionRateFloorPctDefault (40). Only read when RepositionRateFloorEnabled is true.
+	RepositionRateFloorPct int
+	// RepositionRateFloorImprovementPct is how much better the best reach candidate's PROJECTED rate
+	// must be than the hull's CURRENT realized rate to justify the jump (the anti-thrash cushion):
+	// relocate only if candidate_projected >= this % of current_realized (and strictly better).
+	// 0/absent → repositionRateFloorImprovementPctDefault (200, i.e. 2x). Only read when
+	// RepositionRateFloorEnabled is true.
+	RepositionRateFloorImprovementPct int
+	// RepositionRateFloorDwellMinutes is the per-hull cooldown after a rate-floor relocation: a hull
+	// that relocated within this window is never a rate-floor candidate again, so it cannot
+	// hop-scotch across successive productive tours. 0/absent → repositionRateFloorDwellMinutesDefault
+	// (15). Only read when RepositionRateFloorEnabled is true.
+	RepositionRateFloorDwellMinutes int
+
 	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
 	// The margins-death rescue evolves into the spec's score(x)=E_x−β·D_x placement loop:
 	// argmax over reachable systems (INCLUDING staying put) on the deadhead-charged score,
@@ -459,6 +489,30 @@ type RunTourCoordinatorHandler struct {
 	strandedMu     sync.Mutex
 	strandedStreak map[string]*strandedHullState
 
+	// rateFloorLastRelocation records the last rate-floor relocation time per hull for the dwell
+	// window (epic sp-fguo Part 2): a hull that relocated within reposition_rate_floor_dwell_minutes
+	// is not a rate-floor candidate again, so it cannot hop-scotch across successive productive
+	// tours. Keyed by ship symbol; guarded by rateFloorMu because the handler is a SHARED singleton
+	// dispatched concurrently for every touring hull (the same per-hull discipline as strandedStreak
+	// / depositParked). In-memory only: a daemon restart resets the timer (acceptable — dwell is a
+	// soft anti-thrash cadence cap, not a correctness invariant).
+	rateFloorMu             sync.Mutex
+	rateFloorLastRelocation map[string]time.Time
+
+	// pendingRelocationsBySystem counts rate-floor relocations currently IN FLIGHT toward each
+	// destination system (epic sp-fguo Part 2, atomic anti-herd). A relocation increments its
+	// target at the commit-decision (just BEFORE the jump) and decrements it on landing (defer,
+	// after the synchronous RepositionToWaypointWithinJumps returns). excludeHerdedSystems ADDS
+	// this pending count to the LANDED count, so a concurrent evaluator sees in-flight movers and
+	// respects the per-system cap — closing the restart-cohort overshoot where every under-earner
+	// reads the richest frontier system as under-cap while the early movers are still mid-jump (the
+	// landed count lags a full multi-hop flight), all pile in, dilute, fall under-floor, and migrate
+	// as a bunch. Guarded by pendingMu; empty when the rate-floor trigger never commits (so the herd
+	// check is byte-identical when the trigger is off). In-memory only (a restart resets it —
+	// acceptable; it only bounds a live concurrent cohort within one daemon lifetime).
+	pendingMu                  sync.Mutex
+	pendingRelocationsBySystem map[string]int
+
 	// --- Cross-engine absorption coordination (sp-78ai L3) ---
 	// absorptionLedger, when wired via SetAbsorptionLedger, makes the tour a ledger
 	// WRITER (reserve planned tranches at plan-accept, convert to recovery shadows at
@@ -529,16 +583,18 @@ func NewRunTourCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 	return &RunTourCoordinatorHandler{
-		legs:           NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, marketRefresher, clock, apiClient),
-		marketRepo:     marketRepo,
-		waypointRepo:   waypointRepo,
-		telemetry:      telemetry,
-		planner:        planner,
-		clock:          clock,
-		apiClient:      apiClient,
-		mediator:       mediator,
-		depositParked:  make(map[string]string),
-		strandedStreak: make(map[string]*strandedHullState),
+		legs:                       NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, marketRefresher, clock, apiClient),
+		marketRepo:                 marketRepo,
+		waypointRepo:               waypointRepo,
+		telemetry:                  telemetry,
+		planner:                    planner,
+		clock:                      clock,
+		apiClient:                  apiClient,
+		mediator:                   mediator,
+		depositParked:              make(map[string]string),
+		strandedStreak:             make(map[string]*strandedHullState),
+		rateFloorLastRelocation:    make(map[string]time.Time),
+		pendingRelocationsBySystem: make(map[string]int),
 	}
 }
 
@@ -935,6 +991,19 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			noProgressStreak = 0
 			response.ToursCompleted++
 			episode = repositionEpisode{}
+			// Rate-floor early-reposition (epic sp-fguo Part 2, DEFAULT-OFF): a hull that just flew a
+			// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
+			// margin-dies, so the margins-death reposition never rescues it. When armed, evaluate a
+			// relocation to a meaningfully better reachable ground before touring here again. The
+			// ENTIRE trigger lives inside cmd.RepositionRateFloorEnabled, so a default-OFF run is
+			// byte-identical to today; it is CONTINUOUS-only (a finite/one-shot run flies exactly its
+			// requested tours). A non-nil error is a resumable travel failure (persisted in-flight
+			// destination resumes on restart); every stay path returns nil and simply keeps touring.
+			if continuous && cmd.RepositionRateFloorEnabled {
+				if rerr := h.maybeRepositionRateFloor(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, modelVersion); rerr != nil {
+					return rerr
+				}
+			}
 			continue
 		}
 

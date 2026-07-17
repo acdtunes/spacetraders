@@ -1401,6 +1401,16 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionReachEnabled:           cfg.OptionalBool("reposition_reach_enabled"),
 		RepositionReachHopDecayPct:       cfg.OptionalInt("reposition_reach_hop_decay_pct", 0),
 		RepositionReachMaxHullsPerSystem: cfg.OptionalInt("reposition_reach_max_hulls_per_system", 0),
+		// epic sp-fguo Part 2 rate-floor early-reposition. OptionalBool/OptionalInt yield zero values
+		// for absent keys — the exact default-OFF dormancy the Reposition*/Placement* knobs use:
+		// reposition_rate_floor_enabled absent ⇒ false ⇒ the trigger is dormant, byte-identical to
+		// today; pct/improvement/dwell default to 0 ⇒ the coordinator's own repositionRateFloor*Default
+		// (40, 200, 15). Every existing container and recovery rebuild takes the dormant branch until a
+		// captain explicitly sets reposition_rate_floor_enabled: true.
+		RepositionRateFloorEnabled:        cfg.OptionalBool("reposition_rate_floor_enabled"),
+		RepositionRateFloorPct:            cfg.OptionalInt("reposition_rate_floor_pct", 0),
+		RepositionRateFloorImprovementPct: cfg.OptionalInt("reposition_rate_floor_improvement_pct", 0),
+		RepositionRateFloorDwellMinutes:   cfg.OptionalInt("reposition_rate_floor_dwell_minutes", 0),
 	}
 }
 
