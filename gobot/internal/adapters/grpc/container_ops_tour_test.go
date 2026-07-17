@@ -237,6 +237,67 @@ func TestTourContainerConfig_PlacementKnobsDefaultDormantWhenUnset(t *testing.T)
 	require.Equal(t, 0, cmd.PlacementShortlistTopN)
 }
 
+// closed_tours THE CONFIG-KNOB PROPAGATION PIN. im74 wired cmd.ClosedTours -> cons.Closed ->
+// the OR-Tools closed-circuit solver but deferred the config knob that SETS it, so
+// cmd.ClosedTours was always false and closed mode could never be armed. closed_tours is a
+// daemon-global [trade_fleet] tuning (exactly like max_tour_systems / reposition_jump_bound),
+// so — mirroring TestStartTourRun_StampsMaxTourSystemsFromTradeFleetConfig — StartTourRun must
+// STAMP it into the launch config from tradeFleetConfig and buildTourCoordinatorCommand must
+// READ it back onto cmd.ClosedTours. Without both writes the knob is INERT: the operator's
+// config.yaml value never reaches the solver and every tour stays OPEN.
+func TestStartTourRun_StampsClosedToursFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.ClosedTours = true // the captain's [trade_fleet] arming
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"closed_tours":true`, "StartTourRun must stamp the [trade_fleet] closed_tours so the launch/rebuild reads it back — otherwise the arming knob is inert and closed mode can never be turned on")
+
+	// The whole boundary round-trips: the rebuild reloads the stamped flag into cmd.ClosedTours,
+	// which im74 already threads to cons.Closed and the closed-circuit solver.
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	require.True(t, rebuilt.(*tradingCmd.RunTourCoordinatorCommand).ClosedTours)
+}
+
+// closed_tours default-safety companion: an UNSET [trade_fleet].closed_tours (false) rebuilds
+// to cmd.ClosedTours false — which im74's cons.Closed path reads as an OPEN tour, so a daemon
+// that never arms the knob is byte-identical to today (the launch path stays default-safe/OPEN).
+func TestStartTourRun_ClosedToursDefaultsFalseWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig.ClosedTours left at its zero value (the operator never armed it).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	require.False(t, rebuilt.(*tradingCmd.RunTourCoordinatorCommand).ClosedTours, "an unset closed_tours must rebuild to cmd.ClosedTours=false (OPEN tours, byte-identical to today)")
+}
+
 // sp-sg35 — the permit half: a tour_run-shaped container (operation "trade", the
 // value StartTourRun now stamps) claiming a hull dedicated to the SAME "trade"
 // fleet is permitted (operation == dedication), so the trade-fleet tours keep

@@ -114,6 +114,15 @@ func (s *DaemonServer) StartTourRun(
 		// (2). This WRITE is what makes the request-driven cap take effect in production —
 		// without it the knob is inert and every tour silently clamps to 2.
 		"max_tour_systems": s.tradeFleetConfig.MaxTourSystems,
+		// sp-im74 config plumbing: the closed-circuit (return-to-anchor) arming flag, sourced
+		// from the daemon's live [trade_fleet] config (a daemon-global tour tuning, same for
+		// every tour — the mirror of max_tour_systems above). Persisted as-is (false too, so an
+		// absent/unarmed knob survives a recovery rebuild unchanged and OPEN mode stays stable);
+		// buildTourCoordinatorCommand reads it back into cmd.ClosedTours, which im74 already
+		// threads to TourConstraints.Closed and the solver's closed-circuit path, resolving
+		// false → OPEN tours (byte-identical to today). This WRITE is what lets the deferred
+		// arming knob take effect — without it cmd.ClosedTours is inert and always false.
+		"closed_tours": s.tradeFleetConfig.ClosedTours,
 		// sp-z7ng: the placement/relocation scoring loop knobs, sourced from the daemon's live
 		// [trade_fleet] config (daemon-global tour tuning, same for every tour — the mirror of
 		// max_tour_systems/reposition_jump_bound above). Persisted as-is (zeros/false too, so an

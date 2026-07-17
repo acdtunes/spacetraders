@@ -119,6 +119,19 @@ type TradeFleetConfig struct {
 	// restarting the daemon (RULINGS #5, no code redeploy).
 	MaxTourSystems int `mapstructure:"max_tour_systems"`
 
+	// ClosedTours arms closed-circuit (return-to-anchor) tour mode (sp-im74 built the
+	// solver + the cmd.ClosedTours -> TourConstraints.Closed thread; this is the config
+	// knob im74 deferred). Like MaxTourSystems it is a daemon-global tour tuning:
+	// StartTourRun stamps it from here into every tour container's launch config,
+	// buildTourCoordinatorCommand reads it back into cmd.ClosedTours, and it rides
+	// TourConstraints.Closed to the Python solver's closed-circuit path. A bare bool, so
+	// absent/false => cmd.ClosedTours=false => OPEN tours, byte-identical to today (the
+	// default-off governance gate — nothing arms without an explicit captain config
+	// change). true makes each planned tour end at the anchor (the ship's FLOATING
+	// current system when no explicit anchor is set — im74 handles the floating anchor).
+	// Arm by editing config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
+	ClosedTours bool `mapstructure:"closed_tours"`
+
 	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
 	// Daemon-global tour tunings, same for every tour container (the mirror of
 	// reposition_jump_bound/max_tour_systems above): StartTourRun stamps them into every tour

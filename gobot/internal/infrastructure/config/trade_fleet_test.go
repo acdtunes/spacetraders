@@ -47,3 +47,46 @@ func TestLoadConfig_StrandedConsecutiveThreshold_AbsentIsZeroSentinel(t *testing
 	require.Equal(t, 0, cfg.TradeFleet.StrandedConsecutiveThreshold,
 		"an absent threshold must be the sentinel 0 (the consumer resolves 0 -> default 3), never a config-layer default")
 }
+
+// closed_tours round-trip pin: the closed-tour arming knob (im74 solver support, this
+// bead's config plumbing) must travel from config.yaml's [trade_fleet] section into the
+// loaded config unchanged, so a captain arms closed-circuit tours by editing config.yaml
+// + restarting — no code redeploy. This exercises the REAL viper mapstructure pipeline
+// (trade_fleet.closed_tours -> TradeFleetConfig.ClosedTours), the ONE seam the grpc
+// stamp/rebuild tests cannot cover (they set the struct field directly). A typo in the
+// mapstructure tag would ship a silently-inert knob; this test catches it.
+func TestLoadConfig_ClosedTours_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  closed_tours: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.True(t, cfg.TradeFleet.ClosedTours,
+		"closed_tours must reach the config struct so the captain can arm closed-circuit tours by editing config.yaml + restarting")
+}
+
+// closed_tours default-safety companion: an ABSENT closed_tours key resolves to false —
+// the Go zero value viper leaves untouched — so a daemon that never sets the knob runs
+// OPEN tours, byte-identical to today. This is the config-layer half of the default-safe
+// proof (the grpc rebuild test proves the false reaches cmd.ClosedTours).
+func TestLoadConfig_ClosedTours_AbsentIsFalse(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	// enabled but NO closed_tours — the default config.yaml shape.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.False(t, cfg.TradeFleet.ClosedTours,
+		"an absent closed_tours must default false (OPEN tours), never a config-layer default that silently arms closed mode")
+}
