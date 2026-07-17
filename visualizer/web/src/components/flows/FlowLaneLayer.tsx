@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { Group, Line, Arrow } from 'react-konva';
-import type { LanesResponse } from '../../types/flows';
+import type { LaneRecord } from '../../types/flows';
 import {
   laneEndpoints,
   laneProfitColor,
@@ -12,7 +12,7 @@ import {
 } from './flowGeometry';
 
 interface Props {
-  lanes: LanesResponse | null;
+  records: LaneRecord[] | null;
   systemPos: Map<string, Point>;
   scale: number;
   nowMs: number;
@@ -23,13 +23,13 @@ interface Props {
 // ambiguous line; a marching dash crawls toward the destination and a mid-lane
 // arrowhead fixes the direction unambiguously in a still frame. Profit sets color
 // and thickness (the TradeRouteLayer idiom).
-export const FlowLaneLayer = memo(function FlowLaneLayer({ lanes, systemPos, scale, nowMs }: Props) {
-  if (!lanes) return null;
+export const FlowLaneLayer = memo(function FlowLaneLayer({ records, systemPos, scale, nowMs }: Props) {
+  if (!records) return null;
   const offsetPx = 3.5 / scale;
   const dashPhase = laneDashPhase(nowMs, scale);
   return (
     <Group listening={false}>
-      {lanes.lanes.map((lane, i) => {
+      {records.map((lane, i) => {
         const ep = laneEndpoints(lane, systemPos);
         if (!ep) return null;
         const seg = offsetSegmentRight(ep.from, ep.to, offsetPx);

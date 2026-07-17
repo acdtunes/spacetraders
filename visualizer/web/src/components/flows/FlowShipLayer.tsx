@@ -16,6 +16,7 @@ interface Props {
   selectedFlowId: string | null;
   onSelect: (containerId: string) => void;
   onHover: (containerId: string | null) => void;
+  opacityById?: Map<string, number>; // enter/exit fades + feed-loss dim (default: 1)
 }
 
 const PROGRAM_COLOR: Record<LiveFlow['program'], string> = {
@@ -29,7 +30,7 @@ const PROGRAM_COLOR: Record<LiveFlow['program'], string> = {
 // Position/bearing come from the nav-grounded motion model; the raf clock
 // makes glides continuous between the 5s polls.
 export const FlowShipLayer = memo(function FlowShipLayer({
-  flows, adj, systemGates, systemPos, nowMs, scale, selectedFlowId, onSelect, onHover,
+  flows, adj, systemGates, systemPos, nowMs, scale, selectedFlowId, onSelect, onHover, opacityById,
 }: Props) {
   return (
     <Group>
@@ -44,7 +45,7 @@ export const FlowShipLayer = memo(function FlowShipLayer({
         const rotationDeg = (m.bearingRad * 180) / Math.PI;
         const pulse = 0.4 + 0.25 * Math.sin(nowMs / 300);
         return (
-          <Group key={`ship-${flow.containerId}`} x={m.x} y={m.y}>
+          <Group key={`ship-${flow.containerId}`} x={m.x} y={m.y} opacity={opacityById?.get(flow.containerId) ?? 1}>
             {/* rotated body: wedge + trail */}
             <Group rotation={rotationDeg} listening={false}>
               <Line points={[-14 * u, 0, -5 * u, 0]} stroke={noirAlpha(color, 0.35)} strokeWidth={1.6 * u} lineCap="round" listening={false} />

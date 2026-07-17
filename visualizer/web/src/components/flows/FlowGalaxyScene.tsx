@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Stage, Layer, Circle, Text, Group, Line } from 'react-konva';
 import type Konva from 'konva';
 import { useFlowStore } from '../../store/flowStore';
 import { useRafClock } from '../../hooks/useRafClock';
 import { CANVAS_CONSTANTS } from '../../constants/canvas';
 import { NOIR, noirAlpha } from '../../theme/noir';
+import type { LiveFlow } from '../../types/flows';
+import { AmbientBackdrop } from '../AmbientBackdrop';
 import { buildSystemIndex, type Point } from './flowGeometry';
+import { buildAdjacency, buildSystemGates, projectFlowMotion } from './flowMotion';
 import { FlowLaneLayer } from './FlowLaneLayer';
 import { FlowShipLayer } from './FlowShipLayer';
 import { FlowPlanPath } from './FlowPlanPath';
@@ -17,6 +20,12 @@ export default function FlowGalaxyScene() {
   const selectedFlowId = useFlowStore((s) => s.selectedFlowId);
   const selectFlow = useFlowStore((s) => s.selectFlow);
   const openDrilldown = useFlowStore((s) => s.openDrilldown);
+  const hoverFlow = useFlowStore((s) => s.hoverFlow);
+  const focusFlowId = useFlowStore((s) => s.focusFlowId);
+  const clearFocus = useFlowStore((s) => s.clearFocus);
+  const layerToggles = useFlowStore((s) => s.layerToggles);
+  const staleFlows = useFlowStore((s) => s.staleFlows);
+  const freezeAtMs = useFlowStore((s) => s.freezeAtMs);
 
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(0.5);
@@ -25,6 +34,15 @@ export default function FlowGalaxyScene() {
 
   const width = window.innerWidth;
   const height = window.innerHeight - 64; // minus nav bar
+
+  const adj = useMemo(() => (topology ? buildAdjacency(topology) : new Map<string, string[]>()), [topology]);
+  const systemGates = useMemo(() => (topology ? buildSystemGates(topology) : new Map<string, string>()), [topology]);
+  const activityBySystem = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const a of lanes?.systemActivity ?? []) m.set(a.system, a.realizedProfit);
+    return m;
+  }, [lanes]);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
 
   // Center once per topology (mirrors GalaxyView's centeredKeyRef guard).
   useEffect(() => {
@@ -38,7 +56,38 @@ export default function FlowGalaxyScene() {
     setScale(initial);
     stageRef.current.scale({ x: initial, y: initial });
     stageRef.current.position({ x: width / 2 - avgX * initial, y: height / 2 - avgY * initial });
+    setPan({ x: width / 2 - avgX * initial, y: height / 2 - avgY * initial });
   }, [topology, width, height]);
+
+  const systemPos: Map<string, Point> = topology ? buildSystemIndex(topology) : new Map();
+  const flows = live?.flows ?? [];
+  const homeSystem = topology?.homeSystem ?? null;
+
+  const feedLost = live?.feedLost ?? false;
+  const renderFlows = feedLost && staleFlows ? staleFlows : flows;
+  const clockMs = feedLost && freezeAtMs ? freezeAtMs : nowMs; // frozen clock = frozen glides
+  const staleOpacity = feedLost ? 0.45 : 1;
+  const presence = useFlowPresence(renderFlows, clockMs);
+
+  // One-shot camera ease to a focused flow (roster/card click), then release.
+  useEffect(() => {
+    if (!focusFlowId || !stageRef.current || !topology) return;
+    const flow = flows.find((f) => f.containerId === focusFlowId);
+    if (flow) {
+      const m = projectFlowMotion(flow, adj, systemGates, systemPos, Date.now(), scale);
+      if (m) {
+        const stage = stageRef.current;
+        stage.to({
+          x: width / 2 - m.x * scale,
+          y: height / 2 - m.y * scale,
+          duration: 0.6,
+          onFinish: () => setPan({ x: stage.x(), y: stage.y() }),
+        });
+      }
+    }
+    clearFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFlowId]);
 
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
@@ -56,23 +105,33 @@ export default function FlowGalaxyScene() {
     stage.scale({ x: newScale, y: newScale });
     stage.position({ x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale });
     setScale(newScale);
+    setPan({ x: stage.x(), y: stage.y() });
   };
-
-  const systemPos: Map<string, Point> = topology ? buildSystemIndex(topology) : new Map();
-  const flows = live?.flows ?? [];
-  const homeSystem = topology?.homeSystem ?? null;
 
   // Mount the Stage unconditionally (even before topology loads) so stageRef is
   // attached by the time the centering effect fires. Gating the Stage behind a
   // loading return races the ref and leaves the galaxy uncentered at scale 1
   // (mirrors GalaxyView, which always mounts its Stage).
   return (
-    <div className="relative w-full h-full" style={{ background: NOIR.bg0 }}>
-      <Stage ref={stageRef} width={width} height={height} draggable onWheel={handleWheel}>
+    <div className="relative w-full h-full overflow-hidden" style={{ background: NOIR.bg0 }}>
+      <AmbientBackdrop pan={pan} />
+      <Stage
+        ref={stageRef}
+        width={width}
+        height={height}
+        draggable
+        onWheel={handleWheel}
+        onDragMove={(e) => {
+          const stage = e.target.getStage();
+          if (stage && e.target === stage) setPan({ x: stage.x(), y: stage.y() });
+        }}
+      >
         <Layer>
           {topology && (
             <>
-          <FlowLaneLayer lanes={lanes} systemPos={systemPos} scale={scale} nowMs={nowMs} />
+          {layerToggles.lanes && (
+            <FlowLaneLayer records={lanes ? lanes.systemLanes : null} systemPos={systemPos} scale={scale} nowMs={nowMs} />
+          )}
 
           {/* Gate edges as hairlines (dashed when under construction) */}
           <Group listening={false}>
@@ -94,11 +153,14 @@ export default function FlowGalaxyScene() {
           </Group>
 
           {/* System nodes — the home system is ringed + always labeled (distinct
-              star treatment), so it reads apart from ordinary nodes at any zoom. */}
+              star treatment), so it reads apart from ordinary nodes at any zoom.
+              Ordinary nodes size/brighten with realized activity. */}
           <Group>
             {topology.systems.map((s) => {
               const isHome = homeSystem !== null && s.symbol === homeSystem;
-              const nodeR = Math.max(2, 3 / scale);
+              const activity = activityBySystem.get(s.symbol) ?? 0;
+              const bump = activity !== 0 ? Math.min(5, Math.max(0, Math.log10(Math.abs(activity) + 10) - 3)) : 0;
+              const nodeR = Math.max(2, (3 + bump) / scale);
               return (
                 <Group key={s.symbol} x={s.x} y={s.y}>
                   {isHome && (
@@ -109,7 +171,7 @@ export default function FlowGalaxyScene() {
                   )}
                   <Circle
                     radius={nodeR}
-                    fill={isHome ? NOIR.star : noirAlpha(NOIR.nebulaCore, 0.9)}
+                    fill={isHome ? NOIR.star : noirAlpha(NOIR.nebulaCore, Math.min(1, 0.55 + 0.09 * bump))}
                     stroke={isHome ? NOIR.star : NOIR.accent}
                     strokeWidth={0.5 / scale}
                     onMouseEnter={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; }}
@@ -133,20 +195,29 @@ export default function FlowGalaxyScene() {
           </Group>
 
           {/* Plan paths for flows that actually published intent */}
-          <Group listening={false}>
-            {flows.filter((f) => f.remainingHops.length > 0).map((f) => (
-              <FlowPlanPath key={`pp-${f.containerId}`} flow={f} systemPos={systemPos} scale={scale} />
-            ))}
-          </Group>
+          {layerToggles.paths &&
+            presence
+              .filter((p) => p.flow.remainingHops.length > 0)
+              .map((p) => (
+                <Group key={`pp-${p.flow.containerId}`} opacity={p.opacity * staleOpacity} listening={false}>
+                  <FlowPlanPath flow={p.flow} adj={adj} systemPos={systemPos} scale={scale} />
+                </Group>
+              ))}
 
-          <FlowShipLayer
-            flows={flows}
-            systemPos={systemPos}
-            nowMs={nowMs}
-            scale={scale}
-            selectedFlowId={selectedFlowId}
-            onSelect={selectFlow}
-          />
+          {layerToggles.ships && (
+            <FlowShipLayer
+              flows={presence.map((p) => p.flow)}
+              adj={adj}
+              systemGates={systemGates}
+              systemPos={systemPos}
+              nowMs={clockMs}
+              scale={scale}
+              selectedFlowId={selectedFlowId}
+              onSelect={selectFlow}
+              onHover={hoverFlow}
+              opacityById={new Map(presence.map((p) => [p.flow.containerId, p.opacity * staleOpacity]))}
+            />
+          )}
             </>
           )}
         </Layer>
@@ -161,4 +232,31 @@ export default function FlowGalaxyScene() {
       )}
     </div>
   );
+}
+
+// Enter/exit presence: new flows fade in over 2s; departed flows linger 2s
+// fading out, rendered from their last snapshot.
+function useFlowPresence(
+  flows: LiveFlow[],
+  nowMs: number,
+): { flow: LiveFlow; opacity: number }[] {
+  const ref = useRef(new Map<string, { flow: LiveFlow; enterAt: number; exitAt: number | null }>());
+  const seen = new Set<string>();
+  for (const f of flows) {
+    seen.add(f.containerId);
+    const cur = ref.current.get(f.containerId);
+    if (cur) { cur.flow = f; cur.exitAt = null; }
+    else ref.current.set(f.containerId, { flow: f, enterAt: nowMs, exitAt: null });
+  }
+  for (const [id, rec] of ref.current) {
+    if (!seen.has(id) && rec.exitAt === null) rec.exitAt = nowMs;
+    if (rec.exitAt !== null && nowMs - rec.exitAt > 2000) ref.current.delete(id);
+  }
+  const out: { flow: LiveFlow; opacity: number }[] = [];
+  for (const rec of ref.current.values()) {
+    const enter = Math.min(1, (nowMs - rec.enterAt) / 2000);
+    const exit = rec.exitAt === null ? 1 : Math.max(0, 1 - (nowMs - rec.exitAt) / 2000);
+    out.push({ flow: rec.flow, opacity: enter * exit });
+  }
+  return out;
 }
