@@ -94,6 +94,17 @@ export default function FlowGalaxyScene() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusFlowId]);
 
+  // Pointer position -> CLIENT coords for the floating tooltip card (same
+  // recipe as FlowLaneLayer's artery hover: container rect + stage pointer).
+  const systemTooltipAt = (key: string, ev: Konva.KonvaEventObject<MouseEvent>) => {
+    const stage = ev.target.getStage();
+    if (!stage) return;
+    const pointer = stage.getPointerPosition();
+    if (!pointer) return;
+    const rect = stage.container().getBoundingClientRect();
+    setTooltip({ kind: 'system', key, x: rect.left + pointer.x, y: rect.top + pointer.y });
+  };
+
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
     const stage = e.target.getStage();
@@ -202,9 +213,10 @@ export default function FlowGalaxyScene() {
                     fill={isHome ? NOIR.star : noirAlpha(NOIR.nebulaCore, Math.min(1, 0.55 + 0.09 * bump))}
                     stroke={isHome ? NOIR.star : NOIR.accent}
                     strokeWidth={0.5 / scale}
-                    onMouseEnter={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; }}
-                    onMouseLeave={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'default'; }}
-                    onClick={() => openDrilldown(s.symbol)}
+                    onMouseEnter={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; systemTooltipAt(s.symbol, ev); }}
+                    onMouseMove={(ev) => systemTooltipAt(s.symbol, ev)}
+                    onMouseLeave={(ev) => { const c = ev.target.getStage()?.container(); if (c) c.style.cursor = 'default'; setTooltip(null); }}
+                    onClick={() => { setTooltip(null); openDrilldown(s.symbol); }}
                   />
                   {(isHome || scale > 0.3) && (
                     <Text

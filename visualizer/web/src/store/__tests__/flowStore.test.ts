@@ -110,4 +110,16 @@ describe('fills + tooltip state', () => {
     s.setTooltip(null);
     expect(useFlowStore.getState().tooltip).toBeNull();
   });
+
+  it('toggling the lanes layer OFF clears a lane tooltip but leaves system tooltips alone', () => {
+    const s = useFlowStore.getState();
+    s.setTooltip({ kind: 'lane', key: 'X1-AA→X1-BB', x: 1, y: 2 });
+    s.toggleLayer('lanes'); // on -> off: the hovered artery just vanished
+    expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
+    expect(useFlowStore.getState().tooltip).toBeNull();
+
+    s.setTooltip({ kind: 'system', key: 'X1-AA', x: 1, y: 2 });
+    s.toggleLayer('lanes'); // off -> on: unrelated to a system card
+    expect(useFlowStore.getState().tooltip?.kind).toBe('system');
+  });
 });

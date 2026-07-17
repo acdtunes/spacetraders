@@ -86,7 +86,13 @@ export const useFlowStore = create<FlowState>((set) => ({
   hoverFlow: (hoveredFlowId) => set({ hoveredFlowId }),
   requestFocus: (focusFlowId) => set({ focusFlowId }),
   clearFocus: () => set({ focusFlowId: null }),
-  toggleLayer: (key) => set((state) => ({ layerToggles: { ...state.layerToggles, [key]: !state.layerToggles[key] } })),
+  // Toggling Lanes OFF removes the hovered artery from under the pointer, so
+  // its tooltip must not linger (no mouseleave will ever fire for it).
+  toggleLayer: (key) =>
+    set((state) => ({
+      layerToggles: { ...state.layerToggles, [key]: !state.layerToggles[key] },
+      ...(key === 'lanes' && state.layerToggles.lanes && state.tooltip?.kind === 'lane' ? { tooltip: null } : {}),
+    })),
   setFreshness: (freshness) => set({ freshness, freshnessMissedPolls: 0 }),
   freshnessPollFailed: () => set((s) => ({ freshnessMissedPolls: s.freshnessMissedPolls + 1 })),
   setFills: (fills) => set({ fills }),
