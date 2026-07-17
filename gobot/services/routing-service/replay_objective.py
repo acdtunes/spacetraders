@@ -30,10 +30,17 @@ Usage (from gobot/services/routing-service, with the model venv):
   python replay_objective.py [--hours 48] [--samples 12] [--hulls 80,220]
       [--max-spend 2000000] [--reserve 50000] [--tour-overhead-seconds 60]
       [--deep] [--json out.json]
+
+Opt-in arming gates (offline evidence only — bare invocation stays byte-identical, and
+nothing arms without an explicit captain config change on top of a green gate):
+  --arm          two-cap fleet-$/hr gate: candidate (cap-N rate) vs the TRUE live-prod
+                 baseline (cap-2 RATE, sp-db0n/sp-ljh5), NOT the cap-2 profit fail-safe.
+  --closure-ab   sp-g8op chained-K open-vs-closed realized round-trip gate (im74 §2.7):
+                 does a CLOSED (return-to-anchor) chain out-earn an OPEN (wander) chain?
+                 Required GREEN before the arming wave exposes a --closed-tours flag.
 """
 import argparse
 import json
-import math
 import sys
 import time
 from collections import defaultdict
@@ -317,6 +324,115 @@ def arming_verdict(cases, baseline, candidate, overhead_seconds, min_delta_pct, 
     )
 
 
+def _solve_chain_tour(scoped, wps, ship, allowed, max_spend, reserve, version, cap, closed):
+    """One RATE-objective solve for the given ship position + closure flag. RATE is the
+    armed longer-tour objective (spec: longer tours are selected on $/hr, not profit), so
+    the closure A/B measures closure UNDER the objective it would actually run with. The
+    `closed`/`anchor_system=""` pair is the sp-im74 FLOATING closure: a CLOSED tour ends
+    back at the ship's current waypoint; closed=False + anchor_system="" is the proto3
+    zero-value open no-op (byte-identical to the field-absent solve)."""
+    cons = dict(max_hops=6, min_margin_per_unit=1,
+                max_snapshot_age_minutes=STALENESS_MINUTES,
+                max_spend=max_spend, working_capital_reserve=reserve,
+                allowed_systems=sorted(allowed), expected_model_version=version,
+                max_tour_systems=cap, closed=closed, anchor_system="")
+    return solve_tour(scoped, dict(ship), cons, MODEL, waypoints=wps,
+                      objective=OBJECTIVE_RATE)
+
+
+def _chain_tours(scoped, wps, ship0, allowed, max_spend, reserve, version, cap, k, closed):
+    """Run K chained RATE tours from ship0. Between tours the hull advances to the plan's
+    LAST leg waypoint — for a CLOSED tour that leg IS the anchor return (the hull re-anchors
+    home each replan, floating-closure semantics), for an OPEN tour it wanders wherever the
+    last leg landed. The advance rule is UNIFORM (always follow the plan's own tail); closure
+    changes only WHERE the tail is. Stops at the first infeasible/empty plan (a short chain
+    that never reaches K is dropped by the caller's horizon filter). Returns the feasible
+    result dicts fleet_cph reads directly."""
+    results = []
+    ship = dict(ship0)
+    for _ in range(k):
+        res = _solve_chain_tour(scoped, wps, ship, allowed, max_spend, reserve,
+                                version, cap, closed)
+        legs = res.get("legs") or []
+        if not res.get("feasible") or not legs:
+            break
+        results.append(res)
+        tail = legs[-1]
+        ship = dict(ship, current_waypoint=tail["waypoint_symbol"],
+                    current_system=tail["system_symbol"])
+    return results
+
+
+def closure_ab_pass(samples, rows, neighbors, coords, hulls, version,
+                    cap, k, max_spend, reserve):
+    """sp-g8op chained-K open-vs-closed A/B assembly (im74 §2.7 / VERIFY A10). Per
+    (sample, home, hull) it runs TWO length-K chains from the SAME home anchor at the SAME
+    distinct-system cap and the RATE objective: an OPEN chain (each tour starts where the
+    previous ENDED — the hull wanders outward) and a CLOSED chain (floating anchor = home,
+    each tour returns to the anchor before the next replan). A case is emitted only when BOTH
+    chains complete the full K-tour horizon, so the realized round-trip comparison is
+    apples-to-apples over an equal number of tours. Snapshot/allowed/ship assembly mirrors
+    arming_pass exactly. Returns dicts of
+    dict(sample, home, hold, open_chain=[...K results], closed_chain=[...K results])."""
+    cases = []
+    for sample_t in samples:
+        snapshot = reconstruct_snapshot(rows, sample_t)
+        waypoints = [dict(symbol=wp, system=sys_, x=int(x), y=int(y))
+                     for wp, (sys_, x, y) in coords.items()]
+        by_system = defaultdict(set)
+        for s in snapshot:
+            by_system[s["system_symbol"]].add(s["waypoint_symbol"])
+        for home, markets in sorted(by_system.items()):
+            if len(markets) < 2:
+                continue
+            allowed = {home} | (neighbors.get(home, set()) & set(by_system))
+            scoped = [s for s in snapshot if s["system_symbol"] in allowed]
+            wps = [w for w in waypoints if w["system"] in allowed]
+            home_markets = sorted(markets)
+            for hold in hulls:
+                ship0 = dict(ship_symbol=f"REPLAY-{hold}",
+                             current_waypoint=home_markets[0], current_system=home,
+                             hold_capacity=hold, fuel_current=400, fuel_capacity=400,
+                             engine_speed=ENGINE_SPEED, cargo=[])
+                open_chain = _chain_tours(scoped, wps, ship0, allowed, max_spend,
+                                          reserve, version, cap, k, closed=False)
+                closed_chain = _chain_tours(scoped, wps, ship0, allowed, max_spend,
+                                            reserve, version, cap, k, closed=True)
+                if len(open_chain) == k and len(closed_chain) == k:
+                    cases.append(dict(sample=str(sample_t), home=home, hold=hold,
+                                      open_chain=open_chain, closed_chain=closed_chain))
+    return cases
+
+
+def closure_ab_verdict(cases, overhead_seconds, min_delta_pct, min_cases):
+    """sp-g8op realized-round-trip closure arming gate (im74 §2.7 / VERIFY A10, resolving
+    the im74 MAJOR #3). Aggregates the CLOSED arm's realized fleet-$/hr against the OPEN
+    arm's over the chained-K A/B — the evidence the arming wave must show GREEN before it
+    exposes the --closed-tours CLI flag: over a K-tour horizon, does pinning each tour to
+    the anchor (paying the return hop for a saturation-resistant circuit) beat letting the
+    hull wander outward? Both arms' cph delegate to fleet_cph, so the closure verdict shares
+    the ONE fleet-$/hr definition summarize prints and arming_verdict gates on (no drift).
+
+    `armed` is True iff the closed arm beats the open arm by >= min_delta_pct over >=
+    min_cases chained cases; NaN/empty fails safe (never armed) — a degenerate A/B must
+    never arm closed mode. Governance still owns the flip: this only produces the evidence."""
+    open_results = [r for c in cases for r in c["open_chain"]]
+    closed_results = [r for c in cases for r in c["closed_chain"]]
+    open_cph = fleet_cph(open_results, overhead_seconds)
+    closed_cph = fleet_cph(closed_results, overhead_seconds)
+    closure_delta_pct = ((closed_cph - open_cph) / open_cph * 100
+                         if open_cph > 0 else float("nan"))
+    n = len(cases)
+    return dict(
+        open_cph=open_cph,
+        closed_cph=closed_cph,
+        closure_delta_pct=closure_delta_pct,
+        cases=n,
+        # NaN >= min_delta_pct is False -> a degenerate/empty A/B fails safe (never armed).
+        armed=bool(closure_delta_pct >= min_delta_pct and n >= min_cases),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--hours", type=int, default=48)
@@ -342,6 +458,19 @@ def main():
                          "live-prod baseline (cap-2 RATE), NOT the cap-2 profit fail-safe (sp-ljh5)")
     ap.add_argument("--arm-min-cases", type=int, default=30,
                     help="min cases feasible in BOTH cells required to arm")
+    # sp-g8op closure arming gate (opt-in, offline). Bare invocation NEVER runs it either,
+    # so default output stays byte-identical. Required GREEN before the arming wave exposes
+    # a --closed-tours CLI flag (governance-owned; deliberately absent today).
+    ap.add_argument("--closure-ab", action="store_true",
+                    help="also run the sp-g8op chained-K open-vs-closed realized round-trip gate")
+    ap.add_argument("--closure-k", type=int, default=4,
+                    help="tours chained per arm in the closure A/B (im74 §2.7 K=4)")
+    ap.add_argument("--closure-cap", type=int, default=6,
+                    help="distinct-system cap the closure chains solve at (solver clamps <= 6)")
+    ap.add_argument("--closure-min-delta-pct", type=float, default=5.0,
+                    help="min realized fleet-$/hr gain of CLOSED over OPEN to arm closed mode")
+    ap.add_argument("--closure-min-cases", type=int, default=30,
+                    help="min chained cases (both arms reach K) required to arm closed mode")
     args = ap.parse_args()
 
     global MODEL
@@ -459,6 +588,31 @@ def main():
         if args.json:
             with open(args.json, "w") as f:
                 json.dump(dict(profit_vs_rate=results, arming=verdict), f,
+                          indent=1, default=str)
+
+    if args.closure_ab:
+        # sp-g8op: the chained open-vs-closed realized round-trip gate. Opt-in, offline; the
+        # evidence the arming wave must show GREEN before it exposes a --closed-tours flag.
+        closure_cases = closure_ab_pass(samples, rows, neighbors, coords, hulls, version,
+                                        args.closure_cap, args.closure_k,
+                                        args.max_spend, args.reserve)
+        closure = closure_ab_verdict(closure_cases, args.tour_overhead_seconds,
+                                     args.closure_min_delta_pct, args.closure_min_cases)
+        print(f"\n=== CLOSURE A/B GATE (chained K={args.closure_k} open vs closed, "
+              f"cap {args.closure_cap} rate) ===")
+        print("legend: `armed` = the CLOSED chain's realized fleet-$/hr beats the OPEN "
+              "chain's by >= min over a K-tour horizon (open wanders; closed re-anchors "
+              "home each replan, paying the return hop)")
+        print(f"chained cases (both arms reach K): {closure['cases']}  "
+              f"(min {args.closure_min_cases})")
+        print(f"open   chain cph (wander-outward): {closure['open_cph']:>10,.0f} cr/hr")
+        print(f"closed chain cph (return-to-anchor): {closure['closed_cph']:>10,.0f} cr/hr")
+        print(f"closure delta (closed vs open): {closure['closure_delta_pct']:+.2f}%  "
+              f"(min {args.closure_min_delta_pct:+.2f}%)")
+        print(f"ARMED (closed mode): {closure['armed']}")
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump(dict(profit_vs_rate=results, closure_ab=closure), f,
                           indent=1, default=str)
     return 0
 
