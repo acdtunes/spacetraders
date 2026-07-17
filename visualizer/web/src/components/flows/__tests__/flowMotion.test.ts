@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildAdjacency, buildSystemGates, gatePath, buildStops, flowIsRelocation, projectFlowMotion,
-  planRoutePolylines,
+  planRoutePolylines, isHeavyHauler, scheduleDriftSeconds,
 } from '../flowMotion';
 import type { LiveFlow, TopologyResponse } from '../../../types/flows';
 
@@ -181,6 +181,38 @@ describe('projectFlowMotion', () => {
   it('returns null when the hull system has no known position', () => {
     const f = flow({ shipNav: nav({ systemSymbol: 'X1-ZZ' }) });
     expect(projectFlowMotion(f, adj, gates, pos, NOW, 1)).toBeNull();
+  });
+});
+
+describe('isHeavyHauler', () => {
+  it('classifies by cargo capacity with 80 as the heavy floor', () => {
+    expect(isHeavyHauler(nav({ cargoCapacity: 120 }))).toBe(true);
+    expect(isHeavyHauler(nav({ cargoCapacity: 80 }))).toBe(true);
+    expect(isHeavyHauler(nav({ cargoCapacity: 40 }))).toBe(false);
+    expect(isHeavyHauler(nav({ cargoCapacity: null }))).toBe(false);
+    expect(isHeavyHauler(null)).toBe(false);
+  });
+});
+
+describe('scheduleDriftSeconds', () => {
+  it('positive drift when the leg arrives later than planned', () => {
+    const f = flow({
+      plannedAt: iso(-500),
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-500), arrivesAt: iso(90), travelSeconds: 180 },
+    });
+    expect(scheduleDriftSeconds(f, NOW)).toBeCloseTo(410, 0);
+  });
+  it('clamps ahead-of-schedule to 0 and returns null without a plan anchor', () => {
+    const onTime = flow({
+      plannedAt: iso(-100),
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-100), arrivesAt: iso(50), travelSeconds: 300 },
+    });
+    expect(scheduleDriftSeconds(onTime, NOW)).toBe(0);
+    expect(scheduleDriftSeconds(flow({ currentLeg: null }), NOW)).toBeNull();
+    const noEstimate = flow({
+      currentLeg: { from: 'A', to: 'B', departedAt: iso(-10), arrivesAt: iso(10), travelSeconds: 0 },
+    });
+    expect(scheduleDriftSeconds(noEstimate, NOW)).toBeNull();
   });
 });
 

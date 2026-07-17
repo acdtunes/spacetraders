@@ -28,6 +28,15 @@ describe('TourRoster', () => {
     expect(screen.getByText(/relocation/i)).toBeTruthy();
   });
 
+  it('appends a drift suffix to late legs and none to on-time rows', () => {
+    render(<TourRoster flows={flows} lanes={lanes} selectedFlowId={null} onRowClick={() => {}} />);
+    // Tour A (TORWIND-3): drift ≈ 410s → +7m (amber). Arb C (TORWIND-54): ≈ 1200s → +20m (red).
+    expect(screen.getByText(/\+7m/)).toBeTruthy();
+    expect(screen.getByText(/\+20m/)).toBeTruthy();
+    // No other row carries a suffix (B/D have no drift estimate).
+    expect(screen.getAllByText(/\+\d+m/)).toHaveLength(2);
+  });
+
   it('row click reports the container id', () => {
     const onRowClick = vi.fn();
     render(<TourRoster flows={flows} lanes={lanes} selectedFlowId={null} onRowClick={onRowClick} />);

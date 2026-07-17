@@ -21,6 +21,28 @@ const PRE_DEPARTURE = 0.04;    // parked away from the gate, departure pending
 const ORBIT_RADIUS_PX = 9;     // dwell orbit, screen-stable (÷ scale)
 const ORBIT_RAD_PER_SEC = 0.35;
 
+export const HEAVY_HAULER_MIN_CAPACITY = 80;
+export const DRIFT_AMBER_SECONDS = 300;
+export const DRIFT_RED_SECONDS = 900;
+
+// Heavy = big freighter hull (silhouette split). Unknown capacity reads light.
+export function isHeavyHauler(nav: LiveFlow['shipNav']): boolean {
+  return Boolean(nav && nav.cargoCapacity !== null && nav.cargoCapacity >= HEAVY_HAULER_MIN_CAPACITY);
+}
+
+// Current-leg schedule drift: actual arrival vs (plannedAt + planned leg
+// seconds). Positive = behind plan; ahead clamps to 0; null = no estimate
+// (no glyph — silence is nominal). plannedAt is stamped at leg-start publish,
+// so this measures exactly the leg the hull is flying.
+export function scheduleDriftSeconds(flow: LiveFlow, _nowMs: number): number | null {
+  const leg = flow.currentLeg;
+  if (!leg || !leg.travelSeconds) return null;
+  const planned = Date.parse(flow.plannedAt);
+  const arrives = Date.parse(leg.arrivesAt);
+  if (Number.isNaN(planned) || Number.isNaN(arrives)) return null;
+  return Math.max(0, (arrives - (planned + leg.travelSeconds * 1000)) / 1000);
+}
+
 export function buildAdjacency(topology: TopologyResponse): Adjacency {
   const adj: Adjacency = new Map();
   const push = (a: string, b: string) => {
@@ -107,7 +129,7 @@ function navProgress(departureIso: string, arrivalIso: string, nowMs: number): n
   return clamp01((nowMs - dep) / Math.max(arr - dep, 1));
 }
 
-function hashShip(sym: string): number {
+export function hashShip(sym: string): number {
   let h = 2166136261;
   for (let i = 0; i < sym.length; i++) {
     h ^= sym.charCodeAt(i);

@@ -1,5 +1,5 @@
 import { NOIR } from '../../theme/noir';
-import type { LiveFlow, LaneRecord, TopologyResponse } from '../../types/flows';
+import type { LiveFlow, LaneRecord, SystemLaneRecord, TopologyResponse } from '../../types/flows';
 
 export interface Point {
   x: number;
@@ -106,6 +106,25 @@ export function pointAlong(from: Point, to: Point, t: number): Point {
 const LANE_DASH_SPEED_PX_PER_SEC = 14;
 export function laneDashPhase(nowMs: number, scale: number): number {
   return -((nowMs / 1000) * LANE_DASH_SPEED_PX_PER_SEC) / Math.max(scale, 1e-6);
+}
+
+// Fleet-scale declutter: only the top-N lanes by |realizedProfit| earn the full
+// artery treatment (dash march + arrowhead + hover target); everything else that
+// still clears the floor renders as a faint capillary; the rest is dropped. The
+// floor is relative to the biggest lane so a quiet era doesn't hide everything.
+export const LANE_EMPHASIS_N = 12;
+export const LANE_FLOOR_PCT = 0.02;
+
+export function partitionLanes(
+  records: SystemLaneRecord[],
+  n: number,
+  floorPct: number,
+): { arteries: SystemLaneRecord[]; capillaries: SystemLaneRecord[] } {
+  if (records.length === 0) return { arteries: [], capillaries: [] };
+  const sorted = [...records].sort((a, b) => Math.abs(b.realizedProfit) - Math.abs(a.realizedProfit));
+  const floor = Math.abs(sorted[0].realizedProfit) * floorPct;
+  const kept = sorted.filter((lane) => Math.abs(lane.realizedProfit) >= floor);
+  return { arteries: kept.slice(0, n), capillaries: kept.slice(n) };
 }
 
 // Remaining planned hops as polyline segments in system space. Consecutive hop

@@ -22,6 +22,8 @@ export default function FlowGalaxyScene() {
   const selectFlow = useFlowStore((s) => s.selectFlow);
   const openDrilldown = useFlowStore((s) => s.openDrilldown);
   const hoverFlow = useFlowStore((s) => s.hoverFlow);
+  const hoveredFlowId = useFlowStore((s) => s.hoveredFlowId);
+  const setTooltip = useFlowStore((s) => s.setTooltip);
   const focusFlowId = useFlowStore((s) => s.focusFlowId);
   const clearFocus = useFlowStore((s) => s.clearFocus);
   const layerToggles = useFlowStore((s) => s.layerToggles);
@@ -150,7 +152,13 @@ export default function FlowGalaxyScene() {
           )}
 
           {layerToggles.lanes && (
-            <FlowLaneLayer records={lanes ? lanes.systemLanes : null} systemPos={systemPos} scale={scale} nowMs={nowMs} />
+            <FlowLaneLayer
+              records={lanes ? lanes.systemLanes : null}
+              systemPos={systemPos}
+              scale={scale}
+              nowMs={nowMs}
+              onLaneHover={(key, x, y) => setTooltip(key ? { kind: 'lane', key, x, y } : null)}
+            />
           )}
 
           {/* Gate edges as hairlines (dashed when under construction) */}
@@ -220,7 +228,13 @@ export default function FlowGalaxyScene() {
               .filter((p) => p.flow.remainingHops.length > 0)
               .map((p) => (
                 <Group key={`pp-${p.flow.containerId}`} opacity={p.opacity * staleOpacity} listening={false}>
-                  <FlowPlanPath flow={p.flow} adj={adj} systemPos={systemPos} scale={scale} />
+                  <FlowPlanPath
+                    flow={p.flow}
+                    adj={adj}
+                    systemPos={systemPos}
+                    scale={scale}
+                    bright={p.flow.containerId === hoveredFlowId || p.flow.containerId === selectedFlowId}
+                  />
                 </Group>
               ))}
 

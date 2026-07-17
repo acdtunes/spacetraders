@@ -9,6 +9,9 @@ import {
   offsetSegmentRight,
   pointAlong,
   laneDashPhase,
+  partitionLanes,
+  LANE_EMPHASIS_N,
+  LANE_FLOOR_PCT,
 } from '../flowGeometry';
 import { mockTopology, mockLiveFlows } from '../../../mocks/mockFlows';
 import type { LiveFlow } from '../../../types/flows';
@@ -136,6 +139,30 @@ describe('pointAlong', () => {
     expect(pointAlong(a, b, 0)).toEqual(a);
     expect(pointAlong(a, b, 1)).toEqual(b);
     expect(pointAlong(a, b, 0.5)).toEqual({ x: 4, y: 2 });
+  });
+});
+
+describe('partitionLanes', () => {
+  const lane = (from: string, profit: number) => ({ from, to: 'X1-ZZ', realizedUnits: 1, realizedProfit: profit, legCount: 1, topGoods: [] });
+
+  it('splits top-N arteries, floor-passing capillaries, and drops sub-floor lanes', () => {
+    const records = [
+      ...Array.from({ length: 15 }, (_, i) => lane(`A${i}`, 1_000_000 - i * 50_000)),
+      lane('TINY', 1_000_000 * LANE_FLOOR_PCT * 0.5), // below floor -> dropped
+      lane('LOSS', -620_000),                          // big loss ranks by magnitude (9th of 17)
+    ];
+    const { arteries, capillaries } = partitionLanes(records, LANE_EMPHASIS_N, LANE_FLOOR_PCT);
+    expect(arteries).toHaveLength(LANE_EMPHASIS_N);
+    expect(arteries.some((l) => l.from === 'LOSS')).toBe(true);
+    expect(capillaries.some((l) => l.from === 'TINY')).toBe(false);
+    expect(arteries.length + capillaries.length).toBe(16); // 17 minus the dropped TINY
+  });
+
+  it('small sets are all arteries; empty is empty', () => {
+    const { arteries, capillaries } = partitionLanes([lane('A', 100)], LANE_EMPHASIS_N, LANE_FLOOR_PCT);
+    expect(arteries).toHaveLength(1);
+    expect(capillaries).toHaveLength(0);
+    expect(partitionLanes([], LANE_EMPHASIS_N, LANE_FLOOR_PCT)).toEqual({ arteries: [], capillaries: [] });
   });
 });
 
