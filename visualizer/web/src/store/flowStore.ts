@@ -12,7 +12,7 @@ export interface FlowState {
   error: string | null;
   hoveredFlowId: string | null;
   focusFlowId: string | null;    // one-shot camera request; scene clears it
-  layerToggles: { lanes: boolean; paths: boolean; ships: boolean };
+  layerToggles: { lanes: boolean; paths: boolean; ships: boolean; freshness: boolean };
   staleFlows: LiveFlow[] | null; // last live flows, frozen while feedLost
   freezeAtMs: number | null;     // clock value the frozen render pins to
   freshness: FreshnessResponse | null;
@@ -29,7 +29,7 @@ export interface FlowState {
   hoverFlow: (containerId: string | null) => void;
   requestFocus: (containerId: string) => void;
   clearFocus: () => void;
-  toggleLayer: (key: 'lanes' | 'paths' | 'ships') => void;
+  toggleLayer: (key: 'lanes' | 'paths' | 'ships' | 'freshness') => void;
   // Freshness poll: success resets the missed counter; failure increments it
   // (freshness failures dim the layer, they never surface through setError).
   setFreshness: (freshness: FreshnessResponse) => void;
@@ -47,7 +47,7 @@ export const useFlowStore = create<FlowState>((set) => ({
   error: null,
   hoveredFlowId: null,
   focusFlowId: null,
-  layerToggles: { lanes: true, paths: true, ships: true },
+  layerToggles: { lanes: true, paths: true, ships: true, freshness: true },
   staleFlows: null,
   freezeAtMs: null,
   freshness: null,

@@ -12,6 +12,7 @@ import { buildAdjacency, buildSystemGates, projectFlowMotion } from './flowMotio
 import { FlowLaneLayer } from './FlowLaneLayer';
 import { FlowShipLayer } from './FlowShipLayer';
 import { FlowPlanPath } from './FlowPlanPath';
+import { FreshnessLayer } from './FreshnessLayer';
 
 export default function FlowGalaxyScene() {
   const topology = useFlowStore((s) => s.topology);
@@ -26,6 +27,8 @@ export default function FlowGalaxyScene() {
   const layerToggles = useFlowStore((s) => s.layerToggles);
   const staleFlows = useFlowStore((s) => s.staleFlows);
   const freezeAtMs = useFlowStore((s) => s.freezeAtMs);
+  const freshness = useFlowStore((s) => s.freshness);
+  const freshnessMissedPolls = useFlowStore((s) => s.freshnessMissedPolls);
 
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(0.5);
@@ -135,6 +138,17 @@ export default function FlowGalaxyScene() {
         <Layer>
           {topology && (
             <>
+          {/* Freshness halos paint first — under lanes, edges, nodes, ships. */}
+          {layerToggles.freshness && freshness && (
+            <FreshnessLayer
+              records={freshness.systems}
+              systemPos={systemPos}
+              scale={scale}
+              nowMs={nowMs}
+              degraded={freshnessMissedPolls >= 5}
+            />
+          )}
+
           {layerToggles.lanes && (
             <FlowLaneLayer records={lanes ? lanes.systemLanes : null} systemPos={systemPos} scale={scale} nowMs={nowMs} />
           )}

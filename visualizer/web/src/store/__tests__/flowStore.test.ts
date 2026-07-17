@@ -56,11 +56,13 @@ describe('galaxy view state', () => {
     s.clearFocus();
     expect(useFlowStore.getState().focusFlowId).toBeNull();
 
-    expect(useFlowStore.getState().layerToggles).toEqual({ lanes: true, paths: true, ships: true });
+    expect(useFlowStore.getState().layerToggles).toEqual({ lanes: true, paths: true, ships: true, freshness: true });
     s.toggleLayer('lanes');
     expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
     s.toggleLayer('lanes');
     expect(useFlowStore.getState().layerToggles.lanes).toBe(true);
+    s.toggleLayer('freshness');
+    expect(useFlowStore.getState().layerToggles.freshness).toBe(false);
   });
 
   it('freezes the last live flows across feed loss and clears on recovery', () => {
