@@ -62,6 +62,11 @@ type tourFixture struct {
 	// destination system so a reposition test can assert the hull actually jumped.
 	neighbors map[string][]string
 	jumps     []string
+	// activeHulls is the fleet snapshot tourFakeShipRepo.FindActiveByPlayer returns for the
+	// sp-uf64 reposition-reach anti-herd count: each entry is one active hull's (system, fleet).
+	// Absent (nil) → no active hulls, so the anti-herd cap never excludes a candidate and every
+	// pre-uf64 test is unaffected (the flag defaults OFF, so the count is never even read).
+	activeHulls []activeHull
 	// navDests records every NavigateRouteCommand destination in dispatch order (sp-trnp), so a
 	// test can assert the cross-system departure hop (waypoint->source gate) fired BEFORE the
 	// jump. Purely additive — no existing test reads it.
@@ -91,6 +96,40 @@ type tourFixture struct {
 	// the mediator seam so a test can prove the coordinator threads "tour".
 	buyOpTypes  []string
 	sellOpTypes []string
+}
+
+// activeHull models one hull in the fleet snapshot the anti-herd count reads (sp-uf64): the
+// system it currently occupies and the fleet it is dedicated to. Only "trade"-dedicated hulls
+// count toward a system's herd; a scout/contract hull in the same system is ignored.
+type activeHull struct {
+	system string
+	fleet  string
+}
+
+// buildHullAt constructs an active hull located in systemSymbol (at a synthetic "<system>-HERD"
+// waypoint) dedicated to fleet — the shape tourFakeShipRepo.FindActiveByPlayer returns so the
+// sp-uf64 anti-herd count can read CurrentLocation().SystemSymbol + DedicatedFleet().
+func (fx *tourFixture) buildHullAt(t *testing.T, symbol, systemSymbol, fleet string) *navigation.Ship {
+	t.Helper()
+	wp, err := shared.NewWaypoint(systemSymbol+"-HERD", 0, 0)
+	if err != nil {
+		t.Fatalf("herd waypoint: %v", err)
+	}
+	fuel, err := shared.NewFuel(1000, 1000)
+	if err != nil {
+		t.Fatalf("herd fuel: %v", err)
+	}
+	cargo, err := shared.NewCargo(100, 0, nil)
+	if err != nil {
+		t.Fatalf("herd cargo: %v", err)
+	}
+	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), wp, fuel, 1000, 100, cargo, 30,
+		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked)
+	if err != nil {
+		t.Fatalf("herd ship: %v", err)
+	}
+	ship.SetDedicatedFleet(fleet)
+	return ship
 }
 
 func (fx *tourFixture) buildShip(t *testing.T, symbol string) *navigation.Ship {
@@ -309,6 +348,20 @@ func (r *tourFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, play
 	return r.fx.buildShip(r.t, symbol), nil
 }
 func (r *tourFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) error { return nil }
+
+// FindActiveByPlayer returns the fixture's active-hull snapshot (sp-uf64): the seam the
+// reposition-reach anti-herd count reads to tally trade hulls per system. Absent activeHulls →
+// an empty fleet, so the cap excludes nothing (every existing test is unaffected).
+func (r *tourFakeShipRepo) FindActiveByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	r.fx.mu.Lock()
+	hulls := append([]activeHull(nil), r.fx.activeHulls...)
+	r.fx.mu.Unlock()
+	var out []*navigation.Ship
+	for i, ah := range hulls {
+		out = append(out, r.fx.buildHullAt(r.t, fmt.Sprintf("HERD-%d", i), ah.system, ah.fleet))
+	}
+	return out, nil
+}
 
 // SyncShipFromAPI models the authoritative live resync the sp-trnp departure-hop
 // re-confirmation performs after navigating to the source gate. When a departure-hop

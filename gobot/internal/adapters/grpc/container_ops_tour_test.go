@@ -350,3 +350,71 @@ func TestTourClaimRejectedOnForeignFleetDedication(t *testing.T) {
 	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
 	require.False(t, hull.IsAssigned())
 }
+
+// reposition_reach THE CONFIG-KNOB PROPAGATION PIN (sp-uf64). The reach discovery/ranking/anti-herd
+// path is a daemon-global [trade_fleet] tuning (exactly like closed_tours / placement_*), so —
+// mirroring TestStartTourRun_StampsClosedToursFromTradeFleetConfig — StartTourRun must STAMP the
+// flag + the two int knobs into the launch config from tradeFleetConfig and buildTourCoordinatorCommand
+// must READ them back onto the command. Without both writes the knob is INERT: the operator's
+// config.yaml value never reaches buildRepositionCandidates and every reposition stays 1-hop-first.
+func TestStartTourRun_StampsRepositionReachFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.RepositionReachEnabled = true // the captain's [trade_fleet] arming
+	s.tradeFleetConfig.RepositionReachHopDecayPct = 70
+	s.tradeFleetConfig.RepositionReachMaxHullsPerSystem = 3
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"reposition_reach_enabled":true`, "StartTourRun must stamp the [trade_fleet] reposition_reach_enabled so the launch/rebuild reads it back — otherwise the reach path can never be armed")
+
+	// The whole boundary round-trips: the rebuild reloads the stamped knobs onto the command, which
+	// buildRepositionCandidates reads to always-broaden + deadhead-decay + anti-herd.
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.True(t, cmd.RepositionReachEnabled)
+	require.Equal(t, 70, cmd.RepositionReachHopDecayPct)
+	require.Equal(t, 3, cmd.RepositionReachMaxHullsPerSystem)
+}
+
+// reposition_reach default-safety companion (sp-uf64): an UNSET [trade_fleet] reposition_reach block
+// rebuilds to RepositionReachEnabled=false + the two int knobs at 0 — which buildRepositionCandidates
+// reads as the legacy 1-hop-first reposition, so a daemon that never arms the knobs is byte-identical
+// to today (the launch path stays default-safe).
+func TestStartTourRun_RepositionReachDefaultsWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig reposition-reach fields left at their zero values (the operator never armed them).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.False(t, cmd.RepositionReachEnabled, "an unset reposition_reach_enabled must rebuild to false (legacy 1-hop reposition, byte-identical to today)")
+	require.Equal(t, 0, cmd.RepositionReachHopDecayPct, "an unset hop_decay_pct must rebuild to the sentinel 0 (consumer resolves -> 85)")
+	require.Equal(t, 0, cmd.RepositionReachMaxHullsPerSystem, "an unset max_hulls_per_system must rebuild to the sentinel 0 (consumer resolves -> 5)")
+}

@@ -231,6 +231,31 @@ type RunTourCoordinatorCommand struct {
 	RepositionTargetSystem   string
 	RepositionTargetWaypoint string
 
+	// --- Reposition reach (sp-uf64 — always-broaden discovery + deadhead-decay + anti-herd) ---
+	// A hull whose origin has ANY fresh-market 1-hop neighbour (even a money-losing one) never
+	// sees richer systems 2-4 gate hops away, because buildRepositionCandidates broadens to the
+	// multi-hop scan ONLY when the 1-hop set is EMPTY (the sp-jeou off-circuit gate). The live
+	// symptom: three heavy freighters bought at the X1-UF64 yard tour UF64-local arb at -49k
+	// cr/hull/hr while frontier systems (X1-YU58 +482k, X1-DG23 +414k) sit 2+ hops away, unreached.
+
+	// RepositionReachEnabled arms the reach improvement. false (the zero value / absent config) →
+	// the legacy 1-hop-first + broaden-on-empty path runs byte-for-byte unchanged (the governance
+	// gate). true → buildRepositionCandidates ALWAYS runs BOTH the 1-hop and the multi-hop scan,
+	// merges+dedups them (1-hop precedence on ties), RE-RANKS by a hop-decayed score so a rich
+	// distant ground can outrank a mediocre near one without a marginally-better distant one
+	// overflying, and EXCLUDES candidate systems already saturated with active trade hulls.
+	RepositionReachEnabled bool
+	// RepositionReachHopDecayPct is the per-hop ranking decay (an int percent): the pre-rank score
+	// is adjusted to score·(pct/100)^hops so distant candidates pay for the extra deadhead travel.
+	// 0/absent → repositionReachHopDecayPctDefault (85 ⇒ 0.85/hop). Only read when
+	// RepositionReachEnabled is true.
+	RepositionReachHopDecayPct int
+	// RepositionReachMaxHullsPerSystem is the anti-herd cap: a candidate system already served by
+	// >= this many active trade hulls is excluded, so simultaneously-margin-dead hulls do not all
+	// pile onto the same top system and re-drain it. 0/absent →
+	// repositionReachMaxHullsPerSystemDefault (5). Only read when RepositionReachEnabled is true.
+	RepositionReachMaxHullsPerSystem int
+
 	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
 	// The margins-death rescue evolves into the spec's score(x)=E_x−β·D_x placement loop:
 	// argmax over reachable systems (INCLUDING staying put) on the deadhead-charged score,

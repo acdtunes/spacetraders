@@ -1392,6 +1392,15 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		PlacementBetaWindowMinutes: cfg.OptionalInt("placement_beta_window_minutes", 0),
 		PlacementParkFloorPct:      cfg.OptionalInt("placement_park_floor_pct", 0),
 		PlacementShortlistTopN:     cfg.OptionalInt("placement_shortlist_top_n", 0),
+		// sp-uf64 reposition reach (always-broaden discovery + deadhead-decay ranking + anti-herd).
+		// OptionalBool/OptionalInt yield zero values for absent keys — the exact default-OFF dormancy
+		// the Placement*/Reposition* knobs use: reposition_reach_enabled absent ⇒ false ⇒ the legacy
+		// 1-hop-first reposition runs, byte-identical to today; the decay/cap default to 0 ⇒ the
+		// coordinator's own repositionReach*Default (85, 5). Every existing container and recovery
+		// rebuild takes the legacy branch until a captain explicitly sets reposition_reach_enabled: true.
+		RepositionReachEnabled:           cfg.OptionalBool("reposition_reach_enabled"),
+		RepositionReachHopDecayPct:       cfg.OptionalInt("reposition_reach_hop_decay_pct", 0),
+		RepositionReachMaxHullsPerSystem: cfg.OptionalInt("reposition_reach_max_hulls_per_system", 0),
 	}
 }
 

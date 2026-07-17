@@ -12,6 +12,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -71,6 +73,23 @@ const (
 	// of money and keeps the strict Path — the guard distinction is money-commitment vs
 	// hull-movement, not probe vs heavy.
 	repositionJumpBoundDefault = 12
+
+	// repositionReachHopDecayPctDefault is the per-hop ranking decay the sp-uf64 reach path applies
+	// to a candidate's pre-rank score when RepositionReachEnabled is armed and the captain leaves
+	// [trade_fleet].reposition_reach_hop_decay_pct at 0: score·(85/100)^hops, so a candidate one
+	// gate hop farther keeps ~85% of its rank weight. 85 is deliberately gentle — a ~3-hop ground
+	// with >=1.4x the spread of a 1-hop one still wins, but a marginally-better distant ground does
+	// NOT over-fly. A named knob, not a magic constant (RULINGS #5); retune as the fleet's deadhead
+	// cost / opportunity rate shifts.
+	repositionReachHopDecayPctDefault = 85
+
+	// repositionReachMaxHullsPerSystemDefault caps how many active trade hulls a candidate system
+	// may ALREADY carry before the reach scan EXCLUDES it (anti-herd), when the captain leaves
+	// [trade_fleet].reposition_reach_max_hulls_per_system at 0. Without the cap every
+	// simultaneously-margin-dead hull picks the same top system and re-drains it (herding is
+	// already visible in the live logs). 5 lets a genuinely rich ground absorb a small cohort while
+	// still spreading the fleet across the frontier.
+	repositionReachMaxHullsPerSystemDefault = 5
 )
 
 // resolveRepositionJumpBound applies the 0/absent → default rule to the configured
@@ -82,6 +101,30 @@ const (
 func resolveRepositionJumpBound(configured int) int {
 	if configured <= 0 {
 		return repositionJumpBoundDefault
+	}
+	return configured
+}
+
+// resolveRepositionReachHopDecay applies the 0/absent → 85 rule to reposition_reach_hop_decay_pct
+// (sp-uf64) and returns it as a fraction in (0,1], so the default lives in ONE place (RULINGS #5).
+// A configured value is clamped to [1,100]: a stray 0 falls to the default and a >100 typo is
+// pinned at 1.0, so the knob can never INVERT the ranking (a decay >1 would REWARD distance).
+func resolveRepositionReachHopDecay(configuredPct int) float64 {
+	pct := configuredPct
+	if pct <= 0 {
+		pct = repositionReachHopDecayPctDefault
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return float64(pct) / 100
+}
+
+// resolveRepositionReachMaxHulls applies the 0/absent → 5 rule to reposition_reach_max_hulls_per_system
+// (sp-uf64 anti-herd cap), so the default lives in ONE place (RULINGS #5).
+func resolveRepositionReachMaxHulls(configured int) int {
+	if configured <= 0 {
+		return repositionReachMaxHullsPerSystemDefault
 	}
 	return configured
 }
@@ -343,33 +386,42 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 	neighbors, originReason := h.legs.repositionNeighbors(ctx, currentSystem, cmd.PlayerID)
 	candidates, rejections := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, neighbors, now)
 
-	// sp-jeou: an OFF-CIRCUIT hull (bought at a far yard like X1-UF64) whose 1-gate-hop neighbors
-	// carry no fresh cached market yields ZERO candidates above, so maybeReposition would exit and
-	// the hull would strand — never reaching the circuit the auto-reposition machinery exists to
-	// reach. ONLY when the 1-hop scan is empty, broaden discovery to every cached-market system
-	// within the SAME jump bound the flight (RepositionToWaypointWithinJumps) already routes over,
-	// so a profitable circuit system 2-4 gate hops away becomes a candidate (discovery reach ==
-	// travel reach). An on-circuit hull with ANY 1-hop candidate never enters this branch — its
-	// behavior is byte-for-byte unchanged. Empty here too (a genuinely stranded hull) falls through
-	// to the same empty-discovery diagnostic + stranded detector below, reading the 1-hop signal.
-	if len(candidates) == 0 {
-		jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
-		farNeighbors, _ := h.legs.repositionNeighborsWithinJumps(ctx, currentSystem, cmd.PlayerID, jumpBound)
-		if broadened, _ := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, farNeighbors, now); len(broadened) > 0 {
-			candidates = broadened
-			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Reposition discovery broadened from %s: no fresh-market 1-hop neighbor, found %d cached-market candidate(s) within %d jumps (sp-jeou off-circuit rescue)", currentSystem, len(candidates), jumpBound), map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem, "candidates": len(candidates), "jump_bound": jumpBound, "bead": "sp-jeou",
-			})
+	if cmd.RepositionReachEnabled {
+		// sp-uf64 reposition reach (default-OFF governance gate): a hull with ANY fresh-market 1-hop
+		// neighbor — even a money-losing one — never saw richer systems 2-4 gate hops away, because
+		// the sp-jeou broaden below fires ONLY on an EMPTY 1-hop scan. Armed, discovery ALWAYS
+		// broadens+merges, EXCLUDES herd-saturated systems, and RE-RANKS by a per-hop deadhead decay
+		// (see repositionReachCandidates). Unarmed, the else branch is byte-for-byte today's path.
+		candidates = h.repositionReachCandidates(ctx, cmd, currentSystem, candidates, now)
+	} else {
+		// sp-jeou: an OFF-CIRCUIT hull (bought at a far yard like X1-UF64) whose 1-gate-hop neighbors
+		// carry no fresh cached market yields ZERO candidates above, so maybeReposition would exit and
+		// the hull would strand — never reaching the circuit the auto-reposition machinery exists to
+		// reach. ONLY when the 1-hop scan is empty, broaden discovery to every cached-market system
+		// within the SAME jump bound the flight (RepositionToWaypointWithinJumps) already routes over,
+		// so a profitable circuit system 2-4 gate hops away becomes a candidate (discovery reach ==
+		// travel reach). An on-circuit hull with ANY 1-hop candidate never enters this branch — its
+		// behavior is byte-for-byte unchanged. Empty here too (a genuinely stranded hull) falls through
+		// to the same empty-discovery diagnostic + stranded detector below, reading the 1-hop signal.
+		if len(candidates) == 0 {
+			jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
+			farNeighbors, _ := h.legs.repositionNeighborsWithinJumps(ctx, currentSystem, cmd.PlayerID, jumpBound)
+			if broadened, _ := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, farNeighbors, now); len(broadened) > 0 {
+				candidates = broadened
+				common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Reposition discovery broadened from %s: no fresh-market 1-hop neighbor, found %d cached-market candidate(s) within %d jumps (sp-jeou off-circuit rescue)", currentSystem, len(candidates), jumpBound), map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem, "candidates": len(candidates), "jump_bound": jumpBound, "bead": "sp-jeou",
+				})
+			}
 		}
+		// Cheap pre-rank: highest cached in-system capped spread first (a proxy for tour
+		// margin), system symbol as a stable tie-break so the top-K bound is deterministic.
+		sort.SliceStable(candidates, func(i, j int) bool {
+			if candidates[i].score != candidates[j].score {
+				return candidates[i].score > candidates[j].score
+			}
+			return candidates[i].system < candidates[j].system
+		})
 	}
-	// Cheap pre-rank: highest cached in-system capped spread first (a proxy for tour
-	// margin), system symbol as a stable tie-break so the top-K bound is deterministic.
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].system < candidates[j].system
-	})
 	// sp-1ki5 #3: an empty discovery must name WHY — the origin-level reason when no gated
 	// neighbor resolved at all (the X1-DP51 shape), or the per-neighbor rejection reasons when
 	// neighbors were found but each fell out. Emitted ONLY on empty; a populated scan logs its
@@ -395,6 +447,130 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 		metrics.RecordHullStranded(cmd.ShipSymbol, currentSystem)
 	}
 	return candidates
+}
+
+// repositionReachCandidates is the armed sp-uf64 discovery+ranking path. It ALWAYS runs the
+// multi-hop BFS (repositionNeighborsWithinJumps, over the same jump bound the reposition FLIGHT
+// routes) IN ADDITION to the 1-hop scan already in hand, MERGES the far candidates onto the 1-hop
+// set (1-hop precedence on dedup — each scan is already internally deduped by
+// scoreRepositionNeighbors' `seen` map, so this only reconciles the overlap), EXCLUDES any
+// candidate system already saturated with active trade hulls (anti-herd), then RE-RANKS the
+// survivors by a per-hop deadhead-decayed score so a rich distant ground outranks a mediocre near
+// one ONLY when its spread beats the travel penalty. The shared empty-diagnostic + stranded
+// detector in the caller then read this result.
+func (h *RunTourCoordinatorHandler) repositionReachCandidates(
+	ctx context.Context,
+	cmd *RunTourCoordinatorCommand,
+	currentSystem string,
+	oneHop []repositionCandidate,
+	now time.Time,
+) []repositionCandidate {
+	jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
+	farNeighbors, _ := h.legs.repositionNeighborsWithinJumps(ctx, currentSystem, cmd.PlayerID, jumpBound)
+	broadened, _ := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, farNeighbors, now)
+
+	merged := mergeRepositionCandidates(oneHop, broadened)
+	kept, herdExcluded := h.excludeHerdedSystems(ctx, cmd, merged)
+
+	// Deadhead-decayed pre-rank: score·decay^hops descending, system symbol as the stable tie-break
+	// (preserved from the legacy sort) so the top-K bound stays deterministic.
+	decay := resolveRepositionReachHopDecay(cmd.RepositionReachHopDecayPct)
+	sort.SliceStable(kept, func(i, j int) bool {
+		di, dj := repositionDecayedScore(kept[i], decay), repositionDecayedScore(kept[j], decay)
+		if di != dj {
+			return di > dj
+		}
+		return kept[i].system < kept[j].system
+	})
+
+	if len(kept) > 0 {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Reposition reach from %s: %d candidate(s) within %d jumps after merge, %d herd-excluded, ranked by %.2f/hop deadhead decay (sp-uf64)", currentSystem, len(kept), jumpBound, herdExcluded, decay), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem, "candidates": len(kept), "jump_bound": jumpBound, "herd_excluded": herdExcluded, "hop_decay": decay, "bead": "sp-uf64",
+		})
+	}
+	return kept
+}
+
+// mergeRepositionCandidates unions the 1-hop candidate set with the broadened multi-hop set,
+// deduped by system with the PRIMARY (1-hop) entry winning a tie — a system reachable at 1 hop is
+// ranked and charged as a 1-hop ground even though the BFS also re-surfaces it deeper. Order is
+// primary-first then the new far systems in BFS order; the caller re-ranks by decay anyway.
+func mergeRepositionCandidates(primary, extra []repositionCandidate) []repositionCandidate {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	merged := make([]repositionCandidate, 0, len(primary)+len(extra))
+	for _, group := range [][]repositionCandidate{primary, extra} {
+		for _, candidate := range group {
+			if seen[candidate.system] {
+				continue
+			}
+			seen[candidate.system] = true
+			merged = append(merged, candidate)
+		}
+	}
+	return merged
+}
+
+// repositionDecayedScore is a candidate's pre-rank score after the per-hop deadhead decay (sp-uf64):
+// score·decay^hops. A hops<=0 sentinel (an unstamped candidate from some future discovery path) is
+// charged one hop so a mis-stamped ground can never rank as a free, undecayed deadhead — the same
+// defensive floor evaluateForeignPlacement applies.
+func repositionDecayedScore(candidate repositionCandidate, decay float64) float64 {
+	hops := candidate.hops
+	if hops < 1 {
+		hops = 1
+	}
+	return float64(candidate.score) * math.Pow(decay, float64(hops))
+}
+
+// excludeHerdedSystems drops any candidate system already served by >= the configured per-system
+// hull cap (sp-uf64 anti-herd), returning the survivors and how many were excluded (for the log).
+// Fail-open: an unreadable/unwired fleet snapshot excludes NOTHING (RULINGS #4 — the margins-death
+// rescue must never be blocked by a telemetry miss), so a nil ship repo or a read error leaves the
+// set intact.
+func (h *RunTourCoordinatorHandler) excludeHerdedSystems(ctx context.Context, cmd *RunTourCoordinatorCommand, candidates []repositionCandidate) ([]repositionCandidate, int) {
+	counts, ok := h.activeTradeHullsBySystem(ctx, cmd.PlayerID)
+	if !ok {
+		return candidates, 0
+	}
+	maxHulls := resolveRepositionReachMaxHulls(cmd.RepositionReachMaxHullsPerSystem)
+	kept := make([]repositionCandidate, 0, len(candidates))
+	excluded := 0
+	for _, candidate := range candidates {
+		if counts[candidate.system] >= maxHulls {
+			excluded++
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	return kept, excluded
+}
+
+// activeTradeHullsBySystem tallies active TRADE-dedicated hulls per system for the anti-herd cap
+// (sp-uf64). It reads the existing FindActiveByPlayer seam — the scout coordinator's own
+// per-episode idiom — which is acceptable at the RARE margins-death boundary and is NOT a per-tick
+// full-fleet scan. ok=false (nil repo or read error) tells the caller to fail open. Only
+// DedicatedFleet()=="trade" hulls count: a scout/contract hull passing through a system is not part
+// of the trade herd that would re-drain it.
+func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context, playerID int) (map[string]int, bool) {
+	if h.legs == nil || h.legs.shipRepo == nil {
+		return nil, false
+	}
+	ships, err := h.legs.shipRepo.FindActiveByPlayer(ctx, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return nil, false
+	}
+	counts := make(map[string]int, len(ships))
+	for _, ship := range ships {
+		if ship == nil || ship.DedicatedFleet() != tradeFleet {
+			continue
+		}
+		location := ship.CurrentLocation()
+		if location == nil {
+			continue
+		}
+		counts[location.SystemSymbol]++
+	}
+	return counts, true
 }
 
 // scoreRepositionNeighbors is the per-neighbor candidate scorer shared by the 1-hop scan and the

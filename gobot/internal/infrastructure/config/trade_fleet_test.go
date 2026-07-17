@@ -90,3 +90,56 @@ func TestLoadConfig_ClosedTours_AbsentIsFalse(t *testing.T) {
 	require.False(t, cfg.TradeFleet.ClosedTours,
 		"an absent closed_tours must default false (OPEN tours), never a config-layer default that silently arms closed mode")
 }
+
+// sp-uf64 round-trip pin: the reposition-reach knobs (the default-OFF flag + the two int tunables)
+// must travel from config.yaml's [trade_fleet] section into the loaded config unchanged, so a
+// captain arms the reach improvement by editing config.yaml + restarting — no code redeploy. This
+// exercises the REAL viper mapstructure pipeline (the ONE seam the grpc stamp/rebuild tests cannot
+// cover — they set the struct fields directly). A typo in any mapstructure tag would ship a
+// silently-inert knob; this test catches it.
+func TestLoadConfig_RepositionReach_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  reposition_reach_enabled: true\n"+
+			"  reposition_reach_hop_decay_pct: 70\n"+
+			"  reposition_reach_max_hulls_per_system: 3\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.True(t, cfg.TradeFleet.RepositionReachEnabled,
+		"reposition_reach_enabled must reach the config struct so the captain can arm the reach improvement by editing config.yaml + restarting")
+	require.Equal(t, 70, cfg.TradeFleet.RepositionReachHopDecayPct,
+		"reposition_reach_hop_decay_pct must round-trip so the per-hop deadhead decay is operator-tunable")
+	require.Equal(t, 3, cfg.TradeFleet.RepositionReachMaxHullsPerSystem,
+		"reposition_reach_max_hulls_per_system must round-trip so the anti-herd cap is operator-tunable")
+}
+
+// sp-uf64 default-safety companion: an ABSENT reposition_reach block resolves to the Go zero values
+// viper leaves untouched (false + 0 + 0) — so a daemon that never sets the knobs runs the legacy
+// 1-hop-first reposition, byte-identical to today. The two int sentinels (0) are the consumer's
+// "resolve to default" signal (resolveRepositionReachHopDecay → 85, resolveRepositionReachMaxHulls
+// → 5), so the defaults live in ONE place (the coordinator), never smeared across the config layer.
+func TestLoadConfig_RepositionReach_AbsentIsDefaults(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	// enabled but NO reposition_reach keys — the default config.yaml shape.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.False(t, cfg.TradeFleet.RepositionReachEnabled,
+		"an absent reposition_reach_enabled must default false (legacy reposition), never a config-layer default that silently arms the reach path")
+	require.Equal(t, 0, cfg.TradeFleet.RepositionReachHopDecayPct,
+		"an absent hop_decay_pct must be the sentinel 0 (the consumer resolves 0 -> default 85), never a config-layer default")
+	require.Equal(t, 0, cfg.TradeFleet.RepositionReachMaxHullsPerSystem,
+		"an absent max_hulls_per_system must be the sentinel 0 (the consumer resolves 0 -> default 5), never a config-layer default")
+}

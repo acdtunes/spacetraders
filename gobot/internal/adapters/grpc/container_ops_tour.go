@@ -134,7 +134,18 @@ func (s *DaemonServer) StartTourRun(
 		"placement_beta_window_minutes": s.tradeFleetConfig.PlacementBetaWindowMinutes,
 		"placement_park_floor_pct":      s.tradeFleetConfig.PlacementParkFloorPct,
 		"placement_shortlist_top_n":     s.tradeFleetConfig.PlacementShortlistTopN,
-		"iterations":                    iterations,
+		// sp-uf64: the reposition-reach knobs (always-broaden discovery + deadhead-decay ranking +
+		// anti-herd cap), sourced from the daemon's live [trade_fleet] config (daemon-global tour
+		// tuning, same for every tour — the mirror of closed_tours/placement_* above). Persisted
+		// as-is (false/0 too, so an absent knob survives a recovery rebuild unchanged and the
+		// default-OFF dormancy is stable in BOTH directions); buildTourCoordinatorCommand reads them
+		// back onto the command via OptionalBool/OptionalInt, which yield the zero values for absent
+		// keys. reposition_reach_enabled=false keeps the legacy 1-hop-first reposition. This WRITE is
+		// what lets the knob take effect — without it cmd.RepositionReachEnabled is inert and false.
+		"reposition_reach_enabled":              s.tradeFleetConfig.RepositionReachEnabled,
+		"reposition_reach_hop_decay_pct":        s.tradeFleetConfig.RepositionReachHopDecayPct,
+		"reposition_reach_max_hulls_per_system": s.tradeFleetConfig.RepositionReachMaxHullsPerSystem,
+		"iterations":                            iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

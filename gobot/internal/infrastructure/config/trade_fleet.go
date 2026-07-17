@@ -143,6 +143,19 @@ type TradeFleetConfig struct {
 	PlacementBetaWindowMinutes int  `mapstructure:"placement_beta_window_minutes"`
 	PlacementParkFloorPct      int  `mapstructure:"placement_park_floor_pct"`
 	PlacementShortlistTopN     int  `mapstructure:"placement_shortlist_top_n"`
+
+	// --- Reposition reach (sp-uf64) ---
+	// Daemon-global tour tunings, same for every tour container (the mirror of
+	// closed_tours/placement_* above): StartTourRun stamps them into every tour launch config,
+	// buildTourCoordinatorCommand reads them back onto the command. RepositionReachEnabled defaults
+	// FALSE, so the legacy 1-hop-first reposition runs unchanged (the governance gate — nothing arms
+	// without an explicit captain config change). The two int knobs default to 0 ⇒ the coordinator's
+	// own reposition_reach_{hop_decay_pct,max_hulls_per_system} default (85, 5), so an absent knob is
+	// byte-identical to today; the default lives in the consumer, not here. Arm/retune by editing
+	// config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
+	RepositionReachEnabled           bool `mapstructure:"reposition_reach_enabled"`
+	RepositionReachHopDecayPct       int  `mapstructure:"reposition_reach_hop_decay_pct"`
+	RepositionReachMaxHullsPerSystem int  `mapstructure:"reposition_reach_max_hulls_per_system"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)
