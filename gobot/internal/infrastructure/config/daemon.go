@@ -39,6 +39,17 @@ type DaemonConfig struct {
 	// re-apply retry entirely. Absent/false = retry ACTIVE.
 	CASRetryDisabled bool `mapstructure:"cas_retry_disabled"`
 
+	// ArrivalWaitLiveReconfirmDisabled is the kill-switch (inverted polarity,
+	// mirroring CASRetryDisabled) for the arrival-wait fix (sp-arrwait): before
+	// parking a still-IN_TRANSIT-past-ETA ship as a lost event, WaitForShipArrival
+	// re-confirms ONCE against the authoritative live API (a short leg's local row
+	// can lag the async arrival transition) and debounces the short-leg race with a
+	// second local-DB poll. Absent/false = fix ACTIVE (default ON, bug fixed by
+	// default); true instantly reverts WaitForShipArrival to the pre-fix DB-only
+	// park with no code rollback. The re-confirm costs at most ONE API call, only on
+	// the rare park path — never on the happy path. Sticky across restart via config.
+	ArrivalWaitLiveReconfirmDisabled bool `mapstructure:"arrival_wait_live_reconfirm_disabled"`
+
 	// AgentCacheTTLSeconds bounds how long the shared API client may serve a
 	// cached agent before re-reading /my/agent live (sp-oszc): GetAgent was the
 	// #2 API consumer (343 calls / 1306s rate-limit wait) and agent data changes

@@ -219,6 +219,11 @@ func run(cfg *config.Config) error {
 	// NewShipRepository call sites untouched.
 	shipRepoImpl.SetCASRetryPolicy(cfg.Daemon.MaxCASRetries, cfg.Daemon.CASRetryDisabled)
 	shipRepo = shipRepoImpl
+	// sp-arrwait: wire the arrival-wait live-reconfirm kill-switch (live by default;
+	// arrival_wait_live_reconfirm_disabled reverts WaitForShipArrival to the pre-fix
+	// DB-only park). Mirrors SetCASRetryPolicy's boot wiring; inverted-polarity flag
+	// so "default ON" survives Go's bool zero-value.
+	ship.SetArrivalWaitLiveReconfirm(!cfg.Daemon.ArrivalWaitLiveReconfirmDisabled)
 	fmt.Println("Ship repository initialized")
 
 	// 7. Initialize mediator (CQRS dispatcher)

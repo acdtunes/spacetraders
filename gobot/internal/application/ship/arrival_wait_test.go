@@ -50,9 +50,17 @@ func (f *fakeArrivalSubscriber) UnsubscribeTransferCompleted(int, <-chan domainN
 // fakeShipQueryRepo scripts what a resync reload returns, so tests can drive
 // the "resync confirms arrival" and "resync still shows in transit" paths
 // deterministically without a real database.
+//
+// getShipDataFunc scripts the AUTHORITATIVE live-API re-confirm (Fix A). It is left
+// nil by tests that must never reach it (the happy path and the flag-OFF park path):
+// in that case GetShipData fails loudly, so an unexpected API call surfaces as a
+// test failure rather than passing silently. getShipDataCalls records the live-API
+// call count so a test can assert the zero-extra-API-calls contract.
 type fakeShipQueryRepo struct {
 	findBySymbolFunc func() (*domainNavigation.Ship, error)
 	calls            int
+	getShipDataFunc  func() (*domainNavigation.ShipData, error)
+	getShipDataCalls int
 }
 
 func (f *fakeShipQueryRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*domainNavigation.Ship, error) {
@@ -60,7 +68,11 @@ func (f *fakeShipQueryRepo) FindBySymbol(_ context.Context, _ string, _ shared.P
 	return f.findBySymbolFunc()
 }
 func (f *fakeShipQueryRepo) GetShipData(_ context.Context, _ string, _ shared.PlayerID) (*domainNavigation.ShipData, error) {
-	return nil, fmt.Errorf("fakeShipQueryRepo: GetShipData not implemented")
+	f.getShipDataCalls++
+	if f.getShipDataFunc == nil {
+		return nil, fmt.Errorf("fakeShipQueryRepo: GetShipData called unexpectedly (no live-API script set)")
+	}
+	return f.getShipDataFunc()
 }
 func (f *fakeShipQueryRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*domainNavigation.Ship, error) {
 	return nil, fmt.Errorf("fakeShipQueryRepo: FindAllByPlayer not implemented")
@@ -144,7 +156,7 @@ func TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged(t *testing.T) {
 		return nil, nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, 200*time.Millisecond)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, 200*time.Millisecond, false)
 	if err != nil {
 		t.Fatalf("expected success on event arrival, got: %v", err)
 	}
@@ -165,7 +177,7 @@ func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 20*time.Millisecond, 200*time.Millisecond)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 20*time.Millisecond, 200*time.Millisecond, false)
 	if err != nil {
 		t.Fatalf("expected resync to recover from a lost event, got: %v", err)
 	}
@@ -209,7 +221,7 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilA
 	// wait is never at risk of exhausting on wall-clock alone - this test is
 	// about NOT parking early on a future ETA, not about budget sizing (that's
 	// calculateArrivalWaitBudget's own test below).
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1500, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1500, noopLogger{}, 5*time.Millisecond, 2*time.Second, false)
 	if err != nil {
 		t.Fatalf("expected the wait to survive past the old fixed-attempt budget and eventually succeed, got: %v", err)
 	}
@@ -241,7 +253,7 @@ func TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned(t *testing.T) 
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 5*time.Second)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 5*time.Second, false)
 	if err != nil {
 		t.Fatalf("expected the resync to confirm arrival, got: %v", err)
 	}
@@ -274,7 +286,7 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinOneResync
 
 	// budget is deliberately large (5s) to prove parking happens because the
 	// ETA is past, not because the budget ran out.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 10*time.Millisecond, 5*time.Second)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 10*time.Millisecond, 5*time.Second, false)
 	if err == nil {
 		t.Fatalf("expected exhaustion error, got nil (a past-ETA IN_TRANSIT resync must not succeed silently)")
 	}
@@ -309,7 +321,7 @@ func TestWaitForShipArrivalCore_BudgetExhausted_NoResolvingSignal_ParksWithTyped
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit), nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 15*time.Millisecond, 40*time.Millisecond)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 15*time.Millisecond, 40*time.Millisecond, false)
 	if err == nil {
 		t.Fatalf("expected exhaustion error, got nil (wait must not silently succeed while still IN_TRANSIT)")
 	}
@@ -339,7 +351,7 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := waitForShipArrivalCore(ctx, repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, time.Second)
+	err := waitForShipArrivalCore(ctx, repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, time.Second, false)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
@@ -370,7 +382,7 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 // repo.calls==1); on fixed code the stale poll is ignored and confirmation lands
 // on the destination poll (repo.calls==2).
 func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfirmUntilAtDestination(t *testing.T) {
-	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit) // heading to X1-TEST-A
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)             // heading to X1-TEST-A
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost / not yet published
 
 	repo := &fakeShipQueryRepo{}
@@ -386,7 +398,7 @@ func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfir
 	// waitTimeSeconds=1 keeps both resyncs firmly BEFORE the scheduled arrival
 	// (dueIn>0) — the exact window the false positive lived in. The small budget
 	// bounds the ETA-aligned reschedule so the destination poll lands fast.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 200*time.Millisecond)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 200*time.Millisecond, false)
 	if err != nil {
 		t.Fatalf("expected the wait to ignore the stale pre-departure snapshot and confirm on the real destination arrival, got: %v", err)
 	}
@@ -405,7 +417,7 @@ func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfir
 // the hull actually landed, so the fix must not reject real early arrivals just
 // because the ETA has not elapsed.
 func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPosition(t *testing.T) {
-	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit) // heading to X1-TEST-A
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)             // heading to X1-TEST-A
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
 	repo := &fakeShipQueryRepo{findBySymbolFunc: func() (*domainNavigation.Ship, error) {
 		// Live data: the hull genuinely arrived early, sitting AT THE DESTINATION.
@@ -413,7 +425,7 @@ func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPositio
 	}}
 
 	// waitTimeSeconds=1 puts the resync firmly BEFORE the scheduled arrival.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 2*time.Second, false)
 	if err != nil {
 		t.Fatalf("expected a genuine early destination arrival to confirm, got: %v", err)
 	}
@@ -442,7 +454,7 @@ func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t
 
 	// waitTimeSeconds=0: the scheduled arrival is immediately due, so the first
 	// resync fires AT/PAST the ETA — the normal on-time arrival window.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second, false)
 	if err != nil {
 		t.Fatalf("expected an on-time (past-ETA) arrival to confirm on status alone, got: %v", err)
 	}
@@ -451,6 +463,190 @@ func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t
 	}
 	if repo.calls != 1 {
 		t.Fatalf("expected the past-ETA arrival to confirm on the first resync, got %d resyncs", repo.calls)
+	}
+}
+
+// --- sp-arrwait: live-API re-confirm before parking (Fix A) + short-leg --------
+// --- debounce (Fix B) + kill-switch -------------------------------------------
+
+// TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIConfirmsArrived_ReturnsSuccess
+// is the sp-arrwait headline: the LOCAL DB row is stale (still IN_TRANSIT with its
+// own ETA already past) because the async IN_TRANSIT->IN_ORBIT transition has not
+// committed yet, but the AUTHORITATIVE live API says the hull has arrived. The wait
+// must re-confirm against the API and RETURN SUCCESS instead of the false
+// ErrArrivalWaitExhausted that crash-loops the container. This is the MUTATION
+// sentinel for Fix A: reverting the live-API re-confirm makes this test see the
+// crash-error again.
+func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIConfirmsArrived_ReturnsSuccess(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{
+		// The local row is stale on EVERY poll: still IN_TRANSIT, ETA a minute past.
+		findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(-time.Minute)), nil
+		},
+		// The live API is authoritative: the hull actually arrived (IN_ORBIT).
+		getShipDataFunc: func() (*domainNavigation.ShipData, error) {
+			return &domainNavigation.ShipData{NavStatus: string(domainNavigation.NavStatusInOrbit)}, nil
+		},
+	}
+
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second, true)
+	if err != nil {
+		t.Fatalf("expected the live-API re-confirm to recognise the stale-row arrival and succeed, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d after the live-API re-confirm, got status %s", ship.NavStatus())
+	}
+	// Fix B: two DB observations before the park path is entered; Fix A: exactly ONE
+	// live-API call there — the whole-wait API budget.
+	if repo.calls != requiredPastETAObservationsBeforePark {
+		t.Fatalf("expected %d local-DB observations before the live re-confirm, got %d", requiredPastETAObservationsBeforePark, repo.calls)
+	}
+	if repo.getShipDataCalls != 1 {
+		t.Fatalf("expected EXACTLY one live-API re-confirm call on the park path, got %d (must never be per-poll)", repo.getShipDataCalls)
+	}
+}
+
+// TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIError_FallsBackToPark is Fix A's
+// fail-safe: if the live-API re-confirm itself errors, the wait falls back to
+// today's DB-only park (never worse than status quo) rather than panicking or
+// succeeding blind.
+func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIError_FallsBackToPark(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{
+		findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(-time.Minute)), nil
+		},
+		getShipDataFunc: func() (*domainNavigation.ShipData, error) {
+			return nil, fmt.Errorf("API unreachable")
+		},
+	}
+
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second, true)
+	var exhausted *ErrArrivalWaitExhausted
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("expected fallback to DB-only park (*ErrArrivalWaitExhausted) on live-API error, got %T: %v", err, err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInTransit {
+		t.Fatalf("ship state must be untouched on the fail-safe park, got %s", ship.NavStatus())
+	}
+	if repo.getShipDataCalls != 1 {
+		t.Fatalf("expected exactly one live-API attempt before the fallback park, got %d", repo.getShipDataCalls)
+	}
+}
+
+// TestWaitForShipArrivalCore_StaleDBPastETA_LiveAlsoInTransit_StillParks is Fix A's
+// true-stuck guard: when BOTH the local row AND the authoritative live API agree the
+// hull is genuinely still IN_TRANSIT past its ETA, the wait must STILL park — the
+// re-confirm must not mask a real lost-event / stuck hull.
+func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAlsoInTransit_StillParks(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{
+		findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(-time.Minute)), nil
+		},
+		// Live API AGREES: genuinely still in transit.
+		getShipDataFunc: func() (*domainNavigation.ShipData, error) {
+			return &domainNavigation.ShipData{NavStatus: string(domainNavigation.NavStatusInTransit)}, nil
+		},
+	}
+
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second, true)
+	var exhausted *ErrArrivalWaitExhausted
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("expected a genuinely-stuck hull to still park (*ErrArrivalWaitExhausted), got %T: %v", err, err)
+	}
+	if repo.getShipDataCalls != 1 {
+		t.Fatalf("expected exactly one live-API re-confirm before parking a genuinely-stuck hull, got %d", repo.getShipDataCalls)
+	}
+}
+
+// TestWaitForShipArrivalCore_ShortLeg_DoesNotParkOnFirstPastETAObservation is Fix
+// B: a short-ETA leg whose first poll lands past the ETA before the async
+// IN_TRANSIT->IN_ORBIT transition commits must NOT park on that first observation.
+// The debounce grants one more LOCAL DB re-read, by which the transition has landed
+// — so the wait confirms arrival with ZERO live-API calls (the DB resolved it).
+func TestWaitForShipArrivalCore_ShortLeg_DoesNotParkOnFirstPastETAObservation(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{}
+	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
+		if repo.calls == 1 {
+			// First poll: stale row, still IN_TRANSIT past its ETA (the race window).
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(-time.Minute)), nil
+		}
+		// Second poll: the async transition landed — the hull is now IN_ORBIT at
+		// its destination.
+		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
+	}
+
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second, true)
+	if err != nil {
+		t.Fatalf("expected the short-leg debounce to catch the second (arrived) poll and succeed, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d on the second poll, got status %s", ship.NavStatus())
+	}
+	if repo.calls != 2 {
+		t.Fatalf("expected the debounce to re-read the local row (2 polls) rather than park on the first, got %d", repo.calls)
+	}
+	if repo.getShipDataCalls != 0 {
+		t.Fatalf("expected ZERO live-API calls when the DB debounce resolves the arrival, got %d", repo.getShipDataCalls)
+	}
+}
+
+// TestWaitForShipArrivalCore_LiveReconfirmDisabled_ParksDBOnly is the kill-switch
+// OFF proof: with liveReconfirm=false the wait is byte-identical to the pre-fix
+// behavior — it parks on the FIRST past-ETA observation off the DB read alone, in
+// exactly one resync, and NEVER touches the live API — even though the (scripted)
+// API would have reported the hull arrived. Flipping the flag off instantly reverts
+// to today's DB-only park with no code rollback.
+func TestWaitForShipArrivalCore_LiveReconfirmDisabled_ParksDBOnly(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
+	repo := &fakeShipQueryRepo{
+		findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(-time.Minute)), nil
+		},
+		// Scripted to "arrived" to PROVE the flag-off path never consults it.
+		getShipDataFunc: func() (*domainNavigation.ShipData, error) {
+			return &domainNavigation.ShipData{NavStatus: string(domainNavigation.NavStatusInOrbit)}, nil
+		},
+	}
+
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 10*time.Millisecond, 5*time.Second, false)
+	var exhausted *ErrArrivalWaitExhausted
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("expected DB-only park (*ErrArrivalWaitExhausted) with the flag OFF, got %T: %v", err, err)
+	}
+	if repo.calls != 1 || exhausted.Attempts != 1 {
+		t.Fatalf("expected the pre-fix single-resync park (calls=1, Attempts=1), got calls=%d Attempts=%d", repo.calls, exhausted.Attempts)
+	}
+	if repo.getShipDataCalls != 0 {
+		t.Fatalf("expected ZERO live-API calls with the kill-switch OFF, got %d", repo.getShipDataCalls)
+	}
+}
+
+// TestSetArrivalWaitLiveReconfirm_TogglesPackageDefault pins the kill-switch wiring:
+// the package default is ON, and SetArrivalWaitLiveReconfirm (the boot-time config
+// hook) flips it both ways. Restores the default so the global does not leak across
+// tests.
+func TestSetArrivalWaitLiveReconfirm_TogglesPackageDefault(t *testing.T) {
+	t.Cleanup(func() { SetArrivalWaitLiveReconfirm(true) })
+
+	if !arrivalWaitLiveReconfirm.Load() {
+		t.Fatalf("expected the arrival-wait live-reconfirm kill-switch to DEFAULT ON")
+	}
+	SetArrivalWaitLiveReconfirm(false)
+	if arrivalWaitLiveReconfirm.Load() {
+		t.Fatalf("expected SetArrivalWaitLiveReconfirm(false) to disable the fix")
+	}
+	SetArrivalWaitLiveReconfirm(true)
+	if !arrivalWaitLiveReconfirm.Load() {
+		t.Fatalf("expected SetArrivalWaitLiveReconfirm(true) to re-enable the fix")
 	}
 }
 

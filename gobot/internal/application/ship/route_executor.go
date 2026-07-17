@@ -2,6 +2,7 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -177,33 +178,7 @@ func (e *RouteExecutor) ExecuteRoute(
 		})
 
 		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
-			logger.Log("ERROR", "Route segment execution failed", map[string]interface{}{
-				"ship_symbol":   ship.ShipSymbol(),
-				"action":        "execute_segment",
-				"segment_index": segmentCount,
-				"from":          segment.FromWaypoint.Symbol,
-				"to":            segment.ToWaypoint.Symbol,
-				"error":         err.Error(),
-			})
-			if failErr := route.FailRoute(err.Error()); failErr != nil {
-				logger.Log("ERROR", "Failed to mark route as failed", map[string]interface{}{
-					"ship_symbol": ship.ShipSymbol(),
-					"action":      "fail_route",
-					"error":       failErr.Error(),
-				})
-			}
-
-			// Record route failure metrics
-			duration := time.Since(route.CreatedAt()).Seconds()
-			metrics.RecordRouteCompletion(
-				route.PlayerID(),
-				route.Status(),
-				duration,
-				int(route.TotalDistance()),
-				route.TotalFuelRequired(),
-			)
-
-			return err
+			return e.reactToSegmentFailure(ctx, route, ship, segment, segmentCount, err)
 		}
 
 		logger.Log("INFO", "Route segment completed successfully", map[string]interface{}{
@@ -251,6 +226,75 @@ func (e *RouteExecutor) ExecuteRoute(
 	})
 
 	return nil
+}
+
+// reactToSegmentFailure decides how ExecuteRoute responds to a failed segment
+// (sp-arrwait, Fix C: recover-not-crash on the route/tour path).
+//
+// A genuine *ErrArrivalWaitExhausted is a RECOVERABLE PARK, not a route failure:
+// the hull is still IN_TRANSIT and the ARRIVED event was lost/raced, which a later
+// run re-syncs and resolves (Fix A's live re-confirm succeeds once the async
+// transition lands). Failing the route here propagates a hard error that burns the
+// container's restart budget to an "unrecoverable crash" for what is a transient,
+// self-healing condition. So this DEFERS instead: it logs a park (WARNING, mirroring
+// run_factory_coordinator.go's per-node park of this same error type), does NOT mark
+// the route FAILED, and does NOT emit the route-completion FAILURE metric — while
+// still returning the error with its TYPE PRESERVED so the caller keeps its
+// recoverable classification. It deliberately does not fabricate arrival (the ship
+// really is still in transit); the caller/container simply retries.
+//
+// Any other error is a genuine route failure, handled exactly as before: mark the
+// route FAILED and record the route-completion (failure) metric.
+func (e *RouteExecutor) reactToSegmentFailure(
+	ctx context.Context,
+	route *domainNavigation.Route,
+	ship *domainNavigation.Ship,
+	segment *domainNavigation.RouteSegment,
+	segmentCount int,
+	err error,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
+	var arrivalErr *ErrArrivalWaitExhausted
+	if errors.As(err, &arrivalErr) {
+		logger.Log("WARNING", "Route segment parked on arrival-wait exhaustion - ship still IN_TRANSIT, deferring for retry rather than failing the route", map[string]interface{}{
+			"ship_symbol":   ship.ShipSymbol(),
+			"action":        "route_segment_parked",
+			"segment_index": segmentCount,
+			"from":          segment.FromWaypoint.Symbol,
+			"to":            segment.ToWaypoint.Symbol,
+			"attempts":      arrivalErr.Attempts,
+		})
+		return err
+	}
+
+	logger.Log("ERROR", "Route segment execution failed", map[string]interface{}{
+		"ship_symbol":   ship.ShipSymbol(),
+		"action":        "execute_segment",
+		"segment_index": segmentCount,
+		"from":          segment.FromWaypoint.Symbol,
+		"to":            segment.ToWaypoint.Symbol,
+		"error":         err.Error(),
+	})
+	if failErr := route.FailRoute(err.Error()); failErr != nil {
+		logger.Log("ERROR", "Failed to mark route as failed", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "fail_route",
+			"error":       failErr.Error(),
+		})
+	}
+
+	// Record route failure metrics
+	duration := time.Since(route.CreatedAt()).Seconds()
+	metrics.RecordRouteCompletion(
+		route.PlayerID(),
+		route.Status(),
+		duration,
+		int(route.TotalDistance()),
+		route.TotalFuelRequired(),
+	)
+
+	return err
 }
 
 // executeSegment executes a single route segment using atomic commands
