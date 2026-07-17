@@ -170,6 +170,22 @@ type TradeFleetConfig struct {
 	RepositionRateFloorPct            int  `mapstructure:"reposition_rate_floor_pct"`
 	RepositionRateFloorImprovementPct int  `mapstructure:"reposition_rate_floor_improvement_pct"`
 	RepositionRateFloorDwellMinutes   int  `mapstructure:"reposition_rate_floor_dwell_minutes"`
+
+	// --- Wider candidate set (sp-jsng, epic sp-fguo build-decomp #5; the #1 fleet-$/hr lever, sp-7q5t) ---
+	// Daemon-global tour tunings, same for every tour container (the mirror of closed_tours /
+	// max_tour_systems above): StartTourRun stamps them into every tour launch config,
+	// buildTourCoordinatorCommand reads them back onto the command. sp-jsng BUILT the widened
+	// candidate producer (widenedTourSystems + the profitable-edge shortlist) but DEFERRED this
+	// config knob, so the widening was unreachable in production. Both knobs are DOUBLE default-safe:
+	// (1) CandidateHopDepth 0/absent ⇒ resolveCandidateHopDepth floors to 1 ⇒ widenedTourSystems
+	// returns the exact live 1-hop set, byte-identical to today; AND (2) effectiveCandidateHopDepth
+	// independently holds the depth at 1 unless MaxTourSystems > 2 (the solver clamp is lifted), so a
+	// lone candidate_hop_depth edit can never feed a non-gate-adjacent set to the flat-pricing solver.
+	// The default lives in the consumer (the coordinator's resolveCandidate* helpers: 1 / 6), not this
+	// config layer. Arm by setting candidate_hop_depth: 2 (with max_tour_systems already > 2) + restart
+	// (RULINGS #5, no code redeploy).
+	CandidateHopDepth      int `mapstructure:"candidate_hop_depth"`
+	CandidateShortlistTopN int `mapstructure:"candidate_shortlist_top_n"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

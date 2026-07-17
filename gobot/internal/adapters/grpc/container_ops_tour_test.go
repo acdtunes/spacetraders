@@ -488,3 +488,71 @@ func TestStartTourRun_RepositionRateFloorDefaultsWhenUnset(t *testing.T) {
 	require.Equal(t, 0, cmd.RepositionRateFloorImprovementPct, "an unset reposition_rate_floor_improvement_pct must rebuild to the sentinel 0 (consumer resolves -> 200)")
 	require.Equal(t, 0, cmd.RepositionRateFloorDwellMinutes, "an unset reposition_rate_floor_dwell_minutes must rebuild to the sentinel 0 (consumer resolves -> 15)")
 }
+
+// sp-jsng THE CONFIG-KNOB PROPAGATION PIN (the #1 fleet-$/hr lever, sp-7q5t). sp-jsng BUILT the
+// widened candidate producer (widenedTourSystems reads cmd.CandidateHopDepth / cmd.CandidateShortlistTopN)
+// but DEFERRED the config knob that SETS them, so both were always 0 and the widening was unreachable
+// in production. candidate_hop_depth / candidate_shortlist_top_n are daemon-global [trade_fleet] tunings
+// (exactly like max_tour_systems / closed_tours), so — mirroring TestStartTourRun_StampsClosedToursFromTradeFleetConfig
+// — StartTourRun must STAMP them into the launch config from tradeFleetConfig and buildTourCoordinatorCommand
+// must READ them back onto the command. Without both writes the knob is INERT: the operator's config.yaml
+// value never reaches the candidate producer and every tour stays on the exact 1-hop set.
+func TestStartTourRun_StampsCandidateWideningFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.CandidateHopDepth = 2 // the captain's [trade_fleet] arming
+	s.tradeFleetConfig.CandidateShortlistTopN = 8
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"candidate_hop_depth":2`, "StartTourRun must stamp the [trade_fleet] candidate_hop_depth so the launch/rebuild reads it back — otherwise the candidate-widening lever is inert and every tour stays 1-hop")
+	require.Contains(t, model.Config, `"candidate_shortlist_top_n":8`)
+
+	// The whole boundary round-trips: the rebuild reloads the stamped knobs onto the command, which
+	// widenedTourSystems reads (arming-gated by MaxTourSystems > 2) to gather the wider candidate set.
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.Equal(t, 2, cmd.CandidateHopDepth)
+	require.Equal(t, 8, cmd.CandidateShortlistTopN)
+}
+
+// sp-jsng default-safety companion: an UNSET [trade_fleet] candidate-widening block rebuilds to
+// CandidateHopDepth 0 + CandidateShortlistTopN 0 — which the coordinator's resolveCandidateHopDepth
+// floors to 1 (the exact live 1-hop set) and resolveCandidateShortlistTopN resolves to 6, so a daemon
+// that never sets the knobs is byte-identical to today (the launch path stays default-safe/1-hop).
+func TestStartTourRun_CandidateWideningDefaultsWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig candidate-widening fields left at their zero values (the operator never armed them).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.Equal(t, 0, cmd.CandidateHopDepth, "an unset candidate_hop_depth must rebuild to the sentinel 0 (consumer floors -> 1, the exact 1-hop set, byte-identical to today)")
+	require.Equal(t, 0, cmd.CandidateShortlistTopN, "an unset candidate_shortlist_top_n must rebuild to the sentinel 0 (consumer resolves -> 6)")
+}

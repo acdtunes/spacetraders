@@ -313,3 +313,33 @@ func TestTourCandidateSystems_HomeRetainedAndDeduped(t *testing.T) {
 		t.Fatalf("a 1-hop neighbor that also scores in the shortlist must be deduped; got %v", got)
 	}
 }
+
+// RED #7 — the composed arming gate (effectiveCandidateHopDepth). This is the DOUBLE
+// default-safety the config plumbing (sp-jsng) rides on, proven end-to-end at the gate itself:
+// the configured depth only takes EFFECT once BOTH (a) depth resolves > 1 AND (b) the solver
+// clamp is lifted (cmd.MaxTourSystems > 2). Complements RED #1b (which proves the gate HOLDS at
+// MaxTourSystems ∈ {0,2} via the produced set) by pinning the transition at the > 2 boundary —
+// the arming point that makes the widening reachable once candidate_hop_depth is wired. A lone
+// candidate_hop_depth edit (max unlifted) can never open the gate; a depth of 0/absent floors to
+// 1 (byte-identical) even with the clamp lifted.
+func TestEffectiveCandidateHopDepth_ComposedArmingGate(t *testing.T) {
+	h := &RunTourCoordinatorHandler{}
+	for _, c := range []struct {
+		name       string
+		depth, max int
+		want       int
+	}{
+		{"armed: depth 2 + clamp lifted (max 4) widens", 2, 4, 2},
+		{"armed: depth 3 + clamp lifted (max 4) widens to 3", 3, 4, 3},
+		{"gate holds: depth 2 but clamp at explicit 2 (unlifted)", 2, 2, 1},
+		{"gate holds: depth 2 but max 0 (solver default 2, unlifted)", 2, 0, 1},
+		{"depth floor: absent depth (0) stays 1 even with clamp lifted", 0, 4, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := &RunTourCoordinatorCommand{CandidateHopDepth: c.depth, MaxTourSystems: c.max}
+			if got := h.effectiveCandidateHopDepth(cmd); got != c.want {
+				t.Errorf("effectiveCandidateHopDepth(depth=%d, max=%d) = %d, want %d", c.depth, c.max, got, c.want)
+			}
+		})
+	}
+}

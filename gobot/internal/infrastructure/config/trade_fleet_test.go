@@ -198,3 +198,52 @@ func TestLoadConfig_RepositionRateFloor_AbsentIsDefaults(t *testing.T) {
 	require.Equal(t, 0, cfg.TradeFleet.RepositionRateFloorDwellMinutes,
 		"an absent reposition_rate_floor_dwell_minutes must be the sentinel 0 (the consumer resolves 0 -> default 15)")
 }
+
+// sp-jsng round-trip pin: the candidate-widening knobs (candidate_hop_depth +
+// candidate_shortlist_top_n) must travel from config.yaml's [trade_fleet] section into the
+// loaded config unchanged, so a captain arms the wider candidate set — the #1 fleet-$/hr lever
+// (sp-7q5t) — by editing config.yaml + restarting, no code redeploy. This exercises the REAL
+// viper mapstructure pipeline (the ONE seam the grpc stamp/rebuild tests cannot cover — they set
+// the struct fields directly). A typo in either mapstructure tag would ship a silently-inert
+// knob (the widening stays unreachable); this test catches it.
+func TestLoadConfig_CandidateWidening_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  candidate_hop_depth: 2\n"+
+			"  candidate_shortlist_top_n: 8\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 2, cfg.TradeFleet.CandidateHopDepth,
+		"candidate_hop_depth must reach the config struct so the captain can arm the wider candidate set by editing config.yaml + restarting")
+	require.Equal(t, 8, cfg.TradeFleet.CandidateShortlistTopN,
+		"candidate_shortlist_top_n must round-trip so the profitable-edge shortlist bound is operator-tunable")
+}
+
+// sp-jsng default-safety companion: an ABSENT candidate-widening block resolves to the Go zero
+// values viper leaves untouched (0 + 0) — so a daemon that never sets the knobs runs the exact
+// 1-hop candidate set, byte-identical to today. The two int sentinels (0) are the consumer's
+// "resolve to default" signal (resolveCandidateHopDepth -> 1, resolveCandidateShortlistTopN -> 6),
+// so the defaults live in ONE place (the coordinator), never smeared across the config layer.
+func TestLoadConfig_CandidateWidening_AbsentIsDefaults(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	// enabled but NO candidate_* keys — the default config.yaml shape.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 0, cfg.TradeFleet.CandidateHopDepth,
+		"an absent candidate_hop_depth must be the sentinel 0 (the consumer resolves 0 -> default 1, the exact 1-hop set), never a config-layer default that silently widens")
+	require.Equal(t, 0, cfg.TradeFleet.CandidateShortlistTopN,
+		"an absent candidate_shortlist_top_n must be the sentinel 0 (the consumer resolves 0 -> default 6)")
+}

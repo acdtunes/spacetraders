@@ -156,7 +156,17 @@ func (s *DaemonServer) StartTourRun(
 		"reposition_rate_floor_pct":             s.tradeFleetConfig.RepositionRateFloorPct,
 		"reposition_rate_floor_improvement_pct": s.tradeFleetConfig.RepositionRateFloorImprovementPct,
 		"reposition_rate_floor_dwell_minutes":   s.tradeFleetConfig.RepositionRateFloorDwellMinutes,
-		"iterations":                            iterations,
+		// sp-jsng: the candidate-widening knobs (the #1 fleet-$/hr lever, sp-7q5t), sourced from the
+		// daemon's live [trade_fleet] config (daemon-global tour tuning, the mirror of max_tour_systems/
+		// closed_tours above). Persisted as-is (0 too, so an absent knob survives a recovery rebuild
+		// unchanged and the 1-hop default is stable); buildTourCoordinatorCommand reads them back onto
+		// cmd.CandidateHopDepth / cmd.CandidateShortlistTopN, which the widenedTourSystems producer reads
+		// (arming-gated by max_tour_systems > 2). candidate_hop_depth 0/absent → the coordinator floors it
+		// to 1 (the exact 1-hop set, byte-identical to today). This WRITE is what lets the deferred knob
+		// take effect — without it cmd.CandidateHopDepth is inert and every tour stays 1-hop.
+		"candidate_hop_depth":       s.tradeFleetConfig.CandidateHopDepth,
+		"candidate_shortlist_top_n": s.tradeFleetConfig.CandidateShortlistTopN,
+		"iterations":                iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

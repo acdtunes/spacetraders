@@ -1419,6 +1419,17 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionRateFloorPct:            cfg.OptionalInt("reposition_rate_floor_pct", 0),
 		RepositionRateFloorImprovementPct: cfg.OptionalInt("reposition_rate_floor_improvement_pct", 0),
 		RepositionRateFloorDwellMinutes:   cfg.OptionalInt("reposition_rate_floor_dwell_minutes", 0),
+		// sp-jsng candidate widening (the #1 fleet-$/hr lever, sp-7q5t): reload the gate-hop radius +
+		// shortlist bound StartTourRun stamped from [trade_fleet].candidate_hop_depth /
+		// candidate_shortlist_top_n (the read side of the launch/rebuild boundary, mirroring
+		// max_tour_systems). OptionalInt yields 0 for an absent key → the coordinator's resolveCandidate*
+		// helpers floor candidate_hop_depth → 1 (the exact 1-hop set, byte-identical to today) and
+		// resolve candidate_shortlist_top_n → 6; EFFECT is additionally arming-gated by MaxTourSystems > 2
+		// (effectiveCandidateHopDepth), so a positive depth alone never widens. Every existing container
+		// and recovery rebuild stays 1-hop until a captain explicitly sets candidate_hop_depth: 2 with the
+		// solver clamp already lifted.
+		CandidateHopDepth:      cfg.OptionalInt("candidate_hop_depth", 0),
+		CandidateShortlistTopN: cfg.OptionalInt("candidate_shortlist_top_n", 0),
 	}
 }
 
