@@ -1019,9 +1019,17 @@ func run(cfg *config.Config) error {
 	// age breaching the post's freshness target without advancing. nil disables the watchdog
 	// (pre-5les behavior); it never affects manning when unwired.
 	scoutPostCoordinatorHandler.SetSystemFreshnessReader(marketRepo)
+	// sp-u8jc cross-system reuse relay: wire the per-system freshsizer-demand source over the SAME
+	// SystemsFreshness census (cycle/sla default to the freshness sizer's own defaults so the two
+	// agree). This makes the relay ARM-able by a knob flip (scout_cross_system_relay_enabled=1);
+	// while that flag is 0 (the default) the reader is read by nothing, so the coordinator is
+	// byte-identical to today. Demand HONORS age-driven raises, so a breaching core system reads a
+	// high demand and is never raided — only comfortably-fresh over-provisioned systems donate.
+	scoutPostCoordinatorHandler.SetProbeDemandReader(scoutingCmd.NewCensusProbeDemandReader(marketRepo, 0, 0))
 	// sp-5les: the watchdog's manning_stall_* knobs are live-tunable — snapshot this
 	// container's own persisted config each tick (the SAME reader the freshness sizer uses) so a
-	// `spacetraders tune scoutpost ...` lands on the next tick with no restart.
+	// `spacetraders tune scoutpost ...` lands on the next tick with no restart. sp-u8jc's two knobs
+	// ride the same snapshot.
 	scoutPostCoordinatorHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {

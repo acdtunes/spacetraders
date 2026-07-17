@@ -2988,3 +2988,199 @@ func TestReconcileGateChartSweep_MarketlessWidening_DisabledByKnob_NoDispatch(t 
 		"the disable-escape pins the sweep market-only — the marketless transit gate is dropped from the target set")
 	require.Len(t, idle, 1, "no probe consumed when the widened scope is disabled")
 }
+
+// ---- tests: sp-u8jc cross-system reuse relay ------------------------------
+
+// fakeProbeDemandReader answers a fixed per-system freshsizer demand (sp-u8jc). An absent
+// system reads 0 (cannot assess); err simulates an unreadable census.
+type fakeProbeDemandReader struct {
+	demand map[string]int
+	err    error
+}
+
+func (r *fakeProbeDemandReader) ProbeDemand(_ context.Context, _ int, systemSymbol string) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.demand[systemSymbol], nil
+}
+
+// crossSystemRelayFixture builds the sp-u8jc canonical scene: an unmanned HUB post with NO
+// in-system probe, and an OVER-COVERED source CORE post fully manned by TWO probes on RUNNING
+// tours — so the idle pool is empty (every probe is busy manning) and the reconciler reaches the
+// reuse-relay seam that used to just park. The caller sets the source's demand, its gate-hop
+// distance to the hub, the arm flag, and the reach bound to exercise each branch.
+type crossSystemRelayFixture struct {
+	handler      *RunScoutPostCoordinatorHandler
+	postRepo     *fakeScoutPostRepo
+	shipRepo     *fakeScoutShipRepo
+	daemonClient *fakeScoutDaemonClient
+	logger       *scoutCaptureLogger
+	cmd          *RunScoutPostCoordinatorCommand
+	ctx          context.Context
+}
+
+func newCrossSystemRelayFixture(t *testing.T, coreDemand, coreToHubHops, relayEnabled, relayMaxHops int) *crossSystemRelayFixture {
+	t.Helper()
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	hub := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-HUB", Kind: domainScouting.PostKindStanding}
+	core := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-CORE", Kind: domainScouting.PostKindStanding, Hulls: 2,
+		FreshnessTarget: time.Hour,
+		AssignedHull:    "SAT-CORE-1", TourContainerID: "core-0", PrimaryPartition: []string{"X1-CORE-M1"},
+		ExtraSlots: []domainScouting.ScoutPostSlot{
+			{AssignedHull: "SAT-CORE-2", TourContainerID: "core-1", Partition: []string{"X1-CORE-M2"}},
+		},
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{hub, core}}
+	core1 := newScoutTestSatellite(t, "SAT-CORE-1", "X1-CORE-A1")
+	core2 := newScoutTestSatellite(t, "SAT-CORE-2", "X1-CORE-A2")
+	require.NoError(t, core1.AssignToContainer("core-0", clock))
+	require.NoError(t, core2.AssignToContainer("core-1", clock))
+	shipRepo := &fakeScoutShipRepo{ships: []*navigation.Ship{core1, core2}, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	cq := &fakeContainerStatusQuery{byStatus: map[string][]persistence.ContainerSummary{
+		"RUNNING": {{ID: "core-0", Status: "RUNNING"}, {ID: "core-1", Status: "RUNNING"}},
+	}}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-HUB":  {"X1-HUB-M1"},
+		"X1-CORE": {"X1-CORE-M1", "X1-CORE-M2"},
+	}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: cq, marketProvider: mp, clock: clock,
+		gateGraph:         &fakeGateGraph{hops: map[string]int{"X1-CORE->X1-HUB": coreToHubHops}},
+		routingClient:     &fakeScoutRoutingClient{},
+		probeDemandReader: &fakeProbeDemandReader{demand: map[string]int{"X1-CORE": coreDemand}},
+	}
+	cmd := scoutPostTestCmd()
+	cmd.ScoutCrossSystemRelayEnabled = relayEnabled
+	cmd.ScoutRelayMaxHops = relayMaxHops
+	logger := &scoutCaptureLogger{}
+	return &crossSystemRelayFixture{
+		handler: handler, postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		logger: logger, cmd: cmd, ctx: common.WithLogger(context.Background(), logger),
+	}
+}
+
+// ACCEPTANCE (headline): 5 hub posts declared, 0 in-system probes at the hubs, but surplus probes
+// in over-covered core systems + relay ARMED ⇒ the coordinator relays a surplus probe cross-system
+// to man the hub post (so its markets can be scanned), pulled from the over-covered core.
+func TestScoutPost_CrossSystemRelay_MansHubFromOverCoveredSurplus(t *testing.T) {
+	f := newCrossSystemRelayFixture(t, 1 /*demand*/, 2 /*hops*/, 1 /*armed*/, 5 /*maxHops*/)
+
+	require.NoError(t, f.handler.reconcileOnce(f.ctx, f.cmd))
+
+	require.Len(t, f.daemonClient.repositioned, 1, "one cross-system reuse relay is dispatched to man the hub")
+	require.Len(t, f.daemonClient.persistedRepositionCmds, 1)
+	require.Equal(t, 5, f.daemonClient.persistedRepositionCmds[0].MaxRepositionJumps, "the relay carries scout_relay_max_hops so the worker flies it at the same reach")
+	require.Contains(t, f.daemonClient.stopped, "core-1", "the donated probe's source tour is stopped")
+	require.Contains(t, f.shipRepo.releases, "SAT-CORE-2", "the donated probe is reclaimed from its source tour")
+	require.Len(t, f.shipRepo.claims, 1)
+	require.Equal(t, "SAT-CORE-2", f.shipRepo.claims[0].ship, "the surplus probe is claimed for the relay")
+	require.Equal(t, f.daemonClient.repositioned[0], f.shipRepo.claims[0].container, "the claim binds the probe to the relay container")
+	require.Equal(t, f.daemonClient.repositioned[0], f.postRepo.find("X1-HUB").RepositionContainerID, "the hub records the in-flight relay")
+	require.Empty(t, f.postRepo.find("X1-HUB").AssignedHull, "the hub is NOT manned during transit (manning stays in-system)")
+	core := f.postRepo.find("X1-CORE")
+	require.Equal(t, 1, core.MannedCount(), "the over-covered source keeps exactly its demand — never stripped below its need")
+	require.Equal(t, "SAT-CORE-1", core.AssignedHull, "the source primary slot is untouched")
+	require.Empty(t, core.ExtraSlots[0].AssignedHull, "the donated extra slot is cleared")
+	require.True(t, f.logger.loggedContaining("cross-system reuse relay", "X1-HUB", "X1-CORE"), "the dispatch logs the honest cross-system relay reason")
+}
+
+// MUTATION / default-OFF: the SAME scene with the relay DISABLED must be byte-identical to the
+// pre-sp-u8jc behavior — the hub parks with the exact old reason and no probe moves. Paired with
+// the headline test above, this is the mutation proof: only the arm flag differs, and flipping it
+// flips the outcome from relay→park (disabling the relay branch would fail the headline test).
+func TestScoutPost_CrossSystemRelay_Disabled_ParksByteIdentical(t *testing.T) {
+	f := newCrossSystemRelayFixture(t, 1, 2, 0 /*DISABLED*/, 5)
+
+	require.NoError(t, f.handler.reconcileOnce(f.ctx, f.cmd))
+
+	require.Empty(t, f.daemonClient.repositioned, "disabled: no cross-system relay is dispatched")
+	require.NotContains(t, f.daemonClient.stopped, "core-1", "disabled: the over-covered source tour is untouched")
+	require.NotContains(t, f.shipRepo.releases, "SAT-CORE-2", "disabled: no probe is reclaimed")
+	require.Empty(t, f.postRepo.find("X1-HUB").RepositionContainerID, "disabled: the hub records no relay")
+	require.True(t, f.postRepo.find("X1-CORE").IsFullyManned(), "disabled: the source stays fully manned")
+	require.True(t, f.logger.loggedContaining("X1-HUB", "no in-system satellite — reposition one or wait"),
+		"disabled: the hub parks with the exact pre-sp-u8jc reason (byte-identical)")
+}
+
+// The armed relay never strips a source below its freshsizer demand: a system whose manning supply
+// EQUALS its demand is not over-covered and is left alone (the hub then parks honest).
+func TestScoutPost_CrossSystemRelay_NeverStripsSystemAtExactlyItsDemand(t *testing.T) {
+	f := newCrossSystemRelayFixture(t, 2 /*demand == 2 manning*/, 2, 1 /*armed*/, 5)
+
+	require.NoError(t, f.handler.reconcileOnce(f.ctx, f.cmd))
+
+	require.Empty(t, f.daemonClient.repositioned, "a system at exactly its demand is never raided")
+	require.NotContains(t, f.shipRepo.releases, "SAT-CORE-2", "no probe reclaimed from an at-demand source")
+	require.True(t, f.postRepo.find("X1-CORE").IsFullyManned(), "the at-demand source keeps all its probes")
+	require.True(t, f.logger.loggedContaining("X1-HUB", "no surplus probe"), "the hub parks: no over-covered surplus to borrow")
+}
+
+// The armed relay respects scout_relay_max_hops: an over-covered surplus beyond the reach bound is
+// out of reach, so the hub parks rather than dispatching a doomed multi-jump relay.
+func TestScoutPost_CrossSystemRelay_RespectsMaxHops(t *testing.T) {
+	f := newCrossSystemRelayFixture(t, 1, 8 /*hops*/, 1 /*armed*/, 5 /*maxHops < hops*/)
+
+	require.NoError(t, f.handler.reconcileOnce(f.ctx, f.cmd))
+
+	require.Empty(t, f.daemonClient.repositioned, "a surplus beyond scout_relay_max_hops is out of reach — parked")
+	require.NotContains(t, f.shipRepo.releases, "SAT-CORE-2", "an out-of-reach source is untouched")
+	require.True(t, f.postRepo.find("X1-CORE").IsFullyManned())
+	require.True(t, f.logger.loggedContaining("X1-HUB", "no surplus probe", "5 hops"))
+}
+
+// Fail-safe: the arm flag alone does nothing without a demand reader wired — the relay stays off
+// and the hub parks byte-identically, so arming requires BOTH the knob AND SetProbeDemandReader.
+func TestScoutPost_CrossSystemRelay_NoDemandReader_ParksByteIdentical(t *testing.T) {
+	f := newCrossSystemRelayFixture(t, 1, 2, 1 /*armed*/, 5)
+	f.handler.probeDemandReader = nil // armed flag, but the demand reader is unwired
+
+	require.NoError(t, f.handler.reconcileOnce(f.ctx, f.cmd))
+
+	require.Empty(t, f.daemonClient.repositioned, "no demand reader ⇒ the relay stays off even when armed (fail-safe)")
+	require.True(t, f.postRepo.find("X1-CORE").IsFullyManned(), "source untouched with no demand reader")
+	require.True(t, f.logger.loggedContaining("X1-HUB", "no in-system satellite — reposition one or wait"))
+}
+
+// pickSurplusProbe is the PURE selection core (mirrors sp-6vep's pickReusableProbe): the
+// over-covered guard (never strip a system to/below its demand) and the reach guard are unit-tested
+// with no repo, census, or gate graph.
+func TestPickSurplusProbe_OverCoveredAndReachFilters(t *testing.T) {
+	cases := []struct {
+		name    string
+		c       surplusProbeCandidate
+		maxHops int
+		want    bool
+	}{
+		{"over-covered within reach is selected", surplusProbeCandidate{sourceSystem: "S", shipSymbol: "A", mannedCount: 2, demand: 1, hops: 3}, 5, true},
+		{"exactly at demand is never raided", surplusProbeCandidate{sourceSystem: "S", shipSymbol: "A", mannedCount: 2, demand: 2, hops: 3}, 5, false},
+		{"below demand is never raided", surplusProbeCandidate{sourceSystem: "S", shipSymbol: "A", mannedCount: 1, demand: 2, hops: 3}, 5, false},
+		{"beyond max hops is out of reach", surplusProbeCandidate{sourceSystem: "S", shipSymbol: "A", mannedCount: 5, demand: 1, hops: 6}, 5, false},
+		{"unreachable (hops<1) is skipped", surplusProbeCandidate{sourceSystem: "S", shipSymbol: "A", mannedCount: 5, demand: 1, hops: -1}, 5, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := pickSurplusProbe([]surplusProbeCandidate{tc.c}, tc.maxHops)
+			require.Equal(t, tc.want, ok)
+		})
+	}
+}
+
+// pickSurplusProbe prefers the fewest-hop over-covered source, breaking ties on the lowest source
+// system then the lowest ship symbol, so the selection is deterministic across ticks.
+func TestPickSurplusProbe_PicksNearestThenDeterministicTieBreak(t *testing.T) {
+	candidates := []surplusProbeCandidate{
+		{sourceSystem: "X1-FARCORE", shipSymbol: "PROBE-1", mannedCount: 3, demand: 1, hops: 4},
+		{sourceSystem: "X1-NEARB", shipSymbol: "PROBE-9", mannedCount: 2, demand: 1, hops: 2},
+		{sourceSystem: "X1-NEARA", shipSymbol: "PROBE-5", mannedCount: 2, demand: 1, hops: 2}, // ties NEARB on hops; lower system wins
+	}
+
+	pick, ok := pickSurplusProbe(candidates, 5)
+
+	require.True(t, ok)
+	require.Equal(t, "X1-NEARA", pick.sourceSystem, "fewest hops wins; ties break on the lowest source system")
+	require.Equal(t, "PROBE-5", pick.shipSymbol)
+}

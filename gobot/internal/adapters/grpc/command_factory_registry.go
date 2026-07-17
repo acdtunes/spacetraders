@@ -606,6 +606,11 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		GateReconcileEnabled:            cfg.OptionalBool("gate_reconcile_enabled"),
 		GateReconcileMaxDispatch:        cfg.OptionalInt("gate_reconcile_max_dispatch", 0),
 		GateReconcileMarketlessDisabled: cfg.OptionalBool("gate_reconcile_marketless_disabled"),
+		// sp-u8jc cross-system reuse relay: an int-mode flag (0=off, byte-identical) + a hop bound,
+		// threaded config→command like sp-6vep's probe_reuse_enabled/edge_relay_max_hops. Absent from
+		// config.yaml ⇒ OptionalInt returns 0 ⇒ the relay is off and byte-identical to today.
+		ScoutCrossSystemRelayEnabled: cfg.OptionalInt("scout_cross_system_relay_enabled", 0),
+		ScoutRelayMaxHops:            cfg.OptionalInt("scout_relay_max_hops", 0),
 	}
 }
 
