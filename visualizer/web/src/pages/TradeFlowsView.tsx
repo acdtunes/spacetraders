@@ -61,7 +61,7 @@ export function TradeFlowsView() {
       </div>
 
       {/* Layer toggles */}
-      <div className="absolute bottom-4 left-28 flex gap-1 rounded p-1" style={{ background: NOIR.panel }}>
+      <div className="absolute bottom-4 left-44 flex gap-1 rounded p-1" style={{ background: NOIR.panel }}>
         {(['lanes', 'paths', 'ships'] as const).map((k) => (
           <button
             key={k}
