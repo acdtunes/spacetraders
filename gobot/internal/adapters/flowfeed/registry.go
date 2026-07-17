@@ -50,13 +50,16 @@ type CargoItem struct {
 // Leg is the hull's current in-progress leg. Timestamps are best-effort from the
 // executor's ship nav; the visualizer server overlays PG nav for position truth.
 type Leg struct {
-	From       string    `json:"from"`
-	To         string    `json:"to"`
+	From string `json:"from"`
+	To   string `json:"to"`
+	// DepartedAt is the TRUE leg-start timestamp (captured before travel began),
+	// not publish time — the tour publisher runs after arrival, so a publish
+	// stamp would sit at/after ArrivesAt.
 	DepartedAt time.Time `json:"departedAt"`
 	ArrivesAt  time.Time `json:"arrivesAt"`
 	// TravelSeconds is the planner's projected duration for THIS leg (0 = no
-	// plan-time estimate). With PlannedAt (stamped at leg-start publish) it
-	// anchors the galaxy view's schedule-drift glyph.
+	// plan-time estimate). With DepartedAt it anchors the galaxy view's
+	// schedule-drift glyph: drift = ArrivesAt − (DepartedAt + TravelSeconds).
 	TravelSeconds int `json:"travelSeconds"`
 }
 

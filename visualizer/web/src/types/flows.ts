@@ -26,9 +26,9 @@ export interface FlowCargoItem {
 export interface FlowLeg {
   from: string;         // waypoint symbol
   to: string;           // waypoint symbol
-  departedAt: string;   // ISO
+  departedAt: string;   // ISO; TRUE leg-start (not publish time) — schedule-drift anchor
   arrivesAt: string;    // ISO
-  travelSeconds: number; // planner's projected duration for THIS leg; 0 = no estimate (schedule-drift anchor)
+  travelSeconds: number; // planner's projected duration for THIS leg; 0 = no estimate (drift = arrivesAt − (departedAt + travelSeconds))
 }
 
 export interface FlowProjection {

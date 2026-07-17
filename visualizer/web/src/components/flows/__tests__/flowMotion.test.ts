@@ -202,6 +202,16 @@ describe('scheduleDriftSeconds', () => {
     });
     expect(scheduleDriftSeconds(f, NOW)).toBeCloseTo(410, 0);
   });
+  it('anchors on leg departedAt, not plannedAt (gobot publishes AFTER arrival)', () => {
+    // Production wire shape: the tour publisher stamps plannedAt at publish time,
+    // which is after travel() blocks through arrival — so plannedAt >= arrivesAt
+    // for every published leg. Drift must still fire off the leg's own departure.
+    const late = flow({
+      plannedAt: iso(0), // publish-time now, at/after arrival
+      currentLeg: { from: 'X1-AA-M1', to: 'X1-BB-M1', departedAt: iso(-1380), arrivesAt: iso(-2), travelSeconds: 180 },
+    });
+    expect(scheduleDriftSeconds(late, NOW)).toBeCloseTo(1198, 0);
+  });
   it('clamps ahead-of-schedule to 0 and returns null without a plan anchor', () => {
     const onTime = flow({
       plannedAt: iso(-100),

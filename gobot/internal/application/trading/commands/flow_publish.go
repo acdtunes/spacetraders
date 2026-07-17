@@ -70,11 +70,18 @@ func buildArbFlow(cmd *RunArbCoordinatorCommand, cargo []flowfeed.CargoItem, now
 
 // buildTourFlow maps a tour plan snapshot into a flow-feed Flow. currentLegIdx < 0
 // means the plan was just adopted (no leg in progress): currentLeg is null and
-// remainingHops is every planned leg. currentLegIdx >= 0 means the hull is flying
+// remainingHops is every planned leg. currentLegIdx >= 0 means the hull flew
 // that leg: currentLeg describes it (From derived from the previous leg, empty for
 // the first leg where the nav join owns the origin) and remainingHops is the legs
 // after it.
-func buildTourFlow(cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, currentLegIdx int, arrivesAt time.Time, cargo []flowfeed.CargoItem, now time.Time) flowfeed.Flow {
+//
+// departedAt is the TRUE leg-start timestamp captured before travel began — it
+// must NOT be publish-time now. The publisher runs after travel() blocks through
+// arrival, so stamping now would put departedAt at/after arrivesAt on every
+// published leg and permanently zero the visualizer's schedule-drift glyph
+// (drift = arrivesAt − (departedAt + travelSeconds)). PlannedAt stays now: it
+// means snapshot freshness, not the drift anchor.
+func buildTourFlow(cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, currentLegIdx int, departedAt, arrivesAt time.Time, cargo []flowfeed.CargoItem, now time.Time) flowfeed.Flow {
 	tourID := cmd.ContainerID
 	var currentLeg *flowfeed.Leg
 	remaining := plan.Legs
@@ -86,7 +93,7 @@ func buildTourFlow(cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, curre
 		currentLeg = &flowfeed.Leg{
 			From:          from,
 			To:            plan.Legs[currentLegIdx].Waypoint,
-			DepartedAt:    now,
+			DepartedAt:    departedAt,
 			ArrivesAt:     arrivesAt,
 			TravelSeconds: plan.Legs[currentLegIdx].TravelSecondsFromPrev,
 		}

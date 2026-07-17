@@ -71,7 +71,7 @@ func TestBuildTourFlow_AdoptionHasNoCurrentLegAndAllHops(t *testing.T) {
 	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
 	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 
-	f := buildTourFlow(cmd, tourPlanFixture(), -1, time.Time{}, nil, now)
+	f := buildTourFlow(cmd, tourPlanFixture(), -1, time.Time{}, time.Time{}, nil, now)
 
 	if f.Program != flowfeed.ProgramTour {
 		t.Errorf("program = %q, want tour", f.Program)
@@ -93,10 +93,11 @@ func TestBuildTourFlow_AdoptionHasNoCurrentLegAndAllHops(t *testing.T) {
 func TestBuildTourFlow_LegBoundarySetsCurrentLegAndTrimsHops(t *testing.T) {
 	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
 	arrives := time.Date(2026, 7, 11, 10, 8, 0, 0, time.UTC)
+	departed := time.Date(2026, 7, 11, 10, 1, 0, 0, time.UTC)
 	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 
 	// Flying leg index 1 (the second leg): from Legs[0].Waypoint to Legs[1].Waypoint.
-	f := buildTourFlow(cmd, tourPlanFixture(), 1, arrives, nil, now)
+	f := buildTourFlow(cmd, tourPlanFixture(), 1, departed, arrives, nil, now)
 
 	if f.CurrentLeg == nil {
 		t.Fatal("leg-boundary currentLeg must be set")
@@ -104,7 +105,7 @@ func TestBuildTourFlow_LegBoundarySetsCurrentLegAndTrimsHops(t *testing.T) {
 	if f.CurrentLeg.From != "X1-AA-A1" || f.CurrentLeg.To != "X1-AA-B2" {
 		t.Errorf("currentLeg from/to = %s/%s, want X1-AA-A1/X1-AA-B2", f.CurrentLeg.From, f.CurrentLeg.To)
 	}
-	if !f.CurrentLeg.DepartedAt.Equal(now) || !f.CurrentLeg.ArrivesAt.Equal(arrives) {
+	if !f.CurrentLeg.DepartedAt.Equal(departed) || !f.CurrentLeg.ArrivesAt.Equal(arrives) {
 		t.Errorf("currentLeg timestamps mismatch: %+v", f.CurrentLeg)
 	}
 	if len(f.RemainingHops) != 1 || f.RemainingHops[0].Waypoint != "X1-AA-C3" {
@@ -118,7 +119,7 @@ func TestBuildTourFlow_LegBoundarySetsCurrentLegAndTrimsHops(t *testing.T) {
 
 func TestBuildTourFlow_FirstLegHasEmptyFrom(t *testing.T) {
 	cmd := &RunTourCoordinatorCommand{ContainerID: "c", ShipSymbol: "S"}
-	f := buildTourFlow(cmd, tourPlanFixture(), 0, time.Time{}, nil, time.Now())
+	f := buildTourFlow(cmd, tourPlanFixture(), 0, time.Time{}, time.Time{}, nil, time.Now())
 	if f.CurrentLeg == nil || f.CurrentLeg.From != "" || f.CurrentLeg.To != "X1-AA-A1" {
 		t.Errorf("first leg: want From empty (nav owns origin), To=X1-AA-A1, got %+v", f.CurrentLeg)
 	}
@@ -178,7 +179,7 @@ func TestBuildTourFlow_HopsCarrySystemAndTravelSeconds(t *testing.T) {
 	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
 	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
 
-	f := buildTourFlow(cmd, crossSystemTourPlanFixture(), -1, time.Time{}, nil, now)
+	f := buildTourFlow(cmd, crossSystemTourPlanFixture(), -1, time.Time{}, time.Time{}, nil, now)
 
 	if len(f.RemainingHops) != 2 {
 		t.Fatalf("want 2 hops, got %d", len(f.RemainingHops))
@@ -197,7 +198,7 @@ func TestBuildTourFlow_HopsCarrySystemAndTravelSeconds(t *testing.T) {
 
 func TestBuildTourFlow_ClosedFlagFollowsCommand(t *testing.T) {
 	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9", ClosedTours: true}
-	f := buildTourFlow(cmd, tourPlanFixture(), -1, time.Time{}, nil, time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC))
+	f := buildTourFlow(cmd, tourPlanFixture(), -1, time.Time{}, time.Time{}, nil, time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC))
 	if !f.Closed {
 		t.Errorf("ClosedTours command must publish closed=true")
 	}
@@ -218,12 +219,38 @@ func TestBuildArbAndTradeRouteFlows_DeriveHopSystem(t *testing.T) {
 	}
 }
 
+// The drift glyph anchors on currentLeg.departedAt, so it must carry the TRUE
+// leg-start timestamp — not publish-time now. The tour publisher runs after
+// travel() blocks through arrival, so stamping now would make
+// departedAt >= arrivesAt on every published leg and clamp drift to 0 forever.
+func TestBuildTourFlow_DepartedAtIsLegStartNotPublishTime(t *testing.T) {
+	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
+	now := time.Date(2026, 7, 17, 10, 20, 0, 0, time.UTC) // publish, after arrival
+	departed := now.Add(-20 * time.Minute)                // true leg start
+	arrives := now.Add(-30 * time.Second)                 // actual arrival, before publish
+
+	f := buildTourFlow(cmd, tourPlanFixture(), 1, departed, arrives, nil, now)
+
+	if f.CurrentLeg == nil {
+		t.Fatal("leg 1 in progress must yield a currentLeg")
+	}
+	if !f.CurrentLeg.DepartedAt.Equal(departed) {
+		t.Errorf("currentLeg.departedAt = %v, want leg start %v (not publish now %v)", f.CurrentLeg.DepartedAt, departed, now)
+	}
+	if !f.CurrentLeg.ArrivesAt.Equal(arrives) {
+		t.Errorf("currentLeg.arrivesAt = %v, want %v", f.CurrentLeg.ArrivesAt, arrives)
+	}
+	if !f.PlannedAt.Equal(now) {
+		t.Errorf("plannedAt = %v, want publish now %v (snapshot freshness)", f.PlannedAt, now)
+	}
+}
+
 func TestBuildTourFlow_CurrentLegCarriesPlannedTravelSeconds(t *testing.T) {
 	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
 	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
 	arrives := now.Add(7 * time.Minute)
 
-	f := buildTourFlow(cmd, tourPlanFixture(), 1, arrives, nil, now)
+	f := buildTourFlow(cmd, tourPlanFixture(), 1, now, arrives, nil, now)
 
 	if f.CurrentLeg == nil {
 		t.Fatal("leg 1 in progress must yield a currentLeg")

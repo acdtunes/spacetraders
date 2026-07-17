@@ -30,17 +30,20 @@ export function isHeavyHauler(nav: LiveFlow['shipNav']): boolean {
   return Boolean(nav && nav.cargoCapacity !== null && nav.cargoCapacity >= HEAVY_HAULER_MIN_CAPACITY);
 }
 
-// Current-leg schedule drift: actual arrival vs (plannedAt + planned leg
+// Current-leg schedule drift: actual arrival vs (leg departedAt + planned leg
 // seconds). Positive = behind plan; ahead clamps to 0; null = no estimate
-// (no glyph — silence is nominal). plannedAt is stamped at leg-start publish,
-// so this measures exactly the leg the hull is flying.
+// (no glyph — silence is nominal). The anchor is the LEG's own departure
+// timestamp, NOT flow.plannedAt: the gobot tour publisher stamps plannedAt at
+// publish time, which happens AFTER travel blocks through arrival, so
+// plannedAt >= arrivesAt on every published leg and a plannedAt anchor would
+// clamp drift to 0 forever.
 export function scheduleDriftSeconds(flow: LiveFlow, _nowMs: number): number | null {
   const leg = flow.currentLeg;
   if (!leg || !leg.travelSeconds) return null;
-  const planned = Date.parse(flow.plannedAt);
+  const departed = Date.parse(leg.departedAt);
   const arrives = Date.parse(leg.arrivesAt);
-  if (Number.isNaN(planned) || Number.isNaN(arrives)) return null;
-  return Math.max(0, (arrives - (planned + leg.travelSeconds * 1000)) / 1000);
+  if (Number.isNaN(departed) || Number.isNaN(arrives)) return null;
+  return Math.max(0, (arrives - (departed + leg.travelSeconds * 1000)) / 1000);
 }
 
 export function buildAdjacency(topology: TopologyResponse): Adjacency {

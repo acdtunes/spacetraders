@@ -131,7 +131,7 @@ export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
       // motion model expects (see flowMotion outbound-half tests) and maps the
       // hull onto the NK36→KA42 galaxy edge at phase 0.5*t.
       // Drift anchor: currentLeg times are nowMs-relative (independent of the epoch-anchored
-      // shipNav glide) so schedule drift is phase-stable. arrivesAt=(nowMs+90s), plannedAt below
+      // shipNav glide) so schedule drift is phase-stable. arrivesAt=(nowMs+90s), departedAt
       // =(nowMs−500s), travelSeconds=180 ⇒ drift ≈ 410s → amber tick / +7m roster suffix.
       currentLeg: { from: 'X1-NK36-FE8A', to: 'X1-KA42-D39', departedAt: iso(nowMs - 500_000), arrivesAt: iso(nowMs + 90_000), travelSeconds: 180 },
       cargo: [{ good: 'FABRICS', units: 120 }],
@@ -173,7 +173,7 @@ export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
       ship: 'TORWIND-54',
       tourId: null,
       closed: false,
-      // Drift anchor (red): arrivesAt=(nowMs+100s), plannedAt below=(nowMs−1_300s),
+      // Drift anchor (red): arrivesAt=(nowMs+100s), departedAt=(nowMs−1_300s),
       // travelSeconds=200 ⇒ drift ≈ 1200s → red tick / +20m roster suffix.
       currentLeg: { from: 'X1-ZC66-C39A', to: 'X1-UU57-E21Z', departedAt: iso(nowMs - 1_300_000), arrivesAt: iso(nowMs + 100_000), travelSeconds: 200 },
       cargo: [{ good: 'EQUIPMENT', units: 200 }],
@@ -361,12 +361,13 @@ export function mockDenseGalaxy(nowMs: number): { topology: TopologyResponse; la
     const good = DENSE_GOODS[i % DENSE_GOODS.length];
     if (i % 3 === 0) {
       // Gliding freighter across two adjacent ring systems (true warp). i===0 carries a
-      // red drift (plannedAt far in the past + travelSeconds); the rest have no estimate.
+      // red drift (departedAt far in the past + travelSeconds); the rest have no estimate.
       const dest = sym((homeIdx + 1) % RING);
       flows.push({
         containerId: `tour-run-${ship}-dense`,
         program: 'tour', ship, tourId: `tour-run-${ship}-dense`, closed: false,
-        currentLeg: { from: `${home}-A1`, to: `${dest}-B2`, departedAt: iso(nowMs - 400_000), arrivesAt: iso(nowMs + 120_000), travelSeconds: i === 0 ? 120 : 0 },
+        // i===0 drift = (nowMs+120s) − (nowMs−1_100s + 120s) ≈ 1100s → red.
+        currentLeg: { from: `${home}-A1`, to: `${dest}-B2`, departedAt: iso(nowMs - (i === 0 ? 1_100_000 : 400_000)), arrivesAt: iso(nowMs + 120_000), travelSeconds: i === 0 ? 120 : 0 },
         cargo: [{ good, units: Math.min(cap, 100) }],
         remainingHops: [{ waypoint: `${dest}-B2`, system: dest, travelSeconds: 300, tranches: [{ good, isBuy: false, units: 40, expectedUnitPrice: 2000 }] }],
         projected: { profit: 120_000, ratePerHour: 200_000 },
