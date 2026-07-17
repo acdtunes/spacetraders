@@ -7,7 +7,7 @@ import {
   demoGateProgress,
   isSignalLossWindow,
 } from '../../mocks/demoEvents';
-import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse, mockSystemWaypoints } from '../../mocks/mockFlows';
+import { mockTopology, mockLanes, mockLiveFlows, mockFeedLostResponse, mockFreshness, mockSystemWaypoints } from '../../mocks/mockFlows';
 import type { FlowWindow } from '../../types/flows';
 
 const DEFAULT_LIMIT = 20;
@@ -166,6 +166,7 @@ function demoFlowsRequest<T>(path: string, searchParams: URLSearchParams, nowMs:
   if (path === '/flows/live') {
     return (isSignalLossWindow(nowMs) ? mockFeedLostResponse(nowMs) : mockLiveFlows(nowMs)) as T;
   }
+  if (path === '/flows/freshness') return mockFreshness() as T;
   return {} as T;
 }
 

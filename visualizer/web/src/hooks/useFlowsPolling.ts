@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { useFlowStore } from '../store/flowStore';
-import { getFlowsLive, getFlowLanes, getFlowTopology } from '../services/api/flows';
+import { getFlowsLive, getFlowLanes, getFlowTopology, getFlowFreshness } from '../services/api/flows';
 
 const LIVE_INTERVAL_MS = 5000;
 const LANES_INTERVAL_MS = 30000;
+const FRESHNESS_INTERVAL_MS = 60000;
 
 export function useFlowsPolling() {
   const window = useFlowStore((s) => s.window);
@@ -11,6 +12,8 @@ export function useFlowsPolling() {
   const setLanes = useFlowStore((s) => s.setLanes);
   const setLive = useFlowStore((s) => s.setLive);
   const setError = useFlowStore((s) => s.setError);
+  const setFreshness = useFlowStore((s) => s.setFreshness);
+  const freshnessPollFailed = useFlowStore((s) => s.freshnessPollFailed);
 
   // Topology once per mount.
   useEffect(() => {
@@ -46,4 +49,18 @@ export function useFlowsPolling() {
     const id = setInterval(tick, LANES_INTERVAL_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [window, setLanes, setError]);
+
+  // Freshness every 60s. Failures do NOT surface through setError — they bump
+  // the missed-poll counter so the halo layer dims honestly (spec §5).
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      getFlowFreshness()
+        .then((f) => { if (!cancelled) setFreshness(f); })
+        .catch(() => { if (!cancelled) freshnessPollFailed(); });
+    };
+    tick();
+    const id = setInterval(tick, FRESHNESS_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [setFreshness, freshnessPollFailed]);
 }

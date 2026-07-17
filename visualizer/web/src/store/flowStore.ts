@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { LiveFlowsResponse, LiveFlow, LanesResponse, TopologyResponse, FlowWindow } from '../types/flows';
+import type { LiveFlowsResponse, LiveFlow, LanesResponse, TopologyResponse, FlowWindow, FreshnessResponse } from '../types/flows';
 
 export interface FlowState {
   topology: TopologyResponse | null;
@@ -15,6 +15,8 @@ export interface FlowState {
   layerToggles: { lanes: boolean; paths: boolean; ships: boolean };
   staleFlows: LiveFlow[] | null; // last live flows, frozen while feedLost
   freezeAtMs: number | null;     // clock value the frozen render pins to
+  freshness: FreshnessResponse | null;
+  freshnessMissedPolls: number;  // consecutive freshness-poll failures; >=5 dims the layer
 
   setTopology: (t: TopologyResponse) => void;
   setLanes: (l: LanesResponse) => void;
@@ -28,6 +30,10 @@ export interface FlowState {
   requestFocus: (containerId: string) => void;
   clearFocus: () => void;
   toggleLayer: (key: 'lanes' | 'paths' | 'ships') => void;
+  // Freshness poll: success resets the missed counter; failure increments it
+  // (freshness failures dim the layer, they never surface through setError).
+  setFreshness: (freshness: FreshnessResponse) => void;
+  freshnessPollFailed: () => void;
 }
 
 export const useFlowStore = create<FlowState>((set) => ({
@@ -44,6 +50,8 @@ export const useFlowStore = create<FlowState>((set) => ({
   layerToggles: { lanes: true, paths: true, ships: true },
   staleFlows: null,
   freezeAtMs: null,
+  freshness: null,
+  freshnessMissedPolls: 0,
 
   setTopology: (topology) => set({ topology, error: null }),
   setLanes: (lanes) => set({ lanes, error: null }),
@@ -73,6 +81,8 @@ export const useFlowStore = create<FlowState>((set) => ({
   requestFocus: (focusFlowId) => set({ focusFlowId }),
   clearFocus: () => set({ focusFlowId: null }),
   toggleLayer: (key) => set((state) => ({ layerToggles: { ...state.layerToggles, [key]: !state.layerToggles[key] } })),
+  setFreshness: (freshness) => set({ freshness, freshnessMissedPolls: 0 }),
+  freshnessPollFailed: () => set((s) => ({ freshnessMissedPolls: s.freshnessMissedPolls + 1 })),
 }));
 
 // Dev-only debugging affordance: expose the store so the flows tab can be driven

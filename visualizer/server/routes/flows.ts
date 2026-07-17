@@ -5,6 +5,7 @@ import { computeGalaxyLayout, layoutWithAnchors, type AnchoredNode } from '../ut
 import { aggregateLanes, rollupSystemLanes, rollupSystemActivity } from '../utils/laneAggregation.js';
 import { homeSystemFromHeadquarters } from '../utils/homeSystem.js';
 import { currentEraId, resolveSystemCoords } from '../utils/systemCoords.js';
+import { shapeFreshnessResponse } from '../utils/freshness.js';
 import { SpaceTradersClient } from '../src/client.js';
 
 const router = Router();
@@ -334,6 +335,46 @@ router.get('/live', async (_req, res) => {
     res.json({ flows, generatedAt: new Date().toISOString(), feedLost: false, lastPlanAt });
   } catch (error: any) {
     console.error('Failed to join ship nav for flows/live:', error?.message ?? error);
+    res.status(503).json({ error: 'db_unavailable' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// ---- GET /api/flows/freshness ------------------------------------------------
+// Per-system solver visibility: share of market listings inside the tour/sink
+// staleness gate, plus scout-post actuator state. STALE_AFTER_MINUTES mirrors
+// gobot maxListingAge (run_trade_route_coordinator_travel.go:711) — the solver's
+// number; clients read it from the response, never hardcode it.
+const STALE_AFTER_MINUTES = 75;
+
+router.get('/freshness', async (_req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+    const eraId = await currentEraId(client);
+    const cutoffIso = new Date(Date.now() - STALE_AFTER_MINUTES * 60 * 1000).toISOString();
+    const marketResult = await client.query(
+      `SELECT w.system_symbol AS system,
+              COUNT(*) AS total,
+              COUNT(*) FILTER (WHERE md.last_updated >= $2) AS fresh,
+              MAX(md.last_updated) AS freshest_at
+       FROM market_data md
+       JOIN waypoints w ON w.waypoint_symbol = md.waypoint_symbol
+        AND (era_id = $1 OR era_id IS NULL)
+       GROUP BY w.system_symbol`,
+      [eraId, cutoffIso],
+    );
+    const scoutResult = await client.query(
+      `SELECT system_symbol, assigned_hull, reposition_container_id, kind FROM scout_posts`,
+    );
+    res.json({
+      systems: shapeFreshnessResponse(marketResult.rows, scoutResult.rows),
+      staleAfterMinutes: STALE_AFTER_MINUTES,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Failed to build flows freshness:', error?.message ?? error);
     res.status(503).json({ error: 'db_unavailable' });
   } finally {
     if (client) client.release();

@@ -126,3 +126,22 @@ export interface TopologyResponse {
   homeSystem?: string;   // server-derived from /my/agent; absent when unknown (never guessed)
   generatedAt: string;
 }
+
+// Per-system market freshness = solver visibility. `/api/flows/freshness` shapes
+// these from the era-scoped market aggregation merged with scout_posts.
+export type ScoutPostStatus = 'manned' | 'relay' | 'unmanned';
+
+export interface SystemFreshnessRecord {
+  system: string;
+  totalListings: number;
+  freshListings: number;
+  freshnessPct: number;          // 0..100 solver visibility
+  freshestAt: string | null;     // ISO of the newest listing scan
+  scoutPost: { status: ScoutPostStatus; hull: string | null; kind: string } | null;
+}
+
+export interface FreshnessResponse {
+  systems: SystemFreshnessRecord[];
+  staleAfterMinutes: number;     // mirrors gobot maxListingAge; never hardcode
+  generatedAt: string;
+}

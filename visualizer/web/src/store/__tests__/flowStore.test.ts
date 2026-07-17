@@ -77,3 +77,19 @@ describe('galaxy view state', () => {
     expect(useFlowStore.getState().freezeAtMs).toBeNull();
   });
 });
+
+describe('freshness state', () => {
+  beforeEach(() => {
+    useFlowStore.setState(useFlowStore.getInitialState());
+  });
+
+  it('stores responses and resets the missed-poll counter', () => {
+    const s = useFlowStore.getState();
+    s.freshnessPollFailed();
+    s.freshnessPollFailed();
+    expect(useFlowStore.getState().freshnessMissedPolls).toBe(2);
+    s.setFreshness({ systems: [], staleAfterMinutes: 75, generatedAt: 'x' });
+    expect(useFlowStore.getState().freshnessMissedPolls).toBe(0);
+    expect(useFlowStore.getState().freshness?.staleAfterMinutes).toBe(75);
+  });
+});
