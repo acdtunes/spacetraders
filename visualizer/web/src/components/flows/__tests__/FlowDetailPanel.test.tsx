@@ -22,4 +22,11 @@ describe('FlowDetailPanel', () => {
     expect(screen.getByText(/ADVANCED_CIRCUITRY/)).toBeInTheDocument(); // hop tranche good
     expect(screen.getByText(/250,?000/)).toBeInTheDocument();      // projected profit
   });
+
+  it('renders realized-so-far next to the projection', () => {
+    const flow = mockLiveFlows(Date.now()).flows[0];
+    render(<FlowDetailPanel flow={flow} />);
+    expect(screen.getByText(/Realized so far/i)).toBeTruthy();
+    expect(screen.getByText(/96,000/)).toBeTruthy();
+  });
 });

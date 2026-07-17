@@ -71,6 +71,16 @@ export function FlowDetailPanel({ flow }: Props) {
         </div>
       )}
 
+      <div className="pt-2 border-t" style={{ borderColor: NOIR.nebulaCore }}>
+        <div className="flex justify-between text-xs">
+          <span style={{ color: NOIR.muted }}>Realized so far (net, incl. fuel)</span>
+          <span style={{ color: flow.realized.net >= 0 ? NOIR.good : NOIR.bad }}>{money(flow.realized.net)}</span>
+        </div>
+        {flow.realized.lastEventAt && (
+          <div className="text-xs text-right" style={{ color: NOIR.dim }}>last fill {eta(flow.realized.lastEventAt) === 'arrived' ? 'just now' : new Date(flow.realized.lastEventAt).toLocaleTimeString()}</div>
+        )}
+      </div>
+
       {flow.projected && (
         <div className="pt-2 border-t" style={{ borderColor: NOIR.nebulaCore }}>
           <div className="flex justify-between text-xs">

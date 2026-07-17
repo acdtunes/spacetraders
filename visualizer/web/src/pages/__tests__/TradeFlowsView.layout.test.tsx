@@ -48,7 +48,10 @@ describe('TradeFlowsView layout (demo, fleet-stopped)', () => {
       seed();
       useFlowStore.getState().selectFlow('tour-run-TORWIND-3-galaxyA');
     });
-    await waitFor(() => expect(screen.getByText('TORWIND-3')).toBeInTheDocument());
+    // The Task 12 roster also lists TORWIND-3, so the ship symbol is no longer
+    // unique to the panel; the first match still proves it rendered, and the
+    // detail-panel-only tranche good below confirms the panel specifically.
+    await waitFor(() => expect(screen.getAllByText('TORWIND-3')[0]).toBeInTheDocument());
     expect(screen.getByText(/ADVANCED_CIRCUITRY/)).toBeInTheDocument();
   });
 
