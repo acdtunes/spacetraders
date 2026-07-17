@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -89,6 +90,14 @@ type SpaceTradersClient struct {
 	agentCachedAt   time.Time
 	agentCacheToken string        // token that produced agentCache (cross-agent guard)
 	agentCacheTTL   time.Duration // 0 => defaultAgentCacheTTL
+
+	// scheduler holds the priority-aware rate-limit scheduler when priority
+	// scheduling is armed (SetPriorityScheduling). A nil pointer — the DEFAULT —
+	// means the legacy path: acquireRateToken calls c.rateLimiter.Wait directly,
+	// byte-identical to the behaviour before this feature existed. It is read on
+	// the hot path of every request, so it is an atomic pointer to stay race-free
+	// with the boot-time setter.
+	scheduler atomic.Pointer[priorityScheduler]
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
@@ -191,6 +200,42 @@ func (c *SpaceTradersClient) getBudgetTracker() *metrics.APIBudgetTracker {
 // This is useful for monitoring rate limiter saturation (max 30 tokens)
 func (c *SpaceTradersClient) GetRateLimiterTokens() float64 {
 	return c.rateLimiter.Tokens()
+}
+
+// SetPriorityScheduling arms (true) or disarms (false) priority-aware rate-limit
+// scheduling. The DEFAULT is OFF and OFF is byte-identical to the legacy
+// FIFO/blocking path (acquireRateToken calls c.rateLimiter.Wait directly).
+//
+// When ON, and ONLY when the limiter is saturated and multiple callers are
+// waiting, trade-critical calls (Buy/Sell Cargo, and any call explicitly marked
+// via WithPriority) acquire the next contended token ahead of deferrable status
+// polls (Get Agent/Construction/Ship/Jump Gate, List*, ...). This changes NOTHING
+// about how many calls are made or the 2 req/s ceiling, burst, or refill — every
+// token still comes from the same limiter — it only reorders contended waiters.
+// Bounded aging inside the scheduler guarantees no low-priority call is starved.
+//
+// Wired at daemon boot from DaemonConfig.APIPrioritySchedulingEnabled (default
+// false => absent from config => OFF). Safe to call before the daemon starts
+// issuing requests; the atomic pointer keeps it race-free otherwise.
+func (c *SpaceTradersClient) SetPriorityScheduling(enabled bool) {
+	if !enabled {
+		c.scheduler.Store(nil)
+		return
+	}
+	c.scheduler.Store(newPriorityScheduler(c.rateLimiter.Wait, c.clock, defaultPriorityAgingWindow))
+}
+
+// acquireRateToken acquires exactly ONE token from the shared rate limiter before
+// an API attempt. With priority scheduling OFF (the default) this is the legacy
+// c.rateLimiter.Wait(ctx). With it ON, the acquisition is ordered by the call's
+// priority (endpoint classification, overridable via WithPriority), but every
+// token still comes from the SAME limiter, so the rate/burst/refill are
+// unchanged — only the order of contended waiters differs.
+func (c *SpaceTradersClient) acquireRateToken(ctx context.Context, endpoint string) error {
+	if s := c.scheduler.Load(); s != nil {
+		return s.wait(ctx, priorityForRequest(ctx, endpoint))
+	}
+	return c.rateLimiter.Wait(ctx)
 }
 
 // GetShip retrieves ship details

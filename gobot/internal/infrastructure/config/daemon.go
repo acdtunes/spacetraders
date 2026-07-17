@@ -58,6 +58,17 @@ type DaemonConfig struct {
 	// from invalidating the cache on every credit-decreasing call, not the TTL —
 	// so tuning it never risks an over-spend. Sticky across restart via config.
 	AgentCacheTTLSeconds int `mapstructure:"agent_cache_ttl_seconds"`
+
+	// APIPrioritySchedulingEnabled arms priority-aware rate-limit scheduling in
+	// the shared API client (sp-ratelimit-prio). Absent/false — the DEFAULT — is
+	// byte-identical to the legacy FIFO/blocking token acquisition: nothing about
+	// the 2 req/s ceiling, burst, or refill changes. When true, trade-critical
+	// calls (Buy/Sell Cargo, and calls explicitly marked trade-blocking) acquire a
+	// CONTENDED token ahead of deferrable status polls under saturation, cutting
+	// trade latency without changing total throughput. Bounded aging guarantees no
+	// poll is starved. This is the governance gate — the reordering is completely
+	// inert until this is explicitly set true. Sticky across restart via config.
+	APIPrioritySchedulingEnabled bool `mapstructure:"api_priority_scheduling_enabled"`
 }
 
 // RestartPolicyConfig holds container restart policy configuration
