@@ -114,7 +114,18 @@ func (s *DaemonServer) StartTourRun(
 		// (2). This WRITE is what makes the request-driven cap take effect in production —
 		// without it the knob is inert and every tour silently clamps to 2.
 		"max_tour_systems": s.tradeFleetConfig.MaxTourSystems,
-		"iterations":       iterations,
+		// sp-z7ng: the placement/relocation scoring loop knobs, sourced from the daemon's live
+		// [trade_fleet] config (daemon-global tour tuning, same for every tour — the mirror of
+		// max_tour_systems/reposition_jump_bound above). Persisted as-is (zeros/false too, so an
+		// absent knob survives a recovery rebuild unchanged and the default-OFF dormancy is stable
+		// in BOTH directions); buildTourCoordinatorCommand reads them back onto the command via
+		// OptionalBool/OptionalInt, which yield the zero values for absent keys — the dormancy the
+		// Reposition* knobs already rely on. placement_score_enabled=false keeps the legacy engine.
+		"placement_score_enabled":       s.tradeFleetConfig.PlacementScoreEnabled,
+		"placement_beta_window_minutes": s.tradeFleetConfig.PlacementBetaWindowMinutes,
+		"placement_park_floor_pct":      s.tradeFleetConfig.PlacementParkFloorPct,
+		"placement_shortlist_top_n":     s.tradeFleetConfig.PlacementShortlistTopN,
+		"iterations":                    iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

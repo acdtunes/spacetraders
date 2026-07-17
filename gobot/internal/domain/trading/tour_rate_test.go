@@ -97,3 +97,54 @@ func TestComputeFleetTourRate_StableTrend_NotDeclining(t *testing.T) {
 		t.Fatalf("a flat 100k->100k trend must not read as declining")
 	}
 }
+
+// RED#1 (sp-z7ng): β is the per-TOUR MEDIAN realized $/hr, never the mean — so one blowout tour
+// cannot drag the fleet's placement reference. Three tours at 100k/200k/900k → 200k (the middle),
+// not the mean 400k; an even count averages the two middles.
+func TestMedianTourRate_PerTourMedianOddAndEven(t *testing.T) {
+	base := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	h := func(n int) time.Time { return base.Add(time.Duration(n) * time.Hour) }
+	// One buy@0 + one sell@1h per tour ⇒ net = 100*(price) over 1h = price*100 /hr.
+	tour := func(id string, sellPrice int) []TourLegTelemetry {
+		return []TourLegTelemetry{
+			tleg(id, "A", true, 100, 1000, h(0), h(0)),       // buy 100@1000 = -100k
+			tleg(id, "A", false, 100, sellPrice, h(0), h(1)), // sell 100@sellPrice over 1h
+		}
+	}
+	// net = 100*sellPrice - 100*1000; sell 2000→100k/hr, 3000→200k/hr, 10000→900k/hr.
+	odd := append(append(tour("t1", 2000), tour("t2", 3000)...), tour("t3", 10000)...)
+	rate, ok := MedianTourRate(odd)
+	if !ok {
+		t.Fatalf("three computable tours must be readable")
+	}
+	if rate != 200000 {
+		t.Fatalf("median(100k,200k,900k) = %v, want 200000 (the MIDDLE, not the mean 400000)", rate)
+	}
+	// Even count: drop t3 → median averages the two middles of {100k,200k} = 150k.
+	even := append(tour("t1", 2000), tour("t2", 3000)...)
+	rate2, ok2 := MedianTourRate(even)
+	if !ok2 || rate2 != 150000 {
+		t.Fatalf("median(100k,200k) = %v (ok=%v), want mean-of-two-middles 150000", rate2, ok2)
+	}
+}
+
+// RED#2 (sp-z7ng): β fails CLOSED — empty rows, buys with no realized sell, and a zero-span tour
+// each yield ok=false, never a misleading readable 0. A placement caller that cannot see β falls
+// back to the legacy engine; a fabricated 0 would silently arm the park floor at φ*0 = 0.
+func TestMedianTourRate_FailsClosedWhenNoComputableTour(t *testing.T) {
+	base := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	if _, ok := MedianTourRate(nil); ok {
+		t.Fatalf("empty rows must be unreadable (fail closed)")
+	}
+	buysOnly := []TourLegTelemetry{tleg("t1", "A", true, 100, 1000, base, base.Add(time.Hour))}
+	if _, ok := MedianTourRate(buysOnly); ok {
+		t.Fatalf("a tour with no realized sell has no computable rate — must be unreadable")
+	}
+	zeroSpan := []TourLegTelemetry{
+		tleg("t1", "A", true, 100, 1000, base, base),
+		tleg("t1", "A", false, 100, 2000, base, base), // sell realized at the same instant → zero span
+	}
+	if _, ok := MedianTourRate(zeroSpan); ok {
+		t.Fatalf("a zero-wall-clock-span tour is not computable — must be unreadable")
+	}
+}

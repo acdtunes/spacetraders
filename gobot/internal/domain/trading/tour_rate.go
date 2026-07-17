@@ -168,3 +168,41 @@ func meanRate(tours []tourRatePoint) float64 {
 	}
 	return sum / float64(len(tours))
 }
+
+// MedianTourRate is the fleet rolling-MEDIAN realized tour $/hr over the rows the caller passes
+// (the placement engine's β, sp-z7ng): it reuses the same per-TourID legGroup fold as
+// tourRateDeclining — group by TourID, .add() each row, keep the tours whose .rate() is computable
+// (a realized sell over a positive wall-clock span) — then returns the MEDIAN of those per-tour
+// rates (an even count averages the two middle values). The median, not the mean, is deliberate:
+// on a small fleet (2-3 live tours) a single blowout tour must not drag β, and a single dead one
+// must not crater it. ok=false when NO tour is computable (empty rows, buys-only, or zero-span),
+// mirroring FleetTourRateResult.Readable's fail-closed contract — a readable zero is never
+// invented, because the placement caller falls back to the legacy static-floor engine when β is
+// unreadable rather than deciding off a fabricated rate. The window is applied by the caller at
+// the repository read (ListByPlayer's since bound); this function is pure over the rows it sees.
+func MedianTourRate(rows []TourLegTelemetry) (float64, bool) {
+	byTour := map[string]*legGroup{}
+	for _, r := range rows {
+		g := byTour[r.TourID]
+		if g == nil {
+			g = &legGroup{}
+			byTour[r.TourID] = g
+		}
+		g.add(r)
+	}
+	rates := make([]float64, 0, len(byTour))
+	for _, g := range byTour {
+		if rate, ok := g.rate(); ok {
+			rates = append(rates, rate)
+		}
+	}
+	if len(rates) == 0 {
+		return 0, false // no computable tour → fail closed (never a readable 0)
+	}
+	sort.Float64s(rates)
+	mid := len(rates) / 2
+	if len(rates)%2 == 1 {
+		return rates[mid], true
+	}
+	return (rates[mid-1] + rates[mid]) / 2, true
+}

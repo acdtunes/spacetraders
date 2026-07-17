@@ -206,7 +206,7 @@ func (h *RunTradeRouteCoordinatorHandler) repositionNeighbors(ctx context.Contex
 			}
 			out := make([]repositionNeighborEdge, 0, len(edges))
 			for _, e := range edges {
-				out = append(out, repositionNeighborEdge{system: e.ConnectedSystem, underConstruction: e.UnderConstruction})
+				out = append(out, repositionNeighborEdge{system: e.ConnectedSystem, underConstruction: e.UnderConstruction, hops: 1})
 			}
 			return out, ""
 		}
@@ -272,7 +272,10 @@ func (h *RunTradeRouteCoordinatorHandler) repositionNeighborsWithinJumps(ctx con
 			return
 		}
 		visited[nextSystem] = true
-		out = append(out, repositionNeighborEdge{system: nextSystem})
+		// sp-z7ng: stamp the BFS depth as the candidate's hop count so the armed placement path
+		// charges deadhead per-hop (a 3-hop broadened ground pays 3× the crossing). The frontier
+		// depth was previously discarded here — this is the write the hops threading rides on.
+		out = append(out, repositionNeighborEdge{system: nextSystem, hops: depth})
 		queue = append(queue, frontier{system: nextSystem, depth: depth})
 	}
 	// Seed from the 1-hop probe already in hand, over BUILT gates only.
@@ -309,7 +312,7 @@ func (h *RunTradeRouteCoordinatorHandler) repositionNeighborsWithinJumps(ctx con
 func liveNeighborEdges(systems []string) []repositionNeighborEdge {
 	out := make([]repositionNeighborEdge, 0, len(systems))
 	for _, s := range systems {
-		out = append(out, repositionNeighborEdge{system: s})
+		out = append(out, repositionNeighborEdge{system: s, hops: 1})
 	}
 	return out
 }

@@ -166,6 +166,77 @@ func TestStartTourRun_MaxTourSystemsDefaultsZeroWhenUnset(t *testing.T) {
 	require.Equal(t, 0, rebuilt.(*tradingCmd.RunTourCoordinatorCommand).MaxTourSystems)
 }
 
+// sp-z7ng RED#18 — the placement-knob threading pin. The four placement/relocation loop knobs are
+// daemon-global [trade_fleet] tunings (exactly like max_tour_systems / reposition_jump_bound), so
+// StartTourRun must STAMP them into the launch config and buildTourCoordinatorCommand must READ them
+// back onto the command. Set knobs round-trip onto the command; an ABSENT knob rebuilds to the
+// zero/false value (dormant) — the default-OFF safety the whole child rides on.
+func TestTourContainerConfig_ThreadsPlacementKnobs(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.PlacementScoreEnabled = true // the captain's [trade_fleet] arming
+	s.tradeFleetConfig.PlacementBetaWindowMinutes = 45
+	s.tradeFleetConfig.PlacementParkFloorPct = 25
+	s.tradeFleetConfig.PlacementShortlistTopN = 5
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"placement_score_enabled":true`, "StartTourRun must stamp placement_score_enabled so the rebuild reads it back (the arming write side)")
+	require.Contains(t, model.Config, `"placement_beta_window_minutes":45`)
+	require.Contains(t, model.Config, `"placement_park_floor_pct":25`)
+	require.Contains(t, model.Config, `"placement_shortlist_top_n":5`)
+
+	// The whole boundary round-trips onto the command.
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.True(t, cmd.PlacementScoreEnabled)
+	require.Equal(t, 45, cmd.PlacementBetaWindowMinutes)
+	require.Equal(t, 25, cmd.PlacementParkFloorPct)
+	require.Equal(t, 5, cmd.PlacementShortlistTopN)
+}
+
+// sp-z7ng default-safety companion: an UNSET [trade_fleet] placement block rebuilds to a DORMANT
+// command — placement_score_enabled false, every int 0 — so every existing container and recovery
+// rebuild takes the legacy reposition branch. This is the launch-path half of the default-off proof.
+func TestTourContainerConfig_PlacementKnobsDefaultDormantWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig placement block left at its zero values (the operator never armed it).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.False(t, cmd.PlacementScoreEnabled, "an unset placement block must rebuild DORMANT (legacy reposition runs)")
+	require.Equal(t, 0, cmd.PlacementBetaWindowMinutes)
+	require.Equal(t, 0, cmd.PlacementParkFloorPct)
+	require.Equal(t, 0, cmd.PlacementShortlistTopN)
+}
+
 // sp-sg35 — the permit half: a tour_run-shaped container (operation "trade", the
 // value StartTourRun now stamps) claiming a hull dedicated to the SAME "trade"
 // fleet is permitted (operation == dedication), so the trade-fleet tours keep

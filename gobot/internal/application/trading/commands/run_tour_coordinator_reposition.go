@@ -106,6 +106,11 @@ type repositionCandidate struct {
 	system   string
 	waypoint string
 	score    int
+	// hops is the gate-hop distance from the current system (1 for a direct neighbor, the BFS
+	// depth for a sp-jeou broadened candidate). Read ONLY by the armed placement path (sp-z7ng)
+	// to charge deadhead per-hop in score(x)=E_x−β·D_x; the legacy repositionCandidateRate keeps
+	// its hardcoded single-hop constant, so this field is inert when placement is off.
+	hops int
 }
 
 // repositionScore is one candidate's evaluated result for the ranking-table log and the
@@ -162,6 +167,18 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	}
 	if episode.repositioned {
 		return false, nil // already spent this episode's one reposition — no hop-scotching
+	}
+
+	// sp-z7ng placement dispatch — sits BELOW the shared kill-switch and episode-budget guards so
+	// precedence is RepositionDisabled > episode.repositioned > PlacementScoreEnabled > legacy: an
+	// armed daemon still honours reposition_disabled and one-reposition-per-episode. When armed and
+	// β is readable, the placement engine decides; an unreadable β returns handled=false and falls
+	// THROUGH to the untouched legacy body below (fresh-boot rescue preserved), never a forked copy.
+	if cmd.PlacementScoreEnabled {
+		handled, repositioned, perr := h.maybeRepositionPlacement(ctx, cmd, response, episode, netBought, maxHops, maxSpend, reserve, modelVersion)
+		if handled {
+			return repositioned, perr
+		}
 	}
 
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
@@ -291,6 +308,10 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 type repositionNeighborEdge struct {
 	system            string
 	underConstruction bool
+	// hops is the gate-hop distance from the origin (1 for a directly-gated neighbor, the BFS
+	// depth for a multi-hop broadened one). Stamped by the discovery constructors and copied onto
+	// the candidate for the armed placement per-hop deadhead charge (sp-z7ng); inert for legacy.
+	hops int
 }
 
 // neighborRejection is one directly-gated neighbor the reposition scan considered but did NOT
@@ -436,7 +457,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			rejections = append(rejections, neighborRejection{system: sys, reason: "no-waypoint"})
 			continue
 		}
-		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score})
+		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score, hops: nb.hops})
 	}
 	return candidates, rejections
 }

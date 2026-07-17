@@ -1376,6 +1376,16 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// sp-686e: stranded-hull detector threshold from [trade_fleet]; 0/absent → the
 		// coordinator's own default (3, resolveStrandedThreshold).
 		StrandedConsecutiveThreshold: cfg.OptionalInt("stranded_consecutive_threshold", 0),
+		// sp-z7ng placement/relocation scoring loop (epic sp-fguo). OptionalBool/OptionalInt
+		// yield zero values for absent keys — the exact default-OFF dormancy mechanism the
+		// Reposition* knobs use: placement_score_enabled absent ⇒ false ⇒ the legacy static-floor
+		// reposition runs, byte-identical to today; the window/floor/shortlist default to 0 ⇒ the
+		// coordinator's own placement*Default. Every existing container and recovery rebuild takes
+		// the legacy branch until a captain explicitly sets placement_score_enabled: true.
+		PlacementScoreEnabled:      cfg.OptionalBool("placement_score_enabled"),
+		PlacementBetaWindowMinutes: cfg.OptionalInt("placement_beta_window_minutes", 0),
+		PlacementParkFloorPct:      cfg.OptionalInt("placement_park_floor_pct", 0),
+		PlacementShortlistTopN:     cfg.OptionalInt("placement_shortlist_top_n", 0),
 	}
 }
 

@@ -231,6 +231,29 @@ type RunTourCoordinatorCommand struct {
 	RepositionTargetSystem   string
 	RepositionTargetWaypoint string
 
+	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
+	// The margins-death rescue evolves into the spec's score(x)=E_x−β·D_x placement loop:
+	// argmax over reachable systems (INCLUDING staying put) on the deadhead-charged score,
+	// with a φ·β park floor. DEFAULT-OFF and byte-identical to the legacy sp-zhii reposition
+	// when unarmed; the shared RepositionDisabled kill-switch and one-per-episode budget still
+	// win (they sit ABOVE the placement dispatch). Governance-owned arming (config + replay gate).
+
+	// PlacementScoreEnabled arms the placement loop. false (the zero value / absent config) →
+	// the legacy static-floor reposition runs unchanged (byte-identical at the epic defaults);
+	// true → maybeRepositionPlacement scores candidates on score(x)=E_x−β·D_x. β unreadable
+	// (no telemetry) falls back to the legacy engine for that episode (fresh-boot rescue).
+	PlacementScoreEnabled bool
+	// PlacementBetaWindowMinutes is the trailing window for the fleet rolling-median realized
+	// tour $/hr (β). 0 → placementBetaWindowMinutesDefault (60).
+	PlacementBetaWindowMinutes int
+	// PlacementParkFloorPct is φ×100: a candidate's deadhead-charged score must clear φ·β to be
+	// worth the jump, else the hull parks. 0 → placementParkFloorPctDefault (30, spec φ=0.3).
+	PlacementParkFloorPct int
+	// PlacementShortlistTopN is the same-budget shortlist N: armed mode prices top-(N−1) foreign
+	// candidates + 1 current-system E_s = N planner calls per episode, identical to legacy's K.
+	// 0 → the resolved RepositionMaxCandidates (default 3), so arming never grows the solver herd.
+	PlacementShortlistTopN int
+
 	// StrandedConsecutiveThreshold is the sp-686e stranded-hull detector threshold: how many
 	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
 	// inaccessible — the TORWIND-2C shape) a hull must accrue before the coordinator pages

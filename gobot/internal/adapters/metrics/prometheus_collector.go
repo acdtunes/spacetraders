@@ -420,6 +420,15 @@ func RecordTourReposition(playerID int, outcome string) {
 	}
 }
 
+// RecordTourPlacementDecision records one armed placement/relocation decision globally by
+// verdict (jump|stay|hold_park_floor|fallback_legacy), sp-z7ng. No-op when metrics are disabled,
+// so a metrics miss never touches the trade path (RULINGS #4).
+func RecordTourPlacementDecision(playerID int, verdict string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordPlacementDecision(playerID, verdict)
+	}
+}
+
 // RecordTourMarginsDeath records one confirmed 3-strike ground tap-out globally
 // (sp-fbih P4). No-op when metrics are disabled.
 func RecordTourMarginsDeath(playerID int) {

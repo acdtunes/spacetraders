@@ -35,6 +35,14 @@ type TourMetricsCollector struct {
 	// they are not evaluations, and counting them would pollute the no_candidate rate.
 	repositionsTotal *prometheus.CounterVec
 
+	// placementDecisionsTotal increments once per armed placement/relocation decision (sp-z7ng),
+	// by verdict: jump (scored a foreign argmax and repositioned), stay (the current-system E_s
+	// won), hold_park_floor (nothing cleared φ·β), or fallback_legacy (β unreadable → the legacy
+	// engine ran this episode). Only the ARMED path (placement_score_enabled) emits; the legacy
+	// reposition keeps tour_repositions_total, so the two engines' telemetry never conflate. The
+	// series materialize only on first increment ⇒ /metrics is unchanged until a captain arms.
+	placementDecisionsTotal *prometheus.CounterVec
+
 	// marginsDeathTotal increments once per confirmed 3-strike tap-out (sp-m5kv
 	// tourStarvationLimit), whether or not a reposition then rescues the run — so it
 	// measures the ground rich->tapped cadence (bopj P4's 3-strike calibration), distinct
@@ -122,6 +130,16 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 				Help:      "Margins-death reposition evaluations by outcome (outcome=success|no_candidate|failed)",
 			},
 			[]string{"player_id", "outcome"},
+		),
+
+		placementDecisionsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_placement_decisions_total",
+				Help:      "Armed placement/relocation decisions by verdict (verdict=jump|stay|hold_park_floor|fallback_legacy)",
+			},
+			[]string{"player_id", "verdict"},
 		),
 
 		marginsDeathTotal: prometheus.NewCounterVec(
@@ -227,6 +245,7 @@ func (c *TourMetricsCollector) Register() error {
 
 	metrics := []prometheus.Collector{
 		c.repositionsTotal,
+		c.placementDecisionsTotal,
 		c.marginsDeathTotal,
 		c.reserveFloorEngagementsTotal,
 		c.exitTotal,
@@ -254,6 +273,15 @@ func (c *TourMetricsCollector) RecordReposition(playerID int, outcome string) {
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.repositionsTotal.WithLabelValues(strconv.Itoa(playerID), outcome).Inc()
+}
+
+// RecordPlacementDecision records one armed placement/relocation decision by verdict
+// (jump|stay|hold_park_floor|fallback_legacy). Nil-safe and best-effort (RULINGS #4).
+func (c *TourMetricsCollector) RecordPlacementDecision(playerID int, verdict string) {
+	if c == nil || c.placementDecisionsTotal == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	c.placementDecisionsTotal.WithLabelValues(strconv.Itoa(playerID), verdict).Inc()
 }
 
 // RecordMarginsDeath records one confirmed 3-strike ground tap-out.

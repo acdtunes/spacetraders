@@ -118,6 +118,18 @@ type TradeFleetConfig struct {
 	// not this config layer. A positive value sweeps tour length by editing config.yaml +
 	// restarting the daemon (RULINGS #5, no code redeploy).
 	MaxTourSystems int `mapstructure:"max_tour_systems"`
+
+	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
+	// Daemon-global tour tunings, same for every tour container (the mirror of
+	// reposition_jump_bound/max_tour_systems above): StartTourRun stamps them into every tour
+	// launch config, buildTourCoordinatorCommand reads them back onto the command. Zero =
+	// unset ⇒ defer to the consumer's default (the default lives in the coordinator, not here),
+	// so an absent knob is byte-identical to today. PlacementScoreEnabled defaults FALSE, so
+	// nothing arms without an explicit captain config change — the governance gate.
+	PlacementScoreEnabled      bool `mapstructure:"placement_score_enabled"`
+	PlacementBetaWindowMinutes int  `mapstructure:"placement_beta_window_minutes"`
+	PlacementParkFloorPct      int  `mapstructure:"placement_park_floor_pct"`
+	PlacementShortlistTopN     int  `mapstructure:"placement_shortlist_top_n"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

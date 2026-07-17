@@ -44,6 +44,11 @@ type tourFixture struct {
 	bid     map[string]map[string]int // waypoint -> good -> bid (PurchasePrice, sell revenue)
 	ask     map[string]map[string]int // waypoint -> good -> ask (SellPrice, buy cost)
 	tv      map[string]map[string]int // waypoint -> good -> tradeVolume
+	// staleMarkets marks waypoints whose cached market reads are >maxListingAge old (sp-z7ng): a
+	// listed waypoint here gets an ObservedAt 2h in the past, so freshListings drops it and the
+	// reposition/placement staleness gate excludes it. Absent (nil) → every market reads fresh
+	// (ObservedAt=now), the pre-existing behavior every other test relies on.
+	staleMarkets map[string]bool
 	// tradeType maps waypoint -> good -> trade type (EXPORT/IMPORT/EXCHANGE). Absent →
 	// EXPORT, the pre-existing default every non-look-back test relies on. sp-ed4i uses it
 	// to model a real IMPORT sink so the look-back sink discipline (sp-9mkf: never sell into
@@ -269,7 +274,11 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 		}
 		tgs = append(tgs, *g)
 	}
-	m, err := market.NewMarket(waypointSymbol, tgs, time.Now())
+	observedAt := time.Now()
+	if r.fx.staleMarkets[waypointSymbol] {
+		observedAt = observedAt.Add(-2 * time.Hour) // >maxListingAge (75m) → freshListings drops it
+	}
+	m, err := market.NewMarket(waypointSymbol, tgs, observedAt)
 	if err != nil {
 		r.t.Fatalf("market: %v", err)
 	}
