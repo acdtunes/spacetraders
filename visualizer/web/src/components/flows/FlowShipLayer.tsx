@@ -48,8 +48,11 @@ export const FlowShipLayer = memo(function FlowShipLayer({
           <Group key={`ship-${flow.containerId}`} x={m.x} y={m.y} opacity={opacityById?.get(flow.containerId) ?? 1}>
             {/* rotated body: wedge + trail */}
             <Group rotation={rotationDeg} listening={false}>
-              <Line points={[-14 * u, 0, -5 * u, 0]} stroke={noirAlpha(color, 0.35)} strokeWidth={1.6 * u} lineCap="round" listening={false} />
-              <Line points={[-22 * u, 0, -14 * u, 0]} stroke={noirAlpha(color, 0.15)} strokeWidth={1 * u} lineCap="round" listening={false} />
+              {/* Comet trail: solid + bright enough to read over the dashed
+                  lane beneath (the lane is the same hue — an 0.35-alpha trail
+                  vanished into it on screen). */}
+              <Line points={[-18 * u, 0, -5 * u, 0]} stroke={noirAlpha(color, 0.65)} strokeWidth={2.2 * u} lineCap="round" listening={false} />
+              <Line points={[-30 * u, 0, -18 * u, 0]} stroke={noirAlpha(color, 0.3)} strokeWidth={1.3 * u} lineCap="round" listening={false} />
               <Line
                 points={[6 * u, 0, -4 * u, 3.5 * u, -4 * u, -3.5 * u]}
                 closed

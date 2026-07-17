@@ -113,7 +113,13 @@ export default function FlowGalaxyScene() {
   // loading return races the ref and leaves the galaxy uncentered at scale 1
   // (mirrors GalaxyView, which always mounts its Stage).
   return (
-    <div className="relative w-full h-full overflow-hidden" style={{ background: NOIR.bg0 }}>
+    <div
+      className="relative w-full h-full overflow-hidden"
+      // isolation creates a stacking context so the zIndex:-1 AmbientBackdrop
+      // paints above this wrapper's opaque background instead of behind it
+      // (mirrors SpaceMap; without it the nebula/starfield is invisible).
+      style={{ isolation: 'isolate', background: NOIR.bg0 }}
+    >
       <AmbientBackdrop pan={pan} />
       <Stage
         ref={stageRef}
@@ -235,19 +241,23 @@ export default function FlowGalaxyScene() {
 }
 
 // Enter/exit presence: new flows fade in over 2s; departed flows linger 2s
-// fading out, rendered from their last snapshot.
+// fading out, rendered from their last snapshot. The FIRST non-empty delivery
+// (initial page population) mounts at full opacity — fading the whole fleet in
+// from nothing on load reads as "no ships", and freezes invisible in stills.
 function useFlowPresence(
   flows: LiveFlow[],
   nowMs: number,
 ): { flow: LiveFlow; opacity: number }[] {
   const ref = useRef(new Map<string, { flow: LiveFlow; enterAt: number; exitAt: number | null }>());
+  const bootedRef = useRef(false);
   const seen = new Set<string>();
   for (const f of flows) {
     seen.add(f.containerId);
     const cur = ref.current.get(f.containerId);
     if (cur) { cur.flow = f; cur.exitAt = null; }
-    else ref.current.set(f.containerId, { flow: f, enterAt: nowMs, exitAt: null });
+    else ref.current.set(f.containerId, { flow: f, enterAt: bootedRef.current ? nowMs : nowMs - 2000, exitAt: null });
   }
+  if (flows.length > 0) bootedRef.current = true;
   for (const [id, rec] of ref.current) {
     if (!seen.has(id) && rec.exitAt === null) rec.exitAt = nowMs;
     if (rec.exitAt !== null && nowMs - rec.exitAt > 2000) ref.current.delete(id);

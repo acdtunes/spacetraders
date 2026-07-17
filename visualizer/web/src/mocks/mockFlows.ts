@@ -90,6 +90,11 @@ export function mockLanes(window: FlowWindow): LanesResponse {
 // A is first so the roster/detail specs (find program==='tour') read the glide.
 export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
   const iso = (ms: number) => new Date(ms).toISOString();
+  // In-transit legs are pinned to the current 10-minute wall-clock window, NOT
+  // to the poll instant: re-anchoring "now - 90s" on every poll freezes every
+  // glide at a constant phase. With a window anchor the hulls advance in real
+  // time (and across page reloads), and the demo resets each window boundary.
+  const epoch = Math.floor(nowMs / 600_000) * 600_000;
   const flows: LiveFlow[] = [
     // A — cross-system glide, partial ring. Mid-leg inside X1-NK36 heading for its
     // gate, then a two-stop plan in X1-KA42 (travelSeconds gates the glide chain).
@@ -99,7 +104,11 @@ export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
       ship: 'TORWIND-3',
       tourId: 'tour-run-TORWIND-3-galaxyA',
       closed: false,
-      currentLeg: { from: 'X1-NK36-FE8A', to: 'X1-NK36-I52', departedAt: iso(nowMs - 90_000), arrivesAt: iso(nowMs + 90_000) },
+      // Logical leg is cross-system (next stop in X1-KA42); the PHYSICAL nav leg
+      // below flies toward the home gate. That pairing is the wire contract the
+      // motion model expects (see flowMotion outbound-half tests) and maps the
+      // hull onto the NK36→KA42 galaxy edge at phase 0.5*t.
+      currentLeg: { from: 'X1-NK36-FE8A', to: 'X1-KA42-D39', departedAt: iso(epoch - 90_000), arrivesAt: iso(epoch + 510_000) },
       cargo: [{ good: 'FABRICS', units: 120 }],
       remainingHops: [
         { waypoint: 'X1-KA42-D39', system: 'X1-KA42', travelSeconds: 420, tranches: [{ good: 'ELECTRONICS', isBuy: false, units: 60, expectedUnitPrice: 2200 }] },
@@ -107,7 +116,7 @@ export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
       ],
       projected: { profit: 250000, ratePerHour: 445000 },
       plannedAt: iso(nowMs - 120_000),
-      shipNav: { status: 'IN_TRANSIT', systemSymbol: 'X1-NK36', waypointSymbol: 'X1-NK36-I52', x: 390, y: 165, arrivalTime: iso(nowMs + 90_000), originSymbol: 'X1-NK36-FE8A', originX: 280, originY: -70, departureTime: iso(nowMs - 90_000) },
+      shipNav: { status: 'IN_TRANSIT', systemSymbol: 'X1-NK36', waypointSymbol: 'X1-NK36-I52', x: 390, y: 165, arrivalTime: iso(epoch + 510_000), originSymbol: 'X1-NK36-FE8A', originX: 280, originY: -70, departureTime: iso(epoch - 90_000) },
       realized: { net: 96000, lastEventAt: iso(nowMs - 30_000) },
     },
     // B — closed-tour loop, overshoot ring. Dwelling (IN_ORBIT) in X1-KA42; the plan
@@ -139,14 +148,14 @@ export function mockLiveFlows(nowMs: number): LiveFlowsResponse {
       ship: 'TORWIND-54',
       tourId: null,
       closed: false,
-      currentLeg: { from: 'X1-ZC66-C39A', to: 'X1-UU57-E21Z', departedAt: iso(nowMs - 150_000), arrivesAt: iso(nowMs + 30_000) },
+      currentLeg: { from: 'X1-ZC66-C39A', to: 'X1-UU57-E21Z', departedAt: iso(epoch - 150_000), arrivesAt: iso(epoch + 450_000) },
       cargo: [{ good: 'EQUIPMENT', units: 200 }],
       remainingHops: [
         { waypoint: 'X1-UU57-E21Z', system: 'X1-UU57', travelSeconds: 0, tranches: [{ good: 'EQUIPMENT', isBuy: false, units: 200, expectedUnitPrice: 1500 }] },
       ],
       projected: { profit: 60000, ratePerHour: 96000 },
       plannedAt: iso(nowMs - 160_000),
-      shipNav: { status: 'IN_TRANSIT', systemSymbol: 'X1-ZC66', waypointSymbol: 'X1-ZC66-C39A', x: 4, y: 22, arrivalTime: iso(nowMs + 30_000), originSymbol: 'X1-ZC66-C39A', originX: 240, originY: 120, departureTime: iso(nowMs - 150_000) },
+      shipNav: { status: 'IN_TRANSIT', systemSymbol: 'X1-ZC66', waypointSymbol: 'X1-UU57-E21Z', x: 4, y: 22, arrivalTime: iso(epoch + 450_000), originSymbol: 'X1-ZC66-C39A', originX: 240, originY: 120, departureTime: iso(epoch - 150_000) },
       realized: { net: -42000, lastEventAt: iso(nowMs - 120_000) },
     },
     // D — pure deadhead relocation. Dwelling in X1-ZC66; a single trade-empty hop to
