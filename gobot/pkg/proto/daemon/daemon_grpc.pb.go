@@ -71,6 +71,7 @@ const (
 	DaemonService_FactoryWorkerCap_FullMethodName              = "/daemon.DaemonService/FactoryWorkerCap"
 	DaemonService_TuneContainerConfig_FullMethodName           = "/daemon.DaemonService/TuneContainerConfig"
 	DaemonService_ShowTunableConfig_FullMethodName             = "/daemon.DaemonService/ShowTunableConfig"
+	DaemonService_GetFrontierStatus_FullMethodName             = "/daemon.DaemonService/GetFrontierStatus"
 	DaemonService_GetFactoryStatus_FullMethodName              = "/daemon.DaemonService/GetFactoryStatus"
 	DaemonService_ScanArbitrageOpportunities_FullMethodName    = "/daemon.DaemonService/ScanArbitrageOpportunities"
 	DaemonService_StartArbitrageCoordinator_FullMethodName     = "/daemon.DaemonService/StartArbitrageCoordinator"
@@ -259,6 +260,11 @@ type DaemonServiceClient interface {
 	// values, sources (live-config vs default), and bounds (sp-vwek `tune --show`,
 	// minimal coverage — the migrated engines only; full coverage is sp-kv27).
 	ShowTunableConfig(ctx context.Context, in *ShowTunableConfigRequest, opts ...grpc.CallOption) (*ShowTunableConfigResponse, error)
+	// GetFrontierStatus returns the frontier expansion coordinator's live state in one
+	// view (sp-pvw3): the effective discovery/scan split + degradation note, the discovery
+	// frontier depth, the honest dark-market backlog (charted markets with no/stale price
+	// data), probe allocation, the last probe buy, and the current fail-closed blockers.
+	GetFrontierStatus(ctx context.Context, in *GetFrontierStatusRequest, opts ...grpc.CallOption) (*GetFrontierStatusResponse, error)
 	// GetFactoryStatus retrieves status and progress of a goods factory
 	GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
@@ -843,6 +849,16 @@ func (c *daemonServiceClient) ShowTunableConfig(ctx context.Context, in *ShowTun
 	return out, nil
 }
 
+func (c *daemonServiceClient) GetFrontierStatus(ctx context.Context, in *GetFrontierStatusRequest, opts ...grpc.CallOption) (*GetFrontierStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFrontierStatusResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetFrontierStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFactoryStatusResponse)
@@ -1236,6 +1252,11 @@ type DaemonServiceServer interface {
 	// values, sources (live-config vs default), and bounds (sp-vwek `tune --show`,
 	// minimal coverage — the migrated engines only; full coverage is sp-kv27).
 	ShowTunableConfig(context.Context, *ShowTunableConfigRequest) (*ShowTunableConfigResponse, error)
+	// GetFrontierStatus returns the frontier expansion coordinator's live state in one
+	// view (sp-pvw3): the effective discovery/scan split + degradation note, the discovery
+	// frontier depth, the honest dark-market backlog (charted markets with no/stale price
+	// data), probe allocation, the last probe buy, and the current fail-closed blockers.
+	GetFrontierStatus(context.Context, *GetFrontierStatusRequest) (*GetFrontierStatusResponse, error)
 	// GetFactoryStatus retrieves status and progress of a goods factory
 	GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
@@ -1455,6 +1476,9 @@ func (UnimplementedDaemonServiceServer) TuneContainerConfig(context.Context, *Tu
 }
 func (UnimplementedDaemonServiceServer) ShowTunableConfig(context.Context, *ShowTunableConfigRequest) (*ShowTunableConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShowTunableConfig not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetFrontierStatus(context.Context, *GetFrontierStatusRequest) (*GetFrontierStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetFrontierStatus not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFactoryStatus not implemented")
@@ -2482,6 +2506,24 @@ func _DaemonService_ShowTunableConfig_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_GetFrontierStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFrontierStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetFrontierStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetFrontierStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetFrontierStatus(ctx, req.(*GetFrontierStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_GetFactoryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetFactoryStatusRequest)
 	if err := dec(in); err != nil {
@@ -3110,6 +3152,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ShowTunableConfig",
 			Handler:    _DaemonService_ShowTunableConfig_Handler,
+		},
+		{
+			MethodName: "GetFrontierStatus",
+			Handler:    _DaemonService_GetFrontierStatus_Handler,
 		},
 		{
 			MethodName: "GetFactoryStatus",

@@ -1109,9 +1109,10 @@ func run(cfg *config.Config) error {
 	// sp-jide: the scan-only backlog enumerator — the FULL charted-but-unscanned MARKET set (every
 	// system with MARKETPLACE waypoints but zero player market_data), unbounded by gate hops. When
 	// `tune --operation frontier scan_only 1` is set the coordinator sweeps this whole discovered
-	// backlog and declares no depth post / buys no probe; scan_only=0 never consults it. Reads the
-	// raw market repo (charted-market counts + the player's already-scanned systems).
-	frontierExpansionHandler.SetDarkMarketScanner(expansionAdapters.NewDarkMarketScanner(marketRepo))
+	// backlog (sp-pvw3: charted markets with NO or STALE price data — the honest dark set, not just
+	// never-scanned). The scan side of the discovery_share split drains it; discovery_share=100 never
+	// consults it. Reads the raw market repo (charted-market counts + the player's scan ages).
+	frontierExpansionHandler.SetDarkMarketScanner(expansionAdapters.NewDarkMarketScanner(marketRepo, expansionAdapters.DefaultStaleMarketSeconds))
 	// sp-rjgr §4: the deep-resource (heavy-yard) objective the DEPTH slice biases on — heavy
 	// capacity shortfall (sp-4ewi profitable-lane surface, read-only off the market cache) AND
 	// whether a heavy-freighter yard is known yet (sp-42ow shipyard inventory). While unmet the
@@ -1137,6 +1138,10 @@ func run(cfg *config.Config) error {
 	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {
 		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
 	}
+	// sp-pvw3 `frontier status`: expose the coordinator's read-only live-state query through the
+	// daemon. The handler already holds every port the view needs; the daemon just resolves the
+	// running container and delegates.
+	daemonServer.SetFrontierStatusProvider(frontierExpansionHandler)
 
 	// Market-freshness auto-sizer (sp-orgp): the standing coordinator that keeps EVERY
 	// scanned market fresh within an SLA by auto-sizing AND auto-buying probe capacity per

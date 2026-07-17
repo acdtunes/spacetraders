@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +33,87 @@ re-derives every decision from persisted state, so it survives daemon restarts.`
 	}
 
 	cmd.AddCommand(newFrontierStartCommand())
+	cmd.AddCommand(newFrontierStatusCommand())
 	return cmd
+}
+
+// newFrontierStatusCommand builds `frontier status` (sp-pvw3): one view of the running coordinator's
+// live state — the effective discovery/scan split, discovery frontier depth, the honest dark-market
+// backlog, probe allocation, the last probe buy, and the current fail-closed blockers.
+func newFrontierStatusCommand() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show the frontier coordinator's live state (split, backlog, probes, blockers)",
+		Long: `Show the running frontier expansion coordinator's live state in one view (sp-pvw3):
+the effective discovery/scan split (and any graceful-degradation redirect), the
+discovery frontier depth, the HONEST dark-market backlog (charted markets with no
+or stale price data), probe allocation, the last probe buy, and the current
+fail-closed blockers. Use --json for scripts.
+
+Examples:
+  spacetraders frontier status --agent ENDURANCE
+  spacetraders frontier status --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			resp, err := client.GetFrontierStatus(ctx, playerID, agentSymbol)
+			if err != nil {
+				return fmt.Errorf("frontier status failed: %w", err)
+			}
+			out, err := formatFrontierStatus(resp, asJSON)
+			if err != nil {
+				return err
+			}
+			fmt.Print(out)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Render the status as JSON for scripts")
+	return cmd
+}
+
+// formatFrontierStatus renders the frontier status view — a compact operator table, or JSON with
+// --json. Pure over the response so it is unit-testable without a daemon.
+func formatFrontierStatus(resp *pb.GetFrontierStatusResponse, asJSON bool) (string, error) {
+	if asJSON {
+		encoded, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("failed to render frontier status as JSON: %w", err)
+		}
+		return string(encoded) + "\n", nil
+	}
+
+	lastBuy := "none recorded"
+	if resp.LastBuyAgeSeconds >= 0 {
+		lastBuy = fmt.Sprintf("%d cr, %s ago", resp.LastBuyPrice, (time.Duration(resp.LastBuyAgeSeconds) * time.Second).Round(time.Second))
+	}
+	blockers := "none"
+	if len(resp.Blockers) > 0 {
+		blockers = strings.Join(resp.Blockers, "; ")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Frontier expansion — %s\n", resp.ContainerId)
+	fmt.Fprintf(&b, "  Split:      %s\n", resp.SplitSummary)
+	fmt.Fprintf(&b, "  Discovery:  %d reachable virgin system(s) queued\n", resp.VirginQueueDepth)
+	fmt.Fprintf(&b, "  Backlog:    %d dark-market system(s), %d unscanned marketplace(s)\n", resp.DarkSystems, resp.DarkMarketplaces)
+	fmt.Fprintf(&b, "  Probes:     %d/%d satellites (%d idle), %d post(s) in flight\n", resp.ProbeFleet, resp.ProbeCap, resp.ProbesIdle, resp.PostsInFlight)
+	fmt.Fprintf(&b, "  Last buy:   %s\n", lastBuy)
+	fmt.Fprintf(&b, "  Blockers:   %s\n", blockers)
+	return b.String(), nil
 }
 
 func newFrontierStartCommand() *cobra.Command {

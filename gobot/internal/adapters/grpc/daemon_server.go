@@ -56,6 +56,7 @@ type DaemonServer struct {
 	waypointRepo     *persistence.GormWaypointRepository
 	shipRepo         navigation.ShipRepository
 	playerRepo       player.PlayerRepository
+	frontierStatus   frontierStatusProvider // sp-pvw3 frontier-status query; injected post-construction, nil until wired
 	routingClient    routing.RoutingClient
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository
 	apiClient        domainPorts.APIClient

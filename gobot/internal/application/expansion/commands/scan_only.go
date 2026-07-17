@@ -9,77 +9,46 @@ import (
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 )
 
-// This file holds the sp-jide SCAN-ONLY mode: a live-tunable knob that DECOUPLES scanning the
-// discovered-market backlog from expanding to virgin. Today the coordinator entangles the two —
-// the only off-switch for expansion is stopping the whole container, which also stops all market
-// scanning. scan_only=1 keeps the scan machinery running (breadth sweep-once posts, manned by the
-// scout reconciler) while declaring NO depth pathfinder and buying NO probe: it drains the FULL
-// charted-but-unscanned MARKET backlog to zero, then idles. scan_only=0 (default) is byte-identical
-// to pre-sp-jide. It is a self-contained add-on to ReconcileOnce that never touches the probe-buy
-// path (there is none in scan-only) or the expansion-frontier ranker.
+// This file holds the SCAN side of the sp-pvw3 discovery_share split (formerly the sp-jide binary
+// scan_only mode). It drains the dark-market backlog: systems with MARKETPLACE waypoints (charted)
+// but no fresh player market_data. Where scan_only owned the WHOLE cycle (declare a sweep for every
+// dark system, buy nothing, then idle), the scan side is now one half of a concurrent split —
+// declaring dark sweeps up to the cycle's SCAN BUDGET (frontierCapacitySplit), running alongside the
+// discovery side. It still buys no probe: draining discovered markets rides idle relays the scout
+// reconciler mans, it never grows the fleet.
 
-// ScanCandidate is one charted-but-unscanned MARKET system for scan-only mode: a system with
-// MARKETPLACE waypoints (charted) but zero player market_data (never scanned), plus its market
-// count (the ranking key). It is distinct from ExpansionCandidate: there is no hop distance and no
-// charted/virgin flag, because the scan-only backlog is the COMPLETE discovered dark set — every
-// dark system regardless of gate depth — not the hop-bounded expansion frontier the ranker surfaces.
+// ScanCandidate is one charted-but-unscanned MARKET system: a system with MARKETPLACE waypoints
+// (charted) but no fresh player market_data, plus its market count (the ranking key). It is distinct
+// from ExpansionCandidate: there is no hop distance and no charted/virgin flag, because the dark
+// backlog is the COMPLETE discovered dark/stale set — every such system regardless of gate depth —
+// not the hop-bounded expansion frontier the ranker surfaces.
 type ScanCandidate struct {
 	SystemSymbol string
 	MarketCount  int
 }
 
-// DarkMarketScanner enumerates the FULL charted-but-unscanned MARKET backlog for scan-only mode
-// (sp-jide): every system that has MARKETPLACE waypoints but zero player market_data, each with its
-// market count. It is deliberately NOT hop-bounded (unlike ExpansionScanner's expansion-frontier
-// BFS, which surfaces only the ~frontier subset) — it is the complete discovered "dark" backlog the
-// operator drains when expansion is paused. Optional-injection: a nil scanner (or scan_only=0)
-// leaves the coordinator byte-identical to pre-sp-jide.
+// DarkMarketScanner enumerates the FULL charted-but-price-unscanned MARKET backlog: every system
+// with MARKETPLACE waypoints but no (or stale) player market_data, each with its market count. It is
+// deliberately NOT hop-bounded (unlike ExpansionScanner's expansion-frontier BFS, which surfaces
+// only the ~frontier subset) — it is the complete dark/stale backlog the scan side drains.
+// Optional-injection: a nil scanner leaves the scan side inert (nothing to sweep).
 type DarkMarketScanner interface {
 	ChartedUnscannedMarketSystems(ctx context.Context, playerID int) ([]ScanCandidate, error)
 }
 
-// SetDarkMarketScanner wires the scan-only backlog enumerator. Leaving it unset makes scan_only
-// idle every cycle (nothing to sweep); scan_only=0 ignores it entirely.
+// SetDarkMarketScanner wires the dark-market backlog enumerator. Leaving it unset makes the scan side
+// idle every cycle (nothing to sweep) and, via graceful degradation, hands its budget to discovery.
 func (h *RunFrontierExpansionCoordinatorHandler) SetDarkMarketScanner(s DarkMarketScanner) {
 	h.darkScanner = s
 }
 
-// reconcileScanOnly is the whole scan-only reconcile pass — reached only when cfg.ScanOnly > 0. It
-// declares a breadth sweep-once post for EVERY uncovered dark-market system (the reconciler mans
-// them and scans the markets), and does nothing else: no depth pathfinder, no probe purchase, no
-// off-gate explorer demand — expansion is paused. When the backlog is fully scanned it idles with a
-// NoWork reason rather than reaching for virgin. Idempotent: a system already carrying a post is
-// excluded, and declareSweepOncePost is keyed by (player, system), so a restart re-derives the same
-// declarations from persisted state (RULINGS #2).
-func (h *RunFrontierExpansionCoordinatorHandler) reconcileScanOnly(
-	ctx context.Context,
-	cmd *RunFrontierExpansionCoordinatorCommand,
-	cfg frontierConfig,
-	posts []*domainScouting.ScoutPost,
-) error {
-	logger := common.LoggerFromContext(ctx)
-
-	backlog := h.buildScanOnlyQueue(ctx, cmd, posts)
-	declared := h.declareScanOnlySweeps(ctx, cmd, cfg, backlog)
-
-	outcome := scanOnlyOutcome(len(backlog), declared)
-	logger.Log("INFO", fmt.Sprintf("Frontier scan-only cycle: %d dark-market system(s) in the discovered backlog — %s", len(backlog), outcome), map[string]interface{}{
-		"action":   "frontier_scan_only_cycle",
-		"backlog":  len(backlog),
-		"declared": declared,
-		"dry_run":  cmd.DryRun,
-		"outcome":  outcome,
-	})
-	return nil
-}
-
-// buildScanOnlyQueue ranks the UNCOVERED dark-market backlog highest-market-count first (a
+// buildScanBacklog ranks the UNCOVERED dark-market backlog highest-market-count first (a
 // deterministic system-symbol tiebreak keeps the head and the logged ranking stable across ticks).
-// A system already carrying any post is covered and dropped — so the backlog shrinks to empty as
-// posts are declared and markets get scanned, which is what makes the coordinator idle once the
-// discovered set is drained. A nil scanner or a failed scan yields an empty backlog (idle this
-// cycle), never a fall-through to expansion.
-func (h *RunFrontierExpansionCoordinatorHandler) buildScanOnlyQueue(
+// A system already carrying any post is covered and dropped — so the backlog shrinks as posts are
+// declared and markets get scanned, which lets the scan side idle (and yield to discovery) once the
+// discovered set is drained. A nil scanner or a failed scan yields an empty backlog (nothing to
+// sweep this cycle), never a fall-through to discovery here — the caller's split does that.
+func (h *RunFrontierExpansionCoordinatorHandler) buildScanBacklog(
 	ctx context.Context,
 	cmd *RunFrontierExpansionCoordinatorCommand,
 	posts []*domainScouting.ScoutPost,
@@ -91,7 +60,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildScanOnlyQueue(
 
 	candidates, err := h.darkScanner.ChartedUnscannedMarketSystems(ctx, cmd.PlayerID.Value())
 	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Scan-only dark-market scan failed: %v — idle this cycle", err), nil)
+		logger.Log("WARNING", fmt.Sprintf("Dark-market backlog scan failed: %v — scan side idle this cycle", err), nil)
 		return nil
 	}
 
@@ -99,12 +68,12 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildScanOnlyQueue(
 	entries := make([]queueEntry, 0, len(candidates))
 	for _, candidate := range candidates {
 		if covered[candidate.SystemSymbol] {
-			continue // already has a post — do not re-declare (drains toward idle)
+			continue // already has a post — do not re-declare (drains toward empty)
 		}
 		entries = append(entries, queueEntry{
 			SystemSymbol: candidate.SystemSymbol,
 			KnownMarkets: candidate.MarketCount,
-			Score:        candidate.MarketCount, // scan-only ranks purely by market count
+			Score:        candidate.MarketCount, // scan side ranks purely by market count
 		})
 	}
 
@@ -119,8 +88,8 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildScanOnlyQueue(
 		if i >= rankingLogLimit {
 			break
 		}
-		logger.Log("INFO", fmt.Sprintf("Scan-only backlog #%d: %s (%d markets)%s", i+1, entry.SystemSymbol, entry.KnownMarkets, chosenMarker(i)), map[string]interface{}{
-			"action":        "frontier_scan_only_ranking",
+		logger.Log("INFO", fmt.Sprintf("Dark-market backlog #%d: %s (%d markets)%s", i+1, entry.SystemSymbol, entry.KnownMarkets, chosenMarker(i)), map[string]interface{}{
+			"action":        "frontier_scan_ranking",
 			"rank":          i + 1,
 			"system_symbol": entry.SystemSymbol,
 			"markets":       entry.KnownMarkets,
@@ -130,50 +99,44 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildScanOnlyQueue(
 	return entries
 }
 
-// declareScanOnlySweeps declares a single-hull sweep-once post for EVERY backlog entry through the
-// SAME repository seam breadth uses (declareSweepOncePost), returning the count declared. Unlike the
-// expansion path's one-per-cycle head it declares the whole uncovered backlog: manning is bounded by
-// idle-probe supply either way (the reconciler only mans what it has hulls for), and scan-only buys
-// no probes, so declaring the finite discovered set at once simply lets the reconciler drain it as
-// hulls free — never a runaway, since covered systems drop out next cycle. In dry-run it logs the
-// intent and counts it without writing, mirroring the breadth/depth heads.
-func (h *RunFrontierExpansionCoordinatorHandler) declareScanOnlySweeps(
+// declareScanSweeps declares a single-hull sweep-once post for the top `budget` uncovered backlog
+// entries through the SAME repository seam breadth uses (declareSweepOncePost), returning the count
+// declared. The budget is this cycle's SCAN share (frontierCapacitySplit): the split bounds how much
+// of the dark backlog is declared per cycle, and manning is bounded further downstream by idle-probe
+// supply (the reconciler only mans what it has hulls for). Covered systems dropped out in
+// buildScanBacklog, so a restart re-derives the same declarations from persisted state (RULINGS #2).
+// In dry-run it logs the intent and counts it without writing, mirroring the breadth/depth heads.
+func (h *RunFrontierExpansionCoordinatorHandler) declareScanSweeps(
 	ctx context.Context,
 	cmd *RunFrontierExpansionCoordinatorCommand,
 	cfg frontierConfig,
 	backlog []queueEntry,
+	budget int,
 ) int {
 	logger := common.LoggerFromContext(ctx)
 	declared := 0
 	for _, entry := range backlog {
+		if declared >= budget {
+			break // this cycle's scan budget is spent; the rest drains over subsequent cycles
+		}
 		if cmd.DryRun {
-			logger.Log("INFO", fmt.Sprintf("DRY-RUN: would declare scan-only sweep-once post %s (%d markets) — draining discovered backlog", entry.SystemSymbol, entry.KnownMarkets), map[string]interface{}{
-				"action":        "frontier_scan_only_declare_dryrun",
+			logger.Log("INFO", fmt.Sprintf("DRY-RUN: would declare dark-market sweep-once post %s (%d markets) — draining discovered backlog", entry.SystemSymbol, entry.KnownMarkets), map[string]interface{}{
+				"action":        "frontier_scan_declare_dryrun",
 				"system_symbol": entry.SystemSymbol,
 			})
 			declared++
 			continue
 		}
 		if err := h.declareSweepOncePost(ctx, cmd, cfg, entry.SystemSymbol); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to declare scan-only sweep-once post %s: %v", entry.SystemSymbol, err), nil)
+			logger.Log("WARNING", fmt.Sprintf("Failed to declare dark-market sweep-once post %s: %v", entry.SystemSymbol, err), nil)
 			continue
 		}
 		declared++
-		logger.Log("INFO", fmt.Sprintf("Declared scan-only sweep-once post %s (%d markets) — draining discovered backlog; reconciler will relay a probe", entry.SystemSymbol, entry.KnownMarkets), map[string]interface{}{
-			"action":        "frontier_scan_only_post_declared",
+		logger.Log("INFO", fmt.Sprintf("Declared dark-market sweep-once post %s (%d markets) — draining discovered backlog; reconciler will relay a probe", entry.SystemSymbol, entry.KnownMarkets), map[string]interface{}{
+			"action":        "frontier_scan_post_declared",
 			"system_symbol": entry.SystemSymbol,
 			"markets":       entry.KnownMarkets,
 		})
 	}
 	return declared
-}
-
-// scanOnlyOutcome is the per-cycle human summary: the NoWork idle reason when the discovered
-// backlog is fully scanned, else the count of sweep-once posts declared this cycle. Either way it
-// states plainly that scan-only expands to no virgin and spends nothing on probes.
-func scanOnlyOutcome(backlog, declared int) string {
-	if backlog == 0 {
-		return "discovered backlog fully scanned — idle (no expansion, no probe purchase)"
-	}
-	return fmt.Sprintf("declared %d dark-market sweep-once post(s); no expansion, no probe purchase", declared)
 }

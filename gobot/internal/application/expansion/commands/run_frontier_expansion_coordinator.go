@@ -289,10 +289,17 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// behavior). Live-tunable (FrontierTunableDefaults).
 	ReservedFreshnessFloor int
 
-	// ScanOnly (sp-jide) decouples SCANNING the discovered-market backlog from EXPANDING to virgin.
-	// 0 (default) is byte-identical to today. 1 = declare no depth pathfinder, buy no probe, and
-	// sweep only the FULL charted-but-unscanned MARKET backlog (drain it, then idle). Live-tunable
-	// (FrontierTunableDefaults); overrides breadth_fraction / max_depth_pathfinders when set.
+	// DiscoveryShare (sp-pvw3) is the 0-100 percent of each cycle's post-declaration capacity spent
+	// CHARTING VIRGIN systems; the complement (100 - share) drains the dark-market backlog. 100 =
+	// pure discovery (== old scan_only=0); 0 = pure backlog-scan (== old scan_only=1); 50 = a
+	// balanced concurrent split. <= 0 (or unset) folds through the deprecated ScanOnly alias, else
+	// the documented default. Live-tunable (FrontierTunableDefaults).
+	DiscoveryShare int
+
+	// ScanOnly (sp-jide) is the DEPRECATED binary predecessor of DiscoveryShare, kept as a read-only
+	// alias so an operator who tuned it still gets the equivalent share (1 ↔ share 0, 0 ↔ the
+	// default). resolveConfig folds it into DiscoveryShare; nothing else reads it. Prefer
+	// discovery_share.
 	ScanOnly int
 }
 
@@ -493,7 +500,11 @@ func FrontierTunableDefaults() map[string]int {
 		"off_gate_value_weight":            defaultOffGateValueWeight,
 		"off_gate_fuel_weight":             defaultOffGateFuelWeight,
 		"reserved_freshness_floor":         defaultReservedFreshnessFloor,
-		// Scan-only mode (sp-jide): drain the discovered-market backlog, expand to no virgin.
+		// Discovery/scan budget split (sp-pvw3): declare both discovery and dark-market scan posts
+		// each cycle, split by this ratio (100 = pure discovery, 0 = pure scan, 50 = balanced).
+		"discovery_share": defaultDiscoveryShare,
+		// scan_only (sp-jide) is the DEPRECATED binary alias, superseded by discovery_share. Kept so
+		// a persisted scan_only value still resolves to the equivalent share; prefer discovery_share.
 		"scan_only": defaultScanOnly,
 	}
 }
@@ -523,8 +534,9 @@ type frontierConfig struct {
 	OffGateValueWeight           int
 	OffGateFuelWeight            int
 	ReservedFreshnessFloor       int
-	// ScanOnly (sp-jide): 1 ⇒ scan-only mode (no depth, no probe buy, sweep the full dark backlog).
-	ScanOnly int
+	// DiscoveryShare (sp-pvw3) is the effective 0-100 discovery/scan split for this tick, already
+	// folded from the discovery_share knob and the deprecated scan_only alias by resolveConfig.
+	DiscoveryShare int
 }
 
 // resolveConfig resolves one tick's effective config. live is the tick-start snapshot
@@ -559,8 +571,11 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		OffGateValueWeight:           cmd.OffGateValueWeight,
 		OffGateFuelWeight:            cmd.OffGateFuelWeight,
 		ReservedFreshnessFloor:       cmd.ReservedFreshnessFloor,
-		ScanOnly:                     cmd.ScanOnly,
 	}
+	// sp-pvw3: seed the raw discovery_share knob and the deprecated scan_only alias from the launch
+	// command; a live snapshot (below) overrides both. They fold to one effective share after.
+	discoveryShare := cmd.DiscoveryShare
+	scanOnly := cmd.ScanOnly
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
@@ -578,11 +593,14 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		// sp-iopd reserved freshness floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
 		// the documented default — no <=0 fallback, since 0 IS the default here.
 		c.ReservedFreshnessFloor = live.PositiveIntOrZero("reserved_freshness_floor")
-		// sp-jide scan_only: live-authoritative, same "0 IS the default" discipline as the floor.
-		// A live snapshot present ⇒ its value governs, so `tune scan_only 0` reverts to OFF even
-		// over a launch value that set it ON (no <=0 fallback below strands it).
-		c.ScanOnly = live.PositiveIntOrZero("scan_only")
+		// sp-pvw3 discovery_share + the deprecated scan_only alias: live-authoritative. A present
+		// snapshot governs, so a `tune discovery_share <N>` (or a legacy `tune scan_only …`) lands
+		// next tick with no restart.
+		discoveryShare = live.PositiveIntOrZero("discovery_share")
+		scanOnly = live.PositiveIntOrZero("scan_only")
 	}
+	// Fold the knob + deprecated alias into one effective share in [0,100] (the default when unset).
+	c.DiscoveryShare = resolveDiscoveryShare(discoveryShare, scanOnly)
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
 	}
@@ -709,13 +727,16 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 		return fmt.Errorf("failed to list scout posts: %w", err)
 	}
 
-	// SCAN-ONLY (sp-jide): drain the discovered-market backlog, reach for no virgin. This branch
-	// declares NO depth pathfinder and buys NO probe; it sweeps only the FULL charted-unscanned
-	// MARKET set. It returns before any of the expansion path below runs, so scan_only=0 (the
-	// default) leaves everything from here down BYTE-IDENTICAL to pre-sp-jide.
-	if cfg.ScanOnly > 0 {
-		return h.reconcileScanOnly(ctx, cmd, cfg, posts)
-	}
+	// sp-pvw3 DISCOVERY/SCAN SPLIT (replacing the sp-jide binary scan_only): each cycle declares BOTH
+	// discovery posts (chart virgin) AND scan posts (drain the dark-market backlog), dividing the
+	// per-cycle post-declaration capacity by discovery_share with GRACEFUL DEGRADATION. The plan
+	// consults each side's backlog LAZILY, so a pure-discovery cycle (share 100) never touches the
+	// dark scanner and a pure-scan cycle (share 0) never touches the expansion scanner — the extremes
+	// keep the old scan_only call profile.
+	plan := h.planCapacitySplit(ctx, cmd, cfg, posts)
+	// pureScan (backlog-only served) suppresses probe buys and the off-gate explorer hooks exactly as
+	// the old scan_only=1: draining discovered markets rides idle relays, it never grows the fleet.
+	pureScan := plan.scanBudget > 0 && plan.discoveryBudget == 0
 
 	openSlots := countUnmannedSlots(posts)
 	frontierPosts := countSweepOncePosts(posts)
@@ -727,87 +748,107 @@ func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Conte
 	}
 	availableCount := len(available)
 
-	// QUEUE: rank the uncovered gate-reachable frontier (logs the ranking, pin #1).
-	queue := h.buildExpansionQueue(ctx, cmd, cfg, posts)
-
-	// OFF-GATE DEMAND (sp-k645, slice B): raise the explorer-demand SIGNAL for slice C when
-	// the gate-reachable frontier can no longer serve expansion. Signal-only — no warp/buy.
-	h.evaluateOffGateDemand(ctx, cmd, cfg, len(queue))
-
-	// EXPLORER DISPATCH (sp-a3yn, slice C): warp a bought+dedicated idle explorer to this cycle's
-	// off-gate target. No-op unless demand fired AND an idle dedicated explorer exists (the autosizer
-	// buys it). On arrival slice-A charts the system → growFrontierGraph resumes next cycle. ONE line.
-	h.dispatchOffGateExplorer(ctx, cmd)
-
-	// DEPLOY: declare the top uncovered frontier system as a sweep-once post, bounded by
-	// the in-flight cap so declaration never outruns what the fleet can man (pin #3).
 	declared := ""
-	if len(queue) > 0 && frontierPosts < cfg.MaxFrontierPostsInFlight {
-		head := queue[0]
-		if !hasPost(posts, head.SystemSymbol) {
-			if cmd.DryRun {
-				logger.Log("INFO", fmt.Sprintf("DRY-RUN: would declare sweep-once frontier post %s (score %d, %d markets, %d hops, virgin=%v)", head.SystemSymbol, head.Score, head.KnownMarkets, head.Hops, head.Virgin), map[string]interface{}{
-					"action":        "frontier_declare_dryrun",
-					"system_symbol": head.SystemSymbol,
-				})
-				declared = head.SystemSymbol
-			} else if err := h.declareSweepOncePost(ctx, cmd, cfg, head.SystemSymbol); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to declare frontier sweep-once post %s: %v", head.SystemSymbol, err), nil)
-			} else {
-				declared = head.SystemSymbol
-				logger.Log("INFO", fmt.Sprintf("Declared frontier sweep-once post %s (score %d, %d markets, %d hops, virgin=%v) — reconciler will relay a probe", head.SystemSymbol, head.Score, head.KnownMarkets, head.Hops, head.Virgin), map[string]interface{}{
-					"action":        "frontier_post_declared",
-					"system_symbol": head.SystemSymbol,
-					"score":         head.Score,
-					"markets":       head.KnownMarkets,
-					"hops":          head.Hops,
-					"virgin":        head.Virgin,
-				})
-			}
+	if !pureScan {
+		// OFF-GATE DEMAND (sp-k645) + EXPLORER DISPATCH (sp-a3yn): discovery-side signals. They run
+		// whenever discovery is not fully suppressed — including a dry cycle, so queue exhaustion is
+		// still detected — over the plan's already-ranked queue (no re-scan).
+		h.evaluateOffGateDemand(ctx, cmd, cfg, len(plan.discoveryQueue))
+		h.dispatchOffGateExplorer(ctx, cmd)
+	}
+	if plan.discoveryBudget > 0 {
+		// DEPLOY: declare the top uncovered frontier system as a sweep-once post, bounded by the
+		// in-flight cap so declaration never outruns what the fleet can man (pin #3).
+		declared = h.declareBreadthHead(ctx, cmd, cfg, posts, plan.discoveryQueue, frontierPosts)
+		if declared != "" {
+			openSlots++ // the fresh post adds one unmanned slot to this cycle's demand
 		}
-	}
-	// A declared (or, in dry-run, would-be-declared) sweep-once post adds one unmanned
-	// slot to this cycle's demand, so the purchase decision — and the dry-run preview —
-	// reflects the fresh coverage need the reconciler must now serve.
-	if declared != "" {
-		openSlots++
+		// DEPTH slice (sp-rjgr): pathfinders punching OUTWARD along distinct corridors, additive to
+		// the breadth head and bounded by the SAME in-flight cap. Its would-be posts add to demand.
+		openSlots += h.dispatchDepthPathfinders(ctx, cmd, cfg, posts, declared, frontierPosts)
 	}
 
-	// DEPTH slice (sp-rjgr): reserve a fraction of frontier capacity for PATHFINDERS that punch
-	// OUTWARD — declaring the deepest-reachable virgin (ignoring the near-ring score) along
-	// DISTINCT corridors, so the frontier escapes the pure-BFS hop-1 starvation that never lets a
-	// probe reach the ring a heavy-freighter yard lives on. Additive to the breadth head above and
-	// bounded by the SAME in-flight cap; each depth post is an ordinary sweep-once post the
-	// reconciler mans and relays exactly like a breadth post — only the SELECTION differs. Its
-	// would-be-declared posts add to this cycle's demand so the buy decision reflects them.
-	openSlots += h.dispatchDepthPathfinders(ctx, cmd, cfg, posts, declared, frontierPosts)
-
-	// PURCHASE: buy one probe iff the fleet is short of the open manning demand and every
-	// guard passes. decideAndMaybeBuy returns the human reason for the per-cycle summary. The
-	// demand-proximal TARGET (sp-hej4) is the system the probe will serve: the just-declared
-	// frontier post if one was declared this cycle, else the first pre-existing post with an
-	// unmanned slot. Empty (nothing to serve) is the home-yard path — but the buy is gated on a
-	// slot existing anyway, so a real buy always carries a target.
-	target := declared
-	if target == "" {
-		target = firstUnmannedSlotSystem(posts)
+	// PURCHASE: buy one probe iff the fleet is short of open manning demand and every guard passes —
+	// never in a pure-scan cycle (draining the backlog spends nothing, == old scan_only=1). The
+	// demand-proximal target (sp-hej4) is the just-declared post, else the first pre-existing open slot.
+	purchaseReason := "no purchase: pure backlog-scan cycle spends nothing (== deprecated scan_only=1)"
+	if !pureScan {
+		target := declared
+		if target == "" {
+			target = firstUnmannedSlotSystem(posts)
+		}
+		purchaseReason = h.decideAndMaybeBuy(ctx, cmd, cfg, openSlots, availableCount, target)
 	}
-	purchaseReason := h.decideAndMaybeBuy(ctx, cmd, cfg, openSlots, availableCount, target)
+
+	// SCAN: drain the dark-market backlog, bounded by this cycle's scan budget (skipped when the split
+	// reserves nothing for scanning — the pure-discovery case, == old scan_only=0).
+	scanDeclared := 0
+	if plan.scanBudget > 0 {
+		scanDeclared = h.declareScanSweeps(ctx, cmd, cfg, plan.scanBacklog, plan.scanBudget)
+	}
 
 	action := purchaseReason
 	if declared != "" {
 		action = fmt.Sprintf("declared %s; %s", declared, purchaseReason)
 	}
-	logger.Log("INFO", fmt.Sprintf("Frontier expansion cycle: demand %d open slots + %d queue, supply %d idle probes, %d frontier posts in flight — %s", openSlots, len(queue), availableCount, frontierPosts, action), map[string]interface{}{
-		"action":         "frontier_expansion_cycle",
-		"open_slots":     openSlots,
-		"queue_len":      len(queue),
-		"idle_probes":    availableCount,
-		"frontier_posts": frontierPosts,
-		"dry_run":        cmd.DryRun,
-		"outcome":        action,
+	logger.Log("INFO", fmt.Sprintf("Frontier cycle (discovery_share %d%% → %d discovery / %d scan budget): %d open slots, %d discovery queue, %d dark backlog, %d idle probes, %d posts in flight — %s; %d dark sweep(s) declared", cfg.DiscoveryShare, plan.discoveryBudget, plan.scanBudget, openSlots, len(plan.discoveryQueue), len(plan.scanBacklog), availableCount, frontierPosts, action, scanDeclared), map[string]interface{}{
+		"action":           "frontier_expansion_cycle",
+		"discovery_share":  cfg.DiscoveryShare,
+		"discovery_budget": plan.discoveryBudget,
+		"scan_budget":      plan.scanBudget,
+		"open_slots":       openSlots,
+		"discovery_queue":  len(plan.discoveryQueue),
+		"dark_backlog":     len(plan.scanBacklog),
+		"idle_probes":      availableCount,
+		"frontier_posts":   frontierPosts,
+		"scan_declared":    scanDeclared,
+		"dry_run":          cmd.DryRun,
+		"outcome":          action,
 	})
 	return nil
+}
+
+// declareBreadthHead declares the top-ranked uncovered frontier system from the discovery queue as a
+// single-hull sweep-once post (the breadth head), bounded by the in-flight cap so declaration never
+// outruns what the fleet can man (pin #3). It returns the declared system ("" when the queue is empty,
+// the cap is reached, the head already has a post, or the write failed). Extracted verbatim from the
+// pre-sp-pvw3 inline DEPLOY block so the discovery-side behavior is unchanged when the split activates it.
+func (h *RunFrontierExpansionCoordinatorHandler) declareBreadthHead(
+	ctx context.Context,
+	cmd *RunFrontierExpansionCoordinatorCommand,
+	cfg frontierConfig,
+	posts []*domainScouting.ScoutPost,
+	queue []queueEntry,
+	frontierPosts int,
+) string {
+	logger := common.LoggerFromContext(ctx)
+	if len(queue) == 0 || frontierPosts >= cfg.MaxFrontierPostsInFlight {
+		return ""
+	}
+	head := queue[0]
+	if hasPost(posts, head.SystemSymbol) {
+		return ""
+	}
+	if cmd.DryRun {
+		logger.Log("INFO", fmt.Sprintf("DRY-RUN: would declare sweep-once frontier post %s (score %d, %d markets, %d hops, virgin=%v)", head.SystemSymbol, head.Score, head.KnownMarkets, head.Hops, head.Virgin), map[string]interface{}{
+			"action":        "frontier_declare_dryrun",
+			"system_symbol": head.SystemSymbol,
+		})
+		return head.SystemSymbol
+	}
+	if err := h.declareSweepOncePost(ctx, cmd, cfg, head.SystemSymbol); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to declare frontier sweep-once post %s: %v", head.SystemSymbol, err), nil)
+		return ""
+	}
+	logger.Log("INFO", fmt.Sprintf("Declared frontier sweep-once post %s (score %d, %d markets, %d hops, virgin=%v) — reconciler will relay a probe", head.SystemSymbol, head.Score, head.KnownMarkets, head.Hops, head.Virgin), map[string]interface{}{
+		"action":        "frontier_post_declared",
+		"system_symbol": head.SystemSymbol,
+		"score":         head.Score,
+		"markets":       head.KnownMarkets,
+		"hops":          head.Hops,
+		"virgin":        head.Virgin,
+	})
+	return head.SystemSymbol
 }
 
 // decideAndMaybeBuy runs the fail-closed purchase gate stack and, when every gate

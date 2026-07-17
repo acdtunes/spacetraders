@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -105,7 +106,7 @@ func TestRunTuneShow_ListsKnobsWithSourcesAndBounds(t *testing.T) {
 		},
 	}}
 
-	msg, err := runTuneShow(context.Background(), client, "", "freshsizer", nil, nil)
+	msg, err := runTuneShow(context.Background(), client, "", "freshsizer", "", false, nil, nil)
 	require.NoError(t, err)
 	require.Contains(t, msg, "MARKET_FRESHNESS_SIZER_COORDINATOR")
 	require.Contains(t, msg, "purchase_cooldown_secs")
@@ -114,4 +115,115 @@ func TestRunTuneShow_ListsKnobsWithSourcesAndBounds(t *testing.T) {
 	require.Contains(t, msg, "default")
 	require.Contains(t, msg, "[10, 86400]", "bounds are part of the listing")
 	require.Contains(t, msg, "credits")
+}
+
+// frontierShowResp is a frontier knob listing including discovery_share + the deprecated scan_only
+// alias — the shape the readable-tune table (sp-pvw3) renders.
+func frontierShowResp() *pb.ShowTunableConfigResponse {
+	return &pb.ShowTunableConfigResponse{
+		ContainerId:   "frontier_expansion_coordinator-player-1-abc",
+		ContainerType: "FRONTIER_EXPANSION_COORDINATOR",
+		Knobs: []*pb.TunableKnobStatus{
+			{Key: "discovery_share", Effective: 60, Source: "live-config", Min: 0, Max: 100, Unit: "percent", Description: "percent of each cycle charting virgin; the rest drains the dark-market backlog", DefaultValue: 50},
+			{Key: "max_probe_fleet", Effective: 40, Source: "default", Min: 0, Max: 200, Unit: "hulls", Description: "total satellite cap", DefaultValue: 40},
+			{Key: "scan_only", Effective: 0, Source: "default", Min: 0, Max: 1, Unit: "flag", Description: "DEPRECATED alias of discovery_share", DefaultValue: 0},
+		},
+	}
+}
+
+// sp-pvw3 readable tune: `tune --operation frontier` (no knob/value) lists EVERY knob with current
+// value, default, bounds, unit, and description — the whole-container table.
+func TestRunTuneShow_ListsEveryFrontierKnobWithMetadata(t *testing.T) {
+	client := &fakeTuner{showResp: frontierShowResp()}
+
+	msg, err := runTuneShow(context.Background(), client, "", "frontier", "", false, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, msg, "FRONTIER_EXPANSION_COORDINATOR")
+	require.Contains(t, msg, "discovery_share")
+	require.Contains(t, msg, "percent")
+	require.Contains(t, msg, "[0, 100]", "discovery_share bounds are listed")
+	require.Contains(t, msg, "default=50", "the default is listed")
+	require.Contains(t, msg, "scan_only", "the deprecated alias is still listed")
+	require.Contains(t, msg, "DEPRECATED", "the deprecated alias is labeled")
+	require.Contains(t, msg, "max_probe_fleet", "every knob is listed, not just discovery_share")
+}
+
+// sp-pvw3 readable tune: `tune --operation frontier discovery_share` (no value) shows THAT knob's
+// current value + metadata, not the whole table.
+func TestRunTuneShow_SingleKnobShowsValueAndMetadata(t *testing.T) {
+	client := &fakeTuner{showResp: frontierShowResp()}
+
+	msg, err := runTuneShow(context.Background(), client, "", "frontier", "discovery_share", false, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, msg, "discovery_share")
+	require.Contains(t, msg, "60", "the current effective value")
+	require.Contains(t, msg, "[0, 100]")
+	require.NotContains(t, msg, "max_probe_fleet", "a single-knob read shows only the requested knob")
+
+	// An unknown knob is a clear error that points back to the listing form.
+	_, err = runTuneShow(context.Background(), client, "", "frontier", "no_such_knob", false, nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not a tunable knob")
+}
+
+// sp-pvw3 readable tune --json: a machine-readable object for scripts, with a legitimate 0 preserved.
+func TestRunTuneShow_JSONForScripts(t *testing.T) {
+	client := &fakeTuner{showResp: frontierShowResp()}
+
+	msg, err := runTuneShow(context.Background(), client, "", "frontier", "", true, nil, nil)
+	require.NoError(t, err)
+
+	var parsed tuneShowJSON
+	require.NoError(t, json.Unmarshal([]byte(msg), &parsed), "output must be valid JSON")
+	require.Equal(t, "FRONTIER_EXPANSION_COORDINATOR", parsed.ContainerType)
+	require.Len(t, parsed.Knobs, 3)
+	require.Equal(t, "discovery_share", parsed.Knobs[0].Key)
+	require.Equal(t, int64(60), parsed.Knobs[0].Effective)
+	require.Equal(t, int64(50), parsed.Knobs[0].Default)
+	require.Equal(t, int64(100), parsed.Knobs[0].Max)
+	// scan_only's 0 effective must survive (explicit JSON tags, not proto omitempty).
+	require.Equal(t, "scan_only", parsed.Knobs[2].Key)
+	require.Equal(t, int64(0), parsed.Knobs[2].Effective)
+}
+
+// sp-pvw3 grammar: a missing value is a READ (not an error); a value is a WRITE; --reset reverts.
+func TestParseTuneArgs_ReadAndWriteForms(t *testing.T) {
+	// READ: whole-container table (by --operation, no positional).
+	cid, key, value, isShow, err := parseTuneArgs(nil, "frontier", false, false)
+	require.NoError(t, err)
+	require.True(t, isShow)
+	require.Empty(t, cid)
+	require.Empty(t, key)
+	require.Zero(t, value)
+
+	// READ: single knob (by --operation + knob, no value).
+	_, key, _, isShow, err = parseTuneArgs([]string{"discovery_share"}, "frontier", false, false)
+	require.NoError(t, err)
+	require.True(t, isShow)
+	require.Equal(t, "discovery_share", key)
+
+	// WRITE: knob + value.
+	_, key, value, isShow, err = parseTuneArgs([]string{"discovery_share", "60"}, "frontier", false, false)
+	require.NoError(t, err)
+	require.False(t, isShow)
+	require.Equal(t, "discovery_share", key)
+	require.Equal(t, int64(60), value)
+
+	// WRITE: --reset reverts (value 0) and needs a knob.
+	_, key, value, isShow, err = parseTuneArgs([]string{"discovery_share"}, "frontier", true, false)
+	require.NoError(t, err)
+	require.False(t, isShow)
+	require.Equal(t, "discovery_share", key)
+	require.Zero(t, value)
+
+	// By container-id (no --operation): first positional is the id.
+	cid, key, _, isShow, err = parseTuneArgs([]string{"frontier-abc", "discovery_share"}, "", false, false)
+	require.NoError(t, err)
+	require.True(t, isShow)
+	require.Equal(t, "frontier-abc", cid)
+	require.Equal(t, "discovery_share", key)
+
+	// A negative value is rejected.
+	_, _, _, _, err = parseTuneArgs([]string{"discovery_share", "-3"}, "frontier", false, false)
+	require.Error(t, err)
 }

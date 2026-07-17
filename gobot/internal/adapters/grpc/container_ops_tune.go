@@ -119,8 +119,11 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"off_gate_value_weight":            {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_value_weight"], Unit: "weight", Description: "weight on exploration value (promising-type unexplored systems) in off-gate target ranking"},
 			"off_gate_fuel_weight":             {Type: "int", Min: 0, Max: 1_000_000, Default: frontier["off_gate_fuel_weight"], Unit: "weight", Description: "weight on warp fuel (distance from the frontier edge) in off-gate target ranking"},
 			"reserved_freshness_floor":         {Type: "int", Min: 0, Max: 200, Default: frontier["reserved_freshness_floor"], Unit: "hulls", Description: "sp-iopd MVP: idle probes the frontier reserves for freshness — discounted from the supply covering its demand (buys rather than cannibalize scanning); 0 = off (pre-sp-iopd)"},
-			// sp-jide scan-only mode: decouple scanning the discovered backlog from expanding to virgin.
-			"scan_only": {Type: "int", Min: 0, Max: 1, Default: frontier["scan_only"], Unit: "flag", Description: "scan discovered markets only; declare no expansion/depth posts and buy no probes (drain the charted-but-unscanned market backlog, then idle); 0 = off (full expansion)"},
+			// sp-pvw3 discovery/scan budget split — retune the concurrent discover-vs-drain balance live.
+			"discovery_share": {Type: "int", Min: 0, Max: 100, Default: frontier["discovery_share"], Unit: "percent", Description: "percent of each cycle's post-declaration capacity spent CHARTING VIRGIN systems; the rest (100-share) concurrently drains the dark-market backlog, with graceful degradation (a dry side yields its budget to the other). 100 = pure discovery, 50 = balanced. Reach the pure-scan endpoint (share 0) via the deprecated scan_only=1 — tuning 0 here reverts to the default like every knob"},
+			// scan_only (sp-jide) is DEPRECATED, superseded by discovery_share (sp-pvw3). Kept so a
+			// persisted value still resolves to the equivalent share; prefer discovery_share.
+			"scan_only": {Type: "int", Min: 0, Max: 1, Default: frontier["scan_only"], Unit: "flag", Description: "DEPRECATED alias of discovery_share — 1 ↔ pure backlog-scan (share 0), 0 ↔ the default. Prefer discovery_share; this remains only so a tuned scan_only still resolves to the equivalent split"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":         {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},

@@ -215,6 +215,12 @@ service DaemonService {
   // minimal coverage — the migrated engines only; full coverage is sp-kv27).
   rpc ShowTunableConfig(ShowTunableConfigRequest) returns (ShowTunableConfigResponse);
 
+  // GetFrontierStatus returns the frontier expansion coordinator's live state in one
+  // view (sp-pvw3): the effective discovery/scan split + degradation note, the discovery
+  // frontier depth, the honest dark-market backlog (charted markets with no/stale price
+  // data), probe allocation, the last probe buy, and the current fail-closed blockers.
+  rpc GetFrontierStatus(GetFrontierStatusRequest) returns (GetFrontierStatusResponse);
+
   // GetFactoryStatus retrieves status and progress of a goods factory
   rpc GetFactoryStatus(GetFactoryStatusRequest) returns (GetFactoryStatusResponse);
 
@@ -1361,6 +1367,30 @@ message ShowTunableConfigResponse {
   string container_id = 1;
   string container_type = 2;
   repeated TunableKnobStatus knobs = 3;
+}
+
+// GetFrontierStatusRequest resolves the running frontier coordinator for a player.
+message GetFrontierStatusRequest {
+  optional int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+// GetFrontierStatusResponse is the frontier coordinator's one-view live state (sp-pvw3).
+message GetFrontierStatusResponse {
+  string container_id = 1;
+  int32 discovery_share = 2;       // effective 0-100 percent charting virgin
+  int32 scan_share = 3;            // 100 - discovery_share
+  string split_summary = 4;        // e.g. "60% discover / 40% scan" or "100% discover — backlog empty"
+  int32 virgin_queue_depth = 5;    // reachable uncovered virgin frontier systems
+  int32 dark_systems = 6;          // charted markets with no/stale price data (honest backlog)
+  int32 dark_marketplaces = 7;     // total unscanned marketplace count across those systems
+  int32 probe_fleet = 8;           // total satellites owned
+  int32 probe_cap = 9;             // max satellite cap
+  int32 probes_idle = 10;          // idle relayable probes
+  int32 posts_in_flight = 11;      // outstanding sweep-once posts
+  int32 last_buy_price = 12;       // price of the most recent probe buy (0 if none)
+  int32 last_buy_age_seconds = 13; // seconds since the most recent probe buy (-1 if none)
+  repeated string blockers = 14;   // read-only reasons the buy path is failing closed
 }
 
 // GetFactoryStatusRequest retrieves factory status

@@ -1116,6 +1116,23 @@ func (c *DaemonClient) ShowTunableConfig(ctx context.Context, containerID, opera
 	return resp, nil
 }
 
+// GetFrontierStatus returns the frontier coordinator's live state in one view (sp-pvw3 `frontier
+// status`): the effective discovery/scan split, discovery frontier depth, honest dark-market backlog,
+// probe allocation, last probe buy, and current blockers.
+func (c *DaemonClient) GetFrontierStatus(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.GetFrontierStatusResponse, error) {
+	req := &pb.GetFrontierStatusRequest{
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.GetFrontierStatus(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
 func (c *DaemonClient) ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error) {
 	req := &pb.ListFleetsRequest{

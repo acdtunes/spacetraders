@@ -24,19 +24,33 @@ type marketBacklogSource interface {
 // charted market system with zero player market_data, the complete set the operator drains when
 // expansion is paused. Era scoping lives in ChartedMarketSystemCounts (current-era waypoints only),
 // so a dead-universe system can never enter the backlog.
+// DefaultStaleMarketSeconds is the sp-pvw3 coverage-gap staleness threshold: a charted market whose
+// oldest player market_data is older than this is treated as effectively dark and re-enters the
+// backlog. Set well ABOVE the freshness sizer's ~1h SLA (4h) so it catches only markets the sizer has
+// ABANDONED — not its normal refresh cadence — while still surfacing genuinely stale price data the
+// optimizer can no longer trust. The dominant dark set is still the NEVER-scanned systems (age
+// infinite); staleness is the secondary "or stale" clause.
+const DefaultStaleMarketSeconds = 4 * 60 * 60
+
 type DarkMarketScanner struct {
-	source marketBacklogSource
+	source            marketBacklogSource
+	staleAfterSeconds float64
 }
 
-// NewDarkMarketScanner wires the scan-only backlog over the market persistence reads.
-func NewDarkMarketScanner(source marketBacklogSource) *DarkMarketScanner {
-	return &DarkMarketScanner{source: source}
+// NewDarkMarketScanner wires the dark-market backlog over the market persistence reads. staleAfterSeconds
+// is the "or stale" threshold (see DefaultStaleMarketSeconds); a non-positive value disables staleness so
+// only NEVER-scanned charted markets are dark (the pre-sp-pvw3 behavior).
+func NewDarkMarketScanner(source marketBacklogSource, staleAfterSeconds float64) *DarkMarketScanner {
+	return &DarkMarketScanner{source: source, staleAfterSeconds: staleAfterSeconds}
 }
 
-// ChartedUnscannedMarketSystems returns every charted market system the player has no market_data
-// for, each annotated with its marketplace-waypoint count (the scan-only ranking key). A read
-// failure on either source surfaces as an error so the coordinator idles this cycle rather than
-// declaring against a partial view.
+// ChartedUnscannedMarketSystems returns every charted market system with NO or STALE player
+// market_data (sp-pvw3 coverage-gap broadening), each annotated with its marketplace-waypoint count
+// (the scan ranking key). This is the WHOLE charted frontier's dark/stale set — the honest "dark-market
+// backlog", broader than the old never-scanned-only queue: a system whose markets were charted but
+// whose prices were never scanned (the live charting→price-scan handoff gap) is dark, and a system
+// whose market_data has gone stale re-enters. A read failure on either source surfaces as an error so
+// the coordinator idles this cycle rather than declaring against a partial view.
 func (s *DarkMarketScanner) ChartedUnscannedMarketSystems(ctx context.Context, playerID int) ([]expansionCmd.ScanCandidate, error) {
 	counts, err := s.source.ChartedMarketSystemCounts(ctx)
 	if err != nil {
@@ -49,10 +63,18 @@ func (s *DarkMarketScanner) ChartedUnscannedMarketSystems(ctx context.Context, p
 
 	dark := make([]expansionCmd.ScanCandidate, 0, len(counts))
 	for system, count := range counts {
-		if _, isScanned := scanned[system]; isScanned {
-			continue // the player already has market_data here — not dark
+		age, isScanned := scanned[system]
+		if isScanned && !s.isStale(age) {
+			continue // the player has FRESH market_data here — not dark
 		}
+		// Never scanned (isScanned == false → prices never recorded, the live gap) OR stale.
 		dark = append(dark, expansionCmd.ScanCandidate{SystemSymbol: system, MarketCount: count})
 	}
 	return dark, nil
+}
+
+// isStale reports whether a scanned system's oldest market age exceeds the staleness threshold. A
+// non-positive threshold disables staleness, so only never-scanned systems are dark.
+func (s *DarkMarketScanner) isStale(ageSeconds float64) bool {
+	return s.staleAfterSeconds > 0 && ageSeconds > s.staleAfterSeconds
 }
