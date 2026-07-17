@@ -1,6 +1,8 @@
 # gobot/services/routing-service/tests/test_tour_solver.py
 import random
 
+import pytest
+
 from utils.tour_solver import tranche_prices, solve_tour, net_absorption
 
 MODEL = {"fit_version": 1, "era": "e", "impact":
@@ -889,3 +891,151 @@ def test_sort_scored_zero_time_falls_back_to_profit_ordering():
     effective = _sort_scored(scored, OBJECTIVE_RATE)
     assert effective == OBJECTIVE_RATE
     assert scored[0][1] == "fast"
+
+
+# ===================================================================== sp-ljh5 =====
+# Arm the RATE ($/hr) objective as the DEFAULT for longer tours, replay-gated.
+# "Option C": the length-conditional armed tier sits ABOVE the TOUR_SOLVER_OBJECTIVE
+# env block, so for a longer-than-default tour the arm flag is the SOLE governor of the
+# objective (deliberately superseding the launcher's fleet-wide env=rate default). Short
+# tours are untouched — the env still governs them exactly as sp-1wp8 shipped.
+
+# (objective arg, long_tour, TOUR_SOLVER_OBJECTIVE, TOUR_SOLVER_RATE_ARMED_LONG, expect)
+_ARMED_LONG_TRUTH_TABLE = [
+    (None,     False, None,     False, "profit"),
+    (None,     True,  None,     False, "profit"),
+    (None,     True,  None,     True,  "rate"),     # the arm fires on a long tour
+    (None,     False, None,     True,  "profit"),   # arm never leaks into a short tour
+    ("profit", True,  None,     True,  "profit"),   # explicit arg wins over the arm
+    ("rate",   False, None,     False, "rate"),      # explicit arg wins over everything
+    (None,     False, "rate",   False, "rate"),      # short: env governs (live cap-2 path)
+    (None,     True,  "rate",   False, "profit"),    # BLOCKER: arm supersedes global env=rate
+    (None,     True,  "rate",   True,  "rate"),
+    (None,     False, "profit", False, "profit"),
+    (None,     True,  "profit", False, "profit"),
+    (None,     False, "bogus",  False, "profit"),
+]
+
+
+@pytest.mark.parametrize("objective,long_tour,env,arm,expected", _ARMED_LONG_TRUTH_TABLE)
+def test_resolve_objective_armed_long_truth_table(monkeypatch, objective, long_tour,
+                                                  env, arm, expected):
+    """Option-C precedence oracle: explicit arg > (long-tour arm) > env > profit.
+    Asserts RETURN VALUES ONLY — the module-global once-log sets persist across
+    in-process tests, so log side effects are pinned separately (see the log-silence
+    guard). The (None, long=True, env=rate, arm off) -> profit row is the mechanical
+    proof the launcher-env shadow is resolved: a below-env branch would return rate."""
+    from utils.tour_solver import (_resolve_objective, OBJECTIVE_ENV_VAR,
+                                   OBJECTIVE_LONG_TOUR_ARM_ENV_VAR)
+    if env is None:
+        monkeypatch.delenv(OBJECTIVE_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(OBJECTIVE_ENV_VAR, env)
+    if arm:
+        monkeypatch.setenv(OBJECTIVE_LONG_TOUR_ARM_ENV_VAR, "1")
+    else:
+        monkeypatch.delenv(OBJECTIVE_LONG_TOUR_ARM_ENV_VAR, raising=False)
+    assert _resolve_objective(objective, long_tour=long_tour) == expected
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, False), ("", False), ("0", False), ("false", False), ("off", False),
+    ("no", False), ("   ", False),
+    ("1", True), ("true", True), ("yes", True), ("on", True),
+    ("TRUE", True), ("On", True), (" 1 ", True),
+])
+def test_rate_armed_long_env_parsing(monkeypatch, value, expected):
+    """The arm is a governed default-OFF switch: only the truthy set arms it;
+    unset/empty/0/false/off/no fail toward the proven profit default. Case-insensitive,
+    whitespace-trimmed (mirrors the TOUR_SOLVER_OBJECTIVE parse)."""
+    from utils.tour_solver import _rate_armed_long, OBJECTIVE_LONG_TOUR_ARM_ENV_VAR
+    if value is None:
+        monkeypatch.delenv(OBJECTIVE_LONG_TOUR_ARM_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(OBJECTIVE_LONG_TOUR_ARM_ENV_VAR, value)
+    assert _rate_armed_long() is expected
+
+
+def test_long_tour_armed_supersedes_launcher_env_rate(monkeypatch):
+    """Blocker proof through the driving port (solve_tour), objective=None (the prod
+    path): with the launcher's global TOUR_SOLVER_OBJECTIVE=rate set, an UNARMED long
+    tour still resolves to PROFIT (the arm supersedes the global env for long tours),
+    and arming genuinely flips it to RATE. This is the local proof Option C makes the
+    arm a functioning control, independent of any launcher change."""
+    snapshot, ship, cons = _objective_fixture()
+    cons["max_tour_systems"] = 6                          # long tour (cap > MAX_TOUR_SYSTEMS)
+    monkeypatch.setenv("TOUR_SOLVER_OBJECTIVE", "rate")   # simulate the launcher default
+
+    # arm OFF: the long tour resolves to profit DESPITE the global env=rate.
+    monkeypatch.delenv("TOUR_SOLVER_RATE_ARMED_LONG", raising=False)
+    out_off = solve_tour(snapshot, ship, cons, MODEL)
+    assert out_off["feasible"]
+    off_sinks = {l["waypoint_symbol"] for l in out_off["legs"]
+                 for t in l["trades"] if not t["is_buy"]}
+    assert "B2" in off_sinks, \
+        f"unarmed long tour must stay profit despite env=rate, sold at {off_sinks}"
+
+    # arm ON: the flag fires — the long tour flips to rate (fast lane), strictly higher
+    # cph and strictly lower absolute profit than the unarmed profit choice.
+    monkeypatch.setenv("TOUR_SOLVER_RATE_ARMED_LONG", "1")
+    out_on = solve_tour(snapshot, ship, cons, MODEL)
+    assert out_on["feasible"]
+    on_stops = {l["waypoint_symbol"] for l in out_on["legs"]}
+    assert on_stops <= {"A1", "A2"}, f"armed long tour must fly the fast lane, got {on_stops}"
+    assert out_on["projected_credits_per_hour"] > out_off["projected_credits_per_hour"]
+    assert out_on["projected_profit"] < out_off["projected_profit"]
+
+
+@pytest.mark.parametrize("env,expect_rate", [
+    ("rate", True),    # live cap-2 prod path: env governs short tours -> rate, byte-identical
+    (None,   False),   # epic default: no env -> profit, and the arm cannot leak into short
+])
+def test_cap2_default_safe_regardless_of_arm(monkeypatch, env, expect_rate):
+    """DEFAULT-SAFETY (epic reference max_tour_systems=2 -> long_tour False): the arm is
+    INERT at the default cap even when TOUR_SOLVER_RATE_ARMED_LONG is ON. A short tour
+    still resolves by the env alone — env=rate -> rate (live prod, unchanged); no env ->
+    profit (epic default). Falsifiable: if the length gate leaked, the no-env + arm-ON
+    case would wrongly flip to rate ({A1,A2}) instead of profit (B2)."""
+    snapshot, ship, cons = _objective_fixture()          # cap defaulted (absent -> 2)
+    monkeypatch.setenv("TOUR_SOLVER_RATE_ARMED_LONG", "1")   # arm ON, must stay inert at cap-2
+    if env is None:
+        monkeypatch.delenv("TOUR_SOLVER_OBJECTIVE", raising=False)
+    else:
+        monkeypatch.setenv("TOUR_SOLVER_OBJECTIVE", env)
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"]
+    stops = {l["waypoint_symbol"] for l in out["legs"]}
+    sinks = {l["waypoint_symbol"] for l in out["legs"]
+             for t in l["trades"] if not t["is_buy"]}
+    if expect_rate:
+        assert stops <= {"A1", "A2"}, f"cap-2 env=rate must stay rate (live prod), got {stops}"
+    else:
+        assert "B2" in sinks, f"cap-2 no-env must stay profit (epic default), sold at {sinks}"
+
+
+def test_env_profit_silent_bogus_warns_once(monkeypatch, caplog):
+    """Option C leaves tier-3 (the TOUR_SOLVER_OBJECTIVE env block) log-identical to
+    pre-ljh5: env=profit resolves silently (no rate log, no once-log mutation), and an
+    unrecognized env warns exactly once. Pins that tier-2's distinct armed-long log key
+    never collides with tier-3's rate once-log."""
+    import logging as _logging
+    from utils import tour_solver as ts
+    ts._logged_objective.clear()
+    ts._warned_tiers.clear()
+    monkeypatch.delenv("TOUR_SOLVER_RATE_ARMED_LONG", raising=False)
+
+    # env=profit: silent short-tour resolution, no logging-state mutation.
+    monkeypatch.setenv("TOUR_SOLVER_OBJECTIVE", "profit")
+    with caplog.at_level(_logging.INFO, logger="utils.tour_solver"):
+        assert ts._resolve_objective(None, long_tour=False) == ts.OBJECTIVE_PROFIT
+    assert ts._logged_objective == set(), "env=profit must not mutate the once-log set"
+    assert caplog.records == []
+
+    # env=bogus: unrecognized -> profit fail-safe + exactly one warning across repeats.
+    caplog.clear()
+    monkeypatch.setenv("TOUR_SOLVER_OBJECTIVE", "bogus")
+    with caplog.at_level(_logging.WARNING, logger="utils.tour_solver"):
+        assert ts._resolve_objective(None, long_tour=False) == ts.OBJECTIVE_PROFIT
+        assert ts._resolve_objective(None, long_tour=False) == ts.OBJECTIVE_PROFIT
+    warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+    assert len(warnings) == 1, "unrecognized env must warn exactly once per process"

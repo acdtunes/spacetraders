@@ -271,7 +271,15 @@ def arming_verdict(cases, baseline, candidate, overhead_seconds, min_delta_pct, 
     `objective_delta_pct` is an OBSERVABILITY column (never gates): candidate-cap rate vs
     candidate-cap profit isolates the standalone objective effect ljh5 flips at fixed cap,
     so "cap widened" and "rate helped" are never conflated invisibly. All cph delegate to
-    fleet_cph — the same definition summarize prints."""
+    fleet_cph — the same definition summarize prints.
+
+    sp-ljh5 arming criterion: `armed` gates on `true_live_delta_pct` — the candidate cell's
+    fleet-$/hr vs the TRUE live-prod baseline `baseline_cap_rate_cph` (cap-2 RATE, sp-1wp8's
+    launch default) — NOT the cap-2 PROFIT `baseline_cph` fail-safe (a config prod does not
+    run). Arming flips longer tours to rate, so the honest question is whether the candidate
+    package beats what prod ACTUALLY runs today; a phantom win over the never-deployed
+    fail-safe must never arm the fleet. `baseline_cph`/`delta_pct` stay REPORTED as the
+    package-vs-fail-safe diagnostic sp-db0n surfaced, but they no longer gate."""
     baseline_cap, _ = baseline
     candidate_cap, _ = candidate
     joint = [c for c in cases
@@ -287,6 +295,9 @@ def arming_verdict(cases, baseline, candidate, overhead_seconds, min_delta_pct, 
     baseline_cap_rate_cph = cph((baseline_cap, OBJECTIVE_RATE))
     delta_pct = ((candidate_cph - baseline_cph) / baseline_cph * 100
                  if baseline_cph > 0 else float("nan"))
+    # sp-ljh5: the GATING delta — candidate vs the TRUE live-prod baseline (cap-2 RATE).
+    true_live_delta_pct = ((candidate_cph - baseline_cap_rate_cph) / baseline_cap_rate_cph * 100
+                           if baseline_cap_rate_cph > 0 else float("nan"))
     objective_delta_pct = ((candidate_cph - candidate_cap_profit_cph)
                            / candidate_cap_profit_cph * 100
                            if candidate_cap_profit_cph > 0 else float("nan"))
@@ -298,9 +309,11 @@ def arming_verdict(cases, baseline, candidate, overhead_seconds, min_delta_pct, 
         cases=n,
         candidate_cap_profit_cph=candidate_cap_profit_cph,
         baseline_cap_rate_cph=baseline_cap_rate_cph,
+        true_live_delta_pct=true_live_delta_pct,
         objective_delta_pct=objective_delta_pct,
+        # sp-ljh5: arm on the TRUE live-prod delta (cap-2 RATE), never the fail-safe delta.
         # NaN >= min_delta_pct is False -> a degenerate/empty pass fails safe (never armed).
-        armed=bool(delta_pct >= min_delta_pct and n >= min_cases),
+        armed=bool(true_live_delta_pct >= min_delta_pct and n >= min_cases),
     )
 
 
@@ -325,7 +338,8 @@ def main():
     ap.add_argument("--candidate-cap", type=int, default=6,
                     help="candidate cap to arm toward (solver clamps to <= 6)")
     ap.add_argument("--arm-min-delta-pct", type=float, default=5.0,
-                    help="min fleet-$/hr gain (candidate rate vs baseline profit) to arm")
+                    help="min fleet-$/hr gain to arm — candidate (cap-N rate) vs the TRUE "
+                         "live-prod baseline (cap-2 RATE), NOT the cap-2 profit fail-safe (sp-ljh5)")
     ap.add_argument("--arm-min-cases", type=int, default=30,
                     help="min cases feasible in BOTH cells required to arm")
     args = ap.parse_args()
@@ -409,12 +423,12 @@ def main():
         # NOTE(W4): this operational firing is meaningful once sp-y05b's OR-Tools cap-6
         # sequencer has landed so the candidate cap is solved on the real longer-tour path.
         # The gate's pure logic is unit-pinned in tests/test_replay_objective.py.
-        # sp-db0n: the baseline cell is the solver's IN-CODE fail-safe (cap=2, profit) — the
+        # sp-db0n: the `baseline` cell is the solver's IN-CODE fail-safe (cap=2, profit) — the
         # objective the solver falls back to when TOUR_SOLVER_OBJECTIVE is unset. It is NOT
         # what prod runs today: sp-1wp8's launch path (run.sh) exports TOUR_SOLVER_OBJECTIVE=
-        # rate, so the DEPLOYED default is (cap=2, RATE). The gate's delta_pct still measures
-        # the JOINT cap+rate package against this fail-safe, but the operator's TRUE live-prod
-        # reference is baseline_cap_rate_cph (cap=2, RATE), surfaced in the console below.
+        # rate, so the DEPLOYED default is (cap=2, RATE). sp-ljh5: `armed` GATES on the true
+        # live-prod delta (candidate vs baseline_cap_rate_cph); `delta_pct` (JOINT package vs
+        # the fail-safe) is kept as a DIAGNOSTIC only — never the arm gate.
         baseline = (args.baseline_cap, OBJECTIVE_PROFIT)   # solver in-code fail-safe, NOT the deployed default
         candidate = (args.candidate_cap, OBJECTIVE_RATE)   # the cap+rate package ljh5 arms
         cases = arming_pass(samples, rows, neighbors, coords, hulls, version,
@@ -422,26 +436,24 @@ def main():
                             args.max_spend, args.reserve)
         verdict = arming_verdict(cases, baseline, candidate, args.tour_overhead_seconds,
                                  args.arm_min_delta_pct, args.arm_min_cases)
-        print(f"\n=== ARMING GATE (cap {args.baseline_cap} profit -> cap "
+        print(f"\n=== ARMING GATE (cap {args.baseline_cap} rate -> cap "
               f"{args.candidate_cap} rate) ===")
-        print("legend: `armed` gates the JOINT cap+rate package; objective_delta_pct "
-              "isolates the rate objective at the candidate cap (the variable ljh5 flips); "
-              "true live-prod cph is cap-2 RATE (sp-1wp8 launch default), NOT the cap-2 "
-              "PROFIT in-code fail-safe the `baseline cph` line shows")
+        print("legend: `armed` gates on the TRUE live-prod delta (candidate cap-N rate vs "
+              "cap-2 RATE, sp-1wp8's launch default); `delta_pct` (JOINT package vs the cap-2 "
+              "PROFIT in-code fail-safe) and objective_delta_pct (rate vs profit at the "
+              "candidate cap) are DIAGNOSTIC columns only — neither gates (sp-ljh5)")
         print(f"cases (feasible both cells): {verdict['cases']}  (min {args.arm_min_cases})")
-        print(f"baseline  cph (cap {args.baseline_cap}, profit): "
-              f"{verdict['baseline_cph']:>10,.0f} cr/hr")
-        print(f"candidate cph (cap {args.candidate_cap}, rate)  : "
+        print(f"true live-prod cph (cap {args.baseline_cap}, RATE — sp-1wp8 launch default): "
+              f"{verdict['baseline_cap_rate_cph']:>10,.0f} cr/hr")
+        print(f"candidate cph      (cap {args.candidate_cap}, rate)                          : "
               f"{verdict['candidate_cph']:>10,.0f} cr/hr")
-        print(f"fleet-$/hr delta (JOINT package): {verdict['delta_pct']:+.2f}%  "
-              f"(min {args.arm_min_delta_pct:+.2f}%)")
-        # sp-db0n: the TRUE live-prod baseline. sp-1wp8's launch path exports
-        # TOUR_SOLVER_OBJECTIVE=rate, so prod ACTUALLY runs cap-2 RATE — NOT the cap-2
-        # PROFIT in-code fail-safe the `baseline cph` line above shows. ljh5 must read THIS
-        # cph so the arming decision is never made against a config prod does not run.
-        print(f"  true live-prod cph (cap {args.baseline_cap}, RATE per sp-1wp8 launch "
-              f"default): {verdict['baseline_cap_rate_cph']:>10,.0f} cr/hr")
-        print(f"  objective_delta_pct (rate vs profit @cap {args.candidate_cap}): "
+        print(f"fleet-$/hr delta (GATING — candidate vs true live-prod): "
+              f"{verdict['true_live_delta_pct']:+.2f}%  (min {args.arm_min_delta_pct:+.2f}%)")
+        # DIAGNOSTIC-only rows below (do not gate the arm).
+        print(f"  diag baseline cph (cap {args.baseline_cap}, PROFIT in-code fail-safe): "
+              f"{verdict['baseline_cph']:>10,.0f} cr/hr")
+        print(f"  diag delta_pct (JOINT package vs fail-safe): {verdict['delta_pct']:+.2f}%")
+        print(f"  diag objective_delta_pct (rate vs profit @cap {args.candidate_cap}): "
               f"{verdict['objective_delta_pct']:+.2f}%")
         print(f"ARMED: {verdict['armed']}")
         if args.json:

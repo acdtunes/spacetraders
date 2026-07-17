@@ -48,6 +48,22 @@ hunch. Zero-time safety: if ANY scored candidate carries no positive time
 estimate, rate mode falls back to profit ordering wholesale (a rate against
 a guess is not a ranking; divide-by-zero can never decide selection).
 
+sp-ljh5 (epic sp-fguo item #4) arms RATE as the DEFAULT for LONGER tours, but
+default-OFF and replay-gated. A "long" tour is one whose per-tour distinct-system
+cap was raised above MAX_TOUR_SYSTEMS (arming thus implies rate for ALL caps > 2).
+The armed-long tier (see _resolve_objective, "Option C") sits ABOVE the
+TOUR_SOLVER_OBJECTIVE env block: for a long tour the arm flag is the SOLE governor
+of the objective, deliberately superseding the launcher's fleet-wide env=rate
+default (the per-solve `objective` arg still wins over all). It is (a) default-OFF;
+(b) gated on replay_objective.py --arm showing a fleet-$/hr win at the higher cap
+measured against the TRUE live-prod baseline (cap-2 RATE, baseline_cap_rate_cph —
+NOT the cap-2 profit fail-safe) AND p99 solve latency within the anytime cap at
+that cap (a conjunction — never the $/hr delta alone); (c) selection-only —
+candidate generation, tranche pricing, guards, and the response shape are identical
+under both objectives (the sp-1wp8 invariant); (d) armed by exporting
+TOUR_SOLVER_RATE_ARMED_LONG=1 in the Go manager's / process-manager's environment
+(inherited via os.Environ()), reversible without a redeploy.
+
 Every hop must add positive marginal profit under EITHER objective —
 allocations only exist at margin >= the min-margin gate, and hops with no
 allocation are pruned from the plan.
@@ -145,17 +161,54 @@ OBJECTIVE_PROFIT = "profit"
 OBJECTIVE_RATE = "rate"
 OBJECTIVE_ENV_VAR = "TOUR_SOLVER_OBJECTIVE"
 
+# Longer-tour RATE arm (sp-ljh5, epic sp-fguo item #4). A governed, default-OFF runtime
+# switch: for a LONGER-than-default tour (per-tour distinct-system cap raised above
+# MAX_TOUR_SYSTEMS) the arm is the SOLE governor of the objective — see _resolve_objective's
+# tier-2 (Option C). Ships DORMANT; the governed ACT of arming is (a) an operator raising the
+# [trade_fleet].max_tour_systems cap knob > 2 AND (b) exporting TOUR_SOLVER_RATE_ARMED_LONG=1,
+# and only after replay_objective.py --arm shows a fleet-$/hr win against the TRUE live-prod
+# baseline (cap-2 RATE, baseline_cap_rate_cph) AND p99 solve latency within the anytime cap.
+OBJECTIVE_LONG_TOUR_ARM_ENV_VAR = "TOUR_SOLVER_RATE_ARMED_LONG"
+_ARMED_LONG_LOG_KEY = "armed_long"   # DISTINCT once-log key so the tier-2 and tier-3 (env)
+                                     # RATE logs never suppress each other
+_ARM_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
 _warned_tiers = set()
 _logged_objective = set()
 _logged_sequencer = set()
 
 
-def _resolve_objective(objective):
-    """Resolve the selection objective: explicit argument > env > profit default.
-    An unrecognized value falls back to profit (fail toward the proven default,
-    never toward an accidental objective flip) with a once-per-process log."""
+def _rate_armed_long():
+    """Governed runtime arm for rate-on-long-tours (sp-ljh5, default OFF). Truthy set
+    only; unset/''/'0'/'false'/'off' -> False (fail toward the proven profit default)."""
+    return os.environ.get(OBJECTIVE_LONG_TOUR_ARM_ENV_VAR, "").strip().lower() in _ARM_TRUTHY
+
+
+def _resolve_objective(objective, long_tour=False):
+    """Resolve the selection objective. Precedence, top wins:
+      (1) explicit per-solve `objective` argument in {profit, rate}  [sp-1wp8, unchanged]
+      (2) LONG-TOUR governance (sp-ljh5): for a longer-than-default tour the arm flag is
+          the SOLE governor of objective, DELIBERATELY superseding the global
+          TOUR_SOLVER_OBJECTIVE launch default (main.go / run.sh set it =rate fleet-wide as
+          a cap-2-validated default; at this layer that env is indistinguishable from an
+          operator override). armed -> RATE; unarmed -> PROFIT. The epic requires long tours
+          to default profit until replay_objective.py --arm shows a fleet-$/hr win against
+          the TRUE live-prod baseline (cap-2 RATE) AND p99 latency within the anytime cap;
+          only then is TOUR_SOLVER_RATE_ARMED_LONG set. Short tours never reach here.
+      (3) explicit env TOUR_SOLVER_OBJECTIVE=rate (governs SHORT tours)  [sp-1wp8, unchanged]
+      (4) profit fail-safe (unrecognized env warns once)                 [sp-1wp8, unchanged]
+    `long_tour` is a pre-solve, deterministic boolean (the cap raised above the default);
+    it is fixed before _sort_scored runs, so it can never depend on realized tour length."""
     if objective in (OBJECTIVE_PROFIT, OBJECTIVE_RATE):
         return objective
+    if long_tour:
+        if _rate_armed_long():
+            if _ARMED_LONG_LOG_KEY not in _logged_objective:
+                _logged_objective.add(_ARMED_LONG_LOG_KEY)
+                logger.info("tour-solver: long-tour selection objective RATE (armed) via %s",
+                            OBJECTIVE_LONG_TOUR_ARM_ENV_VAR)
+            return OBJECTIVE_RATE
+        return OBJECTIVE_PROFIT
     env = os.environ.get(OBJECTIVE_ENV_VAR, "").strip().lower()
     if env == OBJECTIVE_RATE:
         if OBJECTIVE_RATE not in _logged_objective:
@@ -1342,7 +1395,13 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     Fail-loud contract: missing artifact or version mismatch are structured
     infeasible reasons, never a silent fallback (spec error-handling table).
     """
-    objective = _resolve_objective(objective)
+    # sp-ljh5: "long" == the request opted the per-tour distinct-system cap ABOVE the
+    # default (consume syaz's canonical _effective_tour_systems — the single read, already
+    # falsy-zero/clamp safe). At the epic default (cap absent/0/2 -> 2) long_tour is False,
+    # so tier-2 is skipped, _rate_armed_long() is never called, and resolution is
+    # byte-identical to pre-ljh5. This must be fixed pre-solve — objective feeds _sort_scored.
+    long_tour = _effective_tour_systems(constraints) > MAX_TOUR_SYSTEMS
+    objective = _resolve_objective(objective, long_tour=long_tour)
     if not model:
         return _infeasible("model_artifact_missing", "")
     model_version = f"{model['fit_version']}@{model['era']}"

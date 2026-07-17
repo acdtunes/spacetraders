@@ -201,6 +201,34 @@ def test_arming_verdict_noop(n, min_delta, min_cases, reason):
     assert verdict["armed"] is False, reason
 
 
+# ------------------------------- sp-ljh5: the arm relies on the TRUE live-prod baseline
+def test_arming_verdict_relies_on_true_live_prod_baseline():
+    """sp-ljh5 (post sp-db0n): the arm decision must measure the fleet-$/hr win against
+    the TRUE live-prod reference — cap=2 at the RATE objective (sp-1wp8's launch default,
+    baseline_cap_rate_cph) — NOT the cap=2 PROFIT in-code fail-safe (a config prod does
+    NOT run). A candidate that crushes the fail-safe but barely beats what prod ACTUALLY
+    runs today must stay DISARMED, so the fleet is never re-objectived on a phantom win."""
+    cells = {
+        (2, OBJECTIVE_PROFIT): _res(1000, 1000),   # in-code fail-safe (NOT the deployed default)
+        (2, OBJECTIVE_RATE):   _res(2000, 2000),   # TRUE live-prod: cap-2 RATE (sp-1wp8 launch)
+        (6, OBJECTIVE_PROFIT): _res(1500, 1500),
+        (6, OBJECTIVE_RATE):   _res(2050, 2050),   # candidate: +105% vs fail-safe, +2.5% vs true live
+    }
+    cases = [_case_by_cell(dict(cells)) for _ in range(30)]
+    verdict = ro.arming_verdict(cases, baseline=(2, OBJECTIVE_PROFIT),
+                                candidate=(6, OBJECTIVE_RATE),
+                                overhead_seconds=0, min_delta_pct=5.0, min_cases=30)
+    # The fail-safe delta is huge (+105%) — a gate that read it would have armed here.
+    assert verdict["delta_pct"] > 100
+    # The gating delta is measured against the true live-prod baseline (cap-2 RATE = 2000).
+    assert math.isclose(verdict["baseline_cap_rate_cph"], 2000.0, rel_tol=1e-9)
+    assert math.isclose(verdict["true_live_delta_pct"],
+                        (2050.0 - 2000.0) / 2000.0 * 100, rel_tol=1e-9)
+    assert verdict["true_live_delta_pct"] < 5.0
+    # ljh5: the arm relies on baseline_cap_rate_cph, so a +2.5% true-live gain stays DISARMED.
+    assert verdict["armed"] is False
+
+
 # ============================================================ STUB: TODO(W4) =========
 @pytest.mark.skip(reason="TODO(W4): the end-to-end fleet-$/hr replay GATE firing on real "
                          "OR-Tools cap-6 solver data requires sp-y05b (OR-Tools sequencer) "
