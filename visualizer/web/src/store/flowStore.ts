@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { LiveFlowsResponse, LanesResponse, TopologyResponse, FlowWindow } from '../types/flows';
+import type { LiveFlowsResponse, LiveFlow, LanesResponse, TopologyResponse, FlowWindow } from '../types/flows';
 
 export interface FlowState {
   topology: TopologyResponse | null;
@@ -10,6 +10,11 @@ export interface FlowState {
   selectedFlowId: string | null;
   drilldownSystem: string | null;
   error: string | null;
+  hoveredFlowId: string | null;
+  focusFlowId: string | null;    // one-shot camera request; scene clears it
+  layerToggles: { lanes: boolean; paths: boolean; ships: boolean };
+  staleFlows: LiveFlow[] | null; // last live flows, frozen while feedLost
+  freezeAtMs: number | null;     // clock value the frozen render pins to
 
   setTopology: (t: TopologyResponse) => void;
   setLanes: (l: LanesResponse) => void;
@@ -19,6 +24,10 @@ export interface FlowState {
   openDrilldown: (systemSymbol: string) => void;
   closeDrilldown: () => void;
   setError: (message: string | null) => void;
+  hoverFlow: (containerId: string | null) => void;
+  requestFocus: (containerId: string) => void;
+  clearFocus: () => void;
+  toggleLayer: (key: 'lanes' | 'paths' | 'ships') => void;
 }
 
 export const useFlowStore = create<FlowState>((set) => ({
@@ -30,21 +39,40 @@ export const useFlowStore = create<FlowState>((set) => ({
   selectedFlowId: null,
   drilldownSystem: null,
   error: null,
+  hoveredFlowId: null,
+  focusFlowId: null,
+  layerToggles: { lanes: true, paths: true, ships: true },
+  staleFlows: null,
+  freezeAtMs: null,
 
   setTopology: (topology) => set({ topology, error: null }),
   setLanes: (lanes) => set({ lanes, error: null }),
-  // lastPlanAt is sticky: only advance it when the server reports a real plan.
+  // lastPlanAt is sticky; staleFlows freezes the last real snapshot the moment
+  // the feed drops (never fabricate motion on stale intent — spec §8).
   setLive: (live) =>
     set((state) => ({
       live,
       error: null,
       lastPlanAt: live.lastPlanAt ?? state.lastPlanAt,
+      ...(live.feedLost
+        ? state.staleFlows
+          ? {}
+          : {
+              staleFlows: state.live && !state.live.feedLost && state.live.flows.length > 0 ? state.live.flows : null,
+              freezeAtMs: Date.now(),
+            }
+        : { staleFlows: null, freezeAtMs: null }),
     })),
   setWindow: (window) => set({ window }),
   selectFlow: (selectedFlowId) => set({ selectedFlowId }),
   openDrilldown: (drilldownSystem) => set({ drilldownSystem }),
   closeDrilldown: () => set({ drilldownSystem: null }),
   setError: (error) => set({ error }),
+
+  hoverFlow: (hoveredFlowId) => set({ hoveredFlowId }),
+  requestFocus: (focusFlowId) => set({ focusFlowId }),
+  clearFocus: () => set({ focusFlowId: null }),
+  toggleLayer: (key) => set((state) => ({ layerToggles: { ...state.layerToggles, [key]: !state.layerToggles[key] } })),
 }));
 
 // Dev-only debugging affordance: expose the store so the flows tab can be driven

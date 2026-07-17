@@ -3,6 +3,7 @@ import { useFlowStore } from '../store/flowStore';
 import { useFlowsPolling } from '../hooks/useFlowsPolling';
 import FlowGalaxyScene from '../components/flows/FlowGalaxyScene';
 import { FlowDetailPanel } from '../components/flows/FlowDetailPanel';
+import { TourRoster } from '../components/flows/TourRoster';
 import { SystemDrilldown } from '../components/flows/SystemDrilldown';
 import { FeedLostChip } from '../components/flows/FeedLostChip';
 import { NOIR } from '../theme/noir';
@@ -20,6 +21,10 @@ export function TradeFlowsView() {
   const lastPlanAt = useFlowStore((s) => s.lastPlanAt);
   const selectedFlowId = useFlowStore((s) => s.selectedFlowId);
   const selectFlow = useFlowStore((s) => s.selectFlow);
+  const hoveredFlowId = useFlowStore((s) => s.hoveredFlowId);
+  const requestFocus = useFlowStore((s) => s.requestFocus);
+  const layerToggles = useFlowStore((s) => s.layerToggles);
+  const toggleLayer = useFlowStore((s) => s.toggleLayer);
   const drilldownSystem = useFlowStore((s) => s.drilldownSystem);
   const closeDrilldown = useFlowStore((s) => s.closeDrilldown);
   const error = useFlowStore((s) => s.error);
@@ -32,6 +37,7 @@ export function TradeFlowsView() {
 
   const flows = live?.flows ?? [];
   const selectedFlow = flows.find((f) => f.containerId === selectedFlowId) ?? null;
+  const hoveredFlow = flows.find((f) => f.containerId === hoveredFlowId) ?? null;
 
   return (
     <div className="relative w-full h-full" style={{ background: NOIR.bg0 }}>
@@ -54,7 +60,30 @@ export function TradeFlowsView() {
         ))}
       </div>
 
-      <FlowDetailPanel flow={selectedFlow} />
+      {/* Layer toggles */}
+      <div className="absolute bottom-4 left-44 flex gap-1 rounded p-1" style={{ background: NOIR.panel }}>
+        {(['lanes', 'paths', 'ships'] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => toggleLayer(k)}
+            className="px-3 py-1 text-xs rounded capitalize"
+            style={{
+              background: layerToggles[k] ? NOIR.accent : 'transparent',
+              color: layerToggles[k] ? NOIR.bg0 : NOIR.muted,
+            }}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
+
+      <FlowDetailPanel flow={hoveredFlow ?? selectedFlow} />
+      <TourRoster
+        flows={flows}
+        lanes={lanes}
+        selectedFlowId={selectedFlowId}
+        onRowClick={(id) => { selectFlow(id); requestFocus(id); }}
+      />
       {drilldownSystem && (
         <SystemDrilldown
           systemSymbol={drilldownSystem}

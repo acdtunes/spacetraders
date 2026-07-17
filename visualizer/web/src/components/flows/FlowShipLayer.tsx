@@ -1,16 +1,22 @@
 import { memo } from 'react';
-import { Group, Circle, Text } from 'react-konva';
+import { Group, Line, Arc, Ring, Circle, Text } from 'react-konva';
 import type { LiveFlow } from '../../types/flows';
-import { projectFlowShip, type Point } from './flowGeometry';
-import { NOIR } from '../../theme/noir';
+import type { Point } from './flowGeometry';
+import { projectFlowMotion, type Adjacency } from './flowMotion';
+import { ringSpec } from './profitRing';
+import { NOIR, noirAlpha } from '../../theme/noir';
 
 interface Props {
   flows: LiveFlow[];
+  adj: Adjacency;
+  systemGates: Map<string, string>;
   systemPos: Map<string, Point>;
   nowMs: number;
   scale: number;
   selectedFlowId: string | null;
   onSelect: (containerId: string) => void;
+  onHover: (containerId: string | null) => void;
+  opacityById?: Map<string, number>; // enter/exit fades + feed-loss dim (default: 1)
 }
 
 const PROGRAM_COLOR: Record<LiveFlow['program'], string> = {
@@ -19,41 +25,83 @@ const PROGRAM_COLOR: Record<LiveFlow['program'], string> = {
   arb: NOIR.good,
 };
 
-// Hull glyphs glide along their current leg (interpolated per tick). Clicking a
-// hull selects its flow for the detail panel.
+// Oriented hull glyphs: a wedge nosing along the travel bearing with a fading
+// comet trail, wrapped in an unrotated progress ring (realized ÷ projected).
+// Position/bearing come from the nav-grounded motion model; the raf clock
+// makes glides continuous between the 5s polls.
 export const FlowShipLayer = memo(function FlowShipLayer({
-  flows, systemPos, nowMs, scale, selectedFlowId, onSelect,
+  flows, adj, systemGates, systemPos, nowMs, scale, selectedFlowId, onSelect, onHover, opacityById,
 }: Props) {
   return (
     <Group>
       {flows.map((flow) => {
-        const pos = projectFlowShip(flow, systemPos, nowMs);
-        if (!pos) return null;
+        const m = projectFlowMotion(flow, adj, systemGates, systemPos, nowMs, scale);
+        if (!m) return null;
         const color = PROGRAM_COLOR[flow.program];
         const selected = flow.containerId === selectedFlowId;
-        const r = Math.max(2, 4 / scale);
+        const u = 1 / Math.max(scale, 1e-6); // 1 on-screen px in stage units
+        const r = Math.max(2, 4 * u);
+        const ring = ringSpec(flow.realized?.net, flow.projected?.profit ?? null);
+        const rotationDeg = (m.bearingRad * 180) / Math.PI;
+        const pulse = 0.4 + 0.25 * Math.sin(nowMs / 300);
         return (
-          <Group key={`ship-${flow.containerId}`} x={pos.x} y={pos.y}>
-            {selected && (
-              <Circle radius={r + 3 / scale} stroke={NOIR.ink} strokeWidth={1 / scale} opacity={0.9} />
+          <Group key={`ship-${flow.containerId}`} x={m.x} y={m.y} opacity={opacityById?.get(flow.containerId) ?? 1}>
+            {/* rotated body: wedge + trail */}
+            <Group rotation={rotationDeg} listening={false}>
+              {/* Comet trail: solid + bright enough to read over the dashed
+                  lane beneath (the lane is the same hue — an 0.35-alpha trail
+                  vanished into it on screen). */}
+              <Line points={[-18 * u, 0, -5 * u, 0]} stroke={noirAlpha(color, 0.65)} strokeWidth={2.2 * u} lineCap="round" listening={false} />
+              <Line points={[-30 * u, 0, -18 * u, 0]} stroke={noirAlpha(color, 0.3)} strokeWidth={1.3 * u} lineCap="round" listening={false} />
+              <Line
+                points={[6 * u, 0, -4 * u, 3.5 * u, -4 * u, -3.5 * u]}
+                closed
+                fill={color}
+                stroke={noirAlpha(NOIR.ink, 0.5)}
+                strokeWidth={0.4 * u}
+                listening={false}
+              />
+            </Group>
+
+            {/* unrotated dress: ring, under-glow, selection, overshoot pulse */}
+            <Ring innerRadius={r + 2.5 * u} outerRadius={r + 4 * u} fill={noirAlpha(NOIR.ink, 0.14)} listening={false} />
+            {ring.underGlow && (
+              <Ring innerRadius={r + 2.5 * u} outerRadius={r + 4 * u} fill={noirAlpha(ring.underGlow, 0.4)} listening={false} />
             )}
+            {ring.fill > 0 && (
+              <Arc
+                innerRadius={r + 2.5 * u}
+                outerRadius={r + 4 * u}
+                angle={ring.fill * 360}
+                rotation={-90}
+                fill={ring.color}
+                listening={false}
+              />
+            )}
+            {ring.overshoot && (
+              <Ring innerRadius={r + 5 * u} outerRadius={r + 6 * u} fill={noirAlpha(NOIR.star, pulse)} listening={false} />
+            )}
+            {selected && <Ring innerRadius={r + 7 * u} outerRadius={r + 7.8 * u} fill={noirAlpha(NOIR.ink, 0.9)} listening={false} />}
+
+            {/* hit target */}
             <Circle
-              radius={r}
-              fill={color}
-              onMouseEnter={(e) => { const c = e.target.getStage()?.container(); if (c) c.style.cursor = 'pointer'; }}
-              onMouseLeave={(e) => { const c = e.target.getStage()?.container(); if (c) c.style.cursor = 'default'; }}
+              radius={r + 6 * u}
+              opacity={0}
+              onMouseEnter={(e) => {
+                const c = e.target.getStage()?.container();
+                if (c) c.style.cursor = 'pointer';
+                onHover(flow.containerId);
+              }}
+              onMouseLeave={(e) => {
+                const c = e.target.getStage()?.container();
+                if (c) c.style.cursor = 'default';
+                onHover(null);
+              }}
               onClick={() => onSelect(flow.containerId)}
               onTouchStart={() => onSelect(flow.containerId)}
             />
             {scale > 0.4 && (
-              <Text
-                text={flow.ship}
-                fontSize={Math.max(6, 9 / scale)}
-                fill={NOIR.muted}
-                x={r + 2 / scale}
-                y={-r}
-                listening={false}
-              />
+              <Text text={flow.ship} fontSize={Math.max(6, 9 * u)} fill={NOIR.muted} x={r + 6 * u} y={-r} listening={false} />
             )}
           </Group>
         );

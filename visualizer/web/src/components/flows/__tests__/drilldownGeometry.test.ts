@@ -134,23 +134,24 @@ describe('resolveLaneSegment', () => {
 });
 
 const baseFlow = (overrides: Partial<LiveFlow>): LiveFlow => ({
-  containerId: 'c', program: 'tour', ship: 'S', tourId: null,
+  containerId: 'c', program: 'tour', ship: 'S', tourId: null, closed: false,
   currentLeg: null, cargo: [], remainingHops: [], projected: null,
-  plannedAt: '2026-07-11T00:00:00Z', shipNav: null, ...overrides,
+  plannedAt: '2026-07-11T00:00:00Z', shipNav: null,
+  realized: { net: 0, lastEventAt: null }, ...overrides,
 });
 
 describe('residentFlows / hullWaypointInSystem', () => {
   it('keeps flows whose nav is here or whose current leg touches the system', () => {
-    const navHere = baseFlow({ containerId: 'a', shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-FF5F', x: 0, y: 0, arrivalTime: null } });
+    const navHere = baseFlow({ containerId: 'a', shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-FF5F', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null } });
     const legHere = baseFlow({ containerId: 'b', currentLeg: { from: 'X1-JP61-A1', to: 'X1-UQ16-ZZ3F', departedAt: '', arrivesAt: '' } });
-    const elsewhere = baseFlow({ containerId: 'c', shipNav: { status: 'DOCKED', systemSymbol: 'X1-JP61', waypointSymbol: 'X1-JP61-A1', x: 0, y: 0, arrivalTime: null } });
+    const elsewhere = baseFlow({ containerId: 'c', shipNav: { status: 'DOCKED', systemSymbol: 'X1-JP61', waypointSymbol: 'X1-JP61-A1', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null } });
     const kept = residentFlows([navHere, legHere, elsewhere], 'X1-UQ16').map((f) => f.containerId);
     expect(kept).toEqual(['a', 'b']);
   });
 
   it('reports the actual in-system waypoint for a resident hull, null when elsewhere', () => {
-    const here = baseFlow({ shipNav: { status: 'IN_ORBIT', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-XB8B', x: 0, y: 0, arrivalTime: null } });
-    const away = baseFlow({ shipNav: { status: 'IN_ORBIT', systemSymbol: 'X1-JP61', waypointSymbol: 'X1-JP61-A1', x: 0, y: 0, arrivalTime: null } });
+    const here = baseFlow({ shipNav: { status: 'IN_ORBIT', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-XB8B', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null } });
+    const away = baseFlow({ shipNav: { status: 'IN_ORBIT', systemSymbol: 'X1-JP61', waypointSymbol: 'X1-JP61-A1', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null } });
     expect(hullWaypointInSystem(here, 'X1-UQ16')).toBe('X1-UQ16-XB8B');
     expect(hullWaypointInSystem(away, 'X1-UQ16')).toBeNull();
     expect(hullWaypointInSystem(baseFlow({}), 'X1-UQ16')).toBeNull();
@@ -160,11 +161,11 @@ describe('residentFlows / hullWaypointInSystem', () => {
 describe('intentWaypointsInSystem', () => {
   it('chains the hull waypoint and in-system remaining hops, dropping cross-system hops', () => {
     const flow = baseFlow({
-      shipNav: { status: 'IN_ORBIT', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-FF5F', x: 0, y: 0, arrivalTime: null },
+      shipNav: { status: 'IN_ORBIT', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-FF5F', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null },
       remainingHops: [
-        { waypoint: 'X1-UQ16-ZZ3F', tranches: [] },
-        { waypoint: 'X1-JP61-A1', tranches: [] }, // cross-system: excluded
-        { waypoint: 'X1-UQ16-XB8B', tranches: [] },
+        { waypoint: 'X1-UQ16-ZZ3F', system: 'X1-UQ16', travelSeconds: 0, tranches: [] },
+        { waypoint: 'X1-JP61-A1', system: 'X1-JP61', travelSeconds: 0, tranches: [] }, // cross-system: excluded
+        { waypoint: 'X1-UQ16-XB8B', system: 'X1-UQ16', travelSeconds: 0, tranches: [] },
       ],
     });
     expect(intentWaypointsInSystem(flow, 'X1-UQ16')).toEqual(['X1-UQ16-FF5F', 'X1-UQ16-ZZ3F', 'X1-UQ16-XB8B']);
@@ -172,8 +173,8 @@ describe('intentWaypointsInSystem', () => {
 
   it('does not duplicate the hull waypoint when it equals the first hop', () => {
     const flow = baseFlow({
-      shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-ZZ3F', x: 0, y: 0, arrivalTime: null },
-      remainingHops: [{ waypoint: 'X1-UQ16-ZZ3F', tranches: [] }, { waypoint: 'X1-UQ16-FF5F', tranches: [] }],
+      shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-ZZ3F', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null },
+      remainingHops: [{ waypoint: 'X1-UQ16-ZZ3F', system: 'X1-UQ16', travelSeconds: 0, tranches: [] }, { waypoint: 'X1-UQ16-FF5F', system: 'X1-UQ16', travelSeconds: 0, tranches: [] }],
     });
     expect(intentWaypointsInSystem(flow, 'X1-UQ16')).toEqual(['X1-UQ16-ZZ3F', 'X1-UQ16-FF5F']);
   });
@@ -198,9 +199,9 @@ describe('tourRouteStops', () => {
   it('emits the remaining hops as globally-ordered 1-based stops with buy/sell kind', () => {
     const flow = baseFlow({
       remainingHops: [
-        { waypoint: 'X1-UQ16-FF5F', tranches: [tranche(false)] },       // sell
-        { waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(true)] },        // buy
-        { waypoint: 'X1-JP61-A1', tranches: [tranche(true), tranche(false)] }, // mixed, cross-system
+        { waypoint: 'X1-UQ16-FF5F', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(false)] },       // sell
+        { waypoint: 'X1-UQ16-ZZ3F', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(true)] },        // buy
+        { waypoint: 'X1-JP61-A1', system: 'X1-JP61', travelSeconds: 0, tranches: [tranche(true), tranche(false)] }, // mixed, cross-system
       ],
     });
     expect(tourRouteStops(flow)).toEqual([
@@ -224,9 +225,9 @@ describe('tourRoutePathInSystem', () => {
     const flow = baseFlow({
       currentLeg: { from: 'X1-UQ16-FF5F', to: 'X1-UQ16-XB8B', departedAt: '', arrivesAt: '' },
       remainingHops: [
-        { waypoint: 'X1-UQ16-XB8B', tranches: [tranche(false)] }, // stop 1, sell, in-system
-        { waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(true)] },  // stop 2, buy, in-system
-        { waypoint: 'X1-JP61-A1', tranches: [tranche(false)] },   // stop 3, cross-system -> gate exit
+        { waypoint: 'X1-UQ16-XB8B', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(false)] }, // stop 1, sell, in-system
+        { waypoint: 'X1-UQ16-ZZ3F', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(true)] },  // stop 2, buy, in-system
+        { waypoint: 'X1-JP61-A1', system: 'X1-JP61', travelSeconds: 0, tranches: [tranche(false)] },   // stop 3, cross-system -> gate exit
       ],
     });
     const anchors = tourRoutePathInSystem(flow, 'X1-UQ16', idx, gate);
@@ -244,7 +245,7 @@ describe('tourRoutePathInSystem', () => {
   it('leads with a gate ENTRY anchor when the ship is arriving from another system', () => {
     const flow = baseFlow({
       currentLeg: { from: 'X1-JP61-A1', to: 'X1-UQ16-ZZ3F', departedAt: '', arrivesAt: '' },
-      remainingHops: [{ waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(true)] }],
+      remainingHops: [{ waypoint: 'X1-UQ16-ZZ3F', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(true)] }],
     });
     const anchors = tourRoutePathInSystem(flow, 'X1-UQ16', idx, gate);
     expect(anchors[0]).toEqual({ index: 0, kind: 'entry', waypoint: null, point: gate });
@@ -255,8 +256,8 @@ describe('tourRoutePathInSystem', () => {
     const flow = baseFlow({
       currentLeg: { from: 'X1-UQ16-FF5F', to: 'X1-UQ16-ZZ3F', departedAt: '', arrivesAt: '' },
       remainingHops: [
-        { waypoint: 'X1-UQ16-ZZ3F', tranches: [tranche(false)] },
-        { waypoint: 'X1-UQ16-XB8B', tranches: [tranche(true)] },
+        { waypoint: 'X1-UQ16-ZZ3F', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(false)] },
+        { waypoint: 'X1-UQ16-XB8B', system: 'X1-UQ16', travelSeconds: 0, tranches: [tranche(true)] },
       ],
     });
     const anchors = tourRoutePathInSystem(flow, 'X1-UQ16', idx, gate);
@@ -305,7 +306,7 @@ describe('interpolateHullInSystem', () => {
 
   it('sits a docked/orbiting hull at its actual waypoint (no current leg)', () => {
     const flow = baseFlow({
-      shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-XB8B', x: 0, y: 0, arrivalTime: null },
+      shipNav: { status: 'DOCKED', systemSymbol: 'X1-UQ16', waypointSymbol: 'X1-UQ16-XB8B', x: 0, y: 0, arrivalTime: null, originSymbol: null, originX: null, originY: null, departureTime: null },
     });
     expect(interpolateHullInSystem(flow, 'X1-UQ16', idx, gate, 500)).toEqual({ x: 0, y: 50 });
   });

@@ -56,3 +56,35 @@ describe('aggregateLanes', () => {
     expect(lanes).toEqual([]);
   });
 });
+
+import { rollupSystemLanes, rollupSystemActivity, systemOfWaypoint } from '../../utils/laneAggregation.js';
+
+describe('system rollups', () => {
+  const lanes = [
+    { from: 'X1-AA-P1', to: 'X1-BB-Q2', realizedUnits: 100, realizedProfit: 50000, legCount: 2 },
+    { from: 'X1-AA-P9', to: 'X1-BB-Q2', realizedUnits: 40, realizedProfit: 10000, legCount: 1 },
+    { from: 'X1-AA-P1', to: 'X1-AA-P2', realizedUnits: 60, realizedProfit: 7000, legCount: 3 },
+    { from: 'X1-BB-Q2', to: 'X1-AA-P1', realizedUnits: 10, realizedProfit: -500, legCount: 1 },
+  ];
+
+  it('systemOfWaypoint truncates to SECTOR-SYSTEM', () => {
+    expect(systemOfWaypoint('X1-AA-P1')).toBe('X1-AA');
+    expect(systemOfWaypoint('WEIRD')).toBe('WEIRD');
+  });
+
+  it('rolls waypoint lanes up to directed system lanes, dropping intra-system', () => {
+    const sys = rollupSystemLanes(lanes);
+    expect(sys).toEqual([
+      { from: 'X1-AA', to: 'X1-BB', realizedUnits: 140, realizedProfit: 60000, legCount: 3 },
+      { from: 'X1-BB', to: 'X1-AA', realizedUnits: 10, realizedProfit: -500, legCount: 1 },
+    ]);
+  });
+
+  it('credits activity to the destination system (intra credits its own)', () => {
+    const act = rollupSystemActivity(lanes);
+    expect(act).toEqual([
+      { system: 'X1-BB', realizedProfit: 60000, legCount: 3 },
+      { system: 'X1-AA', realizedProfit: 6500, legCount: 4 },
+    ]);
+  });
+});

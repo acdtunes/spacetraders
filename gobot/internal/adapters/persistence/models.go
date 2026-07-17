@@ -596,6 +596,25 @@ func (GateEdgeModel) TableName() string {
 	return "gate_edges"
 }
 
+// SystemCoordModel is one galaxy-level system coordinate snapshot row. The
+// daemon owns only the DDL (AutoMigrate); rows are written LAZILY by the
+// visualizer server from the live GET /systems/{symbol} API while building
+// /api/flows/topology, so the galaxy view draws REAL positions instead of a
+// synthesized force layout. Era-scoped like GateEdgeModel: a universe reset
+// regenerates symbols, and the (era_id, symbol) key keeps a dead era's
+// coordinates from colliding with a recurring symbol.
+type SystemCoordModel struct {
+	EraID     int     `gorm:"column:era_id;primaryKey"`
+	Symbol    string  `gorm:"column:symbol;primaryKey;size:32"`
+	X         float64 `gorm:"column:x;not null"`
+	Y         float64 `gorm:"column:y;not null"`
+	FetchedAt string  `gorm:"column:fetched_at"` // RFC3339, mirrors GateEdgeModel.SyncedAt
+}
+
+func (SystemCoordModel) TableName() string {
+	return "system_coords"
+}
+
 // TourLegTelemetryModel is one planned-vs-realized record for a single trade at a
 // single leg of a multi-hop trade tour (sp-1ek0 P1b). The tour_run executor writes
 // one row per executed (or explicitly skipped) trade: the planner's projection
@@ -890,5 +909,6 @@ func AllModels() []any {
 		&WarehouseWithdrawalModel{},
 		&WarehouseStockingModel{},
 		&ShipyardInventoryModel{},
+		&SystemCoordModel{},
 	}
 }

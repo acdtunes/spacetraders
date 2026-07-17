@@ -58,9 +58,9 @@ func TestBuildArbFlow_MapsLaneIntent(t *testing.T) {
 func tourPlanFixture() *routing.TourPlan {
 	return &routing.TourPlan{
 		Legs: []routing.TourLeg{
-			{Waypoint: "X1-AA-A1", Trades: []routing.TourTrade{{Good: "IRON", Units: 50, ExpectedUnitPrice: 30, IsBuy: true}}},
-			{Waypoint: "X1-AA-B2", Trades: []routing.TourTrade{{Good: "IRON", Units: 50, ExpectedUnitPrice: 42, IsBuy: false}}},
-			{Waypoint: "X1-AA-C3", Trades: []routing.TourTrade{{Good: "GOLD", Units: 10, ExpectedUnitPrice: 900, IsBuy: true}}},
+			{Waypoint: "X1-AA-A1", System: "X1-AA", Trades: []routing.TourTrade{{Good: "IRON", Units: 50, ExpectedUnitPrice: 30, IsBuy: true}}},
+			{Waypoint: "X1-AA-B2", System: "X1-AA", TravelSecondsFromPrev: 420, Trades: []routing.TourTrade{{Good: "IRON", Units: 50, ExpectedUnitPrice: 42, IsBuy: false}}},
+			{Waypoint: "X1-AA-C3", System: "X1-AA", TravelSecondsFromPrev: 300, Trades: []routing.TourTrade{{Good: "GOLD", Units: 10, ExpectedUnitPrice: 900, IsBuy: true}}},
 		},
 		ProjectedProfit:         600,
 		ProjectedCreditsPerHour: 5400,
@@ -160,5 +160,60 @@ func TestBuildTradeRouteFlow_MapsCommittedLane(t *testing.T) {
 	}
 	if f.Projected == nil || f.Projected.Profit != 1800 || f.Projected.RatePerHour != 12000 {
 		t.Errorf("projected mismatch: %+v", f.Projected)
+	}
+}
+
+func crossSystemTourPlanFixture() *routing.TourPlan {
+	return &routing.TourPlan{
+		Legs: []routing.TourLeg{
+			{Waypoint: "X1-AA-A1", System: "X1-AA", Trades: []routing.TourTrade{{Good: "IRON", Units: 50, ExpectedUnitPrice: 30, IsBuy: true}}},
+			{Waypoint: "X1-BB-D4", System: "X1-BB", TravelSecondsFromPrev: 900, Trades: []routing.TourTrade{{Good: "IRON", Units: 50, ExpectedUnitPrice: 42, IsBuy: false}}},
+		},
+		ProjectedProfit:         600,
+		ProjectedCreditsPerHour: 5400,
+	}
+}
+
+func TestBuildTourFlow_HopsCarrySystemAndTravelSeconds(t *testing.T) {
+	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9"}
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+
+	f := buildTourFlow(cmd, crossSystemTourPlanFixture(), -1, time.Time{}, nil, now)
+
+	if len(f.RemainingHops) != 2 {
+		t.Fatalf("want 2 hops, got %d", len(f.RemainingHops))
+	}
+	h0, h1 := f.RemainingHops[0], f.RemainingHops[1]
+	if h0.System != "X1-AA" || h0.TravelSeconds != 0 {
+		t.Errorf("hop0 = %q/%d, want X1-AA/0", h0.System, h0.TravelSeconds)
+	}
+	if h1.System != "X1-BB" || h1.TravelSeconds != 900 {
+		t.Errorf("hop1 = %q/%d, want X1-BB/900", h1.System, h1.TravelSeconds)
+	}
+	if f.Closed {
+		t.Errorf("open command must publish closed=false")
+	}
+}
+
+func TestBuildTourFlow_ClosedFlagFollowsCommand(t *testing.T) {
+	cmd := &RunTourCoordinatorCommand{ContainerID: "tour-run-SHIP-9-xyz", ShipSymbol: "SHIP-9", ClosedTours: true}
+	f := buildTourFlow(cmd, tourPlanFixture(), -1, time.Time{}, nil, time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC))
+	if !f.Closed {
+		t.Errorf("ClosedTours command must publish closed=true")
+	}
+}
+
+func TestBuildArbAndTradeRouteFlows_DeriveHopSystem(t *testing.T) {
+	arbCmd := &RunArbCoordinatorCommand{ContainerID: "arb-1", ShipSymbol: "SHIP-1", Good: "IRON_ORE", SellAt: "X1-AA-B2", MaxUnits: 10, QuotedDestBid: 5}
+	af := buildArbFlow(arbCmd, nil, time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC))
+	if af.RemainingHops[0].System != "X1-AA" || af.RemainingHops[0].TravelSeconds != 0 {
+		t.Errorf("arb hop = %q/%d, want X1-AA/0", af.RemainingHops[0].System, af.RemainingHops[0].TravelSeconds)
+	}
+
+	trCmd := &RunTradeRouteCoordinatorCommand{ContainerID: "tr-1", ShipSymbol: "SHIP-2"}
+	lane := trading.ArbitrageLane{SourceWaypoint: "X1-CC-A1", DestWaypoint: "X1-DD-B2", Good: "FUEL", VolumeCap: 40, DestBid: 80, CappedSpread: 1200}
+	tf := buildTradeRouteFlow(trCmd, lane, 3600, nil, time.Time{}, time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC))
+	if tf.RemainingHops[0].System != "X1-DD" || tf.RemainingHops[0].TravelSeconds != 0 {
+		t.Errorf("trade-route hop = %q/%d, want X1-DD/0", tf.RemainingHops[0].System, tf.RemainingHops[0].TravelSeconds)
 	}
 }

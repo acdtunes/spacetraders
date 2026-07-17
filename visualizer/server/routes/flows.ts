@@ -1,14 +1,28 @@
 import { Router } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
-import { computeGalaxyLayout } from '../utils/galaxyLayout.js';
-import { aggregateLanes } from '../utils/laneAggregation.js';
+import { computeGalaxyLayout, layoutWithAnchors, type AnchoredNode } from '../utils/galaxyLayout.js';
+import { aggregateLanes, rollupSystemLanes, rollupSystemActivity } from '../utils/laneAggregation.js';
 import { homeSystemFromHeadquarters } from '../utils/homeSystem.js';
+import { currentEraId, resolveSystemCoords } from '../utils/systemCoords.js';
 import { SpaceTradersClient } from '../src/client.js';
 
 const router = Router();
 
 const API_BASE_URL = 'https://api.spacetraders.io/v2';
+
+// Coord fetch for the lazy system_coords fill (public endpoint, no token).
+async function fetchSystemXY(symbol: string): Promise<{ x: number; y: number } | null> {
+  try {
+    const stClient = new SpaceTradersClient(API_BASE_URL);
+    const resp = await stClient.get(`/systems/${symbol}`);
+    const x = Number(resp?.data?.x);
+    const y = Number(resp?.data?.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  } catch {
+    return null;
+  }
+}
 
 // Best-effort home-system derivation for the galaxy/drilldown marker. The token
 // lives in PG players.token (the server already owns it); one GET /my/agent gives
@@ -58,11 +72,37 @@ router.get('/topology', async (_req, res) => {
   let client;
   try {
     client = await pool.connect();
-    const result = await client.query(`
-      SELECT system_symbol, connected_system, gate_waypoint, under_construction
-      FROM gate_edges
-      WHERE connected_system <> ''
-    `);
+
+    // Era-scope the gate graph, mirroring gobot's eraScopePredicate
+    // (era_id = current OR era_id IS NULL for the transition window). Dead-era
+    // rows persist in gate_edges after a universe reset (gobot only deletes
+    // per rescanned system_symbol); unscoped, their ghost systems can never
+    // resolve in the current-era system_coords snapshot, so every 5-minute
+    // cache rebuild would refetch them from the live API forever and warp the
+    // layout with mixed-era anchors. Era resolution failure (pre-AutoMigrate
+    // transition) degrades to the unscoped query + force layout — never a 503.
+    let eraId: number | null = null;
+    try {
+      eraId = await currentEraId(client);
+    } catch (eraError: any) {
+      console.error(
+        'era resolution failed, serving unscoped gate_edges:',
+        eraError?.message ?? eraError,
+      );
+    }
+
+    const result = eraId !== null
+      ? await client.query(
+          `SELECT system_symbol, connected_system, gate_waypoint, under_construction
+           FROM gate_edges
+           WHERE connected_system <> '' AND (era_id = $1 OR era_id IS NULL)`,
+          [eraId],
+        )
+      : await client.query(`
+          SELECT system_symbol, connected_system, gate_waypoint, under_construction
+          FROM gate_edges
+          WHERE connected_system <> ''
+        `);
 
     const edges = result.rows.map((r: any) => ({
       from: r.system_symbol as string,
@@ -76,12 +116,25 @@ router.get('/topology', async (_req, res) => {
       systemSet.add(e.from);
       systemSet.add(e.to);
     }
-    const layout = computeGalaxyLayout([...systemSet], edges.map((e) => ({ from: e.from, to: e.to })));
+    // Real coordinates, era-scoped, lazily filled from the live API. ANY
+    // failure in this block (e.g. system_coords not yet AutoMigrated by the
+    // daemon, or no resolvable era — the snapshot is era-keyed) degrades to
+    // the classic all-force layout — never a 503.
+    let systems: AnchoredNode[];
+    try {
+      if (eraId === null) throw new Error('no resolvable era for system_coords');
+      const real = await resolveSystemCoords(client, fetchSystemXY, [...systemSet], eraId);
+      systems = layoutWithAnchors(real, [...systemSet], edges.map((e) => ({ from: e.from, to: e.to })));
+    } catch (coordError: any) {
+      console.error('system_coords unavailable, using force layout:', coordError?.message ?? coordError);
+      systems = computeGalaxyLayout([...systemSet], edges.map((e) => ({ from: e.from, to: e.to })))
+        .map((n) => ({ ...n, layout: 'force' as const }));
+    }
 
     const homeSystem = await deriveHomeSystem(client);
 
     const payload = {
-      systems: layout,
+      systems,
       edges,
       ...(homeSystem ? { homeSystem } : {}),
       generatedAt: new Date().toISOString(),
@@ -152,7 +205,13 @@ router.get('/lanes', async (req, res) => {
     }));
 
     const lanes = aggregateLanes(telemetry, arb, windowStartMs, windowEndMs);
-    res.json({ lanes, window, generatedAt: new Date().toISOString() });
+    res.json({
+      lanes,
+      systemLanes: rollupSystemLanes(lanes),
+      systemActivity: rollupSystemActivity(lanes),
+      window,
+      generatedAt: new Date().toISOString(),
+    });
   } catch (error: any) {
     console.error('Failed to build flows lanes:', error?.message ?? error);
     res.status(503).json({ error: 'db_unavailable' });
@@ -174,9 +233,10 @@ interface RawDaemonFlow {
   program: 'tour' | 'trade-route' | 'arb';
   ship: string;
   tourId: string | null;
+  closed: boolean;
   currentLeg: { from: string; to: string; departedAt: string; arrivesAt: string } | null;
   cargo: { good: string; units: number }[];
-  remainingHops: { waypoint: string; tranches: { good: string; isBuy: boolean; units: number; expectedUnitPrice: number }[] }[];
+  remainingHops: { waypoint: string; system: string; travelSeconds: number; tranches: { good: string; isBuy: boolean; units: number; expectedUnitPrice: number }[] }[];
   projected: { profit: number; ratePerHour: number } | null;
   plannedAt: string;
 }
@@ -214,17 +274,41 @@ router.get('/live', async (_req, res) => {
     if (shipSymbols.length > 0) {
       const result = await client.query(`
         SELECT ship_symbol, nav_status, system_symbol, location_symbol,
-               location_x, location_y, arrival_time
+               location_x, location_y, arrival_time,
+               origin_symbol, origin_x, origin_y, departure_time
         FROM ships
         WHERE ship_symbol = ANY($1)
       `, [shipSymbols]);
       for (const r of result.rows) navByShip.set(r.ship_symbol, r);
     }
 
+    // Realized-so-far per flow: one grouped signed sum over the container-
+    // attributed ledger (purchases negative, sells positive, refuels negative
+    // => net realized). transactions.idx_related covers the lookup.
+    const realizedByContainer = new Map<string, { net: number; lastEventAt: string | null }>();
+    const containerIds = feed.flows.map((f) => f.containerId);
+    if (containerIds.length > 0) {
+      const realizedResult = await client.query(`
+        SELECT related_entity_id AS cid,
+               COALESCE(SUM(amount), 0) AS net,
+               MAX(timestamp) AS last_event_at
+        FROM transactions
+        WHERE related_entity_type = 'container' AND related_entity_id = ANY($1)
+        GROUP BY related_entity_id
+      `, [containerIds]);
+      for (const row of realizedResult.rows) {
+        realizedByContainer.set(row.cid, {
+          net: Number(row.net) || 0,
+          lastEventAt: row.last_event_at ? new Date(row.last_event_at).toISOString() : null,
+        });
+      }
+    }
+
     const flows = feed.flows.map((f) => {
       const nav = navByShip.get(f.ship);
       return {
         ...f,
+        realized: realizedByContainer.get(f.containerId) ?? { net: 0, lastEventAt: null },
         shipNav: nav
           ? {
               status: nav.nav_status,
@@ -233,6 +317,10 @@ router.get('/live', async (_req, res) => {
               x: Number(nav.location_x) || 0,
               y: Number(nav.location_y) || 0,
               arrivalTime: nav.arrival_time ? new Date(nav.arrival_time).toISOString() : null,
+              originSymbol: nav.origin_symbol ?? null,
+              originX: nav.origin_x !== null && nav.origin_x !== undefined ? Number(nav.origin_x) : null,
+              originY: nav.origin_y !== null && nav.origin_y !== undefined ? Number(nav.origin_y) : null,
+              departureTime: nav.departure_time ? new Date(nav.departure_time).toISOString() : null,
             }
           : null,
       };

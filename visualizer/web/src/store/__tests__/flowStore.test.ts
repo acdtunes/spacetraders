@@ -10,7 +10,7 @@ describe('flowStore', () => {
   it('setLive stores flows and updates sticky lastPlanAt on a live feed', () => {
     const res = mockLiveFlows(Date.parse('2026-07-11T00:00:00Z'));
     useFlowStore.getState().setLive(res);
-    expect(useFlowStore.getState().live?.flows).toHaveLength(3);
+    expect(useFlowStore.getState().live?.flows).toHaveLength(4);
     expect(useFlowStore.getState().lastPlanAt).toBe(res.lastPlanAt);
   });
 
@@ -36,5 +36,44 @@ describe('flowStore', () => {
     expect(useFlowStore.getState().drilldownSystem).toBe('X1-KA42');
     s.closeDrilldown();
     expect(useFlowStore.getState().drilldownSystem).toBeNull();
+  });
+});
+
+describe('galaxy view state', () => {
+  beforeEach(() => {
+    useFlowStore.setState(useFlowStore.getInitialState());
+  });
+
+  it('hover, focus, and layer toggles round-trip', () => {
+    const s = useFlowStore.getState();
+    s.hoverFlow('tour-1');
+    expect(useFlowStore.getState().hoveredFlowId).toBe('tour-1');
+    s.hoverFlow(null);
+    expect(useFlowStore.getState().hoveredFlowId).toBeNull();
+
+    s.requestFocus('tour-2');
+    expect(useFlowStore.getState().focusFlowId).toBe('tour-2');
+    s.clearFocus();
+    expect(useFlowStore.getState().focusFlowId).toBeNull();
+
+    expect(useFlowStore.getState().layerToggles).toEqual({ lanes: true, paths: true, ships: true });
+    s.toggleLayer('lanes');
+    expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
+    s.toggleLayer('lanes');
+    expect(useFlowStore.getState().layerToggles.lanes).toBe(true);
+  });
+
+  it('freezes the last live flows across feed loss and clears on recovery', () => {
+    const s = useFlowStore.getState();
+    const mk = (feedLost: boolean, flows: any[]) => ({ flows, generatedAt: new Date().toISOString(), feedLost, lastPlanAt: null });
+    s.setLive(mk(false, [{ containerId: 'a' }]) as any);
+    s.setLive(mk(true, []) as any);
+    expect(useFlowStore.getState().staleFlows?.[0]?.containerId).toBe('a');
+    expect(useFlowStore.getState().freezeAtMs).not.toBeNull();
+    s.setLive(mk(true, []) as any); // repeated loss keeps the ORIGINAL snapshot
+    expect(useFlowStore.getState().staleFlows?.[0]?.containerId).toBe('a');
+    s.setLive(mk(false, []) as any);
+    expect(useFlowStore.getState().staleFlows).toBeNull();
+    expect(useFlowStore.getState().freezeAtMs).toBeNull();
   });
 });

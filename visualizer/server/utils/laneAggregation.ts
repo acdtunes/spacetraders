@@ -93,3 +93,47 @@ export function aggregateLanes(
 
   return [...lanes.values()].sort((a, b) => b.realizedProfit - a.realizedProfit);
 }
+
+export interface SystemActivityRecord {
+  system: string;
+  realizedProfit: number;
+  legCount: number;
+}
+
+// "X1-AA-P1" -> "X1-AA" (SECTOR-SYSTEM-WAYPOINT); non-conforming pass through.
+export function systemOfWaypoint(wp: string): string {
+  const parts = wp.split('-');
+  return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : wp;
+}
+
+// Galaxy-level rollup: directed system→system lanes. Intra-system realizations
+// are excluded — they light the node (see rollupSystemActivity), not an edge.
+export function rollupSystemLanes(lanes: LaneRecord[]): LaneRecord[] {
+  const out = new Map<string, LaneRecord>();
+  for (const l of lanes) {
+    const from = systemOfWaypoint(l.from);
+    const to = systemOfWaypoint(l.to);
+    if (from === to) continue;
+    const k = key(from, to);
+    const rec = out.get(k) ?? { from, to, realizedUnits: 0, realizedProfit: 0, legCount: 0 };
+    rec.realizedUnits += l.realizedUnits;
+    rec.realizedProfit += l.realizedProfit;
+    rec.legCount += l.legCount;
+    out.set(k, rec);
+  }
+  return [...out.values()].sort((a, b) => b.realizedProfit - a.realizedProfit);
+}
+
+// Per-system realized activity in the window, credited to the system where the
+// value realized (the lane destination; intra-system lanes credit their own).
+export function rollupSystemActivity(lanes: LaneRecord[]): SystemActivityRecord[] {
+  const out = new Map<string, SystemActivityRecord>();
+  for (const l of lanes) {
+    const system = systemOfWaypoint(l.to);
+    const rec = out.get(system) ?? { system, realizedProfit: 0, legCount: 0 };
+    rec.realizedProfit += l.realizedProfit;
+    rec.legCount += l.legCount;
+    out.set(system, rec);
+  }
+  return [...out.values()].sort((a, b) => b.realizedProfit - a.realizedProfit);
+}
