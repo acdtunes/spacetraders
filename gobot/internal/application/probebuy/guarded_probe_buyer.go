@@ -57,10 +57,20 @@ type TreasuryReader interface {
 // to that sibling instead of spiraling one market to 4x. It bounds the premium the proximity
 // preference may pay: a yard is abandoned the moment a sibling undercuts it by more than the
 // margin. <=0 disables the override (pure HopPenaltyCredits selection — the pre-sp-iqv2 lever).
+//
+// MaxProbePriceCredits is the sp-3u5d per-unit PRICE CEILING — the BACKSTOP for the deepest-frontier
+// tail whose ONLY reachable yard is a depleted deep one (no cheaper reachable sibling for the
+// SiblingPriceMarginCredits spread to fall to), where the price spirals to 210-235k with nothing to
+// stop it. It gates the FINAL chosen quote (after the sibling-spread already ran inside QuoteProbe):
+// when set (>0) and the quote exceeds it, the buy DEFERS — the post is left unmanned to retry next
+// cycle (price may recover or a nearer yard become reachable), a normal no-op exactly like the spend
+// cap. 0 (or absent) = DISABLED, byte-identical to pre-sp-3u5d. Only a caller that governs deep-yard
+// spend sets it (the frontier coordinator's live max_probe_price knob); the freshness sizer leaves it 0.
 type ProbeTarget struct {
 	System                    string
 	HopPenaltyCredits         int
 	SiblingPriceMarginCredits int
+	MaxProbePriceCredits      int
 }
 
 // DefaultHopPenaltyCredits is the demand-proximal tradeoff a caller applies when it resolves a
@@ -170,6 +180,16 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 	price, yard, err := b.purchaser.QuoteProbe(ctx, playerID, target)
 	if err != nil {
 		return Outcome{Reason: fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", err)}
+	}
+
+	// Per-unit price ceiling (sp-3u5d): the BACKSTOP applied to the FINAL chosen quote — QuoteProbe
+	// has already run the sibling-spread, so `price` is the cheapest reachable yard's price. When the
+	// ceiling is set (>0) and even that final price exceeds it, DEFER: leave the post unmanned and
+	// retry next cycle (price may recover or a nearer yard become reachable). A normal no-op exactly
+	// like the spend cap below — never spends, never errors. Ceiling 0 = DISABLED (byte-identical to
+	// pre-sp-3u5d). Placed before the dry-run branch so a dry-run reports the deferral, not a "would buy".
+	if target.MaxProbePriceCredits > 0 && price > target.MaxProbePriceCredits {
+		return Outcome{Reason: fmt.Sprintf("no purchase: probe price %d exceeds ceiling %d at yard %s (deferred, retry next cycle)", price, target.MaxProbePriceCredits, yard)}
 	}
 
 	// 25% rule (RULINGS #6): integer form price*100 > credits*25 avoids float rounding.

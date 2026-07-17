@@ -735,6 +735,7 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 		WeightVirginBonus:        cfg.OptionalInt("weight_virgin_bonus", 0),
 		ProximalYardHopPenalty:   cfg.OptionalInt("proximal_yard_hop_penalty", 0),
 		ProbeSiblingPriceMargin:  cfg.OptionalInt("probe_sibling_price_margin", 0),
+		MaxProbePrice:            cfg.OptionalInt("max_probe_price", 0),
 		// sp-rjgr depth-vs-breadth balance (all live-tunable; 0 → the coordinator's own default).
 		BreadthFractionPercent: cfg.OptionalInt("breadth_fraction_percent", 0),
 		MaxDepthPathfinders:    cfg.OptionalInt("max_depth_pathfinders", 0),

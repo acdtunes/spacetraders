@@ -216,4 +216,55 @@ func TestDryRun_EvaluatesButDoesNotBuy(t *testing.T) {
 	require.Contains(t, out.Reason, "would buy")
 }
 
+// sp-3u5d per-unit price ceiling: the BACKSTOP for the deepest-frontier tail whose only reachable
+// yard is a depleted deep one. QuoteProbe has ALREADY run the sibling-spread and returns the FINAL
+// chosen quote; the buyer gates THAT price against the ceiling. One parametrized table because every
+// row is the same behavior — "buy iff the ceiling is disabled OR the final quote is within it" — with
+// treasury 10M and spend cap 5M so ONLY the ceiling can decide the over-priced row (the mutation
+// guard: delete the check and the 235k quote passes every other guard and wrongly buys).
+func TestDefers_WhenFinalQuoteExceedsPriceCeiling(t *testing.T) {
+	highCapConfig := Config{
+		MaxProbeFleet:    40,
+		MaxSpendPerCycle: 5_000_000, // far above any quote, so the ceiling — not the spend cap — decides
+		PurchaseCooldown: 10 * time.Minute,
+		SpendWindow:      1 * time.Hour,
+	}
+	cases := []struct {
+		name    string
+		ceiling int
+		quote   int
+		wantBuy bool
+	}{
+		{name: "ceiling disabled (0) buys at any price — byte-identical to pre-sp-3u5d", ceiling: 0, quote: 235_000, wantBuy: true},
+		{name: "quote under ceiling buys", ceiling: 60_000, quote: 23_000, wantBuy: true},
+		{name: "quote over ceiling defers", ceiling: 60_000, quote: 235_000, wantBuy: false},
+		// After sibling-spread QuoteProbe returns the cheaper reachable sibling (45k), which is under
+		// the ceiling → the buy proceeds; only the FINAL best quote is what the ceiling gates.
+		{name: "post-sibling-spread sibling under ceiling buys", ceiling: 60_000, quote: 45_000, wantBuy: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &shared.MockClock{CurrentTime: time.Now()}
+			tr := &fakeTreasury{credits: 10_000_000} // 25% ceiling = 2.5M, above every quote here
+			pu := &fakePurchaser{quotePrice: tc.quote, quoteYard: "X1-DEEP-YARD", buySymbol: "PROBE-NEW"}
+			b := NewGuardedProbeBuyer(tr, pu, &fakeLedger{}, clock, highCapConfig)
+
+			target := ProbeTarget{System: "X1-FRONTIER", HopPenaltyCredits: 50_000, SiblingPriceMarginCredits: 30_000, MaxProbePriceCredits: tc.ceiling}
+			out := b.MaybeBuy(context.Background(), shared.MustNewPlayerID(1), 5 /*demand*/, 3 /*supply*/, false, target)
+
+			if tc.wantBuy {
+				require.True(t, out.Bought, "quote %d within ceiling %d should buy (%s)", tc.quote, tc.ceiling, out.Reason)
+				require.Equal(t, 1, pu.buyCalls, "exactly one probe bought")
+				return
+			}
+			require.False(t, out.Bought, "quote %d over ceiling %d must defer (%s)", tc.quote, tc.ceiling, out.Reason)
+			require.Zero(t, pu.buyCalls, "an over-ceiling quote never buys")
+			// A clear, mirrored "no purchase: ..." defer reason carrying the price, ceiling, and yard.
+			require.Contains(t, out.Reason, "235000", "the defer reason states the offending price")
+			require.Contains(t, out.Reason, "60000", "the defer reason states the ceiling")
+			require.Contains(t, out.Reason, "X1-DEEP-YARD", "the defer reason states the yard")
+		})
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

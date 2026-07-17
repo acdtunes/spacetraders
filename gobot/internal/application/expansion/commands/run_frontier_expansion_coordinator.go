@@ -89,6 +89,16 @@ const (
 	// than this, the buy spreads to that sibling instead of spiraling one market to 4x (the live home
 	// hub 20k→86k). It bounds the premium proximity may pay. Mirrors probebuy.DefaultSiblingPriceMarginCredits.
 	defaultProbeSiblingPriceMargin = probebuy.DefaultSiblingPriceMarginCredits
+
+	// defaultMaxProbePrice is the sp-3u5d per-unit probe PRICE CEILING (credits) — the max the frontier
+	// will pay for ONE probe. It is the BACKSTOP for the deepest-frontier tail whose ONLY reachable yard
+	// is a depleted deep one: with no cheaper reachable sibling for probe_sibling_price_margin to spread
+	// to, price spirals to 210-235k with nothing to stop it (max_spend_per_cycle is a blunt trailing-window
+	// budget that also blocks the cheap near buys). When the FINAL chosen quote (after sibling-spread)
+	// exceeds this, the buy DEFERS — the post stays dark and retries next cycle. 0 (the default) = DISABLED,
+	// byte-identical to pre-sp-3u5d and the governance gate; unlike the hop/sibling knobs it takes NO <=0
+	// default fallback, so 0 is the real "off" value (mirrors reserved_freshness_floor).
+	defaultMaxProbePrice = 0
 	// Depth-vs-breadth balance (sp-rjgr). Pure BFS scores hop-1 above hop-2 EVERY time, so with
 	// scout throughput < ring width the near ring never drains and no probe ever reaches the depth
 	// a heavy-freighter yard needs. The depth slice reserves a fraction of frontier capacity for
@@ -272,6 +282,10 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// ProbeSiblingPriceMargin is the sp-iqv2 supply-depletion / load-balance margin: the buy spreads
 	// off a yard once a cheaper reachable sibling undercuts it by more than this. <= 0 → default.
 	ProbeSiblingPriceMargin int
+	// MaxProbePrice is the sp-3u5d per-unit probe price ceiling (credits): the buy DEFERS when the final
+	// chosen quote (after sibling-spread) exceeds it. 0 = DISABLED (byte-identical to today); no <=0
+	// default fallback — 0 is the real "off" value (the governance gate).
+	MaxProbePrice int
 	// Depth-vs-breadth balance knobs (sp-rjgr), all live-tunable (FrontierTunableDefaults).
 	BreadthFractionPercent int // breadth share; depth = 100 - this. 100 ⇒ pure BFS.
 	MaxDepthPathfinders    int // cap on concurrent depth posts
@@ -489,6 +503,8 @@ func FrontierTunableDefaults() map[string]int {
 		"max_probe_fleet":            defaultMaxProbeFleet,
 		"proximal_yard_hop_penalty":  defaultProximalYardHopPenalty,
 		"probe_sibling_price_margin": defaultProbeSiblingPriceMargin,
+		// sp-3u5d per-unit probe price ceiling — the BACKSTOP for reachability-bound deep yards.
+		"max_probe_price": defaultMaxProbePrice,
 		// Depth-vs-breadth balance (sp-rjgr) — retunable live with no restart.
 		"breadth_fraction_percent": defaultBreadthFractionPercent,
 		"max_depth_pathfinders":    defaultMaxDepthPathfinders,
@@ -524,6 +540,7 @@ type frontierConfig struct {
 	WeightVirginBonus        int
 	ProximalYardHopPenalty   int
 	ProbeSiblingPriceMargin  int
+	MaxProbePrice            int
 	BreadthFractionPercent   int
 	MaxDepthPathfinders      int
 	MaxDepthHops             int
@@ -561,6 +578,7 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		WeightVirginBonus:        cmd.WeightVirginBonus,
 		ProximalYardHopPenalty:   cmd.ProximalYardHopPenalty,
 		ProbeSiblingPriceMargin:  cmd.ProbeSiblingPriceMargin,
+		MaxProbePrice:            cmd.MaxProbePrice,
 		BreadthFractionPercent:   cmd.BreadthFractionPercent,
 		MaxDepthPathfinders:      cmd.MaxDepthPathfinders,
 		MaxDepthHops:             cmd.MaxDepthHops,
@@ -582,6 +600,9 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 		c.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
 		c.ProximalYardHopPenalty = live.PositiveIntOrZero("proximal_yard_hop_penalty")
 		c.ProbeSiblingPriceMargin = live.PositiveIntOrZero("probe_sibling_price_margin")
+		// sp-3u5d probe price ceiling: live-authoritative. Absent/zeroed ⇒ 0 (ceiling OFF), the
+		// documented default — NO <=0 fallback, since 0 IS the default here (the governance gate).
+		c.MaxProbePrice = live.PositiveIntOrZero("max_probe_price")
 		c.BreadthFractionPercent = live.PositiveIntOrZero("breadth_fraction_percent")
 		c.MaxDepthPathfinders = live.PositiveIntOrZero("max_depth_pathfinders")
 		c.MaxDepthHops = live.PositiveIntOrZero("max_depth_hops")
@@ -867,7 +888,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	logger := common.LoggerFromContext(ctx)
 	// The demand-proximal yard hint handed to the quote+buy (sp-hej4). SELECTION only — every
 	// guard below is unchanged and gates the buy on the quoted price of the selected yard.
-	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty, SiblingPriceMarginCredits: cfg.ProbeSiblingPriceMargin}
+	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty, SiblingPriceMarginCredits: cfg.ProbeSiblingPriceMargin, MaxProbePriceCredits: cfg.MaxProbePrice}
 
 	// A named target must exist: an unmanned slot on a declared post. The expansion
 	// queue only becomes a target once declared into a post (above), so gating on
@@ -932,6 +953,17 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	price, yard, err := h.purchaser.QuoteProbe(ctx, cmd.PlayerID, target)
 	if err != nil {
 		return fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", err)
+	}
+
+	// Per-unit price ceiling (sp-3u5d): the BACKSTOP for the deepest-frontier tail whose ONLY reachable
+	// yard is a depleted deep one. QuoteProbe has already run the sibling-spread, so `price` is the
+	// FINAL cheapest reachable yard's price; when no cheaper sibling exists it can spiral to 210-235k.
+	// If the ceiling is set (>0) and that final price exceeds it, DEFER — leave the post dark and retry
+	// next cycle (price may recover or a nearer yard become reachable). A normal no-op like the spend
+	// cap: never spends, never errors, never strands the loop. Ceiling 0 = DISABLED (byte-identical to
+	// pre-sp-3u5d). Placed before the dry-run branch so a dry-run reports the deferral, not a "would buy".
+	if cfg.MaxProbePrice > 0 && price > cfg.MaxProbePrice {
+		return fmt.Sprintf("no purchase: probe price %d exceeds ceiling %d at yard %s (deferred, retry next cycle)", price, cfg.MaxProbePrice, yard)
 	}
 
 	// 25% rule (RULINGS #6): price must be at most 25% of live treasury. Integer form

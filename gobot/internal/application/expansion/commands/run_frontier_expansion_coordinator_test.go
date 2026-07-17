@@ -800,3 +800,67 @@ func TestResolveFrontierConfig_ReadsReservedFreshnessFloorLiveWithDefaultFallbac
 	require.Equal(t, 3, resolveConfig(launch, live).ReservedFreshnessFloor,
 		"a live snapshot overrides the launch value next tick")
 }
+
+// sp-3u5d: the per-unit probe price ceiling DEFERS a buy whose final chosen quote exceeds it — the
+// backstop for the deep-frontier tail whose only reachable yard is a depleted deep one. Treasury 10M
+// and spend cap 5M so ONLY the ceiling can decide the over-priced row (mutation guard: delete the
+// check and the 235k quote passes every other gate and wrongly buys). A deferral is a normal no-op:
+// ReconcileOnce returns no error, the loop is never stranded, the post simply stays dark this cycle.
+func TestFrontier_ProbePriceCeilingDefersOverpricedBuy(t *testing.T) {
+	cases := []struct {
+		name     string
+		ceiling  int
+		quote    int
+		wantBuys bool
+	}{
+		{name: "final quote over ceiling defers (deep depleted yard)", ceiling: 60000, quote: 235000, wantBuys: false},
+		{name: "quote under ceiling still buys (cheap near yard flows)", ceiling: 60000, quote: 23000, wantBuys: true},
+		{name: "ceiling disabled (0) buys at any price — byte-identical to today", ceiling: 0, quote: 235000, wantBuys: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &shared.MockClock{CurrentTime: time.Now()}
+			pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
+			fr := &fakeFleetRepo{}  // no idle probes → short by one
+			lr := &fakeLedgerRepo{} // no prior purchases → cooldown clear
+			h := newHandler(pr, fr, lr, clock)
+			h.SetTreasuryReader(&fakeTreasury{credits: 10_000_000}) // 25% = 2.5M, above every quote here
+			buyer := &fakePurchaser{quotePrice: tc.quote, quoteYard: "X1-DEEP-SY", buySymbol: "NEW", buyPrice: tc.quote}
+			h.SetProbePurchaser(buyer)
+
+			cmd := testCmd()
+			cmd.MaxProbePrice = tc.ceiling
+			cmd.MaxSpendPerCycle = 5_000_000 // far above any quote → the ceiling, not the spend cap, decides
+			cmd.MaxProbeFleet = 40
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd), "a ceiling defer is a normal no-op — never errors or strands the loop")
+			if tc.wantBuys {
+				require.Equal(t, 1, buyer.buyCalls, "quote %d within ceiling %d must still buy", tc.quote, tc.ceiling)
+				return
+			}
+			require.Zero(t, buyer.buyCalls, "quote %d over ceiling %d must defer — the post stays dark", tc.quote, tc.ceiling)
+		})
+	}
+}
+
+// sp-3u5d config round-trip: the ceiling is DEFAULT-SAFE (0 = disabled) and live-authoritative.
+// Unlike the hop/sibling knobs it takes NO <=0 fallback — 0 is the real "off" value (the governance
+// gate), so an absent live key resolves to 0, not to a nonzero default. Mirrors reserved_freshness_floor.
+func TestResolveFrontierConfig_ReadsMaxProbePriceLiveDefaultDisabled(t *testing.T) {
+	def := resolveConfig(testCmd(), nil)
+	require.Equal(t, defaultMaxProbePrice, def.MaxProbePrice)
+	require.Zero(t, def.MaxProbePrice, "no snapshot, no launch value → 0 (ceiling DISABLED), byte-identical to today")
+
+	launch := testCmd()
+	launch.MaxProbePrice = 60000
+	require.Equal(t, 60000, resolveConfig(launch, nil).MaxProbePrice,
+		"no snapshot → the launch command value governs")
+
+	live := liveconfig.Snapshot{"max_probe_price": 55000}
+	require.Equal(t, 55000, resolveConfig(launch, live).MaxProbePrice,
+		"a live snapshot overrides the launch value next tick")
+
+	empty := liveconfig.Snapshot{}
+	require.Zero(t, resolveConfig(launch, empty).MaxProbePrice,
+		"live present but key absent ⇒ 0 (disabled) — no fallback to a nonzero default")
+}
