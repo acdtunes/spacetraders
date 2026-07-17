@@ -26,8 +26,9 @@ export interface FlowCargoItem {
 export interface FlowLeg {
   from: string;         // waypoint symbol
   to: string;           // waypoint symbol
-  departedAt: string;   // ISO
+  departedAt: string;   // ISO; TRUE leg-start (not publish time) — schedule-drift anchor
   arrivesAt: string;    // ISO
+  travelSeconds: number; // planner's projected duration for THIS leg; 0 = no estimate (drift = arrivesAt − (departedAt + travelSeconds))
 }
 
 export interface FlowProjection {
@@ -61,6 +62,7 @@ export interface FlowShipNav {
   originX: number | null;
   originY: number | null;
   departureTime: string | null;  // ships.departure_time
+  cargoCapacity: number | null;  // ships.cargo_capacity; drives hull silhouette split (heavy vs light). null = unknown
 }
 
 // Signed realized-so-far from the container-attributed transaction ledger
@@ -90,7 +92,12 @@ export interface LaneRecord {
   realizedUnits: number;
   realizedProfit: number;
   legCount: number;
+  goods?: Record<string, number>; // per-good signed credits (additive; system rollup folds these into topGoods)
 }
+
+// A directed system→system lane carrying its dominant goods (top 3 by |credits|),
+// surfaced in the galaxy lane-hover tooltip.
+export type SystemLaneRecord = LaneRecord & { topGoods: { good: string; credits: number }[] };
 
 export interface SystemActivityRecord {
   system: string;
@@ -100,7 +107,7 @@ export interface SystemActivityRecord {
 
 export interface LanesResponse {
   lanes: LaneRecord[];
-  systemLanes: LaneRecord[];              // directed system→system (galaxy layer)
+  systemLanes: SystemLaneRecord[];        // directed system→system (galaxy layer)
   systemActivity: SystemActivityRecord[]; // node sizing/brightness
   window: FlowWindow;
   generatedAt: string;
@@ -145,3 +152,26 @@ export interface FreshnessResponse {
   staleAfterMinutes: number;     // mirrors gobot maxListingAge; never hardcode
   generatedAt: string;
 }
+
+// Recent realized trade — tour-leg fill or arb execution — mirroring the server's
+// utils/fills.ts FillRecord. The galaxy view's ambient ticker feed, newest-first.
+export interface FillRecord {
+  id: string;            // stable per source row: `t-<id>` tour leg, `a-<id>` arb
+  at: string;            // ISO
+  ship: string;
+  good: string;
+  isBuy: boolean;
+  units: number;
+  credits: number;       // signed: sells +, buys −; arb rows carry net profit
+  waypoint: string;
+}
+
+export interface FillsResponse {
+  fills: FillRecord[];
+  generatedAt: string;   // ISO
+}
+
+// Shared galaxy hover target: a system node or a directed system→system lane.
+// `key` is the system symbol ('X1-NK36') or `"from→to"`; x/y are client coords
+// (stage-container rect + pointer) for the floating tooltip card.
+export type TooltipState = { kind: 'system' | 'lane'; key: string; x: number; y: number } | null;

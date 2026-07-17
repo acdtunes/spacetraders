@@ -1152,7 +1152,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	}
 	// Publish the adopted tour plan to the read-only flow feed (fire-and-forget; a
 	// missed publish never touches the trade path — RULINGS #4).
-	flowfeed.Publish(buildTourFlow(cmd, plan, -1, time.Time{}, shipCargoItems(ship), time.Now().UTC()))
+	flowfeed.Publish(buildTourFlow(cmd, plan, -1, time.Time{}, time.Time{}, shipCargoItems(ship), time.Now().UTC()))
 	response.LegsPlanned += len(plan.Legs)
 	// Honest projection split (sp-bc27 + sp-dchv Lane C): projected profit is the
 	// TOTAL that ranked this tour; fresh cash profit, held-cargo liquidation revenue,
@@ -1268,6 +1268,10 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		if err != nil {
 			return false, err
 		}
+		// True leg-start stamp: travel() blocks through arrival, so this is the only
+		// place the real departure time exists. It anchors the visualizer's
+		// schedule-drift glyph (drift = arrivesAt − (departedAt + travelSeconds)).
+		legDepartedAt := time.Now().UTC()
 		ship, err = h.legs.travel(ctx, ship, leg.Waypoint, cmd.PlayerID)
 		if err != nil {
 			if errors.Is(err, gategraph.ErrUnroutable) {
@@ -1278,14 +1282,17 @@ func (h *RunTourCoordinatorHandler) executePlan(
 			}
 			return false, fmt.Errorf("travel to leg %d (%s) failed: %w", legIdx, leg.Waypoint, err)
 		}
-		// Publish the in-progress leg to the read-only flow feed (RULINGS #4). The
-		// hull is now in transit toward leg.Waypoint; arrivesAt is best-effort from
-		// nav (the visualizer nav join owns authoritative position).
-		arrivesAt := time.Time{}
-		if at := ship.ArrivalTime(); at != nil {
+		// Publish the just-flown leg to the read-only flow feed (RULINGS #4). travel()
+		// has blocked through arrival, so arrivesAt is the ACTUAL arrival: nav's
+		// arrival time when it survived, else publish-now (we arrived moments ago —
+		// the arrival path clears ship.ArrivalTime(), and a zero arrivesAt would
+		// zero the drift glyph). Position truth stays with the visualizer nav join.
+		publishedAt := time.Now().UTC()
+		arrivesAt := publishedAt
+		if at := ship.ArrivalTime(); at != nil && !at.IsZero() {
 			arrivesAt = *at
 		}
-		flowfeed.Publish(buildTourFlow(cmd, plan, legIdx, arrivesAt, shipCargoItems(ship), time.Now().UTC()))
+		flowfeed.Publish(buildTourFlow(cmd, plan, legIdx, legDepartedAt, arrivesAt, shipCargoItems(ship), publishedAt))
 		if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
 			return false, fmt.Errorf("dock at leg %d (%s) failed: %w", legIdx, leg.Waypoint, err)
 		}

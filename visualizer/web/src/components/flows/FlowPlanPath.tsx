@@ -10,6 +10,10 @@ interface Props {
   adj: Adjacency;
   systemPos: Map<string, Point>;
   scale: number;
+  // Fleet-scale path quieting: only the hovered/selected flow renders bright
+  // (full gradient + hop markers + anchor ring); everything else is a whisper —
+  // thin static-dashed segments with no dress, so 10+ plans read as texture.
+  bright: boolean;
 }
 
 // Deterministic per-flow sideways nudge (in on-screen px) so two flows whose
@@ -45,7 +49,7 @@ function nudgePoints(points: number[], offset: number): number[] {
 // directional gradient (bright toward the next stop); trade-less transitions
 // (closed-tour return legs, placement relocations) render cool and dashed.
 // A closed tour's final stop is its anchor — ringed so the loop reads.
-export const FlowPlanPath = memo(function FlowPlanPath({ flow, adj, systemPos, scale }: Props) {
+export const FlowPlanPath = memo(function FlowPlanPath({ flow, adj, systemPos, scale, bright }: Props) {
   const segments = planRoutePolylines(flow, adj, systemPos);
   if (segments.length === 0) return null;
   const u = 1 / Math.max(scale, 1e-6);
@@ -61,6 +65,20 @@ export const FlowPlanPath = memo(function FlowPlanPath({ flow, adj, systemPos, s
         const cool = seg.deadhead || relocation;
         const pts = nudgePoints(seg.points, nudge);
         const last = pts.length;
+        if (!bright) {
+          // Whisper: static dash, no gradient, no dress — presence, not signal.
+          return (
+            <Line
+              key={`plan-${flow.containerId}-${i}`}
+              points={pts}
+              stroke={noirAlpha(cool ? NOIR.dim : NOIR.accentSoft, cool ? 0.15 : 0.25)}
+              strokeWidth={Math.max(0.3, 0.6 * u)}
+              dash={[2 * u, 4 * u]}
+              lineCap="round"
+              listening={false}
+            />
+          );
+        }
         if (cool) {
           return (
             <Line
@@ -90,7 +108,7 @@ export const FlowPlanPath = memo(function FlowPlanPath({ flow, adj, systemPos, s
         );
       })}
 
-      {flow.remainingHops.map((hop, i) => {
+      {bright && flow.remainingHops.map((hop, i) => {
         const p = systemPos.get(hop.system);
         if (!p) return null;
         const dead = hop.tranches.length === 0;
@@ -106,7 +124,7 @@ export const FlowPlanPath = memo(function FlowPlanPath({ flow, adj, systemPos, s
         );
       })}
 
-      {anchorPos && (
+      {bright && anchorPos && (
         <Circle
           x={anchorPos.x}
           y={anchorPos.y}

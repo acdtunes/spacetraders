@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { LiveFlow, LanesResponse } from '../../types/flows';
-import { flowIsRelocation } from './flowMotion';
+import { flowIsRelocation, scheduleDriftSeconds, DRIFT_AMBER_SECONDS, DRIFT_RED_SECONDS } from './flowMotion';
 import { ringSpec } from './profitRing';
 import { NOIR, noirAlpha } from '../../theme/noir';
 
@@ -73,6 +73,7 @@ export function TourRoster({ flows, lanes, selectedFlowId, onRowClick }: Props) 
             const ring = ringSpec(f.realized?.net, f.projected?.profit ?? null);
             const fillPct = Math.round(ring.fill * 100);
             const selected = f.containerId === selectedFlowId;
+            const drift = scheduleDriftSeconds(f, Date.now());
             return (
               <div
                 key={f.containerId}
@@ -86,7 +87,14 @@ export function TourRoster({ flows, lanes, selectedFlowId, onRowClick }: Props) 
                 </div>
                 <div className="font-mono truncate" style={{ color: NOIR.dim }}>{routeSummary(f)}</div>
                 {f.currentLeg && (
-                  <div style={{ color: NOIR.warn }}>leg → {f.currentLeg.to} · ETA {legEta(f.currentLeg.arrivesAt)}</div>
+                  <div style={{ color: NOIR.warn }}>
+                    leg → {f.currentLeg.to} · ETA {legEta(f.currentLeg.arrivesAt)}
+                    {drift !== null && drift > DRIFT_AMBER_SECONDS && (
+                      <span style={{ color: drift > DRIFT_RED_SECONDS ? NOIR.bad : NOIR.warn }}>
+                        {` · +${Math.round(drift / 60)}m`}
+                      </span>
+                    )}
+                  </div>
                 )}
                 <div className="flex justify-between mt-1">
                   <span style={{ color: NOIR.muted }}>proj {f.projected ? money(f.projected.profit) : '—'}</span>

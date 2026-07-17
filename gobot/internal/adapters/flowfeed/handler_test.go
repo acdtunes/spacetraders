@@ -75,7 +75,7 @@ func TestFlowsHandler_GoldenPayloadShape(t *testing.T) {
 	want := `{"flows":[{"containerId":"tour-run-TORWIND-54-beba64e7","program":"tour",` +
 		`"ship":"TORWIND-54","tourId":"tour-run-TORWIND-54-beba64e7","closed":false,` +
 		`"currentLeg":{"from":"X1-UU57-E21Z","to":"X1-ZC66-C39A",` +
-		`"departedAt":"2026-07-11T11:55:00Z","arrivesAt":"2026-07-11T12:03:00Z"},` +
+		`"departedAt":"2026-07-11T11:55:00Z","arrivesAt":"2026-07-11T12:03:00Z","travelSeconds":0},` +
 		`"cargo":[{"good":"EQUIPMENT","units":200}],` +
 		`"remainingHops":[{"waypoint":"X1-ZC66-F12F","system":"","travelSeconds":0,"tranches":[{"good":"ADVANCED_CIRCUITRY",` +
 		`"isBuy":false,"units":100,"expectedUnitPrice":4100}]}],` +

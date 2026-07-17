@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { LiveFlowsResponse, LiveFlow, LanesResponse, TopologyResponse, FlowWindow, FreshnessResponse } from '../types/flows';
+import type { LiveFlowsResponse, LiveFlow, LanesResponse, TopologyResponse, FlowWindow, FreshnessResponse, FillsResponse, TooltipState } from '../types/flows';
 
 export interface FlowState {
   topology: TopologyResponse | null;
@@ -17,6 +17,8 @@ export interface FlowState {
   freezeAtMs: number | null;     // clock value the frozen render pins to
   freshness: FreshnessResponse | null;
   freshnessMissedPolls: number;  // consecutive freshness-poll failures; >=5 dims the layer
+  fills: FillsResponse | null;   // ambient ticker feed (15s poll; failures skip silently)
+  tooltip: TooltipState;         // shared hover card for a system node or lane
 
   setTopology: (t: TopologyResponse) => void;
   setLanes: (l: LanesResponse) => void;
@@ -34,6 +36,8 @@ export interface FlowState {
   // (freshness failures dim the layer, they never surface through setError).
   setFreshness: (freshness: FreshnessResponse) => void;
   freshnessPollFailed: () => void;
+  setFills: (fills: FillsResponse) => void;
+  setTooltip: (tooltip: TooltipState) => void;
 }
 
 export const useFlowStore = create<FlowState>((set) => ({
@@ -52,6 +56,8 @@ export const useFlowStore = create<FlowState>((set) => ({
   freezeAtMs: null,
   freshness: null,
   freshnessMissedPolls: 0,
+  fills: null,
+  tooltip: null,
 
   setTopology: (topology) => set({ topology, error: null }),
   setLanes: (lanes) => set({ lanes, error: null }),
@@ -80,9 +86,17 @@ export const useFlowStore = create<FlowState>((set) => ({
   hoverFlow: (hoveredFlowId) => set({ hoveredFlowId }),
   requestFocus: (focusFlowId) => set({ focusFlowId }),
   clearFocus: () => set({ focusFlowId: null }),
-  toggleLayer: (key) => set((state) => ({ layerToggles: { ...state.layerToggles, [key]: !state.layerToggles[key] } })),
+  // Toggling Lanes OFF removes the hovered artery from under the pointer, so
+  // its tooltip must not linger (no mouseleave will ever fire for it).
+  toggleLayer: (key) =>
+    set((state) => ({
+      layerToggles: { ...state.layerToggles, [key]: !state.layerToggles[key] },
+      ...(key === 'lanes' && state.layerToggles.lanes && state.tooltip?.kind === 'lane' ? { tooltip: null } : {}),
+    })),
   setFreshness: (freshness) => set({ freshness, freshnessMissedPolls: 0 }),
   freshnessPollFailed: () => set((s) => ({ freshnessMissedPolls: s.freshnessMissedPolls + 1 })),
+  setFills: (fills) => set({ fills }),
+  setTooltip: (tooltip) => set({ tooltip }),
 }));
 
 // Dev-only debugging affordance: expose the store so the flows tab can be driven

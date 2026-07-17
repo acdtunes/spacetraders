@@ -36,6 +36,7 @@ const shipRow = (ship_symbol: string) => ({
   ship_symbol, nav_status: 'IN_TRANSIT', system_symbol: 'X1-NK36', location_symbol: 'X1-NK36-I52',
   location_x: '12', location_y: '-7', arrival_time: '2026-07-17T10:05:00Z',
   origin_symbol: 'X1-NK36-A1', origin_x: '3', origin_y: '4', departure_time: '2026-07-17T10:00:00Z',
+  cargo_capacity: '120',
 });
 
 describe('GET /api/flows/live — transit columns + realized', () => {
@@ -54,10 +55,12 @@ describe('GET /api/flows/live — transit columns + realized', () => {
     expect(nav).toMatchObject({
       originSymbol: 'X1-NK36-A1', originX: 3, originY: 4,
       departureTime: '2026-07-17T10:00:00.000Z',
+      cargoCapacity: 120,
     });
     const shipSql = query.mock.calls[0][0] as string;
     expect(shipSql).toMatch(/origin_symbol/);
     expect(shipSql).toMatch(/departure_time/);
+    expect(shipSql).toMatch(/cargo_capacity/);
   });
 
   it('folds signed transaction sums into realized per flow (0/null when no rows)', async () => {

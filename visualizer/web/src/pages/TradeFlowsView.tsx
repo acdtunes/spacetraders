@@ -6,6 +6,8 @@ import { FlowDetailPanel } from '../components/flows/FlowDetailPanel';
 import { TourRoster } from '../components/flows/TourRoster';
 import { SystemDrilldown } from '../components/flows/SystemDrilldown';
 import { FeedLostChip } from '../components/flows/FeedLostChip';
+import { FillTicker } from '../components/flows/FillTicker';
+import { FlowTooltip } from '../components/flows/FlowTooltip';
 import { NOIR } from '../theme/noir';
 import type { FlowWindow } from '../types/flows';
 
@@ -105,6 +107,11 @@ export function TradeFlowsView() {
           {error}
         </div>
       )}
+
+      {/* Ambient fill ticker + shared hover card — the tooltip mounts last so it
+          floats above every panel. */}
+      <FillTicker />
+      <FlowTooltip />
     </div>
   );
 }
