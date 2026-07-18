@@ -15,11 +15,19 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   margin; treasury is never the Phase-1 constraint — supply-state and time are. Phase 2 =
   frontier expansion + heavy trade: optimize per-hull sustained $/hr against the absorption
   ceiling. Detect the flip with `construction status <gate-waypoint>`; never assume the phase.
-- **Hour-0 duties:** contracts on immediately (they are the funding floor and the crash-proof
-  engine); read the live gate bill; pin the era KPI on the strategy bead — metric basis
-  (net credit delta over closed hours) plus measurement window — before any optimization talk;
-  economy-analyst delivers the era economy map once; schedule the construction shakedown
-  inside the first ~12h, graded only on material-delivered > 0.
+- **Hour-0 duties:** start the bootstrap reconciler (`workflow bootstrap`) — it plays the
+  early game hands-off (DATA: guarded staged probe buys + scout-all-markets to the coverage
+  bar → INCOME: frigate retire, contract hubs, capital-gated hauler buys, starts the batch-
+  contract operation → GATE: starts the construction pipeline, sticky to COMPLETE). The
+  captain STARTS operations and TURNS KNOBS; hand-flying the early game is the fallback,
+  not the plan — watch the bootstrap heartbeat (phase · progress · blockers) and clear
+  blockers via knobs, not manual flying. Frontier expansion stays OFF until the gate
+  completes (it expands over gate edges — there is nothing to expand pre-gate); the
+  freshsizer boots standing and takes over the durable freshness fleet once markets are
+  scanned. Then: pin the era KPI on the strategy bead — metric basis (net credit delta over
+  closed hours) plus measurement window — before any optimization talk; economy-analyst
+  delivers the era economy map once; schedule the construction shakedown inside the first
+  ~12h, graded only on material-delivered > 0.
 - **Three walls bound every era:** (1) the API rate limit — per ACCOUNT, cannot be sharded
   around; (2) market absorption / sink depth; (3) the era clock — every capex must pay back
   inside remaining era-hours.
