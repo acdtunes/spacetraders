@@ -43,15 +43,22 @@ const (
 	// and park the hull — exactly the captain-time sink this coordinator retires.
 	tourIterationsContinuous = -1
 
-	// defaultRelaunchBackoffMaxSeconds is the ceiling for the per-hull ADAPTIVE
-	// relaunch backoff (sp-1pli) when the config leaves it unset. When a hull's
-	// continuous tour exits unproductive (fast-fail, see minProductiveTourDuration),
-	// the coordinator doubles that hull's relaunch cooldown from the base
-	// (defaultTradeFleetCooldownSeconds or CooldownSecs) up to this ceiling, instead
-	// of retrying the full discovery+solver pass every base cooldown forever against a
-	// fleet-wide-infeasible market (862 tour-run log lines in 20 minutes prompted this
-	// bead). 30min is the brief's own stated ceiling.
-	defaultRelaunchBackoffMaxSeconds = 1800
+	// defaultRelaunchBackoffMaxSeconds is the ceiling for the per-hull ADAPTIVE relaunch
+	// backoff (sp-1pli) when the config leaves it unset. When a hull keeps fast-failing,
+	// the coordinator doubles that hull's relaunch cooldown from the base up to this
+	// ceiling, so a fleet-wide-infeasible market is not hammered with a discovery+solver
+	// pass every base cooldown (862 tour-run log lines in 20 minutes prompted sp-1pli).
+	//
+	// sp-nxrt LOWERED this 1800->600 (30min->10min). The old 30min ceiling was only
+	// needed because SLEEP was the sole response to a fast-fail — a hull in a thin/stale
+	// pocket spiralled 6->12->24->30min parked (~238 hull-hours/day of pure parking). Now
+	// the 2nd consecutive fast-fail escalates to MOVEMENT (reposition-reach, see
+	// cooldownFor), so ever-longer sleep is no longer how a stuck hull is handled: the
+	// remaining backoff exists only to rate-limit a GENUINELY map-wide-dead neighbourhood
+	// the reach-armed relaunch also could not escape, for which 10min is ample. A named
+	// config knob (RelaunchBackoffMaxSecs / [trade_fleet].relaunch_backoff_max_minutes,
+	// RULINGS #5) — retune without a rebuild.
+	defaultRelaunchBackoffMaxSeconds = 600
 
 	// minProductiveTourDuration is the fast-fail line between an honest trade leg and
 	// a tour that never really flew (sp-1pli). It is a hardcoded mechanism constant,
@@ -167,6 +174,16 @@ type TourLaunchSpec struct {
 	AgentSymbol                      string
 	Iterations                       int
 	PlayerID                         int
+
+	// RepositionReachEscalated arms reposition-reach for THIS launch (sp-nxrt part a),
+	// overriding the daemon-global reposition_reach_enabled. The fleet coordinator sets it
+	// on the relaunch of a hull that has fast-failed twice in a row: instead of doubling the
+	// hull's sleep again, it relaunches promptly with the broadened 2-4-gate-hop reach
+	// discovery armed, so a hull whose lane died HERE moves to a fresh system it could not
+	// see over the default 1-hop scan. Zero value (false) is a normal launch — byte-identical
+	// to a config-only reach setting — so every non-escalated relaunch and the captain CLI
+	// path are unchanged.
+	RepositionReachEscalated bool
 }
 
 // TourLauncher starts one recovery-safe, guarded continuous tour container for an idle
@@ -373,11 +390,13 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 			break
 		}
 
-		// cooldown is BASE unless sp-1pli's adaptive backoff has escalated this
-		// specific hull past a run of unproductive exits — see cooldownFor. A hull whose
-		// park is part of a restart-induced mass-park (sp-nkci) is exempt from that
-		// escalation, so the whole fleet does not ramp in lockstep after a daemon blip.
-		cooldown := h.cooldownFor(ship, baseCooldown, backoffMax, massParkExempt[ship.ShipSymbol()], logger)
+		// cooldown is BASE unless sp-1pli's adaptive backoff has escalated this specific
+		// hull past a run of unproductive exits — see cooldownFor. reachEscalated is set
+		// (sp-nxrt) once the hull hit its 2nd consecutive fast-fail: the relaunch is armed
+		// to reposition-reach to a fresh system instead of the coordinator sleeping longer
+		// on a dead lane. A hull whose park is part of a restart-induced mass-park (sp-nkci)
+		// is exempt from BOTH the sleep ramp and the movement escalation.
+		cooldown, reachEscalated := h.cooldownFor(ship, baseCooldown, backoffMax, massParkExempt[ship.ShipSymbol()], logger)
 
 		if remaining := cooldownRemaining(ship, now, cooldown); remaining > 0 {
 			logger.Log("INFO", fmt.Sprintf(
@@ -403,6 +422,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 			AgentSymbol:                      cmd.AgentSymbol,
 			Iterations:                       tourIterationsContinuous,
 			PlayerID:                         cmd.PlayerID.Value(),
+			RepositionReachEscalated:         reachEscalated,
 		}
 		containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 		if lerr != nil {
@@ -418,14 +438,19 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 
 		runningTours++
 		launched++
+		reachNote := ""
+		if reachEscalated {
+			reachNote = ", reposition-reach ARMED (escalate-to-movement, sp-nxrt)"
+		}
 		logger.Log("INFO", fmt.Sprintf(
-			"Relaunched continuous tour for trade hull %s (prior exit: %s, cooldown %s, container %s)",
-			ship.ShipSymbol(), priorExitReasonLabel(ship), cooldown.Truncate(time.Second), containerID), map[string]interface{}{
+			"Relaunched continuous tour for trade hull %s (prior exit: %s, cooldown %s, container %s%s)",
+			ship.ShipSymbol(), priorExitReasonLabel(ship), cooldown.Truncate(time.Second), containerID, reachNote), map[string]interface{}{
 			"action":            "trade_fleet_relaunch",
 			"ship_symbol":       ship.ShipSymbol(),
 			"container_id":      containerID,
 			"prior_exit_reason": priorExitReason(ship),
 			"cooldown_secs":     int(cooldown.Seconds()),
+			"reposition_reach":  reachEscalated,
 		})
 	}
 
@@ -575,24 +600,46 @@ type hullBackoff struct {
 	consecutiveUnproductive int
 	cooldown                time.Duration
 	scoredRelease           time.Time
+	// reachEscalated is set once a hull hits its 2nd consecutive fast-fail (sp-nxrt part a):
+	// the relaunch is armed with reposition-reach (the broadened 2-4-gate-hop discovery)
+	// so the hull MOVES to a fresh system instead of the coordinator sleeping ever longer
+	// on a lane that is gone from HERE. It stays armed while the coordinator backs off a
+	// map-wide-dead neighbourhood (streak >= 3) and is cleared only by a productive tour —
+	// a recovered hull relaunches normally. reconcileOnce copies it onto the launch spec.
+	reachEscalated bool
 }
 
-// cooldownFor resolves the relaunch cooldown to apply to one idle hull this pass
-// (sp-1pli). A hull that has never toured (no release recorded) is unscored and uses
-// base, exactly like cooldownRemaining's own nil-check — never-toured hulls have
-// nothing to be adaptive about.
+// cooldownFor resolves the relaunch cooldown to apply to one idle hull this pass AND
+// whether that relaunch should be reach-escalated (sp-1pli + sp-nxrt). A hull that has
+// never toured (no release recorded) is unscored, uses base, and is not escalated —
+// exactly like cooldownRemaining's own nil-check.
 //
-// Otherwise the hull's last release is scored AT MOST ONCE (guarded by
-// scoredRelease): a tour that ran for at least minProductiveTourDuration before
-// exiting is productive and resets the hull straight back to base; a shorter exit is
-// an unproductive fast-fail and DOUBLES the hull's cooldown, clamped to max. Every
-// escalation (never a reset) logs one INFO line — the bead's explicit ask, and the
-// only log this method emits, so an idle hull merely waiting out an already-scored
+// Otherwise the hull's last release is scored AT MOST ONCE (guarded by scoredRelease):
+// a tour that ran for at least minProductiveTourDuration is productive and resets the
+// hull straight back to base (and disarms any reach escalation); a shorter exit is an
+// unproductive fast-fail and drives the escalation ladder below. Every escalation logs
+// one INFO line (never a reset), so an idle hull merely waiting out an already-scored
 // cooldown across many ticks stays silent.
-func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, base, max time.Duration, massParkExempt bool, logger common.ContainerLogger) time.Duration {
+//
+// The fast-fail ladder (sp-nxrt part a) — the fix for ~238 hull-hours/day of pure
+// parking, where SLEEP was the sole response and a hull spiralled 6->12->24->30min:
+//
+//	1st fast-fail   -> DOUBLE the sleep (base -> 2*base). The market HERE may just be
+//	                   thin (the lxwn rich->tapped->rich cycle), so wait one cycle in
+//	                   place — cheaper than moving. Reach stays off.
+//	2nd consecutive -> ESCALATE TO MOVEMENT. Waiting-in-place did not help: the lane is
+//	                   gone from HERE. Arm reposition-reach on the relaunch and drop the
+//	                   sleep back to the base breather so the hull MOVES promptly instead
+//	                   of a longer sleep. This is the biggest single tempo lever.
+//	3rd+ consecutive-> Even the reach-armed relaunch (broadened to 2-4 gate hops) found
+//	                   no ground worth the jump — genuine map-wide margin exhaustion.
+//	                   RESUME the bounded sleep backoff (do not hammer a dead map every
+//	                   base cooldown) while KEEPING reach armed for the instant a ground
+//	                   reopens.
+func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, base, max time.Duration, massParkExempt bool, logger common.ContainerLogger) (time.Duration, bool) {
 	assignment := ship.Assignment()
 	if assignment == nil || assignment.ReleasedAt() == nil {
-		return base // never toured — nothing to score
+		return base, false // never toured — nothing to score
 	}
 	releasedAt := *assignment.ReleasedAt()
 
@@ -603,17 +650,18 @@ func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, bas
 	}
 
 	if !releasedAt.After(bo.scoredRelease) {
-		return bo.cooldown // this exit was already scored on a prior tick
+		return bo.cooldown, bo.reachEscalated // this exit was already scored on a prior tick
 	}
 	bo.scoredRelease = releasedAt
 
 	// sp-nkci: a restart-induced mass-park (many hulls force-parked in one window) is not
-	// a thin-depth signal — do NOT feed it to the adaptive backoff. Mark the release
-	// scored (so the same park is never re-scored as unproductive on a later tick, once
-	// some hulls relaunch and the cluster dissipates), but leave the hull's cooldown and
-	// streak untouched: the synchronized park says nothing about market depth, so it
-	// neither escalates nor resets. One INFO line (guarded by scoredRelease, so once per
-	// park) records why the fleet did not ramp after a restart.
+	// a thin-depth signal — do NOT feed it to the adaptive backoff, and (sp-nxrt) do NOT
+	// let it trigger the movement escalation: repositioning the whole fleet off a daemon
+	// blip would be a mass reposition-churn event. Mark the release scored (so the same
+	// park is never re-scored on a later tick as hulls relaunch and the cluster dissipates)
+	// but leave the hull's cooldown, streak, AND reach flag untouched: a synchronized park
+	// says nothing about market depth, so it neither escalates nor resets. One INFO line
+	// (guarded by scoredRelease, so once per park) records why the fleet did not ramp.
 	if massParkExempt {
 		logger.Log("INFO", fmt.Sprintf(
 			"Trade hull %s parked in a fleet-wide mass-park window — exempt from sp-1pli adaptive backoff (sp-nkci), cooldown held at %s",
@@ -622,29 +670,69 @@ func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, bas
 			"ship_symbol":   ship.ShipSymbol(),
 			"cooldown_secs": int(bo.cooldown.Seconds()),
 		})
-		return bo.cooldown
+		return bo.cooldown, bo.reachEscalated
 	}
 
 	if releasedAt.Sub(assignment.AssignedAt()) >= minProductiveTourDuration {
+		// Productive: a fresh ground was found and traded. Reset to base and disarm reach —
+		// the recovered hull relaunches normally, not force-armed forever.
 		bo.consecutiveUnproductive = 0
 		bo.cooldown = base
-		return bo.cooldown
+		bo.reachEscalated = false
+		return bo.cooldown, false
 	}
 
 	bo.consecutiveUnproductive++
-	bo.cooldown *= 2
-	if bo.cooldown > max {
-		bo.cooldown = max
+	switch {
+	case bo.consecutiveUnproductive == 1:
+		// 1st fast-fail: wait ONE lengthened cycle in place (the market may just be thin).
+		bo.cooldown = clampDuration(base*2, max)
+		logger.Log("INFO", fmt.Sprintf(
+			"Trade hull %s cooldown escalating to %s after %d consecutive unproductive exit(s) — fleet-wide infeasibility backoff",
+			ship.ShipSymbol(), bo.cooldown.Truncate(time.Second), bo.consecutiveUnproductive), map[string]interface{}{
+			"action":                   "trade_fleet_backoff_escalate",
+			"ship_symbol":              ship.ShipSymbol(),
+			"new_cooldown_secs":        int(bo.cooldown.Seconds()),
+			"consecutive_unproductive": bo.consecutiveUnproductive,
+		})
+	case bo.consecutiveUnproductive == 2:
+		// 2nd consecutive fast-fail: the lane is gone from HERE — MOVE instead of sleeping
+		// longer. Arm reposition-reach and relaunch at the base breather (sp-nxrt part a).
+		bo.reachEscalated = true
+		bo.cooldown = base
+		logger.Log("INFO", fmt.Sprintf(
+			"Trade hull %s escalating to MOVEMENT after %d consecutive unproductive exit(s) — arming reposition-reach and relaunching at the %s base breather instead of a longer sleep (sp-nxrt)",
+			ship.ShipSymbol(), bo.consecutiveUnproductive, bo.cooldown.Truncate(time.Second)), map[string]interface{}{
+			"action":                   "trade_fleet_movement_escalate",
+			"ship_symbol":              ship.ShipSymbol(),
+			"new_cooldown_secs":        int(bo.cooldown.Seconds()),
+			"consecutive_unproductive": bo.consecutiveUnproductive,
+			"reposition_reach_armed":   true,
+		})
+	default:
+		// 3rd+ consecutive fast-fail: the reach-armed relaunch could not escape either —
+		// genuine map-wide exhaustion. Resume the bounded sleep backoff, keep reach armed.
+		bo.cooldown = clampDuration(bo.cooldown*2, max)
+		logger.Log("INFO", fmt.Sprintf(
+			"Trade hull %s cooldown escalating to %s after %d consecutive unproductive exit(s) — reposition-reach did not rescue it, backing off (bounded, reposition-reach stays armed)",
+			ship.ShipSymbol(), bo.cooldown.Truncate(time.Second), bo.consecutiveUnproductive), map[string]interface{}{
+			"action":                   "trade_fleet_backoff_escalate",
+			"ship_symbol":              ship.ShipSymbol(),
+			"new_cooldown_secs":        int(bo.cooldown.Seconds()),
+			"consecutive_unproductive": bo.consecutiveUnproductive,
+			"reposition_reach_armed":   true,
+		})
 	}
-	logger.Log("INFO", fmt.Sprintf(
-		"Trade hull %s cooldown escalating to %s after %d consecutive unproductive exit(s) — fleet-wide infeasibility backoff",
-		ship.ShipSymbol(), bo.cooldown.Truncate(time.Second), bo.consecutiveUnproductive), map[string]interface{}{
-		"action":                   "trade_fleet_backoff_escalate",
-		"ship_symbol":              ship.ShipSymbol(),
-		"new_cooldown_secs":        int(bo.cooldown.Seconds()),
-		"consecutive_unproductive": bo.consecutiveUnproductive,
-	})
-	return bo.cooldown
+	return bo.cooldown, bo.reachEscalated
+}
+
+// clampDuration caps d at max (the per-hull backoff ceiling, RULINGS #5). A tiny helper so
+// the ladder's two escalation arms clamp identically.
+func clampDuration(d, max time.Duration) time.Duration {
+	if d > max {
+		return max
+	}
+	return d
 }
 
 // priorExitReason returns the release reason stamped on the hull when its last tour

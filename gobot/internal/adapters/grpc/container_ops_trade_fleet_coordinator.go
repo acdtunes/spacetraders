@@ -64,6 +64,14 @@ func (s *DaemonServer) TradeFleetCoordinator(ctx context.Context, playerID int, 
 // the single-writer recovery-safe container row, and release-on-death — so the
 // coordinator stays a pure decision loop that claims nothing itself (RULINGS #3/#7).
 func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunchSpec) (string, error) {
+	// sp-nxrt escalate-to-movement: a hull the coordinator flagged after its 2nd
+	// consecutive fast-fail is relaunched with reposition-reach armed for THIS tour, so it
+	// moves to a fresh system instead of the coordinator sleeping longer on a dead lane.
+	// nil for a normal relaunch — byte-identical to today's config-only launch.
+	var overrides *TourRunOverrides
+	if spec.RepositionReachEscalated {
+		overrides = &TourRunOverrides{RepositionReachEnabled: true}
+	}
 	result, err := s.StartTourRun(
 		ctx,
 		spec.ShipSymbol,
@@ -76,6 +84,7 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 		spec.AgentSymbol,
 		spec.Iterations,
 		spec.PlayerID,
+		overrides,
 	)
 	if err != nil {
 		return "", err

@@ -57,7 +57,7 @@ func TestStartTourRun_StampsTradeOperationInLaunchConfig(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0 /* reserve treasury pct */, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0 /* reserve treasury pct */, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "TORWIND-19", result.ShipSymbol)
@@ -89,7 +89,7 @@ func TestStartTourRun_StampsRepositionJumpBoundFromTradeFleetConfig(t *testing.T
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -122,7 +122,7 @@ func TestStartTourRun_StampsMaxTourSystemsFromTradeFleetConfig(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -151,7 +151,7 @@ func TestStartTourRun_MaxTourSystemsDefaultsZeroWhenUnset(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -182,7 +182,7 @@ func TestTourContainerConfig_ThreadsPlacementKnobs(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -218,7 +218,7 @@ func TestTourContainerConfig_PlacementKnobsDefaultDormantWhenUnset(t *testing.T)
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -253,7 +253,7 @@ func TestStartTourRun_StampsClosedToursFromTradeFleetConfig(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -283,7 +283,7 @@ func TestStartTourRun_ClosedToursDefaultsFalseWhenUnset(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -367,7 +367,7 @@ func TestStartTourRun_StampsRepositionReachFromTradeFleetConfig(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -401,7 +401,7 @@ func TestStartTourRun_RepositionReachDefaultsWhenUnset(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -436,7 +436,7 @@ func TestStartTourRun_StampsRepositionRateFloorFromTradeFleetConfig(t *testing.T
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -470,7 +470,7 @@ func TestStartTourRun_RepositionRateFloorDefaultsWhenUnset(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -506,7 +506,7 @@ func TestStartTourRun_StampsCandidateWideningFromTradeFleetConfig(t *testing.T) 
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)
@@ -540,7 +540,7 @@ func TestStartTourRun_CandidateWideningDefaultsWhenUnset(t *testing.T) {
 	hull.SetDedicatedFleet("trade")
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
 
-	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID)
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), 0, "AGENT", 1, playerID, nil)
 	require.NoError(t, err)
 	runner := s.registeredRunner(result.ContainerID)
 	require.NotNil(t, runner)

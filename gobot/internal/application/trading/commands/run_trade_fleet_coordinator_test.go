@@ -467,14 +467,16 @@ func TestTradeFleetBackoff_SameExitScoredOnce_NoDoubleEscalationAcrossTicks(t *t
 	require.Equal(t, 1, escalations, "the same tour exit must be scored exactly once, not once per tick")
 }
 
-// Two GENUINE consecutive unproductive tour cycles on the same hull double the
-// cooldown twice: 180s -> 360s -> 720s. Each cycle is driven by directly re-assigning
-// and releasing the ship (simulating what the real daemon does between fake-launcher
-// calls, which deliberately never touches ship state itself — see fakeTourLauncher's
-// doc comment), advancing the SAME mock clock instance across one persistent handler
-// so both the backoff map and the escalation math accumulate exactly as they would in
-// production.
-func TestTradeFleetBackoff_CompoundingUnproductiveExits_DoublesEachTime(t *testing.T) {
+// sp-nxrt part (a): the 2nd CONSECUTIVE fast-fail escalates to MOVEMENT, not a longer
+// sleep. The 1st fast-fail still doubles the sleep (the market here may just be thin —
+// the lxwn rich->tapped->rich cycle, so one wait-in-place cycle is right). But when the
+// hull fast-fails AGAIN, waiting-in-place did not help: the lane is gone from HERE, so
+// the coordinator arms reposition-reach on the relaunch and drops the sleep back to the
+// base breather so the hull MOVES promptly instead of idling another (720s) escalation
+// step. The discriminating boundary is picked so the OLD behavior (720s) would HOLD the
+// hull while the NEW behavior launches it: 300s elapsed clears the 180s base but not a
+// 720s doubled sleep. The launched spec carries the reach-armed flag; cycle-1's does not.
+func TestTradeFleetBackoff_SecondConsecutive_EscalatesToMovementNotSleep(t *testing.T) {
 	ship := parkedTradeHullGap(t, "TORWIND-92", 0, 20, "margins_died_both_systems") // 1st: 20s, unproductive
 	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
 	launcher := &fakeTourLauncher{}
@@ -483,20 +485,26 @@ func TestTradeFleetBackoff_CompoundingUnproductiveExits_DoublesEachTime(t *testi
 	h := newTradeHandler(repo, launcher, clock)
 	cmd := tradeCmd()
 
-	// Pass 1: 180s -> 360s. 1000-20=980s >= 360s -> launches.
+	// Pass 1 (streak 1): 180s -> 360s sleep escalation. 1000-20=980s >= 360s -> launches,
+	// reach NOT armed (a first fast-fail waits in place, it does not move).
 	launched1, err := h.reconcileOnce(tradeCtx(logger), cmd)
 	require.NoError(t, err)
 	require.Equal(t, 1, launched1)
+	require.False(t, launcher.launches[0].RepositionReachEscalated, "the first fast-fail waits in place — reach is not armed")
 
 	// 2nd tour cycle: another short, unproductive exit.
 	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
 	ship.ForceRelease("margins_died_both_systems", clockAt(1015)) // 15s, unproductive
 
-	clock.CurrentTime = baseTime.Add(2000 * time.Second) // 2000-1015=985s
+	clock.CurrentTime = baseTime.Add(1315 * time.Second) // 1315-1015=300s: >=180s base, <720s the old doubling
 	launched2, err := h.reconcileOnce(tradeCtx(logger), cmd)
 	require.NoError(t, err)
-	require.Equal(t, 1, launched2, "360s -> 720s escalation; 985s still clears it")
-	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 12m0s after 2 consecutive"))
+	require.Equal(t, 1, launched2, "escalate-to-MOVEMENT relaunches at the base breather (300s clears 180s); the old 720s doubling would still HOLD it")
+	require.True(t, launcher.launches[1].RepositionReachEscalated, "the 2nd consecutive fast-fail arms reposition-reach on the relaunch")
+	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "escalating to MOVEMENT", "reposition-reach"),
+		"the movement escalation is logged distinctly from a sleep escalation")
+	require.False(t, logger.loggedContaining("cooldown escalating to 12m0s"),
+		"the 2nd fast-fail must NOT double the sleep to 720s — it moves instead")
 }
 
 // A PRODUCTIVE exit (>= 90s) resets a previously-escalated hull straight back to base,
@@ -534,12 +542,14 @@ func TestTradeFleetBackoff_ProductiveExit_ResetsToBase(t *testing.T) {
 }
 
 // The backoff ceiling is a config value (RelaunchBackoffMaxSecs, RULINGS #5), not a
-// hardcoded cap — this test exercises both its resolution AND the clamp it enforces in
-// one pass: base 180s, ceiling configured to 400s. A first unproductive exit escalates
-// to 360s (under the ceiling, unaffected). A second unproductive exit would naturally
-// double to 720s, but must clamp at the configured 400s instead. now is picked to land
-// strictly between the two (500s elapsed): clears a correctly-clamped 400s but would
-// still be held under an unclamped 720s.
+// hardcoded cap. Post-sp-nxrt the clamp lives in the RESUMED backoff (streak >= 3): the
+// 2nd fast-fail escalates to movement (reach) at the base breather rather than doubling,
+// so the sleep only resumes climbing once the reach-armed relaunch ALSO fast-failed
+// (genuine map-wide exhaustion). This drives four consecutive fast-fails with the ceiling
+// configured to 400s: streak1 180->360 (under ceiling); streak2 -> movement, sleep back
+// to 180; streak3 resumes 180->360; streak4 would double to 720 but must CLAMP to 400.
+// now on the 4th pass is picked between the two (500s elapsed): clears a correctly-clamped
+// 400s but would still be held under an unclamped 720s.
 func TestTradeFleetBackoff_MaxClamp_HonorsConfiguredCeiling(t *testing.T) {
 	ship := parkedTradeHullGap(t, "TORWIND-94", 0, 20, "margins_died_both_systems") // 1st: 20s, unproductive
 	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
@@ -550,21 +560,123 @@ func TestTradeFleetBackoff_MaxClamp_HonorsConfiguredCeiling(t *testing.T) {
 	cmd := tradeCmd()
 	cmd.RelaunchBackoffMaxSecs = 400
 
-	// Pass 1: 180s -> 360s (under the 400s ceiling). 980s clears it.
+	// Pass 1 (streak 1): 180s -> 360s (under the 400s ceiling). 980s clears it.
 	launched1, err := h.reconcileOnce(tradeCtx(logger), cmd)
 	require.NoError(t, err)
 	require.Equal(t, 1, launched1)
 
-	// 2nd unproductive cycle: would double to 720s, must clamp to 400s instead.
+	// Cycle 2 (streak 2): escalate-to-movement — sleep drops back to the 180s base breather.
 	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
 	ship.ForceRelease("margins_died_both_systems", clockAt(1015)) // 15s, unproductive
-
-	clock.CurrentTime = baseTime.Add(1515 * time.Second) // 1515-1015=500s: >=400s clamp, <720s unclamped
+	clock.CurrentTime = baseTime.Add(1215 * time.Second)          // 1215-1015=200s >= 180s base -> launches (reach armed)
 	launched2, err := h.reconcileOnce(tradeCtx(logger), cmd)
 	require.NoError(t, err)
-	require.Equal(t, 1, launched2, "500s clears the clamped 400s ceiling but would not clear an unclamped 720s")
-	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 6m40s after 2 consecutive"),
+	require.Equal(t, 1, launched2, "the 2nd fast-fail moves at the base breather, it does not lengthen the sleep")
+
+	// Cycle 3 (streak 3): the reach-armed relaunch ALSO fast-failed -> resume backoff 180->360.
+	require.NoError(t, ship.AssignToContainer("tour-3-"+ship.ShipSymbol(), clockAt(1215)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1230)) // 15s, unproductive
+	clock.CurrentTime = baseTime.Add(1630 * time.Second)          // 1630-1230=400s >= 360s -> launches
+	launched3, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched3, "streak 3 resumes the sleep escalation at 360s")
+
+	// Cycle 4 (streak 4): would double 360->720, must CLAMP to the configured 400s.
+	require.NoError(t, ship.AssignToContainer("tour-4-"+ship.ShipSymbol(), clockAt(1630)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1645)) // 15s, unproductive
+	clock.CurrentTime = baseTime.Add(2145 * time.Second)          // 2145-1645=500s: >=400s clamp, <720s unclamped
+	launched4, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched4, "500s clears the clamped 400s ceiling but would not clear an unclamped 720s")
+	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 6m40s after 4 consecutive"),
 		"6m40s = 400s, the configured ceiling — not 12m0s (720s), what an unclamped doubling would produce")
+}
+
+// sp-nxrt part (a): after the movement escalation, a hull whose reach-armed relaunch
+// ALSO fast-fails (streak >= 3) means even the broadened 2-4-hop reach found no ground
+// worth the jump — genuine map-wide margin exhaustion. The coordinator RESUMES the
+// bounded sleep backoff (so a dead map is not hammered with a discovery+solver pass every
+// base cooldown) while KEEPING reach armed (the honest response the instant a ground
+// reopens). This walks streak1->2->3 and asserts the streak-3 relaunch both resumes the
+// sleep (360s, shown by the escalation log value) AND still carries the reach flag.
+func TestTradeFleetBackoff_ThirdConsecutive_ResumesBoundedBackoffReachStaysArmed(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-95", 0, 20, "margins_died_both_systems")
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	clock := clockAt(1000)
+	h := newTradeHandler(repo, launcher, clock)
+	cmd := tradeCmd()
+
+	// streak 1: 180 -> 360; 980s clears it.
+	launched1, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched1)
+
+	// streak 2: movement escalation, sleep back to 180s base.
+	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1015))
+	clock.CurrentTime = baseTime.Add(1215 * time.Second) // 200s >= 180 base
+	launched2, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched2)
+	require.True(t, launcher.launches[1].RepositionReachEscalated)
+
+	// streak 3: the reach-armed relaunch fast-failed too -> resume backoff 180 -> 360,
+	// reach STAYS armed. 400s clears the resumed 360s so the relaunch spec is observable.
+	require.NoError(t, ship.AssignToContainer("tour-3-"+ship.ShipSymbol(), clockAt(1215)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1230))
+	clock.CurrentTime = baseTime.Add(1630 * time.Second) // 400s >= 360 resumed
+	launched3, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.Equal(t, 1, launched3)
+	require.True(t, launcher.launches[2].RepositionReachEscalated,
+		"reach stays armed while the coordinator backs off a genuinely map-wide-dead neighbourhood")
+	require.True(t, logger.loggedContaining(ship.ShipSymbol(), "cooldown escalating to 6m0s after 3 consecutive"),
+		"streak 3 resumes the sleep escalation at 360s (6m0s), bounded by the ceiling")
+}
+
+// sp-nxrt part (a): a PRODUCTIVE tour (the hull found a ground and traded) resets the
+// streak AND disarms the reach escalation — a hull that recovered must relaunch normally,
+// not keep force-arming reach forever. After the 2nd fast-fail arms reach, a productive
+// exit drops the next relaunch back to an un-escalated, non-reach launch.
+func TestTradeFleetBackoff_ProductiveExit_DisarmsReachEscalation(t *testing.T) {
+	ship := parkedTradeHullGap(t, "TORWIND-96", 0, 20, "margins_died_both_systems")
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{ship}}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	clock := clockAt(1000)
+	h := newTradeHandler(repo, launcher, clock)
+	cmd := tradeCmd()
+
+	// streak 1 then streak 2 (reach armed).
+	_, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.NoError(t, ship.AssignToContainer("tour-2-"+ship.ShipSymbol(), clockAt(1000)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1015))
+	clock.CurrentTime = baseTime.Add(1215 * time.Second)
+	_, err = h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.True(t, launcher.launches[1].RepositionReachEscalated, "precondition: reach armed at streak 2")
+
+	// Productive tour cycle (150s >= 90s line): resets streak and disarms reach.
+	require.NoError(t, ship.AssignToContainer("tour-3-"+ship.ShipSymbol(), clockAt(1215)))
+	ship.ForceRelease("margins_died_both_systems", clockAt(1365)) // 150s, productive
+	clock.CurrentTime = baseTime.Add(1565 * time.Second)          // 200s >= 180 base
+	_, err = h.reconcileOnce(tradeCtx(logger), cmd)
+	require.NoError(t, err)
+	require.False(t, launcher.launches[2].RepositionReachEscalated,
+		"a productive tour disarms the reach escalation — the recovered hull relaunches normally")
+}
+
+// sp-nxrt part (c): the default relaunch-backoff ceiling is 600s (10 min), lowered from
+// the old 1800s (30 min) now that a fast-failing hull escalates to MOVEMENT rather than
+// ever-longer sleep. A captain [trade_fleet] override still wins (RULINGS #5).
+func TestTradeFleetCommand_DefaultBackoffCeiling_Is600s(t *testing.T) {
+	require.Equal(t, 600*time.Second, (&RunTradeFleetCoordinatorCommand{}).relaunchBackoffMaxDuration(),
+		"the default ceiling is 600s post-sp-nxrt (escalate-to-movement replaces the long sleep)")
+	require.Equal(t, 900*time.Second, (&RunTradeFleetCoordinatorCommand{RelaunchBackoffMaxSecs: 900}).relaunchBackoffMaxDuration(),
+		"a captain override still takes precedence over the default")
 }
 
 // ---- sp-nkci: restart-induced mass-park is non-signal -----------------------
@@ -610,6 +722,30 @@ func TestTradeFleetBackoff_MassPark_ExemptFromLockstepRamp(t *testing.T) {
 		"a restart mass-park is non-signal: it must not feed the thin-depth backoff")
 	require.True(t, logger.loggedContaining("mass-park", "exempt"),
 		"the exemption is logged so the captain can see why cooldowns did not ramp after a restart")
+}
+
+// sp-nxrt part (a) x sp-nkci: a restart mass-park must NOT trigger the movement
+// escalation either. The whole fleet fast-failing in one synchronized window is a restart
+// signature, not per-hull thin depth — repositioning the entire fleet off a daemon blip
+// would be a mass reposition-churn event (the lead's explicit "do not reposition during a
+// mass-park"). Because the exemption holds each hull's scoring, consecutiveUnproductive
+// never climbs to 2, so reach is never armed: every relaunch spec is a normal (non-reach)
+// launch and no movement escalation is logged.
+func TestTradeFleetBackoff_MassPark_NoMovementEscalation(t *testing.T) {
+	repo := &fakeTradeShipRepo{ships: massParkFleet(t, 5, 20)}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+	h := newTradeHandler(repo, launcher, clockAt(220)) // 200s since the synchronized park
+
+	launched, err := h.reconcileOnce(tradeCtx(logger), tradeCmd())
+	require.NoError(t, err)
+	require.Equal(t, 5, launched)
+	for _, spec := range launcher.launches {
+		require.False(t, spec.RepositionReachEscalated,
+			"a mass-parked hull is exempt — the movement escalation must never fire off a restart signature")
+	}
+	require.False(t, logger.loggedContaining("escalating to MOVEMENT"),
+		"no movement escalation during a mass-park")
 }
 
 // The exemption is a live-by-default knob with a kill switch (RULINGS #5). Disabling it

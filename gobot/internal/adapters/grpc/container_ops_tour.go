@@ -18,6 +18,35 @@ type TourRunOperationResult struct {
 	ShipSymbol  string
 }
 
+// TourRunOverrides carries per-launch overrides the trade-fleet coordinator applies to a
+// SPECIFIC relaunch that the daemon-global [trade_fleet] config does not (sp-nxrt). nil =
+// no override (byte-identical to a config-only launch), so the captain CLI / gRPC path and
+// every recovery rebuild are unchanged.
+type TourRunOverrides struct {
+	// RepositionReachEnabled arms reposition-reach for THIS launch even when the global
+	// reposition_reach_enabled is off — the sp-nxrt fast-fail escalation: a hull that
+	// fast-failed twice at its current ground is relaunched to REACH a fresh system it
+	// could not see over the default 1-hop scan, instead of the coordinator sleeping
+	// longer. It only ever ARMS reach (never disarms), so it cannot fight a captain who
+	// globally enabled it.
+	RepositionReachEnabled bool
+}
+
+// applyTourRunOverrides layers a launch's per-launch overrides onto the freshly-built tour
+// config map (sp-nxrt), just before the command is built — so the persisted launch config
+// (and therefore a recovery rebuild) carries the override, and the registry's OptionalBool
+// read of reposition_reach_enabled picks it up with no daemon-global flip. nil is a no-op;
+// an override only ever UPGRADES reposition_reach_enabled to true (never downgrades), so a
+// non-escalated launch on a reach-on fleet is untouched.
+func applyTourRunOverrides(config map[string]interface{}, overrides *TourRunOverrides) {
+	if overrides == nil {
+		return
+	}
+	if overrides.RepositionReachEnabled {
+		config["reposition_reach_enabled"] = true
+	}
+}
+
 // StartTourRun launches a captain-directed, guarded multi-hop trade tour (sp-1ek0) as
 // a recovery-safe daemon container — arb-run's twin. Unlike arb-run it does not name a
 // lane: it asks the depth-aware planner for a tour, flies it leg by leg with prices
@@ -55,6 +84,7 @@ func (s *DaemonServer) StartTourRun(
 	agentSymbol string,
 	iterations int,
 	playerID int,
+	overrides *TourRunOverrides,
 ) (*TourRunOperationResult, error) {
 	if shipSymbol == "" {
 		return nil, fmt.Errorf("ship symbol is required")
@@ -178,6 +208,12 @@ func (s *DaemonServer) StartTourRun(
 		// (operation == dedication) while a foreign-fleet hull is still rejected.
 		"operation": operationTrade,
 	}
+
+	// sp-nxrt: layer any per-launch overrides (the fast-fail escalate-to-movement reach
+	// arming) onto the config BEFORE building the command, so the override rides the same
+	// persisted launch config the recovery rebuild reads — the escalation survives a
+	// daemon restart mid-tour without the fleet coordinator's in-memory streak.
+	applyTourRunOverrides(config, overrides)
 
 	// Build the tour command through the same factory recovery uses, so the launch
 	// config and the recovery rebuild can never drift.

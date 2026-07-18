@@ -1620,7 +1620,9 @@ func (s *daemonServiceImpl) StartTourRun(ctx context.Context, req *pb.StartTourR
 	// resolves it to the 40% default — a captain CLI tour still runs the counter-cyclical
 	// floor (the deadlock fix is fleet-wide, not only the trade_fleet-relaunched hulls).
 	const workingCapitalReserveTreasuryPct = 0
-	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, workingCapitalReserveTreasuryPct, agentSymbol, iterations, playerID)
+	// sp-nxrt: the captain CLI / gRPC tour-run has no per-launch escalation — pass nil
+	// overrides so this path is byte-identical (reposition-reach follows the global config).
+	result, err := s.daemon.StartTourRun(ctx, req.ShipSymbol, maxHops, maxSpend, minMargin, replanLimit, workingCapitalReserve, workingCapitalReserveTreasuryPct, agentSymbol, iterations, playerID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start tour-run: %w", err)
 	}
