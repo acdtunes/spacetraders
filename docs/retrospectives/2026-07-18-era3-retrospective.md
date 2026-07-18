@@ -22,7 +22,8 @@ mail archive, RULINGS.md, era3-learnings.md, and the era-3 git history (641 comm
   time-to-gate, not margin; contracts are the funding floor). Phase 2 = frontier expansion +
   heavy trade (optimize per-hull sustained $/hr against the absorption ceiling). Both eras
   completed their gate and reached Phase 2 (era-2 gate X1-KA42-I53 done day ~3.4, bead
-  st-wisp-ctf5; era-3 gate X1-VB74-I55 done ~day 2). *Correction to era3-learnings.md: the
+  st-wisp-ctf5; era-3 gate X1-VB74-I55 done ~day 2). *Correction to era3-learnings.md (now
+  archived at `docs/retrospectives/legacy/era3-learnings.md`): the
   "no gate ever hit 100%" caveat is wrong — st-wisp-ctf5 records 1600 FAB_MATS + 400
   ADVANCED_CIRCUITRY delivered, isComplete:true.*
 - Doctrine lives in three layers, in order of authority: **RULINGS.md** (Admiral standing orders,
