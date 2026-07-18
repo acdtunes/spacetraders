@@ -205,9 +205,15 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   consuming-queue label AT creation. `type=session` beads are bookkeeping, never tasks.
 - The open queue can contain already-merged work — grep main for the bead-id/symptom before
   dispatching a lane.
-- Mail: sweep every inbox you answer to EXPLICITLY by role name; every send carries
-  `--notify`; read bodies before archiving; a truncated Admiral message gets a resend
-  request, never a guess.
+- **The mail protocol (all agents, no exceptions):** inter-agent mail is
+  `gc mail send <role> -s "<subject>" -m "<body>" --notify` — ALWAYS `--notify`. The nudge
+  is the delivery mechanism: inboxes are only swept on wakes, so un-notified mail sits
+  unread forever. **NEVER mail `human`** — the Admiral does not read mail: Admiral-facing
+  digests and reports land as `bd note`s (durable, read on attach); anything needing crew
+  action routes to the owning ROLE with `--notify`. Sweep every inbox you answer to
+  EXPLICITLY by role name; read bodies before archiving; a truncated Admiral message gets
+  a resend request, never a guess. Consult answers are a `bd note` on the consult bead +
+  ONE `gc session nudge` — the asker closes the consult, never the answerer.
 - The CLI teaches itself: `--help` at every depth, `man -k spacetraders`. Never invent a verb
   or guess flags. Scope every read (`--system`, `--top`, `--tail`, `--era`, `--level`) —
   unscoped dumps burn the turn. The capability map and the full knob system (config layers,

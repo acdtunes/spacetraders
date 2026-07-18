@@ -1,0 +1,5 @@
+# Scholar agent — pinned to claude-sonnet-5 per ADMIRAL POLICY (RULINGS #9: standing
+# crew on the mid-tier; deep digs run in ephemeral sub-researchers on stronger models,
+# chosen per dispatch). Model pinning mechanism: the provider's args_append (see
+# city.toml [providers.claude-sonnet5]), wired through this `provider` key.
+provider = "claude-sonnet5"
