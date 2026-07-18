@@ -50,6 +50,7 @@ Examples:
 func newWorkflowBatchContractCommand() *cobra.Command {
 	var (
 		shipSymbol string
+		loop       bool
 	)
 
 	cmd := &cobra.Command{
@@ -67,13 +68,19 @@ The daemon will automatically:
 - Fulfill contracts
 - Return a container ID for tracking progress
 
-This runs a single contract to completion. For continuous, multi-contract
-operation across all idle light hauler ships, use 'spacetraders contract start'
-instead.
+By default this runs a SINGLE contract to completion. Pass --loop to run a
+CONTINUOUS single-hull loop on this one ship: it re-negotiates and runs the next
+contract after each fulfillment, until the container is stopped
+('spacetraders container stop <id>'), money-guarded (an unaffordable contract
+parks and retries rather than crashing). This is the bootstrap command frigate's
+sole-earner loop before the first light hauler exists. For continuous
+MULTI-hull operation across all idle light haulers, use 'spacetraders contract
+start' instead.
 
 Examples:
   spacetraders workflow batch-contract --ship SHIP-1 --player-id 1
-  spacetraders workflow batch-contract --ship SHIP-1 --agent ENDURANCE`,
+  spacetraders workflow batch-contract --ship SHIP-1 --agent ENDURANCE
+  spacetraders workflow batch-contract --ship SHIP-1 --loop --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate flags
 			if shipSymbol == "" {
@@ -97,16 +104,21 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := client.BatchContractWorkflow(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			result, err := client.BatchContractWorkflow(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol, loop)
 			if err != nil {
 				return fmt.Errorf("batch contract workflow failed: %w", err)
 			}
 
 			// Display result
+			mode := "single contract"
+			if loop {
+				mode = "continuous loop (stop with: spacetraders container stop " + result.ContainerID + ")"
+			}
 			fmt.Println("✓ Batch contract workflow started successfully")
 			fmt.Printf("  Container ID:     %s\n", result.ContainerID)
 			fmt.Printf("  Ship:             %s\n", result.ShipSymbol)
 			fmt.Printf("  Agent:            %s (player %d)\n", playerIdent.AgentSymbol, playerIdent.PlayerID)
+			fmt.Printf("  Mode:             %s\n", mode)
 			fmt.Printf("  Status:           %s\n", result.Status)
 			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
 
@@ -116,6 +128,7 @@ Examples:
 
 	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to use for contracts (required)")
+	cmd.Flags().BoolVar(&loop, "loop", false, "Run a continuous single-hull contract loop (re-negotiate + run until stopped) instead of a single contract (sp-ehg9)")
 
 	return cmd
 }

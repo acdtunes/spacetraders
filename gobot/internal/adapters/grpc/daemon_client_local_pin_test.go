@@ -72,9 +72,15 @@ func TestPersistContractWorkflow_StoresConfigAndLinksParent(t *testing.T) {
 	require.Equal(t, "PENDING", model.Status)
 	require.NotNil(t, model.ParentContainerID)
 	require.Equal(t, "fleet-coord-1", *model.ParentContainerID)
+	// iterations=1 is persisted (sp-ehg9): the config now records the iteration
+	// budget so recoverContainer/buildContractWorkflowCommand rebuild the right
+	// mode on restart. A coordinator-spawned worker (RunWorkflowCommand.Loop=false)
+	// is single-shot — pinned here as the byte-identical default; only a --loop
+	// container persists -1. JSON round-trips the number as float64.
 	require.Equal(t, map[string]interface{}{
 		"ship_symbol":    "SHIP-CW",
 		"coordinator_id": "fleet-coord-1",
+		"iterations":     float64(1),
 	}, containerConfig(t, model))
 }
 

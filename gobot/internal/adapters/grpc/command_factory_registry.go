@@ -949,11 +949,18 @@ func buildScoutFleetAssignmentCommand(cfg *configReader, playerID int, container
 }
 
 func buildContractWorkflowCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	// sp-ehg9: a looping batch-contract container persists iterations=-1; rebuild
+	// its RunWorkflowCommand with Loop=true so a daemon restart RE-ADOPTS the
+	// frigate loop as a loop (recovery-safe). recoverContainer separately reads
+	// the same config["iterations"] for the container's maxIterations. A
+	// single-shot worker (iterations 1 or absent — every coordinator-spawned
+	// worker) rebuilds Loop=false, byte-identical to today.
 	return &contractCmd.RunWorkflowCommand{
 		ShipSymbol:    cfg.RequiredString("ship_symbol"),
 		PlayerID:      shared.MustNewPlayerID(playerID),
 		ContainerID:   containerID,
 		CoordinatorID: cfg.OptionalString("coordinator_id"),
+		Loop:          cfg.OptionalInt("iterations", 1) == -1,
 	}
 }
 

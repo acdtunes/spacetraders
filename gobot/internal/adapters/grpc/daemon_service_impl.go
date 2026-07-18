@@ -416,7 +416,15 @@ func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.B
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	containerID, err := s.daemon.BatchContractWorkflow(ctx, req.ShipSymbol, playerID)
+	// iterations selects single-shot vs continuous loop (sp-ehg9). The CLI sends
+	// -1 for `--loop`; an unset/0 value (every pre-sp-ehg9 caller) maps to 1 so
+	// the plain verb stays byte-identical single-shot.
+	iterations := int(req.GetIterations())
+	if iterations == 0 {
+		iterations = 1
+	}
+
+	containerID, err := s.daemon.BatchContractWorkflow(ctx, req.ShipSymbol, playerID, iterations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start batch contract workflow: %w", err)
 	}

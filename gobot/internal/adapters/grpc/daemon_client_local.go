@@ -73,7 +73,14 @@ func (c *DaemonClientLocal) PersistContainer(
 		if !ok {
 			return daemon.ErrInvalidCommandType
 		}
-		return c.server.PersistContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
+		// iterations from the command's loop intent (sp-ehg9): a coordinator-
+		// spawned worker has Loop=false → 1 (single-shot, byte-identical); a
+		// continuous single-hull loop has Loop=true → -1.
+		iterations := 1
+		if cmd.Loop {
+			iterations = -1
+		}
+		return c.server.PersistContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID, iterations)
 	case daemon.ContainerKindGasSiphonWorker:
 		return c.server.PersistGasSiphonWorkerContainer(ctx, containerID, playerID, command)
 	case daemon.ContainerKindStorageShip:

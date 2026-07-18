@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
@@ -47,6 +48,10 @@ type RunWorkflowResponse = contractTypes.RunWorkflowResponse
 type RunWorkflowHandler struct {
 	lifecycleService *contractServices.ContractLifecycleService
 	deliveryExecutor *contractServices.DeliveryExecutor
+	// clock paces the continuous loop (sp-ehg9). Only consulted in loop mode;
+	// the single-shot path is unaffected. Injectable so tests advance it
+	// instantly (shared.MockClock).
+	clock shared.Clock
 }
 
 // RunWorkflowOption configures optional collaborators on the contract workflow
@@ -96,9 +101,14 @@ func NewRunWorkflowHandler(
 	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
 	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager, cfg.deliveryOpts...)
 
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+
 	return &RunWorkflowHandler{
 		lifecycleService: lifecycleService,
 		deliveryExecutor: deliveryExecutor,
+		clock:            clock,
 	}
 }
 
@@ -107,6 +117,13 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 	cmd, ok := request.(*RunWorkflowCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
+	}
+
+	// Continuous single-hull contract loop (sp-ehg9): re-negotiate + run the
+	// next contract after each fulfillment, until the container is stopped. The
+	// single-shot path below is left byte-identical for Loop=false.
+	if cmd.Loop {
+		return h.runContractLoop(ctx, cmd)
 	}
 
 	result := &RunWorkflowResponse{
@@ -261,4 +278,128 @@ func (h *RunWorkflowHandler) negotiateNextContractBestEffort(ctx context.Context
 		"contract_id":    nextContract.ContractID(),
 		"was_negotiated": wasNegotiated,
 	})
+}
+
+// ============================================================================
+// Continuous single-hull contract loop (sp-ehg9)
+// ============================================================================
+
+const (
+	// contractLoopSettle is the pause after a fulfilled contract before the loop
+	// starts the next one. The real per-contract work (source → deliver →
+	// fulfill) dominates wall time; this only keeps a degenerate/instant cycle
+	// from hot-spinning.
+	contractLoopSettle = 5 * time.Second
+
+	// contractLoopBackoff is the pause after a money-guard park (insufficient
+	// credits, sp-vwhi) or a transient per-contract error before the loop retries
+	// — so an insolvent or stalled frigate re-checks periodically instead of
+	// hammering the API. Mirrors the fleet coordinator's park-then-rediscover
+	// cadence.
+	contractLoopBackoff = 60 * time.Second
+
+	// contractLoopStopChunk bounds stop latency: the paced wait is taken in
+	// chunks so a container stop (ctx cancel) at the first-hauler pivot is
+	// honoured within one chunk instead of the full interval. Instant under a
+	// MockClock (tests).
+	contractLoopStopChunk = time.Second
+)
+
+// runContractLoop runs contracts continuously on this one hull until the
+// container is stopped (sp-ehg9). It wraps the SAME single-contract cycle the
+// single-shot path runs (executeWorkflow), so every money guard, the
+// one-active-contract idempotence (FindOrNegotiateContract finds the active
+// contract before negotiating a new one), and the container runner's ship claim
+// are inherited unchanged — the loop only adds "do it again, paced, until
+// stopped". Exposed via `workflow batch-contract --loop <ship>`; the bootstrap
+// INCOME phase starts it for the command frigate and stops it (container stop)
+// at the first-hauler pivot.
+func (h *RunWorkflowHandler) runContractLoop(ctx context.Context, cmd *RunWorkflowCommand) (common.Response, error) {
+	return h.runContractLoopWithCycle(ctx, cmd, func(c context.Context) (*RunWorkflowResponse, error) {
+		result := &RunWorkflowResponse{}
+		err := h.executeWorkflow(c, cmd, result)
+		return result, err
+	})
+}
+
+// runContractLoopWithCycle is the loop core, decoupled from the delivery
+// pipeline via the cycle seam so the orchestration (repeat, pace,
+// park-not-crash, clean ctx-stop) is unit-testable. It NEVER returns on a
+// per-cycle failure — a money-guard park or a transient error is logged, backed
+// off, and retried, exactly as the fleet coordinator keeps working the contract
+// through worker deaths (RULINGS #1). It returns ONLY when the container is
+// stopped (ctx cancelled), surfacing the graceful ctx error the runner treats as
+// a clean stop.
+func (h *RunWorkflowHandler) runContractLoopWithCycle(
+	ctx context.Context,
+	cmd *RunWorkflowCommand,
+	cycle func(context.Context) (*RunWorkflowResponse, error),
+) (common.Response, error) {
+	logger := common.LoggerFromContext(ctx)
+	var last *RunWorkflowResponse
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return coalesceLoopResponse(last), err
+		}
+
+		result, err := cycle(ctx)
+		if result != nil {
+			last = result
+		}
+
+		wait := contractLoopSettle
+		if err != nil {
+			wait = contractLoopBackoff
+			var insufficient *contractServices.ErrInsufficientCredits
+			if errors.As(err, &insufficient) {
+				// Money guard fired: the frigate cannot afford this contract's
+				// goods. Park (don't spend, don't crash) and retry after a backoff
+				// once the treasury recovers.
+				logger.Log("WARNING", "Contract loop parked on insufficient credits; backing off before retry", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "contract_loop_park",
+					"error":       err.Error(),
+				})
+			} else {
+				logger.Log("WARNING", "Contract loop cycle failed; backing off before retry", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "contract_loop_retry",
+					"error":       err.Error(),
+				})
+			}
+		}
+
+		if stopped := h.sleepWithContext(ctx, wait); stopped {
+			return coalesceLoopResponse(last), ctx.Err()
+		}
+	}
+}
+
+// sleepWithContext paces the loop via the injected clock in stop-responsive
+// chunks: it returns true the moment the container is stopped (ctx cancelled) so
+// the pivot handoff is prompt, instead of blocking out the whole interval.
+// Instant under a MockClock (tests advance without wall-waiting).
+func (h *RunWorkflowHandler) sleepWithContext(ctx context.Context, d time.Duration) (stopped bool) {
+	for remaining := d; remaining > 0; remaining -= contractLoopStopChunk {
+		if ctx.Err() != nil {
+			return true
+		}
+		step := contractLoopStopChunk
+		if remaining < step {
+			step = remaining
+		}
+		h.clock.Sleep(step)
+	}
+	return ctx.Err() != nil
+}
+
+// coalesceLoopResponse returns the last cycle's response, or an empty one if the
+// loop was stopped before any contract ran, so the loop always returns a
+// non-nil common.Response.
+func coalesceLoopResponse(last *RunWorkflowResponse) common.Response {
+	if last != nil {
+		return last
+	}
+	return &RunWorkflowResponse{}
 }

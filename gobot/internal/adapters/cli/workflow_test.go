@@ -35,6 +35,20 @@ func TestWorkflowBatchContractHasNoIterationsFlag(t *testing.T) {
 		"the dead --iterations flag must not be registered on batch-contract (sp-6fsq)")
 }
 
+// sp-ehg9: batch-contract gains a --loop flag that turns the single-shot worker
+// into a CONTINUOUS single-hull contract loop (re-negotiate + run until stopped)
+// for the bootstrap command frigate. Unlike the retired --iterations (a silent
+// no-op, sp-6fsq), --loop actually loops. It is a bool and defaults false so the
+// plain `batch-contract --ship X` verb stays byte-identical single-shot.
+func TestWorkflowBatchContractHasLoopFlag(t *testing.T) {
+	cmd := newWorkflowBatchContractCommand()
+
+	flag := cmd.Flags().Lookup("loop")
+	require.NotNil(t, flag, "batch-contract must expose --loop (continuous single-hull contract loop, sp-ehg9)")
+	require.Equal(t, "false", flag.DefValue,
+		"--loop must default false so `batch-contract --ship X` stays byte-identical single-shot")
+}
+
 func TestWorkflowBatchContractRequiresShipFlag(t *testing.T) {
 	cmd := newWorkflowBatchContractCommand()
 

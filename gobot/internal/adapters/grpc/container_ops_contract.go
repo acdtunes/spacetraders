@@ -11,26 +11,33 @@ import (
 )
 
 // BatchContractWorkflow handles batch contract workflow requests.
-// It runs a single contract to completion; continuous, multi-contract operation
-// is served by the contract fleet coordinator (see ContractFleetCoordinator /
-// the `contract start` CLI verb).
-func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, playerID int) (string, error) {
+//
+// iterations selects the mode (sp-ehg9): 1 (the default) runs a SINGLE contract
+// to completion, byte-identical to today; -1 runs the CONTINUOUS single-hull
+// contract loop — re-negotiate + run contracts until stopped — for the bootstrap
+// command frigate during the pre-hauler window. Multi-hull continuous operation
+// is still served by the contract fleet coordinator (`contract start`). The
+// bootstrap INCOME phase calls this with iterations=-1 and stops the returned
+// container (StopContainer) at the first-hauler pivot.
+func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, playerID int, iterations int) (string, error) {
 	containerID := utils.GenerateContainerID("batch_contract_workflow", shipSymbol)
 
-	// Delegate to ContractWorkflow (single iteration)
-	return s.ContractWorkflow(ctx, containerID, shipSymbol, playerID, "")
+	return s.ContractWorkflow(ctx, containerID, shipSymbol, playerID, "", iterations)
 }
 
-// ContractWorkflow creates and starts a contract workflow container
+// ContractWorkflow creates and starts a contract workflow container. iterations
+// is 1 for a single-shot worker (the coordinator-spawned default) or -1 for a
+// continuous single-hull loop (sp-ehg9).
 func (s *DaemonServer) ContractWorkflow(
 	ctx context.Context,
 	containerID string,
 	shipSymbol string,
 	playerID int,
 	coordinatorID string,
+	iterations int,
 ) (string, error) {
 	// Persist container to DB
-	if err := s.PersistContractWorkflow(ctx, containerID, shipSymbol, playerID, coordinatorID); err != nil {
+	if err := s.PersistContractWorkflow(ctx, containerID, shipSymbol, playerID, coordinatorID, iterations); err != nil {
 		return "", err
 	}
 
@@ -42,16 +49,21 @@ func (s *DaemonServer) ContractWorkflow(
 	return containerID, nil
 }
 
-// PersistContractWorkflow creates a contract workflow container in DB (does NOT start it)
+// PersistContractWorkflow creates a contract workflow container in DB (does NOT
+// start it). iterations is the container's work budget: 1 = single contract
+// (the coordinator-owned worker default), -1 = continuous loop (sp-ehg9). It is
+// stored BOTH on the entity (drives the live runner) AND in the launch config
+// ("iterations"), because recoverContainer rebuilds the entity's maxIterations
+// from config on a daemon restart and buildContractWorkflowCommand rebuilds the
+// command's Loop flag from it — so a -1 loop resumes as a loop (recovery-safe).
 func (s *DaemonServer) PersistContractWorkflow(
 	ctx context.Context,
 	containerID string,
 	shipSymbol string,
 	playerID int,
 	coordinatorID string,
+	iterations int,
 ) error {
-	// Create container entity (single iteration for worker containers)
-	iterations := 1
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeContractWorkflow,
@@ -61,6 +73,7 @@ func (s *DaemonServer) PersistContractWorkflow(
 		map[string]interface{}{
 			"ship_symbol":    shipSymbol,
 			"coordinator_id": coordinatorID,
+			"iterations":     iterations,
 		},
 		nil, // Use default RealClock for production
 	)
@@ -117,13 +130,23 @@ func (s *DaemonServer) StartContractWorkflow(
 		return fmt.Errorf("failed to create command: %w", err)
 	}
 
+	// Iteration budget from the persisted launch config: 1 (or absent) = a
+	// single-shot worker; -1 = the continuous single-hull loop (sp-ehg9). Read
+	// from config so the fresh-start entity matches what recoverContainer rebuilds
+	// on a restart — otherwise a loop container would start looping but restart as
+	// single-shot. A coordinator-spawned worker never sets "iterations", so it
+	// stays 1 (byte-identical).
+	iterations := 1
+	if v, ok := intValue(config["iterations"]); ok {
+		iterations = v
+	}
+
 	// Create container entity from model
-	// Worker containers always have 1 iteration
 	containerEntity := container.NewContainer(
 		containerModel.ID,
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
-		1,   // Worker containers are single iteration
+		iterations,
 		nil, // No parent container
 		config,
 		nil,

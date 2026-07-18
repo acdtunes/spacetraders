@@ -625,15 +625,23 @@ func (c *DaemonClient) JettisonCargo(
 	}, nil
 }
 
-// BatchContractWorkflow initiates batch contract workflow
+// BatchContractWorkflow initiates batch contract workflow. loop=false runs a
+// single contract (byte-identical to today); loop=true runs the continuous
+// single-hull contract loop (sp-ehg9) by sending iterations=-1.
 func (c *DaemonClient) BatchContractWorkflow(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
 	agentSymbol string,
+	loop bool,
 ) (*BatchContractWorkflowResponse, error) {
+	iterations := int32(1)
+	if loop {
+		iterations = -1
+	}
 	req := &pb.BatchContractWorkflowRequest{
 		ShipSymbol: shipSymbol,
+		Iterations: iterations,
 		PlayerId:   int32(playerID),
 	}
 	if agentSymbol != "" {

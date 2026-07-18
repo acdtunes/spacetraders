@@ -91,6 +91,17 @@ type RunWorkflowCommand struct {
 	PlayerID      shared.PlayerID
 	ContainerID   string // This worker's container ID (optional)
 	CoordinatorID string // Parent coordinator container ID (optional)
+
+	// Loop turns the single-shot worker into a CONTINUOUS single-hull contract
+	// loop (sp-ehg9): the handler re-negotiates and runs the next contract after
+	// each fulfillment, paced, until the container is stopped (ctx cancelled).
+	// It is the bootstrap command frigate's sole-earner loop during the
+	// pre-hauler cold-start window. Default false = the original single-shot
+	// behavior, byte-identical for `batch-contract` and every coordinator-spawned
+	// worker (the fleet coordinator owns their looping). A looping container
+	// persists iterations=-1 so a daemon restart rebuilds this flag true
+	// (recovery-safe); see buildContractWorkflowCommand.
+	Loop bool
 }
 
 // RunWorkflowResponse contains workflow execution results.
