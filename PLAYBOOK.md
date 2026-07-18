@@ -24,7 +24,13 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   blockers via knobs, not manual flying. Frontier expansion stays OFF until the gate
   completes (it expands over gate edges — there is nothing to expand pre-gate); the
   freshsizer boots standing and takes over the durable freshness fleet once markets are
-  scanned. Then: pin the era KPI on the strategy bead — metric basis (net credit delta over
+  scanned. Once the first contract hubs exist (INCOME), start the capacity reconciler
+  (`workflow capacity-reconciler`) — it converges the contract topology continuously up
+  the tier ladder: reuse idle hulls → reposition/rebalance workers → tune depot-warehouse
+  buffer whitelists/caps → capital moves (new depots, hull buys) filed as DEFERRED captain
+  events with full ROI evidence, approval-gated. The captain approves proposals at wake
+  and tunes; it never hand-builds topology. (`--dry-run` launches it observe-only and
+  stays dry across restarts.) Then: pin the era KPI on the strategy bead — metric basis (net credit delta over
   closed hours) plus measurement window — before any optimization talk; economy-analyst
   delivers the era economy map once; schedule the construction shakedown inside the first
   ~12h, graded only on material-delivered > 0.
