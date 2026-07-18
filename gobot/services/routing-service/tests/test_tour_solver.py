@@ -1119,3 +1119,231 @@ def test_max_planned_tranches_env_deepens_planned_load(monkeypatch):
     # Mutation guard: hardcode the resolver to 2 and baseline == deeper == deepest here.
     assert deeper > baseline, (baseline, deeper)
     assert deepest > deeper, (deeper, deepest)
+
+
+# ── sp-7q5t / sp-fguo widening unlock: two env-overridable tour-solver knobs ────
+# candidate_hop_depth=2 widening is armed but under-delivering: the beam generates
+# many more 2-hop candidate SEQUENCES than the hardcoded FULL_SCORE_TOP_N=20 can
+# score, and OR-Tools caps each model at ORTOOLS_MAX_NODES=80 nodes — so the distant
+# rich sinks are cut before full scoring. These two knobs let the widened candidates
+# actually compete. Both mirror TOUR_SOLVER_MAX_PLANNED_TRANCHES / _sequencer_env_scalar:
+# resolved once per solve, clamped, default-safe. DEFAULT-SAFE governance gate:
+# absent/unset/invalid env resolves to the current hardcode (20 / 80), byte-identical.
+
+@pytest.mark.parametrize("env_value,expected", [
+    (None, 20),    # absent/unset -> module default (byte-identical to pre-widening)
+    ("", 20),      # empty/unset -> the default
+    ("20", 20),    # explicit default
+    ("35", 35),    # the economy-analyst's recommended arm value
+    ("50", 50),    # mid, in-range
+    ("100", 100),  # ceiling, in-range
+    ("10", 10),    # floor, in-range
+    ("0", 10),     # 0 -> floored to the sane minimum, NEVER 0 (a 0 top-N scores nothing)
+    ("-5", 10),    # negative -> floored to 10, never 0
+    ("5", 10),     # below the floor -> clamped up to 10
+    ("200", 100),  # above the sane range -> clamped to the ceiling
+    ("abc", 20),   # non-int -> falls back to the default
+    ("2.5", 20),   # non-int (float string) -> falls back to the default
+])
+def test_resolve_full_score_top_n_env_override(monkeypatch, env_value, expected):
+    # sp-7q5t: the resolver mirrors _sequencer_env_scalar — clamp to [10, 100], fall
+    # back to the FULL_SCORE_TOP_N default (20) on absent/unset/non-int. Floor is 10
+    # (NEVER 0): a 0/negative operator typo could otherwise admit no sequence to full
+    # scoring and silently return no tour.
+    from utils.tour_solver import (_resolve_full_score_top_n,
+                                   FULL_SCORE_TOP_N_ENV_VAR, FULL_SCORE_TOP_N)
+    if env_value is None:
+        monkeypatch.delenv(FULL_SCORE_TOP_N_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(FULL_SCORE_TOP_N_ENV_VAR, env_value)
+    resolved = _resolve_full_score_top_n()
+    assert resolved == expected
+    assert resolved >= 10, "the full-score cut must never resolve below 10 (never 0)"
+    if env_value in (None, ""):
+        # governance gate: an absent env is byte-identical to the pre-widening hardcode
+        assert resolved == FULL_SCORE_TOP_N
+
+
+def test_full_score_top_n_env_admits_more_sequences_to_full_scoring(monkeypatch):
+    # sp-7q5t (the point of the knob): FULL_SCORE_TOP_N is the SIZE of the stage-2
+    # scoring pool (beam_cands[:full_score_top_n]); every pooled sequence is handed to
+    # score_sequence exactly once. A board with far more than 35 profitable candidate
+    # sequences lets us OBSERVE the cut through the driving port: raising the env from
+    # the default 20 to 35 admits 15 more widened sequences to full scoring.
+    from utils import tour_solver as ts
+    # 24 independent (source, sink) pairs on distinct goods -> the beam surfaces well
+    # over 35 candidate sequences, so the top-N cut is the binding limit.
+    snapshot = []
+    for i in range(24):
+        snapshot.append(snap(f"SRC{i:02d}", "S1", f"G{i:02d}", ask=100, bid=90, tv=20))
+        snapshot.append(snap(f"SNK{i:02d}", "S1", f"G{i:02d}", ask=999, bid=400, tv=20))
+    ship = dict(ship_symbol="H", current_waypoint="SRC00", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(max_hops=6, max_spend=10_000_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+
+    def scored_count(env_value):
+        if env_value is None:
+            monkeypatch.delenv("TOUR_SOLVER_FULL_SCORE_TOP_N", raising=False)
+        else:
+            monkeypatch.setenv("TOUR_SOLVER_FULL_SCORE_TOP_N", env_value)
+        calls = {"n": 0}
+        real = ts.score_sequence
+
+        def spy(*a, **k):
+            calls["n"] += 1
+            return real(*a, **k)
+
+        monkeypatch.setattr(ts, "score_sequence", spy)
+        try:
+            out = solve_tour(snapshot, ship, cons, MODEL, objective="profit")
+        finally:
+            monkeypatch.setattr(ts, "score_sequence", real)
+        assert out["feasible"], out
+        return calls["n"]
+
+    default_scored = scored_count(None)   # cut at the default 20
+    widened_scored = scored_count("35")   # cut raised to 35
+
+    # Sanity: the board must generate MORE candidate sequences than the default cut,
+    # else the knob has nothing to admit and the test would be vacuous.
+    assert default_scored == 20, default_scored
+    # Mutation guard: hardcode _resolve_full_score_top_n to 20 and widened_scored == 20.
+    assert widened_scored == 35, widened_scored
+    assert widened_scored > default_scored
+
+
+@pytest.mark.parametrize("env_value,expected", [
+    (None, 80),    # absent/unset -> module default (byte-identical)
+    ("", 80),      # empty/unset -> the default
+    ("80", 80),    # explicit default
+    ("160", 160),  # the recommended arm value
+    ("40", 40),    # floor, in-range
+    ("400", 400),  # ceiling, in-range
+    ("0", 40),     # 0 -> floored to the sane minimum 40
+    ("-5", 40),    # negative -> floored to 40
+    ("20", 40),    # below the floor -> clamped up to 40
+    ("999", 400),  # above the sane range -> clamped to the ceiling
+    ("abc", 80),   # non-int -> falls back to the default
+    ("3.5", 80),   # non-int (float string) -> falls back to the default
+])
+def test_resolve_ortools_max_nodes_env_override(monkeypatch, env_value, expected):
+    # sp-7q5t: the resolver mirrors _sequencer_env_scalar — clamp to [40, 400], fall
+    # back to the ORTOOLS_MAX_NODES default (80) on absent/unset/non-int.
+    from utils.tour_solver import (_resolve_ortools_max_nodes,
+                                   ORTOOLS_MAX_NODES_ENV_VAR, ORTOOLS_MAX_NODES)
+    if env_value is None:
+        monkeypatch.delenv(ORTOOLS_MAX_NODES_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(ORTOOLS_MAX_NODES_ENV_VAR, env_value)
+    resolved = _resolve_ortools_max_nodes()
+    assert resolved == expected
+    assert resolved >= 40, "the node cap must never resolve below the sane floor of 40"
+    if env_value in (None, ""):
+        # governance gate: an absent env is byte-identical to the pre-widening hardcode
+        assert resolved == ORTOOLS_MAX_NODES
+
+
+def _big_prune_board():
+    # 200 profitable markets (100 goods x cheap-source + rich-sink), self-contained.
+    big = []
+    for i in range(100):
+        big.append(snap(f"S{i:03d}", "S1", f"GD{i:02d}", ask=50, bid=45, tv=20))
+        big.append(snap(f"K{i:03d}", "S1", f"GD{i:02d}", ask=999, bid=150, tv=20))
+    ship = dict(ship_symbol="H", current_waypoint="S000", current_system="S1",
+                hold_capacity=40, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=0,
+                working_capital_reserve=0, allowed_systems=["S1"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    return big, ship, cons
+
+
+def test_ortools_max_nodes_widens_pruned_node_cap():
+    # sp-7q5t (the point of the knob): ORTOOLS_MAX_NODES bounds how many pruned market
+    # nodes enter each OR-Tools subset model. 200 profitable markets truncate to the
+    # cap. Raising it keeps MORE nodes — exercising BOTH read sites (the len<=cap gate
+    # AND the room=cap-len(exempt) truncation). Direct _prune_nodes call (mirrors the
+    # T10 ortools pruning test) so no OR-Tools solve is needed — fast + deterministic.
+    from utils import tour_solver as ts
+    big, ship, cons = _big_prune_board()
+    rows = [r for r in big if r["ask"] > 0 or r["bid"] > 0]
+    markets = ts._build_markets(rows)
+
+    def kept_count(cap):
+        return len(ts._prune_nodes(markets, ship, cons, {}, {}, ortools_max_nodes=cap))
+
+    default_nodes = kept_count(80)    # the current hardcode
+    widened_nodes = kept_count(160)   # the recommended arm
+    assert default_nodes == 80, default_nodes
+    # Mutation guard: leave read site :946 (room) on the constant and widened == 80.
+    assert widened_nodes == 160, widened_nodes
+    assert widened_nodes > default_nodes
+
+
+def test_ortools_max_nodes_env_flows_through_sequencer_to_prune(monkeypatch):
+    # sp-7q5t wiring guard: the env-resolved cap must actually REACH the node-cap read
+    # site. Drive the real ortools_sequences (which resolves the env) over the 200-market
+    # board and observe, via a wrapper on _prune_nodes, how many nodes survived the cap.
+    # env=160 keeps 160; unset keeps the default 80. The wrapper truncates its RETURN so
+    # the downstream OR-Tools solve stays cheap regardless of the cap.
+    from utils import tour_solver as ts
+    big, ship, cons = _big_prune_board()
+    rows = [r for r in big if r["ask"] > 0 or r["bid"] > 0]
+    markets = ts._build_markets(rows)
+    travel = ts._make_travel_fn(cons, markets, ship)
+
+    def surviving_nodes(env_value):
+        if env_value is None:
+            monkeypatch.delenv("TOUR_SOLVER_ORTOOLS_MAX_NODES", raising=False)
+        else:
+            monkeypatch.setenv("TOUR_SOLVER_ORTOOLS_MAX_NODES", env_value)
+        seen = {}
+        real = ts._prune_nodes
+
+        def wrap(*a, **k):
+            pruned = real(*a, **k)
+            seen["n"] = len(pruned)
+            return pruned[:3]   # keep the downstream OR-Tools solve cheap
+
+        monkeypatch.setattr(ts, "_prune_nodes", wrap)
+        try:
+            ts.ortools_sequences(markets, ship, cons, travel)
+        finally:
+            monkeypatch.setattr(ts, "_prune_nodes", real)
+        return seen["n"]
+
+    # Mutation guard: hardcode _resolve_ortools_max_nodes to 80, or drop the kwarg on the
+    # _prune_nodes call in ortools_sequences, and the env=160 case still reports 80.
+    assert surviving_nodes(None) == 80, "default cap must flow through ortools_sequences"
+    assert surviving_nodes("160") == 160, "env cap must flow through ortools_sequences"
+
+
+def test_env_knobs_resolve_from_boot_environment():
+    # "Live server (env at boot)": run.sh exports the knobs before launching
+    # server/main.py, so they live in os.environ from process start. Prove a FRESH
+    # interpreter that had BOTH knobs in its boot environment resolves them (mirrors the
+    # T1 lazy-import subprocess pin in test_tour_solver_ortools.py). This is exactly the
+    # run.sh arming path — distinct from the in-process monkeypatch path above.
+    import os as _os
+    import subprocess as _sub
+    import sys as _sys
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "from utils.tour_solver import (_resolve_full_score_top_n,\n"
+        "                               _resolve_ortools_max_nodes)\n"
+        "assert _resolve_full_score_top_n() == 35, _resolve_full_score_top_n()\n"
+        "assert _resolve_ortools_max_nodes() == 160, _resolve_ortools_max_nodes()\n"
+        "print('BOOT_ENV_OK')\n"
+    ) % root
+    env = dict(_os.environ)
+    env["TOUR_SOLVER_FULL_SCORE_TOP_N"] = "35"
+    env["TOUR_SOLVER_ORTOOLS_MAX_NODES"] = "160"
+    proc = _sub.run([_sys.executable, "-c", code], capture_output=True,
+                    text=True, env=env, cwd=root)
+    assert proc.returncode == 0, proc.stderr
+    assert "BOOT_ENV_OK" in proc.stdout

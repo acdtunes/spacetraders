@@ -111,7 +111,16 @@ logger = logging.getLogger(__name__)
 MAX_TOUR_SYSTEMS = 2          # Admiral revision 2026-07-09: start system + 1 gate neighbor
 MAX_HOPS_DEFAULT = 6          # spec: maxHops <= 6
 BEAM_WIDTH = 50               # spec decision #4
-FULL_SCORE_TOP_N = 20         # sequences fully tranche-scored after the beam
+# sp-7q5t/sp-fguo widening unlock: env-overridable so the widened candidate set
+# (candidate_hop_depth=2) actually survives to full stage-2 scoring — the distant rich
+# sinks were being cut here before scoring. Resolved ONCE per solve_tour
+# (_resolve_full_score_top_n) and used at every cut site, mirroring
+# TOUR_SOLVER_MAX_PLANNED_TRANCHES. DEFAULT-SAFE: absent/unset/invalid env -> 20 ->
+# byte-identical to the pre-widening hardcode (the governance gate).
+FULL_SCORE_TOP_N = 20         # sequences fully tranche-scored after the beam; env TOUR_SOLVER_FULL_SCORE_TOP_N, clamp [10, 100]
+FULL_SCORE_TOP_N_ENV_VAR = "TOUR_SOLVER_FULL_SCORE_TOP_N"
+FULL_SCORE_TOP_N_MIN = 10     # floor: a tiny top-N starves stage-2 of candidates; NEVER 0 (0 scores nothing)
+FULL_SCORE_TOP_N_MAX = 100    # ceiling: bounds stage-2 scoring cost
 TOP_REJECTED_N = 3            # rejected alternatives reported (observability parity)
 MAX_SNAPSHOT_AGE_MINUTES_DEFAULT = 75   # mirrors trading's maxListingAge
 DEFAULT_SELL_DECAY = 0.9      # conservative fallback when tier not fitted
@@ -150,7 +159,10 @@ SEQUENCER_ORTOOLS = "ortools"
 ORTOOLS_TIME_BUDGET_SECONDS = 3        # GLOBAL per-call wall budget, env TOUR_SOLVER_ORTOOLS_BUDGET_SECONDS, clamp [2, 5]
 ORTOOLS_MIN_MODEL_MS = 250             # floor per subset model
 ORTOOLS_MAX_SUBSETS = 8                # max subset models solved per call, env TOUR_SOLVER_ORTOOLS_MAX_SUBSETS, clamp [1, 32]
-ORTOOLS_MAX_NODES = 80                 # per-model node cap after pruning
+ORTOOLS_MAX_NODES = 80                 # per-model node cap after pruning; env TOUR_SOLVER_ORTOOLS_MAX_NODES, clamp [40, 400]
+ORTOOLS_MAX_NODES_ENV_VAR = "TOUR_SOLVER_ORTOOLS_MAX_NODES"  # sp-7q5t/sp-fguo widening unlock
+ORTOOLS_MAX_NODES_MIN = 40             # floor: below this a rich distant cluster is over-pruned before it can compete
+ORTOOLS_MAX_NODES_MAX = 400            # ceiling: bounds per-model routing cost / p99 solve latency
 # λ (credits per second of travel+dwell) shapes IN-MODEL visit/skip and
 # ordering only — candidate ranking and stage-2 pricing never see it. Default
 # 10.0 is a documented PLACEHOLDER pending the pre-arming replay sweep
@@ -878,7 +890,8 @@ def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp,
 
 
 def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
-                 max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE):
+                 max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE,
+                 ortools_max_nodes=ORTOOLS_MAX_NODES):
     """Two-phase node pruning for the ortools subset models (sp-y05b).
 
     Phase 1 — cheap prefilter on per-good global max_bid/min_ask with the
@@ -889,7 +902,7 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
     Also kept: held-cargo liquidation sinks (beam's liquidation-seed parity),
     deposit-sink/stock-source hosts, and the ship's current waypoint.
 
-    Phase 2 — if still over ORTOOLS_MAX_NODES, rank by max incident
+    Phase 2 — if still over the node cap ortools_max_nodes, rank by max incident
     _pair_gain + liquidation value and truncate, with start/deposit/stock/
     liquidation-positive nodes EXEMPT from truncation."""
     deposit_sinks = deposit_sinks or {}
@@ -920,7 +933,7 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
         return False
 
     kept = [wp for wp in sorted(markets) if keep(wp)]
-    if len(kept) <= ORTOOLS_MAX_NODES:
+    if len(kept) <= ortools_max_nodes:
         return kept
 
     exempt = {wp for wp in kept
@@ -943,7 +956,7 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
 
     ranked = sorted((wp for wp in kept if wp not in exempt),
                     key=lambda wp: (-node_potential(wp), wp))
-    room = max(0, ORTOOLS_MAX_NODES - len(exempt))
+    room = max(0, ortools_max_nodes - len(exempt))
     survivors = set(ranked[:room]) | exempt
     return [wp for wp in kept if wp in survivors]
 
@@ -1118,6 +1131,36 @@ def _resolve_max_planned_tranches():
                                  MAX_PLANNED_TRANCHES_MAX, int)
 
 
+def _resolve_full_score_top_n():
+    """Per-solve env override for the stage-2 full-scoring cut
+    (TOUR_SOLVER_FULL_SCORE_TOP_N, sp-7q5t/sp-fguo widening unlock). Delegates to
+    _sequencer_env_scalar, so it clamps to [FULL_SCORE_TOP_N_MIN, FULL_SCORE_TOP_N_MAX]
+    and falls back to the FULL_SCORE_TOP_N default (20) on absent/unset/non-int —
+    byte-identical to the pre-widening hardcode when the env is not set. The floor is
+    10 (NEVER 0: a 0/negative top-N would admit no sequence to full scoring and return
+    no tour). Resolved ONCE at the top of solve_tour and used at every cut site — the
+    same discipline as _resolve_max_planned_tranches."""
+    return _sequencer_env_scalar(FULL_SCORE_TOP_N_ENV_VAR,
+                                 FULL_SCORE_TOP_N,
+                                 FULL_SCORE_TOP_N_MIN,
+                                 FULL_SCORE_TOP_N_MAX, int)
+
+
+def _resolve_ortools_max_nodes():
+    """Per-solve env override for the OR-Tools per-model node cap
+    (TOUR_SOLVER_ORTOOLS_MAX_NODES, sp-7q5t/sp-fguo widening unlock). Delegates to
+    _sequencer_env_scalar, so it clamps to [ORTOOLS_MAX_NODES_MIN, ORTOOLS_MAX_NODES_MAX]
+    and falls back to the ORTOOLS_MAX_NODES default (80) on absent/unset/non-int —
+    byte-identical when the env is not set. Resolved ONCE inside ortools_sequences
+    (alongside the lam/budget/max_subsets OR-Tools knobs, since the node cap is only
+    reached on the ortools path) and threaded to _prune_nodes so both node-cap read
+    sites use one consistent value — the same discipline as TOUR_SOLVER_ORTOOLS_TIME_VALUE."""
+    return _sequencer_env_scalar(ORTOOLS_MAX_NODES_ENV_VAR,
+                                 ORTOOLS_MAX_NODES,
+                                 ORTOOLS_MAX_NODES_MIN,
+                                 ORTOOLS_MAX_NODES_MAX, int)
+
+
 def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                       stock_sources=None, stats_out=None, max_planned_tranches=None):
     """OR-Tools prize-collecting stage-1 sequencer (sp-y05b). Same contract as
@@ -1167,9 +1210,13 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                                         ORTOOLS_MAX_SUBSETS, 1, 32, int)
     if max_planned_tranches is None:   # sp-acb8: env-resolve for direct callers; solve_tour threads it
         max_planned_tranches = _resolve_max_planned_tranches()
+    # sp-7q5t/sp-fguo: resolve the per-model node cap alongside the sibling OR-Tools
+    # knobs (lam/budget/max_subsets) — the node cap is only reached on this path — and
+    # thread it to _prune_nodes so both node-cap read sites use one consistent value.
+    ortools_max_nodes = _resolve_ortools_max_nodes()
 
     pruned = _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
-                          max_planned_tranches)
+                          max_planned_tranches, ortools_max_nodes=ortools_max_nodes)
     # sp-im74: CLOSED mode prices the return-to-anchor on the virtual END arc, so the
     # in-model route optimum is a closed circuit. Open (closed falsey, or a direct
     # caller without the solve_tour stash) keeps all end arcs at 0 — byte-identical.
@@ -1523,6 +1570,10 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # TOUR_SOLVER_MAX_PLANNED_TRANCHES, default 2 == byte-identical) and thread the
     # single value to every stage so this solve is internally consistent.
     max_planned_tranches = _resolve_max_planned_tranches()
+    # sp-7q5t/sp-fguo widening unlock: resolve the stage-2 full-scoring cut ONCE per
+    # solve (env TOUR_SOLVER_FULL_SCORE_TOP_N, default 20 == byte-identical) so the
+    # widened beam candidates can actually survive to full scoring.
+    full_score_top_n = _resolve_full_score_top_n()
     beam_cands = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
                                 stock_source_idx,
                                 max_planned_tranches=max_planned_tranches)
@@ -1546,11 +1597,11 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
                 "tour-solver: ortools sequencer produced no candidates; beam only")
         # UNION (F1/F2 safety net): a degenerate non-empty ortools pool must
         # never hide beam's candidates — ortools can only ADD, stage 2 arbitrates.
-        pool = list(ortools_cands[:FULL_SCORE_TOP_N])
+        pool = list(ortools_cands[:full_score_top_n])
         seen_seqs = set(pool)
-        pool += [s for s in beam_cands[:FULL_SCORE_TOP_N] if s not in seen_seqs]
+        pool += [s for s in beam_cands[:full_score_top_n] if s not in seen_seqs]
     else:
-        pool = beam_cands[:FULL_SCORE_TOP_N]
+        pool = beam_cands[:full_score_top_n]
     if not pool:
         # Union-empty ⇒ beam-empty ⇒ today's reason string, byte-identical.
         return _infeasible("no_candidate_tours", model_version)
