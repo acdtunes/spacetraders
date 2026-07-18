@@ -176,7 +176,7 @@ func incomeObs() Observation {
 // --- phase derivation: past coverage, INCOME below the bar, GATE at/above it ---
 
 func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // income_bar default 10000
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar default 10000
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 5000}
 	if p := derivePhase(obs, cfg); p != PhaseIncome {
 		t.Fatalf("coverage met + income below bar should derive INCOME, got %s", p)
@@ -184,7 +184,7 @@ func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
 }
 
 func TestBootstrap_DerivePhase_GateAtIncomeBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 10000}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
 		t.Fatalf("realized $/hr ≥ bar should derive GATE, got %s", p)
@@ -194,7 +194,7 @@ func TestBootstrap_DerivePhase_GateAtIncomeBar(t *testing.T) {
 // --- config defaults resolve LIVE for the INCOME knobs ---
 
 func TestBootstrap_ResolvesIncomeDefaults(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	if cfg.HaulerTarget != defaultHaulerTarget {
 		t.Fatalf("hauler_target default = %d, got %d", defaultHaulerTarget, cfg.HaulerTarget)
 	}

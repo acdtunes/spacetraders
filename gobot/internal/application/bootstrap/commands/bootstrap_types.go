@@ -65,6 +65,13 @@ type Observation struct {
 	// Treasury is live agent credits — the capital-gate input.
 	Treasury int64
 
+	// FreshsizerActive reports whether a market-freshness-sizer coordinator is RUNNING for this
+	// player — the sp-tsn2 probe-buyer-arbitration input. When the deferral knob is armed and the
+	// first market is covered, bootstrap hands probe acquisition to the freshsizer so exactly one
+	// buyer grows the shared fleet during the conflict window. false ⇒ bootstrap NEVER defers (it
+	// must not defer into a vacuum — a cold start would wedge if no buyer provisions probes).
+	FreshsizerActive bool
+
 	// --- INCOME-phase signals (Slice 2). Zero values are the cold-start default (no income yet, no
 	// haulers, frigate untagged, no market data), so a DATA-phase observation that leaves them unset
 	// reads as "INCOME not started" and the DATA guards are unaffected. ---

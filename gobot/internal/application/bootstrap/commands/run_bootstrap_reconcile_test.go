@@ -253,7 +253,7 @@ func TestBootstrap_Disabled_TakesNoAction(t *testing.T) {
 // --- phase derivation is from observation, never a stored cursor ---
 
 func TestBootstrap_DerivePhase_DataWhenUncovered(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 0}, cfg); p != PhaseData {
 		t.Fatalf("uncovered world should derive DATA, got %s", p)
 	}
@@ -264,7 +264,7 @@ func TestBootstrap_DerivePhase_DataWhenUncovered(t *testing.T) {
 }
 
 func TestBootstrap_DerivePhase_BeyondDataAtCoverageBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // bar 0.9
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // bar 0.9
 	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 9}, cfg); p != PhaseIncome {
 		t.Fatalf("coverage 90%% should derive past DATA (INCOME), got %s", p)
 	}

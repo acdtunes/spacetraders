@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -47,6 +48,12 @@ const (
 	// call-site constant (not a knob) — it is a shape detail of the sizing formula, bounded by
 	// gate_worker_target which IS the operator-reachable cap.
 	gateDeliveryHaulers = 1
+
+	// defaultDeferProbeToFreshsizer is the sp-tsn2 single-buyer-arbitration flag default: 0 = OFF
+	// (byte-identical — bootstrap and freshsizer each buy behind their own guards). Armed to 1 via
+	// `tune --operation bootstrap defer_probe_to_freshsizer 1`, bootstrap hands probe acquisition to
+	// the freshsizer once the first market is covered (coverage>0) and a freshsizer coordinator runs.
+	defaultDeferProbeToFreshsizer = 0
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -232,6 +239,11 @@ type RunBootstrapCoordinatorHandler struct {
 	repurposer    WorkerRepurposer
 	gateAcquirer  GateWorkerAcquirer
 	handoff       HandoffLauncher
+
+	// liveConfig snapshots the container's OWN persisted config at each tick start (sp-r6yq),
+	// so a `spacetraders tune --operation bootstrap` of a knob takes effect on the NEXT tick with
+	// no restart. Optional-injection: nil keeps the launch-frozen behavior byte-identical.
+	liveConfig liveconfig.Reader
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when
@@ -300,6 +312,30 @@ func (h *RunBootstrapCoordinatorHandler) SetGateWorkerAcquirer(a GateWorkerAcqui
 // the gate completes but the hand-off is a logged skip, so the mature economy is not launched (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetHandoffLauncher(l HandoffLauncher) { h.handoff = l }
 
+// SetLiveConfigReader wires the per-tick live-config snapshot source (sp-r6yq), making the
+// tunable knobs (BootstrapTunableDefaults) honor `spacetraders tune --operation bootstrap` on
+// the next tick. Leaving it unset keeps every knob launch-frozen (byte-identical to pre-sp-r6yq).
+func (h *RunBootstrapCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) { h.liveConfig = r }
+
+// liveConfigSnapshot takes the tick's live-config snapshot (sp-r6yq). A nil reader (not wired —
+// tests, minimal boots) or a read error yields nil, which resolveBootstrapConfig treats as "run
+// this tick entirely on the launch command" — the fail-safe launch behavior, never a
+// half-applied config. The read is logged, not fatal: a transient DB gap must not kill the loop.
+func (h *RunBootstrapCoordinatorHandler) liveConfigSnapshot(ctx context.Context, cmd *RunBootstrapCoordinatorCommand) liveconfig.Snapshot {
+	if h.liveConfig == nil {
+		return nil
+	}
+	snap, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf("Bootstrap live config unreadable — this tick runs on launch values: %v", err), map[string]interface{}{
+			"action":       "bootstrap_live_config_unreadable",
+			"container_id": cmd.ContainerID,
+		})
+		return nil
+	}
+	return snap
+}
+
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -309,7 +345,9 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	cfg := resolveBootstrapConfig(cmd)
+	// Startup log only — resolve from the launch command alone (nil live). Per-tick reconcile
+	// re-resolves WITH the live snapshot (sp-r6yq), so a later tune is reflected from that tick on.
+	cfg := resolveBootstrapConfig(cmd, nil)
 	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, reserve_margin=%.2f, hauler_target=%d, income_bar=%.0f, min_contract_earners=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.ReserveMargin, cfg.HaulerTarget, cfg.IncomeBar, cfg.MinContractEarners), map[string]interface{}{
 		"action":       "bootstrap_start",
 		"container_id": cmd.ContainerID,

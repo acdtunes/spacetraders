@@ -10,7 +10,7 @@ import (
 
 // The INCOME→GATE entry is realized $/hr ≥ income_bar (unchanged from Slice 2's stub-era derivation).
 func TestBootstrap_DerivePhase_EntersGateAtIncomeBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // income_bar 10000
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar 10000
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 12000}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
 		t.Fatalf("income over bar should derive GATE, got %s", p)
@@ -21,7 +21,7 @@ func TestBootstrap_DerivePhase_EntersGateAtIncomeBar(t *testing.T) {
 // income has fallen back under the bar (haulers repurposed to construction). Without this, derivePhase
 // regresses GATE→INCOME and re-buys haulers — a thrash loop.
 func TestBootstrap_DerivePhase_GateStickyOnceConstructionStarted(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 10,
 		IncomePerHour:       500, // well under the 10000 bar — haulers repurposed
@@ -34,7 +34,7 @@ func TestBootstrap_DerivePhase_GateStickyOnceConstructionStarted(t *testing.T) {
 
 // A 100%-delivered gate derives COMPLETE — terminal and monotone, so a restart post-completion resumes COMPLETE.
 func TestBootstrap_DerivePhase_CompleteWhenConstructionComplete(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 10,
 		IncomePerHour:        200, // income is irrelevant once the gate is built
@@ -49,7 +49,7 @@ func TestBootstrap_DerivePhase_CompleteWhenConstructionComplete(t *testing.T) {
 // Coverage still gates everything: a cold agent (no market data) stays DATA even if some stray
 // construction flag is set — the arc never skips the data phase.
 func TestBootstrap_DerivePhase_DataDominatesConstructionFlags(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}
 	if p := derivePhase(obs, cfg); p != PhaseData {
 		t.Fatalf("uncovered world should derive DATA regardless of construction flags, got %s", p)
@@ -61,7 +61,7 @@ func TestBootstrap_DerivePhase_DataDominatesConstructionFlags(t *testing.T) {
 // Repurpose-first: when GATE begins, all contract haulers beyond min_contract_earners are released to
 // the executor as the seed workforce — BEFORE the pipeline reveals its shape (chains still 0), so no buy.
 func TestBootstrap_PlanGateWorkers_RepurposesSurplusFirst(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // min_contract_earners 1, gate_worker_target 6
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // min_contract_earners 1, gate_worker_target 6
 	obs := Observation{
 		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}},
 		GateMaterialChains: 0, // pipeline shape not yet known
@@ -86,7 +86,7 @@ func TestBootstrap_PlanGateWorkers_RepurposesSurplusFirst(t *testing.T) {
 
 // The keep guard holds: at exactly min_contract_earners on contract, nothing is released.
 func TestBootstrap_PlanGateWorkers_KeepsMinContractEarners(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // keep 1
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // keep 1
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateMaterialChains: 3}
 	plan := planGateWorkers(obs, cfg)
 	if len(plan.ReleaseShips) != 0 {
@@ -97,7 +97,7 @@ func TestBootstrap_PlanGateWorkers_KeepsMinContractEarners(t *testing.T) {
 // Top-up buy: the pipeline reveals 3 chains, no repurposable haulers cover it and no workers yet, so
 // the staged delta buys ONE hull (never a blind buy-all).
 func TestBootstrap_PlanGateWorkers_TopsUpWhenShort(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // target 6, delivery +1 ⇒ desired = min(3+1,6) = 4
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // target 6, delivery +1 ⇒ desired = min(3+1,6) = 4
 	obs := Observation{
 		Haulers:            []HaulerSnapshot{{Symbol: "H1"}}, // only the kept earner, nothing to repurpose
 		GateWorkers:        0,
@@ -114,7 +114,7 @@ func TestBootstrap_PlanGateWorkers_TopsUpWhenShort(t *testing.T) {
 
 // One buy per tick: even a large deficit stages exactly one buy (never a blind buy-all).
 func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // target 6
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // target 6
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 0, GateMaterialChains: 5}
 	plan := planGateWorkers(obs, cfg) // desired = min(5+1,6) = 6, pool 0 ⇒ deficit 6
 	if plan.Buy != 1 {
@@ -124,7 +124,7 @@ func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
 
 // No buy when the repurposed seed + existing workers already cover the pipeline's shape.
 func TestBootstrap_PlanGateWorkers_NoBuyWhenPoolCovers(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd()) // target 6, desired = min(2+1,6) = 3
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // target 6, desired = min(2+1,6) = 3
 	obs := Observation{
 		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}}, // release 3
 		GateWorkers:        0,
@@ -145,7 +145,7 @@ func TestBootstrap_PlanGateWorkers_NoBuyWhenPoolCovers(t *testing.T) {
 // No buy when the executor already has enough workers (idempotency: a restart mid-GATE re-observes
 // GateWorkers and never re-buys or re-overshoots).
 func TestBootstrap_PlanGateWorkers_NoBuyWhenWorkersSuffice(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd())
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 4, GateMaterialChains: 3}
 	plan := planGateWorkers(obs, cfg) // desired = 4, have 4
 	if plan.Buy != 0 {
@@ -157,7 +157,7 @@ func TestBootstrap_PlanGateWorkers_NoBuyWhenWorkersSuffice(t *testing.T) {
 func TestBootstrap_PlanGateWorkers_CapsAtTarget(t *testing.T) {
 	cmd := baseCmd()
 	cmd.GateWorkerTarget = 4
-	cfg := resolveBootstrapConfig(cmd)
+	cfg := resolveBootstrapConfig(cmd, nil)
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 0, GateMaterialChains: 10}
 	plan := planGateWorkers(obs, cfg)
 	if plan.DesiredWorkers != 4 {

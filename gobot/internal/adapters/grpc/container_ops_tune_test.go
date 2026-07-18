@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -179,6 +180,8 @@ const (
 	scoutPostContainerType        = "SCOUT_POST_COORDINATOR"
 	shipyardBackfillContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 	contractCoordinatorType       = "CONTRACT_FLEET_COORDINATOR"
+	bootstrapContainerType        = "BOOTSTRAP_COORDINATOR"
+	tuneBootstrapContainerID      = "bootstrap-player-tune-test"
 )
 
 // newTunedSizer wires a real freshness-sizer handler whose live-config reader reads
@@ -481,6 +484,7 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 		{scoutPostContainerType, scoutingCmd.ScoutPostTunableDefaults()},
 		{shipyardBackfillContainerType, scoutingCmd.ShipyardBackfillTunableDefaults()},
 		{contractCoordinatorType, ContractCoordinatorTunableDefaults()},
+		{bootstrapContainerType, bootstrapCmd.BootstrapTunableDefaults()},
 	}
 	for _, engine := range engines {
 		knobs, ok := registry[engine.containerType]
@@ -575,4 +579,156 @@ func TestShowTunableConfig_ListsEffectiveValuesSourcesAndBounds(t *testing.T) {
 	require.Equal(t, 500000, spend.Effective, "an unset knob shows its documented default")
 	require.Equal(t, "default", spend.Source)
 	require.Equal(t, 5_000_000, spend.Bound.Max)
+}
+
+// ---- bootstrap: the config.yaml-authoritative coordinator joins the registry (sp-r6yq) ----
+
+// sp-r6yq acceptance (registry side): the captain bootstrap coordinator is now a first-class tune
+// target. Resolved by `--operation bootstrap` (FindActiveCoordinatorByType), a live write of a BARE
+// tune key lands in the persisted column (the coordinator's per-tick liveconfig reader picks it up next
+// tick), `--show` lists every knob with bounds, an effective tune emits the config.tuned audit, an
+// out-of-bounds tune is rejected, and `tune 0` reverts to the documented default. Bootstrap's launch
+// keys are the SEPARATE prefixed bootstrap_* family, so an untuned knob reads its documented default
+// (source "default"), never a launch value.
+func TestTune_Bootstrap_TunesLiveViaOperation_ShowRevertAudit(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	// Seed with the config.yaml-authoritative PREFIXED launch keys (a float coverage bar + identity),
+	// mirroring how the daemon launches bootstrap — the bare tune keys are a distinct family.
+	seedTuneContainer(t, db, playerID, tuneBootstrapContainerID, bootstrapContainerType, "bootstrap", "RUNNING", map[string]interface{}{
+		"container_id":           tuneBootstrapContainerID,
+		"agent_symbol":           "TUNE-AGENT",
+		"bootstrap_coverage_bar": 0.9,
+		"bootstrap_probe_target": 3,
+	})
+	rec := &tuneFakeRecorder{}
+	SetCaptainEventRecorder(rec)
+	t.Cleanup(func() { SetCaptainEventRecorder(nil) })
+	s := &DaemonServer{containerRepo: repo}
+	ctx := context.Background()
+
+	// Live tune via the operation alias: coverage_bar_percent 90 (default) → 95. No restart.
+	out, err := s.MutateContainerConfigKey(ctx, "", "bootstrap", "coverage_bar_percent", 95, playerID)
+	require.NoError(t, err)
+	require.True(t, out.Changed)
+	require.Equal(t, tuneBootstrapContainerID, out.ContainerID, "the operation alias must resolve to the active bootstrap coordinator")
+	require.Equal(t, 90, out.OldEffective, "pre-tune effective is the documented default (0.90 → 90%)")
+	require.Equal(t, 95, out.NewEffective)
+	require.Len(t, rec.events, 1, "an effective tune emits exactly one config.tuned audit event")
+	require.Equal(t, captain.EventConfigTuned, rec.events[0].Type)
+
+	// The BARE tune key is what the coordinator's per-tick live reader consumes.
+	snap, err := NewContainerConfigReader(repo).Snapshot(ctx, tuneBootstrapContainerID, playerID)
+	require.NoError(t, err)
+	v, set := snap.PositiveInt("coverage_bar_percent")
+	require.True(t, set)
+	require.Equal(t, 95, v)
+
+	// --show lists every registered knob; the tuned knob is live-config, an untuned knob is its default.
+	show, err := s.ShowTunableConfig(ctx, "", "bootstrap", playerID)
+	require.NoError(t, err)
+	require.Len(t, show.Knobs, len(bootstrapCmd.BootstrapTunableDefaults()))
+	byKey := map[string]TunableKnobStatus{}
+	for _, k := range show.Knobs {
+		byKey[k.Key] = k
+	}
+	require.Equal(t, 95, byKey["coverage_bar_percent"].Effective)
+	require.Equal(t, "live-config", byKey["coverage_bar_percent"].Source)
+	require.Equal(t, 100, byKey["coverage_bar_percent"].Bound.Max)
+	require.Equal(t, "percent", byKey["coverage_bar_percent"].Bound.Unit)
+	require.Equal(t, 3, byKey["probe_target"].Effective, "probe_target untuned → documented default (the prefixed launch key is a separate family)")
+	require.Equal(t, "default", byKey["probe_target"].Source)
+
+	// Out-of-bounds is rejected before any write (the column stays byte-identical).
+	before := containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "coverage_bar_percent", 150, playerID)
+	require.Error(t, err, "coverage_bar_percent 150 exceeds the 100 ceiling")
+	require.Equal(t, before, containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID))
+
+	// `tune 0` reverts to the documented default; the bare key is cleared from the column.
+	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "coverage_bar_percent", 0, playerID)
+	require.NoError(t, err)
+	require.True(t, out.Changed)
+	require.Equal(t, 90, out.NewEffective)
+	require.Equal(t, "default", out.NewSource)
+	snap, err = NewContainerConfigReader(repo).Snapshot(ctx, tuneBootstrapContainerID, playerID)
+	require.NoError(t, err)
+	_, set = snap.PositiveInt("coverage_bar_percent")
+	require.False(t, set, "revert clears the bare tune key from the column")
+}
+
+// sp-r6yq restart-survival: bootstrap's launch config is config.yaml-authoritative — resolveBootstrapConfig
+// CLEARS the prefixed bootstrap_* keys and re-injects them from config.yaml on every build (creation and
+// recovery alike). The BARE tune keys are a SEPARATE family, never in that clear list, so a tuned value
+// persists in the column across a daemon bounce and the coordinator's per-tick live reader keeps applying
+// it (RULINGS #2) — while the transient prefixed launch key is refreshed from config.yaml. This is why the
+// bootstrap tune keys must NOT reuse the prefixed launch key names.
+func TestTune_Bootstrap_BareTuneKeySurvivesConfigRebuild(t *testing.T) {
+	s := &DaemonServer{} // zero bootstrapConfig → injectBootstrapConfig writes nothing (config.yaml unset)
+	config := map[string]interface{}{
+		"container_id":           "boot-x",
+		"agent_symbol":           "A",
+		"bootstrap_coverage_bar": 0.9, // prefixed launch key — transient, config.yaml-authoritative
+		"coverage_bar_percent":   95,  // bare tune key — must survive the rebuild
+		"probe_target":           7,   // bare tune key — must survive the rebuild
+	}
+	s.resolveBootstrapConfig(config)
+
+	require.EqualValues(t, 95, config["coverage_bar_percent"], "a bare tune key must survive the launch-config rebuild")
+	require.EqualValues(t, 7, config["probe_target"], "a bare tune key must survive the launch-config rebuild")
+	_, hasPrefixed := config["bootstrap_coverage_bar"]
+	require.False(t, hasPrefixed, "the prefixed launch key is transient — cleared and re-injected from config.yaml")
+	require.Equal(t, "boot-x", config["container_id"], "identity keys survive the rebuild")
+	require.Equal(t, "A", config["agent_symbol"], "identity keys survive the rebuild")
+}
+
+// sp-tsn2: the single-buyer arbitration flag is armed LIVE through the same tune path — a bare
+// defer_probe_to_freshsizer key written to the running bootstrap coordinator's config column, honored
+// on the next tick. It is a 0/1 flag (default off): 1 arms, 2 is out of bounds, `tune 0` reverts.
+func TestTune_Bootstrap_ArbitrationFlag_ArmsLiveAndBounded(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	seedTuneContainer(t, db, playerID, tuneBootstrapContainerID, bootstrapContainerType, "bootstrap", "RUNNING", map[string]interface{}{
+		"container_id": tuneBootstrapContainerID,
+		"agent_symbol": "TUNE-AGENT",
+	})
+	s := &DaemonServer{containerRepo: repo}
+	ctx := context.Background()
+
+	// Default off: --show reports the flag at 0 with source "default".
+	show, err := s.ShowTunableConfig(ctx, "", "bootstrap", playerID)
+	require.NoError(t, err)
+	var flag TunableKnobStatus
+	for _, k := range show.Knobs {
+		if k.Key == "defer_probe_to_freshsizer" {
+			flag = k
+		}
+	}
+	require.Equal(t, "defer_probe_to_freshsizer", flag.Key, "the arbitration flag must be a registered knob")
+	require.Equal(t, 0, flag.Effective)
+	require.Equal(t, "default", flag.Source)
+	require.Equal(t, "flag", flag.Bound.Unit)
+	require.Equal(t, 1, flag.Bound.Max)
+
+	// Arm it live: 1. The bare key lands in the column (the coordinator's live reader picks it up).
+	out, err := s.MutateContainerConfigKey(ctx, "", "bootstrap", "defer_probe_to_freshsizer", 1, playerID)
+	require.NoError(t, err)
+	require.True(t, out.Changed)
+	require.Equal(t, 1, out.NewEffective)
+	snap, err := NewContainerConfigReader(repo).Snapshot(ctx, tuneBootstrapContainerID, playerID)
+	require.NoError(t, err)
+	v, set := snap.PositiveInt("defer_probe_to_freshsizer")
+	require.True(t, set)
+	require.Equal(t, 1, v)
+
+	// Out of bounds (a flag is 0/1): 2 is rejected before any write.
+	before := containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "defer_probe_to_freshsizer", 2, playerID)
+	require.Error(t, err, "defer_probe_to_freshsizer 2 exceeds the flag ceiling of 1")
+	require.Equal(t, before, containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID))
+
+	// Disarm: revert to the documented default (off).
+	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "defer_probe_to_freshsizer", 0, playerID)
+	require.NoError(t, err)
+	require.True(t, out.Changed)
+	require.Equal(t, 0, out.NewEffective)
+	require.Equal(t, "default", out.NewSource)
 }

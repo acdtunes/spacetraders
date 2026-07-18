@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
+	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -68,6 +69,7 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"contract":         string(container.ContainerTypeContractFleetCoordinator),
 	"autooutfit":       string(container.ContainerTypeAutoOutfitCoordinator),
 	"shipyardbackfill": string(container.ContainerTypeShipyardBackfillCoordinator),
+	"bootstrap":        string(container.ContainerTypeBootstrapCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -77,6 +79,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	contract := ContractCoordinatorTunableDefaults()
 	autoOutfit := autooutfitCmd.AutoOutfitTunableDefaults()
 	shipyardBackfill := scoutingCmd.ShipyardBackfillTunableDefaults()
+	bootstrap := bootstrapCmd.BootstrapTunableDefaults()
 	return map[string]map[string]TuneBound{
 		string(container.ContainerTypeAutoOutfitCoordinator): {
 			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},
@@ -146,6 +149,29 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		string(container.ContainerTypeShipyardBackfillCoordinator): {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},
 			"backfill_max_hops":        {Type: "int", Min: 1, Max: 1000, Default: shipyardBackfill["backfill_max_hops"], Unit: "hops", Description: "enumeration REACH — how deep into the gate graph the sweep hunts charted-but-unscanned shipyards; a charted shipyard is in-graph + relay-reachable so the default is the full gate graph (sp-b8lf), tune DOWN only to cap per-cycle enumeration cost"},
+		},
+		// sp-r6yq: the captain bootstrap coordinator (workflow bootstrap; DATA→INCOME→GATE). It is the
+		// first CONFIG.YAML-AUTHORITATIVE coordinator in the registry, so its tune keys are the SEPARATE
+		// BARE family (probe_target, coverage_bar_percent, …) — NOT the prefixed bootstrap_* launch keys,
+		// which resolveBootstrapConfig clears+reinjects from config.yaml on every rebuild. A bare tune
+		// therefore survives a daemon bounce (the coordinator's per-tick liveconfig reader keeps applying
+		// it) instead of being wiped. The int-only mechanism carries the two float knobs as integer
+		// percents (coverage_bar_percent, reserve_margin_percent) and income_bar as whole credits; the
+		// two ship-type knobs stay launch-only (no coordinator makes a string asset live-tunable).
+		string(container.ContainerTypeBootstrapCoordinator): {
+			"probe_target":           {Type: "int", Min: 1, Max: 50, Default: bootstrap["probe_target"], Unit: "hulls", Description: "DATA target: probes scouting the home system before the coverage bar can clear"},
+			"coverage_bar_percent":   {Type: "int", Min: 1, Max: 100, Default: bootstrap["coverage_bar_percent"], Unit: "percent", Description: "DATA→INCOME exit: percent of home-system marketplaces that must carry fresh data (the float coverage_bar as an integer percent — 90 = 0.90)"},
+			"reserve_margin_percent": {Type: "int", Min: 1, Max: 100, Default: bootstrap["reserve_margin_percent"], Unit: "percent", Description: "capital gate: max percent of live treasury a single staged buy may spend (the float reserve_margin as an integer percent — 50 = 0.50)"},
+			"hauler_target":          {Type: "int", Min: 1, Max: 50, Default: bootstrap["hauler_target"], Unit: "hulls", Description: "INCOME hull cap: at most one contract hauler per viable hub, up to this"},
+			"income_bar":             {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
+			"min_contract_earners":   {Type: "int", Min: 1, Max: 50, Default: bootstrap["min_contract_earners"], Unit: "hulls", Description: "haulers kept on contracts through GATE to keep funding gate-material acquisition"},
+			"gate_worker_target":     {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (mostly repurposed idle haulers, rarely a buy)"},
+			"tick_secs":              {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — the cold-start ramp is a deliberately slow, staged buy loop (default 300s)"},
+			// sp-tsn2 single-buyer arbitration flag: 1 ⇒ bootstrap DEFERS its DATA probe buy to the
+			// freshsizer once coverage>0 and a freshsizer coordinator is running (so exactly one buyer grows
+			// the shared fleet — the era-3 multi-buyer lesson); 0 (default) ⇒ today's behavior, both buy
+			// behind their own guards. Bootstrap never defers into a vacuum (freshsizer must be running).
+			"defer_probe_to_freshsizer": {Type: "int", Min: 0, Max: 1, Default: bootstrap["defer_probe_to_freshsizer"], Unit: "flag", Description: "sp-tsn2: 1 ⇒ bootstrap hands DATA probe acquisition to the freshsizer once the first market is covered and a freshsizer coordinator runs (single-buyer arbitration); 0 (default) ⇒ both buy independently (byte-identical)"},
 		},
 	}
 }

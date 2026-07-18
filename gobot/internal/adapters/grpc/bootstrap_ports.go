@@ -76,6 +76,10 @@ func NewBootstrapCoordinatorHandler(
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
+	// sp-r6yq: the per-tick live-config reader makes every bootstrap knob honor
+	// `spacetraders tune --operation bootstrap` on the next reconcile with no restart. Reads the
+	// same persisted config column the tune verb writes (ContainerConfigReader).
+	h.SetLiveConfigReader(NewContainerConfigReader(server.containerRepo))
 
 	// GATE-phase collaborators (Slice 3): construction start, the manufacturing-executor ensure/bounce,
 	// the repurpose-to-manufacturing re-tag, the gate-worker buy, and the COMPLETE hand-off — each a thin
@@ -210,6 +214,12 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 	if o.containerRepo != nil {
 		if running, rerr := contractFleetCoordinatorRunning(ctx, o.containerRepo, playerID); rerr == nil {
 			obs.BatchContractRunning = running
+		}
+		// sp-tsn2 probe-buyer arbitration input: is a market-freshness-sizer coordinator running to take
+		// over probe acquisition? Best-effort — a read miss leaves it false, so bootstrap keeps buying
+		// (never defers into a vacuum). Inert unless defer_probe_to_freshsizer is armed.
+		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeMarketFreshnessSizer); rerr == nil {
+			obs.FreshsizerActive = running
 		}
 	}
 

@@ -3,10 +3,40 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
+
+// BootstrapTunableDefaults maps every LIVE-tunable bootstrap knob (sp-r6yq) to its documented
+// default — the value that applies when the persisted config column carries no positive
+// override. The daemon's tune bounds registry reads THIS map, so the defaults-of-record stay
+// in this file next to the consts they mirror. The map's KEY SET is also the contract for which
+// BARE keys resolveBootstrapConfig live-overlays.
+//
+// The tune mechanism is integer-only (liveconfig.PositiveInt), so the two fraction knobs are
+// expressed as integer PERCENTS (coverage_bar_percent, reserve_margin_percent) and income_bar as
+// whole credits — the coordinator divides the percents by 100 on read. The two ship-type knobs
+// (probe_ship_type, hauler_ship_type) are deliberately NOT tunable: a string asset is launch-config
+// only across every coordinator (a hull type is not swapped mid-run). These keys are the SEPARATE
+// bare family — distinct from the config.yaml-authoritative prefixed bootstrap_* launch keys — so a
+// tune is never cleared by the launch-config rebuild and survives a daemon bounce (RULINGS #2).
+func BootstrapTunableDefaults() map[string]int {
+	return map[string]int{
+		"probe_target":           defaultProbeTarget,
+		"coverage_bar_percent":   int(math.Round(defaultCoverageBar * 100)),
+		"reserve_margin_percent": int(math.Round(defaultReserveMargin * 100)),
+		"hauler_target":          defaultHaulerTarget,
+		"income_bar":             int(math.Round(defaultIncomeBar)),
+		"min_contract_earners":   defaultMinContractEarners,
+		"gate_worker_target":     defaultGateWorkerTarget,
+		"tick_secs":              defaultBootstrapTickSeconds,
+		// sp-tsn2 single-buyer arbitration flag (0=off default, 1=on). A tunable flag with no launch key.
+		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer,
+	}
+}
 
 // bootstrapRunConfig is the launch command with every default resolved, so the reconcile logic
 // never repeats the "<= 0 → default" fallback (RULINGS #5, the autosizer resolveConfig idiom).
@@ -28,9 +58,15 @@ type bootstrapRunConfig struct {
 
 	// GATE-phase knob (Slice 3), resolved to its documented default when unset.
 	GateWorkerTarget int
+
+	// DeferProbeToFreshsizer arms the sp-tsn2 single-buyer arbitration: when true, bootstrap DEFERS
+	// its DATA probe buy to the freshsizer once coverage>0 and a freshsizer coordinator is running, so
+	// exactly one buyer grows the shared fleet during the conflict window. Default false
+	// (byte-identical). A tunable flag (defer_probe_to_freshsizer) — armed live, no launch key.
+	DeferProbeToFreshsizer bool
 }
 
-func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunConfig {
+func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig.Snapshot) bootstrapRunConfig {
 	c := bootstrapRunConfig{
 		Disabled:      cmd.Disabled,
 		DryRun:        cmd.DryRun,
@@ -47,6 +83,46 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand) bootstrapRunCon
 
 		GateWorkerTarget: cmd.GateWorkerTarget,
 	}
+
+	// Live overlay (sp-r6yq): a `tune` writes a BARE positive key to the persisted config
+	// column; the per-tick snapshot overlays it here so the change lands on the NEXT tick with no
+	// restart. Only-when-present (NOT snapshot-authoritative like the freshsizer): bootstrap's
+	// launch keys are the SEPARATE prefixed bootstrap_* family, so an untuned bare key is genuinely
+	// absent and must not zero the launch value — byte-identical when nothing is tuned. The two
+	// fraction knobs decode from integer percent; income_bar is whole credits; the <=0 default
+	// fallbacks below still apply to any knob left unset by both the launch command and the overlay.
+	if live != nil {
+		if v := live.PositiveIntOrZero("probe_target"); v > 0 {
+			c.ProbeTarget = v
+		}
+		if v := live.PositiveIntOrZero("coverage_bar_percent"); v > 0 {
+			c.CoverageBar = float64(v) / 100.0
+		}
+		if v := live.PositiveIntOrZero("reserve_margin_percent"); v > 0 {
+			c.ReserveMargin = float64(v) / 100.0
+		}
+		if v := live.PositiveIntOrZero("hauler_target"); v > 0 {
+			c.HaulerTarget = v
+		}
+		if v := live.PositiveIntOrZero("income_bar"); v > 0 {
+			c.IncomeBar = float64(v)
+		}
+		if v := live.PositiveIntOrZero("min_contract_earners"); v > 0 {
+			c.MinContractEarners = v
+		}
+		if v := live.PositiveIntOrZero("gate_worker_target"); v > 0 {
+			c.GateWorkerTarget = v
+		}
+		if v := live.PositiveIntOrZero("tick_secs"); v > 0 {
+			c.Tick = time.Duration(v) * time.Second
+		}
+		// sp-tsn2 arbitration flag: tunable-only (no launch key), default off. A positive value arms it;
+		// absent/zeroed reverts to off (byte-identical). Reused straight off the sp-r6yq live-read seam.
+		if v := live.PositiveIntOrZero("defer_probe_to_freshsizer"); v > 0 {
+			c.DeferProbeToFreshsizer = true
+		}
+	}
+
 	if c.Tick <= 0 {
 		c.Tick = defaultBootstrapTickSeconds * time.Second
 	}
@@ -112,7 +188,10 @@ type reconcileResult struct {
 // Every side-effecting step is guarded "already done / in-flight?" and fails CLOSED on an
 // unreadable input, so re-evaluation (including the first tick after a restart) never double-acts.
 func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunBootstrapCoordinatorCommand) (reconcileResult, error) {
-	cfg := resolveBootstrapConfig(cmd)
+	// The tick runs entirely on the live-config snapshot taken here; a knob tuned mid-tick lands
+	// on the next tick (sp-r6yq). A nil reader / read miss yields a nil snapshot, which
+	// resolveBootstrapConfig treats as "run this tick on the launch command" (fail-safe launch).
+	cfg := resolveBootstrapConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
 	logger := common.LoggerFromContext(ctx)
 	res := reconcileResult{}
 
@@ -235,8 +314,10 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	// (1) Staged, capital-gated probe acquisition — at most one buy per tick (never a blind
 	// buy-all). Guarded on the re-observed count, so a mid-purchase restart that already
-	// incremented the count simply skips.
-	if obs.ProbeCount < cfg.ProbeTarget {
+	// incremented the count simply skips. sp-tsn2: when the single-buyer arbitration is armed and
+	// the freshsizer has taken over (coverage>0 + freshsizer running), DEFER the buy to it so the
+	// two coordinators never grow one shared fleet past the ceiling (the era-3 multi-buyer lesson).
+	if obs.ProbeCount < cfg.ProbeTarget && !h.deferProbeBuyToFreshsizer(ctx, cmd, cfg, obs, res) {
 		h.maybeBuyProbe(ctx, cmd, cfg, obs, res)
 	}
 
@@ -245,6 +326,26 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 	if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
 		h.assignScouting(ctx, cmd, cfg, obs, res)
 	}
+}
+
+// deferProbeBuyToFreshsizer reports whether bootstrap should hand THIS tick's probe buy to the
+// standing freshsizer (sp-tsn2 single-buyer arbitration). It engages ONLY when armed
+// (defer_probe_to_freshsizer) AND the first market is covered (coverage>0, so the freshsizer has
+// something to size against) AND a freshsizer coordinator is actually running to take over —
+// bootstrap never defers into a vacuum, so a cold start cannot wedge if the freshsizer is down. It is
+// BUY-ONLY: the caller still assigns scouting for the probes bootstrap already holds. Default off ⇒
+// always false (byte-identical to today). A deferral is surfaced on the heartbeat, never silent.
+func (h *RunBootstrapCoordinatorHandler) deferProbeBuyToFreshsizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
+	if !cfg.DeferProbeToFreshsizer || obs.CoverageFraction() <= 0 || !obs.FreshsizerActive {
+		return false
+	}
+	res.Blocker = "deferred_to_freshsizer"
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap probe needed (%d/%d) but DEFERRING the buy to the running freshsizer (coverage %.0f%%>0) — single-buyer arbitration, one fleet-grower during the conflict window (sp-tsn2)", obs.ProbeCount, cfg.ProbeTarget, obs.CoverageFraction()*100), map[string]interface{}{
+		"action":       "bootstrap_probe_deferred",
+		"container_id": cmd.ContainerID,
+		"blocker":      "deferred_to_freshsizer",
+	})
+	return true
 }
 
 // maybeBuyProbe evaluates and (unless dry-run) executes ONE staged probe buy behind the readiness
