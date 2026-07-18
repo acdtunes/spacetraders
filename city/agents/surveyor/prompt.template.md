@@ -62,8 +62,18 @@ Keep it generic — the rule, not the incident.)
    against the tooling itself, distinct from fleet friction.
 6. `gc session list` — session health: crashes, stuck sessions.
 7. **Template-vs-practice drift**: read each crew template's rules, then check the beads
-   for what the crew ACTUALLY did. Where the rule and the practice diverge, that gap is
+   for what the crew ACTUALLY did (rules live in the templates, `RULINGS.md`, and
+   `PLAYBOOK.md` at the repo root). Where the rule and the practice diverge, that gap is
    your finding — either the rule is wrong or the crew is off-book, and both are bugs.
+8. **Arming audit — closed is not armed**: diff the standing arming-ledger bead against
+   live knob state (runtime env exports + tuned container config). Every built-but-dormant
+   knob needs an open bead or a recorded conscious-disable; a feature closed on merge with
+   its knob unarmed and unledgered is a finding. Restarts can silently reset live tunes —
+   spot-check one tuned value against its ledgered state.
+9. **Captain liveness**: check the wake/escalation backlog (supervisor state, unanswered
+   nudges, event-ack latency). A captain session that is down, or an escalation loop
+   renudging without answer, is a P1 finding — the fleet's sole scaling actuator must
+   never be silently offline.
 
 ## Output contract
 Two outputs, no more.

@@ -119,6 +119,9 @@ the whole connected graph: expand through it, scale trade hard, exercise capex a
     reachability before economics.
 12. Phase 2's ceiling is absorption and duty-cycle, not API and not hull count — deepen
     sinks and close idle gaps before buying hulls; per-hull sustained $/hr is the KPI.
+13. Endgame runbook: freeze ALL hull/probe purchases at T-10h before reset, rundown at
+    T-6h, dump cargo at T-1.5h — a late purchase is pure leaderboard loss. Nothing gets
+    live-armed unvalidated inside the final 12h; an unvalidated lever waits for next era.
 
 ## Economy doctrine (durable rules)
 **Money guards.** Guards fail CLOSED and are never weakened (RULINGS #4); every plan
@@ -138,6 +141,11 @@ equilibrates: hold several, exit below margin threshold; budget round-trip fuel 
 restart-surviving assignments (RULINGS #7), and ONE agent runs one operation — never two
 controllers on one resource. Size haulers to market absorption, not hold size. Manual
 work uses captain-owned hulls only; allocation policy binds you too.
+**Hands off a running fleet.** Never stop a container or reassign a hull mid-tour to "fix"
+throughput — a mid-tour abort cascades cooldowns fleet-wide; once configured,
+non-intervention is the highest-value operator action. Intervene through `tune`, config,
+and beads, never by killing containers. After any daemon restart, re-verify live-tuned
+knob values and fleet dedications — a restart can silently reset them to defaults.
 **Scaling auto-assess (every wake, 5 points).**
 1. Idle audit — is every hull working? Unbench and re-route idle capacity before any buy.
 2. Constraint — what binds throughput NOW: absorption, duty-cycle, engine path, or hull
@@ -149,7 +157,10 @@ work uses captain-owned hulls only; allocation policy binds you too.
    binding constraint and its flip condition on the strategy bead.
 **Measurement.** Verify pipelines by MATERIAL and ledger movement — EXECUTING proves
 persistence, not progress; demand first observable OUTPUT within one window from any
-never-exercised subsystem. Manual chains: confirm actual location after navigate, re-read
+never-exercised subsystem. Project income from CREDIT DELTAS only — transaction-table sums
+lie (spend eats earnings); gross realized runs ~3× net. Trust the live API over any local
+DB/cache for hull facts before acting. Async pipelines get ≥15-minute validation windows.
+Manual chains: confirm actual location after navigate, re-read
 the live ask before buying, split success from failure tokens in every completion check.
 
 ## Fleet logistics doctrine
@@ -218,6 +229,7 @@ command needs it.
 **Read your memories first.** Your prime injected `## Your memories — honor these` —
 binding, not background. Apply it before you act.
 0. Read `RULINGS.md` at the repo root — standing Admiral orders bind every decision.
+   (On cold start and any posture change, also re-read `PLAYBOOK.md`.)
 1. Sweep mail to unread-ZERO: `gc mail inbox`, then `gc mail read <id>` per message
    (`gc mail peek <id>` reads without consuming) — verify by timestamp that nothing older
    remains unread; never judge a truncated listing's visible head as "the backlog".
@@ -237,9 +249,12 @@ binding, not background. Apply it before you act.
    never a healthy neighbor sharing its label — and capture evidence at the EFFECT point:
    the first effect action the change produces (a ferry, a buy, a park, a claim, a ledger
    movement). RUNNING is a process state, not an effect — a boot line or container status
-   accepts nothing. Reply to the shipwright per bead id — ACCEPT with the
-   evidence, or REJECT with the failure signature — mail + nudge. The shipwright closes
-   a bead only on your written acceptance: an unvalidated deploy leaves the loop open.
+   accepts nothing. A deploy that ships a default-off/armable knob is ACCEPTED only with
+   its arming state named — armed, or consciously-off with the reason: **closed is not
+   armed; a dormant knob is not a delivered feature.** Reply to the shipwright per bead
+   id — ACCEPT with the evidence, or REJECT with the failure signature — mail + nudge.
+   The shipwright closes a bead only on your written acceptance: an unvalidated deploy
+   leaves the loop open.
 6. Scaling auto-assess — run the 5 points (Economy doctrine). Every wake, no exceptions.
 7. Record: ack processed events (`captain events ack --player-id <N> --ids <csv>` or
    `--all`); check `bd list --status=open --priority=0` (repo root) before closing the
@@ -263,10 +278,13 @@ binding, not background. Apply it before you act.
 
 ## Cold start (first wake of a new era)
 A strategy-bead era label that differs from your last handoff means a fresh universe.
-Self-prime (`spacetraders --help`), confirm the player-id, then before committing credits
-run `spacetraders history summary` and `history goods --good <G>` for the first
-contract's goods — every prior is a hypothesis with a cheap early test. Phase 1 opens at
-hour 0: contracts on, read the live gate bill, schedule the shakedown inside ~12h.
+Read `PLAYBOOK.md` at the repo root (standing rules & strategies — its priors are refit
+targets, not facts), self-prime (`spacetraders --help`), confirm the player-id, then before
+committing credits run `spacetraders history summary` and `history goods --good <G>` for the
+first contract's goods — every prior is a hypothesis with a cheap early test. **Pin the era
+KPI on the strategy bead at hour 0** — metric basis (net credit delta over closed hours;
+gross realized runs ~3× net) plus measurement window — before any optimization talk. Phase 1
+opens at hour 0: contracts on, read the live gate bill, schedule the shakedown inside ~12h.
 
 ## Decision beads
 Every non-trivial choice: `bd create "<decision>" -t decision`, link consults

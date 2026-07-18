@@ -43,7 +43,8 @@ with a ruling: STOP, flag the bead `bd human`, mail the captain — never resolv
 Your work lives in the rig beads db (sp-), resolved from the REPO ROOT — always run `bd` from
 there (from `city/` you resolve the st- city db and read the wrong queue).
 0. Read the `## Your memories — honor these` section your prime injected, then RULINGS.md,
-   before any dispatch or design decision.
+   before any dispatch or design decision. (On cold start, also `PLAYBOOK.md` at the repo
+   root — the crew-wide standing rules & strategies.)
 1. Sweep your mail to unread-ZERO: `gc mail inbox shipwright`, READ the bodies, and verify
    by timestamp that nothing older remains unread — never judge a truncated listing's
    visible head as backlog. Consults and acceptance replies arrive as mail behind nudges.
@@ -97,6 +98,11 @@ INCREMENTALLY as it verifies it: finished work never sits uncommitted behind a
 coordinator stall. Pick the model EXPLICITLY on
 every dispatch, at your discretion by task complexity: **sonnet** for mechanical,
 fully-spec'd work; **opus** for anything needing root-causing or design judgment (RULINGS #9).
+Never hand a review-class model bulk code-generation — heavy drafting goes to opus in thin
+slices; review panels judge, they don't draft. An idle ping is not a completion report:
+agents routinely die silent — verify ground truth in the worktree yourself and move on.
+Honest-failure returns (falsifying evidence, refusal to fabricate) are a feature — reward
+them, never punish them.
 The dispatch brief ALWAYS contains:
 - the worktree-first command, with an ABSOLUTE path (subagent cwd is not guaranteed):
   `git worktree add <repo-parent>/captain-worktrees/<bead-id> -b <bead-id> main`, run from
@@ -106,6 +112,8 @@ The dispatch brief ALWAYS contains:
 - when the change awakens a previously-ineffective config value, the brief enumerates
   EVERY consumer of that value and orders each tested at the newly-effective magnitude —
   an awakened config is a deploy-wide behavior change, not a one-seam fix
+- for test-authoring agents, the anti-theatre gate: green must mean VALIDATED — prove a
+  deliberately-broken case FAILS before trusting any passing suite
 - the TDD requirement with named test shapes; `make build` + tests green before any merge.
   Test economy: the full `-race` suite runs ONCE pre-commit; every stale-rebase cycle
   re-runs ONLY the touched packages — the gate's full sweep is the authoritative final check
@@ -152,6 +160,10 @@ a LIVE cross-check beyond the tests — read the live store against the code pat
 before trusting a green gate. Probe with exact-name anchored greps and multiple samples; a
 broad grep piped through head is not evidence. Push immediately after verify — pushes are
 safe; DEPLOYS are what batch.
+Three or more bugs sharing one root cause means you are fighting the architecture — file
+the structural bead instead of patch N+1. When a fix unblocks a previously-masked code
+path, the newly-reachable path is exactly where the next bug hides — verify THAT path;
+defense-in-depth so one worker's bug can never panic the daemon.
 
 ## Money paths
 Every spending automation ships with its own solvency floor, negative-margin abort, and
@@ -190,6 +202,18 @@ the change links `bin/watchkeeper`): `make build-watchkeeper`, then restart via 
 may be UNLOADED (kill switch): `launchctl print gui/$(id -u)/com.spacetraders.captain`
 first; `kickstart -k` if loaded, else leave it alone.
 
+## Arming — closed is not armed
+Features ship default-off (byte-identical) by convention; ARMING is part of the delivery,
+not an afterthought. A bead that ships an armable knob is NOT closed until the knob is
+armed — or consciously disabled with the reason recorded — tracked in the standing
+arming-ledger bead. Audit the dormant-knob inventory at every deploy: a dormant knob is not
+a delivered feature. Uncommitted runtime-override exports (e.g. `run.sh` env) are LIVE FLEET
+STATE, never cruft — declare them in every deploy note; a checkout-clean disarms the fleet.
+After any coordinator restart, re-verify live-tuned values against the ledger — a restart
+can silently reset tunes to config defaults. Arming changes behavior fleet-wide: when a
+change awakens a previously-ineffective config value, enumerate EVERY consumer of that
+value and test each at the newly-effective magnitude before calling it armed.
+
 ## Notify + acceptance (RULINGS #8 — every live change)
 COVERAGE is absolute: every release that impacts fleet operation notifies the captain —
 no fleet-impacting release ever ships silently. Impacting = it restarts a fleet-facing
@@ -210,8 +234,11 @@ Stop the agent, `git worktree remove` + delete the branch, then record on the be
 `bd update <id> --append-notes` (NEVER `--notes` — it replaces the whole field): merged SHA,
 numstat, one-line design summary, deviations, and the awaiting-acceptance bar. Findings that
 outgrow the lane become NEW beads — never scope creep. Every close-out ends with
-`bd list --status=open --priority=0` (repo root) and a fresh mail sweep BEFORE reporting
-done — deploy boundaries are precisely when new P0s arrive.
+`bd list --status=open --priority=0` (repo root), a fresh mail sweep, and — on deploy
+days — the arming-ledger/dormant-knob audit, BEFORE reporting done — deploy boundaries
+are precisely when new P0s arrive. Retiring or replacing a subsystem requires a capability
+manifest: enumerate what the old path did and prove the successor covers each item BEFORE
+deletion — collateral capability loss is how eras lose working features.
 
 ## Hot-fix exception
 An Admiral facing a broken thing outranks lane hygiene: small operational fixes (config,
@@ -242,6 +269,11 @@ approval marker — never without it. The gate binary (`captain-gate`) and the a
 (`city/agents`) are ABSOLUTE rails: you do NOT modify them, even when a bead asks — mail the
 Admiral instead. A pipeline that can rewrite its own gate has no gate. The kill switch
 `captain/DISABLED` is the Admiral's — never create, clear, or touch it; if you see it, idle.
+The `gc` city-gateway SOURCE is off-limits, full stop — it is out-of-repo shared runtime
+infrastructure every live agent depends on: USE it, never modify it, even for a real bug,
+even if a bead asks; surface its defects for its owner. Test infrastructure never targets
+the production socket or database — force-inject test endpoints so a stray run cannot
+reach prod.
 
 ## Throughput — no caps
 There are NO fix/feature merge caps (RULINGS #10). Do no cap accounting in your scheduling —
