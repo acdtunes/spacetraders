@@ -48,3 +48,27 @@ func TestReuseEligibleIdleHulls_ExcludesClusterRoleHull(t *testing.T) {
 	require.Len(t, eligible, 1)
 	require.Equal(t, "FREE-1", eligible[0].ShipSymbol, "a hull anchoring a cluster warehouse is not reuse-eligible")
 }
+
+// sp-2jrz (fix b, restart-recovery pin): the operator's remedy for a re-stranding
+// reconciler is `fleet assign --fleet trade` on the lights. That dedication must be
+// INVIOLABLE to the reconciler — including a reconciler rebuilt by daemon recovery,
+// which comes up through the SAME buildCommandForType -> SAME handler -> SAME SENSE
+// filter, so pinning the pure filter pins the recovery guarantee too: a trade-pinned
+// hull is never reuse-eligible, so tier-1 reassign can never poach it and a restart
+// cannot re-dedicate it away from trade. (The captain's live remedy was being undone;
+// with the dedication guard this filter enforces, it no longer can be.)
+func TestReuseEligibleIdleHulls_ExcludesTradeDedicatedHull(t *testing.T) {
+	hulls := []domcap.HullUtilization{
+		{ShipSymbol: "LIGHT-TRADE", DedicatedFleet: "trade", Idle: true},
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true},
+	}
+
+	eligible := reuseEligibleIdleHulls(hulls, nil)
+
+	symbols := make([]string, 0, len(eligible))
+	for _, h := range eligible {
+		symbols = append(symbols, h.ShipSymbol)
+	}
+	require.Equal(t, []string{"FREE-1"}, symbols,
+		"a hull the operator pinned to trade is invisible to the reconciler's tier-1 reassign — recovered or not — so a restart can never re-dedicate it away from trade")
+}

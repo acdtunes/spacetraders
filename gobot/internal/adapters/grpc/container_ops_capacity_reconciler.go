@@ -33,8 +33,10 @@ import (
 // CapacityReconcilerCoordinator starts the standing capacity reconciler for a player: a
 // recovery-safe container that each tick drives the contract-delivery machine's actual capacity
 // topology toward the computed desired topology (SENSE → PLAN → DIFF → GOVERN → CONVERGE),
-// capex-paced and kill-switch-gated. The foundation wiring carries the NoOp planner chain —
-// started, it provably emits ZERO actions until the intelligence lanes land.
+// capex-paced and kill-switch-gated. The production wiring (main.go) is the FULLY ARMED engine —
+// real SENSE/PLAN/DIFF/GOVERN plus a cheap-tier actuator that reassigns/repositions hulls and
+// writes depot buffers; only tier-4 capital stays gated behind the human-approved proposal path.
+// "Deploy-inert" here means only that it is never boot-standing (below), NOT that it is observe-only.
 func (s *DaemonServer) CapacityReconcilerCoordinator(ctx context.Context, playerID int, dryRun bool) (string, error) {
 	// Double-launch guard: ONE standing reconciler per player. A twin loop
 	// would double-execute tier-1..3 actions and double-file proposals once
