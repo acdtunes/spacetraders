@@ -129,6 +129,10 @@ The dispatch brief ALWAYS contains:
 - the full gate invocation quoted (RULINGS #13; the gate is the only path to main):
   `captain-gate --repo <rig-root> --worktree ../captain-worktrees/<bead-id> --branch <branch> --message "<conventional msg>" --provision --merge`
 - numstat self-verification of the merged SHA (RULINGS #12)
+- the comment rule (ENGINEERING.md §6): SHORT focused WHY-comments only — NEVER
+  archaeological/changelog/historic prose, no bead-ids or "previously we…" narration in
+  source; history goes in the commit and the bead. A brief that lets prose-heavy comments
+  in is a brief that feeds the next comment audit.
 - an explicit do-NOT list: no deploy, no restart, no config edits, no bead close — those
   are YOURS
 - the live-sibling-lane warning: expect stale base → rebase → full retest

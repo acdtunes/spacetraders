@@ -123,3 +123,20 @@ learned the hard way:
   practice (e.g. the captain's always-flown reserve), not the code's per-run defaults — a
   silent default swap can legally draw the fleet down. Encode the values the human actually
   flew.
+
+## 6. Comment discipline (binding — never regress this)
+
+A comment exists for the NEXT reader of the code, not to narrate your change to a reviewer.
+
+- **NEVER add archaeological / historic / changelog prose.** No "previously we…", no "this
+  was added because…", no dated narration, no bead-ids-as-war-stories, no "the old code
+  did Y". History lives in git and beads — putting it in the source is noise the moment the
+  PR merges, and it accretes into the prose-heavy cruft the comment audit exists to strip.
+- **Only add a short, focused WHY** the code itself cannot show: a non-obvious constraint,
+  an ordering requirement, a guard's rationale, a real gotcha. One or two lines. If the code
+  already says it, say nothing.
+- Keep godoc, compiler directives, and license headers. Match the surrounding comment
+  density; when in doubt, fewer.
+- The test before you write a comment: *does this help someone understand the code, or am I
+  explaining my edit?* If it's the edit, it goes in the commit message or the bead, never
+  the source.
