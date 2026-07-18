@@ -6,7 +6,9 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // This file is the daemon-side depot-management surface (bead sp-u9xa): the single
@@ -200,7 +202,65 @@ func (s *DaemonServer) reloadDepotRegistryAtBoot(ctx context.Context, playerID i
 	// and is left alone; only a genuinely idle depot hull (freshly-applied topology, or a
 	// previously-stopped coordinator) is (re)started. Routes through s.depotSink() (the injectable
 	// seam sp-3l64 shares with the element-add positioning) — in production s itself.
-	launchDepotCoordinators(ctx, reg, playerID, s.depotSink())
+	//
+	// sp-udgc (re-strander (ii)): but launch ONLY depots whose domain still has LIVE contract
+	// demand. A decommissioned contract op leaves stale contract_depots rows behind; without this
+	// guard the boot reload re-spawns their stocker/warehouse containers and RE-DEDICATES the
+	// crewing hulls off trade EVERY restart, keyed off the stale rows rather than live demand — the
+	// confirmed live re-strander (sibling to sp-2jrz's reconciler). The signal is FindActiveContracts
+	// (live, accepted-not-fulfilled — NOT the demand miner's contract HISTORY, which a decommissioned
+	// domain still shows), matched at the destination-SYSTEM granularity the depot's own receipt
+	// solve uses. FAIL-OPEN: on a live-demand lookup error launch every depot exactly as before
+	// (byte-identical) rather than withhold a live buffer on a transient hiccup — the guard only ever
+	// WITHHOLDS on a positive "no live contract for this system" signal.
+	liveSystems, lerr := s.liveContractDestinationSystems(ctx, playerID)
+	if lerr != nil {
+		fmt.Printf("Warning: depot-launch live-demand lookup failed for player %d (launching all persisted depots, pre-sp-udgc behavior): %v\n", playerID, lerr)
+		launchDepotCoordinators(ctx, reg, playerID, s.depotSink())
+		return
+	}
+	if skipped := launchLiveDepotCoordinators(ctx, reg, playerID, s.depotSink(), liveSystems); len(skipped) > 0 {
+		fmt.Printf("sp-udgc: withheld depot-launch for %d depot(s) with no live contract demand (player %d): %v — decommissioned/stale topology, crewing hulls left to trade (not re-dedicated to stocker/warehouse)\n",
+			len(skipped), playerID, skipped)
+	}
+}
+
+// liveContractDestinationSystems resolves the set of destination SYSTEMS the player's LIVE
+// (accepted, not-yet-fulfilled) contracts deliver to — the demand signal the boot depot-launch guard
+// consults so a decommissioned domain (no active contract for its system) is not re-materialized on
+// restart (sp-udgc). It reads the SAME FindActiveContracts the bootstrapper trusts (live contracts,
+// NOT the contract HISTORY the demand miner ranks — a fulfilled/expired contract still shows in
+// history but no longer counts here). A test override drives it without a DB; a nil DB yields
+// (nil, nil) so a degraded/test boot fails OPEN to the pre-sp-udgc launch-all behavior.
+func (s *DaemonServer) liveContractDestinationSystems(ctx context.Context, playerID int) (map[string]bool, error) {
+	if s.depotLiveContractSystemsOverride != nil {
+		return s.depotLiveContractSystemsOverride(ctx, playerID)
+	}
+	if s.db == nil {
+		return nil, nil
+	}
+	contracts, err := persistence.NewGormContractRepository(s.db).FindActiveContracts(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	return contractDestinationSystems(contracts), nil
+}
+
+// contractDestinationSystems reduces a set of contracts to the destination SYSTEMS their deliveries
+// target (sp-udgc) — the granularity a depot's domain is matched at (a depot buffers for a region /
+// system, and its receipt solve is scoped by system). Every delivery's destination WAYPOINT collapses
+// to its system, so a contract delivering anywhere in a depot's system marks that depot live. Kept
+// pure (no I/O) so the extraction is unit-tested without a DB.
+func contractDestinationSystems(contracts []*contract.Contract) map[string]bool {
+	systems := map[string]bool{}
+	for _, c := range contracts {
+		for _, d := range c.Terms().Deliveries {
+			if system := shared.ExtractSystemSymbol(d.DestinationSymbol); system != "" {
+				systems[system] = true
+			}
+		}
+	}
+	return systems
 }
 
 // toDomain converts a boundary DepotSpec into a validated domain depot (the

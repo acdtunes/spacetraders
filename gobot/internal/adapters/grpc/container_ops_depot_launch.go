@@ -236,6 +236,54 @@ func launchDepotCoordinators(ctx context.Context, reg *depot.Registry, playerID 
 	}
 }
 
+// depotsWithLiveDemand partitions depots by whether their DOMAIN still has LIVE contract demand
+// (bead sp-udgc — the depot-launch re-strander (ii), sibling to sp-2jrz's capacity_reconciler
+// re-strander (i)). A depot's domain is the destination SYSTEM of its anchor (first) warehouse —
+// the SAME system the depot's receipt-demand solve is scoped to (depotWarehouseTargetUnits) — so a
+// depot is LIVE iff liveSystems contains that system. A DECOMMISSIONED/stale depot (its contracts
+// fulfilled or expired, so no active contract delivers to its system any longer) lands in skipped:
+// it must NOT be re-materialized into stocker/warehouse containers or have its crewing hulls
+// re-dedicated off trade on restart. Input order is preserved, so a live-only subset launches
+// byte-identically to the pre-guard launchDepotCoordinators. A depot with no warehouse (never a
+// valid depot — NewContractDepot forbids it) has no destination geometry and so no domain to be
+// live for: it is treated as skipped.
+func depotsWithLiveDemand(depots []*depot.ContractDepot, liveSystems map[string]bool) (live, skipped []*depot.ContractDepot) {
+	for _, d := range depots {
+		warehouses := d.Warehouses()
+		if len(warehouses) == 0 {
+			skipped = append(skipped, d)
+			continue
+		}
+		if liveSystems[shared.ExtractSystemSymbol(warehouses[0].Waypoint)] {
+			live = append(live, d)
+		} else {
+			skipped = append(skipped, d)
+		}
+	}
+	return live, skipped
+}
+
+// launchLiveDepotCoordinators is the RESTART-SAFE launch entrypoint (bead sp-udgc): it launches only
+// the coordinators of depots whose domain still has LIVE contract demand, WITHHOLDING any
+// decommissioned/stale depot so a daemon restart never re-spawns its buffer containers or
+// re-dedicates its crewing hulls off trade (the confirmed re-strander (ii)). It is a thin demand
+// FILTER in front of launchDepotCoordinators — a live depot launches byte-identically; only a
+// no-live-demand depot is held back. liveSystems is the set of destination systems the player's live
+// (accepted, not-fulfilled) contracts deliver to. Returns the ids of the skipped depots so the boot
+// log can name what it withheld. A nil registry launches nothing.
+func launchLiveDepotCoordinators(ctx context.Context, reg *depot.Registry, playerID int, sink depotCoordinatorSink, liveSystems map[string]bool) []string {
+	if reg == nil {
+		return nil
+	}
+	live, skipped := depotsWithLiveDemand(reg.Depots(), liveSystems)
+	launchDepotCoordinators(ctx, depot.NewRegistry(live), playerID, sink)
+	ids := make([]string, 0, len(skipped))
+	for _, d := range skipped {
+		ids = append(ids, d.ID())
+	}
+	return ids
+}
+
 // dispatchDepotLaunch routes ONE planned intent to the sink's per-role launch (sp-3l64). Extracted
 // so BOTH the whole-registry boot/reload path (launchDepotCoordinators) and the granular
 // element-add path (positionAddedDepotElement) dispatch through ONE role→launch mapping — a new

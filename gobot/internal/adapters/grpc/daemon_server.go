@@ -94,6 +94,14 @@ type DaemonServer struct {
 	// coordinator goroutines. Same post-construction test-seam convention as depotReceiptMinerOverride.
 	depotSinkOverride depotCoordinatorSink
 
+	// depotLiveContractSystemsOverride, when non-nil, replaces the DB-backed live-contract lookup the
+	// boot depot-launch guard consults (sp-udgc): the set of destination SYSTEMS the player's active
+	// (accepted, not-fulfilled) contracts deliver to. Nil in production →
+	// FindActiveContracts(persistence.NewGormContractRepository(s.db)); injected in tests to drive the
+	// decommissioned-vs-live launch decision without a live contracts table. Same post-construction
+	// test-seam convention as depotSinkOverride.
+	depotLiveContractSystemsOverride func(ctx context.Context, playerID int) (map[string]bool, error)
+
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 
