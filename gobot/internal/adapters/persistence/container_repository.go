@@ -452,6 +452,36 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
 	return &model, nil
 }
 
+// FindMostRecentByType returns the most-recently-STARTED container of a type for a
+// player REGARDLESS of status (STOPPED/INTERRUPTED included), or nil if none exists.
+// Unlike FindActiveCoordinatorByType it applies NO PENDING/RUNNING filter — it is the
+// source of the last persisted live-config a coordinator (re)start re-applies (sp-ve3q):
+// relaunching a previously-stopped coordinator via `frontier start` must re-adopt its
+// live-tuned knobs (the persisted config column) instead of reverting to config-file
+// defaults, exactly as the daemon-restart recovery path already does. Ordered by
+// started_at DESC (the freshest launch's config wins; StartedAt is set on every Add).
+func (r *ContainerRepositoryGORM) FindMostRecentByType(
+	ctx context.Context,
+	containerType string,
+	playerID int,
+) (*ContainerModel, error) {
+	var model ContainerModel
+
+	result := r.db.WithContext(ctx).
+		Where("container_type = ? AND player_id = ?", containerType, playerID).
+		Order("started_at DESC").
+		First(&model)
+
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find most recent container by type: %w", result.Error)
+	}
+
+	return &model, nil
+}
+
 // StopOrphanedWorkersByParent marks all RUNNING/PENDING worker containers
 // with the given parent container ID as STOPPED. Used during coordinator
 // startup to clean up orphaned workers from crashed coordinators.
