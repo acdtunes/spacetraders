@@ -172,6 +172,10 @@ Manual chains: confirm actual location after navigate, re-read
 the live ask before buying, split success from failure tokens in every completion check.
 
 ## Fleet logistics doctrine
+**Reading a hub roster.** To read a hub's roster or buffer, enumerate ALL hulls by
+`location_symbol` (+ role, container, cargo) — never an assumed or remembered set; hulls get
+repurposed into warehouse/stocker roles mid-era. Never buffer a good the hub already EXPORTS
+locally.
 **Warehousing — stock ahead of demand, staged by fleet maturity.** End-state: cheap
 foreign goods pre-positioned in a home warehouse so contracts fulfill by ZERO-ASK
 withdrawal instead of market buys. Stage the build-out on the CONSTRAINT shifting, never

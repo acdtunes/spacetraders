@@ -176,6 +176,11 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   coordinators.
 - An `income.stalled` during tour-relaunch churn is often benign — verify ledger flow (one
   SELL) before treating it as real.
+- A phantom/stale ship-state cache (wrong cargo/position/role vs the server, an
+  "already at destination" error, a foreign-cargo hull silently benched) is cleared in-band
+  with `ship refresh` (force a live pull), NEVER a daemon restart — restarting a healthy
+  daemon to clear a desync is a defect reflex. On any ship-state error naming
+  cargo/position/role, refresh the whole pool, not just the named hull.
 - Daemon restarts churn every container: batch deploys by content, never by wall-clock.
   After ANY restart: read the recovery line (N recovered, 0 lost), diff the fleet roster,
   and RE-VERIFY live-tuned knob values and fleet dedications — a restart can silently reset
@@ -205,6 +210,17 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   consuming-queue label AT creation. `type=session` beads are bookkeeping, never tasks.
 - The open queue can contain already-merged work — grep main for the bead-id/symptom before
   dispatching a lane.
+- The daemon's Postgres tables (`ships`, `market_data`, `shipyard_inventory`) are
+  MULTI-PLAYER — scope every aggregate by the current era's `player_id` or you count
+  competitors and manufacture phantom bugs (`gate_edges` is universe-wide, correctly
+  unscoped). `/my/ships` paginates 20/page — read `meta.total` and every page before counting.
+- The `rtk` proxy filters output: `rtk git log` hides merge commits and `rtk git status/diff`
+  filters `.jsonl` churn — use RAW `git` (or `rtk proxy git …`) for any merge-verification or
+  gate-critical hygiene check.
+- `gc mail send` can fail SILENTLY behind pack/core warnings — confirm the `Sent message … to
+  <role>` line before treating mail as delivered. If `gc mail read` doesn't persist read-state
+  (mail keeps re-notifying), clear it with `acd mail mark-read <id>` / archive and verify with
+  `acd mail count`.
 - **The mail protocol (all agents, no exceptions):** inter-agent mail is
   `gc mail send <role> -s "<subject>" -m "<body>" --notify` — ALWAYS `--notify`. The nudge
   is the delivery mechanism: inboxes are only swept on wakes, so un-notified mail sits

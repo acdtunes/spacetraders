@@ -23,6 +23,11 @@ before firing a novel verb. Almost every read verb also takes `--agent`/`--playe
 `--agent SYMBOL` (era-stable), `--player-id N`, or the persisted default
 (`config set-player`).
 
+**Two data planes back the CLI.** The Unix socket is the DAEMON (health, ship, container,
+workflow verbs); market/ledger/player/history reads go to POSTGRES. A SQLSTATE error while
+the socket still answers is a DB-side outage, NOT daemon death — keep operating on socket
+data; don't hand-probe repeatedly.
+
 ---
 
 ## 1. Daemon & services (names only — deploys are the shipwright's)
@@ -85,6 +90,9 @@ current. Trust `--help`; treat the man pages as a rough index only.
   across ANY reachable system), `dock`/`orbit`/`refuel`/`refresh`, `buy`/`sell`/`jettison`,
   `jump` (via jump gate), `outfit install|remove|list`, `reserve`/`release` (captain manual hold),
   `reserve-cargo`/`reserved-cargo`/`unreserve-cargo` (do-not-sell marks).
+  `navigate`/`route` spawn a routed container that plans segments and AUTO-REFUELS en route —
+  never manually `refuel` or compute fuel/coordinates before a nav; manual fuel planning is a
+  defect signature.
 - **fleet** — dedicated hull groups: `list`, `assign --ship --fleet`, `unassign`,
   `add`/`remove --operation <op> --ship` (mutate a RUNNING coordinator's fleet live, no restart),
   `hub` (add/remove a standby-station hub live).
@@ -138,6 +146,12 @@ current. Trust `--help`; treat the man pages as a rough index only.
 - **waypoint** — `list --system [--type X] [--trait X]`, `get --waypoint` (syncs from API on a
   cache miss; surfaces JUMP_GATE and non-market waypoints the market cache omits).
 - **shipyard** — `list <SYSTEM> <WP>`, `purchase --ship --type SHIP_X [--quantity N] [--budget C]`.
+  `purchase` is ASYNC (spawns a batch container; verify via ship count + `transactions`, not CLI
+  output) and buys AT THE YARD WHERE THE BUYER IS DOCKED — dock the buyer there first. Concurrent
+  single-buys on one buyer RACE the claim handoff — use `--quantity N` in one call. A LIMITED-supply
+  yard's price inflates with repeated buys; `--budget B` buys only as many as fit B. Read the
+  `Purchased SHIP_* at <wp>` transaction rows for the true per-unit price. Callsigns run …-1..9 then
+  …-A..Z (never …-10) — detection greps must use `-([0-9]|[A-Z])`.
 - **system** — `gates` (cross-system jump-gate adjacency; charts a named system live on a miss).
 
 ### Manufacturing & factories
@@ -248,6 +262,11 @@ Every `{0,1}`/flag knob and every reuse/relay master switch **defaults to 0 = of
 to prior behavior (see §3.4). Target by `--operation <alias>` (freshest-heartbeat coordinator of
 that type) or by explicit `<container-id>` (must be RUNNING/PENDING — a STOPPED container has no
 loop to retune).
+
+**Verifying a live mutation:** `container get` serializes a coordinator's LAUNCH-FROZEN metadata —
+a live `tune`, `fleet hub add/remove`, `goods factory`, or `construction override` does NOT appear
+there until a daemon restart re-syncs from the DB. Confirm a live-mutated value by its behavioral
+effect or the DB row, never by `container get`.
 
 ### 3.3 Layer C — routing env (`run.sh` exports)
 

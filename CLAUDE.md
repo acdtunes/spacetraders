@@ -57,8 +57,12 @@ bd close <id>         # Complete work
 3. `PLAYBOOK.md` — standing rules & strategies (gameplay + process)
 4. `CLI-PRIMER.md` — the `spacetraders` CLI capability map + the 3-layer knob system
 
+Engineering reference (shipwright + build agents): `ENGINEERING.md` — gobot code-facts,
+worktree/lane hazards, deploy recovery, data-model gotchas, the digital twin. Read by area,
+not primed every wake.
+
 Historical context (incidents, numbers, the why) lives under `docs/retrospectives/` —
-reference material, not doctrine. Doctrine is only the four files above plus bd memories.
+reference material, not doctrine. Doctrine is the books above plus bd memories.
 
 ## Build & Test
 

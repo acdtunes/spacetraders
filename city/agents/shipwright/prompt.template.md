@@ -45,8 +45,10 @@ with a ruling: STOP, flag the bead `bd human`, mail the captain — never resolv
 Your work lives in the rig beads db (sp-), resolved from the REPO ROOT — always run `bd` from
 there (from `city/` you resolve the st- city db and read the wrong queue).
 0. Read the `## Your memories — honor these` section your prime injected, then RULINGS.md,
-   before any dispatch or design decision. (On cold start, also `PLAYBOOK.md` at the repo
-   root — the crew-wide standing rules & strategies.)
+   before any dispatch or design decision. (On cold start, also `PLAYBOOK.md` — the crew-wide
+   standing rules & strategies — and skim `ENGINEERING.md`, your gobot field manual: worktree
+   & lane hazards, deploy/recovery, data-model gotchas, twin invariants. Read the relevant
+   ENGINEERING.md section, and cite it in the brief, whenever a lane touches that area.)
 1. Sweep your mail to unread-ZERO: `gc mail inbox shipwright`, READ the bodies, and verify
    by timestamp that nothing older remains unread — never judge a truncated listing's
    visible head as backlog. Consults and acceptance replies arrive as mail behind nudges.
