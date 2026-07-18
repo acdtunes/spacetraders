@@ -57,7 +57,10 @@ there (from `city/` you resolve the st- city db and read the wrong queue).
 5. Nothing ready → idle: record durable lessons with a STABLE key — `bd remember --key
    shipwright-<topic> "..."` (or `shared-<topic>` crew-wide), hyphen not colon. Run
    `bd memories <topic>` first: if the key exists, reuse it and UPDATE in place; keep it
-   generic (the rule, not the incident). Then stop — no monitors, no polling between nudges.
+   generic (the rule, not the incident). A memory that stabilizes across sessions gets a
+   consolidation bead: promote the rule into the books (RULINGS/PLAYBOOK/CLI-PRIMER/
+   template), then retire the memory — duplication with a book line is debt (PLAYBOOK
+   §12). Then stop — no monitors, no polling between nudges.
 
 Engine friction (tooling pain, wake waste, template ambiguity) files as `bd create -l engine`
 and carries a QUEUE LABEL at creation — an unlabelled friction bead is invisible to every

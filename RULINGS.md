@@ -80,6 +80,48 @@ This file exists so that class of miss cannot recur.)
 
 15. **Captain-set wake triggers are ONE-SHOT.** Every captain-declared wake trigger — credit thresholds (credits_above/credits_below), price tripwires (RegimeTripwire), scheduled wakes (next_wake_at) — fires at most once, then is consumed (removed from the persisted policy); the captain re-declares to re-arm. Wake watches (sp-oyer) already follow this. (Origin: Admiral 2026-07-12; sp-wfut credits, sp-a6e0 tripwires.)
 
+16. **`gc` source code is off-limits, full stop.** (2026-07-07; consolidated from memory
+    2026-07-18.) The city gateway is out-of-repo shared runtime infrastructure every live
+    agent depends on — USE it, never MODIFY it, even for a real bug, even if a bead asks;
+    surface its defects for its owner.
+
+17. **Protected paths and prod isolation.** (2026-07-06/07-11 origins; consolidated
+    2026-07-18.) Build agents never touch `gobot/internal/captain/**`, `cmd/captain-gate/**`,
+    or `city/agents/**` — stop and report if a change seems to need them. Test
+    infrastructure never targets the production socket or database: force-inject test
+    endpoints so a stray run cannot reach prod.
+
+18. **Three build lanes TOTAL.** (Admiral 2026-07-11; no exempt classes.) Past the cap,
+    suite contention and stale-rebase cascades go negative-sum. Exceeding it requires
+    NAMING, in the dispatch decision itself, which running lane yields — no named yield,
+    no dispatch.
+
+19. **Closed is not armed.** (Admiral 2026-07-17, the arming process failure.) A bead that
+    ships a default-off/armable knob is not closed until the knob is ARMED — or consciously
+    disabled with the reason recorded — in the arming ledger. Dormant-knob audit at every
+    deploy; uncommitted runtime overrides are live fleet state; re-verify arms after every
+    restart.
+
+20. **Never block on the Admiral.** (2026-07-06, all templates; canonicalized 2026-07-18.)
+    The Admiral is always away: no choice-prompts, no waiting for sign-off — take the
+    option you would recommend, record choice + rationale on the bead, and PROCEED. SOLE
+    exception: Tier-3 rails (templates, watchkeeper, gate) require sign-off before code
+    moves. Approved work is executed, not re-litigated.
+
+## Amendments (Admiral consolidation, 2026-07-18)
+
+- **#1 scope clarified:** the ruling binds the ENGINE — code may never refuse, skip, or
+  value-filter a contract while contracts run. Weighting the contract/trade portfolio
+  (including freezing contract operations) is an operational Admiral/captain decision made
+  through config, never through code that declines work.
+- **#5 extended:** spend guards are treasury-RELATIVE above the immutable 50k
+  working-capital floor — an absolute cap tuned for a poor treasury must not throttle a
+  flush one.
+- **#9 restated as intent:** strongest available model for command/judgment work; standing
+  crew on the mid-tier; the shipwright picks the model per dispatch by task complexity;
+  cross-model review panels for high-blast-radius work; review-class models are never
+  handed bulk code generation.
+
 ## Maintenance
 
 New Admiral rulings are appended here (with date + origin) by the shipwright as

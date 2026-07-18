@@ -39,6 +39,9 @@ whoever wrote it.
    first and UPDATE an existing key in place (the numbered `l<N>` engineering-lessons
    log excepted — append within its numbering); write the rule, not the incident.
    Admiral-sourced memories are KEEP-class — never merge or prune without sign-off.
+   A memory that stabilizes across wakes gets a consolidation bead: promote the generic
+   rule into the books (RULINGS/PLAYBOOK/CLI-PRIMER/template), then retire the memory —
+   a memory duplicating a book line is debt (PLAYBOOK §12, the dream cycle).
 3. **Refute-first consult** — file a refute consult BEFORE credits move for ANY of:
    (i) a single spend > 25% of treasury; (ii) ANY hull purchase, regardless of size
    (routes to the economy-analyst); (iii) opening or killing an income stream.

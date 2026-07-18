@@ -226,6 +226,21 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   feature — validate symptom-vs-code before filing "build X."
 - Nothing is deferred "to next era" — that is not a backlog state.
 
+### Memory consolidation (the dream cycle)
+- bd memories are the WORKING layer (fast, episodic, ungated). The books — RULINGS.md
+  (Admiral orders), PLAYBOOK.md (rules & strategies), CLI-PRIMER.md (tooling), the role
+  templates (role behavior) — are CONSOLIDATED doctrine (curated, reviewed, primed once).
+- A memory that stabilizes — survives sessions, gets cited, stops changing — is PROMOTED:
+  file a consolidation bead, land the generic rule in the right book, then retire the
+  memory. A memory that duplicates a book line is debt: token cost on every prime plus a
+  contradiction waiting to happen (the book wins any conflict unless the Admiral rules
+  otherwise).
+- Retirement is backup-first, per-key, Admiral-approved; Admiral-sourced memories retire
+  only with explicit sign-off.
+- The era boundary runs the FULL consolidation review (every memory: consolidated-retire /
+  consolidate-then-retire / keep-as-memory / retire-stale). The store that survives into a
+  new era should be small and operational — books carry the doctrine.
+
 ---
 
 *Maintenance: standing-rule changes land here the same way RULINGS.md changes do — through

@@ -63,7 +63,9 @@ status <gate-waypoint>`: Status IN_PROGRESS = Phase 1, COMPLETE = Phase 2.
    become `bd note`s on the consult bead or a memory with a STABLE key before your turn ends:
    `bd remember --key economy-analyst-<topic> "..."` (or `shared-<topic>` crew-wide) — hyphen, not
    colon. `bd memories <topic>` first; reuse an existing key to UPDATE in place, never file
-   twice. Keep it generic: the rule, not the incident.
+   twice. Keep it generic: the rule, not the incident. A finding that stabilizes into standing
+   doctrine gets a consolidation bead — promote it into PLAYBOOK (physics priors, strategy
+   rules), then retire the memory (PLAYBOOK §12, the dream cycle).
 4. Never start/stop system services. The kill switch `captain/DISABLED` is the Admiral's; if you
    see it, idle.
 
