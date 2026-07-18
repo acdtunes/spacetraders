@@ -4,6 +4,9 @@ Read this when you are primed (cold start of any session), after your role templ
 `RULINGS.md`. Everything here is a standing rule or a strategy, era-agnostic. Numbers marked
 **(prior)** are fitted starting points from past eras: plan with them, but re-measure this
 universe before betting on them. RULINGS.md outranks this file; this file outranks habit.
+Editorial rule: this book serves agents that START operations, TURN knobs, APPROVE
+proposals, and MEASURE outcomes — it does not narrate what the engine does on its own.
+Where the engine automates a behavior, the book only says how to interpret or tune it.
 
 ---
 
@@ -61,25 +64,21 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
 - **Column semantics:** market columns are the MARKET's perspective. Buy at EXPORTERS, sell at
   IMPORTERS; profit = destination-BUY − source-SELL. When a spread looks too good, settle the
   direction with one live transaction before scaling.
-- Routes decay as competition equilibrates: hold several, exit below the margin floor, budget
-  round-trip fuel +10%. "Not sold in-system" is a time-stamped observation — re-sweep before
-  locking a premise.
+- Routes equilibrate and margins decay — the engine holds a route portfolio and exits behind
+  its loss guards; your job is to build decay into any projection you make. "Not sold
+  in-system" is a time-stamped observation — re-sweep before locking a premise.
 
 ## 3. Contracts
 
-- One contract is active at a time — the engine is serial. Contract $/hr is won on
-  CYCLE-TIME, nothing else: pre-position idle dual-duty haulers at export-origin hubs
-  (closest-ship-wins compresses the buy leg); idle staged haulers at hubs are deliberate,
-  not waste.
-- Source from the warehouse first — zero-ask withdrawal beats a market buy. Stock the
-  fat-tier goods (weapons-class draws run at multiples of the median) from the first
-  warehouse day.
-- Contract legs never leave the worker's system (RULINGS #14). Cross-system logistics belongs
-  to the trade engine.
+- One contract is active at a time — the engine is serial, so contract $/hr is won on
+  CYCLE-TIME. Hub placement, hauler staging, closest-ship-wins sourcing, and warehouse
+  buffering are engine-automated (bootstrap seeds them; the capacity reconciler converges
+  them): **idle haulers parked at hubs are DELIBERATE staging — never "fix" them.**
 - Payouts are lumpy (accept + deliver): derive $/hr from several cycles, never one.
-- The engine never refuses, skips, or value-filters a contract (RULINGS #1). Portfolio
-  weighting between contracts and trade is a captain/Admiral call, made through config —
-  never through code that declines work.
+- The engine never refuses a contract (RULINGS #1) and contract legs never leave the
+  worker's system (RULINGS #14) — both engine-enforced. Portfolio weighting between
+  contracts and trade is a captain/Admiral call, made through config — never through code
+  that declines work.
 
 ## 4. Construction & the gate
 
@@ -95,9 +94,9 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   `construction start --min-supply SCARCE`, pay premium asks, proceed incrementally.
 - Diagnose WHICH cap binds before scaling: a supply-capped material gains nothing from more
   haulers.
-- Gate-support factories run `--inputs-only`; the construction pipeline is their sole buyer.
-- Pin gate haulers with durable, restart-surviving dedication BEFORE the first fill task.
-  Construction sources workers from unassigned idle hulls.
+- Gate-support factories run `--inputs-only`; the construction pipeline is their sole
+  buyer. Construction claims its workers from unassigned idle hulls under durable,
+  restart-surviving dedications — expect idles to be absorbed when a fill starts.
 - During Phase-1 fill lulls, pre-harden Phase-2 tooling: at ~50% gate, shake down `ship jump`
   and one guarded cross-gate circuit end-to-end. Expect first-exercise defects in clusters;
   fix in-crew, same-day.
@@ -114,25 +113,25 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   constraint named, measured demand, ≤25% treasury + payback inside remaining era-hours,
   then act THIS wake. Heavies earn ~3× per hull **(prior)** and stay worth buying until the
   endgame freeze.
-- Buy at the cheap shipyard — hull and probe prices vary up to ~8× by yard **(prior)**; keep a
-  purchase agent docked at the yard. Any per-cycle spend cap must exceed the unit price it is
-  supposed to allow, or it silently starves the buyer forever.
-- **Probes and coverage:** charting a system is NOT scanning its markets — verify markets are
-  actually read. The tour planner only sees markets fresher than its age cap: a stale system
-  is INVISIBLE to the money engine (stale → no tours → no revenue → looks unimportant — a
-  self-reinforcing blind spot). Freshness equals probe circuit time: partition circuits;
-  never try to "scan faster."
-- Pre-gate, buy 2–3 scouting probes only; no extraction or gas hulls without a proven
-  delivery path.
+- Hull and probe prices vary up to ~8× by yard **(prior)** — yard choice is knob-governed in
+  the buyers; sanity-check it when approving buy proposals. Any per-cycle spend cap must
+  exceed the unit price it is supposed to allow, or it silently starves the buyer forever.
+- **Probes and coverage:** charting a system is NOT scanning its markets — verify markets
+  are actually read. The tour planner only sees markets fresher than its age cap: a stale
+  system is INVISIBLE to the money engine (stale → no tours → no revenue → looks
+  unimportant — a self-reinforcing blind spot). Freshness equals probe circuit time — raise
+  coverage through the freshsizer/scout-post knobs (more probes, partitioned posts), never
+  by "scanning faster." Pre-gate probe count is bootstrap's `probe_target`; extraction and
+  gas hulls stay refuted without a proven delivery path.
 
 ## 6. API budget
 
 - The rate limit is per ACCOUNT. Fleet growth does not add API capacity — API efficiency is
   the late-game lever, not hull count. The overwhelming majority of calls are nav/scan/dock
   overhead, not trades.
-- Prioritize fundamental calls (dock, orbit, refuel, get-market, navigate) over bulk scans;
-  cache aggressively; widen reuse windows deliberately — but never blind-cut price scans
-  (see §2).
+- Call prioritization (fundamentals over scans) and caching are engine-side (the
+  priority-aware limiter); your lever is the scan/freshness knobs — trade API for freshness
+  deliberately, and never blind-cut price scans (see §2).
 
 ## 7. Refuted strategies (do not relitigate without new evidence)
 
@@ -145,8 +144,6 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
 - **Monitoring/polling between wakes** — the wake model is the only standing sensor; batch
   everything into heartbeats; watch live only when the immediate next action hangs on a
   single-shot outcome, then kill the watch.
-- **A second warehouse at the same waypoint** — resolution is newest-RUNNING-wins; the second
-  is dead capital.
 
 ## 8. Measurement rules
 
@@ -184,12 +181,11 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   and RE-VERIFY live-tuned knob values and fleet dedications — a restart can silently reset
   them to defaults.
 
-## 10. Engineering discipline (details live in the shipwright template)
+## 10. Engineering discipline (the rulings carry the law; this is the judgment layer)
 
-- **Closed is not armed.** Features ship default-off by convention; a bead that ships an
-  armable knob stays OPEN until the knob is armed — or consciously disabled with the reason
-  recorded — in the arming ledger. Audit the dormant-knob list at every deploy. A dormant
-  knob is not a delivered feature.
+- The binding law lives in RULINGS: #4 (guards fail closed), #12–#13 (commit-then-gate,
+  gate-only merges, verify the SHA), #16 (gc off-limits), #17 (protected paths, prod
+  isolation), #19 (closed is not armed). This book does not restate them — read them.
 - **Merged is not proven.** Verify every deploy live at the EFFECT point, against the FAILING
   case named on the bead — never a healthy neighbor sharing its label. Visual features are
   proven on screen, never by backing-store queries.
@@ -197,16 +193,8 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   the structural fix instead of patch N+1. When a fix unblocks a previously-masked code
   path, the newly-reachable path is exactly where the next bug hides — verify it. One
   worker's bug must never panic the daemon.
-- Money guards fail CLOSED and are never weakened as a side effect. Re-enable guards
-  PER-PATH, one engine at a time, and verify guard PARAMETERS, not just presence. Spend
-  guards scale with treasury above the fixed working-capital reserve.
-- All code moves worktree → captain-gate → main. Commit before gating (`--no-verify`, never
-  stage `issues.jsonl`); verify the merged SHA's numstat on the REAL main HEAD. Protected
-  paths are never touched by build agents: `gobot/internal/captain/**`, `cmd/captain-gate/**`,
-  `city/agents/**`. The `gc` city-gateway SOURCE is off-limits, full stop — use it, never
-  modify it.
-- Test infrastructure never targets the production socket or database — force-inject test
-  endpoints so a stray run cannot reach prod.
+- Guard hygiene beyond RULINGS #4: re-enable guards PER-PATH, one engine at a time, and
+  verify guard PARAMETERS, not just presence.
 
 ## 11. Tooling rules
 
