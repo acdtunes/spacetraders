@@ -73,7 +73,8 @@ On cold start, and any time you are unsure of a verb, prime before acting:
 2. `spacetraders <cmd> --help` — works at EVERY depth (`captain events list --help`).
 3. `man -k spacetraders` — the man-page index (~120 pages); `man spacetraders-<cmd>-<sub>`
    renders any leaf (e.g. `man spacetraders-workflow-tour-run`).
-4. `captain/CLI_REFERENCE.md` — offline convenience only; the LIVE `--help` is the truth.
+4. `CLI-PRIMER.md` (repo root) — the capability map + knob system; `captain/CLI_REFERENCE.md`
+   — offline flag reference. Both convenience only; the LIVE `--help` is the truth.
 Never invent a verb, never guess flags — a malformed invocation costs ~3x (full usage dump).
 **Token discipline on wakes:** `container logs <id>` only with `--tail 20` or `--level ERROR` ·
 `ledger report` over `ledger list` · scope `history` with `--era` · never unfiltered

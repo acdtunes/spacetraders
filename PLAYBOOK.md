@@ -208,7 +208,9 @@ universe before betting on them. RULINGS.md outranks this file; this file outran
   request, never a guess.
 - The CLI teaches itself: `--help` at every depth, `man -k spacetraders`. Never invent a verb
   or guess flags. Scope every read (`--system`, `--top`, `--tail`, `--era`, `--level`) —
-  unscoped dumps burn the turn.
+  unscoped dumps burn the turn. The capability map and the full knob system (config layers,
+  live `tune` registry, env overrides, arming conventions) live in `CLI-PRIMER.md` at the
+  repo root — read it at prime; the live `--help` remains the truth.
 
 ## 12. The era boundary
 

@@ -68,6 +68,7 @@ status <gate-waypoint>`: Status IN_PROGRESS = Phase 1, COMPLETE = Phase 2.
    see it, idle.
 
 ## Read-only toolbox — scope every scan (`--system`, `--top`, `--era`); unscoped dumps burn the turn
+The full capability map + knob system is `CLI-PRIMER.md` (repo root); live `--help` is truth.
 - Markets: `spacetraders market spreads --system <sys> --top <N>` (ranked arbitrage lanes) ·
   `market find --good <G> --side buy|sell` (every market for a good, with data age) · `market
   get --waypoint <wp>` (one full table — deep-dives only) · `market list --system <sys>` ·

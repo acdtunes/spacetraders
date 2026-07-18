@@ -212,7 +212,9 @@ STATE, never cruft — declare them in every deploy note; a checkout-clean disar
 After any coordinator restart, re-verify live-tuned values against the ledger — a restart
 can silently reset tunes to config defaults. Arming changes behavior fleet-wide: when a
 change awakens a previously-ineffective config value, enumerate EVERY consumer of that
-value and test each at the newly-effective magnitude before calling it armed.
+value and test each at the newly-effective magnitude before calling it armed. The knob
+inventory — all three config layers, the `tune` registry, and the env overrides — is
+documented in `CLI-PRIMER.md` at the repo root; keep it current when you add knobs.
 
 ## Notify + acceptance (RULINGS #8 — every live change)
 COVERAGE is absolute: every release that impacts fleet operation notifies the captain —
