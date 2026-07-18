@@ -127,6 +127,20 @@ const (
 	// count-only-OWN-probes fix so freed hulls actually reach depth) is the deferred follow-up;
 	// this static floor is the surgical de-risk.
 	defaultReservedFrontierFloor = 0
+	// defaultHoldUnscannedMarketPosts is the sp-u8jc/sp-gucu bootstrap-catch-22 fix flag
+	// (int-mode, 0 = OFF = today's retire-as-gone behavior, byte-identical). The freshness
+	// census keys "markets" on SCANNED market_data rows, so a CHARTED dense hub (its waypoints
+	// carry the MARKETPLACE trait) that has never been scanned reads as 0 markets and its
+	// standing post is retired "its markets are gone" — the probe never goes, so the system
+	// never gets its first scan, so it stays dark forever (the depth-wall root the sp-u8jc relay
+	// and the probe-buyer are armed to break but cannot while the post keeps being retired). 1 ⇒
+	// a charted-with-marketplaces-but-unscanned system is treated as NEEDING AN INITIAL SCAN: its
+	// post is HELD (not retired) and it counts as one-probe initial-scan demand, so the coordinator
+	// mans it (in-system idle, sp-u8jc cross-system relay, or a probe buy), the probe scans it, and
+	// it joins the normal freshness rotation. Genuinely empty systems (no marketplace waypoints)
+	// still retire. Live-tunable (SizerTunableDefaults); requires the daemon to have wired the
+	// charted-marketplace reader (SetChartedMarketplaceReader).
+	defaultHoldUnscannedMarketPosts = 0
 )
 
 // FleetReader is the narrow slice of the ship repository the sizer reads: the whole fleet,
@@ -144,6 +158,21 @@ type FleetReader interface {
 // avoids). Structurally satisfied by the GORM scout-post repository.
 type ScoutPostHullUpdater interface {
 	UpdateHulls(ctx context.Context, playerID int, systemSymbol string, hulls int) error
+}
+
+// ChartedMarketplaceReader reports, per system, how many CHARTED marketplace waypoints it holds
+// (a non-fuel waypoint carrying the MARKETPLACE trait) — regardless of whether the player has
+// scanned those markets' prices yet. It is the "has a marketplace" signal the sp-u8jc/sp-gucu
+// hold-unscanned-posts guard keys on: a system present here but ABSENT from the SCANNED freshness
+// census (SystemsFreshness, which counts only waypoints that already have market_data) is charted-
+// but-unscanned — it NEEDS an initial scan, NOT retirement. It REUSES the sp-gucu/sp-pvw3 census
+// primitive the dark-market scanner is built on (MarketRepositoryGORM.ChartedMarketSystemCounts:
+// era-scoped, fuel-excluded, MARKETPLACE-trait-filtered) so charting and this signal share one
+// notion of "a market" and cannot drift — no new query. Optional-injection: nil (unwired) keeps
+// the retire-as-gone behavior byte-identical, and the hold_unscanned_market_posts knob gates it
+// even when wired.
+type ChartedMarketplaceReader interface {
+	ChartedMarketSystemCounts(ctx context.Context) (map[string]int, error)
 }
 
 // RunMarketFreshnessSizerCoordinatorCommand launches the standing coordinator for a player
@@ -183,6 +212,13 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	// surplus. 0 → the floor is off (pre-sp-iopd behavior). Live-tunable (SizerTunableDefaults).
 	ReservedFrontierFloor int
 
+	// HoldUnscannedMarketPosts (sp-u8jc/sp-gucu) is the int-mode bootstrap-catch-22 flag: >0 ⇒
+	// a charted-with-marketplaces-but-unscanned system is HELD (its post is not retired) and
+	// counted as one-probe initial-scan demand; 0 (default) ⇒ today's retire-as-gone behavior,
+	// byte-identical. Live-tunable (SizerTunableDefaults). Inert unless the daemon also wired the
+	// charted-marketplace reader (SetChartedMarketplaceReader).
+	HoldUnscannedMarketPosts int
+
 	MaxProbeFleet        int // total satellite cap
 	MaxSpendPerCycle     int // max probe spend within the trailing spend window
 	PurchaseCooldownSecs int // min seconds between probe buys
@@ -219,6 +255,11 @@ type RunMarketFreshnessSizerCoordinatorHandler struct {
 	treasury    probebuy.TreasuryReader
 	purchaser   probebuy.ProbePurchaser
 	hullUpdater ScoutPostHullUpdater
+
+	// chartedMarketplaceReader is the optional "has a marketplace" signal the sp-u8jc/sp-gucu
+	// hold-unscanned-posts guard reads. nil (unwired) keeps the retire-as-gone behavior byte-
+	// identical; even wired it is inert until the hold_unscanned_market_posts knob is armed.
+	chartedMarketplaceReader ChartedMarketplaceReader
 
 	// captainEvents emits the coordinator error-loop event when a reconcile pass fails with
 	// the identical error for DefaultStreakThreshold consecutive ticks. Optional-injection.
@@ -278,6 +319,13 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) SetProbePurchaser(p probebuy
 // back to a full Upsert on resize.
 func (h *RunMarketFreshnessSizerCoordinatorHandler) SetHullUpdater(u ScoutPostHullUpdater) {
 	h.hullUpdater = u
+}
+
+// SetChartedMarketplaceReader wires the "has a marketplace" signal the sp-u8jc/sp-gucu
+// hold-unscanned-posts guard reads. Leaving it unset keeps the retire-as-gone behavior
+// byte-identical; even wired it is inert until hold_unscanned_market_posts is armed.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) SetChartedMarketplaceReader(r ChartedMarketplaceReader) {
+	h.chartedMarketplaceReader = r
 }
 
 // SetEventRecorder wires the captain outbox for the reconcile error-loop event.
@@ -359,39 +407,41 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) noteReconcile(ctx context.Co
 // KEY SET is also the contract for which keys resolveSizerConfig live-overlays.
 func SizerTunableDefaults() map[string]int {
 	return map[string]int{
-		"max_spend_per_cycle":        defaultSizerMaxSpend,
-		"purchase_cooldown_secs":     int(defaultSizerCooldown / time.Second),
-		"spend_window_secs":          int(defaultSizerSpendWindow / time.Second),
-		"max_probe_fleet":            defaultSizerMaxProbeFleet,
-		"max_probes_per_system":      defaultMaxProbesPerSystem,
-		"sla_seconds":                defaultSLASeconds,
-		"target_percentile":          defaultTargetPercentile, // sp-r57g percentile-age target
-		"value_weighted":             valueWeightedModeOn,     // sp-r57g value-weighting mode (2=on default, 1=off)
-		"worst_cycle_seconds":        defaultWorstCycleSeconds,
-		"cycle_dampening_percent":    defaultCycleDampeningPercent,
-		"breach_response_percent":    defaultBreachResponsePercent,
-		"release_slack_percent":      defaultReleaseSlackPercent,
-		"release_stable_window_secs": defaultReleaseStableWindowSecs,
-		"reserved_frontier_floor":    defaultReservedFrontierFloor,
+		"max_spend_per_cycle":         defaultSizerMaxSpend,
+		"purchase_cooldown_secs":      int(defaultSizerCooldown / time.Second),
+		"spend_window_secs":           int(defaultSizerSpendWindow / time.Second),
+		"max_probe_fleet":             defaultSizerMaxProbeFleet,
+		"max_probes_per_system":       defaultMaxProbesPerSystem,
+		"sla_seconds":                 defaultSLASeconds,
+		"target_percentile":           defaultTargetPercentile, // sp-r57g percentile-age target
+		"value_weighted":              valueWeightedModeOn,     // sp-r57g value-weighting mode (2=on default, 1=off)
+		"worst_cycle_seconds":         defaultWorstCycleSeconds,
+		"cycle_dampening_percent":     defaultCycleDampeningPercent,
+		"breach_response_percent":     defaultBreachResponsePercent,
+		"release_slack_percent":       defaultReleaseSlackPercent,
+		"release_stable_window_secs":  defaultReleaseStableWindowSecs,
+		"reserved_frontier_floor":     defaultReservedFrontierFloor,
+		"hold_unscanned_market_posts": defaultHoldUnscannedMarketPosts, // sp-u8jc/sp-gucu bootstrap flag (0=off)
 	}
 }
 
 // sizerConfig is the launch command with every default resolved.
 type sizerConfig struct {
-	DefaultSLA            time.Duration
-	Overrides             map[string]time.Duration
-	SeedCycle             time.Duration
-	MinCycleSamples       int
-	WorstCycle            time.Duration
-	CycleDampeningPercent int
-	MaxProbesPerSystem    int
-	BreachResponsePercent int
-	TargetPercentile      int  // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
-	ValueWeighted         bool // sp-r57g: weight the percentile by per-market value (default ON)
-	ReleaseSlackPercent   int
-	ReleaseStableWindow   time.Duration
-	ReservedFrontierFloor int
-	Buy                   probebuy.Config
+	DefaultSLA               time.Duration
+	Overrides                map[string]time.Duration
+	SeedCycle                time.Duration
+	MinCycleSamples          int
+	WorstCycle               time.Duration
+	CycleDampeningPercent    int
+	MaxProbesPerSystem       int
+	BreachResponsePercent    int
+	TargetPercentile         int  // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
+	ValueWeighted            bool // sp-r57g: weight the percentile by per-market value (default ON)
+	ReleaseSlackPercent      int
+	ReleaseStableWindow      time.Duration
+	ReservedFrontierFloor    int
+	HoldUnscannedMarketPosts bool // sp-u8jc/sp-gucu: hold-not-retire charted-but-unscanned posts
+	Buy                      probebuy.Config
 }
 
 // resolveSizerConfig resolves one tick's effective config. live is the tick-start
@@ -416,6 +466,8 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		ReleaseSlackPercent:   cmd.ReleaseSlackPercent,
 		ReleaseStableWindow:   time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
 		ReservedFrontierFloor: cmd.ReservedFrontierFloor,
+		// sp-u8jc/sp-gucu int-mode flag: >0 ⇒ hold-not-retire charted-but-unscanned posts.
+		HoldUnscannedMarketPosts: cmd.HoldUnscannedMarketPosts > 0,
 		Buy: probebuy.Config{
 			MaxProbeFleet:    cmd.MaxProbeFleet,
 			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
@@ -438,6 +490,9 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		// sp-iopd reserved frontier floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
 		// which is the documented default — no <=0 fallback, since 0 IS the default here.
 		c.ReservedFrontierFloor = live.PositiveIntOrZero("reserved_frontier_floor")
+		// sp-u8jc/sp-gucu hold-unscanned flag: live-authoritative int-mode bool. Absent/zeroed ⇒
+		// OFF (the documented default, retire-as-gone) — no fallback, since 0 IS the default here.
+		c.HoldUnscannedMarketPosts = live.PositiveIntOrZero("hold_unscanned_market_posts") > 0
 		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.Buy.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.Buy.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
@@ -562,6 +617,17 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		return err
 	}
 
+	// CHARTED-MARKETPLACE signal (sp-u8jc/sp-gucu): system → charted marketplace-waypoint count,
+	// independent of whether prices were scanned. Empty (nil) unless the hold_unscanned_market_posts
+	// knob is armed AND the reader is wired — so the retire-as-gone behavior is byte-identical by
+	// default. When armed, a read failure aborts THIS tick (fail-safe: never retire a charted post
+	// on a partial view) and the error-streak monitor handles a persistent gap — mirroring the
+	// dark-market scanner's "idle rather than act on a partial census".
+	chartedMarketplace, err := h.chartedMarketplaceSystems(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to read charted marketplace systems: %w", err)
+	}
+
 	marketBearing := make(map[string]bool, len(snapshots))
 	// desiredBySystem holds each market-bearing system's target from the UNCHANGED
 	// computeTarget/desiredHulls pipeline (model → clamp → circuit → per-system release pacing).
@@ -601,6 +667,15 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		totalDemand = sumDesired(desiredBySystem)
 	}
 
+	// INITIAL-SCAN DEMAND (sp-u8jc/sp-gucu): each charted-but-unscanned system that carries a
+	// standing post adds ONE probe of demand so the aggregate buy provisions capacity to man it for
+	// its first scan (the reconciler mans it via in-system idle, the sp-u8jc cross-system relay, or
+	// this buy); once scanned it lands market_data and enters the census-sized rotation above. Added
+	// AFTER the reserved-frontier-floor recompute (which resets totalDemand from the per-system map)
+	// so the floor never wipes it — this is NEW buy-demand, not a per-system holding the floor caps.
+	// Empty chartedMarketplace (knob off / reader unwired) ⇒ 0 ⇒ byte-identical.
+	totalDemand += initialScanDemand(posts, marketBearing, chartedMarketplace)
+
 	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
 	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
 	// undedicated probe for the reconciler to relay; naming the neediest system lets the purchaser
@@ -627,8 +702,10 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	}
 
 	// AUTO-RESIZE / RELEASE: a standing post whose system dropped out of the census (its
-	// markets retired) is removed, freeing its probes back to the pool.
-	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing)
+	// markets retired) is removed, freeing its probes back to the pool. A charted-but-unscanned
+	// system (marketplace waypoints present, no market_data yet) is HELD when armed — it needs an
+	// initial scan, not retirement (sp-u8jc/sp-gucu).
+	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, chartedMarketplace)
 
 	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply. With the
 	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
@@ -962,7 +1039,14 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) applyPost(ctx context.Contex
 // retireMarketlessPosts removes every STANDING post whose system dropped out of the census
 // (its markets retired), freeing its probes back to the pool. sweep_once posts are left to
 // the frontier coordinator. Returns the count retired.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, marketBearing map[string]bool) int {
+//
+// sp-u8jc/sp-gucu HOLD GUARD: a system ABSENT from the SCANNED census is not automatically
+// "markets gone". If it is charted WITH marketplace waypoints (chartedMarketplace[system] > 0)
+// it has simply never been scanned — it NEEDS an initial scan, so its post is HELD, not retired,
+// so the reconciler/relay can man it and the probe can make that first scan. chartedMarketplace
+// is nil (⇒ zero for every lookup) unless the hold_unscanned_market_posts knob is armed AND the
+// reader is wired, so this guard never fires by default — retire-as-gone stays byte-identical.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int) int {
 	if cmd.DryRun {
 		return 0
 	}
@@ -979,6 +1063,13 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx co
 		if post.Kind != domainScouting.PostKindStanding || marketBearing[post.SystemSymbol] {
 			continue
 		}
+		if chartedMarketplace[post.SystemSymbol] > 0 {
+			// Charted WITH marketplace waypoints but not yet scanned — held for its initial scan.
+			logger.Log("INFO", fmt.Sprintf("Held freshness post %s — charted with %d marketplace(s) but unscanned, awaiting its initial scan (not retired)", post.SystemSymbol, chartedMarketplace[post.SystemSymbol]), map[string]interface{}{
+				"action": "freshness_post_held_unscanned", "system_symbol": post.SystemSymbol, "marketplaces": chartedMarketplace[post.SystemSymbol],
+			})
+			continue
+		}
 		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to retire marketless freshness post %s: %v", post.SystemSymbol, err), nil)
 			continue
@@ -989,6 +1080,41 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx co
 		})
 	}
 	return retired
+}
+
+// chartedMarketplaceSystems reads the "has a marketplace" signal (sp-u8jc/sp-gucu) for this tick:
+// system → charted marketplace-waypoint count. It returns nil (⇒ every lookup is zero ⇒ the
+// retire-as-gone behavior byte-identical) unless the hold_unscanned_market_posts knob is armed AND
+// the charted-marketplace reader is wired. A read error is returned to ReconcileOnce, which aborts
+// the tick rather than retire charted posts on a partial view (fail-safe).
+func (h *RunMarketFreshnessSizerCoordinatorHandler) chartedMarketplaceSystems(ctx context.Context, cfg sizerConfig) (map[string]int, error) {
+	if !cfg.HoldUnscannedMarketPosts || h.chartedMarketplaceReader == nil {
+		return nil, nil
+	}
+	return h.chartedMarketplaceReader.ChartedMarketSystemCounts(ctx)
+}
+
+// initialScanDemand (sp-u8jc/sp-gucu) totals the one-probe-per-post initial-scan demand of the
+// charted-but-unscanned systems: a system that carries a STANDING post, is charted WITH marketplace
+// waypoints (chartedMarketplace[system] > 0), but is ABSENT from the scanned census (not market-
+// bearing) needs one probe to make its first scan. It is bounded to ONE probe per post — never
+// scaled by the marketplace count — and only for systems that already have a post (a mannable
+// target), so it can never over-provision. A nil chartedMarketplace (knob off / reader unwired)
+// yields 0, keeping the aggregate demand byte-identical.
+func initialScanDemand(posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int) int {
+	demand := 0
+	for _, post := range posts {
+		if post.Kind != domainScouting.PostKindStanding {
+			continue
+		}
+		if marketBearing[post.SystemSymbol] {
+			continue // already counted by the census demand loop
+		}
+		if chartedMarketplace[post.SystemSymbol] > 0 {
+			demand++ // ONE probe for the initial scan — never scaled by the marketplace count
+		}
+	}
+	return demand
 }
 
 // scoutSupply counts the scout-probe SUPPLY: every scout-type hull the player owns that is

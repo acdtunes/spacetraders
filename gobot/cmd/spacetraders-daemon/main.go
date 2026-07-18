@@ -1198,6 +1198,14 @@ func run(cfg *config.Config) error {
 	// The narrow, manning-preserving resize seam: UpdateHulls touches only the hull column so
 	// a resize cannot clobber the manning the scout reconciler wrote to the same row.
 	freshnessSizerHandler.SetHullUpdater(scoutPostRepo)
+	// sp-u8jc/sp-gucu bootstrap-catch-22 fix: wire the "has a marketplace" signal over the SAME
+	// GORM market repo (ChartedMarketSystemCounts — the era-scoped, fuel-excluded, MARKETPLACE-
+	// trait census the dark-market scanner is built on), so a CHARTED-but-unscanned dense hub is
+	// HELD (not retired "markets gone") and counted as initial-scan demand once armed. This makes
+	// the fix ARM-able by a knob flip (hold_unscanned_market_posts=1); while that flag is 0 (the
+	// default) the reader is read by nothing, so the coordinator is byte-identical to today. It is
+	// the missing piece the sp-u8jc relay + probe-buyer need: the post must survive to be manned.
+	freshnessSizerHandler.SetChartedMarketplaceReader(marketRepo)
 	freshnessSizerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
 	// sp-vwek: per-tick live-config snapshots — the motivating retune surface (the
 	// cooldown/spend knobs hand-edited on 2026-07-15 are now `tune`-able live).

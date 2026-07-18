@@ -767,26 +767,27 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 // knobs the common single-SLA case needs.
 func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand{
-		PlayerID:                shared.MustNewPlayerID(playerID),
-		ContainerID:             cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:        cfg.OptionalInt("tick_interval_secs", 0),
-		DryRun:                  cfg.OptionalBool("dry_run"),
-		SLASeconds:              cfg.OptionalInt("sla_seconds", 0),
-		SeedCycleSeconds:        cfg.OptionalInt("seed_cycle_seconds", 0),
-		MinCycleSamples:         cfg.OptionalInt("min_cycle_samples", 0),
-		WorstCycleSeconds:       cfg.OptionalInt("worst_cycle_seconds", 0),
-		CycleDampeningPercent:   cfg.OptionalInt("cycle_dampening_percent", 0),
-		MaxProbesPerSystem:      cfg.OptionalInt("max_probes_per_system", 0),
-		BreachResponsePercent:   cfg.OptionalInt("breach_response_percent", 0),
-		TargetPercentile:        cfg.OptionalInt("target_percentile", 0), // sp-r57g percentile-age target
-		ValueWeightedMode:       cfg.OptionalInt("value_weighted", 0),    // sp-r57g value-weighting mode (2=on default, 1=off)
-		ReleaseSlackPercent:     cfg.OptionalInt("release_slack_percent", 0),
-		ReleaseStableWindowSecs: cfg.OptionalInt("release_stable_window_secs", 0),
-		ReservedFrontierFloor:   cfg.OptionalInt("reserved_frontier_floor", 0), // sp-iopd reserved frontier floor
-		MaxProbeFleet:           cfg.OptionalInt("max_probe_fleet", 0),
-		MaxSpendPerCycle:        cfg.OptionalInt("max_spend_per_cycle", 0),
-		PurchaseCooldownSecs:    cfg.OptionalInt("purchase_cooldown_secs", 0),
-		SpendWindowSecs:         cfg.OptionalInt("spend_window_secs", 0),
+		PlayerID:                 shared.MustNewPlayerID(playerID),
+		ContainerID:              cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs:         cfg.OptionalInt("tick_interval_secs", 0),
+		DryRun:                   cfg.OptionalBool("dry_run"),
+		SLASeconds:               cfg.OptionalInt("sla_seconds", 0),
+		SeedCycleSeconds:         cfg.OptionalInt("seed_cycle_seconds", 0),
+		MinCycleSamples:          cfg.OptionalInt("min_cycle_samples", 0),
+		WorstCycleSeconds:        cfg.OptionalInt("worst_cycle_seconds", 0),
+		CycleDampeningPercent:    cfg.OptionalInt("cycle_dampening_percent", 0),
+		MaxProbesPerSystem:       cfg.OptionalInt("max_probes_per_system", 0),
+		BreachResponsePercent:    cfg.OptionalInt("breach_response_percent", 0),
+		TargetPercentile:         cfg.OptionalInt("target_percentile", 0), // sp-r57g percentile-age target
+		ValueWeightedMode:        cfg.OptionalInt("value_weighted", 0),    // sp-r57g value-weighting mode (2=on default, 1=off)
+		ReleaseSlackPercent:      cfg.OptionalInt("release_slack_percent", 0),
+		ReleaseStableWindowSecs:  cfg.OptionalInt("release_stable_window_secs", 0),
+		ReservedFrontierFloor:    cfg.OptionalInt("reserved_frontier_floor", 0),     // sp-iopd reserved frontier floor
+		HoldUnscannedMarketPosts: cfg.OptionalInt("hold_unscanned_market_posts", 0), // sp-u8jc/sp-gucu bootstrap flag (0=off)
+		MaxProbeFleet:            cfg.OptionalInt("max_probe_fleet", 0),
+		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
+		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),
+		SpendWindowSecs:          cfg.OptionalInt("spend_window_secs", 0),
 	}
 }
 

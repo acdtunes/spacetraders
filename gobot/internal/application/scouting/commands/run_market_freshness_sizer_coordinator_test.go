@@ -27,6 +27,18 @@ func (f *fakeFreshnessReader) SystemsFreshness(_ context.Context, _ int) ([]doma
 	return f.snapshots, f.err
 }
 
+// fakeChartedMarketplaceReader stands in for the "has a marketplace" signal (sp-u8jc/sp-gucu):
+// system → charted marketplace-waypoint count, regardless of whether prices were scanned. The
+// coordinator diffs it against the SCANNED freshness census to find charted-but-unscanned hubs.
+type fakeChartedMarketplaceReader struct {
+	counts map[string]int
+	err    error
+}
+
+func (f *fakeChartedMarketplaceReader) ChartedMarketSystemCounts(_ context.Context) (map[string]int, error) {
+	return f.counts, f.err
+}
+
 // fakeSizerPostRepo records every write so a test can assert the exact desired-state the
 // coordinator declared/resized/retired. UpdateHulls is the narrow, manning-preserving
 // resize seam (the coordinator prefers it over a full Upsert on an existing standing post).
@@ -1151,4 +1163,123 @@ func TestResolveSizerConfig_ReadsPercentileKnobsLiveWithDefaultFallback(t *testi
 
 	reEnabled := resolveSizerConfig(launch, liveconfig.Snapshot{"value_weighted": valueWeightedModeOn})
 	require.True(t, reEnabled.ValueWeighted, "a live snapshot can re-enable the value-weighting the launch disabled")
+}
+
+// ---- sp-u8jc/sp-gucu: hold charted-but-unscanned market posts (bootstrap-catch-22 fix) ----
+
+// THE ROOT DEPTH-BLOCKER FIX. The freshness census keys "markets" on SCANNED market_data, so a
+// CHARTED dense hub (its waypoints carry the MARKETPLACE trait) that has never been scanned reads
+// as 0 markets and — pre-fix — its standing post is retired "its markets are gone", so the probe
+// never goes and the system stays dark forever. Armed, such a system is HELD for its initial scan
+// (NOT retired). A genuinely empty system (no marketplace waypoints charted) still retires. Disabled
+// (the default) is byte-identical to today: it retires. This is the retire-CLASSIFICATION matrix; the
+// mutation guard is the armed-charted row — revert the hold guard and it retires, failing the test.
+func TestSizer_HoldsChartedUnscannedPostWhenArmed_RetiresGenuinelyEmpty(t *testing.T) {
+	cases := []struct {
+		name         string
+		armed        bool
+		chartedCount int // marketplace waypoints charted in the hub's system (0 = genuinely empty)
+		wantRetired  bool
+	}{
+		{"armed + charted marketplaces but unscanned → HELD (needs initial scan)", true, 26, false},
+		{"armed + no marketplace waypoints (genuinely empty) → retired", true, 0, true},
+		{"disabled + charted marketplaces but unscanned → retired (byte-identical to today)", false, 26, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A market-bearing (scanned) system keeps the census non-empty so the fail-safe
+			// empty-census guard does not mask the retire decision under test.
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snap("X1-SCANNED", 10, 100, 120, 59),
+			}}
+			pr := newSizerPostRepo(
+				standingSizerPost("X1-SCANNED", 1, "P-SCANNED"),
+				standingSizerPost("X1-DENSEHUB", 1, "P-HUB"), // the charted-unscanned candidate
+			)
+			fl := &fakeSizerFleetRepo{all: scouts(t, 10)}
+			h := newSizer(fr, pr, fl)
+			charted := map[string]int{"X1-SCANNED": 10} // the scanned system is charted too (market-bearing → guard moot)
+			if tc.chartedCount > 0 {
+				charted["X1-DENSEHUB"] = tc.chartedCount
+			}
+			h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: charted})
+			cmd := sizerCmd()
+			if tc.armed {
+				cmd.HoldUnscannedMarketPosts = 1
+			}
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+			if tc.wantRetired {
+				require.Contains(t, pr.removed, "X1-DENSEHUB",
+					"an unscanned post with no charted marketplaces (or with the fix disabled) retires as today")
+			} else {
+				require.NotContains(t, pr.removed, "X1-DENSEHUB",
+					"a charted-with-marketplaces-but-unscanned post is HELD for its initial scan, never retired 'markets gone'")
+			}
+			require.NotContains(t, pr.removed, "X1-SCANNED", "a market-bearing system is never retired")
+		})
+	}
+}
+
+// The held post must also PULL a probe: a charted-but-unscanned system counts as ONE-probe
+// initial-scan demand so the aggregate buy provisions capacity for the reconciler/relay to man it
+// (in-system idle, the sp-u8jc cross-system relay, or a probe buy) — after which its first scan
+// lands market_data and it enters the normal census-sized rotation. The demand is bounded to ONE
+// probe, NOT scaled by the 26 charted marketplace waypoints: the supply-1 no-buy row proves the
+// bound (a 26-scaled demand would outrun a single probe and buy). Disabled adds no demand.
+// Mutation guards: drop the demand-add → the zero-supply armed row stops buying; scale demand by
+// the marketplace count → the one-probe-supply armed row starts buying. Either fails the test.
+func TestSizer_ChartedUnscannedSystemCountsAsBoundedInitialScanDemand(t *testing.T) {
+	cases := []struct {
+		name     string
+		armed    bool
+		supply   int
+		wantBuys int
+	}{
+		{"armed + unscanned hub + zero supply → buy (initial-scan demand outruns supply)", true, 0, 1},
+		{"armed + unscanned hub + one-probe supply → no buy (demand is ONE, not marketplace-count-scaled)", true, 1, 0},
+		{"disabled + unscanned hub + zero supply → no buy (no initial-scan demand)", false, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: nil}                      // nothing scanned yet — the bootstrap state
+			pr := newSizerPostRepo(standingSizerPost("X1-DENSEHUB", 1, "")) // declared, awaiting its first scan
+			fl := &fakeSizerFleetRepo{all: scouts(t, tc.supply)}
+			h := newSizer(fr, pr, fl)
+			pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+			h.SetProbePurchaser(pu)
+			// 26 charted marketplace waypoints, ZERO scanned — the dense-hub bootstrap case.
+			h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: map[string]int{"X1-DENSEHUB": 26}})
+			cmd := sizerCmd()
+			if tc.armed {
+				cmd.HoldUnscannedMarketPosts = 1
+			}
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+			require.Equal(t, tc.wantBuys, pu.buyCalls,
+				"a charted-unscanned post demands exactly ONE initial-scan probe when armed, and none when disabled")
+		})
+	}
+}
+
+// Config wiring: hold_unscanned_market_posts is a live-tunable int-mode flag. resolveSizerConfig
+// reads it from the tick's live-config snapshot (live > launch); with NO snapshot it falls back to
+// the launch command, else the documented default (OFF, retire-as-gone) — guarding the registry↔
+// overlay drift that would leave the knob registered but silently ineffective.
+func TestResolveSizerConfig_ReadsHoldUnscannedMarketPostsLiveWithDefaultFallback(t *testing.T) {
+	require.False(t, resolveSizerConfig(sizerCmd(), nil).HoldUnscannedMarketPosts,
+		"no snapshot, no launch value → the documented default (OFF, retire-as-gone)")
+
+	launch := sizerCmd()
+	launch.HoldUnscannedMarketPosts = 1
+	require.True(t, resolveSizerConfig(launch, nil).HoldUnscannedMarketPosts,
+		"no snapshot → the launch command value governs")
+
+	require.True(t, resolveSizerConfig(sizerCmd(), liveconfig.Snapshot{"hold_unscanned_market_posts": 1}).HoldUnscannedMarketPosts,
+		"a live snapshot arms it next tick")
+
+	require.False(t, resolveSizerConfig(launch, liveconfig.Snapshot{"hold_unscanned_market_posts": 0}).HoldUnscannedMarketPosts,
+		"a live 0 reverts even a launch-armed flag (tune 0 = off)")
 }
