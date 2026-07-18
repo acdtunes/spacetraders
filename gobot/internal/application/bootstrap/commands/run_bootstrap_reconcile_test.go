@@ -88,6 +88,29 @@ func (f *fakeScouter) AssignAllMarkets(ctx context.Context, playerID int, system
 	return nil
 }
 
+// fakeScanner is the sp-hh0h shipyard-readability positioner port. dispatched/err are what it returns;
+// readyAcq (optional) is flipped readable when it "dispatches", modeling the hull arriving at the yard
+// so the NEXT tick's live price read succeeds.
+type fakeScanner struct {
+	dispatched  bool
+	err         error
+	calls       int
+	homeSystems []string
+	readyAcq    *fakeAcquirer // if set, its readable is flipped true on a dispatch
+}
+
+func (f *fakeScanner) EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (bool, error) {
+	f.calls++
+	f.homeSystems = append(f.homeSystems, homeSystem)
+	if f.err != nil {
+		return false, f.err
+	}
+	if f.dispatched && f.readyAcq != nil {
+		f.readyAcq.readable = true // the hull reaches the yard → the live price becomes readable
+	}
+	return f.dispatched, nil
+}
+
 type fakeMetrics struct {
 	phases          []string
 	purchase        int
@@ -202,6 +225,8 @@ func baseCmd() *RunBootstrapCoordinatorCommand {
 
 // --- live-by-default: a fresh, all-zero-config launch acts (no enablement flip) ---
 
+// sp-hh0h: buy-to-target in ONE tick (not one probe per 5-min tick). A cold agent with 1 probe and
+// target 3 buys the 2-probe remainder this tick, capital permitting.
 func TestBootstrap_LiveByDefault_BuysProbeOnColdAgent(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
@@ -216,11 +241,11 @@ func TestBootstrap_LiveByDefault_BuysProbeOnColdAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Purchased != 1 {
-		t.Fatalf("live-by-default cold agent should buy 1 probe, got %d (blocker=%q)", res.Purchased, res.Blocker)
+	if res.Purchased != 2 {
+		t.Fatalf("live-by-default cold agent (1/3 probes) should buy the 2-probe remainder to target this tick, got %d (blocker=%q)", res.Purchased, res.Blocker)
 	}
-	if acq.buys != 1 {
-		t.Fatalf("acquirer should have executed 1 buy, got %d", acq.buys)
+	if acq.buys != 2 {
+		t.Fatalf("acquirer should have executed 2 buys to reach target, got %d", acq.buys)
 	}
 }
 
@@ -381,13 +406,13 @@ func TestBootstrap_CapitalGate_BlocksUnaffordableProbe(t *testing.T) {
 }
 
 func TestBootstrap_CapitalGate_AllowsAffordableProbe(t *testing.T) {
-	// treasury 150k, cap 75k, probe 40k → affordable.
+	// treasury 150k, cap 75k/decrementing, probe 40k → both remaining buys affordable (1→3, need 2).
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	h := newWiredHandler(obs, acq, &fakeScouter{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if acq.buys != 1 || res.Purchased != 1 {
-		t.Fatalf("affordable probe should buy exactly 1: buys=%d purchased=%d", acq.buys, res.Purchased)
+	if acq.buys != 2 || res.Purchased != 2 {
+		t.Fatalf("affordable probes should buy to target (2 remaining): buys=%d purchased=%d", acq.buys, res.Purchased)
 	}
 }
 
@@ -421,15 +446,33 @@ func TestBootstrap_PriceUnreadable_FailsClosed(t *testing.T) {
 	}
 }
 
-// --- at most ONE buy per tick, even when short by more than one ---
+// --- sp-hh0h: buy to target in ONE tick (not one probe per tick) ---
 
-func TestBootstrap_OneBuyPerTick(t *testing.T) {
+func TestBootstrap_BuysToTargetInOneTick(t *testing.T) {
+	// 0/3 probes, ample treasury → buy all 3 THIS tick (the old behavior was exactly 1).
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	h := newWiredHandler(obs, acq, &fakeScouter{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res.Purchased != 3 || acq.buys != 3 {
+		t.Fatalf("short by 3 must buy to target (3) in one tick: purchased=%d buys=%d", res.Purchased, acq.buys)
+	}
+}
+
+// The buy loop honors the reserve_margin capital gate against the DECREMENTING treasury: it buys what
+// fits this tick and stops (the rest next tick as treasury grows), never overspending on a stale snapshot.
+func TestBootstrap_BuyLoop_CapitalGateStopsPartway(t *testing.T) {
+	// treasury 100k, reserve_margin 0.5, price 40k. iter1: cap on 100k = 50k ≥ 40k → buy (spent 40k).
+	// iter2: cap on remaining 60k = 30k < 40k → BLOCKED. So exactly 1 buys this tick, blocker capital_gate.
+	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 100000, Readable: true}
+	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
+	h := newWiredHandler(obs, acq, &fakeScouter{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Purchased != 1 || acq.buys != 1 {
-		t.Fatalf("short by 3 but must buy exactly 1 per tick: purchased=%d buys=%d", res.Purchased, acq.buys)
+		t.Fatalf("decrementing capital gate should allow exactly 1 buy from 100k: purchased=%d buys=%d", res.Purchased, acq.buys)
+	}
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate to stop the loop partway, got blocker=%q", res.Blocker)
 	}
 }
 
@@ -468,8 +511,9 @@ func TestBootstrap_DryRun_TakesNoAction(t *testing.T) {
 	if acq.buys != 0 || scout.calls != 0 {
 		t.Fatalf("dry-run must take no action: buys=%d scouts=%d", acq.buys, scout.calls)
 	}
-	if res.WouldBuy != 1 {
-		t.Fatalf("dry-run should report would_buy=1, got %d", res.WouldBuy)
+	// buy-to-target dry-run reports the whole remainder it WOULD buy (0/3 → 3), still spending nothing.
+	if res.WouldBuy != 3 {
+		t.Fatalf("dry-run should report would_buy=3 (buy-to-target), got %d", res.WouldBuy)
 	}
 }
 
@@ -502,8 +546,9 @@ func TestBootstrap_RecordsMetrics(t *testing.T) {
 	if len(m.phases) != 1 || m.phases[0] != "DATA" {
 		t.Fatalf("expected phase DATA recorded, got %v", m.phases)
 	}
-	if m.purchase != 1 {
-		t.Fatalf("expected 1 probe-purchase metric, got %d", m.purchase)
+	// buy-to-target records one metric per probe bought (0/3 → 3).
+	if m.purchase != 3 {
+		t.Fatalf("expected 3 probe-purchase metrics (buy-to-target), got %d", m.purchase)
 	}
 }
 
@@ -543,7 +588,8 @@ func TestBootstrap_Recovery_NoBuyWhenTargetMet(t *testing.T) {
 	}
 }
 
-// --- DATA-phase acceptance (Slice 1): from a cold fixture, reaches 3 probes scouting, staged ---
+// --- DATA-phase acceptance (sp-hh0h): from a cold fixture, reaches 3 probes scouting FAST — the probe
+// fleet fills to target in ONE tick, then scouting is assigned — with no overshoot. ---
 
 func TestBootstrap_DataAcceptance_ReachesThreeProbesScouting(t *testing.T) {
 	world := &scriptedWorld{probeCount: 0, probesScouting: 0, treasury: 500000, homeSystem: "X1-HQ", hasPurchaser: true, marketsTotal: 10, marketsCovered: 0}
@@ -556,15 +602,20 @@ func TestBootstrap_DataAcceptance_ReachesThreeProbesScouting(t *testing.T) {
 	h.SetProbeAcquirer(acq)
 	h.SetScoutAssigner(scout)
 
-	// Drive ticks until steady state; assert staging (one buy per tick).
-	for i := 0; i < 10; i++ {
+	// Tick 0 buys the whole 3-probe remainder to target; tick 1 assigns scouting on the now-observed
+	// probes. A few ticks reach steady state (contrast the old ~4-tick one-probe-per-tick staging).
+	firstTickBuys := 0
+	for i := 0; i < 5; i++ {
 		res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 		if err != nil {
 			t.Fatalf("tick %d: %v", i, err)
 		}
-		if res.Purchased > 1 {
-			t.Fatalf("tick %d bought %d probes — staging violated (one per tick)", i, res.Purchased)
+		if i == 0 {
+			firstTickBuys = res.Purchased
 		}
+	}
+	if firstTickBuys != 3 {
+		t.Fatalf("DATA acceptance: probe fleet must reach target in the FIRST tick (buy-to-target), bought %d on tick 0", firstTickBuys)
 	}
 	final := world.snapshot()
 	if final.ProbeCount != 3 {
@@ -574,7 +625,7 @@ func TestBootstrap_DataAcceptance_ReachesThreeProbesScouting(t *testing.T) {
 		t.Fatalf("DATA acceptance: expected 3 probes scouting, got %d", final.ProbesScouting)
 	}
 	if acq.buys != 3 {
-		t.Fatalf("DATA acceptance: expected exactly 3 buys total (staged), got %d", acq.buys)
+		t.Fatalf("DATA acceptance: expected exactly 3 buys total (no overshoot), got %d", acq.buys)
 	}
 }
 
@@ -587,4 +638,109 @@ func newWiredHandler(obs Observation, acq ProbeAcquirer, scout ScoutAssigner) *R
 	h.SetProbeAcquirer(acq)
 	h.SetScoutAssigner(scout)
 	return h
+}
+
+// --- sp-hh0h: cold-start shipyard readability. An unreadable price positions a hull at the home yard
+// (does NOT weaken the guard — no buy this tick), then buys to target once the live price reads. ---
+
+// Price unreadable + scanner wired → the coordinator dispatches an idle hull to the yard (positioning),
+// surfaces it on the heartbeat, and buys nothing this tick.
+func TestBootstrap_PriceUnreadable_PositionsHullAtShipyard(t *testing.T) {
+	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
+	acq := &fakeAcquirer{price: 0, yard: "", readable: false} // cold shipyard: no priced listing yet
+	scanner := &fakeScanner{dispatched: true}
+	h := newWiredHandler(obs, acq, &fakeScouter{})
+	h.SetShipyardScanner(scanner)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 0 {
+		t.Fatalf("unreadable price must buy nothing this tick, got %d buys", acq.buys)
+	}
+	if scanner.calls != 1 || len(scanner.homeSystems) != 1 || scanner.homeSystems[0] != "X1-HQ" {
+		t.Fatalf("unreadable price must dispatch the positioner once for the home system, got calls=%d systems=%v", scanner.calls, scanner.homeSystems)
+	}
+	if res.Blocker != "positioning_purchaser_at_shipyard" {
+		t.Fatalf("the positioning must be surfaced on the heartbeat, got blocker=%q", res.Blocker)
+	}
+}
+
+// Price unreadable but the scanner reports NOT dispatched (a hull is already there / en route, or none
+// free) → the coordinator keeps waiting (price_unreadable), still buys nothing, no re-navigation churn.
+func TestBootstrap_PriceUnreadable_ScannerAlreadyPositioned_Waits(t *testing.T) {
+	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
+	acq := &fakeAcquirer{readable: false}
+	scanner := &fakeScanner{dispatched: false}
+	h := newWiredHandler(obs, acq, &fakeScouter{})
+	h.SetShipyardScanner(scanner)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 0 || scanner.calls != 1 {
+		t.Fatalf("already-positioned: no buy, one scanner consult; got buys=%d calls=%d", acq.buys, scanner.calls)
+	}
+	if res.Blocker != "price_unreadable" {
+		t.Fatalf("awaiting a readable price should surface price_unreadable, got %q", res.Blocker)
+	}
+}
+
+// Acceptance (defect 1): a cold home shipyard SELF-CLEARS — tick 0 positions a hull (no buy), tick 1
+// finds the price readable and buys the whole fleet to target. Zero captain intervention.
+func TestBootstrap_ColdShipyard_PositionsThenBuysToTarget(t *testing.T) {
+	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
+	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: false} // starts cold
+	scanner := &fakeScanner{dispatched: true, readyAcq: acq}                // dispatch → price reads next tick
+	h := newWiredHandler(obs, acq, &fakeScouter{})
+	h.SetShipyardScanner(scanner)
+
+	res0, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res0.Purchased != 0 || scanner.calls != 1 {
+		t.Fatalf("tick0 (cold yard): must position, not buy; got purchased=%d scanner.calls=%d", res0.Purchased, scanner.calls)
+	}
+	res1, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res1.Purchased != 3 || acq.buys != 3 {
+		t.Fatalf("tick1 (price now readable): must buy to target 3; got purchased=%d buys=%d", res1.Purchased, acq.buys)
+	}
+}
+
+// --- sp-t39j: DATA (scanning) and INCOME (contracts) run in PARALLEL from hour-0. Coverage no longer
+// gates income — contracts are the RULINGS #1 funding floor, started while probes are still scanning. ---
+
+// The critical parallel pin: a cold, uncovered world (still DATA/scanning) STILL launches the contract
+// engine this tick AND buys probes to target — both workstreams act in one reconcile.
+func TestBootstrap_ParallelDataIncome_ContractsStartAtHour0WhileScanning(t *testing.T) {
+	obs := Observation{
+		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true,
+		MarketsTotal: 10, MarketsCovered: 0, // coverage 0 → still DATA (scanning)
+		Treasury: 500000, CommandFrigateID: "FRIGATE-1", BatchContractRunning: false, Readable: true,
+	}
+	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
+	run := &fakeContractRunner{}
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetShipRefresher(&fakeRefresher{})
+	h.SetWorldObserver(&fakeObserver{obs: obs})
+	h.SetProbeAcquirer(acq)
+	h.SetScoutAssigner(&fakeScouter{})
+	h.SetFrigateRetirer(&fakeRetirer{})
+	h.SetHaulerAcquirer(&fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+	h.SetContractRunner(run)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res.Phase != PhaseData {
+		t.Fatalf("uncovered world is still in the DATA (scanning) label, got %s", res.Phase)
+	}
+	if acq.buys != 2 { // 1/3 probes → buy the 2-probe remainder (scanning workstream)
+		t.Fatalf("scanning must run in parallel: expected 2 probe buys to target, got %d", acq.buys)
+	}
+	if run.calls != 1 || !res.ContractRun {
+		t.Fatalf("contracts must start at HOUR-0 in parallel with scanning: batch-contract calls=%d ran=%v", run.calls, res.ContractRun)
+	}
+}
+
+// GATE triggers on funding regardless of coverage (t39j point 4): a fleet that clears income_bar while
+// still scanning enters GATE, not held in DATA by the coverage bar.
+func TestBootstrap_DerivePhase_IncomeBarBeatsCoverage_Gate(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar 10000, coverage_bar 0.90
+	obs := Observation{MarketsTotal: 10, MarketsCovered: 3, IncomePerHour: 12000}
+	if p := derivePhase(obs, cfg); p != PhaseGate {
+		t.Fatalf("income over the bar while still scanning (coverage 30%%) should derive GATE, got %s", p)
+	}
 }

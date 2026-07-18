@@ -73,6 +73,11 @@ func NewBootstrapCoordinatorHandler(
 	h.SetProbeAcquirer(acq)
 	h.SetHaulerAcquirer(&bootstrapHaulerAcquirer{bootstrapAcquirer: acq})
 	h.SetScoutAssigner(&bootstrapScouter{server: server})
+	// sp-hh0h: the cold-start shipyard-readability positioner. On a fresh universe nothing has visited
+	// the home shipyard, so its live (presence-gated) price is unreadable and the probe buy fails closed
+	// forever; this flies an idle hull to the yard so the next tick's live PriceCheck reads. Same deps as
+	// the acquirer (mediator navigate + ship/waypoint repos) — builds nothing new.
+	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
@@ -532,6 +537,83 @@ type bootstrapScouter struct{ server *DaemonServer }
 func (s *bootstrapScouter) AssignAllMarkets(ctx context.Context, playerID int, system string) error {
 	_, err := s.server.AssignScoutingFleet(ctx, system, playerID)
 	return err
+}
+
+// --- shipyard scanner (sp-hh0h: position a hull at the home yard so the cold price reads) ---
+
+type bootstrapShipyardScanner struct {
+	med          common.Mediator
+	shipRepo     navigation.ShipRepository
+	waypointRepo *persistence.GormWaypointRepository
+}
+
+// EnsureHomeShipyardReadable positions an idle hull at a home-system SHIPYARD waypoint so the NEXT
+// tick's live GetShipyard (bootstrapAcquirer.PriceCheck) returns priced listings. The SpaceTraders
+// shipyard ship listing is PRESENCE-GATED — empty unless a hull is at the waypoint — so on a fresh
+// universe the probe price is unreadable until something visits the yard. This navigates the command
+// frigate / an idle hull there (reusing NavigateRouteCommand, the same high-level route+refuel path
+// BuyAndPlace uses); presence (in orbit) is enough for the listing to read — the buy path docks.
+//
+// Idempotent + best-effort (returns dispatched=false, nil rather than churn):
+//   - a hull is already present (not in transit) at a shipyard ⇒ the price reads next tick, no dispatch;
+//   - the only free hull is already IN_TRANSIT (heading to the yard from a prior dispatch) ⇒ it is not an
+//     idle-non-transit candidate, so no purchaser is chosen and no second nav is issued — just wait;
+//   - no idle hull is free, or no home-system shipyard is known yet ⇒ retry a later tick.
+//
+// It NEVER buys and NEVER weakens the price guard — the reconciler still spends nothing while unreadable.
+func (s *bootstrapShipyardScanner) EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (bool, error) {
+	if homeSystem == "" {
+		return false, nil
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return false, nil
+	}
+	yardWps, werr := s.waypointRepo.ListBySystemWithTrait(ctx, homeSystem, shipyardTrait)
+	if werr != nil {
+		return false, nil
+	}
+	isYard := map[string]struct{}{}
+	dest := ""
+	for _, wp := range yardWps {
+		if wp == nil {
+			continue
+		}
+		isYard[wp.Symbol] = struct{}{}
+		if dest == "" {
+			dest = wp.Symbol
+		}
+	}
+	if dest == "" {
+		return false, nil // no known home-system shipyard yet — retry once waypoint data arrives
+	}
+
+	ships, serr := s.shipRepo.FindAllByPlayer(ctx, pid)
+	if serr != nil {
+		return false, nil
+	}
+	var purchaser *navigation.Ship
+	for _, sh := range ships {
+		if loc := sh.CurrentLocation(); loc != nil {
+			if _, ok := isYard[loc.Symbol]; ok && !sh.IsInTransit() {
+				return false, nil // a hull is already present at a shipyard — the live price reads next tick
+			}
+		}
+		// The purchaser must be free NOW (idle, not mid-flight); prefer the command frigate — the natural
+		// cold-start buyer — over any other idle hull. A hull already en route to the yard is IN_TRANSIT,
+		// so it is never re-selected here (that is the idempotency that prevents re-navigating each tick).
+		if sh.IsIdle() && !sh.IsInTransit() && (purchaser == nil || sh.Role() == commandRole) {
+			purchaser = sh
+		}
+	}
+	if purchaser == nil {
+		return false, nil // no free hull to send this tick (e.g. the last dispatch is still under way)
+	}
+
+	if _, nerr := s.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: purchaser.ShipSymbol(), Destination: dest, PlayerID: pid}); nerr != nil {
+		return false, fmt.Errorf("navigate %s to home shipyard %s: %w", purchaser.ShipSymbol(), dest, nerr)
+	}
+	return true, nil
 }
 
 // --- metrics sink (adapts to the global bootstrap collector; pure observation, nil-safe) ---

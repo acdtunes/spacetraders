@@ -49,7 +49,8 @@ func TestBootstrap_ProbeArbitration_DefaultOff_BuysAsToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Purchased != 1 || acq.buys != 1 {
+	// buy-to-target (sp-hh0h): 1/3 probes → the 2-probe remainder buys this tick when not deferring.
+	if res.Purchased != 2 || acq.buys != 2 {
 		t.Fatalf("default-off: bootstrap must buy toward target as today (purchased=%d buys=%d blocker=%q)", res.Purchased, acq.buys, res.Blocker)
 	}
 }
@@ -85,8 +86,8 @@ func TestBootstrap_ProbeArbitration_ArmedButNoCoverageYet_StillBuys(t *testing.T
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Purchased != 1 || acq.buys != 1 {
-		t.Fatalf("armed but coverage==0: bootstrap must still provision the initial probes (purchased=%d buys=%d)", res.Purchased, acq.buys)
+	if res.Purchased != 2 || acq.buys != 2 {
+		t.Fatalf("armed but coverage==0: bootstrap must still provision the initial probes to target (purchased=%d buys=%d)", res.Purchased, acq.buys)
 	}
 }
 
@@ -102,8 +103,8 @@ func TestBootstrap_ProbeArbitration_ArmedButFreshsizerDown_StillBuys(t *testing.
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Purchased != 1 || acq.buys != 1 {
-		t.Fatalf("armed but freshsizer down: bootstrap must keep buying (never defer into a vacuum) (purchased=%d buys=%d)", res.Purchased, acq.buys)
+	if res.Purchased != 2 || acq.buys != 2 {
+		t.Fatalf("armed but freshsizer down: bootstrap must keep buying to target (never defer into a vacuum) (purchased=%d buys=%d)", res.Purchased, acq.buys)
 	}
 }
 

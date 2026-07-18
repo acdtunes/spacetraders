@@ -47,15 +47,15 @@ func (f *fakeLiveConfig) set(s liveconfig.Snapshot) {
 func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	got := BootstrapTunableDefaults()
 	want := map[string]int{
-		"probe_target":           defaultProbeTarget,                 // 3
-		"coverage_bar_percent":   90,                                 // defaultCoverageBar 0.90 → 90%
-		"reserve_margin_percent": 50,                                 // defaultReserveMargin 0.50 → 50%
-		"hauler_target":          defaultHaulerTarget,                // 4
-		"income_bar":             10000,                              // defaultIncomeBar 10000.0 → 10000 credits
-		"min_contract_earners":   defaultMinContractEarners,          // 1
-		"gate_worker_target":     defaultGateWorkerTarget,            // 6
-		"tick_secs":              defaultBootstrapTickSeconds,        // 300
-		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer,   // 0 (off) — sp-tsn2 arbitration flag
+		"probe_target":              defaultProbeTarget,            // 3
+		"coverage_bar_percent":      90,                            // defaultCoverageBar 0.90 → 90%
+		"reserve_margin_percent":    50,                            // defaultReserveMargin 0.50 → 50%
+		"hauler_target":             defaultHaulerTarget,           // 4
+		"income_bar":                10000,                         // defaultIncomeBar 10000.0 → 10000 credits
+		"min_contract_earners":      defaultMinContractEarners,     // 1
+		"gate_worker_target":        defaultGateWorkerTarget,       // 6
+		"tick_secs":                 defaultBootstrapTickSeconds,   // 300
+		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)
@@ -183,8 +183,9 @@ func TestBootstrap_LiveRetune_ProbeTarget_LandsNextTick_NoRestart(t *testing.T) 
 	if err != nil {
 		t.Fatalf("tick2: %v", err)
 	}
-	if res2.Purchased != 1 || acq.buys != 1 {
-		t.Fatalf("tick2: live probe_target=5 must open the buy gate (purchased=%d buys=%d)", res2.Purchased, acq.buys)
+	// buy-to-target (sp-hh0h): 3 probes, live target 5 → the 2-probe remainder buys this tick.
+	if res2.Purchased != 2 || acq.buys != 2 {
+		t.Fatalf("tick2: live probe_target=5 must open the buy gate to target (purchased=%d buys=%d)", res2.Purchased, acq.buys)
 	}
 
 	if cmd.ProbeTarget != 0 {

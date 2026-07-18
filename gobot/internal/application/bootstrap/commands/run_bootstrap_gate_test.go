@@ -46,13 +46,24 @@ func TestBootstrap_DerivePhase_CompleteWhenConstructionComplete(t *testing.T) {
 	}
 }
 
-// Coverage still gates everything: a cold agent (no market data) stays DATA even if some stray
-// construction flag is set — the arc never skips the data phase.
-func TestBootstrap_DerivePhase_DataDominatesConstructionFlags(t *testing.T) {
+// PARALLEL MODEL (sp-t39j): coverage NO LONGER gates the economic phase. The construction/income
+// signals are evaluated regardless of scan coverage — a built gate is COMPLETE (terminal, monotone)
+// even on a cold, uncovered world; a cold world with NO economic signal yet stays DATA (still scanning),
+// and the contract workstream runs in parallel with that DATA label (see the tick dispatch). This
+// replaces the old "coverage-gate-beats-everything" serial rule.
+func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	obs := Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}
-	if p := derivePhase(obs, cfg); p != PhaseData {
-		t.Fatalf("uncovered world should derive DATA regardless of construction flags, got %s", p)
+	// A completed gate is COMPLETE even uncovered (terminal + monotone — a built gate stays built).
+	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}, cfg); p != PhaseComplete {
+		t.Fatalf("completed construction should derive COMPLETE regardless of coverage, got %s", p)
+	}
+	// A started (not complete) pipeline is GATE even uncovered (sticky).
+	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true}, cfg); p != PhaseGate {
+		t.Fatalf("started construction should derive GATE regardless of coverage, got %s", p)
+	}
+	// A cold world with NO economic signal is DATA (still scanning) — contracts run in parallel there.
+	if p := derivePhase(Observation{MarketsTotal: 0}, cfg); p != PhaseData {
+		t.Fatalf("cold world with no economic signal should derive DATA, got %s", p)
 	}
 }
 

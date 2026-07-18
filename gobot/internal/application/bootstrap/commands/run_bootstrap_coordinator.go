@@ -87,6 +87,20 @@ type ScoutAssigner interface {
 	AssignAllMarkets(ctx context.Context, playerID int, system string) error
 }
 
+// ShipyardScanner positions an idle hull AT a home-system shipyard so the NEXT tick's live PriceCheck
+// returns priced listings (sp-hh0h). The cold-start deadlock it breaks: on a fresh universe nothing
+// has ever visited the home shipyard, its live ship listing is presence-gated (empty unless a hull is
+// there), so PriceCheck reads unreadable and every probe buy fails closed FOREVER — DATA never leaves
+// the ground without a captain. This does NOT weaken the price guard (RULINGS #4): a genuinely
+// unreadable price still buys nothing this tick; the scanner makes the price READABLE by getting a hull
+// to the yard, so the guard clears on evidence. EnsureHomeShipyardReadable is idempotent and
+// best-effort — dispatched=false when a hull is already present/en route at a shipyard (just wait) or no
+// idle hull is free to go — so re-evaluation each unreadable tick never re-navigates or thrashes. Unset
+// (nil) → the reconciler preserves the pre-hh0h fail-closed behavior (byte-identical).
+type ShipyardScanner interface {
+	EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (dispatched bool, err error)
+}
+
 // MetricsSink records the bootstrap's observation series (spec §Observability). Pure observation:
 // nil-safe and best-effort, a recording miss never touches a decision.
 type MetricsSink interface {
@@ -225,6 +239,7 @@ type RunBootstrapCoordinatorHandler struct {
 	observer  WorldObserver
 	acquirer  ProbeAcquirer
 	scouter   ScoutAssigner
+	scanner   ShipyardScanner // sp-hh0h: positions a hull at the home yard so the cold price reads
 	metrics   MetricsSink
 
 	// INCOME-phase collaborators (Slice 2). Each is nil-safe: a nil collaborator degrades the INCOME
@@ -270,6 +285,12 @@ func (h *RunBootstrapCoordinatorHandler) SetProbeAcquirer(a ProbeAcquirer) { h.a
 // SetScoutAssigner wires the scout-all-markets assignment (reuses the VRP fleet assignment). Unset
 // → probes are bought but not assigned (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetScoutAssigner(s ScoutAssigner) { h.scouter = s }
+
+// SetShipyardScanner wires the cold-start shipyard-readability positioner (sp-hh0h): when the home
+// shipyard price is unreadable, it flies an idle hull to the yard so the next tick's live price read
+// succeeds. Unset → the coordinator keeps the pre-hh0h fail-closed behavior (byte-identical): an
+// unreadable price simply blocks the buy each tick with no repositioning.
+func (h *RunBootstrapCoordinatorHandler) SetShipyardScanner(s ShipyardScanner) { h.scanner = s }
 
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunBootstrapCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }

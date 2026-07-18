@@ -265,7 +265,21 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	switch phase {
 	case PhaseData:
+		// COLD-START PARALLEL WINDOW (sp-t39j): scanning (DATA) and contract income (INCOME) run
+		// TOGETHER, not in sequence. actData drives probes→target + scout assignment + shipyard
+		// readability; actIncome starts the contract engine at HOUR-0 and stages haulers as their source
+		// markets appear (the contract engine holds an accepted-but-unsourceable contract gracefully —
+		// verified — and claims no ship until a market is known, so it cannot steal the idle hull
+		// bootstrap needs to buy probes). Coverage no longer gates income (RULINGS #1: contracts from
+		// hour 0).
 		h.actData(ctx, cmd, cfg, obs, &res)
+		dataBlocker := res.Blocker
+		h.actIncome(ctx, cmd, cfg, obs, &res)
+		// In the cold-start window the scanning-workstream blocker is the higher-signal one for the
+		// heartbeat (it is the critical path to markets); keep it when set, else surface income's.
+		if dataBlocker != "" {
+			res.Blocker = dataBlocker
+		}
 	case PhaseIncome:
 		h.actIncome(ctx, cmd, cfg, obs, &res)
 	case PhaseGate:
@@ -279,22 +293,27 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 }
 
 // derivePhase reads the current phase from the observation alone (NEVER a persisted enum — spec
-// §Architecture). DATA is the cold-start default; once market coverage clears the bar the arc has
-// passed DATA. Past DATA it is INCOME until the contract fleet's realized $/hr clears income_bar, then
-// GATE, then COMPLETE once the gate is built. The MarketsTotal>0 guard keeps a cold agent (nothing
-// scouted yet) in DATA rather than reading an empty world as "100% covered"; income_bar is positive by
-// default, so a fresh INCOME entry (0 $/hr) never skips straight to GATE.
+// §Architecture).
+//
+// PARALLEL MODEL (sp-t39j): DATA (scanning) and INCOME (contracts) are PARALLEL workstreams, NOT
+// sequential phases. Coverage is NO LONGER a gate on income — contracts are the RULINGS #1 funding
+// floor and must run from hour 0, not wait for scanning to ~complete. So the economic signals
+// (construction, income_bar) are evaluated FIRST, regardless of coverage: a built gate is COMPLETE, a
+// building/funded gate is GATE, no matter how much of the home system has been scanned. The DATA vs
+// INCOME label below only chooses whether the SCANNING workstream is still active (coverage under the
+// bar ⇒ DATA-labeled, still buying/assigning probes); the contract workstream runs in BOTH (the tick
+// dispatch runs actIncome in the DATA phase too). The MarketsTotal>0 guard keeps a cold agent from
+// reading an empty world as "100% covered".
 //
 // The arc must be MONOTONE, but realized income is NOT monotone across the INCOME→GATE boundary: GATE
 // repurposes contract haulers to construction, which DROPS realized $/hr back under income_bar. So GATE
 // is made STICKY on obs.ConstructionStarted — once a construction pipeline exists the arc stays in GATE
-// regardless of income, never regressing to INCOME (which would re-buy the just-repurposed haulers and
-// thrash). COMPLETE is terminal and monotone (a built gate stays built). A restart at any point
-// re-derives the true phase from these live signals — no persisted cursor, no double-advance.
+// regardless of income, never regressing (which would re-buy the just-repurposed haulers and thrash).
+// COMPLETE is terminal and monotone (a built gate stays built). A restart at any point re-derives the
+// true phase from these live signals — no persisted cursor, no double-advance. A fleet PAST cold-start
+// has coverage ≥ bar, so evaluating the economic signals first is byte-identical for it (the coverage
+// check it used to pass first is satisfied anyway); only the cold-start window changes.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
-	if !(obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar) {
-		return PhaseData
-	}
 	if obs.ConstructionComplete {
 		return PhaseComplete
 	}
@@ -304,21 +323,29 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 	if obs.IncomePerHour >= cfg.IncomeBar {
 		return PhaseGate
 	}
-	return PhaseIncome
+	// Not yet funded/building. Label DATA while the home system is still being scanned (below the bar),
+	// else INCOME — but the contract workstream runs regardless of this label (see the tick dispatch).
+	if obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar {
+		return PhaseIncome
+	}
+	return PhaseData
 }
 
-// actData runs the DATA phase: (1) buy one probe if the fleet is short AND the buy clears both the
-// readiness and capital gates; (2) assign every probe to scout-all-markets when any probe is not
-// yet scouting. Both actions are independently guarded and idempotent, so re-evaluation never
-// double-acts.
+// actData runs the DATA (scanning) workstream: (1) drive the probe fleet to probe_target THIS tick —
+// buying up to (target-count) probes in a capital-gated loop, or (when the home shipyard price is not
+// yet readable) positioning a hull at the yard so the next tick's live read succeeds (sp-hh0h);
+// (2) assign every probe to scout-all-markets when any probe is not yet scouting. Both actions are
+// independently guarded and idempotent, so re-evaluation never double-acts. It runs in the DATA phase,
+// which — under the parallel model (sp-t39j) — executes ALONGSIDE actIncome during cold start.
 func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
-	// (1) Staged, capital-gated probe acquisition — at most one buy per tick (never a blind
-	// buy-all). Guarded on the re-observed count, so a mid-purchase restart that already
-	// incremented the count simply skips. sp-tsn2: when the single-buyer arbitration is armed and
-	// the freshsizer has taken over (coverage>0 + freshsizer running), DEFER the buy to it so the
-	// two coordinators never grow one shared fleet past the ceiling (the era-3 multi-buyer lesson).
+	// (1) Capital-gated probe acquisition — buy to target in ONE pass (sp-hh0h: a fresh universe must
+	// reach probe_target fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
+	// mid-purchase restart that already incremented the count simply buys the remainder. sp-tsn2: when
+	// the single-buyer arbitration is armed and the freshsizer has taken over (coverage>0 + freshsizer
+	// running), DEFER the buy to it so the two coordinators never grow one shared fleet past the ceiling
+	// (the era-3 multi-buyer lesson).
 	if obs.ProbeCount < cfg.ProbeTarget && !h.deferProbeBuyToFreshsizer(ctx, cmd, cfg, obs, res) {
-		h.maybeBuyProbe(ctx, cmd, cfg, obs, res)
+		h.acquireProbesToTarget(ctx, cmd, cfg, obs, res)
 	}
 
 	// (2) Assign every probe to scout-all-markets. Idempotent: skip when every probe already
@@ -348,10 +375,20 @@ func (h *RunBootstrapCoordinatorHandler) deferProbeBuyToFreshsizer(ctx context.C
 	return true
 }
 
-// maybeBuyProbe evaluates and (unless dry-run) executes ONE staged probe buy behind the readiness
-// and capital gates, emitting the guardrail arithmetic as a decision line (RULINGS #4, fail
-// closed). Caller has already checked "needed" (ProbeCount < target).
-func (h *RunBootstrapCoordinatorHandler) maybeBuyProbe(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+// acquireProbesToTarget drives the probe fleet to probe_target in ONE tick (sp-hh0h), behind the
+// readiness and capital gates, emitting the guardrail arithmetic per buy (RULINGS #4, fail closed).
+// Caller has checked "needed" (ProbeCount < target).
+//
+// Two coupled cold-start fixes vs the old one-per-tick buy:
+//   - READABILITY: the yard price is unreadable on a fresh universe because nothing has visited the home
+//     shipyard (its live listing is presence-gated). Rather than fail closed forever, dispatch an idle
+//     hull to the yard (h.scanner) so the NEXT tick's live read succeeds. The price guard is NOT weakened
+//     — no buy fires this tick; we make the price readable, not bypass it.
+//   - BUY-TO-TARGET: once readable, buy up to (target-count) probes in a loop, each iteration honoring the
+//     reserve_margin capital gate against the DECREMENTING treasury (the running spend is subtracted so the
+//     guard reflects real remaining credits — never a stale-treasury overspend). The yard ask is stable
+//     within a tick, so a single PriceCheck feeds the whole loop.
+func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Readiness gate, second half: unblocked? The batch-purchase path needs an idle hull to fly to
@@ -376,11 +413,86 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyProbe(ctx context.Context, cmd 
 		return
 	}
 
-	// Price-check first (reuse shipyard list). Unreadable price ⇒ the capital gate fails CLOSED.
+	// Price-check ONCE (the cheapest reachable yard's ask is stable within a tick, so it feeds the whole
+	// buy loop). Unreadable price ⇒ do NOT buy this tick; instead make it readable by positioning a hull
+	// at the yard (sp-hh0h). Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
 	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, cfg.ProbeShipType)
 	if err != nil || !readable {
+		h.ensureShipyardReadable(ctx, cmd, cfg, obs, res, err)
+		return
+	}
+
+	// Capital-gated buy LOOP: buy up to (target-count) probes THIS tick, decrementing the treasury each
+	// iteration so the reserve_margin gate reflects real remaining credits.
+	need := cfg.ProbeTarget - obs.ProbeCount
+	var spent int64
+	for i := 0; i < need; i++ {
+		remaining := obs.Treasury - spent
+		capBudget := int64(float64(remaining) * cfg.ReserveMargin)
+		affordable := price <= capBudget
+		logger.Log("INFO", fmt.Sprintf("Bootstrap probe buy decision (%d of %d needed): price=%d treasury=%d spent_so_far=%d remaining=%d cap=(reserve_margin %.2f × remaining)=%d affordable=(price≤cap)=%v yard=%s — %s", i+1, need, price, obs.Treasury, spent, remaining, cfg.ReserveMargin, capBudget, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
+			"action":         "bootstrap_buy_decision",
+			"container_id":   cmd.ContainerID,
+			"price":          price,
+			"treasury":       obs.Treasury,
+			"remaining":      remaining,
+			"cap":            capBudget,
+			"reserve_margin": cfg.ReserveMargin,
+			"affordable":     affordable,
+			"yard":           yard,
+		})
+		if !affordable {
+			// The capital gate caps the ramp: buy what fits this tick, the rest next tick as treasury grows.
+			res.Blocker = "capital_gate"
+			break
+		}
+
+		if cfg.DryRun {
+			res.WouldBuy++
+			spent += price // model the cumulative spend so the dry-run count respects the same gate
+			logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy %s #%d/%d at %s for %d (took no action)", cfg.ProbeShipType, obs.ProbeCount+i+1, cfg.ProbeTarget, yard, price), map[string]interface{}{
+				"action":       "bootstrap_would_buy",
+				"container_id": cmd.ContainerID,
+			})
+			continue
+		}
+
+		bought, berr := h.acquirer.Buy(ctx, cmd.PlayerID, cfg.ProbeShipType, yard)
+		if berr != nil {
+			res.Blocker = "purchase_error"
+			logger.Log("ERROR", fmt.Sprintf("Bootstrap probe purchase failed: %v", berr), map[string]interface{}{
+				"action":       "bootstrap_buy_error",
+				"container_id": cmd.ContainerID,
+			})
+			break
+		}
+		res.Purchased++
+		spent += price
+		if h.metrics != nil {
+			h.metrics.RecordProbePurchased()
+		}
+		logger.Log("INFO", fmt.Sprintf("Bootstrap bought probe %s at %s for %d (%d/%d)", bought.ShipSymbol, yard, bought.Price, obs.ProbeCount+res.Purchased, cfg.ProbeTarget), map[string]interface{}{
+			"action":       "bootstrap_bought_probe",
+			"container_id": cmd.ContainerID,
+			"ship":         bought.ShipSymbol,
+			"price":        bought.Price,
+		})
+	}
+}
+
+// ensureShipyardReadable breaks the cold-start deadlock (sp-hh0h): the home shipyard price is unreadable
+// because nothing has visited it yet, so — rather than fail closed forever — position an idle hull AT
+// the yard so the NEXT tick's live PriceCheck returns prices. It NEVER buys and NEVER weakens the price
+// guard: this tick still spends nothing. Nil-safe: with no scanner wired (or in dry-run) it preserves
+// the pre-hh0h fail-closed behavior (blocker=price_unreadable, no repositioning) — byte-identical. The
+// scanner is idempotent (a no-op when a hull is already positioned/en route), so calling it each
+// unreadable tick never re-navigates.
+func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult, priceErr error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.scanner == nil {
 		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap probe price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap probe price unreadable and no shipyard scanner wired — failing closed (no buy): err=%v", priceErr), map[string]interface{}{
 			"action":       "bootstrap_buy_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "price_unreadable",
@@ -388,52 +500,41 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyProbe(ctx context.Context, cmd 
 		return
 	}
 
-	// Capital gate: spend ≤ reserve_margin × treasury (leaves the rest as the working buffer, and
-	// paces the ramp). Emit the full arithmetic so the captain retunes from evidence.
-	capBudget := int64(float64(obs.Treasury) * cfg.ReserveMargin)
-	affordable := price <= capBudget
-	logger.Log("INFO", fmt.Sprintf("Bootstrap probe buy decision: price=%d treasury=%d cap=(reserve_margin %.2f × treasury)=%d affordable=(price≤cap)=%v yard=%s — %s", price, obs.Treasury, cfg.ReserveMargin, capBudget, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
-		"action":         "bootstrap_buy_decision",
-		"container_id":   cmd.ContainerID,
-		"price":          price,
-		"treasury":       obs.Treasury,
-		"cap":            capBudget,
-		"reserve_margin": cfg.ReserveMargin,
-		"affordable":     affordable,
-		"yard":           yard,
-	})
-	if !affordable {
-		res.Blocker = "capital_gate"
-		return
-	}
-
 	if cfg.DryRun {
-		res.WouldBuy++
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy 1 %s at %s for %d (took no action)", cfg.ProbeShipType, yard, price), map[string]interface{}{
-			"action":       "bootstrap_would_buy",
+		res.Blocker = "price_unreadable"
+		logger.Log("INFO", "Bootstrap DRY-RUN: probe price unreadable — WOULD position an idle hull at the home shipyard to make it readable (took no action)", map[string]interface{}{
+			"action":       "bootstrap_would_position_purchaser",
 			"container_id": cmd.ContainerID,
 		})
 		return
 	}
 
-	bought, err := h.acquirer.Buy(ctx, cmd.PlayerID, cfg.ProbeShipType, yard)
-	if err != nil {
-		res.Blocker = "purchase_error"
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap probe purchase failed: %v", err), map[string]interface{}{
-			"action":       "bootstrap_buy_error",
+	dispatched, serr := h.scanner.EnsureHomeShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem)
+	if serr != nil {
+		res.Blocker = "price_unreadable"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap probe price unreadable and shipyard positioning failed — failing closed (no buy): %v", serr), map[string]interface{}{
+			"action":       "bootstrap_buy_blocked",
 			"container_id": cmd.ContainerID,
+			"blocker":      "price_unreadable",
 		})
 		return
 	}
-	res.Purchased++
-	if h.metrics != nil {
-		h.metrics.RecordProbePurchased()
+	if dispatched {
+		res.Blocker = "positioning_purchaser_at_shipyard"
+		logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable (cold home shipyard) — dispatched an idle hull to the home-system shipyard so the next tick's live price read succeeds (sp-hh0h); probes %d/%d", obs.ProbeCount, cfg.ProbeTarget), map[string]interface{}{
+			"action":       "bootstrap_positioning_purchaser",
+			"container_id": cmd.ContainerID,
+			"blocker":      "positioning_purchaser_at_shipyard",
+		})
+		return
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap bought probe %s at %s for %d (%d/%d)", bought.ShipSymbol, yard, bought.Price, obs.ProbeCount+1, cfg.ProbeTarget), map[string]interface{}{
-		"action":       "bootstrap_bought_probe",
+	// Not dispatched: a hull is already present/en route at a shipyard (price should clear soon) or none
+	// is free to send. Keep price_unreadable so the heartbeat shows we are still waiting on the read.
+	res.Blocker = "price_unreadable"
+	logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable — a hull is already at/en route to the home shipyard, or none is free; awaiting a readable price (probes %d/%d)", obs.ProbeCount, cfg.ProbeTarget), map[string]interface{}{
+		"action":       "bootstrap_buy_blocked",
 		"container_id": cmd.ContainerID,
-		"ship":         bought.ShipSymbol,
-		"price":        bought.Price,
+		"blocker":      "price_unreadable",
 	})
 }
 
@@ -546,13 +647,15 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phase Phase, obs Observation) string {
 	switch phase {
 	case PhaseData:
+		// DATA runs in parallel with INCOME (contracts) at cold start (sp-t39j); this names the scanning
+		// workstream's next step (the income workstream logs its own decision lines).
 		if obs.ProbeCount < cfg.ProbeTarget {
-			return fmt.Sprintf("buy probe %d/%d (staged, capital-gated)", obs.ProbeCount+1, cfg.ProbeTarget)
+			return fmt.Sprintf("buy probes to target (%d/%d, capital-gated; positions a hull at the yard first if the price is cold)", obs.ProbeCount, cfg.ProbeTarget)
 		}
 		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
 			return "assign probes to scout-all-markets"
 		}
-		return fmt.Sprintf("await coverage ≥ bar (%.0f%%/%.0f%%)", obs.CoverageFraction()*100, cfg.CoverageBar*100)
+		return fmt.Sprintf("scan to coverage bar in parallel with contracts (%.0f%%/%.0f%%)", obs.CoverageFraction()*100, cfg.CoverageBar*100)
 	case PhaseIncome:
 		if obs.CommandFrigateOnContract {
 			return "retire the command frigate from contract work"
