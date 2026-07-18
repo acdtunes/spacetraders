@@ -228,9 +228,9 @@ func guardPriceCeiling(req PurchaseRequest) GuardVerdict {
 	premiumOK := true
 	premiumDetail := "no cheapest ref"
 	if req.CheapestKnownPrice > 0 {
-		cap := req.CheapestKnownPrice + req.CheapestKnownPrice*int64(req.MaxPremiumPct)/100
-		premiumOK = req.Price <= cap
-		premiumDetail = fmt.Sprintf("price %d <= cheapest %d +%d%% = %d", req.Price, req.CheapestKnownPrice, req.MaxPremiumPct, cap)
+		premiumCap := req.CheapestKnownPrice + req.CheapestKnownPrice*int64(req.MaxPremiumPct)/100
+		premiumOK = req.Price <= premiumCap
+		premiumDetail = fmt.Sprintf("price %d <= cheapest %d +%d%% = %d", req.Price, req.CheapestKnownPrice, req.MaxPremiumPct, premiumCap)
 	}
 	absDetail := "no abs cap"
 	if req.MaxPriceClass > 0 {
@@ -327,11 +327,11 @@ func guardTreasuryPct(req PurchaseRequest) GuardVerdict {
 	if !req.TreasuryReadable {
 		return GuardVerdict{Guard: GuardTreasuryPct, Passed: false, Detail: "treasury unreadable"}
 	}
-	cap := int64(req.TreasuryPctPerBuy) * req.LiveTreasury / 100
+	treasuryCap := int64(req.TreasuryPctPerBuy) * req.LiveTreasury / 100
 	return GuardVerdict{
 		Guard:  GuardTreasuryPct,
-		Passed: req.Price <= cap,
-		Detail: fmt.Sprintf("price %d <= %d%% × treasury %d = %d", req.Price, req.TreasuryPctPerBuy, req.LiveTreasury, cap),
+		Passed: req.Price <= treasuryCap,
+		Detail: fmt.Sprintf("price %d <= %d%% × treasury %d = %d", req.Price, req.TreasuryPctPerBuy, req.LiveTreasury, treasuryCap),
 	}
 }
 

@@ -46,14 +46,7 @@ func (s *DaemonServer) SitingCoordinator(ctx context.Context, playerID int, agen
 		return "", fmt.Errorf("failed to persist siting coordinator container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Siting coordinator container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Siting coordinator container")
 
 	return containerID, nil
 }

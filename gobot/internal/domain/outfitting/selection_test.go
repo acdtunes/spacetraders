@@ -86,10 +86,10 @@ func TestSelectUpgrade_FailsClosedOnThinTelemetry(t *testing.T) {
 func TestSelectUpgrade_RoleAndSlotHardFilter(t *testing.T) {
 	fuelOffer := ModuleOffer{Symbol: "MODULE_FUEL_TANK", Class: ModuleClassFuel, Price: 20000, CapacityGained: 100, ReachHops: 1}
 	cases := []struct {
-		name    string
-		hull    HullBottleneck
-		offer   ModuleOffer
-		wantOk  bool
+		name   string
+		hull   HullBottleneck
+		offer  ModuleOffer
+		wantOk bool
 	}{
 		{"cargo module rejected on a scout (wrong role)",
 			HullBottleneck{ShipSymbol: "PROBE-1", IsCargoHauler: false, FreeModuleSlots: 1, CargoCapacity: 40, CargoLegs: 10, CargoSaturation: 0.9}, cargoOffer(), false},
@@ -119,9 +119,9 @@ func TestSelectUpgrade_PaybackGates(t *testing.T) {
 	saturated := HullBottleneck{ShipSymbol: "TORWIND-16", IsCargoHauler: true, FreeModuleSlots: 1,
 		CargoCapacity: 80, CargoLegs: 10, CargoSaturation: 0.95, ThroughputPerHour: 40}
 	cases := []struct {
-		name    string
-		mutate  func(c *SelectionConfig)
-		wantOk  bool
+		name   string
+		mutate func(c *SelectionConfig)
+		wantOk bool
 	}{
 		{"absolute: cost recovered within a generous horizon → chosen",
 			func(c *SelectionConfig) { c.PaybackHorizonHours = 24 }, true}, // 80*0.95*40*24 = 72960 >= 51100
@@ -148,10 +148,10 @@ func TestSelectUpgrade_PaybackGates(t *testing.T) {
 // actuator does not act on (reactors, jump drives, mining lasers) is Other.
 func TestClassifyModule(t *testing.T) {
 	cases := map[string]ModuleClass{
-		"MODULE_CARGO_HOLD_I":   ModuleClassCargo,
-		"MODULE_CARGO_HOLD_III": ModuleClassCargo,
-		"MODULE_FUEL_TANK":      ModuleClassFuel,
-		"MODULE_JUMP_DRIVE_I":   ModuleClassOther,
+		"MODULE_CARGO_HOLD_I":        ModuleClassCargo,
+		"MODULE_CARGO_HOLD_III":      ModuleClassCargo,
+		"MODULE_FUEL_TANK":           ModuleClassFuel,
+		"MODULE_JUMP_DRIVE_I":        ModuleClassOther,
 		"MODULE_MINERAL_PROCESSOR_I": ModuleClassOther,
 	}
 	for symbol, want := range cases {

@@ -103,8 +103,8 @@ func TestOffGateSelect_ExcludesOutOfWarpRange(t *testing.T) {
 	t.Run("out-of-range candidate excluded, in-range selected", func(t *testing.T) {
 		universe := &fakeUniverseProvider{systems: []system.SystemAPIData{
 			{Symbol: "X1-EDGE", Type: "BLUE_STAR", X: 0, Y: 0},
-			{Symbol: "X1-INRANGE", Type: "BLACK_HOLE", X: 3, Y: 4},  // fuel 5 <= 6
-			{Symbol: "X1-OUT", Type: "ORANGE_STAR", X: 30, Y: 40},   // fuel 50 > 6 — excluded despite promising
+			{Symbol: "X1-INRANGE", Type: "BLACK_HOLE", X: 3, Y: 4}, // fuel 5 <= 6
+			{Symbol: "X1-OUT", Type: "ORANGE_STAR", X: 30, Y: 40},  // fuel 50 > 6 — excluded despite promising
 		}}
 		sel := NewOffGateWarpTargetSelector(universe, gate)
 		target, found, err := sel.SelectTarget(context.Background(), 1, params)

@@ -200,26 +200,7 @@ func (fa *FleetAssigner) AssignShipsToTargetsWithHint(
 
 	// For each remaining ship, find nearest target with available capacity
 	for _, ship := range remaining {
-		var bestTarget *shared.Waypoint
-		bestDistance := math.MaxFloat64
-		currentLocation := ship.CurrentLocation()
-
-		for _, targetWaypoint := range targetWaypoints {
-			// Skip targets at capacity
-			if targetCounts[targetWaypoint.Symbol] >= maxPerTarget {
-				continue
-			}
-
-			distance := currentLocation.DistanceTo(targetWaypoint)
-
-			// Select nearest available target
-			if distance < bestDistance {
-				bestDistance = distance
-				bestTarget = targetWaypoint
-			}
-		}
-
-		// Assign ship to best target (if found)
+		bestTarget, bestDistance := nearestTargetWithCapacity(ship, targetWaypoints, targetCounts, maxPerTarget)
 		if bestTarget != nil {
 			assignments = append(assignments, Assignment{
 				ShipSymbol:     ship.ShipSymbol(),
@@ -232,6 +213,31 @@ func (fa *FleetAssigner) AssignShipsToTargetsWithHint(
 	}
 
 	return assignments, nil
+}
+
+// nearestTargetWithCapacity returns the nearest target that still has assignment
+// capacity (count below maxPerTarget), or nil when every target is full.
+func nearestTargetWithCapacity(
+	ship *navigation.Ship,
+	targetWaypoints []*shared.Waypoint,
+	targetCounts map[string]int,
+	maxPerTarget int,
+) (*shared.Waypoint, float64) {
+	var bestTarget *shared.Waypoint
+	bestDistance := math.MaxFloat64
+	currentLocation := ship.CurrentLocation()
+
+	for _, targetWaypoint := range targetWaypoints {
+		if targetCounts[targetWaypoint.Symbol] >= maxPerTarget {
+			continue
+		}
+		distance := currentLocation.DistanceTo(targetWaypoint)
+		if distance < bestDistance {
+			bestDistance = distance
+			bestTarget = targetWaypoint
+		}
+	}
+	return bestTarget, bestDistance
 }
 
 // findTargetWaypoint returns the target waypoint with the given symbol, or nil when the

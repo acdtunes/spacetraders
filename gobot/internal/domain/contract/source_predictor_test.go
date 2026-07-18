@@ -30,8 +30,8 @@ func newPredictorTestContract(t *testing.T, deliveries ...Delivery) *Contract {
 // near-certainly the SAME market. The predictor must flag it with full confidence.
 func TestPredictNextContractSource_SingleGoodMultiTripRemaining_NearCertain(t *testing.T) {
 	c := newPredictorTestContract(t, Delivery{
-		TradeSymbol:   "IRON_ORE",
-		UnitsRequired: 100,
+		TradeSymbol:    "IRON_ORE",
+		UnitsRequired:  100,
 		UnitsFulfilled: 0,
 	})
 

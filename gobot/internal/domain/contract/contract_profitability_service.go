@@ -64,28 +64,17 @@ func (s *ContractProfitabilityService) EvaluateProfitability(
 	contract *Contract,
 	ctx ProfitabilityContext,
 ) (*ProfitabilityEvaluation, error) {
-	// 1. Calculate total payment
 	totalPayment := s.calculateTotalPayment(contract)
 
-	// 2. Calculate purchase cost and total units needed
 	purchaseCost, totalUnits, err := s.calculatePurchaseCost(contract, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Calculate trips required (ceiling division)
 	tripsRequired := s.calculateTripsRequired(totalUnits, ctx.CargoCapacity)
-
-	// 4. Calculate fuel cost
 	fuelCost := s.calculateFuelCost(tripsRequired, ctx.FuelCostPerTrip)
-
-	// 5. Calculate net profit
 	netProfit := s.calculateNetProfit(totalPayment, purchaseCost, fuelCost)
-
-	// 6. Determine profitability
 	isProfitable := netProfit >= MinProfitThreshold
-
-	// 7. Generate reason
 	reason := s.generateProfitabilityReason(netProfit)
 
 	return &ProfitabilityEvaluation{

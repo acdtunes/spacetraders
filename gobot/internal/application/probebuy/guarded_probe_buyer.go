@@ -221,6 +221,15 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 	return Outcome{Bought: true, Reason: fmt.Sprintf("bought probe %s for %d at %s", sym, paid, yard), Price: paid, Symbol: sym, Yard: yard}
 }
 
+// recentShipPurchaseScan bounds the newest-first PURCHASE_SHIP rows scanned to find the
+// last PROBE buy: a probe may not be the most recent ship bought, so a few non-probe rows
+// can sit ahead of it. windowProbeSpendScan bounds the rows summed for the per-window spend
+// cap — high enough to cover every probe buy that can fall inside the trailing spend window.
+const (
+	recentShipPurchaseScan = 50
+	windowProbeSpendScan   = 500
+)
+
 // lastProbePurchase returns the timestamp of the most recent SHIP_PROBE purchase, derived
 // from the persisted transactions ledger (RULINGS #2: the cooldown clock survives a restart
 // because it is READ from the ledger, not held in memory).
@@ -229,7 +238,7 @@ func (b *GuardedProbeBuyer) lastProbePurchase(ctx context.Context, playerID shar
 	txns, err := b.ledger.FindByPlayer(ctx, playerID, ledger.QueryOptions{
 		TransactionType: &ps,
 		OrderBy:         "timestamp DESC",
-		Limit:           50,
+		Limit:           recentShipPurchaseScan,
 	})
 	if err != nil {
 		return time.Time{}, false, err
@@ -249,7 +258,7 @@ func (b *GuardedProbeBuyer) probeSpendSince(ctx context.Context, playerID shared
 	txns, err := b.ledger.FindByPlayer(ctx, playerID, ledger.QueryOptions{
 		TransactionType: &ps,
 		StartDate:       &since,
-		Limit:           500,
+		Limit:           windowProbeSpendScan,
 	})
 	if err != nil {
 		return 0, err

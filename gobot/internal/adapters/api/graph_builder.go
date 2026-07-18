@@ -114,13 +114,7 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		}
 
 		// Determine has_fuel
-		hasFuel := false
-		for _, trait := range traits {
-			if trait == "MARKETPLACE" || trait == "FUEL_STATION" {
-				hasFuel = true
-				break
-			}
-		}
+		hasFuel := shared.TraitsGrantFuel(traits)
 
 		// Create full waypoint object with traits
 		waypointObj, err := shared.NewWaypoint(wp.Symbol, wp.X, wp.Y)

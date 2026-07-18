@@ -42,23 +42,33 @@ func ParseRole(name string) (Role, error) {
 	return 0, fmt.Errorf("unknown depot element role %q (want one of warehouse, stocker, delivery-hull, source-hub)", name)
 }
 
+// roleTarget returns a pointer to the working slice for the named role, so each
+// mutation touches exactly the element class the caller named.
+func roleTarget(role Role, warehouses, stockers, deliveryHulls, sourceHubs *[]Element) (*[]Element, error) {
+	switch role {
+	case RoleWarehouse:
+		return warehouses, nil
+	case RoleStocker:
+		return stockers, nil
+	case RoleDeliveryHull:
+		return deliveryHulls, nil
+	case RoleSourceHub:
+		return sourceHubs, nil
+	default:
+		return nil, fmt.Errorf("unknown depot element role %q", role)
+	}
+}
+
 // WithElementAdded returns a NEW depot with e appended to the named role's elements,
 // leaving the receiver untouched (immutable functional update). The reconstruction runs
 // through NewContractDepot so the depot invariants hold for the result.
 func (c *ContractDepot) WithElementAdded(role Role, e Element) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
-	switch role {
-	case RoleWarehouse:
-		w = append(w, e)
-	case RoleStocker:
-		s = append(s, e)
-	case RoleDeliveryHull:
-		d = append(d, e)
-	case RoleSourceHub:
-		h = append(h, e)
-	default:
-		return nil, fmt.Errorf("unknown depot element role %q", role)
+	target, err := roleTarget(role, &w, &s, &d, &h)
+	if err != nil {
+		return nil, err
 	}
+	*target = append(*target, e)
 	return NewContractDepot(c.id, w, s, d, h)
 }
 
@@ -69,18 +79,9 @@ func (c *ContractDepot) WithElementAdded(role Role, e Element) (*ContractDepot, 
 // warehouse (the one structural invariant).
 func (c *ContractDepot) WithElementRemoved(role Role, shipSymbol string) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
-	var target *[]Element
-	switch role {
-	case RoleWarehouse:
-		target = &w
-	case RoleStocker:
-		target = &s
-	case RoleDeliveryHull:
-		target = &d
-	case RoleSourceHub:
-		target = &h
-	default:
-		return nil, fmt.Errorf("unknown depot element role %q", role)
+	target, err := roleTarget(role, &w, &s, &d, &h)
+	if err != nil {
+		return nil, err
 	}
 	filtered, found := removeByShip(*target, shipSymbol)
 	if !found {
@@ -98,18 +99,9 @@ func (c *ContractDepot) WithElementRemoved(role Role, shipSymbol string) (*Contr
 // use WithElementAdded to introduce one).
 func (c *ContractDepot) WithElementPlaced(role Role, shipSymbol, waypoint string) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
-	var target *[]Element
-	switch role {
-	case RoleWarehouse:
-		target = &w
-	case RoleStocker:
-		target = &s
-	case RoleDeliveryHull:
-		target = &d
-	case RoleSourceHub:
-		target = &h
-	default:
-		return nil, fmt.Errorf("unknown depot element role %q", role)
+	target, err := roleTarget(role, &w, &s, &d, &h)
+	if err != nil {
+		return nil, err
 	}
 	placed := false
 	for i := range *target {

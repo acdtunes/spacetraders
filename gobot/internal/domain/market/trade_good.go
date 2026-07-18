@@ -3,6 +3,8 @@ package market
 import (
 	"errors"
 	"fmt"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // TradeGood represents a single commodity available at a market (immutable value object).
@@ -19,15 +21,6 @@ type TradeGood struct {
 	tradeType     TradeType // EXPORT, IMPORT, or EXCHANGE
 }
 
-// Valid supply values
-var validSupplyValues = map[string]bool{
-	"SCARCE":   true,
-	"LIMITED":  true,
-	"MODERATE": true,
-	"HIGH":     true,
-	"ABUNDANT": true,
-}
-
 // Valid activity values
 var validActivityValues = map[string]bool{
 	"WEAK":       true,
@@ -38,12 +31,10 @@ var validActivityValues = map[string]bool{
 
 // NewTradeGood creates a new TradeGood with validation
 func NewTradeGood(symbol string, supply *string, activity *string, purchasePrice, sellPrice, tradeVolume int, tradeType TradeType) (*TradeGood, error) {
-	// Validate symbol
 	if symbol == "" {
 		return nil, errors.New("symbol cannot be empty")
 	}
 
-	// Validate prices
 	if purchasePrice < 0 {
 		return nil, errors.New("purchase price must be non-negative")
 	}
@@ -51,14 +42,13 @@ func NewTradeGood(symbol string, supply *string, activity *string, purchasePrice
 		return nil, errors.New("sell price must be non-negative")
 	}
 
-	// Validate trade volume
 	if tradeVolume < 0 {
 		return nil, errors.New("trade volume must be non-negative")
 	}
 
 	// Validate supply if provided
 	if supply != nil && *supply != "" {
-		if !validSupplyValues[*supply] {
+		if !shared.IsValidSupply(*supply) {
 			return nil, fmt.Errorf("invalid supply value: %s", *supply)
 		}
 	}

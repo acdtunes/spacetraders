@@ -2,8 +2,22 @@ package config
 
 import "time"
 
-// SetDefaults sets default values for all configuration fields
+// SetDefaults sets default values for all configuration fields by delegating to
+// one focused helper per config section (each fills only the fields left unset).
 func SetDefaults(cfg *Config) {
+	setDatabaseDefaults(cfg)
+	setAPIDefaults(cfg)
+	setRoutingDefaults(cfg)
+	setDaemonDefaults(cfg)
+	setLoggingDefaults(cfg)
+	setMetricsDefaults(cfg)
+	setCaptainDefaults(cfg)
+	setTradeFleetDefaults(cfg)
+	setBootstrapDefaults(cfg)
+}
+
+// setDatabaseDefaults fills unset database connection and pool fields.
+func setDatabaseDefaults(cfg *Config) {
 	// Database defaults
 	if cfg.Database.Type == "" {
 		cfg.Database.Type = "postgres"
@@ -32,7 +46,10 @@ func SetDefaults(cfg *Config) {
 	if cfg.Database.Pool.MaxLifetime == 0 {
 		cfg.Database.Pool.MaxLifetime = 5 * time.Minute
 	}
+}
 
+// setAPIDefaults fills unset API base URL, timeout, rate-limit, and retry fields.
+func setAPIDefaults(cfg *Config) {
 	// API defaults
 	if cfg.API.BaseURL == "" {
 		cfg.API.BaseURL = "https://api.spacetraders.io/v2"
@@ -55,7 +72,11 @@ func SetDefaults(cfg *Config) {
 	if cfg.API.Retry.BackoffBase == 0 {
 		cfg.API.Retry.BackoffBase = 1 * time.Second
 	}
+}
 
+// setRoutingDefaults fills unset routing address, solver timeouts, gate-backoff,
+// and gate charting/cache fields.
+func setRoutingDefaults(cfg *Config) {
 	// Routing defaults
 	if cfg.Routing.Address == "" {
 		cfg.Routing.Address = "localhost:50051"
@@ -108,7 +129,10 @@ func SetDefaults(cfg *Config) {
 		skipUnchartedDefault := true
 		cfg.Routing.SkipUnchartedGateFetch = &skipUnchartedDefault
 	}
+}
 
+// setDaemonDefaults fills unset daemon address, socket/pid, and restart-policy fields.
+func setDaemonDefaults(cfg *Config) {
 	// Daemon defaults
 	if cfg.Daemon.Address == "" {
 		cfg.Daemon.Address = "localhost:50052"
@@ -137,7 +161,10 @@ func SetDefaults(cfg *Config) {
 	if cfg.Daemon.RestartPolicy.BackoffMultiplier == 0 {
 		cfg.Daemon.RestartPolicy.BackoffMultiplier = 2.0
 	}
+}
 
+// setLoggingDefaults fills unset logging level/format/output and rotation fields.
+func setLoggingDefaults(cfg *Config) {
 	// Logging defaults
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
@@ -157,7 +184,10 @@ func SetDefaults(cfg *Config) {
 	if cfg.Logging.Rotation.MaxAge == 0 {
 		cfg.Logging.Rotation.MaxAge = 28 // days
 	}
+}
 
+// setMetricsDefaults fills unset metrics endpoint fields (metrics stay opt-in).
+func setMetricsDefaults(cfg *Config) {
 	// Metrics defaults
 	// Note: Metrics are disabled by default (opt-in via ST_METRICS_ENABLED=true)
 	if cfg.Metrics.Port == 0 {
@@ -169,7 +199,11 @@ func SetDefaults(cfg *Config) {
 	if cfg.Metrics.Path == "" {
 		cfg.Metrics.Path = "/metrics"
 	}
+}
 
+// setCaptainDefaults fills unset captain/watchkeeper cadence, session, wake, and
+// self-improvement fields.
+func setCaptainDefaults(cfg *Config) {
 	// Captain defaults
 	if cfg.Captain.PollIntervalSeconds == 0 {
 		cfg.Captain.PollIntervalSeconds = 30
@@ -272,7 +306,10 @@ func SetDefaults(cfg *Config) {
 		quotaAlertThresholdPctDefault := 80
 		cfg.Captain.QuotaAlertThresholdPct = &quotaAlertThresholdPctDefault
 	}
+}
 
+// setTradeFleetDefaults resolves the trade-fleet coordinator's default-ON switch.
+func setTradeFleetDefaults(cfg *Config) {
 	// Trade fleet coordinator defaults (sp-1278): default ON. A nil Enabled means the
 	// captain has not configured the coordinator, and its intent is to keep continuous
 	// tours alive on every trade hull — so an absent [trade_fleet] section runs ON. An
@@ -283,7 +320,10 @@ func SetDefaults(cfg *Config) {
 		tradeFleetEnabledDefault := true
 		cfg.TradeFleet.Enabled = &tradeFleetEnabledDefault
 	}
+}
 
+// setBootstrapDefaults fills the bootstrap gate source-factory feeder defaults.
+func setBootstrapDefaults(cfg *Config) {
 	// Gate source-factory feeders (sp-hoc6): a live-by-default set covering the current gate's
 	// buy-direct materials, so the construction drain never buys the gate output with ZERO feeding
 	// (RULINGS: no dark-shipping). This is a config-field DEFAULT — a parameter the Analyst retunes in

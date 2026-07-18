@@ -28,7 +28,7 @@ type concurrentProbeProducer struct {
 	mu          sync.Mutex
 	inFlight    int
 	maxInFlight int
-	produced    []string             // goods sourced, one entry per worker source
+	produced    []string              // goods sourced, one entry per worker source
 	delivered   []producerDeliverCall // deliveries, one entry per worker delivery
 
 	barrier     int

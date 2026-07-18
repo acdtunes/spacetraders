@@ -101,6 +101,31 @@ func (w *Waypoint) IsJumpGate() bool {
 	return w.Type == "JUMP_GATE"
 }
 
+// Waypoint trait symbols that imply on-site fuel: a MARKETPLACE or a FUEL_STATION
+// sells fuel. This is the single source of truth for the has-fuel determination;
+// the api adapter (waypoint converter and graph builder) reads it through the
+// TraitGrantsFuel / TraitsGrantFuel predicates below rather than restating the rule.
+const (
+	traitMarketplace = "MARKETPLACE"
+	traitFuelStation = "FUEL_STATION"
+)
+
+// TraitGrantsFuel reports whether a single waypoint trait implies on-site fuel:
+// a MARKETPLACE or a FUEL_STATION sells fuel.
+func TraitGrantsFuel(trait string) bool {
+	return trait == traitMarketplace || trait == traitFuelStation
+}
+
+// TraitsGrantFuel reports whether any trait in the slice implies on-site fuel.
+func TraitsGrantFuel(traits []string) bool {
+	for _, trait := range traits {
+		if TraitGrantsFuel(trait) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractSystemSymbol extracts the system symbol from a waypoint symbol
 // by finding the last hyphen and returning everything before it.
 // Example: "X1-AB12-C3D4" -> "X1-AB12"

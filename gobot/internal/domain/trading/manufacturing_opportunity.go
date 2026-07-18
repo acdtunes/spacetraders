@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -174,7 +173,7 @@ func (o *ManufacturingOpportunity) calculateScore() float64 {
 
 	// Supply score (0-100) - for sell markets, indicates volume/depth
 	// Markets with higher supply levels trade more volume
-	supplyScore := float64(manufacturing.SupplyLevel(o.supply).Order()) * 20.0
+	supplyScore := float64(shared.SupplyLevel(o.supply).Order()) * 20.0
 	if supplyScore == 0 {
 		supplyScore = 50 // Unknown
 	}
@@ -194,7 +193,6 @@ func (o *ManufacturingOpportunity) calculateScore() float64 {
 	// Direct arbitrage bonus: +100 for opportunities with AcquisitionBuy at root
 	// This prioritizes quick wins (buy from HIGH/ABUNDANT source, sell immediately)
 	// to generate income that funds the slower manufacturing pipelines
-	// Check both: no children AND root is BUY method (more robust detection)
 	if o.dependencyTree != nil && o.dependencyTree.AcquisitionMethod == goods.AcquisitionBuy {
 		return baseScore + 100.0
 	}

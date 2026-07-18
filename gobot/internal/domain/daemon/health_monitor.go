@@ -71,8 +71,8 @@ func (hm *HealthMonitor) SetLastCheckTime(t time.Time) {
 }
 
 // SetMaxRecoveryAttempts configures max recovery attempts before abandoning
-func (hm *HealthMonitor) SetMaxRecoveryAttempts(max int) {
-	hm.maxRecoveryAttempts = max
+func (hm *HealthMonitor) SetMaxRecoveryAttempts(attempts int) {
+	hm.maxRecoveryAttempts = attempts
 }
 
 // GetRecoveryAttemptCount returns the number of recovery attempts for a ship

@@ -43,7 +43,7 @@ func TestTourShipState_ExcludesReservedCargoFromPlanner(t *testing.T) {
 // skip line. Drives the real executor through the fake mediator seam.
 func TestTour_ExecutorSkipsReservedModuleSell(t *testing.T) {
 	fx := &tourFixture{
-		cargo:   map[string]int{"MODULE_CARGO_HOLD_III": 1}, location: "X1-ZC66-BA9D", cargoCap: 80,
+		cargo: map[string]int{"MODULE_CARGO_HOLD_III": 1}, location: "X1-ZC66-BA9D", cargoCap: 80,
 		markets: map[string][]string{"X1-ZC66": {"X1-ZC66-BA9D", "X1-ZC66-B"}},
 		// The incident condition: the module HAS a live bid at the sink (97,033cr) —
 		// that is exactly why a naive coordinator sold it. observeGood must find a

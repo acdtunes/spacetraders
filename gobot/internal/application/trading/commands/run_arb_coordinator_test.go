@@ -322,8 +322,8 @@ func TestArbCoordinator_UnroutableSellAt_RefusesBeforeBuy(t *testing.T) {
 	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		Good:       trGood,
-		BuyAt:      trSource,          // the hull IS here, so only routability can abort
-		SellAt:     "X1-JP61-MARKET",  // a different, unreachable system
+		BuyAt:      trSource,         // the hull IS here, so only routability can abort
+		SellAt:     "X1-JP61-MARKET", // a different, unreachable system
 		PlayerID:   1,
 	})
 	if err != nil {

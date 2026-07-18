@@ -421,7 +421,7 @@ func TestBridgeInterruptBypassesNudgeCooldown(t *testing.T) {
 
 	// A bare non-interrupt event 15s later is deferred (proves the window is open)...
 	ran, err = sup.bridgeWake(ctx, t0.Add(15*time.Second),
-		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(15 * time.Second))}, WakePolicy{})
+		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(15*time.Second))}, WakePolicy{})
 	require.NoError(t, err)
 	require.False(t, ran, "a non-interrupt event inside the window is deferred")
 	require.Len(t, gw.nudges, 1)
@@ -455,7 +455,7 @@ func TestNudgeCooldownClockSurvivesRestartAndDoesNotReStorm(t *testing.T) {
 	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
 	require.False(t, sup2.lastNudge.IsZero(), "lastNudge must reload from disk after restart")
 	ran, err = sup2.bridgeWake(ctx, t0.Add(30*time.Second),
-		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(30 * time.Second))}, WakePolicy{})
+		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(30*time.Second))}, WakePolicy{})
 	require.NoError(t, err)
 	require.False(t, ran, "a restart inside the cooldown window must not re-nudge on boot")
 	require.Empty(t, gw2.nudges)
@@ -463,7 +463,7 @@ func TestNudgeCooldownClockSurvivesRestartAndDoesNotReStorm(t *testing.T) {
 	// Past the cooldown post-restart: the accumulated event finally nudges once.
 	sup3, gw3 := reopenBridgeSupervisor(t, db, playerID, store, dir)
 	ran, err = sup3.bridgeWake(ctx, t0.Add(nudgeCooldown+time.Second),
-		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(30 * time.Second))}, WakePolicy{})
+		[]*captain.Event{deployEvent(1, t0), deployEvent(2, t0.Add(30*time.Second))}, WakePolicy{})
 	require.NoError(t, err)
 	require.True(t, ran, "once the persisted cooldown elapses the coalesced wake fires")
 	require.Len(t, gw3.nudges, 1)

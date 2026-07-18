@@ -1493,30 +1493,6 @@ func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
 	return workerContainerID, nil
 }
 
-// calculateInFlightCargo calculates the total cargo of a specific trade symbol
-// that is currently held by ships working on active contract workflows, plus
-// cargo still aboard ships whose contract worker was interrupted (marked
-// FAILED) but hasn't been reclaimed to idle yet (sp-u20w). Without the second
-// source, a partially-laden hull orphaned by a dead worker read as 0 in-flight
-// the moment its worker died, letting the coordinator purchase units
-// redundant with what that hull is still physically holding.
-//
-// Ordering rules out double-counting: readoptInterruptedDeliveries (sp-tgp5)
-// runs once, before the main loop starts, and moves any successfully
-// re-adopted ship onto a fresh RUNNING container before this function is ever
-// called from inside the loop. That ship is therefore picked up exactly once,
-// by the RUNNING-workers pass below, and no longer matches
-// FindInterruptedWorkerShipsWithCargo's query (it queries by container ID,
-// and the ship has moved off the dead one — the dead container's own row can
-// still be sitting in the FAILED list, but nothing on it matches anymore). A
-// ship that is NOT re-adopted (readoption only re-adopts one hull per
-// startup) stays attached to its FAILED container - a transient state the
-// loop's unconditional ReclaimShipsFromInterruptedWorkers pass forces closed
-// on its very next iteration - so counting it here can delay, but never
-// permanently stall, the coordinator, unlike counting arbitrary idle-ship
-// cargo would.
-//
-// This is used during restart recovery to prevent duplicate cargo purchases.
 // scopeCandidatesToContractHome narrows the worker-candidate pool to hulls idle in the
 // contract's HOME system — the delivery-destination system, the SAME authoritative scope
 // PlanSourcing/market_finder derive contract sourcing from (RULINGS #14: the worker is
@@ -1547,6 +1523,30 @@ func (h *RunFleetCoordinatorHandler) scopeCandidatesToContractHome(
 	return appContract.FilterToHomeSystem(ctx, playerID, h.shipRepo, candidates, homeSystem)
 }
 
+// calculateInFlightCargo calculates the total cargo of a specific trade symbol
+// that is currently held by ships working on active contract workflows, plus
+// cargo still aboard ships whose contract worker was interrupted (marked
+// FAILED) but hasn't been reclaimed to idle yet (sp-u20w). Without the second
+// source, a partially-laden hull orphaned by a dead worker read as 0 in-flight
+// the moment its worker died, letting the coordinator purchase units
+// redundant with what that hull is still physically holding.
+//
+// Ordering rules out double-counting: readoptInterruptedDeliveries (sp-tgp5)
+// runs once, before the main loop starts, and moves any successfully
+// re-adopted ship onto a fresh RUNNING container before this function is ever
+// called from inside the loop. That ship is therefore picked up exactly once,
+// by the RUNNING-workers pass below, and no longer matches
+// FindInterruptedWorkerShipsWithCargo's query (it queries by container ID,
+// and the ship has moved off the dead one — the dead container's own row can
+// still be sitting in the FAILED list, but nothing on it matches anymore). A
+// ship that is NOT re-adopted (readoption only re-adopts one hull per
+// startup) stays attached to its FAILED container - a transient state the
+// loop's unconditional ReclaimShipsFromInterruptedWorkers pass forces closed
+// on its very next iteration - so counting it here can delay, but never
+// permanently stall, the coordinator, unlike counting arbitrary idle-ship
+// cargo would.
+//
+// This is used during restart recovery to prevent duplicate cargo purchases.
 func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	ctx context.Context,
 	tradeSymbol string,

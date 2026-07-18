@@ -61,10 +61,10 @@ func TestAskMovedBeyondTolerance_StaleBasisGuard(t *testing.T) {
 // tick, and the ship's remaining usable capacity — whichever binds first.
 func TestVisitTranche_CapsAtEighteenVolumeAndCapacity(t *testing.T) {
 	cases := []struct {
-		name       string
-		volume     int
-		capacity   int
-		wantUnits  int
+		name      string
+		volume    int
+		capacity  int
+		wantUnits int
 	}{
 		{"tranche cap dominates deep volume and roomy hold", 100, 80, TrancheCap},
 		{"thin market volume binds below the cap", 6, 80, 6},

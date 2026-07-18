@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )

@@ -255,20 +255,3 @@ func GetRequiredInputs(good string) []string {
 	}
 	return inputs
 }
-
-// ValidateSupplyChain checks if a good can be produced given the supply chain map.
-// Returns error if the good is unknown and cannot be produced or purchased.
-func ValidateSupplyChain(good string) error {
-	// Raw materials are always valid (can be mined/purchased)
-	if IsRawMaterial(good) {
-		return nil
-	}
-
-	// Check if the good exists in the supply chain
-	_, exists := ExportToImportMap[good]
-	if !exists {
-		return &UnknownGoodError{Good: good}
-	}
-
-	return nil
-}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -12,6 +11,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+const (
+	// containerMetricsPollInterval is how often the container-running gauge is refreshed.
+	containerMetricsPollInterval = 10 * time.Second
+	// shipMetricsPollInterval is how often the per-player ship role/status gauges are refreshed.
+	shipMetricsPollInterval = 30 * time.Second
 )
 
 // ContainerMetricsCollector handles all container and ship metrics
@@ -40,11 +46,9 @@ type ContainerMetricsCollector struct {
 	// ERROR log (ship_repository.go Save) carries the ship symbol.
 	shipVersionConflicts prometheus.Counter
 
-	// Lifecycle
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.Mutex
+	// Lifecycle scaffolding (ctx/cancelFunc/wg + Start context + Stop) is shared
+	// via the embedded pollingCollector.
+	pollingCollector
 }
 
 // ContainerInfo represents the data needed for metrics collection
@@ -217,41 +221,14 @@ func (c *ContainerMetricsCollector) Register() error {
 
 // Start begins the metrics collection goroutines
 func (c *ContainerMetricsCollector) Start(ctx context.Context) {
-	c.ctx, c.cancelFunc = context.WithCancel(ctx)
+	c.startContext(ctx)
 
-	// Start container metrics collector (poll every 10 seconds)
-	c.wg.Add(1)
-	go c.collectContainerMetrics(10 * time.Second)
+	// Start container metrics collector (tick-only, no initial poll).
+	c.startPolling(containerMetricsPollInterval, false, c.updateContainerMetrics)
 
-	// Start ship metrics collector (poll every 30 seconds)
+	// Start ship metrics collector
 	if c.shipRepo != nil {
-		c.wg.Add(1)
-		go c.collectShipMetrics(30 * time.Second)
-	}
-}
-
-// Stop gracefully stops the metrics collection
-func (c *ContainerMetricsCollector) Stop() {
-	if c.cancelFunc != nil {
-		c.cancelFunc()
-	}
-	c.wg.Wait()
-}
-
-// collectContainerMetrics polls container data and updates metrics
-func (c *ContainerMetricsCollector) collectContainerMetrics(interval time.Duration) {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			c.updateContainerMetrics()
-		}
+		c.startPolling(shipMetricsPollInterval, false, c.updateShipMetrics)
 	}
 }
 
@@ -275,23 +252,6 @@ func (c *ContainerMetricsCollector) updateContainerMetrics() {
 		// Update running gauge (only for RUNNING containers)
 		if status == container.ContainerStatusRunning {
 			c.containerRunningTotal.WithLabelValues(playerID, containerType).Set(1)
-		}
-	}
-}
-
-// collectShipMetrics polls ship data and updates metrics
-func (c *ContainerMetricsCollector) collectShipMetrics(interval time.Duration) {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			c.updateShipMetrics()
 		}
 	}
 }

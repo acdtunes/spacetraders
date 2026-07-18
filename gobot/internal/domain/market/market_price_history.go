@@ -34,22 +34,18 @@ func NewMarketPriceHistory(
 	activity *string,
 	tradeVolume int,
 ) (*MarketPriceHistory, error) {
-	// Validate waypoint symbol
 	if waypointSymbol == "" {
 		return nil, ErrInvalidWaypointSymbol
 	}
 
-	// Validate good symbol
 	if goodSymbol == "" {
 		return nil, ErrInvalidGoodSymbol
 	}
 
-	// Validate player ID
 	if playerID.IsZero() {
 		return nil, ErrInvalidPlayerID
 	}
 
-	// Validate prices
 	if purchasePrice < 0 {
 		return nil, ErrInvalidPrice
 	}
@@ -57,14 +53,13 @@ func NewMarketPriceHistory(
 		return nil, ErrInvalidPrice
 	}
 
-	// Validate trade volume
 	if tradeVolume < 0 {
 		return nil, ErrInvalidTradeVolume
 	}
 
 	// Validate supply if provided
 	if supply != nil && *supply != "" {
-		if !validSupplyValues[*supply] {
+		if !shared.IsValidSupply(*supply) {
 			return nil, ErrInvalidSupply
 		}
 	}

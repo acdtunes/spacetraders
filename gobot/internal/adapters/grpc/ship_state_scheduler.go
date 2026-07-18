@@ -20,6 +20,14 @@ const ClockDriftBuffer = 1 * time.Second
 // With event-based arrival handling, the sweeper is a safety net, not the primary mechanism.
 const SweeperInterval = 60 * time.Second
 
+// shipStateWriteTimeout bounds a single ship-state transition write (arrival or
+// cooldown clear) performed under CAS-retry.
+const shipStateWriteTimeout = 10 * time.Second
+
+// stuckSweepTimeout bounds one full stuck-ship sweeper pass (a batch that may
+// transition many ships in sequence).
+const stuckSweepTimeout = 30 * time.Second
+
 // ShipStateScheduler manages timers for ship state transitions.
 // Uses time.AfterFunc to schedule precise transitions at exact API-provided timestamps.
 // Zero CPU usage between events (no polling).
@@ -84,7 +92,7 @@ func (s *ShipStateScheduler) ScheduleArrival(ship *navigation.Ship) {
 
 // handleArrival processes a ship arrival
 func (s *ShipStateScheduler) handleArrival(symbol string, playerID shared.PlayerID) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shipStateWriteTimeout)
 	defer cancel()
 
 	// Re-find + arrive + save under CAS-retry (sp-01wc): on a concurrent-writer
@@ -92,16 +100,7 @@ func (s *ShipStateScheduler) handleArrival(symbol string, playerID shared.Player
 	// last-write-wins clobbering the other writer. The in-transit guard lives
 	// inside the mutation so it is re-checked on every re-find — if another
 	// writer already transitioned the hull, changed=false and we skip the write.
-	freshShip, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
-		if !sh.IsInTransit() {
-			return false, nil
-		}
-		if err := sh.Arrive(); err != nil {
-			return false, err
-		}
-		sh.ClearArrivalTime()
-		return true, nil
-	})
+	freshShip, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, arriveIfInTransit)
 	if err != nil {
 		fmt.Printf("Warning: Failed to transition ship %s to orbit: %v\n", symbol, err)
 	} else if saved {
@@ -158,20 +157,14 @@ func (s *ShipStateScheduler) ScheduleCooldownClear(ship *navigation.Ship) {
 
 // handleCooldownClear processes a cooldown expiration
 func (s *ShipStateScheduler) handleCooldownClear(symbol string, playerID shared.PlayerID, timerKey string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shipStateWriteTimeout)
 	defer cancel()
 
 	// Re-find + clear-cooldown + save under CAS-retry (sp-01wc): a concurrent
 	// writer's mutation is re-applied on fresh state instead of clobbered. The
 	// still-set guard lives inside the mutation so it is re-checked on every
 	// re-find (another operation may have cleared it first → changed=false).
-	_, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
-		if sh.CooldownExpiration() == nil {
-			return false, nil
-		}
-		sh.ClearCooldown()
-		return true, nil
-	})
+	_, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, clearCooldownIfSet)
 	if err != nil {
 		fmt.Printf("Warning: Failed to save ship %s after cooldown clear: %v\n", symbol, err)
 	} else if saved {
@@ -275,7 +268,7 @@ func (s *ShipStateScheduler) RunSweeper(ctx context.Context) error {
 // sweepStuckShips finds and transitions ships that are stuck in IN_TRANSIT with past arrival times.
 // This catches ships that slipped through due to failed saves, timeouts, or other errors.
 func (s *ShipStateScheduler) sweepStuckShips() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), stuckSweepTimeout)
 	defer cancel()
 
 	// Find ships that should have arrived but are still IN_TRANSIT
@@ -296,16 +289,7 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 		playerID := ship.PlayerID()
 		// Re-find + arrive + save under CAS-retry (sp-01wc), same as the
 		// event-driven handler: the batch row may be stale by the time we write.
-		freshShip, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
-			if !sh.IsInTransit() {
-				return false, nil
-			}
-			if err := sh.Arrive(); err != nil {
-				return false, err
-			}
-			sh.ClearArrivalTime()
-			return true, nil
-		})
+		freshShip, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, arriveIfInTransit)
 		if err != nil {
 			fmt.Printf("Sweeper: Failed to transition %s: %v\n", symbol, err)
 			continue
@@ -335,13 +319,7 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 	for _, ship := range stuckCooldowns {
 		symbol := ship.ShipSymbol()
 		playerID := ship.PlayerID()
-		_, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, func(sh *navigation.Ship) (bool, error) {
-			if sh.CooldownExpiration() == nil {
-				return false, nil
-			}
-			sh.ClearCooldown()
-			return true, nil
-		})
+		_, saved, err := s.shipRepo.SaveWithRetry(ctx, symbol, playerID, clearCooldownIfSet)
 		if err != nil {
 			fmt.Printf("Sweeper: Failed to clear cooldown for %s: %v\n", symbol, err)
 		} else if saved {
@@ -354,4 +332,31 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 func (s *ShipStateScheduler) Stop() {
 	close(s.stopCh)
 	s.CancelAll()
+}
+
+// arriveIfInTransit is the SaveWithRetry mutation that transitions a still-in-transit
+// hull to orbit and clears its arrival time. It reports changed=false (skipping the
+// write) when the hull is no longer in transit, so a concurrent writer that already
+// transitioned it is never clobbered. Shared by the event-driven handler and the sweeper.
+func arriveIfInTransit(sh *navigation.Ship) (bool, error) {
+	if !sh.IsInTransit() {
+		return false, nil
+	}
+	if err := sh.Arrive(); err != nil {
+		return false, err
+	}
+	sh.ClearArrivalTime()
+	return true, nil
+}
+
+// clearCooldownIfSet is the SaveWithRetry mutation that clears a still-set cooldown. It
+// reports changed=false (skipping the write) when the cooldown is already clear, so a
+// concurrent writer that cleared it first is never clobbered. Shared by the event-driven
+// handler and the sweeper.
+func clearCooldownIfSet(sh *navigation.Ship) (bool, error) {
+	if sh.CooldownExpiration() == nil {
+		return false, nil
+	}
+	sh.ClearCooldown()
+	return true, nil
 }

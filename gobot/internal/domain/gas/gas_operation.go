@@ -97,24 +97,20 @@ func (op *Operation) Status() OperationStatus {
 
 // Start transitions the operation from PENDING to RUNNING
 func (op *Operation) Start() error {
-	// Check if we can start from current state
 	status := op.lifecycle.Status()
 	if status != shared.LifecycleStatusPending {
 		return fmt.Errorf("cannot start operation in %s state", op.Status())
 	}
 
-	// Validate before starting
 	if err := op.Validate(); err != nil {
 		return fmt.Errorf("operation validation failed: %w", err)
 	}
 
-	// Delegate to lifecycle state machine
 	return op.lifecycle.Start()
 }
 
 // Stop transitions the operation to STOPPED state
 func (op *Operation) Stop() error {
-	// Check if we can stop from current state
 	status := op.lifecycle.Status()
 	if status == shared.LifecycleStatusCompleted || status == shared.LifecycleStatusStopped {
 		return fmt.Errorf("cannot stop operation in %s state", op.Status())
@@ -125,7 +121,6 @@ func (op *Operation) Stop() error {
 
 // Complete transitions the operation to COMPLETED state
 func (op *Operation) Complete() error {
-	// Check if we can complete from current state
 	status := op.lifecycle.Status()
 	if status != shared.LifecycleStatusRunning {
 		return fmt.Errorf("cannot complete operation in %s state", op.Status())
@@ -136,7 +131,6 @@ func (op *Operation) Complete() error {
 
 // Fail transitions the operation to FAILED state with error
 func (op *Operation) Fail(err error) error {
-	// Check if we can fail from current state
 	status := op.lifecycle.Status()
 	if status == shared.LifecycleStatusCompleted || status == shared.LifecycleStatusStopped {
 		return fmt.Errorf("cannot fail operation in %s state", op.Status())
@@ -245,7 +239,6 @@ func (op *Operation) ToData() *OperationData {
 
 // FromData creates a Operation entity from a DTO
 func FromData(data *OperationData, clock shared.Clock) *Operation {
-	// Create lifecycle state machine
 	lifecycle := shared.NewLifecycleStateMachine(clock)
 
 	// Convert OperationStatus to LifecycleStatus
@@ -265,13 +258,11 @@ func FromData(data *OperationData, clock shared.Clock) *Operation {
 		lifecycleStatus = shared.LifecycleStatusPending
 	}
 
-	// Parse last error
 	var lastErr error
 	if data.LastError != "" {
 		lastErr = fmt.Errorf("%s", data.LastError)
 	}
 
-	// Recover lifecycle state from persistence
 	lifecycle.RecoverFromPersistence(
 		lifecycleStatus,
 		data.CreatedAt,

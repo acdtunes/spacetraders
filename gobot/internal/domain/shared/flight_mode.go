@@ -57,11 +57,11 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 	if engineSpeed < 1 {
 		engineSpeed = 1
 	}
-	time := (distance * float64(config.TimeMultiplier)) / float64(engineSpeed)
-	if time < 1 {
+	travelSeconds := (distance * float64(config.TimeMultiplier)) / float64(engineSpeed)
+	if travelSeconds < 1 {
 		return 1
 	}
-	return int(time)
+	return int(travelSeconds)
 }
 
 // SelectOptimalFlightMode selects best flight mode based on available fuel.

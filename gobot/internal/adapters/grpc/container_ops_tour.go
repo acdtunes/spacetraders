@@ -208,14 +208,7 @@ func (s *DaemonServer) StartTourRun(
 
 	// The runner claims the hull (ship_symbol metadata), flips the row to RUNNING, and
 	// owns release-on-death.
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Tour-run container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Tour-run container")
 
 	return &TourRunOperationResult{
 		ContainerID: containerID,

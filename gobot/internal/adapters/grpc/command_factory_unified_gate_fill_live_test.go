@@ -57,9 +57,9 @@ func TestGoodsFactoryUnsetUnifiedGateFillIsOffAndByteIdentical(t *testing.T) {
 func TestGoodsFactoryUnsetLiveClearsStalePersistedUnifiedGateFill(t *testing.T) {
 	s := newManufacturingFactoryTestServer(config.ManufacturingConfig{})
 	cmd := buildRecoveredGoodsFactoryCommand(t, s, goodsFactoryLaunchConfig(map[string]interface{}{
-		"unified_gate_fill":            true,
+		"unified_gate_fill":             true,
 		"gate_output_buy_rate_multiple": 9.9,
-		"gate_output_pacing_disabled":  true,
+		"gate_output_pacing_disabled":   true,
 	}))
 	require.False(t, cmd.UnifiedGateFill, "unset live must clear the stale persisted toggle and revert to OFF")
 	require.Equal(t, 0.0, cmd.GateOutputBuyRateMultiple, "unset live must clear the stale persisted pacing coefficient")

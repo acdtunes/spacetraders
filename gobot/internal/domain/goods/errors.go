@@ -24,15 +24,6 @@ func (e *ErrCircularDependency) Error() string {
 	return fmt.Sprintf("circular dependency detected for %s: %v", e.Good, e.Chain)
 }
 
-// UnknownGoodError indicates a good is not in the supply chain map
-type UnknownGoodError struct {
-	Good string
-}
-
-func (e *UnknownGoodError) Error() string {
-	return "unknown good: " + e.Good
-}
-
 // ErrUnknownGood indicates a good is not found in the supply chain map
 type ErrUnknownGood struct {
 	Good string
@@ -40,30 +31,6 @@ type ErrUnknownGood struct {
 
 func (e *ErrUnknownGood) Error() string {
 	return fmt.Sprintf("unknown good: %s (not in supply chain map)", e.Good)
-}
-
-// ErrMarketNotFound indicates no market was found for a good
-type ErrMarketNotFound struct {
-	Good         string
-	SystemSymbol string
-	SearchType   string // "export" or "import"
-}
-
-func (e *ErrMarketNotFound) Error() string {
-	return fmt.Sprintf("no market found that %ss %s in system %s", e.SearchType, e.Good, e.SystemSymbol)
-}
-
-// ErrProductionTimeout indicates production polling exceeded timeout
-type ErrProductionTimeout struct {
-	Good            string
-	WaypointSymbol  string
-	PollAttempts    int
-	ElapsedDuration string
-}
-
-func (e *ErrProductionTimeout) Error() string {
-	return fmt.Sprintf("production timeout for %s at %s after %d polls (%s)",
-		e.Good, e.WaypointSymbol, e.PollAttempts, e.ElapsedDuration)
 }
 
 // ErrInsufficientCargo indicates ship cannot hold required goods

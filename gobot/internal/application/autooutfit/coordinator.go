@@ -37,18 +37,18 @@ import (
 const (
 	// Config defaults (RULINGS #5: every operational value is a config key, filled here
 	// only when neither the live container config nor the launch command carries one).
-	defaultTickSeconds        = 300 // 5m — outfitting is not time-critical
-	defaultMinTelemetrySamples = 8  // fail-closed thin-telemetry floor (the 16/17 caveat: 5 legs is too thin)
-	defaultPriceCeiling       = 500000
-	defaultMaxInstallsPerTick = 1
+	defaultTickSeconds         = 300 // 5m — outfitting is not time-critical
+	defaultMinTelemetrySamples = 8   // fail-closed thin-telemetry floor (the 16/17 caveat: 5 legs is too thin)
+	defaultPriceCeiling        = 500000
+	defaultMaxInstallsPerTick  = 1
 	// defaultPaybackHorizonHours 0 = the absolute payback gate is OFF by default (the
 	// value-per-hour it needs is unmeasured until per-hull throughput is wired).
-	defaultPaybackHorizonHours = 0
-	defaultTreasuryReserve    = 50000 // hard working-capital floor, mirrors the outfitting handler
-	defaultMaxTreasuryFractionPct = 25 // a single module never exceeds 25% of live treasury
-	defaultInstallFeeEstimate = 1000
-	defaultHopCost            = 5000 // logistics cost per gate hop to divert to the module's market
-	defaultTelemetryWindowSecs = 12 * 60 * 60 // 12h read window, mirrors the heavy tour-rate window
+	defaultPaybackHorizonHours    = 0
+	defaultTreasuryReserve        = 50000 // hard working-capital floor, mirrors the outfitting handler
+	defaultMaxTreasuryFractionPct = 25    // a single module never exceeds 25% of live treasury
+	defaultInstallFeeEstimate     = 1000
+	defaultHopCost                = 5000         // logistics cost per gate hop to divert to the module's market
+	defaultTelemetryWindowSecs    = 12 * 60 * 60 // 12h read window, mirrors the heavy tour-rate window
 )
 
 // defaultWantedModules is the watchlist: the high-value capacity modules the catalog
@@ -166,7 +166,9 @@ func NewRunAutoOutfitCoordinatorHandler(
 
 // SetTreasuryReader wires the live-treasury source for the money guards. Unset keeps the
 // INSTALL path fail-closed.
-func (h *RunAutoOutfitCoordinatorHandler) SetTreasuryReader(t probebuy.TreasuryReader) { h.treasury = t }
+func (h *RunAutoOutfitCoordinatorHandler) SetTreasuryReader(t probebuy.TreasuryReader) {
+	h.treasury = t
+}
 
 // SetOutfitter wires the physical buy+deliver+install actuator. Unset keeps INSTALL closed.
 func (h *RunAutoOutfitCoordinatorHandler) SetOutfitter(o Outfitter) { h.outfitter = o }
@@ -175,14 +177,18 @@ func (h *RunAutoOutfitCoordinatorHandler) SetOutfitter(o Outfitter) { h.outfitte
 func (h *RunAutoOutfitCoordinatorHandler) SetWatchlistNotifier(w WatchlistNotifier) { h.watchlist = w }
 
 // SetNewHullCostReader wires the autosizer buy-hull payback baseline.
-func (h *RunAutoOutfitCoordinatorHandler) SetNewHullCostReader(r NewHullCostReader) { h.newHullCost = r }
+func (h *RunAutoOutfitCoordinatorHandler) SetNewHullCostReader(r NewHullCostReader) {
+	h.newHullCost = r
+}
 
 // SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek). Unset
 // keeps every knob launch-frozen.
 func (h *RunAutoOutfitCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) { h.liveConfig = r }
 
 // SetEventRecorder wires the captain outbox for the install + error-loop events.
-func (h *RunAutoOutfitCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) { h.captainEvents = rec }
+func (h *RunAutoOutfitCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
+	h.captainEvents = rec
+}
 
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunAutoOutfitCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {

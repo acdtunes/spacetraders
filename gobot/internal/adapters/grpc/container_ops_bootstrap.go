@@ -56,14 +56,7 @@ func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, a
 		return "", fmt.Errorf("failed to persist bootstrap container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Bootstrap container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Bootstrap container")
 
 	return containerID, nil
 }

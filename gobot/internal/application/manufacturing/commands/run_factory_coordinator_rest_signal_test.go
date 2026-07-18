@@ -128,7 +128,7 @@ func TestExportRest_OwnAskAboveMedian_Rests(t *testing.T) {
 		outputGood: testOutputGood, inputGood: testInputGood,
 		sources: map[string]restSource{
 			testFactoryWaypoint: {ask: 6000, supply: "MODERATE", importsInput: true}, // OUR factory (laddered)
-			testReExport1:       {ask: 3000, supply: "MODERATE"},                      // healthy baseline sources
+			testReExport1:       {ask: 3000, supply: "MODERATE"},                     // healthy baseline sources
 			testReExport2:       {ask: 3200, supply: "MODERATE"},
 		},
 	}

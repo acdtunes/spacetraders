@@ -49,14 +49,7 @@ func (s *DaemonServer) FleetAutosizerCoordinator(ctx context.Context, playerID i
 		return "", fmt.Errorf("failed to persist fleet autosizer container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Fleet autosizer container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Fleet autosizer container")
 
 	return containerID, nil
 }

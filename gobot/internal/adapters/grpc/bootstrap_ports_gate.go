@@ -54,6 +54,16 @@ func containerTypeRunning(ctx context.Context, repo *persistence.ContainerReposi
 	return id != "", err
 }
 
+// matchesAnyContainerType reports whether containerType equals any of the given types.
+func matchesAnyContainerType(containerType string, types []container.ContainerType) bool {
+	for _, t := range types {
+		if containerType == string(t) {
+			return true
+		}
+	}
+	return false
+}
+
 // firstContainerIDOfType returns the ID of the first RUNNING-or-PENDING container matching any given type
 // (for the adoption bounce, which stops that container so the daemon re-adopts it), or "" if none.
 func firstContainerIDOfType(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int, types ...container.ContainerType) (string, error) {
@@ -63,10 +73,8 @@ func firstContainerIDOfType(ctx context.Context, repo *persistence.ContainerRepo
 			return "", err
 		}
 		for _, s := range summaries {
-			for _, t := range types {
-				if s.ContainerType == string(t) {
-					return s.ID, nil
-				}
+			if matchesAnyContainerType(s.ContainerType, types) {
+				return s.ID, nil
 			}
 		}
 	}

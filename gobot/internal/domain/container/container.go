@@ -69,7 +69,7 @@ const (
 	// system's standing scout post to a freshness SLA and auto-buying probes behind the shared
 	// money-guard stack. Like the frontier/siting/autosizer coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
-	ContainerTypeMarketFreshnessSizer     ContainerType = "MARKET_FRESHNESS_SIZER_COORDINATOR"
+	ContainerTypeMarketFreshnessSizer ContainerType = "MARKET_FRESHNESS_SIZER_COORDINATOR"
 	// ContainerTypeShipyardBackfillCoordinator is the standing shipyard-backfill sweep (sp-rhju):
 	// a per-player coordinator that loops forever inside one Handle() closing the charted-but-
 	// unscanned shipyard blind spot the market-tour-only scan left behind — enumerating known-
@@ -78,7 +78,7 @@ const (
 	// it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeShipyardBackfillCoordinator ContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 	ContainerTypePurchase                    ContainerType = "PURCHASE"
-	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"
+	ContainerTypeManufacturingCoordinator    ContainerType = "MANUFACTURING_COORDINATOR"
 	// ContainerTypeSitingCoordinator is the standing factory-siting brain (sp-vdld): a
 	// per-player coordinator that loops forever inside one Handle() scanning/scoring/sizing
 	// the factory-chain portfolio and launching/retiring goods_factory chains through the
@@ -199,7 +199,6 @@ func NewContainer(
 	metadata map[string]interface{},
 	clock shared.Clock,
 ) *Container {
-	// Default to real clock if not provided
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
@@ -246,6 +245,19 @@ func (c *Container) StartedAt() *time.Time { return c.lifecycle.StartedAt() }
 func (c *Container) StoppedAt() *time.Time { return c.lifecycle.StoppedAt() }
 func (c *Container) LastError() error      { return c.lifecycle.LastError() }
 
+// containerStatusByLifecycle projects each shared lifecycle state onto the
+// Container-facing status. The Container-specific extension states (STOPPING,
+// INTERRUPTED) are resolved by Status() BEFORE this table because they are not
+// lifecycle states. A lifecycle state absent here falls back to
+// ContainerStatusPending (the former switch's safe default).
+var containerStatusByLifecycle = map[shared.LifecycleStatus]ContainerStatus{
+	shared.LifecycleStatusPending:   ContainerStatusPending,
+	shared.LifecycleStatusRunning:   ContainerStatusRunning,
+	shared.LifecycleStatusCompleted: ContainerStatusCompleted,
+	shared.LifecycleStatusFailed:    ContainerStatusFailed,
+	shared.LifecycleStatusStopped:   ContainerStatusStopped,
+}
+
 // Status returns the current container status
 // Maps LifecycleStatus to ContainerStatus with Container-specific extensions
 func (c *Container) Status() ContainerStatus {
@@ -257,21 +269,7 @@ func (c *Container) Status() ContainerStatus {
 		return ContainerStatusInterrupted
 	}
 
-	// Map lifecycle states to container states
-	switch c.lifecycle.Status() {
-	case shared.LifecycleStatusPending:
-		return ContainerStatusPending
-	case shared.LifecycleStatusRunning:
-		return ContainerStatusRunning
-	case shared.LifecycleStatusCompleted:
-		return ContainerStatusCompleted
-	case shared.LifecycleStatusFailed:
-		return ContainerStatusFailed
-	case shared.LifecycleStatusStopped:
-		return ContainerStatusStopped
-	default:
-		return ContainerStatusPending // Safe default
-	}
+	return shared.ProjectStatus(c.lifecycle, containerStatusByLifecycle, ContainerStatusPending)
 }
 
 // State transition methods

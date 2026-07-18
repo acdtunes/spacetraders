@@ -126,7 +126,7 @@ type factoryFakeShipRepo struct {
 	alwaysEmpty    bool              // report an empty fleet on every call
 	onFindAll      func(callNum int) // hook fired on each call (e.g. to cancel ctx)
 
-	claimErr error             // injected ClaimShip rejection (e.g. fleet dedication)
+	claimErr error              // injected ClaimShip rejection (e.g. fleet dedication)
 	claims   []factoryShipClaim // successful ClaimShip calls, in order
 }
 

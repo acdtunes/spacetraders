@@ -317,10 +317,3 @@ func formatTimestamp(ts string) string {
 	}
 	return t.Format("2006-01-02 15:04:05")
 }
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}

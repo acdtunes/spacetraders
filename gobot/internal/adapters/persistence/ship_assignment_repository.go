@@ -12,6 +12,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
+// assignment_status column values. Untyped so they compare cleanly against both
+// the domain's ShipAssignment status type and the raw string used in GORM
+// Where/Updates clauses.
+const (
+	assignmentStatusActive = "active"
+	assignmentStatusIdle   = "idle"
+)
+
 // ShipAssignmentRepositoryGORM implements ship assignment persistence using GORM
 // DEPRECATED: This repository is being phased out. Use ShipRepository methods instead.
 // Ship assignment is now part of the Ship aggregate in the navigation bounded context.
@@ -36,7 +44,7 @@ func (r *ShipAssignmentRepositoryGORM) Assign(
 		return fmt.Errorf("failed to check existing assignment: %w", err)
 	}
 
-	if existingAssignment != nil && existingAssignment.Status() == "active" {
+	if existingAssignment != nil && existingAssignment.Status() == assignmentStatusActive {
 		return fmt.Errorf("ship %s is already assigned to container %s",
 			assignment.ShipSymbol(), existingAssignment.ContainerID())
 	}
@@ -74,7 +82,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByShip(
 	var model ShipModel
 
 	err := r.db.WithContext(ctx).
-		Where("ship_symbol = ? AND player_id = ? AND assignment_status = ?", shipSymbol, playerID, "active").
+		Where("ship_symbol = ? AND player_id = ? AND assignment_status = ?", shipSymbol, playerID, assignmentStatusActive).
 		First(&model).Error
 
 	if err == gorm.ErrRecordNotFound {
@@ -150,9 +158,9 @@ func (r *ShipAssignmentRepositoryGORM) Release(
 
 	result := r.db.WithContext(ctx).
 		Model(&ShipModel{}).
-		Where("ship_symbol = ? AND player_id = ? AND assignment_status = ?", shipSymbol, playerID, "active").
+		Where("ship_symbol = ? AND player_id = ? AND assignment_status = ?", shipSymbol, playerID, assignmentStatusActive).
 		Updates(map[string]interface{}{
-			"assignment_status": "idle",
+			"assignment_status": assignmentStatusIdle,
 			"container_id":      nil,
 			"released_at":       now,
 			"release_reason":    reason,
@@ -178,7 +186,7 @@ func (r *ShipAssignmentRepositoryGORM) Transfer(
 
 	result := r.db.WithContext(ctx).
 		Model(&ShipModel{}).
-		Where("ship_symbol = ? AND container_id = ? AND assignment_status = ?", shipSymbol, fromContainerID, "active").
+		Where("ship_symbol = ? AND container_id = ? AND assignment_status = ?", shipSymbol, fromContainerID, assignmentStatusActive).
 		Updates(map[string]interface{}{
 			"container_id": toContainerID,
 			"assigned_at":  now,
@@ -206,9 +214,9 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 
 	result := r.db.WithContext(ctx).
 		Model(&ShipModel{}).
-		Where("container_id = ? AND player_id = ? AND assignment_status = ?", containerID, playerID, "active").
+		Where("container_id = ? AND player_id = ? AND assignment_status = ?", containerID, playerID, assignmentStatusActive).
 		Updates(map[string]interface{}{
-			"assignment_status": "idle",
+			"assignment_status": assignmentStatusIdle,
 			"container_id":      nil,
 			"released_at":       now,
 			"release_reason":    reason,
@@ -239,10 +247,10 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 
 	result := r.db.WithContext(ctx).
 		Model(&ShipModel{}).
-		Where("player_id = ? AND assignment_status = ?", playerID, "active").
+		Where("player_id = ? AND assignment_status = ?", playerID, assignmentStatusActive).
 		Where("assignment_owner IS NULL OR assignment_owner != ?", string(navigation.AssignmentOwnerCaptain)).
 		Updates(map[string]interface{}{
-			"assignment_status": "idle",
+			"assignment_status": assignmentStatusIdle,
 			"container_id":      nil,
 			"released_at":       now,
 			"release_reason":    reason,
@@ -327,7 +335,7 @@ func (r *ShipAssignmentRepositoryGORM) CountByContainerPrefix(
 		Model(&ShipModel{}).
 		Where("container_id LIKE ?", prefix+"%").
 		Where("player_id = ?", playerID).
-		Where("assignment_status = ?", "active").
+		Where("assignment_status = ?", assignmentStatusActive).
 		Count(&count)
 
 	if result.Error != nil {

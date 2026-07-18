@@ -66,7 +66,10 @@ func TestGateAndMergeSkipsMergeWhenNotRequested(t *testing.T) {
 // uncommitted source changes. runGate and squashMerge must not be reached.
 func TestGateAndMergeRefusesDirtyWorktree(t *testing.T) {
 	r := gateAndMergeWith(
-		func(string, time.Duration) (bool, string) { t.Fatal("must not gate a dirty worktree"); return false, "" },
+		func(string, time.Duration) (bool, string) {
+			t.Fatal("must not gate a dirty worktree")
+			return false, ""
+		},
 		func(string) (bool, string, error) { return true, " M fix.go\n?? new.go", nil },
 		func(string) (bool, error) { t.Fatal("must not reach staleness check"); return false, nil },
 		func(string, string, string) error { t.Fatal("must not merge a dirty worktree"); return nil },
@@ -82,7 +85,10 @@ func TestGateAndMergeRefusesDirtyWorktree(t *testing.T) {
 // stays false so the CLI exits non-zero rather than proceeding blind.
 func TestGateAndMergeFailsClosedWhenDirtyCheckErrors(t *testing.T) {
 	r := gateAndMergeWith(
-		func(string, time.Duration) (bool, string) { t.Fatal("must not gate when dirtiness is unknown"); return false, "" },
+		func(string, time.Duration) (bool, string) {
+			t.Fatal("must not gate when dirtiness is unknown")
+			return false, ""
+		},
 		func(string) (bool, string, error) { return false, "", fmt.Errorf("git blew up") },
 		func(string) (bool, error) { return false, nil },
 		func(string, string, string) error { t.Fatal("must not merge"); return nil },
@@ -100,7 +106,9 @@ func TestGateAndMergeSurfacesEmptyMerge(t *testing.T) {
 		func(string, time.Duration) (bool, string) { return true, "ok" },
 		cleanWorktree,
 		func(string) (bool, error) { return false, nil },
-		func(string, string, string) error { return fmt.Errorf("%w: branch b has no commits ahead of main", errEmptyMerge) },
+		func(string, string, string) error {
+			return fmt.Errorf("%w: branch b has no commits ahead of main", errEmptyMerge)
+		},
 		"repo", "wt", "b", "msg", time.Minute, true)
 	require.True(t, r.GatePassed)
 	require.True(t, r.EmptyMerge)

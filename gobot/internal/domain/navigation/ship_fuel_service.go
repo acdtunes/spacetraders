@@ -200,7 +200,8 @@ func (s *ShipFuelService) CalculateFuelNeededToFull(currentFuel int, fuelCapacit
 // Parameters:
 //   - fuel: Ship's current fuel state
 //   - fuelCapacity: Ship's maximum fuel capacity
-//   - segment: Route segment to evaluate
+//   - segmentFlightMode: Flight mode of the route segment to evaluate
+//   - fromWaypointHasFuel: Whether the departure waypoint sells fuel
 //   - safetyThreshold: Fuel percentage threshold (e.g., 0.9 = 90%)
 //
 // Returns:

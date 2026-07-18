@@ -24,7 +24,7 @@ func (f fakeContainerInfo) PlayerID() int                     { return f.playerI
 func (f fakeContainerInfo) Type() container.ContainerType     { return f.containerType }
 func (f fakeContainerInfo) Status() container.ContainerStatus { return f.status }
 func (f fakeContainerInfo) RestartCount() int                 { return f.restartCount }
-func (f fakeContainerInfo) CurrentIteration() int              { return f.currentIteration }
+func (f fakeContainerInfo) CurrentIteration() int             { return f.currentIteration }
 func (f fakeContainerInfo) RuntimeDuration() time.Duration    { return f.runtimeDuration }
 
 // TestContainerMetrics_RegisterAndExport proves container_exit_total (sp-dp92 P9)

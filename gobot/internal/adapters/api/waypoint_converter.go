@@ -107,12 +107,10 @@ func (c *WaypointConverter) extractHasFuel(wpMap map[string]interface{}) bool {
 		return hasFuelVal
 	}
 
-	// Strategy 2: Check traits for MARKETPLACE or FUEL_STATION
+	// Strategy 2: Check traits (already []string) for a fuel-granting trait
 	if traits, ok := wpMap["traits"].([]string); ok {
-		for _, trait := range traits {
-			if trait == "MARKETPLACE" || trait == "FUEL_STATION" {
-				return true
-			}
+		if shared.TraitsGrantFuel(traits) {
+			return true
 		}
 	}
 
@@ -120,7 +118,7 @@ func (c *WaypointConverter) extractHasFuel(wpMap map[string]interface{}) bool {
 	if traitsInterface, ok := wpMap["traits"].([]interface{}); ok {
 		for _, trait := range traitsInterface {
 			if traitStr, ok := trait.(string); ok {
-				if traitStr == "MARKETPLACE" || traitStr == "FUEL_STATION" {
+				if shared.TraitGrantsFuel(traitStr) {
 					return true
 				}
 			}

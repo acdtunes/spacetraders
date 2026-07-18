@@ -289,14 +289,14 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyProbe(ctx context.Context, cmd 
 
 	// Capital gate: spend ≤ reserve_margin × treasury (leaves the rest as the working buffer, and
 	// paces the ramp). Emit the full arithmetic so the captain retunes from evidence.
-	cap := int64(float64(obs.Treasury) * cfg.ReserveMargin)
-	affordable := price <= cap
-	logger.Log("INFO", fmt.Sprintf("Bootstrap probe buy decision: price=%d treasury=%d cap=(reserve_margin %.2f × treasury)=%d affordable=(price≤cap)=%v yard=%s — %s", price, obs.Treasury, cfg.ReserveMargin, cap, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
+	capBudget := int64(float64(obs.Treasury) * cfg.ReserveMargin)
+	affordable := price <= capBudget
+	logger.Log("INFO", fmt.Sprintf("Bootstrap probe buy decision: price=%d treasury=%d cap=(reserve_margin %.2f × treasury)=%d affordable=(price≤cap)=%v yard=%s — %s", price, obs.Treasury, cfg.ReserveMargin, capBudget, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
 		"action":         "bootstrap_buy_decision",
 		"container_id":   cmd.ContainerID,
 		"price":          price,
 		"treasury":       obs.Treasury,
-		"cap":            cap,
+		"cap":            capBudget,
 		"reserve_margin": cfg.ReserveMargin,
 		"affordable":     affordable,
 		"yard":           yard,

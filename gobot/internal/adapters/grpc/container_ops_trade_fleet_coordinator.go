@@ -51,14 +51,7 @@ func (s *DaemonServer) TradeFleetCoordinator(ctx context.Context, playerID int, 
 		return "", fmt.Errorf("failed to persist trade fleet coordinator container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Trade fleet coordinator container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Trade fleet coordinator container")
 
 	return containerID, nil
 }

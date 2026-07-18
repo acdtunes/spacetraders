@@ -35,9 +35,9 @@ func TestComputeReport_NoEvents_ReturnsZeroValueReportWithoutDivideByZero(t *tes
 
 func TestComputeReport_PrunesEventsOutsideWindow(t *testing.T) {
 	events := []Event{
-		evt("HULL-1", PurposePoll, 10*time.Second, false),  // inside a 1m window
-		evt("HULL-1", PurposePoll, 2*time.Minute, false),   // outside a 1m window
-		evt("HULL-1", PurposePoll, 90*time.Second, false),  // outside a 1m window
+		evt("HULL-1", PurposePoll, 10*time.Second, false), // inside a 1m window
+		evt("HULL-1", PurposePoll, 2*time.Minute, false),  // outside a 1m window
+		evt("HULL-1", PurposePoll, 90*time.Second, false), // outside a 1m window
 	}
 
 	report := ComputeReport(events, fixedNow, time.Minute, 2.0)
@@ -163,8 +163,8 @@ func TestComputeReport_HullsToCeiling_NoActiveHulls_IsZeroNotInf(t *testing.T) {
 
 func TestComputeDualReport_ReturnsCurrentAndRolling5mWindows(t *testing.T) {
 	events := []Event{
-		evt("HULL-1", PurposePoll, 5*time.Second, false),   // inside both windows
-		evt("HULL-1", PurposePoll, 4*time.Minute, false),   // outside "current", inside 5m
+		evt("HULL-1", PurposePoll, 5*time.Second, false), // inside both windows
+		evt("HULL-1", PurposePoll, 4*time.Minute, false), // outside "current", inside 5m
 	}
 
 	dual := ComputeDualReport(events, fixedNow, 2.0)

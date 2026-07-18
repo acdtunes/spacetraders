@@ -121,8 +121,8 @@ func TestBriefingRendersAllLinesInStrictOrderWhenPopulated(t *testing.T) {
 	requireOrder(t, body, append(append([]string{}, orderedLabels...), "ENGINEERING"))
 	// A few load-bearing values must actually render (not be swallowed).
 	require.Contains(t, body, "EarnerDark")
-	require.Contains(t, body, "FABRICS")            // guard-kill inline chain name
-	require.Contains(t, body, "3/20")               // coverage stale/total
+	require.Contains(t, body, "FABRICS") // guard-kill inline chain name
+	require.Contains(t, body, "3/20")    // coverage stale/total
 }
 
 func TestBriefingNamesKilledChainsInlineOnlyAtOrBelowThreshold(t *testing.T) {

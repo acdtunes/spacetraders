@@ -90,14 +90,6 @@ const (
 	workerFerryOperation = "worker_ferry"
 )
 
-// factoryCommandTypes are the CommandTypes whose RUNNING containers signal active factory
-// work in a system (sp-f5pr). Both persist system_symbol in their container config; the
-// container-query adapter parses it. A system with any such container is a factory system.
-var factoryCommandTypes = map[string]bool{
-	"goods_factory_coordinator": true,
-	"manufacturing_coordinator": true,
-}
-
 // ActiveFactoryContainer is the container-query DTO for one RUNNING factory container
 // (sp-f5pr): the system it runs in and when it started. StartedAt is the restart-safe
 // vacancy clock (the persisted container row survives a daemon restart). Kept as a small

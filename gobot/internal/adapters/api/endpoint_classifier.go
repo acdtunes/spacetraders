@@ -66,15 +66,17 @@ type endpointClassifier struct{}
 
 var apiEndpointClassifier = endpointClassifier{}
 
-func (c endpointClassifier) classify(path string) string {
-	// First, strip query parameters
-	cleanPath := path
-	for i, ch := range path {
-		if ch == '?' {
-			cleanPath = path[:i]
-			break
-		}
+// stripQueryString returns path without its query string (everything from the
+// first '?' onward), or path unchanged when it has none.
+func stripQueryString(path string) string {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		return path[:idx]
 	}
+	return path
+}
+
+func (c endpointClassifier) classify(path string) string {
+	cleanPath := stripQueryString(path)
 
 	// Build a normalized path pattern (replace dynamic segments)
 	pattern := c.normalizePath(strings.Split(cleanPath, "/"))
@@ -141,9 +143,7 @@ func looksLikeShipSymbol(s string) bool {
 // waypoint/system/contract path). Used by the budget tracker (sp-51ti) to
 // attribute request-budget consumption per hull.
 func extractShipSymbol(path string) string {
-	if idx := strings.IndexByte(path, '?'); idx >= 0 {
-		path = path[:idx]
-	}
+	path = stripQueryString(path)
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
 		if part == "ships" && i+1 < len(parts) && looksLikeShipSymbol(parts[i+1]) {

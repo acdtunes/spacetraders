@@ -85,14 +85,7 @@ func (s *DaemonServer) CapacityReconcilerCoordinator(ctx context.Context, player
 		return "", fmt.Errorf("failed to persist capacity reconciler container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Capacity reconciler container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Capacity reconciler container")
 
 	return containerID, nil
 }

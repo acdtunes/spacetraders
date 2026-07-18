@@ -55,14 +55,7 @@ func (s *DaemonServer) WorkerRebalancerCoordinator(ctx context.Context, playerID
 		return "", fmt.Errorf("failed to persist worker rebalancer coordinator container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Worker rebalancer coordinator container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Worker rebalancer coordinator container")
 
 	return containerID, nil
 }
@@ -220,14 +213,7 @@ func (s *DaemonServer) StartWorkerFerry(ctx context.Context, containerID string)
 		nil,
 	)
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return nil
 }

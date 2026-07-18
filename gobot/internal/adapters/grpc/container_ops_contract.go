@@ -15,7 +15,6 @@ import (
 // is served by the contract fleet coordinator (see ContractFleetCoordinator /
 // the `contract start` CLI verb).
 func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, playerID int) (string, error) {
-	// Create container ID
 	containerID := utils.GenerateContainerID("batch_contract_workflow", shipSymbol)
 
 	// Delegate to ContractWorkflow (single iteration)
@@ -130,16 +129,7 @@ func (s *DaemonServer) StartContractWorkflow(
 		nil,
 	)
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return nil
 }
@@ -235,7 +225,6 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		return "", fmt.Errorf("failed to create command: %w", err)
 	}
 
-	// Create container for this operation
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeContractFleetCoordinator,
@@ -246,21 +235,11 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		nil, // Use default RealClock for production
 	)
 
-	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "contract_fleet_coordinator"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return containerID, nil
 }

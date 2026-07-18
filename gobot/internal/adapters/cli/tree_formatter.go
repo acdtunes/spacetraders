@@ -7,6 +7,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 )
 
+// ANSI escape codes used when the TreeFormatter renders with colors enabled.
+const (
+	ansiColorGreen  = "\033[32m"
+	ansiColorYellow = "\033[33m"
+	ansiColorReset  = "\033[0m"
+)
+
 // TreeFormatter provides rich visualization of supply chain dependency trees
 type TreeFormatter struct {
 	useColors bool
@@ -122,9 +129,9 @@ func (f *TreeFormatter) getMethodColor(method goods.AcquisitionMethod) string {
 
 	switch method {
 	case goods.AcquisitionBuy:
-		return "\033[32m" // Green
+		return ansiColorGreen
 	case goods.AcquisitionFabricate:
-		return "\033[33m" // Yellow
+		return ansiColorYellow
 	default:
 		return ""
 	}
@@ -156,7 +163,7 @@ func (f *TreeFormatter) colorReset() string {
 	if !f.useColors {
 		return ""
 	}
-	return "\033[0m"
+	return ansiColorReset
 }
 
 // FormatTreeSummary creates a compact summary of the tree
@@ -186,72 +193,4 @@ func (f *TreeFormatter) FormatTreeSummary(root *goods.SupplyChainNode) string {
 		"Tree: %d nodes (%d BUY, %d FABRICATE), depth=%d, progress=%d%%",
 		totalNodes, buyCount, fabricateCount, depth, progress,
 	)
-}
-
-// FormatCompactTree renders a compact single-line tree representation
-func (f *TreeFormatter) FormatCompactTree(root *goods.SupplyChainNode) string {
-	if root == nil {
-		return "(empty)"
-	}
-
-	nodes := root.FlattenToList()
-	parts := make([]string, 0, len(nodes))
-
-	for _, node := range nodes {
-		status := " "
-		if node.Completed {
-			status = "✓"
-		}
-
-		method := "B"
-		if node.AcquisitionMethod == goods.AcquisitionFabricate {
-			method = "F"
-		}
-
-		parts = append(parts, fmt.Sprintf("[%s%s:%s]", status, method, node.Good))
-	}
-
-	return strings.Join(parts, " → ")
-}
-
-// FormatNodeDetails provides detailed information about a specific node
-func (f *TreeFormatter) FormatNodeDetails(node *goods.SupplyChainNode) string {
-	if node == nil {
-		return "No node"
-	}
-
-	var builder strings.Builder
-
-	builder.WriteString(fmt.Sprintf("Good:              %s\n", node.Good))
-	builder.WriteString(fmt.Sprintf("Acquisition:       %s\n", node.AcquisitionMethod))
-	builder.WriteString(fmt.Sprintf("Completed:         %v\n", node.Completed))
-
-	if node.QuantityAcquired > 0 {
-		builder.WriteString(fmt.Sprintf("Quantity Acquired: %d units\n", node.QuantityAcquired))
-	}
-
-	if node.WaypointSymbol != "" {
-		builder.WriteString(fmt.Sprintf("Waypoint:          %s\n", node.WaypointSymbol))
-	}
-
-	if node.MarketActivity != "" {
-		builder.WriteString(fmt.Sprintf("Market Activity:   %s\n", node.MarketActivity))
-	}
-
-	if node.SupplyLevel != "" {
-		builder.WriteString(fmt.Sprintf("Supply Level:      %s\n", node.SupplyLevel))
-	}
-
-	if len(node.Children) > 0 {
-		builder.WriteString(fmt.Sprintf("Dependencies:      %d inputs required\n", len(node.Children)))
-		for i, child := range node.Children {
-			status := "pending"
-			if child.Completed {
-				status = "completed"
-			}
-			builder.WriteString(fmt.Sprintf("  %d. %s (%s)\n", i+1, child.Good, status))
-		}
-	}
-
-	return builder.String()
 }

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -253,13 +252,4 @@ Example:
 func maskPassword(url string) string {
 	// Simple masking - could be improved
 	return url // TODO: Implement proper password masking
-}
-
-// prettyPrint formats JSON for display
-func prettyPrint(v interface{}) string {
-	bytes, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("%v", v)
-	}
-	return string(bytes)
 }

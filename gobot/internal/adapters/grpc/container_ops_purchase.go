@@ -15,7 +15,6 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		shipyard = *shipyardWaypoint
 	}
 
-	// Create container ID
 	containerID := utils.GenerateContainerID("purchase_ship", purchasingShipSymbol)
 
 	config := map[string]interface{}{
@@ -30,7 +29,6 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		return "", "", 0, 0, "", fmt.Errorf("failed to create command: %w", err)
 	}
 
-	// Create container for this operation
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypePurchase,
@@ -46,15 +44,12 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		return "", "", 0, 0, "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	// Create and start container runner
 	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 
-	// Store container
 	s.containersMu.Lock()
 	s.containers[containerID] = runner
 	s.containersMu.Unlock()
 
-	// Start execution in background
 	runner.Start()
 
 	return containerID, "", 0, 0, "starting", nil
@@ -73,7 +68,6 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		iterCount = *iterations
 	}
 
-	// Create container ID
 	containerID := utils.GenerateContainerID("batch_purchase_ships", purchasingShipSymbol)
 
 	config := map[string]interface{}{
@@ -90,7 +84,6 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		return "", 0, 0, "", "", fmt.Errorf("failed to create command: %w", err)
 	}
 
-	// Create container for this operation
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypePurchase,
@@ -106,15 +99,12 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		return "", 0, 0, "", "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	// Create and start container runner
 	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 
-	// Store container
 	s.containersMu.Lock()
 	s.containers[containerID] = runner
 	s.containersMu.Unlock()
 
-	// Start execution in background
 	runner.Start()
 
 	return containerID, int32(quantity), int32(maxBudget), shipyard, "starting", nil

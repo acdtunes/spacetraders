@@ -163,11 +163,11 @@ func TestComputeWarehouseCaps_StickyOneTickSpikeDoesNotChurn(t *testing.T) {
 	in := WarehouseCapInput{
 		Capacity: 40,
 		Goods: []GoodDemand{
-			{Good: "DRUGS", Recurrence: 5, Payment: 2000, ResidualBuyLeg: 1, Size: 40},      // raw 10000, steady
-			{Good: "EQUIPMENT", Recurrence: 5, Payment: 4000, ResidualBuyLeg: 1, Size: 40},  // raw 20000 — a one-tick spike
+			{Good: "DRUGS", Recurrence: 5, Payment: 2000, ResidualBuyLeg: 1, Size: 40},     // raw 10000, steady
+			{Good: "EQUIPMENT", Recurrence: 5, Payment: 4000, ResidualBuyLeg: 1, Size: 40}, // raw 20000 — a one-tick spike
 		},
 		PriorSmoothed:  map[string]float64{"DRUGS": 10000, "EQUIPMENT": 1000}, // EQUIPMENT was quiet until now
-		CurrentTargets: map[string]int{"DRUGS": 40},                          // DRUGS is held
+		CurrentTargets: map[string]int{"DRUGS": 40},                           // DRUGS is held
 	}
 
 	res := ComputeWarehouseCaps(in, WarehouseCapParams{})
@@ -225,7 +225,7 @@ func TestComputeWarehouseCaps_ColdStartFallbackClippedToCapacity(t *testing.T) {
 // real capacity (a small hull), never overflowing C.
 func TestComputeWarehouseCaps_ColdStartFallbackDropsOverflowGoods(t *testing.T) {
 	in := WarehouseCapInput{
-		Capacity: 50, // only fits DRUGS(24)+MEDICINE(20) = 44; EQUIPMENT(20) overflows
+		Capacity: 50,  // only fits DRUGS(24)+MEDICINE(20) = 44; EQUIPMENT(20) overflows
 		Goods:    nil, // no history at all → cold start
 	}
 
@@ -303,7 +303,7 @@ func TestPlanWarehouseCaps_BuffersFarGoodsAtSingleContractSize(t *testing.T) {
 	home := "X1-VB74"
 	candidates := []persistence.DemandCandidate{
 		candidate("DRUGS", "X1-J58", 3, 24, 700),     // cross-system → far
-		candidate("ANTIMATTER", "X1-I56", 2, 8, 900),  // cross-system → far
+		candidate("ANTIMATTER", "X1-I56", 2, 8, 900), // cross-system → far
 	}
 
 	res := PlanWarehouseCaps(candidates, 80, home, "", nil, nil, nil, WarehouseCapParams{})
@@ -319,8 +319,8 @@ func TestPlanWarehouseCaps_BuffersFarGoodsAtSingleContractSize(t *testing.T) {
 func TestPlanWarehouseCaps_CrossSystemPreferredAtEqualDemand(t *testing.T) {
 	home := "X1-VB74"
 	candidates := []persistence.DemandCandidate{
-		candidate("NEAR", home, 4, 40, 1000),      // in-system source
-		candidate("FAR", "X1-Z99", 4, 40, 1000),   // cross-system source, identical demand/size
+		candidate("NEAR", home, 4, 40, 1000),    // in-system source
+		candidate("FAR", "X1-Z99", 4, 40, 1000), // cross-system source, identical demand/size
 	}
 
 	// Capacity fits exactly one size-40 good.
@@ -381,9 +381,9 @@ func TestPlanWarehouseCaps_FarInSystemGoodOutranksCloseInSystemGood(t *testing.T
 	})
 
 	closeGood := candidate("CLOSE", home, 4, 40, 1000) // in-system (ForeignSystem == home)
-	closeGood.ForeignMarket = wh                        // sourced AT the warehouse — nothing to pre-stage
-	farGood := candidate("FAR", home, 4, 40, 1000)      // identical demand/size
-	farGood.ForeignMarket = "X1-VB74-J58"               // sourced far away — the haul the buffer compresses
+	closeGood.ForeignMarket = wh                       // sourced AT the warehouse — nothing to pre-stage
+	farGood := candidate("FAR", home, 4, 40, 1000)     // identical demand/size
+	farGood.ForeignMarket = "X1-VB74-J58"              // sourced far away — the haul the buffer compresses
 
 	// Capacity fits exactly one size-40 good, forcing the contest.
 	res := PlanWarehouseCaps([]persistence.DemandCandidate{closeGood, farGood}, 40, home, wh, coords, nil, nil, WarehouseCapParams{})

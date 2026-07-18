@@ -155,23 +155,22 @@ func (r *Route) Segments() []*RouteSegment {
 	return segments
 }
 
+// routeStatusByLifecycle projects each shared lifecycle state onto the
+// route-facing status (PLANNED/EXECUTING/COMPLETED/FAILED/ABORTED). A lifecycle
+// state absent here falls back to RouteStatusPlanned (the former switch's safe
+// default).
+var routeStatusByLifecycle = map[shared.LifecycleStatus]RouteStatus{
+	shared.LifecycleStatusPending:   RouteStatusPlanned,
+	shared.LifecycleStatusRunning:   RouteStatusExecuting,
+	shared.LifecycleStatusCompleted: RouteStatusCompleted,
+	shared.LifecycleStatusFailed:    RouteStatusFailed,
+	shared.LifecycleStatusStopped:   RouteStatusAborted,
+}
+
 // Status returns the current route status
 // Maps LifecycleStatus to RouteStatus for domain-specific semantics
 func (r *Route) Status() RouteStatus {
-	switch r.lifecycle.Status() {
-	case shared.LifecycleStatusPending:
-		return RouteStatusPlanned
-	case shared.LifecycleStatusRunning:
-		return RouteStatusExecuting
-	case shared.LifecycleStatusCompleted:
-		return RouteStatusCompleted
-	case shared.LifecycleStatusFailed:
-		return RouteStatusFailed
-	case shared.LifecycleStatusStopped:
-		return RouteStatusAborted
-	default:
-		return RouteStatusPlanned // Safe default
-	}
+	return shared.ProjectStatus(r.lifecycle, routeStatusByLifecycle, RouteStatusPlanned)
 }
 
 // Lifecycle timestamp accessors

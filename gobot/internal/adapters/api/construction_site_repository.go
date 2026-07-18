@@ -46,10 +46,7 @@ func (r *ConstructionSiteAPIRepository) FindByWaypoint(ctx context.Context, wayp
 	}
 
 	// Convert to domain entity
-	materials := make([]manufacturing.ConstructionMaterial, len(data.Materials))
-	for i, mat := range data.Materials {
-		materials[i] = manufacturing.NewConstructionMaterial(mat.TradeSymbol, mat.Required, mat.Fulfilled)
-	}
+	materials := toConstructionMaterials(data.Materials)
 
 	return manufacturing.ReconstructConstructionSite(
 		data.Symbol,
@@ -76,10 +73,7 @@ func (r *ConstructionSiteAPIRepository) SupplyMaterial(ctx context.Context, ship
 	// Convert construction data to domain entity
 	var construction *manufacturing.ConstructionSite
 	if resp.Construction != nil {
-		materials := make([]manufacturing.ConstructionMaterial, len(resp.Construction.Materials))
-		for i, mat := range resp.Construction.Materials {
-			materials[i] = manufacturing.NewConstructionMaterial(mat.TradeSymbol, mat.Required, mat.Fulfilled)
-		}
+		materials := toConstructionMaterials(resp.Construction.Materials)
 		construction = manufacturing.ReconstructConstructionSite(
 			resp.Construction.Symbol,
 			"",
@@ -102,4 +96,14 @@ func (r *ConstructionSiteAPIRepository) SupplyMaterial(ctx context.Context, ship
 		CargoCapacity:  cargoCapacity,
 		CargoUnits:     cargoUnits,
 	}, nil
+}
+
+// toConstructionMaterials converts the API port's construction-material rows into
+// domain ConstructionMaterial values.
+func toConstructionMaterials(materials []domainPorts.ConstructionMaterialData) []manufacturing.ConstructionMaterial {
+	result := make([]manufacturing.ConstructionMaterial, len(materials))
+	for i, mat := range materials {
+		result[i] = manufacturing.NewConstructionMaterial(mat.TradeSymbol, mat.Required, mat.Fulfilled)
+	}
+	return result
 }

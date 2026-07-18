@@ -97,7 +97,7 @@ func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t 
 	ctx := auth.WithPlayerToken(context.Background(), "TOUR-DYN-TOKEN")
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-DYN", PlayerID: 1, ContainerID: "ctr-dyn", Iterations: -1,
-		MaxSpend: 0, // dynamic: 25% of live treasury, re-resolved each tour
+		MaxSpend:          0, // dynamic: 25% of live treasury, re-resolved each tour
 		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {

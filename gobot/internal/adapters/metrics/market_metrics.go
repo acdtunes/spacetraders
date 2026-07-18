@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -42,10 +41,9 @@ type MarketMetricsCollector struct {
 	tradeOpportunitiesTotal *prometheus.GaugeVec
 	marketBestPrice         *prometheus.GaugeVec
 
-	// Lifecycle
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-	wg         sync.WaitGroup
+	// Lifecycle scaffolding (ctx/cancelFunc/wg + Start context + Stop) is shared
+	// via the embedded pollingCollector.
+	pollingCollector
 
 	// Configuration
 	pollInterval     time.Duration
@@ -259,39 +257,10 @@ func (c *MarketMetricsCollector) Register() error {
 
 // Start begins the polling goroutine for aggregate metrics
 func (c *MarketMetricsCollector) Start(ctx context.Context) {
-	c.ctx, c.cancelFunc = context.WithCancel(ctx)
+	c.startContext(ctx)
 
-	// Start polling (every 60 seconds)
-	c.wg.Add(1)
-	go c.pollMetrics(c.pollInterval)
-}
-
-// Stop gracefully stops the market metrics collector
-func (c *MarketMetricsCollector) Stop() {
-	if c.cancelFunc != nil {
-		c.cancelFunc()
-	}
-	c.wg.Wait()
-}
-
-// pollMetrics polls market data periodically
-func (c *MarketMetricsCollector) pollMetrics(interval time.Duration) {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Do initial poll immediately
-	c.updateAllMetrics()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			c.updateAllMetrics()
-		}
-	}
+	// Start polling (every 60 seconds), with an immediate initial poll.
+	c.startPolling(c.pollInterval, true, c.updateAllMetrics)
 }
 
 // updateAllMetrics updates all polling-based metrics

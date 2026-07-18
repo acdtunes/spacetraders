@@ -233,9 +233,9 @@ func (h *RunSitingCoordinatorHandler) maintain(cfg sitingRunConfig, scored []Sco
 
 // breachesInputCap reports whether adding a chain drawing these feed markets would push any
 // one market's chain count past the per-input-market concentration cap.
-func breachesInputCap(inputMarkets []string, perInputMarket map[string]int, cap int) bool {
+func breachesInputCap(inputMarkets []string, perInputMarket map[string]int, maxChains int) bool {
 	for _, m := range dedupeStrings(inputMarkets) {
-		if perInputMarket[m] >= cap {
+		if perInputMarket[m] >= maxChains {
 			return true
 		}
 	}

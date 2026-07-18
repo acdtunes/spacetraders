@@ -85,14 +85,7 @@ func (s *DaemonServer) AutoOutfitCoordinator(ctx context.Context, playerID int, 
 		return "", fmt.Errorf("failed to persist auto-outfit container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Auto-outfit container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Auto-outfit container")
 
 	return containerID, nil
 }

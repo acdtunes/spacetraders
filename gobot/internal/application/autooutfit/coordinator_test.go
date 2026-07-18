@@ -162,16 +162,16 @@ func newHarness(t *testing.T) *harness {
 	handler.SetNewHullCostReader(h.newHull)
 	h.handler = handler
 	h.cmd = &RunAutoOutfitCoordinatorCommand{
-		PlayerID:            shared.MustNewPlayerID(1),
-		ContainerID:         "auto-outfit-1",
-		MinTelemetrySamples: 8,
-		PriceCeiling:        500_000,
-		MaxInstallsPerTick:  1,
-		PaybackHorizonHours: 0,
-		TreasuryReserve:     50_000,
+		PlayerID:               shared.MustNewPlayerID(1),
+		ContainerID:            "auto-outfit-1",
+		MinTelemetrySamples:    8,
+		PriceCeiling:           500_000,
+		MaxInstallsPerTick:     1,
+		PaybackHorizonHours:    0,
+		TreasuryReserve:        50_000,
 		MaxTreasuryFractionPct: 25,
-		InstallFeeEstimate:  1000,
-		WantedModules:       []string{"MODULE_CARGO_HOLD_II", "MODULE_CARGO_HOLD_III", "MODULE_FUEL_TANK"},
+		InstallFeeEstimate:     1000,
+		WantedModules:          []string{"MODULE_CARGO_HOLD_II", "MODULE_CARGO_HOLD_III", "MODULE_FUEL_TANK"},
 	}
 	return h
 }

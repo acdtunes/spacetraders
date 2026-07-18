@@ -234,7 +234,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 // hauler's Waypoint is on it (idle at, or heading to) — so a hauler bought last tick and still en
 // route keeps its hub from being re-selected. The reconciler's count guard caps total buys regardless,
 // so even a mis-placement (from a churned ranking) can never overshoot hauler_target.
-func firstUnservedHub(hubs []Hub, haulers []HaulerSnapshot, cap int) string {
+func firstUnservedHub(hubs []Hub, haulers []HaulerSnapshot, hubCap int) string {
 	served := make(map[string]struct{}, len(haulers))
 	for _, hl := range haulers {
 		if hl.Waypoint != "" {
@@ -242,8 +242,8 @@ func firstUnservedHub(hubs []Hub, haulers []HaulerSnapshot, cap int) string {
 		}
 	}
 	limit := len(hubs)
-	if limit > cap {
-		limit = cap
+	if limit > hubCap {
+		limit = hubCap
 	}
 	for i := 0; i < limit; i++ {
 		if _, ok := served[hubs[i].Waypoint]; !ok {

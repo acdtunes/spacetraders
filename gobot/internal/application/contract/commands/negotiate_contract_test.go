@@ -20,8 +20,8 @@ type negotiateStubShipRepo struct {
 	cachedShip     *navigation.Ship // stale daemon-cache state (FindBySymbol before sync)
 	serverShip     *navigation.Ship // server-true state (FindBySymbol after pool sync)
 	dockCalled     int
-	syncAllCalled  int  // fleet-wide reconcile (SyncAllFromAPI)
-	poolSynced     bool // once the pool syncs, the DB is the source of truth
+	syncAllCalled  int    // fleet-wide reconcile (SyncAllFromAPI)
+	poolSynced     bool   // once the pool syncs, the DB is the source of truth
 	onServerDocked func() // invoked when Dock succeeds, so the API stub can flip state
 }
 

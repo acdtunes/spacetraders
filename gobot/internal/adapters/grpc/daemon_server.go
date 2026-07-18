@@ -1388,16 +1388,7 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 		containerEntity.IncrementRestartCount()
 	}
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerModel.ID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Recovered container %s failed: %v\n", containerModel.ID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerModel.ID, "Recovered container")
 
 	shipInfo := ""
 	if hasShip {

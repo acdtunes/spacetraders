@@ -56,7 +56,7 @@ func newHomeLocalityTestShip(t *testing.T, symbol, waypointSymbol string) *navig
 // FilterToHomeSystem call (return the pool unscoped) and the foreign hull re-enters — the exact
 // live regression.
 func TestScopeCandidatesToContractHome_ExcludesForeignSystemHull(t *testing.T) {
-	homeHull := newHomeLocalityTestShip(t, "TORWIND-H", "X1-VB74-A1")     // idle in the home system
+	homeHull := newHomeLocalityTestShip(t, "TORWIND-H", "X1-VB74-A1")    // idle in the home system
 	foreignHull := newHomeLocalityTestShip(t, "TORWIND-E", "X1-DF86-B7") // idle in the foreign arb system
 	repo := &multiOrphanFakeShipRepo{ships: []*navigation.Ship{homeHull, foreignHull}}
 	handler := &RunFleetCoordinatorHandler{shipRepo: repo}

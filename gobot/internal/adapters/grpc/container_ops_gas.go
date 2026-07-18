@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -65,7 +64,6 @@ func (s *DaemonServer) GasExtractionOperation(
 		}
 	}
 
-	// Create container ID
 	var containerID string
 	if dryRun {
 		containerID = utils.GenerateContainerID("gas_dry_run", siphonShips[0])
@@ -107,7 +105,6 @@ func (s *DaemonServer) GasExtractionOperation(
 		iterations = 1
 	}
 
-	// Create container for this operation
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeGasCoordinator,
@@ -118,21 +115,11 @@ func (s *DaemonServer) GasExtractionOperation(
 		nil, // Use default RealClock for production
 	)
 
-	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "gas_coordinator"); err != nil {
 		return nil, fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return &GasExtractionOperationResult{
 		ContainerID: containerID,
@@ -168,7 +155,6 @@ func (s *DaemonServer) PersistGasSiphonWorkerContainer(
 		nil, // Use default RealClock for production
 	)
 
-	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "gas_siphon_worker"); err != nil {
 		return fmt.Errorf("failed to persist container: %w", err)
 	}
@@ -210,21 +196,9 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 		}
 	} else {
 		// Fallback: Load from database (for recovery)
-		allContainers, err := s.containerRepo.ListAll(ctx, nil)
+		containerModel, err := s.findContainerModelByID(ctx, containerID)
 		if err != nil {
-			return fmt.Errorf("failed to list containers: %w", err)
-		}
-
-		var containerModel *persistence.ContainerModel
-		for _, c := range allContainers {
-			if c.ID == containerID {
-				containerModel = c
-				break
-			}
-		}
-
-		if containerModel == nil {
-			return fmt.Errorf("container %s not found", containerID)
+			return err
 		}
 
 		// Parse config
@@ -259,16 +233,7 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 		nil,
 	)
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return nil
 }
@@ -302,7 +267,6 @@ func (s *DaemonServer) PersistStorageShipContainer(
 		nil, // Use default RealClock for production
 	)
 
-	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "storage_ship"); err != nil {
 		return fmt.Errorf("failed to persist container: %w", err)
 	}
@@ -344,21 +308,9 @@ func (s *DaemonServer) StartStorageShipContainer(
 		}
 	} else {
 		// Fallback: Load from database (for recovery)
-		allContainers, err := s.containerRepo.ListAll(ctx, nil)
+		containerModel, err := s.findContainerModelByID(ctx, containerID)
 		if err != nil {
-			return fmt.Errorf("failed to list containers: %w", err)
-		}
-
-		var containerModel *persistence.ContainerModel
-		for _, c := range allContainers {
-			if c.ID == containerID {
-				containerModel = c
-				break
-			}
-		}
-
-		if containerModel == nil {
-			return fmt.Errorf("container %s not found", containerID)
+			return err
 		}
 
 		// Parse config
@@ -393,16 +345,7 @@ func (s *DaemonServer) StartStorageShipContainer(
 		nil,
 	)
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return nil
 }

@@ -39,10 +39,8 @@ func NewTransaction(
 	relatedEntityID string,
 	operationType string,
 ) (*Transaction, error) {
-	// Generate new transaction ID
 	id := NewTransactionID()
 
-	// Validate player ID
 	if playerID.IsZero() {
 		return nil, &ErrInvalidTransaction{
 			Field:  "player_id",
@@ -50,7 +48,6 @@ func NewTransaction(
 		}
 	}
 
-	// Validate transaction type
 	if !transactionType.IsValid() {
 		return nil, &ErrInvalidTransaction{
 			Field:  "transaction_type",
@@ -58,7 +55,6 @@ func NewTransaction(
 		}
 	}
 
-	// Determine category from type
 	category, err := transactionType.ToCategory()
 	if err != nil {
 		return nil, &ErrInvalidTransaction{
@@ -67,7 +63,6 @@ func NewTransaction(
 		}
 	}
 
-	// Create transaction
 	t := &Transaction{
 		id:                id,
 		playerID:          playerID,
@@ -84,7 +79,6 @@ func NewTransaction(
 		operationType:     operationType,
 	}
 
-	// Validate invariants
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}
@@ -140,7 +134,6 @@ func ReconstructTransaction(
 
 // Validate checks that the transaction satisfies all invariants
 func (t *Transaction) Validate() error {
-	// Amount cannot be zero
 	if t.amount == 0 {
 		return &ErrInvalidTransaction{
 			Field:  "amount",
@@ -214,11 +207,11 @@ func (t *Transaction) Metadata() map[string]interface{} {
 	if t.metadata == nil {
 		return nil
 	}
-	copy := make(map[string]interface{}, len(t.metadata))
+	metadataCopy := make(map[string]interface{}, len(t.metadata))
 	for k, v := range t.metadata {
-		copy[k] = v
+		metadataCopy[k] = v
 	}
-	return copy
+	return metadataCopy
 }
 
 func (t *Transaction) RelatedEntityType() string {
@@ -243,11 +236,6 @@ func (t *Transaction) IsIncome() bool {
 // IsExpense returns true if the transaction represents an expense
 func (t *Transaction) IsExpense() bool {
 	return t.amount < 0
-}
-
-// GetCategory returns the transaction's category
-func (t *Transaction) GetCategory() Category {
-	return t.category
 }
 
 // String provides a human-readable representation

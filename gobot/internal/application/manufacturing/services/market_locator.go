@@ -240,6 +240,15 @@ func (l *MarketLocator) FindExportMarket(
 	return best, nil
 }
 
+// isModeratePlusSupply reports whether a supply level is MODERATE or better (MODERATE, HIGH or
+// ABUNDANT) — the supply-first eligibility floor shared by FindExportMarketBySupplyPriority,
+// EligibleSourceMedianAsk and InputSourceEligibility. SCARCE/LIMITED (and an absent/unknown level)
+// are excluded. It wraps the exact Order()-vs-LIMITED comparison those call sites used, so the
+// shared eligibility test is named in one place without altering the ranking supplyScore arithmetic.
+func isModeratePlusSupply(supply string) bool {
+	return manufacturing.SupplyLevel(supply).Order()-manufacturing.SupplyLevelLimited.Order() >= 1
+}
+
 // FindExportMarketBySupplyPriority finds the best market with acceptable supply level.
 // Priority: Supply level (ABUNDANT > HIGH > MODERATE), then Activity (WEAK > GROWING > STRONG).
 // SCARCE and LIMITED supply levels are skipped to avoid overpaying.
@@ -376,7 +385,7 @@ func (l *MarketLocator) EligibleSourceMedianAsk(
 			continue
 		}
 		// MODERATE+ only — the identical eligibility filter as FindExportMarketBySupplyPriority.
-		if manufacturing.SupplyLevel(supplyOrEmpty(tradeGood)).Order()-manufacturing.SupplyLevelLimited.Order() < 1 {
+		if !isModeratePlusSupply(supplyOrEmpty(tradeGood)) {
 			continue
 		}
 		price := tradeGood.SellPrice()
@@ -440,7 +449,7 @@ func (l *MarketLocator) InputSourceEligibility(
 		}
 		hasReadableSource = true
 		// MODERATE+ only — the identical eligibility filter as the sibling locators.
-		if manufacturing.SupplyLevel(supplyOrEmpty(tradeGood)).Order()-manufacturing.SupplyLevelLimited.Order() >= 1 {
+		if isModeratePlusSupply(supplyOrEmpty(tradeGood)) {
 			eligible = true
 			return eligible, hasReadableSource, nil // one healthy source is enough
 		}

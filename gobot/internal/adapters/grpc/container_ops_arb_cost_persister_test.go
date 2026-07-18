@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 )
 
 // sp-dkj7: the config-backed persister must MERGE the buy cost into the run's persisted

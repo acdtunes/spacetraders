@@ -30,7 +30,7 @@ func nudgesTo(gw *fakeGateway, alias string) int {
 func TestSurveyorNudgeDueAlertsAdmiralWhenSurveyorDead(t *testing.T) {
 	sup, _, gw := newBridgeSupervisor(t)
 	sup.cfg.MetaReviewDays = metaReviewDaysPtr(7)
-	sup.lastSession = time.Now()                               // heartbeat not due — isolate the surveyor path
+	sup.lastSession = time.Now()                                // heartbeat not due — isolate the surveyor path
 	sup.lastSurveyorNudge = time.Now().Add(-8 * 24 * time.Hour) // survey cadence elapsed
 	gw.alive = map[string]bool{"captain": true, surveyorAgent: false}
 

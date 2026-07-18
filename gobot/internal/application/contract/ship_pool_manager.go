@@ -567,13 +567,9 @@ func FilterUnrelatedCargo(
 ) ([]string, []string, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	bySymbol, err := fleetBySymbol(ctx, playerID, shipRepo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch ships: %w", err)
-	}
-	bySymbol := make(map[string]*navigation.Ship, len(allShips))
-	for _, ship := range allShips {
-		bySymbol[ship.ShipSymbol()] = ship
+		return nil, nil, err
 	}
 
 	var claimable []string
@@ -642,13 +638,9 @@ func FilterToHomeSystem(
 	}
 	logger := common.LoggerFromContext(ctx)
 
-	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	bySymbol, err := fleetBySymbol(ctx, playerID, shipRepo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ships: %w", err)
-	}
-	bySymbol := make(map[string]*navigation.Ship, len(allShips))
-	for _, ship := range allShips {
-		bySymbol[ship.ShipSymbol()] = ship
+		return nil, err
 	}
 
 	homeSymbols := make([]string, 0, len(symbols))
@@ -677,6 +669,23 @@ func FilterToHomeSystem(
 	}
 
 	return homeSymbols, nil
+}
+
+// fleetBySymbol fetches the player's current fleet snapshot indexed by ship
+// symbol. Shared by the candidate filters (FilterUnrelatedCargo /
+// FilterToHomeSystem) that resolve already-discovered candidate symbols against
+// live ship state: a symbol absent from the returned map is not in the current
+// fleet snapshot (sold/renamed since discovery) and those filters skip it.
+func fleetBySymbol(ctx context.Context, playerID shared.PlayerID, shipRepo navigation.ShipRepository) (map[string]*navigation.Ship, error) {
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+	bySymbol := make(map[string]*navigation.Ship, len(allShips))
+	for _, ship := range allShips {
+		bySymbol[ship.ShipSymbol()] = ship
+	}
+	return bySymbol, nil
 }
 
 // isCommandHull reports whether a ship is the command ship, by registration role

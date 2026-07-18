@@ -250,41 +250,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	// Synthetic events (state-derived): stale heartbeats, idle ships, credit crossings.
-	dcfg := DetectorConfig{
-		PlayerID:                  s.cfg.PlayerID,
-		ShipIdle:                  time.Duration(s.cfg.ShipIdleMinutes) * time.Minute,
-		StaleHeartbeat:            time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
-		CreditsThresholds:         s.cfg.CreditsThresholds,
-		LastCredits:               prevCredits,
-		CurrentCreditsValue:       s.lastCredits,
-		IncomeStall:               time.Duration(s.cfg.IncomeStallHours) * time.Hour,
-		FactoryIncomeStall:        defaultFactoryIncomeStall,
-		StreamDown:                time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
-		ExpectedStreams:           s.cfg.ExpectedStreams,
-		CrashLoopWindow:           defaultCrashLoopWindow,
-		CrashLoopThreshold:        defaultCrashLoopThreshold,
-		RegimeTripwires:           regimePolicy.Tripwires,
-		PinnedHullContainerless:   time.Duration(s.cfg.PinnedHullContainerlessMinutes) * time.Minute,
-		StandingCoordinatorFleets: defaultStandingCoordinatorFleets,
-		IdleEpisodes:              s.idleEpisodes,
-		ContainerlessEpisodes:     s.containerlessEpisodes,
-
-		// sp-k7q5 layers 2+3, wired to package defaults here until CaptainConfig grows
-		// tunable fields (mirrors FactoryIncomeStall / CrashLoop above).
-		StalenessHidingStaleAge:         defaultStalenessHidingStaleAge,
-		StalenessHidingMinPricedMarkets: defaultStalenessHidingMinPricedMarkets,
-		StalenessHidingThreshold:        defaultStalenessHidingThreshold,
-		StalenessHidingCooldown:         defaultStalenessHidingCooldown,
-		PostProposalMinPricedMarkets:    defaultPostProposalMinPricedMarkets,
-		PostProposalFreshness:           defaultPostProposalFreshness,
-		PostProposalAvgHop:              defaultPostProposalAvgHop,
-		PostProposalCooldown:            defaultPostProposalCooldown,
-
-		// sp-y0f6: Prometheus alert-firing poll. Sourced from s.promAlertsURL
-		// (defaulted to defaultPrometheusAlertsURL in NewSupervisor) so tests can
-		// blank it and stay isolated from any Prometheus running on the dev box.
-		PrometheusAlertsURL: s.promAlertsURL,
-	}
+	dcfg := s.buildDetectorConfig(prevCredits, regimePolicy)
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation
 	// (sp-sk68 D4). Log and continue.
@@ -370,6 +336,50 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		s.consumeTripwires(regimePolicy, events)
 	}
 	return ran, err
+}
+
+// buildDetectorConfig assembles this tick's DetectorConfig from live captain
+// config plus the credit snapshot (prevCredits = the previous poll's value, kept
+// as the crossing baseline; s.lastCredits = this poll's value) and the freshly
+// loaded regime tripwires. The sp-7vos factory-stall, crash-loop, pinned-hull,
+// and sp-k7q5 scout-staleness knobs are wired to their package defaults here
+// until CaptainConfig grows tunable fields for them.
+func (s *Supervisor) buildDetectorConfig(prevCredits int, regimePolicy RegimePolicy) DetectorConfig {
+	return DetectorConfig{
+		PlayerID:                  s.cfg.PlayerID,
+		ShipIdle:                  time.Duration(s.cfg.ShipIdleMinutes) * time.Minute,
+		StaleHeartbeat:            time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
+		CreditsThresholds:         s.cfg.CreditsThresholds,
+		LastCredits:               prevCredits,
+		CurrentCreditsValue:       s.lastCredits,
+		IncomeStall:               time.Duration(s.cfg.IncomeStallHours) * time.Hour,
+		FactoryIncomeStall:        defaultFactoryIncomeStall,
+		StreamDown:                time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
+		ExpectedStreams:           s.cfg.ExpectedStreams,
+		CrashLoopWindow:           defaultCrashLoopWindow,
+		CrashLoopThreshold:        defaultCrashLoopThreshold,
+		RegimeTripwires:           regimePolicy.Tripwires,
+		PinnedHullContainerless:   time.Duration(s.cfg.PinnedHullContainerlessMinutes) * time.Minute,
+		StandingCoordinatorFleets: defaultStandingCoordinatorFleets,
+		IdleEpisodes:              s.idleEpisodes,
+		ContainerlessEpisodes:     s.containerlessEpisodes,
+
+		// sp-k7q5 layers 2+3, wired to package defaults here until CaptainConfig grows
+		// tunable fields (mirrors FactoryIncomeStall / CrashLoop above).
+		StalenessHidingStaleAge:         defaultStalenessHidingStaleAge,
+		StalenessHidingMinPricedMarkets: defaultStalenessHidingMinPricedMarkets,
+		StalenessHidingThreshold:        defaultStalenessHidingThreshold,
+		StalenessHidingCooldown:         defaultStalenessHidingCooldown,
+		PostProposalMinPricedMarkets:    defaultPostProposalMinPricedMarkets,
+		PostProposalFreshness:           defaultPostProposalFreshness,
+		PostProposalAvgHop:              defaultPostProposalAvgHop,
+		PostProposalCooldown:            defaultPostProposalCooldown,
+
+		// sp-y0f6: Prometheus alert-firing poll. Sourced from s.promAlertsURL
+		// (defaulted to defaultPrometheusAlertsURL in NewSupervisor) so tests can
+		// blank it and stay isolated from any Prometheus running on the dev box.
+		PrometheusAlertsURL: s.promAlertsURL,
+	}
 }
 
 // Run loops Tick on the poll interval until ctx is cancelled.

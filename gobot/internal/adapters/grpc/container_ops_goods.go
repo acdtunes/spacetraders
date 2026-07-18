@@ -47,10 +47,8 @@ func (s *DaemonServer) StartGoodsFactory(
 		maxIterations = 1
 	}
 
-	// Generate container ID
 	containerID := utils.GenerateContainerID("goods_factory", targetGood)
 
-	// Create container metadata
 	metadata := map[string]interface{}{
 		"target_good":    targetGood,
 		"system_symbol":  systemSymbol,
@@ -76,21 +74,11 @@ func (s *DaemonServer) StartGoodsFactory(
 		nil, // Use default RealClock
 	)
 
-	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "goods_factory_coordinator"); err != nil {
 		return nil, fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
 
 	return &GoodsFactoryResult{
 		FactoryID:  containerID,

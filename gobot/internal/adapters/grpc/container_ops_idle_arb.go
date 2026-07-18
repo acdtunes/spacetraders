@@ -112,14 +112,7 @@ func (s *DaemonServer) LaunchIdleArb(ctx context.Context, spec appContract.IdleA
 
 	// The runner's own claim is idempotent for this containerID; it owns release on
 	// every terminal path from here (completion, crash, cancel).
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Idle-arb container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Idle-arb container")
 
 	return containerID, nil
 }

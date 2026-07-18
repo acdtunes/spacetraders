@@ -35,10 +35,10 @@ const briefingStaleMarket = 3 * time.Hour
 // Prometheus metric names the briefing reads (namespaced spacetraders_daemon_*,
 // the registry's prefix). All confirmed present in internal/adapters/metrics.
 const (
-	metricChainKills     = "spacetraders_daemon_chain_pnl_kills_total"
+	metricChainKills      = "spacetraders_daemon_chain_pnl_kills_total"
 	metricChainInputPause = "spacetraders_daemon_chain_input_pause_total"
-	metricAPIRequests    = "spacetraders_daemon_api_requests_total"
-	metricAPIWaitBucket  = "spacetraders_daemon_api_rate_limit_wait_seconds_bucket"
+	metricAPIRequests     = "spacetraders_daemon_api_requests_total"
+	metricAPIWaitBucket   = "spacetraders_daemon_api_rate_limit_wait_seconds_bucket"
 )
 
 // Briefing composes the wake-briefing block from live PG + Prometheus state.

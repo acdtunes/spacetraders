@@ -158,8 +158,11 @@ func TestCapexProposalChannel_SubmitFailsClosedOnMalformedProposal(t *testing.T)
 			wantSub: "player",
 		},
 		{
-			name:    "non-capital action masquerading as a proposal",
-			mutate:  func(p *capacity.Proposal) { p.Action.Tier = capacity.TierReuseIdle; p.Action.Verb = capacity.VerbReassignHull },
+			name: "non-capital action masquerading as a proposal",
+			mutate: func(p *capacity.Proposal) {
+				p.Action.Tier = capacity.TierReuseIdle
+				p.Action.Verb = capacity.VerbReassignHull
+			},
 			wantSub: "capital",
 		},
 		{

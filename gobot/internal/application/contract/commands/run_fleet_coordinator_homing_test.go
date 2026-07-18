@@ -34,7 +34,7 @@ func (r *errFindAllRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) (
 // while the stale launch list would have missed it and market-balanced it.
 func TestHomingGate_LiveAddedShip_RecognizedAsDedicated(t *testing.T) {
 	added := newHaulerShip(t, "TORWIND-9", "contract") // fleet-add'd after launch: tag only
-	general := newHaulerShip(t, "TORWIND-2", "")        // general pool
+	general := newHaulerShip(t, "TORWIND-2", "")       // general pool
 	repo := &inMemoryFleetRepo{ships: map[string]*navigation.Ship{
 		"TORWIND-9": added,
 		"TORWIND-2": general,

@@ -85,26 +85,40 @@ func (g legGroup) rate() (float64, bool) {
 	return float64(g.net) / hours, true
 }
 
+// groupLegs folds telemetry rows into legGroups keyed by groupKey — ship symbol for
+// per-ship rates, tour id for per-tour rates.
+func groupLegs(rows []TourLegTelemetry, groupKey func(TourLegTelemetry) string) map[string]*legGroup {
+	groups := map[string]*legGroup{}
+	for _, r := range rows {
+		key := groupKey(r)
+		g := groups[key]
+		if g == nil {
+			g = &legGroup{}
+			groups[key] = g
+		}
+		g.add(r)
+	}
+	return groups
+}
+
+// computableRates collects the realized $/hr of every group with a computable rate
+// (unordered — callers take mean/min or sort for the median, all order-insensitive).
+func computableRates(groups map[string]*legGroup) []float64 {
+	rates := make([]float64, 0, len(groups))
+	for _, g := range groups {
+		if rate, ok := g.rate(); ok {
+			rates = append(rates, rate)
+		}
+	}
+	return rates
+}
+
 // ComputeFleetTourRate summarises the realized fleet-tour rate from per-leg telemetry (sp-4ewi). It
 // is pure and window-agnostic — the caller passes only the rows inside its read window (the port
 // applies `since` at the repository read), and the computation derives its own span from those rows.
 func ComputeFleetTourRate(rows []TourLegTelemetry) FleetTourRateResult {
 	// Per-ship realized rates → FleetAvg (mean) and Marginal (min).
-	byShip := map[string]*legGroup{}
-	for _, r := range rows {
-		g := byShip[r.ShipSymbol]
-		if g == nil {
-			g = &legGroup{}
-			byShip[r.ShipSymbol] = g
-		}
-		g.add(r)
-	}
-	var shipRates []float64
-	for _, g := range byShip {
-		if rate, ok := g.rate(); ok {
-			shipRates = append(shipRates, rate)
-		}
-	}
+	shipRates := computableRates(groupLegs(rows, func(r TourLegTelemetry) string { return r.ShipSymbol }))
 	if len(shipRates) == 0 {
 		return FleetTourRateResult{Readable: false} // no computable rate → fail closed
 	}
@@ -135,15 +149,7 @@ type tourRatePoint struct {
 // newer half against the older half. Fewer than two computable tours cannot establish a trend
 // (returns false — never a spurious stop-buy).
 func tourRateDeclining(rows []TourLegTelemetry) bool {
-	byTour := map[string]*legGroup{}
-	for _, r := range rows {
-		g := byTour[r.TourID]
-		if g == nil {
-			g = &legGroup{}
-			byTour[r.TourID] = g
-		}
-		g.add(r)
-	}
+	byTour := groupLegs(rows, func(r TourLegTelemetry) string { return r.TourID })
 
 	var tours []tourRatePoint
 	for _, g := range byTour {
@@ -181,21 +187,7 @@ func meanRate(tours []tourRatePoint) float64 {
 // unreadable rather than deciding off a fabricated rate. The window is applied by the caller at
 // the repository read (ListByPlayer's since bound); this function is pure over the rows it sees.
 func MedianTourRate(rows []TourLegTelemetry) (float64, bool) {
-	byTour := map[string]*legGroup{}
-	for _, r := range rows {
-		g := byTour[r.TourID]
-		if g == nil {
-			g = &legGroup{}
-			byTour[r.TourID] = g
-		}
-		g.add(r)
-	}
-	rates := make([]float64, 0, len(byTour))
-	for _, g := range byTour {
-		if rate, ok := g.rate(); ok {
-			rates = append(rates, rate)
-		}
-	}
+	rates := computableRates(groupLegs(rows, func(r TourLegTelemetry) string { return r.TourID }))
 	if len(rates) == 0 {
 		return 0, false // no computable tour → fail closed (never a readable 0)
 	}

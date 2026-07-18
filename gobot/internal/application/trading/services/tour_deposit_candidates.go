@@ -265,7 +265,7 @@ func BuildDepositCandidates(
 			continue
 		}
 		byCeiling := int(remainingCredits / int64(r.ForeignAsk))
-		units := minInt(remainingDemand, minInt(remainingSpace, byCeiling))
+		units := min(remainingDemand, remainingSpace, byCeiling)
 		if units <= 0 {
 			continue
 		}
@@ -332,11 +332,4 @@ func toSet(items []string) map[string]bool {
 		s[it] = true
 	}
 	return s
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

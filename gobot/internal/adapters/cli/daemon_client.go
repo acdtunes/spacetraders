@@ -196,7 +196,6 @@ func (c *DaemonClient) NavigateShip(
 	playerID int,
 	agentSymbol string,
 ) (*NavigateResponse, error) {
-	// Build request
 	req := &pb.NavigateShipRequest{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
@@ -206,13 +205,11 @@ func (c *DaemonClient) NavigateShip(
 		req.AgentSymbol = &agentSymbol
 	}
 
-	// Call gRPC service
 	resp, err := c.client.NavigateShip(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
-	// Convert to client response type
 	return &NavigateResponse{
 		ContainerID:   resp.ContainerId,
 		ShipSymbol:    resp.ShipSymbol,
@@ -229,7 +226,6 @@ func (c *DaemonClient) RouteShip(
 	playerID int,
 	agentSymbol string,
 ) (*RouteResponse, error) {
-	// Build request
 	req := &pb.RouteShipRequest{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
@@ -239,13 +235,11 @@ func (c *DaemonClient) RouteShip(
 		req.AgentSymbol = &agentSymbol
 	}
 
-	// Call gRPC service
 	resp, err := c.client.RouteShip(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
-	// Convert to client response type
 	return &RouteResponse{
 		ContainerID: resp.ContainerId,
 		ShipSymbol:  resp.ShipSymbol,
@@ -782,7 +776,6 @@ func (c *DaemonClient) ListContainers(
 		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
-	// Convert to client response type
 	containers := make([]*ContainerInfo, 0, len(resp.Containers))
 	for _, pbCont := range resp.Containers {
 		containers = append(containers, &ContainerInfo{
@@ -874,7 +867,6 @@ func (c *DaemonClient) GetContainerLogs(
 		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
-	// Convert to client response type
 	logs := make([]*LogEntry, 0, len(resp.Logs))
 	for _, pbLog := range resp.Logs {
 		logs = append(logs, &LogEntry{

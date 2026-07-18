@@ -67,6 +67,20 @@ func (sm *LifecycleStateMachine) Status() LifecycleStatus {
 	return sm.status
 }
 
+// ProjectStatus maps the machine's current LifecycleStatus onto a
+// domain-specific status via table, returning fallback for any lifecycle state
+// absent from table. It is the single state->status projection primitive the
+// domain aggregates (Container, StorageOperation, Route) share, so adding a
+// lifecycle state is a one-line table edit per aggregate rather than a
+// hand-written switch in each. Direct-key lookup replicates a switch: a state
+// absent from table takes fallback exactly as the switch's default arm did.
+func ProjectStatus[T any](sm *LifecycleStateMachine, table map[LifecycleStatus]T, fallback T) T {
+	if projected, ok := table[sm.Status()]; ok {
+		return projected
+	}
+	return fallback
+}
+
 // CreatedAt returns when the entity was created
 func (sm *LifecycleStateMachine) CreatedAt() time.Time {
 	return sm.createdAt

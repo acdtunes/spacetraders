@@ -138,7 +138,19 @@ func ComputeReport(events []Event, now time.Time, window time.Duration, ceilingR
 		}
 	}
 
-	report.PerHull = make([]HullStats, 0, len(hullCounts))
+	report.PerHull, report.HullsToCeiling = perHullBreakdown(hullCounts, windowSeconds, ceilingReqPerSec)
+
+	return report
+}
+
+// perHullBreakdown derives the per-hull request stats (sorted busiest-first,
+// ties broken by hull for deterministic output) and the derived
+// hulls-to-ceiling scaling figure: how many hulls at the observed average
+// per-hull rate fit under the ceiling. hullsToCeiling stays 0 when no
+// hull-scoped traffic was observed or the ceiling is unset (avoids reporting
+// a meaningless +Inf).
+func perHullBreakdown(hullCounts map[string]int, windowSeconds, ceilingReqPerSec float64) (perHull []HullStats, hullsToCeiling float64) {
+	perHull = make([]HullStats, 0, len(hullCounts))
 	var hullReqPerSecSum float64
 	for hull, count := range hullCounts {
 		var reqPerSec float64
@@ -146,25 +158,24 @@ func ComputeReport(events []Event, now time.Time, window time.Duration, ceilingR
 			reqPerSec = float64(count) / windowSeconds
 		}
 		hullReqPerSecSum += reqPerSec
-		report.PerHull = append(report.PerHull, HullStats{
+		perHull = append(perHull, HullStats{
 			Hull:             hull,
 			RequestsInWindow: count,
 			ReqPerSec:        reqPerSec,
 		})
 	}
-	sort.SliceStable(report.PerHull, func(i, j int) bool {
-		if report.PerHull[i].RequestsInWindow != report.PerHull[j].RequestsInWindow {
-			return report.PerHull[i].RequestsInWindow > report.PerHull[j].RequestsInWindow
+	sort.SliceStable(perHull, func(i, j int) bool {
+		if perHull[i].RequestsInWindow != perHull[j].RequestsInWindow {
+			return perHull[i].RequestsInWindow > perHull[j].RequestsInWindow
 		}
-		return report.PerHull[i].Hull < report.PerHull[j].Hull
+		return perHull[i].Hull < perHull[j].Hull
 	})
 
 	if len(hullCounts) > 0 && ceilingReqPerSec > 0 {
 		avgPerHullRate := hullReqPerSecSum / float64(len(hullCounts))
 		if avgPerHullRate > 0 {
-			report.HullsToCeiling = ceilingReqPerSec / avgPerHullRate
+			hullsToCeiling = ceilingReqPerSec / avgPerHullRate
 		}
 	}
-
-	return report
+	return perHull, hullsToCeiling
 }

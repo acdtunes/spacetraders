@@ -27,8 +27,8 @@ import (
 	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )

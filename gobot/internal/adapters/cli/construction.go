@@ -565,6 +565,12 @@ type constructionOverrideFlags struct {
 	multProvided     bool // whether --price-ceiling-mult was set on the command line
 }
 
+// anyKnobSet reports whether at least one tunable knob (--min-supply,
+// --strategy, or --price-ceiling-mult) was provided on the command line.
+func (f constructionOverrideFlags) anyKnobSet() bool {
+	return f.minSupply != "" || f.strategy != "" || f.multProvided
+}
+
 // buildConstructionOverrideRequest validates the `construction override` flags at the boundary and
 // assembles the gRPC request. It enforces that --clear is exclusive of the knob flags and that a
 // non-clear call sets at least one knob, validates the strategy/tier (rejecting unknown values),
@@ -588,14 +594,14 @@ func buildConstructionOverrideRequest(f constructionOverrideFlags, playerID int3
 	}
 
 	if f.clear {
-		if f.minSupply != "" || f.strategy != "" || f.multProvided {
+		if f.anyKnobSet() {
 			return nil, false, fmt.Errorf("--clear removes the whole override for %s; it cannot be combined with --min-supply/--strategy/--price-ceiling-mult", f.good)
 		}
 		req.Clear = true
 		return req, false, nil
 	}
 
-	if f.minSupply == "" && f.strategy == "" && !f.multProvided {
+	if !f.anyKnobSet() {
 		return nil, false, fmt.Errorf("nothing to set for %s: pass at least one of --min-supply, --strategy, --price-ceiling-mult (or --clear to remove the override)", f.good)
 	}
 

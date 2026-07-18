@@ -256,13 +256,11 @@ func (s *StorageShip) ConfirmDeposit(goodSymbol string, units int) error {
 			units, goodSymbol, s.totalUnitsUnsafe()+units, s.cargoCapacity)
 	}
 
-	// Release the reservation
 	s.reservedSpace -= units
 	if s.reservedSpace < 0 {
 		s.reservedSpace = 0
 	}
 
-	// Add to inventory
 	s.cargoInventory[goodSymbol] += units
 	return nil
 }

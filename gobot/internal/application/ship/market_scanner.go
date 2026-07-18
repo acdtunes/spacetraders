@@ -51,10 +51,7 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get player token: %v", err), nil)
-		// Record failed scan in metrics
-		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
-			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
-		}
+		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
 		return fmt.Errorf("failed to get player token: %w", err)
 	}
 
@@ -64,29 +61,20 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	marketData, err := s.apiClient.GetMarket(ctx, systemSymbol, waypointSymbol, token)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get market data for %s: %v", waypointSymbol, err), nil)
-		// Record failed scan in metrics
-		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
-			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
-		}
+		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
 		return fmt.Errorf("failed to get market data for %s: %w", waypointSymbol, err)
 	}
 
 	tradeGoods, err := s.convertAPIGoodsToDomain(marketData.TradeGoods, logger)
 	if err != nil {
-		// Record failed scan in metrics
-		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
-			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
-		}
+		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
 		return err
 	}
 
 	err = s.marketRepo.UpsertMarketData(ctx, playerID, waypointSymbol, tradeGoods, time.Now())
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to persist market data for %s: %v", waypointSymbol, err), nil)
-		// Record failed scan in metrics
-		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
-			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
-		}
+		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
 		return fmt.Errorf("failed to persist market data: %w", err)
 	}
 
@@ -97,12 +85,20 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Successfully scanned and saved market data for %s (%d goods)", waypointSymbol, len(tradeGoods)), nil)
 
-	// Record successful scan in metrics
-	if collector := metrics.GetGlobalMarketCollector(); collector != nil {
-		collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), nil)
-	}
+	recordMarketScanMetric(playerID, waypointSymbol, startTime, nil)
 
 	return nil
+}
+
+// recordMarketScanMetric records a market-scan outcome to the global market
+// collector when one is installed. scanErr is nil on a successful scan and the
+// underlying error on a failed one; a nil global collector (e.g. unit tests)
+// makes it a no-op. Extracted to remove the five identical record-and-branch
+// blocks in ScanAndSaveMarket.
+func recordMarketScanMetric(playerID uint, waypointSymbol string, startTime time.Time, scanErr error) {
+	if collector := metrics.GetGlobalMarketCollector(); collector != nil {
+		collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), scanErr)
+	}
 }
 
 // MarketFreshWithin reports whether the cached market m was last updated within maxAge
@@ -220,20 +216,20 @@ func (s *MarketScanner) recordPriceChanges(
 }
 
 // pricesChanged checks if any relevant field changed between old and new trade goods
-func (s *MarketScanner) pricesChanged(old, new *market.TradeGood) bool {
-	if old.PurchasePrice() != new.PurchasePrice() {
+func (s *MarketScanner) pricesChanged(oldGood, newGood *market.TradeGood) bool {
+	if oldGood.PurchasePrice() != newGood.PurchasePrice() {
 		return true
 	}
-	if old.SellPrice() != new.SellPrice() {
+	if oldGood.SellPrice() != newGood.SellPrice() {
 		return true
 	}
-	if old.TradeVolume() != new.TradeVolume() {
+	if oldGood.TradeVolume() != newGood.TradeVolume() {
 		return true
 	}
 
 	// Compare supply (both could be nil)
-	oldSupply := old.Supply()
-	newSupply := new.Supply()
+	oldSupply := oldGood.Supply()
+	newSupply := newGood.Supply()
 	if (oldSupply == nil) != (newSupply == nil) {
 		return true
 	}
@@ -242,8 +238,8 @@ func (s *MarketScanner) pricesChanged(old, new *market.TradeGood) bool {
 	}
 
 	// Compare activity (both could be nil)
-	oldActivity := old.Activity()
-	newActivity := new.Activity()
+	oldActivity := oldGood.Activity()
+	newActivity := newGood.Activity()
 	if (oldActivity == nil) != (newActivity == nil) {
 		return true
 	}

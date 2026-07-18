@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -44,10 +43,9 @@ type FinancialMetricsCollector struct {
 	tradeProfitPerUnit *prometheus.HistogramVec
 	tradeMarginPercent *prometheus.HistogramVec
 
-	// Lifecycle
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-	wg         sync.WaitGroup
+	// Lifecycle scaffolding (ctx/cancelFunc/wg + Start context + Stop) is shared
+	// via the embedded pollingCollector.
+	pollingCollector
 }
 
 // NewFinancialMetricsCollector creates a new financial metrics collector
@@ -209,39 +207,10 @@ func (c *FinancialMetricsCollector) Register() error {
 
 // Start begins the P&L polling goroutine
 func (c *FinancialMetricsCollector) Start(ctx context.Context) {
-	c.ctx, c.cancelFunc = context.WithCancel(ctx)
+	c.startContext(ctx)
 
-	// Start P&L polling (every 60 seconds)
-	c.wg.Add(1)
-	go c.pollProfitLoss(60 * time.Second)
-}
-
-// Stop gracefully stops the financial metrics collector
-func (c *FinancialMetricsCollector) Stop() {
-	if c.cancelFunc != nil {
-		c.cancelFunc()
-	}
-	c.wg.Wait()
-}
-
-// pollProfitLoss polls P&L data periodically
-func (c *FinancialMetricsCollector) pollProfitLoss(interval time.Duration) {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Do initial poll immediately
-	c.updateProfitLoss()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			c.updateProfitLoss()
-		}
-	}
+	// Start P&L polling (every 60 seconds), with an immediate initial poll.
+	c.startPolling(60*time.Second, true, c.updateProfitLoss)
 }
 
 // updateProfitLoss fetches and updates P&L metrics

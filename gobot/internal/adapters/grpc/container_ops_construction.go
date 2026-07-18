@@ -267,14 +267,7 @@ func (s *DaemonServer) ConstructionCoordinator(ctx context.Context, playerID int
 		return "", fmt.Errorf("failed to persist construction coordinator container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Construction coordinator container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Construction coordinator container")
 
 	return containerID, nil
 }

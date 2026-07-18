@@ -71,14 +71,7 @@ func (s *DaemonServer) ShipyardBackfillCoordinator(
 		return "", fmt.Errorf("failed to persist shipyard backfill container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	s.registerContainer(containerID, runner)
-
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Shipyard backfill container %s failed: %v\n", containerID, err)
-		}
-	}()
+	s.startContainerRunner(containerEntity, cmd, containerID, "Shipyard backfill container")
 
 	return containerID, nil
 }

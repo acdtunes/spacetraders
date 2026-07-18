@@ -69,25 +69,24 @@ func (sa *ShipAssignment) Release(reason string) error {
 		return fmt.Errorf("assignment already idle")
 	}
 
-	now := sa.clock.Now()
-	sa.status = AssignmentStatusIdle
-	sa.containerID = "" // Clear container reference
-	sa.releasedAt = &now
-	sa.releaseReason = &reason
-
+	sa.markReleased(reason)
 	return nil
 }
 
 // ForceRelease forcefully releases the assignment regardless of current state
 // Used for cleaning up stale assignments
 func (sa *ShipAssignment) ForceRelease(reason string) error {
+	sa.markReleased(reason)
+	return nil
+}
+
+// markReleased clears the container reference and stamps the release metadata.
+func (sa *ShipAssignment) markReleased(reason string) {
 	now := sa.clock.Now()
 	sa.status = AssignmentStatusIdle
-	sa.containerID = "" // Clear container reference
+	sa.containerID = ""
 	sa.releasedAt = &now
 	sa.releaseReason = &reason
-
-	return nil
 }
 
 // IsStale checks if the assignment is older than the given timeout duration
@@ -137,14 +136,12 @@ func (sam *ShipAssignmentManager) AssignShip(
 	playerID int,
 	containerID string,
 ) (*ShipAssignment, error) {
-	// Check if ship is already assigned
 	if existing, exists := sam.assignments[shipSymbol]; exists {
 		if existing.IsActive() {
 			return nil, fmt.Errorf("ship is already assigned to another container")
 		}
 	}
 
-	// Create new assignment
 	assignment := NewShipAssignment(shipSymbol, playerID, containerID, sam.clock)
 	sam.assignments[shipSymbol] = assignment
 

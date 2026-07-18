@@ -63,12 +63,12 @@ const (
 // This is the aggregate root for storage operations.
 //
 // Invariants:
-// - Extractor-fed types (GAS_SIPHON, MINING) must have at least one extractor
-//   ship; a WAREHOUSE (NewWarehouseOperation) has zero — cargo arrives from
-//   haulers, not extractors.
-// - Must have at least one storage ship
-// - Waypoint must be specified
-// - Supported goods must be specified
+//   - Extractor-fed types (GAS_SIPHON, MINING) must have at least one extractor
+//     ship; a WAREHOUSE (NewWarehouseOperation) has zero — cargo arrives from
+//     haulers, not extractors.
+//   - Must have at least one storage ship
+//   - Waypoint must be specified
+//   - Supported goods must be specified
 type StorageOperation struct {
 	id             string
 	playerID       int
@@ -91,14 +91,8 @@ func NewStorageOperation(
 	supportedGoods []string,
 	clock shared.Clock,
 ) (*StorageOperation, error) {
-	if id == "" {
-		return nil, fmt.Errorf("operation ID cannot be empty")
-	}
-	if playerID <= 0 {
-		return nil, fmt.Errorf("player ID must be positive")
-	}
-	if waypointSymbol == "" {
-		return nil, fmt.Errorf("waypoint symbol cannot be empty")
+	if err := validateOperationIdentity(id, playerID, waypointSymbol); err != nil {
+		return nil, err
 	}
 	if len(extractorShips) == 0 {
 		return nil, fmt.Errorf("operation must have at least 1 extractor ship")
@@ -110,26 +104,39 @@ func NewStorageOperation(
 		return nil, fmt.Errorf("operation must specify supported goods")
 	}
 
-	// Copy slices to avoid external mutation
-	extractors := make([]string, len(extractorShips))
-	copy(extractors, extractorShips)
-
-	storage := make([]string, len(storageShips))
-	copy(storage, storageShips)
-
-	goods := make([]string, len(supportedGoods))
-	copy(goods, supportedGoods)
-
 	return &StorageOperation{
 		id:             id,
 		playerID:       playerID,
 		waypointSymbol: waypointSymbol,
 		operationType:  operationType,
-		extractorShips: extractors,
-		storageShips:   storage,
-		supportedGoods: goods,
+		extractorShips: copyStrings(extractorShips),
+		storageShips:   copyStrings(storageShips),
+		supportedGoods: copyStrings(supportedGoods),
 		lifecycle:      shared.NewLifecycleStateMachine(clock),
 	}, nil
+}
+
+// validateOperationIdentity guards the identity fields every storage-operation
+// constructor requires, with the exact messages both constructors share.
+func validateOperationIdentity(id string, playerID int, waypointSymbol string) error {
+	if id == "" {
+		return fmt.Errorf("operation ID cannot be empty")
+	}
+	if playerID <= 0 {
+		return fmt.Errorf("player ID must be positive")
+	}
+	if waypointSymbol == "" {
+		return fmt.Errorf("waypoint symbol cannot be empty")
+	}
+	return nil
+}
+
+// copyStrings copies a slice so external mutation of the caller's slice can
+// never reach the aggregate.
+func copyStrings(values []string) []string {
+	copied := make([]string, len(values))
+	copy(copied, values)
+	return copied
 }
 
 // NewWarehouseOperation creates a passive warehouse storage operation: a
@@ -155,14 +162,8 @@ func NewWarehouseOperation(
 	supportedGoods []string,
 	clock shared.Clock,
 ) (*StorageOperation, error) {
-	if id == "" {
-		return nil, fmt.Errorf("operation ID cannot be empty")
-	}
-	if playerID <= 0 {
-		return nil, fmt.Errorf("player ID must be positive")
-	}
-	if waypointSymbol == "" {
-		return nil, fmt.Errorf("waypoint symbol cannot be empty")
+	if err := validateOperationIdentity(id, playerID, waypointSymbol); err != nil {
+		return nil, err
 	}
 	if len(storageShips) == 0 {
 		return nil, fmt.Errorf("warehouse operation must have at least 1 storage ship")
@@ -171,22 +172,16 @@ func NewWarehouseOperation(
 		return nil, fmt.Errorf("warehouse operation must specify supported goods")
 	}
 
-	// Copy slices to avoid external mutation. Extractors are deliberately empty:
-	// a warehouse is fed by haulers, not extractors.
-	storage := make([]string, len(storageShips))
-	copy(storage, storageShips)
-
-	goods := make([]string, len(supportedGoods))
-	copy(goods, supportedGoods)
-
+	// Extractors are deliberately empty: a warehouse is fed by haulers, not
+	// extractors.
 	return &StorageOperation{
 		id:             id,
 		playerID:       playerID,
 		waypointSymbol: waypointSymbol,
 		operationType:  OperationTypeWarehouse,
 		extractorShips: []string{},
-		storageShips:   storage,
-		supportedGoods: goods,
+		storageShips:   copyStrings(storageShips),
+		supportedGoods: copyStrings(supportedGoods),
 		lifecycle:      shared.NewLifecycleStateMachine(clock),
 	}, nil
 }
@@ -208,22 +203,20 @@ func (op *StorageOperation) UpdatedAt() time.Time  { return op.lifecycle.Updated
 func (op *StorageOperation) StartedAt() *time.Time { return op.lifecycle.StartedAt() }
 func (op *StorageOperation) StoppedAt() *time.Time { return op.lifecycle.StoppedAt() }
 
+// operationStatusByLifecycle projects each shared lifecycle state onto the
+// storage-operation status. A lifecycle state absent here falls back to
+// OperationStatusPending (the former switch's default).
+var operationStatusByLifecycle = map[shared.LifecycleStatus]OperationStatus{
+	shared.LifecycleStatusPending:   OperationStatusPending,
+	shared.LifecycleStatusRunning:   OperationStatusRunning,
+	shared.LifecycleStatusCompleted: OperationStatusCompleted,
+	shared.LifecycleStatusStopped:   OperationStatusStopped,
+	shared.LifecycleStatusFailed:    OperationStatusFailed,
+}
+
 // Status converts from LifecycleStatus to OperationStatus
 func (op *StorageOperation) Status() OperationStatus {
-	switch op.lifecycle.Status() {
-	case shared.LifecycleStatusPending:
-		return OperationStatusPending
-	case shared.LifecycleStatusRunning:
-		return OperationStatusRunning
-	case shared.LifecycleStatusCompleted:
-		return OperationStatusCompleted
-	case shared.LifecycleStatusStopped:
-		return OperationStatusStopped
-	case shared.LifecycleStatusFailed:
-		return OperationStatusFailed
-	default:
-		return OperationStatusPending
-	}
+	return shared.ProjectStatus(op.lifecycle, operationStatusByLifecycle, OperationStatusPending)
 }
 
 // State transition methods
