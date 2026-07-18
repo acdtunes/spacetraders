@@ -12,7 +12,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
-	playerCmd "github.com/andrescamacho/spacetraders-go/internal/application/player/commands"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -70,13 +69,6 @@ Example:
 				return runPlayerRegisterNewCommand(agentSymbol, faction)
 			}
 
-			if agentSymbol == "" {
-				return fmt.Errorf("--agent flag is required")
-			}
-			if token == "" {
-				return fmt.Errorf("--token flag is required")
-			}
-
 			// Load config and connect to database
 			cfg, err := config.LoadConfig("")
 			if err != nil {
@@ -88,38 +80,15 @@ Example:
 				return fmt.Errorf("failed to connect to database: %w", err)
 			}
 
-			// Create repository and handler
-			playerRepo := persistence.NewGormPlayerRepository(db)
-			handler := playerCmd.NewRegisterPlayerHandler(playerRepo)
-
-			// Prepare metadata
-			metadata := make(map[string]interface{})
-			if faction != "" {
-				metadata["starting_faction"] = faction
-			}
-
-			// Execute command
-			ctx := context.Background()
-			response, err := handler.Handle(ctx, &playerCmd.RegisterPlayerCommand{
-				AgentSymbol: agentSymbol,
-				Token:       token,
-				Metadata:    metadata,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to register player: %w", err)
-			}
-
-			result := response.(*playerCmd.RegisterPlayerResponse)
-
-			fmt.Println("✓ Player registered successfully")
-			fmt.Printf("  Agent Symbol: %s\n", result.Player.AgentSymbol)
-			fmt.Printf("  Player ID:    %d\n", result.Player.ID)
-			if faction != "" {
-				fmt.Printf("  Faction:      %s\n", faction)
-			}
-			fmt.Println("\nSet as default player with: spacetraders config set-player --agent", agentSymbol)
-
-			return nil
+			// Import the caller-supplied token AND open its era row (sp-pr42).
+			// The from-token path previously wrote only the player row, so
+			// `universe status` reported "NO ERA" and era/reset detection ran
+			// blind. runPlayerRegisterFromToken validates the flags, derives the
+			// <symbol>-<resetDate> era name from live server status, and persists
+			// player+era atomically (mirroring --new, minus the API Register call).
+			client := api.NewSpaceTradersClient()
+			store := persistence.NewEraRepository(db)
+			return runPlayerRegisterFromToken(context.Background(), client, store, agentSymbol, token, faction, os.Stdout)
 		},
 	}
 

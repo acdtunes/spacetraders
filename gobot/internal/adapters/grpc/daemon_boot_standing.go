@@ -45,6 +45,16 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 // and non-fatal — one type's failure must never block another's launch attempt, and must never
 // fail daemon startup.
 func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playerID int) {
+	// sp-ls7x: genesis cold-boot guard. On a fresh DB with no player row,
+	// primaryPlayerID() returns 0; every standing coordinator is player-scoped and
+	// building one with id 0 hits MustNewPlayerID(0), which panics. Skip them until
+	// a player exists — the next boot after registration launches them. No-op for
+	// the normal path (playerID>0 behaves exactly as before).
+	if playerID <= 0 {
+		fmt.Println("No player yet - skipping boot-standing coordinators (genesis cold-boot)")
+		return
+	}
+
 	for _, ct := range bootStandingCoordinatorTypes {
 		switch ct {
 		case container.ContainerTypeConstructionCoordinator:

@@ -292,8 +292,13 @@ func run(cfg *config.Config) error {
 	// the last recorded deploy.completed IS the honest deploy signal the
 	// crash-loop-resumes-on-deploy doctrine keys on. Best-effort bead id from
 	// HEAD; a failure here is logged and never blocks the daemon boot.
-	if err := watchkeeper.RecordDeployIfChanged(
-		context.Background(), captainEventRepo, cfg.Captain.PlayerID,
+	//
+	// sp-7pri: guard the emit behind a player-exists check. captain_events.player_id
+	// FKs players.id, so on first boot against a fresh DB (no player row yet) the
+	// insert violated fk_captain_events_player (23503). The signal is re-evaluated
+	// every boot, so skipping the player-less boot loses nothing.
+	if err := recordDeployIfPlayerExists(
+		context.Background(), playerRepo, captainEventRepo, cfg.Captain.PlayerID,
 		buildinfo.Get(), watchkeeper.BeadIDFromHEAD(".")); err != nil {
 		fmt.Printf("watchkeeper: deploy.completed check failed (continuing): %v\n", err)
 	}

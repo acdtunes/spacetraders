@@ -1,10 +1,15 @@
 package grpc
 
 import (
+	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // sp-382j: Admiral-selected launch model (a) — the construction-supply drain must be a STANDING
@@ -45,4 +50,31 @@ func TestDaemonBoot_LaunchesConstructionCoordinatorStanding(t *testing.T) {
 	if cmd.MaxIterations != -1 {
 		t.Fatalf("boot-standing launch must default to MaxIterations=-1 (infinite drain loop), got %d", cmd.MaxIterations)
 	}
+}
+
+// TestEnsureBootStandingCoordinators_NoPanicOnGenesisEmptyDB is the sp-ls7x
+// cold-boot guard. On a fresh DB with no player row, primaryPlayerID() returns
+// 0 (FindOpenEra nil AND players empty). Passing that 0 through to the standing
+// coordinators reaches MarketFreshnessSizerCoordinator(...,0,...) ->
+// MustNewPlayerID(0), which panics ("player_id must be positive"). In prod the
+// panic is caught by supervise.Guard so the daemon stays healthy, but it fires
+// on every boot until a player exists — log-noisy and fragile. The standing
+// coordinators are all player-scoped, so ensureBootStandingCoordinators must
+// skip them entirely when no player exists yet (the next boot after
+// registration launches them). Genesis-path only: with a player present
+// (playerID>0) behavior is unchanged.
+func TestEnsureBootStandingCoordinators_NoPanicOnGenesisEmptyDB(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	s := &DaemonServer{
+		db:             db,
+		containerRepo:  persistence.NewContainerRepository(db),
+		containerSpecs: make(map[string]ContainerSpec),
+	}
+	s.registerContainerSpecs()
+
+	require.NotPanics(t, func() {
+		s.ensureBootStandingCoordinators(context.Background(), 0)
+	}, "genesis cold-boot (playerID=0) must not panic: player-scoped standing coordinators must be skipped until a player row exists")
 }
