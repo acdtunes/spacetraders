@@ -29,8 +29,17 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
+
+// lookbackLegIndex is the LegIndex stamped on a telemetry row for a look-back manifest
+// buy (sp-rd21). It is NOT a solver-plan leg — it is an opportunistic pre-jump load at the
+// reposition seam — so it carries a sentinel index rather than a 0..N plan position, making
+// look-back buys greppable in tour_leg_telemetry while still reconciling with the
+// PURCHASE_CARGO transactions they write. LegIndex is informational only (rows read back in
+// insertion order by id; the netting readers group by good/tour, never by leg_index).
+const lookbackLegIndex = -1
 
 // lookbackExportType is the GoodListing.TradeType value a look-back destination must NOT
 // carry: an exporter's Bid is a low sellback price, not a real import demand (sp-9mkf). It
@@ -355,6 +364,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 		return 0
 	}
 
+	plannedAt := h.clock.Now()
 	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, item.Good, units, cmd.PlayerID, maxAsk)
 	if err != nil {
 		logger.Log("INFO", fmt.Sprintf("Look-back: purchase of %d %s at %s failed (%v) - skipping this good", units, item.Good, item.SourceWaypoint, err), map[string]interface{}{
@@ -371,6 +381,27 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	response.TotalSpent += int64(buyResp.TotalCost)
 	response.TradesExecuted++
 	netBought[item.Good] += buyResp.UnitsAdded
+	// sp-rd21 (epic sp-g9td): record the look-back buy in tour telemetry exactly as
+	// executeBuy records a plan leg — the FULL bought units and the volume-weighted realized
+	// price — so the windowed telemetry-netting rate reconciles with the PURCHASE_CARGO
+	// transactions this buy just wrote. Before this, look-back manifest buys were the ~1/3 of
+	// buy legs silently absent from telemetry (their destination SELLS were still logged as
+	// launch-liquidation legs), the dominant cause of the ~2x realized-$/hr inflation. A
+	// synthetic single-stop leg carries the source waypoint; item.Units/SourceAsk are the plan
+	// basis (mirroring trade.Units/ExpectedUnitPrice) and lookbackLegIndex marks it a
+	// reposition-manifest buy rather than a solver leg. Guarded on UnitsAdded>0 so a
+	// zero-unit no-op writes no row — the same 1:1-with-transactions contract executeBuy keeps
+	// (recordCargoTransaction skips zero-amount rows).
+	if buyResp.UnitsAdded > 0 {
+		h.recordLeg(ctx, cmd,
+			routing.TourLeg{Waypoint: item.SourceWaypoint},
+			lookbackLegIndex,
+			routing.TourTrade{Good: item.Good, IsBuy: true, Units: item.Units, ExpectedUnitPrice: item.SourceAsk},
+			buyResp.UnitsAdded,
+			realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded),
+			plannedAt,
+		)
+	}
 	logger.Log("INFO", fmt.Sprintf("Look-back: bought %d %s at %s (cost %d) for the jump", buyResp.UnitsAdded, item.Good, item.SourceWaypoint, buyResp.TotalCost), nil)
 	return buyResp.UnitsAdded
 }
