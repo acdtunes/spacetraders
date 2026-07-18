@@ -599,10 +599,14 @@ func (s *bootstrapShipyardScanner) EnsureHomeShipyardReadable(ctx context.Contex
 				return false, nil // a hull is already present at a shipyard — the live price reads next tick
 			}
 		}
-		// The purchaser must be free NOW (idle, not mid-flight); prefer the command frigate — the natural
-		// cold-start buyer — over any other idle hull. A hull already en route to the yard is IN_TRANSIT,
-		// so it is never re-selected here (that is the idempotency that prevents re-navigating each tick).
-		if sh.IsIdle() && !sh.IsInTransit() && (purchaser == nil || sh.Role() == commandRole) {
+		// The purchaser must be a genuinely FREE hull that no other controller owns (RULINGS #7 — the
+		// seed→sustain handoff must never double-claim): idle (IsIdle is false for a hull ClaimShip'd by
+		// the contract engine — AssignToContainer makes it IsAssigned), NOT mid-flight (an en-route hull
+		// is skipped, the idempotency that avoids re-navigating each tick), and NOT dedicated to another
+		// fleet (a contract hauler / mfg worker that is momentarily idle must not be poached to reposition
+		// the shipyard — mirrors the factory's not-poach guard). Prefer the command frigate, the natural
+		// cold-start buyer (undedicated at hour-0).
+		if sh.IsIdle() && !sh.IsInTransit() && sh.DedicatedFleet() == "" && (purchaser == nil || sh.Role() == commandRole) {
 			purchaser = sh
 		}
 	}
