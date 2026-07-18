@@ -1620,15 +1620,16 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 		s.terminalizeStorageOperation(ctx, containerID)
 	}
 
-	// sp-2jrz: stopping the capacity reconciler is a COMPLETE decommission — reap the
-	// buffer containers it left holding role-fleet hulls and release those dedications
-	// back to the general pool so trade re-adopts them (the captain's manual remedy,
-	// atomic). STOP-PATH ONLY: interruptAllContainers (deploy recovery) marks INTERRUPTED
-	// via UpdateStatus and never reaches here, so a graceful deploy of a live reconciler
+	// sp-2jrz: stopping the capacity reconciler is a durable decommission — release the
+	// role-fleet dedications it wrote (warehouse/stocker/depot-delivery) back to the
+	// general pool so trade re-adopts the hulls (the release half of the captain's manual
+	// remedy). Reaping the depot-launched buffer containers is lane (ii)/sp-udgc, not here.
+	// STOP-PATH ONLY: interruptAllContainers (deploy recovery) marks INTERRUPTED via a
+	// direct UpdateStatus and never reaches here, so a graceful deploy of a live reconciler
 	// re-establishes its dedications rather than churning them — the Admiral's invariant
 	// that a restart must not change ship assignments.
 	if runner.containerEntity.Type() == container.ContainerTypeCapacityReconciler {
-		s.retireCapacityReconcilerDomain(ctx, playerID)
+		s.retireCapacityReconcilerDedications(ctx, playerID)
 	}
 
 	return stopErr

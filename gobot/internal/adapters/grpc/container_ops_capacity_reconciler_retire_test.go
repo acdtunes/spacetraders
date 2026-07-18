@@ -67,11 +67,12 @@ func TestStopCapacityReconciler_ReleasesRoleFleetHullsToPool(t *testing.T) {
 	require.Equal(t, string(container.ContainerStatusStopped), model.Status)
 }
 
-// The stranded shape that makes a pure idle-release a NO-OP: the reconciler's buffer
-// CONTAINER holds the hull's claim. A complete retire must REAP the buffer container
-// first (freeing the claim), then release the dedication — so the hull actually
-// returns to the pool.
-func TestStopCapacityReconciler_ReapsBufferContainerHoldingRoleFleetHull(t *testing.T) {
+// LANE SPLIT (idle-only): a role-fleet hull still held by a LIVE buffer container is
+// NOT released here, and the buffer container is NOT reaped — that is lane (ii)/sp-udgc
+// (the depot-launch owner). Lane (i) leaves the claimed hull dedicated so it is never
+// yanked mid-work; lane (ii) reaps the container, after which the hull idles and a later
+// retire returns it to the pool.
+func TestStopCapacityReconciler_LeavesClaimedRoleFleetHullForReapLane(t *testing.T) {
 	s, db, playerID, _ := newDepotDeliveryTestServer(t)
 	ctx := context.Background()
 
@@ -83,12 +84,13 @@ func TestStopCapacityReconciler_ReapsBufferContainerHoldingRoleFleetHull(t *test
 	require.NoError(t, err)
 	require.NoError(t, s.StopContainer(reconcilerID))
 
-	// The buffer container is reaped (STOPPED) and its hull returned to the pool.
+	// idle-only: the claimed hull keeps its dedication (not force-yanked mid-work)...
+	assertDedicatedFleet(t, db, "LIGHT-14", "stocker", playerID)
+	// ...and the buffer container is left running for lane (ii)/sp-udgc to reap.
 	var bufferModel persistence.ContainerModel
 	require.NoError(t, db.First(&bufferModel, "id = ?", "stocker-LIGHT-14").Error)
-	require.Equal(t, string(container.ContainerStatusStopped), bufferModel.Status,
-		"the buffer container claiming a role-fleet hull must be reaped on retire")
-	assertDedicatedFleet(t, db, "LIGHT-14", "", playerID)
+	require.Equal(t, string(container.ContainerStatusRunning), bufferModel.Status,
+		"lane (i) must not reap the buffer container — that is lane (ii)/sp-udgc")
 }
 
 // The Admiral's invariant, made explicit: the INTERRUPTED / deploy-recovery path must
