@@ -43,6 +43,15 @@ func (s *DaemonServer) MarketFreshnessSizerCoordinator(
 		"purchase_cooldown_secs": purchaseCooldownSecs,
 	}
 
+	// sp-rsgc: re-adopt the last persisted live-tuned config for this player's sizer so a
+	// relaunch of a stopped one keeps its tunes (matching the daemon-restart recovery path)
+	// instead of silently reverting to config-file defaults.
+	config, warnings, err := s.coordinatorStartConfig(ctx, playerID, config, marketFreshnessSizerStartSpec())
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve freshsizer start config: %w", err)
+	}
+	printCoordinatorStartWarnings("freshsizer", playerID, warnings)
+
 	cmd, err := s.buildCommandForType("market_freshness_sizer_coordinator", config, playerID, containerID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create command: %w", err)

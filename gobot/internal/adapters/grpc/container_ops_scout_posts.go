@@ -26,6 +26,18 @@ func (s *DaemonServer) ScoutPostCoordinator(ctx context.Context, playerID int, t
 		"tick_interval_secs": tickIntervalSecs,
 	}
 
+	// sp-rsgc: re-adopt the last persisted live-tuned config for this player's scout-post
+	// coordinator so a relaunch of a stopped one keeps its tunes (manning-stall window,
+	// cross-system relay switch/hops) instead of silently reverting to defaults — the same
+	// re-adopt the daemon-restart recovery path already does. The [scouting] config.yaml
+	// knobs are re-injected from config.yaml in buildCommandForType (resolveScoutingConfig),
+	// so any stale copy carried forward here is cleared and refreshed.
+	config, warnings, err := s.coordinatorStartConfig(ctx, playerID, config, scoutPostStartSpec())
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve scoutpost start config: %w", err)
+	}
+	printCoordinatorStartWarnings("scoutpost", playerID, warnings)
+
 	cmd, err := s.buildCommandForType("scout_post_coordinator", config, playerID, containerID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create command: %w", err)
