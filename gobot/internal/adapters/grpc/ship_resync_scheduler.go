@@ -9,22 +9,24 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 )
 
-// ShipResyncScheduler periodically re-syncs every player's ships from the API
-// into the local DB, so ship state cannot drift vs live API truth between the
-// event-driven updates (sp-p1ci). It mirrors ShipStateScheduler's sweeper: a
-// timer loop whose tick body runs under supervise.Guard (panic-isolated), and
-// which halts promptly on ctx cancellation OR Stop().
+// ShipResyncScheduler periodically re-syncs the live (open-era) player's ships
+// from the API into the local DB, so ship state cannot drift vs live API truth
+// between the event-driven updates (sp-p1ci). It mirrors ShipStateScheduler's
+// sweeper: a timer loop whose tick body runs under supervise.Guard
+// (panic-isolated), and which halts promptly on ctx cancellation OR Stop().
 //
 // The resync core is injected as a callback so the daemon wires syncAllShips
-// (loops players -> SyncAllFromAPI, the sp-bi75/sp-90a3 dedicated_fleet-safe
-// write path) while tests drive it with a fake callback, a short base interval,
-// and a deterministic jitter seam. This is ordinary Go with real time; tests
-// use a short injected interval rather than a mock clock.
+// (syncs s.primaryPlayerID -> SyncAllFromAPI, the sp-bi75/sp-90a3
+// dedicated_fleet-safe write path; sp-ig6x scoped it to the open-era player)
+// while tests drive it with a fake callback, a short base interval, and a
+// deterministic jitter seam. This is ordinary Go with real time; tests use a
+// short injected interval rather than a mock clock.
 type ShipResyncScheduler struct {
 	resync    func(context.Context) error
 	base      time.Duration
 	jitter    time.Duration
-	randFloat func() float64 // [0,1) seam; rand.Float64 in prod, injected in tests
+	randFloat func() float64                           // [0,1) seam; rand.Float64 in prod, injected in tests
+	logf      func(format string, args ...interface{}) // log sink seam; log.Printf in prod, injected in tests
 	stopCh    chan struct{}
 }
 
@@ -39,6 +41,7 @@ func NewShipResyncScheduler(resync func(context.Context) error, base, jitter tim
 		base:      base,
 		jitter:    jitter,
 		randFloat: rand.Float64,
+		logf:      log.Printf,
 		stopCh:    make(chan struct{}),
 	}
 }
@@ -75,7 +78,14 @@ func (s *ShipResyncScheduler) Run(ctx context.Context) error {
 		case <-timer.C:
 			supervise.Guard("ship-resync", func() {
 				if err := s.resync(ctx); err != nil {
-					log.Printf("Periodic ship resync failed: %v", err)
+					s.logf("Periodic ship resync failed: %v", err)
+				} else {
+					// sp-ig6x (point b): a per-run success heartbeat so a healthy
+					// loop is VISIBLE and a stalled one is diagnosable — previously
+					// the loop logged ONLY on failure, so a success-less (or
+					// non-ticking) loop was invisible. The resync core prints the
+					// synced-count summary to stdout; this confirms the pass ran.
+					s.logf("Periodic ship resync ok")
 				}
 			})
 			timer.Reset(s.nextDelay())

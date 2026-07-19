@@ -920,20 +920,30 @@ func (s *DaemonServer) primaryPlayerID(ctx context.Context) int {
 	return 0
 }
 
-// syncAllShipsOnStartup syncs all ships from API to database for all players
-// at daemon boot. After this sync, the database becomes the source of truth for
-// ship state. Thin wrapper over the shared syncAllShips core (sp-p1ci), which
-// the periodic ShipResyncScheduler also drives.
+// syncAllShipsOnStartup syncs the live (open-era) player's ships from the API
+// into the database at daemon boot. After this sync, the database becomes the
+// source of truth for ship state. Thin wrapper over the shared syncAllShips
+// core (sp-p1ci), which the periodic ShipResyncScheduler also drives.
 func (s *DaemonServer) syncAllShipsOnStartup() error {
 	return s.syncAllShips(context.Background())
 }
 
-// syncAllShips re-syncs every player's ships from the API into the DB. It is
-// the shared core called at startup AND on every periodic resync tick (sp-p1ci).
-// The write path (SyncAllFromAPI) preserves the daemon-owned dedicated_fleet
-// tag per ship (sp-bi75/sp-90a3), so a repeated hourly resync cannot clobber a
-// `fleet assign` pin. The parent ctx bounds the whole sync (canceled at
-// shutdown) under a 60s per-pass timeout.
+// syncAllShips re-syncs the live (open-era) player's ships from the API into
+// the DB. It is the shared core called at startup AND on every periodic resync
+// tick (sp-p1ci). The write path (SyncAllFromAPI) preserves the daemon-owned
+// dedicated_fleet tag per ship (sp-bi75/sp-90a3), so a repeated hourly resync
+// cannot clobber a `fleet assign` pin. The parent ctx bounds the sync (canceled
+// at shutdown) under a 60s timeout.
+//
+// sp-ig6x: sync ONLY s.primaryPlayerID — the open era's player — NOT every
+// player row. A universe reset leaves dead prior-era rows behind (empty or
+// reset-date-mismatched tokens); the old playerRepo.ListAll loop synced them
+// too, and because every player shared this ONE 60s deadline, each dead row's
+// 401 burned the budget so the live player's ships never landed fresh —
+// fleet-wide synced_at froze 12h+. primaryPlayerID is the canonical open-era
+// resolver every other boot-scoped path already uses (ensureBootStandingCoordinators,
+// depot registry). On a normal single-player era it resolves the only player, so
+// the observable outcome is unchanged — this only STOPS syncing dead rows.
 func (s *DaemonServer) syncAllShips(parent context.Context) error {
 	if s.shipRepo == nil || s.playerRepo == nil {
 		return nil
@@ -942,28 +952,32 @@ func (s *DaemonServer) syncAllShips(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 
-	players, err := s.playerRepo.ListAll(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list players: %w", err)
-	}
-
-	if len(players) == 0 {
-		fmt.Println("No players found - skipping ship sync")
+	pid := s.primaryPlayerID(ctx)
+	if pid == 0 {
+		fmt.Println("No open-era player found - skipping ship resync")
 		return nil
 	}
 
-	totalSynced := 0
-	for _, p := range players {
-		count, err := s.shipRepo.SyncAllFromAPI(ctx, p.ID)
-		if err != nil {
-			fmt.Printf("Warning: Failed to sync ships for player %s: %v\n", p.AgentSymbol, err)
-			continue
-		}
-		totalSynced += count
-		fmt.Printf("Synced %d ship(s) for player %s\n", count, p.AgentSymbol)
+	playerID, err := shared.NewPlayerID(pid)
+	if err != nil {
+		return fmt.Errorf("resolve primary player id %d: %w", pid, err)
 	}
 
-	fmt.Printf("Ship sync complete: %d total ship(s) synced across %d player(s)\n", totalSynced, len(players))
+	// Agent symbol for the log line only; the expensive API round-trip is
+	// SyncAllFromAPI below, not this single-row lookup. Fall back to the numeric
+	// id if the row can't be read — the sync still runs.
+	agentLabel := fmt.Sprintf("player_id=%d", pid)
+	if p, err := s.playerRepo.FindByID(ctx, playerID); err == nil && p != nil {
+		agentLabel = p.AgentSymbol
+	}
+
+	count, err := s.shipRepo.SyncAllFromAPI(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to sync ships for player %s: %w", agentLabel, err)
+	}
+
+	fmt.Printf("Synced %d ship(s) for player %s\n", count, agentLabel)
+	fmt.Printf("Ship sync complete: %d total ship(s) synced across 1 player(s)\n", count)
 	return nil
 }
 

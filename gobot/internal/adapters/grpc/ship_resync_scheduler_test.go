@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,6 +61,35 @@ func TestShipResyncScheduler_JitterStaysWithinBounds(t *testing.T) {
 	require.Equal(t, base-jitter, s.nextDelay(), "r=0 must yield base-jitter")
 	s.randFloat = func() float64 { return 1.0 }
 	require.Equal(t, base+jitter, s.nextDelay(), "r=1 must yield base+jitter")
+}
+
+// sp-ig6x (bead point b): a SUCCESSFUL resync pass must emit a per-run success
+// log line, not just the failure line at :78. The prod resync core already
+// prints its own "Ship sync complete" to stdout, but the scheduler itself only
+// logged on failure — so a healthy loop was invisible and a stalled one was
+// indistinguishable from a quiet-but-alive one. This asserts the loop emits a
+// visible heartbeat on a clean pass. logf is injected (same seam idiom as
+// randFloat) so the test observes the log without racing the global logger.
+func TestShipResyncScheduler_LogsSuccessOnCleanPass(t *testing.T) {
+	got := make(chan string, 8)
+	s := NewShipResyncScheduler(func(context.Context) error { return nil }, 15*time.Millisecond, 5*time.Millisecond)
+	s.logf = func(format string, args ...interface{}) {
+		select {
+		case got <- fmt.Sprintf(format, args...):
+		default:
+		}
+	}
+
+	go func() { _ = s.Run(context.Background()) }()
+	defer s.Stop()
+
+	select {
+	case msg := <-got:
+		require.Contains(t, msg, "ship resync ok",
+			"a clean resync pass must emit a visible success/heartbeat log line")
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduler emitted no success log after a clean resync pass — a healthy loop must be visible")
+	}
 }
 
 // Behavior 3 (sp-p1ci): Stop() halts a running loop promptly and cleanly
