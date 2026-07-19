@@ -20,17 +20,34 @@ type fakeTransitionAPI struct {
 	agent       *player.AgentData
 	agentErr    error
 	agentCalled bool
+	agentToken  string
 	status      *api.ServerStatus
 	statusErr   error
+
+	registerResult       *api.RegisterResult
+	registerErr          error
+	registerCalls        int
+	registerAccountToken string
+	registerAgent        string
+	registerFaction      string
 }
 
 func (f *fakeTransitionAPI) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
 	f.agentCalled = true
+	f.agentToken = token
 	return f.agent, f.agentErr
 }
 
 func (f *fakeTransitionAPI) GetServerStatus(ctx context.Context) (*api.ServerStatus, error) {
 	return f.status, f.statusErr
+}
+
+func (f *fakeTransitionAPI) Register(ctx context.Context, accountToken, agentSymbol, faction string) (*api.RegisterResult, error) {
+	f.registerCalls++
+	f.registerAccountToken = accountToken
+	f.registerAgent = agentSymbol
+	f.registerFaction = faction
+	return f.registerResult, f.registerErr
 }
 
 type fakeTransitionEraStore struct {
@@ -302,4 +319,118 @@ func TestTransition_NoConfirmPreviewsNoMutation(t *testing.T) {
 	require.False(t, def.called)
 	require.False(t, cap.called)
 	require.Contains(t, out.String(), "--confirm")
+}
+
+// (a) No --token + ST_ACCOUNT_TOKEN present + apply: the new era's JWT is minted via
+// the API, and it — not the empty --token — is what gets validated and persisted.
+func TestTransition_MintsJWTFromAccountTokenOnApply(t *testing.T) {
+	deps, apiFake, store, def, cap, _ := happyDeps()
+	apiFake.registerResult = &api.RegisterResult{Token: "minted-jwt", AgentSymbol: "TORWIND"}
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", accountToken: "acct-tok", confirm: true}, &out)
+	require.NoError(t, err)
+
+	// Registered exactly once with (accountToken, agent, faction="") — the same
+	// empty-faction default the `player register --new` path uses.
+	require.Equal(t, 1, apiFake.registerCalls)
+	require.Equal(t, "acct-tok", apiFake.registerAccountToken)
+	require.Equal(t, "TORWIND", apiFake.registerAgent)
+	require.Equal(t, "", apiFake.registerFaction)
+
+	// The minted token is the working token: it is what GetAgent re-validates and
+	// what lands in the new player row.
+	require.Equal(t, "minted-jwt", apiFake.agentToken)
+	require.Equal(t, "minted-jwt", store.capturedPlayer.Token)
+
+	// The flip and both repoints proceed on the minted token.
+	require.Equal(t, 1, store.transitionCalls)
+	require.True(t, def.called)
+	require.True(t, cap.called)
+
+	// The one-and-only minted token must never be echoed to stdout.
+	require.NotContains(t, out.String(), "minted-jwt")
+}
+
+// (b) An explicit --token wins over ST_ACCOUNT_TOKEN and must not trigger a mint —
+// byte-identical to the pre-existing token path.
+func TestTransition_ExplicitTokenSkipsMint(t *testing.T) {
+	deps, apiFake, store, _, _, _ := happyDeps()
+	apiFake.registerResult = &api.RegisterResult{Token: "should-not-be-used", AgentSymbol: "TORWIND"}
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", token: "explicit-jwt", accountToken: "acct-tok", confirm: true}, &out)
+	require.NoError(t, err)
+
+	require.Zero(t, apiFake.registerCalls, "explicit --token must not trigger a mint")
+	require.Equal(t, "explicit-jwt", apiFake.agentToken)
+	require.Equal(t, "explicit-jwt", store.capturedPlayer.Token)
+	require.Equal(t, 1, store.transitionCalls)
+}
+
+// (c) Neither --token nor ST_ACCOUNT_TOKEN: fail closed with a clear error, touching
+// no external service and writing nothing (RULINGS #4 fail-closed principle).
+func TestTransition_NoTokenAndNoAccountTokenFailsClosed(t *testing.T) {
+	deps, apiFake, store, def, cap, fleet := happyDeps()
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", confirm: true}, &out)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ST_ACCOUNT_TOKEN")
+	require.Zero(t, apiFake.registerCalls, "no registration without a token source")
+	require.False(t, apiFake.agentCalled, "no API calls at all on the fail-closed path")
+	require.Zero(t, store.transitionCalls)
+	require.False(t, def.called)
+	require.False(t, cap.called)
+	require.Empty(t, fleet.stopOrder)
+}
+
+// (d) A preview (dry-run OR the absence of --confirm) must NOT register an agent —
+// minting consumes an irreversible account slot — yet must tell the operator the
+// mint will happen on --confirm.
+func TestTransition_PreviewDoesNotMint(t *testing.T) {
+	cases := []struct {
+		name string
+		opts transitionOpts
+	}{
+		{"dry-run", transitionOpts{agent: "TORWIND", accountToken: "acct-tok", dryRun: true, confirm: true}},
+		{"no-confirm", transitionOpts{agent: "TORWIND", accountToken: "acct-tok"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, apiFake, store, def, cap, fleet := happyDeps()
+			apiFake.registerResult = &api.RegisterResult{Token: "minted-jwt", AgentSymbol: "TORWIND"}
+			var out bytes.Buffer
+
+			err := runUniverseTransition(context.Background(), deps, tc.opts, &out)
+			require.NoError(t, err)
+
+			require.Zero(t, apiFake.registerCalls, "preview must not register an agent")
+			require.Zero(t, store.transitionCalls)
+			require.False(t, def.called)
+			require.False(t, cap.called)
+			require.Empty(t, fleet.stopOrder)
+
+			require.Contains(t, out.String(), "ST_ACCOUNT_TOKEN")
+			require.Contains(t, out.String(), "TORWIND")
+		})
+	}
+}
+
+// (e) If the minted token validates to a different agent than --agent, the existing
+// GetAgent symbol guard must still refuse the flip (belt-and-suspenders).
+func TestTransition_MintedSymbolMismatchRefused(t *testing.T) {
+	deps, apiFake, store, def, cap, _ := happyDeps()
+	apiFake.registerResult = &api.RegisterResult{Token: "minted-jwt", AgentSymbol: "TORWIND"}
+	apiFake.agent = &player.AgentData{Symbol: "SOMEONE_ELSE"}
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", accountToken: "acct-tok", confirm: true}, &out)
+
+	require.Error(t, err)
+	require.Equal(t, 1, apiFake.registerCalls, "mint precedes validation")
+	require.Zero(t, store.transitionCalls, "no era flip when the minted symbol mismatches")
+	require.False(t, def.called)
+	require.False(t, cap.called)
 }

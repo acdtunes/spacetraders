@@ -25,6 +25,7 @@ import (
 type transitionAPI interface {
 	GetAgent(ctx context.Context, token string) (*player.AgentData, error)
 	GetServerStatus(ctx context.Context) (*api.ServerStatus, error)
+	Register(ctx context.Context, accountToken, agentSymbol, faction string) (*api.RegisterResult, error)
 }
 
 type transitionEraStore interface {
@@ -79,10 +80,11 @@ type transitionDeps struct {
 }
 
 type transitionOpts struct {
-	agent   string
-	token   string
-	dryRun  bool
-	confirm bool
+	agent        string
+	token        string
+	accountToken string
+	dryRun       bool
+	confirm      bool
 }
 
 // ---- orchestration ---------------------------------------------------------
@@ -97,14 +99,34 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	if opts.agent == "" {
 		return fmt.Errorf("--agent is required")
 	}
-	if opts.token == "" {
-		return fmt.Errorf("--token is required")
-	}
 	apply := opts.confirm && !opts.dryRun
 
-	// 1. Validate the token FIRST via the API. This is the root-cause fix for the
-	//    silent-corruption era: nothing is written unless the token authenticates.
-	agentData, err := deps.api.GetAgent(ctx, opts.token)
+	// Resolve the working token. An explicit --token (manual/recovery override) wins
+	// and is validated exactly as before. Absent it, the new era's JWT is minted from
+	// ST_ACCOUNT_TOKEN. Registering an agent is an irreversible external effect that
+	// consumes an account slot, so the mint runs ONLY on a confirmed apply — a
+	// preview/dry-run states the mint and registers nothing. With neither token source
+	// we fail closed before touching the API or the DB.
+	if opts.token == "" && opts.accountToken == "" {
+		return fmt.Errorf("provide --token or set ST_ACCOUNT_TOKEN")
+	}
+	if opts.token == "" && !apply {
+		return previewPendingMint(ctx, deps, opts, out)
+	}
+	token := opts.token
+	if token == "" {
+		minted, err := deps.api.Register(ctx, opts.accountToken, opts.agent, "")
+		if err != nil {
+			return fmt.Errorf("failed to mint new-era JWT for %q — no changes made: %w", opts.agent, err)
+		}
+		token = minted.Token
+	}
+
+	// 1. Validate the (provided or freshly-minted) token FIRST via the API. This is
+	//    the root-cause fix for the silent-corruption era: nothing is written unless
+	//    the token authenticates. On the mint path it also re-asserts the minted
+	//    agent's symbol matches --agent.
+	agentData, err := deps.api.GetAgent(ctx, token)
 	if err != nil {
 		return fmt.Errorf("token validation failed (GetAgent) — no changes made: %w", err)
 	}
@@ -155,7 +177,7 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	now := time.Now().UTC()
 	newPlayer := &persistence.PlayerModel{
 		AgentSymbol: symbol,
-		Token:       opts.token,
+		Token:       token,
 		CreatedAt:   now,
 		Metadata:    factionMetadata(agentData.StartingFaction),
 	}
@@ -226,6 +248,44 @@ func printTransitionPlan(out io.Writer, symbol string, agentData *player.AgentDa
 	fmt.Fprintf(w, "New era\t%s (new player) → will be OPENED for resetDate %s\n", newEraName, resetDate)
 	fmt.Fprintf(w, "Repoint\tCLI default + captain.player_id → new player\n")
 	w.Flush()
+}
+
+// previewPendingMint prints the rollover plan for the mint path (no --token, not yet
+// applied) using only read-only calls — it registers no agent. The new era's JWT is
+// minted from ST_ACCOUNT_TOKEN only when the command is re-run with --confirm.
+func previewPendingMint(ctx context.Context, deps transitionDeps, opts transitionOpts, out io.Writer) error {
+	status, err := deps.api.GetServerStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get server status: %w", err)
+	}
+	resetDate, err := time.Parse(eraDateLayout, status.ResetDate)
+	if err != nil {
+		return fmt.Errorf("failed to parse server reset date %q: %w", status.ResetDate, err)
+	}
+	newEraName := strings.ToLower(opts.agent) + "-" + resetDate.Format(eraDateLayout)
+
+	openEra, err := deps.era.FindOpenEra(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load open era: %w", err)
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "Agent\t%s — a fresh JWT will be minted from ST_ACCOUNT_TOKEN on --confirm\n", opts.agent)
+	fmt.Fprintf(w, "Server resetDate\t%s\n", status.ResetDate)
+	if openEra != nil {
+		fmt.Fprintf(w, "Prior era\t%s (player %d) → will be CLOSED (no cache truncation)\n", openEra.Name, openEra.PlayerID)
+	} else {
+		fmt.Fprintf(w, "Prior era\t(none open)\n")
+	}
+	fmt.Fprintf(w, "New era\t%s (new player) → will be OPENED for resetDate %s\n", newEraName, status.ResetDate)
+	w.Flush()
+
+	if opts.dryRun {
+		fmt.Fprintln(out, "\n--dry-run: no changes made, no agent registered.")
+	} else {
+		fmt.Fprintln(out, "\nPreview only — re-run with --confirm to mint the JWT and apply the era rollover.")
+	}
+	return nil
 }
 
 func factionMetadata(faction string) string {
@@ -426,17 +486,19 @@ func newUniverseTransitionCommand() *cobra.Command {
 		Short: "One-command era rollover: adopt a token, flip the era, repoint, and drain",
 		Long: `Perform the full universe-era rollover as one idempotent, guarded command.
 
-It validates --token against the API (GetAgent) BEFORE writing anything, so a
-corrupt token is rejected with zero partial state. On --confirm it then flips the
-era table WITHOUT truncating the player-partitioned market_data / system_graphs
-caches, repoints both the CLI default player AND captain.player_id, and drains the
-prior era's containers coordinators-first (reconciling daemon-unknown orphan rows
-to STOPPED).
+With --token it validates that token against the API (GetAgent) BEFORE writing
+anything, so a corrupt token is rejected with zero partial state. Without --token it
+mints the new era's JWT by registering --agent via ST_ACCOUNT_TOKEN (only on
+--confirm), then validates and uses it. On --confirm it flips the era table WITHOUT
+truncating the player-partitioned market_data / system_graphs caches, repoints both
+the CLI default player AND captain.player_id, and drains the prior era's containers
+coordinators-first (reconciling daemon-unknown orphan rows to STOPPED).
 
 Idempotent: re-running once the universe is in sync is a no-op. --dry-run (or the
-absence of --confirm) previews the plan and mutates nothing.
+absence of --confirm) previews the plan and mutates nothing (and mints nothing).
 
 Examples:
+  spacetraders universe transition --agent TORWIND --confirm            # mints from ST_ACCOUNT_TOKEN
   spacetraders universe transition --agent TORWIND --token eyJ... --dry-run
   spacetraders universe transition --agent TORWIND --token eyJ... --confirm`,
 		SilenceUsage: true,
@@ -446,7 +508,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&agent, "agent", "", "agent symbol for the new era (must match the token's agent)")
-	cmd.Flags().StringVar(&token, "token", "", "JWT for the new era's agent (validated via API before any write)")
+	cmd.Flags().StringVar(&token, "token", "", "JWT for the new era's agent; if omitted, one is minted from ST_ACCOUNT_TOKEN (validated via API before any write)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the rollover plan without mutating anything")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "apply the destructive rollover (era flip, repoint, drain)")
 	return cmd
@@ -490,9 +552,10 @@ func runUniverseTransitionCommand(agent, token string, dryRun, confirm bool) err
 	}
 
 	return runUniverseTransition(context.Background(), deps, transitionOpts{
-		agent:   agent,
-		token:   token,
-		dryRun:  dryRun,
-		confirm: confirm,
+		agent:        agent,
+		token:        token,
+		accountToken: os.Getenv("ST_ACCOUNT_TOKEN"),
+		dryRun:       dryRun,
+		confirm:      confirm,
 	}, os.Stdout)
 }
