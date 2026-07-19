@@ -8,45 +8,49 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/dutycycle"
 )
 
-// contractHaulerFleets are the dedication tags of the contract-delivery op's cargo
-// haulers — the hauler tier the reconciler's hauler-first staging gate measures
-// (sp-5nd2 / sp-u5nh). "contract" is the contract-fulfillment hauler pool (the literal
-// matches application/ship/commands/assignment's dedicatedFleetContract, which the domain
-// layer cannot import); depot.DeliveryHullFleet is the depot delivery-hull fleet the
-// reconciler dedicates an adopted worker to. FRIGATE-INCLUSIVE: any cargo-capable hull on
-// these fleets counts (the command frigate on "contract" is a hauler); a LIGHT-only count
-// would need a frame read (flagged in the sp-5nd2 handback).
+// roleLightHauler is the registration role of a LIGHT hauling hull — the same "HAULER"
+// tag FindIdleLightHaulers / the autosizer / the depot reserve all key light-hauler
+// candidacy on. The staging count uses it to count ONLY light haulers toward the tier:
+// the COMMAND frigate (role "COMMAND") is the last-resort command ship, not a light
+// hauler (Admiral: "a light hauler is a light hauler"), and a probe/satellite is another
+// role entirely — neither lifts the hauler tier (sp-cr2v).
+const roleLightHauler = "HAULER"
+
+// contractHaulerFleets are the dedication tags a LIGHT hauler is counted under toward the
+// hauler tier (sp-cr2v / sp-u5nh). "contract" is the contract-fulfillment hauler pool (the
+// literal matches application/ship/commands/assignment's dedicatedFleetContract, which the
+// domain layer cannot import); depot.DeliveryHullFleet is the depot delivery-hull fleet the
+// reconciler dedicates an adopted light hauler to. A hauler dedicated to trade/manufacturing
+// serves a different op and is NOT counted.
 var contractHaulerFleets = map[string]bool{
 	"contract":              true,
 	depot.DeliveryHullFleet: true,
 }
 
-// countContractHaulers counts the contract-delivery op's DISTINCT cargo haulers — the
-// staging-gate input the planner reads as EconomicsSignals.ContractHaulerCount. Two
-// sources, deduped by ship symbol: the depot delivery hulls already serving (cluster
-// workers) and the cargo-capable hulls tagged to a hauler fleet (contract-fulfillment +
+// countContractHaulers counts the contract-delivery op's LIGHT haulers — the staging-gate
+// input the planner reads as EconomicsSignals.ContractHaulerCount. A hull counts iff it is
+// the LIGHT-hauler class (role "HAULER" — excludes the COMMAND frigate + probes/satellites),
+// cargo-capable, AND dedicated to a contract-delivery hauler fleet (contract-fulfillment or
 // adopted depot-delivery). DELIBERATELY EXCLUDES the undedicated idle reuse pool: the
-// reconciler consumes it into roles each tick, so counting it would drop the tally the
-// moment an idle hull is reassigned to a warehouse and thrash the gate. Deadlock-safe:
-// contract-delivery hulls are bought UNDEDICATED (autosizerDedicatedFleet default), but
-// staged mode has only worker gaps, so the reconciler dedicates each adopted idle hull to
-// depot-delivery — where this count then sees it — before any warehouse is desired.
-func countContractHaulers(hulls []domainCapacity.HullUtilization, topology domainCapacity.TopologySignals) int {
-	haulers := map[string]bool{}
-	for _, cluster := range topology.Clusters {
-		for _, worker := range cluster.Workers {
-			haulers[worker.ShipSymbol] = true
-		}
-	}
+// reconciler consumes it into roles each tick, so counting it would drop the tally the moment
+// an idle hull is reassigned and thrash the gate. Deadlock-safe: contract-delivery hulls are
+// bought UNDEDICATED (autosizerDedicatedFleet default), but staged mode has only worker gaps,
+// so the reconciler dedicates each adopted light hauler to depot-delivery — where this count
+// then sees it (still role "HAULER") — before any warehouse is desired.
+func countContractHaulers(hulls []domainCapacity.HullUtilization) int {
+	count := 0
 	for _, hull := range hulls {
+		if hull.Role != roleLightHauler {
+			continue
+		}
 		if hull.CargoCapacity < domainCapacity.MinReuseCargoCapacity {
 			continue
 		}
 		if contractHaulerFleets[hull.DedicatedFleet] {
-			haulers[hull.ShipSymbol] = true
+			count++
 		}
 	}
-	return len(haulers)
+	return count
 }
 
 // senseUtilization projects the player's ships rows into per-hull utilization.
@@ -61,10 +65,11 @@ func (s *Sensor) senseUtilization(ctx context.Context, playerID int) domainCapac
 		LocationSymbol string
 		ContainerID    *string
 		CargoCapacity  int
+		Role           string
 	}
 	err := s.db.WithContext(ctx).
 		Table("ships").
-		Select("ship_symbol, dedicated_fleet, location_symbol, container_id, cargo_capacity").
+		Select("ship_symbol, dedicated_fleet, location_symbol, container_id, cargo_capacity, role").
 		Where("player_id = ?", playerID).
 		Order("ship_symbol").
 		Scan(&rows).Error
@@ -89,6 +94,9 @@ func (s *Sensor) senseUtilization(ctx context.Context, playerID int) domainCapac
 			// roles, so the ladder + SENSE filter exclude a below-floor hull
 			// (0-cargo probe/satellite) from reuse — see MinReuseCargoCapacity.
 			CargoCapacity: row.CargoCapacity,
+			// Role gates the hauler-tier count to the LIGHT-hauler class only
+			// (excludes the COMMAND frigate) — see countContractHaulers.
+			Role: row.Role,
 		})
 	}
 	return domainCapacity.UtilizationSignals{Hulls: hulls}

@@ -173,7 +173,7 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 		// FleetHullCount and ContractHaulerCount both derive from the SAME hull
 		// set Utilization carries — the consistency the contract requires is
 		// structural, not coincidental.
-		Economics: s.senseEconomics(ctx, playerID, demand, topology, len(utilization.Hulls), countContractHaulers(utilization.Hulls, topology)),
+		Economics: s.senseEconomics(ctx, playerID, demand, topology, len(utilization.Hulls), countContractHaulers(utilization.Hulls)),
 	}, nil
 }
 

@@ -57,27 +57,51 @@ func TestReuseEligibleIdleHulls_ExcludesPurchasingDedicatedHull(t *testing.T) {
 		"the exclusive purchasing ship (dedicated_fleet=purchasing) is invisible to tier-1 reuse-idle — the reconciler can never poach it into contract-delivery")
 }
 
-// sp-5nd2 staging-gate count: EconomicsSignals.ContractHaulerCount is the DISTINCT union of
-// the depot delivery hulls already serving (cluster workers) and the cargo-capable hulls
-// tagged to a hauler fleet (contract-fulfillment + adopted depot-delivery), deduped by ship
-// symbol. It EXCLUDES 0-cargo probes, warehouse/stocker infra hulls, and the undedicated idle
-// reuse pool (which the reconciler consumes into roles each tick — counting it would thrash
-// the gate).
-func TestCountContractHaulers_UnionOfClusterWorkersAndDedicatedHaulersDeduped(t *testing.T) {
-	hulls := []domcap.HullUtilization{
-		{ShipSymbol: "FRIGATE", DedicatedFleet: "contract", Idle: true, CargoCapacity: 80},       // counts (contract pool)
-		{ShipSymbol: "DELIV-1", DedicatedFleet: "depot-delivery", Idle: true, CargoCapacity: 80}, // counts AND a cluster worker -> deduped
-		{ShipSymbol: "PROBE", DedicatedFleet: "contract", Idle: true, CargoCapacity: 0},          // 0-cargo: excluded
-		{ShipSymbol: "IDLE-FREE", DedicatedFleet: "", Idle: true, CargoCapacity: 80},             // undedicated reuse pool: excluded
-		{ShipSymbol: "WAREHOUSE-1", DedicatedFleet: "warehouse", Idle: true, CargoCapacity: 80},  // infra, not a hauler: excluded
+// sp-cr2v staging-gate count (Admiral: "a light hauler is a light hauler"): the hauler tier
+// counts ONLY the LIGHT-hauler class (role "HAULER") dedicated to a contract-delivery hauler
+// fleet (contract-fulfillment or adopted depot-delivery). It EXCLUDES the COMMAND frigate
+// (role "COMMAND" — the last-resort command ship, NOT a light hauler), probes/satellites
+// (0-cargo / non-hauler role), warehouse/stocker infra, trade/manufacturing haulers (wrong
+// op), and the undedicated idle reuse pool (which the reconciler consumes each tick).
+func TestCountContractHaulers_CountsOnlyLightHaulersExcludingTheCommandFrigate(t *testing.T) {
+	cases := []struct {
+		name  string
+		hulls []domcap.HullUtilization
+		want  int
+	}{
+		{
+			name: "the command frigate + one light hauler is ONE — the frigate never lifts the tier",
+			hulls: []domcap.HullUtilization{
+				{ShipSymbol: "TORWIND-1", Role: "COMMAND", DedicatedFleet: "contract", CargoCapacity: 80},
+				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80},
+			},
+			want: 1,
+		},
+		{
+			name: "two light haulers reach the tier",
+			hulls: []domcap.HullUtilization{
+				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80},
+				{ShipSymbol: "DELIV-1", Role: "HAULER", DedicatedFleet: "depot-delivery", CargoCapacity: 80},
+			},
+			want: 2,
+		},
+		{
+			name: "non-light / wrong-op / 0-cargo / undedicated are all excluded",
+			hulls: []domcap.HullUtilization{
+				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80}, // the only one that counts
+				{ShipSymbol: "FRIGATE", Role: "COMMAND", DedicatedFleet: "contract", CargoCapacity: 80},
+				{ShipSymbol: "PROBE", Role: "SATELLITE", DedicatedFleet: "contract", CargoCapacity: 0},
+				{ShipSymbol: "TRADE-1", Role: "HAULER", DedicatedFleet: "trade", CargoCapacity: 80},
+				{ShipSymbol: "IDLE-FREE", Role: "HAULER", DedicatedFleet: "", CargoCapacity: 80},
+			},
+			want: 1,
+		},
 	}
-	topology := domcap.TopologySignals{Clusters: []domcap.ClusterState{{
-		HubSymbol: "X1-H1",
-		Workers:   []domcap.WorkerState{{ShipSymbol: "DELIV-1"}, {ShipSymbol: "DELIV-2"}},
-	}}}
-
-	require.Equal(t, 3, countContractHaulers(hulls, topology),
-		"FRIGATE + DELIV-1 + DELIV-2 (DELIV-1 counted once across both sources); probe/idle-free/warehouse excluded")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, countContractHaulers(tc.hulls))
+		})
+	}
 }
 
 // sp-5nd2 never-mispick: an idle, undedicated hull that CANNOT haul (a 0-cargo

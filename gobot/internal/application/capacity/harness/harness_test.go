@@ -188,6 +188,7 @@ func seedContractHaulers(t *testing.T, db *gorm.DB, playerID, n int) {
 			SystemSymbol:   "X1-HAULER",
 			DedicatedFleet: "contract",
 			CargoCapacity:  80,
+			Role:           "HAULER", // LIGHT-hauler class — the tier counts only these, never the COMMAND frigate (sp-cr2v)
 		}).Error)
 	}
 }

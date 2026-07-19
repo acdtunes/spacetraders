@@ -161,6 +161,13 @@ type HullUtilization struct {
 	// starving escalation. Excluding it lets the gap escalate to capital instead
 	// (sp-5nd2). SENSE fills it; a zero value fails SAFE (excluded, never poached).
 	CargoCapacity int
+	// Role is the hull's registration role ("HAULER", "COMMAND", "SATELLITE"…).
+	// The hauler-first staging count (ContractHaulerCount) counts ONLY the
+	// LIGHT-hauler class (Role "HAULER") toward the tier — the COMMAND frigate
+	// (Role "COMMAND") is the last-resort command ship, NOT a light hauler, so it
+	// never lifts the tier (sp-cr2v / Admiral: "a light hauler is a light
+	// hauler"). SENSE fills it; unset excludes the hull from the hauler count.
+	Role string
 }
 
 // MinReuseCargoCapacity is the cargo-hold floor an idle hull must clear to be

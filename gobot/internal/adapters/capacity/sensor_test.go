@@ -269,6 +269,39 @@ func newSensorUnderTest(db *gorm.DB, treasury capacityAdapters.TreasuryReader) *
 	)
 }
 
+// seedRoledShip persists one cargo-capable ship with an explicit registration role and
+// dedication — for the hauler-tier count, which keys on role "HAULER" (sp-cr2v).
+func seedRoledShip(t *testing.T, db *gorm.DB, playerID int, symbol, role, fleet string) {
+	t.Helper()
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol:     symbol,
+		PlayerID:       playerID,
+		LocationSymbol: hubWaypoint,
+		SystemSymbol:   "X1-TT77",
+		DedicatedFleet: fleet,
+		CargoCapacity:  80,
+		Role:           role,
+	}).Error)
+}
+
+// sp-cr2v (Admiral: "a light hauler is a light hauler"): EconomicsSignals.ContractHaulerCount
+// counts ONLY the LIGHT-hauler class (role "HAULER") dedicated to the contract op — the
+// COMMAND frigate, seeded role "COMMAND", never lifts the tier however cargo-capable and
+// contract-dedicated it is. Proves the DB role → count path end-to-end.
+func TestSense_ContractHaulerCountCountsLightHaulersNotTheCommandFrigate(t *testing.T) {
+	db := newTestDB(t)
+	playerID := seedWorld(t, db)
+	seedRoledShip(t, db, playerID, "TORWIND-1", "COMMAND", "contract")    // command frigate — excluded
+	seedRoledShip(t, db, playerID, "LIGHT-1", "HAULER", "contract")       // light contract hauler — counts
+	seedRoledShip(t, db, playerID, "LIGHT-2", "HAULER", "depot-delivery") // adopted depot delivery hauler — counts
+
+	signals, err := newSensorUnderTest(db, fakeTreasury{credits: 1}).Sense(context.Background(), playerID)
+
+	require.NoError(t, err)
+	require.Equal(t, 2, signals.Economics.ContractHaulerCount,
+		"only the two LIGHT haulers count; the COMMAND frigate is the last-resort command ship, never a light hauler")
+}
+
 // --- behaviors ---------------------------------------------------------------
 
 // Behavior 1: contract history aggregates into per-hub demand — contracts/hour
