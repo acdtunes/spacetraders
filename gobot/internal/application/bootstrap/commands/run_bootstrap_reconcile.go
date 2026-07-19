@@ -165,10 +165,11 @@ type reconcileResult struct {
 	Blocker   string // the one guard that blocked the highest-priority action (for the heartbeat)
 
 	// INCOME tallies (Slice 2).
-	HaulersBought  int  // contract haulers actually bought this tick (staged: at most 1)
-	FrigateRetired bool // the command frigate was retired from contract work this tick
-	ContractRun    bool // batch-contract was launched this tick
-	ViableHubs     int  // viable contract hubs the selector found (for the heartbeat)
+	HaulersBought      int  // contract haulers actually bought this tick (staged: at most 1)
+	FrigateRetired     bool // the command frigate was retired from contract work this tick
+	ContractRun        bool // batch-contract was launched this tick
+	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
+	ViableHubs         int  // viable contract hubs the selector found (for the heartbeat)
 
 	// GATE tallies (Slice 3).
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
@@ -679,7 +680,7 @@ func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
 	if cfg.DryRun {
 		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
 	}
@@ -709,6 +710,7 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"haulers_bought":   res.HaulersBought,
 		"frigate_retired":  res.FrigateRetired,
 		"batch_contract":   res.ContractRun,
+		"frigate_loop":     res.FrigateLoopStarted,
 		"scouted":          res.Scouted,
 		"gate_site":        obs.GateSite,
 		"construction_pct": obs.ConstructionPercent,
@@ -739,6 +741,9 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		}
 		if !obs.BatchContractRunning {
 			return "launch batch-contract on the contract fleet"
+		}
+		if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning {
+			return "start the command frigate's continuous contract loop (pre-hauler sole earner)"
 		}
 		desired := len(selectContractHubs(obs.Markets, obs.ContractGoods))
 		if desired > cfg.HaulerTarget {

@@ -2,7 +2,9 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
@@ -80,6 +82,10 @@ func NewBootstrapCoordinatorHandler(
 	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
+	// sp-rype: the pre-hauler frigate sole-earner contract loop (sp-ehg9 batch-contract --loop). After the
+	// frigate finishes its hour-0 shipyard run + probe buy it runs contracts as the sole earner instead of
+	// parking idle at the yard — the fix for the cold-start income stall.
+	h.SetFrigateContractLoopStarter(&bootstrapFrigateContractLoop{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
 	// sp-r6yq: the per-tick live-config reader makes every bootstrap knob honor
 	// `spacetraders tune --operation bootstrap` on the next reconcile with no restart. Reads the
@@ -220,6 +226,16 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if running, rerr := contractFleetCoordinatorRunning(ctx, o.containerRepo, playerID); rerr == nil {
 			obs.BatchContractRunning = running
 		}
+		// sp-rype earner-signal: is the command frigate's OWN continuous contract loop running? SEPARATE
+		// from BatchContractRunning (which detects the contract_fleet_coordinator TYPE, not this per-hull
+		// CONTRACT_WORKFLOW loop — sp-ehg9 note), so the INCOME action starts the loop exactly once and
+		// never double-claims. Best-effort + only when the frigate is resolved: a read miss leaves it
+		// false, and the daemon's per-player single-CONTRACT_WORKFLOW guard rejects any redundant start.
+		if obs.CommandFrigateID != "" {
+			if running, rerr := frigateContractLoopRunning(ctx, o.containerRepo, playerID, obs.CommandFrigateID); rerr == nil {
+				obs.FrigateContractLoopRunning = running
+			}
+		}
 		// sp-tsn2 probe-buyer arbitration input: is a market-freshness-sizer coordinator running to take
 		// over probe acquisition? Best-effort — a read miss leaves it false, so bootstrap keeps buying
 		// (never defers into a vacuum). Inert unless defer_probe_to_freshsizer is armed.
@@ -343,6 +359,39 @@ func contractFleetCoordinatorRunning(ctx context.Context, repo *persistence.Cont
 		}
 		for _, m := range models {
 			if m.ContainerType == string(container.ContainerTypeContractFleetCoordinator) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// frigateContractLoopRunning reports whether the command frigate's OWN continuous single-hull contract
+// loop is RUNNING or PENDING for the player — the sp-rype earner-signal the bootstrap INCOME action
+// guards on (so it starts the loop exactly once and never double-claims). It is the loop container
+// sp-ehg9 creates: a CONTRACT_WORKFLOW container with ship_symbol==frigate AND iterations==-1. Matching
+// BOTH is what distinguishes it from a coordinator-spawned single-shot worker (iterations 1, on a
+// hauler); obs.BatchContractRunning cannot see it because that detects the coordinator TYPE, not this
+// per-hull loop (sp-ehg9 note). Mirrors contractFleetCoordinatorRunning's PENDING+RUNNING scan.
+func frigateContractLoopRunning(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int, frigateSymbol string) (bool, error) {
+	for _, st := range []container.ContainerStatus{container.ContainerStatusRunning, container.ContainerStatusPending} {
+		models, err := repo.ListByStatus(ctx, st, &playerID)
+		if err != nil {
+			return false, err
+		}
+		for _, m := range models {
+			if m.ContainerType != string(container.ContainerTypeContractWorkflow) {
+				continue
+			}
+			cfg := map[string]interface{}{}
+			if m.Config != "" {
+				if json.Unmarshal([]byte(m.Config), &cfg) != nil {
+					continue
+				}
+			}
+			ship, _ := cfg["ship_symbol"].(string)
+			iters, _ := intValue(cfg["iterations"])
+			if ship == frigateSymbol && iters == -1 {
 				return true, nil
 			}
 		}
@@ -528,6 +577,28 @@ func (r *bootstrapContractRunner) StartBatchContract(ctx context.Context, player
 	}
 	_, err = r.server.ContractFleetCoordinator(ctx, nil, playerID, nil, nil)
 	return err
+}
+
+// --- frigate contract-loop starter (sp-rype: the pre-hauler sole-earner loop, sp-ehg9 primitive) ---
+
+type bootstrapFrigateContractLoop struct{ server *DaemonServer }
+
+// StartLoop puts the command frigate on a continuous single-hull contract loop
+// (server.BatchContractWorkflow with iterations=-1 — the sp-ehg9 batch-contract --loop). The daemon's
+// per-player single-CONTRACT_WORKFLOW guard (CreateIfNoActiveWorker) makes a duplicate start a benign
+// no-op, so an "already running" error is swallowed as success — the reconciler already gates on the
+// obs.FrigateContractLoopRunning earner-signal, and this only trips on the rare observation-lag race.
+// The loop CLAIMS the frigate via the container runner (IsAssigned), NOT the "contract" fleet tag, so it
+// never collides with the frigate-retire (which clears that tag) and the coordinator can never
+// double-claim the frigate while the loop holds it (RULINGS #7).
+func (r *bootstrapFrigateContractLoop) StartLoop(ctx context.Context, playerID int, frigateSymbol string) error {
+	if _, err := r.server.BatchContractWorkflow(ctx, frigateSymbol, playerID, -1); err != nil {
+		if strings.Contains(err.Error(), "already running") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // --- scout assigner (reuse the VRP scout-all-markets fleet assignment) ---

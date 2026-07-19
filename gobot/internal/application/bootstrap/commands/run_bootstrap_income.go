@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// actIncome runs the INCOME phase (Slice 2): the contract-income ramp. Three independently-guarded,
+// actIncome runs the INCOME phase (Slice 2): the contract-income ramp. Four independently-guarded,
 // idempotent actions on the observed delta, ordered so the fleet earns from tick 1 and never deadlocks:
 //
 //  1. Retire the command frigate from contract work IF it still carries the "contract" tag (it is a
@@ -17,7 +17,13 @@ import (
 //     immediately (the frigate via the contract coordinator's general pool, until dedicated haulers
 //     put it in exclusive mode), growing treasury so the staged hauler buys become affordable — this
 //     is what avoids the "retire everything, nothing earns" deadlock.
-//  3. Staged, capital-gated hauler acquisition — one light hauler per viable contract hub, capped at
+//  3. Start the command frigate's OWN continuous single-hull contract loop once probe provisioning is
+//     done (sp-rype, reusing the sp-ehg9 batch-contract --loop primitive). The frigate is the pre-hauler
+//     sole earner but the contract fleet coordinator does not keep it earning (sp-ehg9), so without this
+//     the frigate parks idle at the shipyard after its hour-0 probe buy and income never flows — the
+//     stall this fixes. The loop and the coordinator are mutually exclusive at the daemon (per-player
+//     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
+//  4. Staged, capital-gated hauler acquisition — one light hauler per viable contract hub, capped at
 //     hauler_target. The COUNT guard (haulers < desired) is the double-buy protection; placement picks
 //     the top-ranked hub no hauler yet serves. At most one buy per tick (never a blind buy-all).
 //
@@ -34,7 +40,16 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		h.ensureBatchContract(ctx, cmd, cfg, res)
 	}
 
-	// (3) Staged hauler acquisition — one per viable hub, capped at hauler_target. Compute the viable
+	// (3) Put the command frigate on its OWN continuous contract loop once provisioning is done, so it
+	// EARNS as the pre-hauler sole earner instead of parking idle at the shipyard (sp-rype). Guarded on
+	// probes≥target (the frigate juggles buy-probes-first, then earn — sp-t39j) AND the frigate not
+	// already looping (obs.FrigateContractLoopRunning — the earner-signal, so it starts exactly once and
+	// never double-claims). A resolved frigate is required (no guess).
+	if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning {
+		h.startFrigateContractLoop(ctx, cmd, cfg, obs, res)
+	}
+
+	// (4) Staged hauler acquisition — one per viable hub, capped at hauler_target. Compute the viable
 	// hubs (pure) and the desired count; the count guard is the double-buy protection.
 	hubs := selectContractHubs(obs.Markets, obs.ContractGoods)
 	res.ViableHubs = len(hubs)
@@ -120,6 +135,49 @@ func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context
 	logger.Log("INFO", "Bootstrap launched batch-contract on the contract fleet — the fleet now earns while the hauler ramp stages", map[string]interface{}{
 		"action":       "bootstrap_ran_batch_contract",
 		"container_id": cmd.ContainerID,
+	})
+}
+
+// startFrigateContractLoop puts the command frigate on its continuous single-hull contract loop so it
+// runs contracts as the pre-hauler sole earner (sp-rype, reusing the sp-ehg9 batch-contract --loop
+// primitive: BatchContractWorkflow with iterations=-1). The caller has checked provisioning is done
+// (probes≥target), the frigate is resolved, and no loop is already running — so this is the guarded,
+// idempotent start. Dry-run logs the intent and takes no action; a nil starter degrades to a logged
+// skip surfaced as a blocker (never a panic), matching the other INCOME collaborators' nil contract.
+func (h *RunBootstrapCoordinatorHandler) startFrigateContractLoop(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if cfg.DryRun {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD start the command frigate %s on its continuous contract loop (pre-hauler sole earner) (took no action)", obs.CommandFrigateID), map[string]interface{}{
+			"action":       "bootstrap_would_start_frigate_loop",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+		return
+	}
+	if h.frigateLoop == nil {
+		res.Blocker = "no_frigate_loop_starter"
+		logger.Log("WARN", "Bootstrap needs to start the frigate contract loop but no starter wired — the frigate would park idle after the probe buy (sp-rype)", map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_frigate_loop_starter",
+		})
+		return
+	}
+	if err := h.frigateLoop.StartLoop(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+		res.Blocker = "frigate_loop_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap frigate contract-loop start failed: %v", err), map[string]interface{}{
+			"action":       "bootstrap_frigate_loop_error",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+		return
+	}
+	res.FrigateLoopStarted = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap started the command frigate %s on its continuous contract loop — it now EARNS as the pre-hauler sole earner (sp-ehg9 batch-contract --loop) instead of parking idle at the shipyard (sp-rype)", obs.CommandFrigateID), map[string]interface{}{
+		"action":       "bootstrap_started_frigate_loop",
+		"container_id": cmd.ContainerID,
+		"ship":         obs.CommandFrigateID,
 	})
 }
 

@@ -74,42 +74,74 @@ func (f *fakeContractRunner) StartBatchContract(ctx context.Context, playerID in
 	return nil
 }
 
+// fakeFrigateLoop is the sp-rype frigate sole-earner contract-loop starter port. It records the ships
+// it was asked to loop; when world is set it flips the world's frigateLoopRunning so a multi-tick test
+// proves the loop is started exactly once (never re-started while running).
+type fakeFrigateLoop struct {
+	calls int
+	ships []string
+	err   error
+	world *incomeWorld
+}
+
+func (f *fakeFrigateLoop) StartLoop(ctx context.Context, playerID int, frigateSymbol string) error {
+	f.calls++
+	f.ships = append(f.ships, frigateSymbol)
+	if f.err != nil {
+		return f.err
+	}
+	if f.world != nil {
+		f.world.startFrigateLoop()
+	}
+	return nil
+}
+
 // incomeWorld is a stateful model so a multi-tick INCOME acceptance test can observe the effect of the
 // retire / batch-contract launch / staged hauler buys.
 type incomeWorld struct {
-	mu                sync.Mutex
-	treasury          int64
-	homeSystem        string
-	marketsTotal      int
-	marketsCovered    int
-	frigateID         string
-	frigateOnContract bool
-	batchRunning      bool
-	haulers           []HaulerSnapshot
-	markets           []MarketSnapshot
-	contractGoods     []string
-	incomePerHour     float64
-	hasPurchaser      bool
+	mu                 sync.Mutex
+	treasury           int64
+	homeSystem         string
+	marketsTotal       int
+	marketsCovered     int
+	frigateID          string
+	frigateOnContract  bool
+	batchRunning       bool
+	haulers            []HaulerSnapshot
+	markets            []MarketSnapshot
+	contractGoods      []string
+	incomePerHour      float64
+	hasPurchaser       bool
+	probeCount         int  // sp-rype: provisioning progress — the frigate-loop start gates on probes≥target
+	frigateLoopRunning bool // sp-rype: the frigate's own contract loop is running (earner-signal)
 }
 
 func (w *incomeWorld) snapshot() Observation {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return Observation{
-		HomeSystem:               w.homeSystem,
-		Treasury:                 w.treasury,
-		MarketsTotal:             w.marketsTotal,
-		MarketsCovered:           w.marketsCovered,
-		CommandFrigateID:         w.frigateID,
-		CommandFrigateOnContract: w.frigateOnContract,
-		BatchContractRunning:     w.batchRunning,
-		Haulers:                  append([]HaulerSnapshot(nil), w.haulers...),
-		Markets:                  w.markets,
-		ContractGoods:            w.contractGoods,
-		IncomePerHour:            w.incomePerHour,
-		HasIdlePurchaser:         w.hasPurchaser,
-		Readable:                 true,
+		HomeSystem:                 w.homeSystem,
+		Treasury:                   w.treasury,
+		MarketsTotal:               w.marketsTotal,
+		MarketsCovered:             w.marketsCovered,
+		ProbeCount:                 w.probeCount,
+		CommandFrigateID:           w.frigateID,
+		CommandFrigateOnContract:   w.frigateOnContract,
+		BatchContractRunning:       w.batchRunning,
+		FrigateContractLoopRunning: w.frigateLoopRunning,
+		Haulers:                    append([]HaulerSnapshot(nil), w.haulers...),
+		Markets:                    w.markets,
+		ContractGoods:              w.contractGoods,
+		IncomePerHour:              w.incomePerHour,
+		HasIdlePurchaser:           w.hasPurchaser,
+		Readable:                   true,
 	}
+}
+
+func (w *incomeWorld) startFrigateLoop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.frigateLoopRunning = true
 }
 
 func (w *incomeWorld) retireFrigate() {
@@ -457,6 +489,166 @@ func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 	}
 	if _, ok := log.find("bootstrap_phase_not_implemented"); ok {
 		t.Fatalf("the GATE 'not implemented' stub must be gone now that GATE is live")
+	}
+}
+
+// --- frigate sole-earner contract loop (sp-rype): once provisioning is done, the frigate is put on its
+// own continuous contract loop so it EARNS instead of parking idle at the shipyard after the probe buy.
+// Guarded on provisioning-done + not-already-looping (the earner-signal), nil-safe, dry-run-silent. ---
+
+// frigateLoopObs is a provisioned INCOME observation with the frigate present and no loop yet running —
+// the state in which the frigate must be put on its earning loop. Batch-contract "running" and the
+// hauler cap "met" isolate the assertion to the frigate-loop action.
+func frigateLoopObs() Observation {
+	obs := incomeObs()
+	obs.ProbeCount = 3 // provisioning done (default probe_target 3)
+	obs.CommandFrigateID = "FRIGATE-1"
+	obs.FrigateContractLoopRunning = false
+	obs.BatchContractRunning = true         // isolate: don't also launch the coordinator
+	obs.Haulers = make([]HaulerSnapshot, 4) // isolate: hauler cap met, no buy
+	return obs
+}
+
+func TestBootstrap_Income_StartsFrigateLoopWhenProvisioned(t *testing.T) {
+	loop := &fakeFrigateLoop{}
+	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.calls != 1 || len(loop.ships) != 1 || loop.ships[0] != "FRIGATE-1" {
+		t.Fatalf("a provisioned frigate must be put on its contract loop once, by symbol; got calls=%d ships=%v (blocker=%q)", loop.calls, loop.ships, res.Blocker)
+	}
+	if !res.FrigateLoopStarted {
+		t.Fatalf("res.FrigateLoopStarted should be true")
+	}
+}
+
+// earner-signal recognition: a frigate loop already running must NOT be re-started (no double-start,
+// no double-claim). This is exactly the obs.BatchContractRunning-blind-spot the sp-rype signal closes.
+func TestBootstrap_Income_SkipsFrigateLoopWhenAlreadyRunning(t *testing.T) {
+	obs := frigateLoopObs()
+	obs.FrigateContractLoopRunning = true // the earner-signal: the loop already runs
+	loop := &fakeFrigateLoop{}
+	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.calls != 0 {
+		t.Fatalf("a running frigate loop must NOT be re-started, got %d calls", loop.calls)
+	}
+	if res.FrigateLoopStarted {
+		t.Fatalf("res.FrigateLoopStarted should be false when the loop is already running")
+	}
+}
+
+// juggle order (sp-t39j): buy the initial probes FIRST, THEN earn — the loop must not start while the
+// frigate is still needed as the probe buyer (probes below target).
+func TestBootstrap_Income_SkipsFrigateLoopBeforeProvisioned(t *testing.T) {
+	obs := frigateLoopObs()
+	obs.ProbeCount = 1 // provisioning NOT done — the frigate is still the probe purchaser
+	loop := &fakeFrigateLoop{}
+	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.calls != 0 {
+		t.Fatalf("the frigate must finish provisioning (probes<target) before earning; got %d loop starts", loop.calls)
+	}
+}
+
+// no frigate ID resolved ⇒ cannot start a loop (fail-closed, no guess).
+func TestBootstrap_Income_SkipsFrigateLoopWithoutFrigateID(t *testing.T) {
+	obs := frigateLoopObs()
+	obs.CommandFrigateID = "" // frigate unresolved
+	loop := &fakeFrigateLoop{}
+	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.calls != 0 {
+		t.Fatalf("no resolved frigate ID: must not start a loop, got %d calls", loop.calls)
+	}
+}
+
+// nil-safe: no starter wired ⇒ a logged skip surfaced as a blocker, never a panic (matches the other
+// INCOME collaborators' nil contract).
+func TestBootstrap_Income_FrigateLoopNilSafe(t *testing.T) {
+	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	// deliberately NO SetFrigateContractLoopStarter
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()) // must not panic
+	if res.FrigateLoopStarted {
+		t.Fatalf("no starter wired: FrigateLoopStarted must be false")
+	}
+	if res.Blocker != "no_frigate_loop_starter" {
+		t.Fatalf("nil frigate-loop starter should surface blocker no_frigate_loop_starter, got %q", res.Blocker)
+	}
+}
+
+// the sp-rype stall reproduction, in the DATA parallel window: cold start still below the coverage bar,
+// but the frigate has finished its hour-0 shipyard run + probe buy (probes at target, scouting). Under
+// the parallel model (sp-t39j) actIncome runs in DATA, so the frigate must start EARNING rather than
+// park idle at the yard — the fix for "sole earner dead, income never flows".
+func TestBootstrap_Data_StartsFrigateLoopInParallelAfterProvisioning(t *testing.T) {
+	obs := Observation{
+		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
+		Treasury: 120000, MarketsTotal: 10, MarketsCovered: 2, // 20% < 90% bar → DATA
+		CommandFrigateID: "FRIGATE-1", FrigateContractLoopRunning: false, Readable: true,
+	}
+	loop := &fakeFrigateLoop{}
+	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res.Phase != PhaseData {
+		t.Fatalf("coverage below bar must derive DATA, got %s", res.Phase)
+	}
+	if loop.calls != 1 || loop.ships[0] != "FRIGATE-1" {
+		t.Fatalf("in the DATA parallel window a provisioned frigate must start earning (contract loop), got calls=%d ships=%v", loop.calls, loop.ships)
+	}
+	if !res.FrigateLoopStarted {
+		t.Fatalf("res.FrigateLoopStarted should be true in the DATA parallel window")
+	}
+}
+
+// dry-run: evaluated + logged but NO loop started.
+func TestBootstrap_Income_DryRunNoFrigateLoop(t *testing.T) {
+	loop := &fakeFrigateLoop{}
+	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	cmd := baseCmd()
+	cmd.DryRun = true
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+	if loop.calls != 0 {
+		t.Fatalf("dry-run must not start the frigate loop, got %d calls", loop.calls)
+	}
+}
+
+// idempotent across ticks: the loop is started exactly once — after it starts, the observed
+// earner-signal (FrigateContractLoopRunning) keeps every later tick from re-starting it.
+func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
+	world := &incomeWorld{
+		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
+		frigateID: "FRIGATE-1", frigateOnContract: false, batchRunning: true,
+		probeCount: 3, // provisioned
+		markets:    incomeHubs(), contractGoods: []string{"IRON"},
+		incomePerHour: 0, hasPurchaser: true,
+		haulers: make([]HaulerSnapshot, 4), // cap met: isolate to the frigate-loop lifecycle
+	}
+	loop := &fakeFrigateLoop{world: world}
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetShipRefresher(&fakeRefresher{})
+	h.SetWorldObserver(&fakeIncomeObserver{world: world})
+	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
+	h.SetScoutAssigner(&fakeScouter{})
+	h.SetFrigateRetirer(&fakeRetirer{})
+	h.SetHaulerAcquirer(&fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+	h.SetContractRunner(&fakeContractRunner{})
+	h.SetFrigateContractLoopStarter(loop)
+	for i := 0; i < 5; i++ {
+		if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if loop.calls != 1 {
+		t.Fatalf("frigate loop must be started exactly once across ticks (idempotent on the earner-signal), got %d", loop.calls)
+	}
+	if !world.snapshot().FrigateContractLoopRunning {
+		t.Fatalf("the frigate loop should be observed running after start")
 	}
 }
 

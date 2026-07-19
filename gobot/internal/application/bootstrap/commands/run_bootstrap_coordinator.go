@@ -153,6 +153,19 @@ type ContractRunner interface {
 	StartBatchContract(ctx context.Context, playerID int) error
 }
 
+// FrigateContractLoopStarter starts the command frigate's OWN continuous single-hull contract loop
+// (sp-rype), reusing the sp-ehg9 batch-contract --loop primitive (DaemonServer.BatchContractWorkflow
+// with iterations=-1). This is the pre-hauler frigate EARNER: after the frigate finishes its hour-0
+// shipyard run + probe buy it must run contracts as the sole earner rather than park idle at the yard
+// (the sp-rype stall — the contract_fleet_coordinator does not keep the frigate earning: sp-ehg9). The
+// reconciler calls StartLoop only when provisioning is done AND no loop is already running
+// (obs.FrigateContractLoopRunning), so the start is idempotent; the daemon's per-player
+// single-CONTRACT_WORKFLOW guard is the atomic backstop, so a duplicate start is a benign no-op. Unset
+// (nil) ⇒ the frigate-earner action is a logged skip (byte-identical to pre-sp-rype).
+type FrigateContractLoopStarter interface {
+	StartLoop(ctx context.Context, playerID int, frigateSymbol string) error
+}
+
 // --- GATE-phase collaborators (Slice 3). Each is nil-safe (a nil collaborator degrades the GATE
 // action it drives to a logged skip surfaced as a blocker, never a panic). ---
 
@@ -259,6 +272,7 @@ type RunBootstrapCoordinatorHandler struct {
 	retirer      FrigateRetirer
 	haulAcquirer HaulerAcquirer
 	contractRun  ContractRunner
+	frigateLoop  FrigateContractLoopStarter // sp-rype: the pre-hauler frigate sole-earner contract loop
 
 	// GATE-phase collaborators (Slice 3). Same nil-safe contract.
 	construction  ConstructionManager
@@ -329,6 +343,13 @@ func (h *RunBootstrapCoordinatorHandler) SetHaulerAcquirer(a HaulerAcquirer) { h
 // SetContractRunner wires the batch-contract launch (reuses the contract fleet coordinator). Unset →
 // haulers are placed but batch-contract is not driven (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetContractRunner(c ContractRunner) { h.contractRun = c }
+
+// SetFrigateContractLoopStarter wires the pre-hauler frigate sole-earner contract loop (sp-rype;
+// reuses the sp-ehg9 batch-contract --loop primitive). Unset → the frigate is provisioned but never put
+// on its earning loop, so it would park idle after the probe buy (surfaced loudly as a logged skip).
+func (h *RunBootstrapCoordinatorHandler) SetFrigateContractLoopStarter(s FrigateContractLoopStarter) {
+	h.frigateLoop = s
+}
 
 // SetConstructionManager wires `construction start` (reuses the construction pipeline planner). Unset →
 // GATE evaluates and logs but never starts the pipeline (surfaced loudly).

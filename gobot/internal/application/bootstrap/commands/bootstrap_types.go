@@ -96,6 +96,14 @@ type Observation struct {
 	// already running for this player — the idempotency guard for the batch-contract launch (never
 	// relaunch a running coordinator).
 	BatchContractRunning bool
+	// FrigateContractLoopRunning reports whether the command frigate's OWN continuous single-hull
+	// contract loop is already running (sp-rype) — a CONTRACT_WORKFLOW loop container (sp-ehg9
+	// batch-contract --loop, iterations=-1) on the frigate. This is the earner-signal guard for the
+	// pre-hauler frigate loop: bootstrap starts it exactly once and never re-starts a running loop.
+	// It is DISTINCT from BatchContractRunning, which detects the contract_fleet_coordinator TYPE and
+	// does NOT see this per-hull loop container (sp-ehg9 note): the two are separate earners, so the
+	// loop needs its own signal. false ⇒ no frigate loop yet (the fresh cold-start default).
+	FrigateContractLoopRunning bool
 	// Markets is the scouted market data for the home system(s) — the contract-hub selector's input
 	// (each marketplace's sourceable goods + purchase prices). Empty ⇒ no hubs selectable this tick
 	// (fail-closed: no hauler buys), which a fresh INCOME entry before scouting completes reads as.
