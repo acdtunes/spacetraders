@@ -1,10 +1,36 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestContainerListHeaderIncludesPlayerColumn(t *testing.T) {
+	header := formatContainerListHeader()
+
+	require.Contains(t, header, "PLAYER",
+		"container list header must show a PLAYER column so era-transition orphans are distinguishable at a glance")
+}
+
+func TestContainerRowShowsPlayerID(t *testing.T) {
+	c := &ContainerInfo{
+		ContainerID:      "navigate-SCOUT-1-1111111111",
+		ContainerType:    "navigate",
+		Status:           "RUNNING",
+		PlayerID:         3,
+		CreatedAt:        "2024-01-01T00:00:00Z",
+		CurrentIteration: 1,
+		MaxIterations:    10,
+	}
+
+	row := formatContainerRow(c)
+	fields := strings.Fields(row)
+
+	require.Equal(t, "3", fields[1],
+		"the column following CONTAINER ID must render the container's PlayerID")
+}
 
 func TestContainerLogsRegistersTailFlag(t *testing.T) {
 	cmd := newContainerLogsCommand()

@@ -78,24 +78,10 @@ Use --show-all to see containers in all states including completed and failed.`,
 			}
 
 			// Display containers in table format
-			fmt.Printf("%-55s %-15s %-12s %-10s %s\n",
-				"CONTAINER ID", "TYPE", "STATUS", "ITERATION", "CREATED")
-			fmt.Println("──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────")
+			fmt.Print(formatContainerListHeader())
 
 			for _, c := range containers {
-				createdAt := formatTimestamp(c.CreatedAt)
-				iteration := fmt.Sprintf("%d/%d", c.CurrentIteration, c.MaxIterations)
-				if c.MaxIterations == -1 {
-					iteration = fmt.Sprintf("%d/∞", c.CurrentIteration)
-				}
-
-				fmt.Printf("%-55s %-15s %-12s %-10s %s\n",
-					c.ContainerID,
-					c.ContainerType,
-					c.Status,
-					iteration,
-					createdAt,
-				)
+				fmt.Print(formatContainerRow(c))
 			}
 
 			fmt.Printf("\nTotal: %d containers\n", len(containers))
@@ -309,6 +295,35 @@ func effectiveLogLimit(cmd *cobra.Command, limit, tail int) int {
 }
 
 // Helper functions
+
+// formatContainerListHeader renders the "container list" table header and
+// separator. PLAYER sits right after CONTAINER ID so era-transition orphans
+// (old-era player N vs new-era player N+1) are visible without a separate
+// --player-id probe.
+func formatContainerListHeader() string {
+	return fmt.Sprintf("%-55s %-8s %-15s %-12s %-10s %s\n",
+		"CONTAINER ID", "PLAYER", "TYPE", "STATUS", "ITERATION", "CREATED") +
+		"──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+}
+
+// formatContainerRow renders one "container list" row, matching the column
+// order/widths set by formatContainerListHeader.
+func formatContainerRow(c *ContainerInfo) string {
+	createdAt := formatTimestamp(c.CreatedAt)
+	iteration := fmt.Sprintf("%d/%d", c.CurrentIteration, c.MaxIterations)
+	if c.MaxIterations == -1 {
+		iteration = fmt.Sprintf("%d/∞", c.CurrentIteration)
+	}
+
+	return fmt.Sprintf("%-55s %-8d %-15s %-12s %-10s %s\n",
+		c.ContainerID,
+		c.PlayerID,
+		c.ContainerType,
+		c.Status,
+		iteration,
+		createdAt,
+	)
+}
 
 func formatTimestamp(ts string) string {
 	t, err := time.Parse(time.RFC3339, ts)
