@@ -60,8 +60,12 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// EARNS as the pre-hauler sole earner instead of parking idle at the shipyard (sp-rype). Guarded on
 	// probes≥target (the frigate juggles buy-probes-first, then earn — sp-t39j) AND the frigate not
 	// already looping (obs.FrigateContractLoopRunning — the earner-signal, so it starts exactly once and
-	// never double-claims). A resolved frigate is required (no guess).
-	if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning {
+	// never double-claims). A resolved frigate is required (no guess). sp-7r7w: also gated on ZERO
+	// haulers — the loop is the PRE-hauler earner ONLY, and the first-hauler pivot (step 4) STOPS it to
+	// free the frigate as the purchaser; once a hauler exists the loop must NEVER (re)start (the hauler +
+	// the scaled fleet earn, and the frigate is retired to the exclusive purchasing role), so this gate is
+	// also what keeps the pivot durable across a restart.
+	if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning && len(obs.Haulers) == 0 && !obs.CommandFrigatePurchasing {
 		h.startFrigateContractLoop(ctx, cmd, cfg, obs, res)
 	}
 
@@ -84,15 +88,17 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 // deferHaulerBuyToAutosizer reports whether bootstrap should hand THIS tick's contract-hauler buy to the
 // standing fleet autosizer (sp-sjvv single-buyer arbitration — the hauler sibling of the sp-tsn2
 // probe→freshsizer deferral). It engages ONLY when armed (autosizer_early_scaling) AND a fleet autosizer
-// is actually running to take over (obs.AutosizerRunning) — bootstrap never defers into a vacuum, so a
-// cold start cannot wedge if the autosizer is down (bootstrap keeps buying its own haulers until the
-// early launch lands). The autosizer scales the contract operation against the capacity reconciler's
-// emitted demand behind its own guard stack (reserve floor + ≤25% treasury + era-payback), so exactly
-// ONE buyer grows the contract fleet during the conflict window. Default off ⇒ always false
+// is actually running to take over (obs.AutosizerRunning) AND at least one hauler already exists
+// (len(Haulers)>=1) — the sp-7r7w Option-1 threshold: bootstrap KEEPS the FIRST hauler (bought via the
+// first-hauler pivot at acv5's cushion) and defers only SUBSEQUENT scaling to the autosizer. bootstrap
+// never defers into a vacuum, so a cold start cannot wedge if the autosizer is down (bootstrap keeps
+// buying until the early launch lands). The autosizer scales the contract operation against the capacity
+// reconciler's emitted demand behind its own guard stack (reserve floor + ≤25% treasury + era-payback),
+// so exactly ONE buyer grows the contract fleet during the conflict window. Default off ⇒ always false
 // (byte-identical to today: bootstrap buys its haulers itself). A deferral is surfaced on the heartbeat,
 // never silent.
 func (h *RunBootstrapCoordinatorHandler) deferHaulerBuyToAutosizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
-	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning {
+	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning || len(obs.Haulers) < 1 {
 		return false
 	}
 	res.Blocker = "deferred_to_autosizer"
@@ -243,18 +249,6 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
-	// Readiness gate: an idle hull must exist to fly to the yard and execute the buy. No idle hull ⇒
-	// BLOCKED (not failed) — a later tick with a free hull retries.
-	if !obs.HasIdlePurchaser {
-		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, hub %s) but BLOCKED: no idle hull to execute the purchase", len(obs.Haulers), cfg.HaulerTarget, hub), map[string]interface{}{
-			"action":       "bootstrap_income_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "no_purchaser",
-		})
-		return
-	}
-
 	if h.haulAcquirer == nil {
 		res.Blocker = "no_hauler_acquirer"
 		logger.Log("WARN", "Bootstrap hauler needed but no hauler acquirer wired — cannot price-check or buy", map[string]interface{}{
@@ -265,7 +259,34 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
-	// Price-check first (reuse shipyard list). Unreadable price ⇒ the capital gate fails CLOSED.
+	// Readiness / FIRST-HAULER PIVOT decision (sp-7r7w). Determined BEFORE the price-check so a genuine
+	// no-purchaser blocks cheaply without a shipyard read — the pre-sp-7r7w behavior.
+	//
+	// The FIRST hauler is bought by freeing the command frigate from its pre-hauler sole-earner loop to
+	// serve as THE purchaser (the documented first-hauler pivot) — the frigate is retired to contracts at
+	// this pivot regardless of whether a stray hull happens to be idle, so the exclusive purchasing ship
+	// is always established. The pivot fires ONLY for the cash-flow-critical FIRST hauler and only at a
+	// SAFE point:
+	//   - len(Haulers)==0 (the first hauler; subsequent scaling defers to the autosizer),
+	//   - the frigate loop is what holds it (FrigateContractLoopRunning) and the frigate is resolved,
+	//   - the frigate carries NO contract cargo (FrigateCargoEmpty) — stopping mid-delivery would lose
+	//     cargo, so a loaded frigate defers the pivot a tick (the loop delivers + empties), and
+	//   - the loop-stopper is wired.
+	// The actual loop-STOP is deferred until AFTER the capital gate below, so the frigate only ever stops
+	// earning once the buy is affordable AND warranted. When NOT pivoting, an existing idle hull buys as
+	// before; with neither an idle hull nor a pivot available, BLOCK (no_purchaser) and retry.
+	pivot := len(obs.Haulers) == 0 && obs.FrigateContractLoopRunning && obs.CommandFrigateID != "" && obs.FrigateCargoEmpty && h.frigateLoop != nil
+	if !pivot && !obs.HasIdlePurchaser {
+		res.Blocker = "no_purchaser"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, hub %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d loop_running=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), cfg.HaulerTarget, hub, len(obs.Haulers), obs.FrigateContractLoopRunning, obs.FrigateCargoEmpty), map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_purchaser",
+		})
+		return
+	}
+
+	// Price-check (reuse shipyard list). Unreadable price ⇒ the capital gate fails CLOSED.
 	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
 	if err != nil || !readable {
 		res.Blocker = "price_unreadable"
@@ -309,14 +330,65 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 
 	if cfg.DryRun {
 		res.WouldBuy++
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy 1 %s at %s for %d and place it on hub %s (took no action)", cfg.HaulerShipType, yard, price, hub), map[string]interface{}{
+		note := ""
+		if pivot {
+			note = fmt.Sprintf(" (WOULD first-hauler PIVOT: stop the frigate %s loop, dedicate it the exclusive purchasing ship, and buy with it)", obs.CommandFrigateID)
+		}
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy 1 %s at %s for %d and place it on hub %s%s (took no action)", cfg.HaulerShipType, yard, price, hub, note), map[string]interface{}{
 			"action":       "bootstrap_would_buy_hauler",
 			"container_id": cmd.ContainerID,
 		})
 		return
 	}
 
-	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, cfg.HaulerShipType, yard, hub)
+	// Execute the pivot BEFORE the buy: stop the frigate loop (StopContainer releases its work-claim →
+	// idle), then dedicate it the exclusive purchasing ship. Dedicating BEFORE the buy keeps the
+	// invariant "the frigate is protected before it is used or left idle": a later buy failure leaves an
+	// idle, purchasing-dedicated frigate (the loop cannot re-claim a foreign-dedicated hull), which the
+	// next tick simply reuses as the purchaser. A stop/dedicate failure returns (retry next tick).
+	if pivot {
+		if err := h.frigateLoop.StopLoop(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+			res.Blocker = "frigate_loop_stop_error"
+			logger.Log("ERROR", fmt.Sprintf("Bootstrap first-hauler pivot: stopping the command frigate %s contract loop failed — no purchaser this tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+				"action":       "bootstrap_frigate_pivot_stop_error",
+				"container_id": cmd.ContainerID,
+				"ship":         obs.CommandFrigateID,
+			})
+			return
+		}
+		if h.retirer == nil {
+			res.Blocker = "no_retirer"
+			logger.Log("WARN", "Bootstrap first-hauler pivot: frigate loop stopped but no retirer wired to dedicate the purchasing ship", map[string]interface{}{
+				"action":       "bootstrap_income_blocked",
+				"container_id": cmd.ContainerID,
+				"blocker":      "no_retirer",
+			})
+			return
+		}
+		if err := h.retirer.DedicateAsPurchaser(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+			res.Blocker = "frigate_dedicate_error"
+			logger.Log("ERROR", fmt.Sprintf("Bootstrap first-hauler pivot: dedicating the command frigate %s as the exclusive purchasing ship failed — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+				"action":       "bootstrap_frigate_pivot_dedicate_error",
+				"container_id": cmd.ContainerID,
+				"ship":         obs.CommandFrigateID,
+			})
+			return
+		}
+		res.FrigatePivoted = true
+		logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler PIVOT: STOPPED the command frigate %s contract loop and dedicated it the EXCLUSIVE purchasing ship (protected, never re-drafted) — it now buys hauler #1 and stands by as the buy ship for every subsequent purchase (the documented first-hauler pivot; the hauler + scaled fleet take over earning)", obs.CommandFrigateID), map[string]interface{}{
+			"action":       "bootstrap_frigate_pivot",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+	}
+
+	// The purchaser is the freed command frigate at the pivot; otherwise "" lets the acquirer use any
+	// idle hull (the direct-buy behavior for a subsequent hauler bootstrap buys itself).
+	purchaser := ""
+	if pivot {
+		purchaser = obs.CommandFrigateID
+	}
+	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, cfg.HaulerShipType, yard, hub, purchaser)
 	if err != nil {
 		res.Blocker = "purchase_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap hauler purchase failed: %v", err), map[string]interface{}{

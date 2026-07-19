@@ -184,6 +184,11 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if s.Role() == commandRole {
 			obs.CommandFrigateID = s.ShipSymbol()
 			obs.CommandFrigateOnContract = s.DedicatedFleet() == contractFleetTag
+			// sp-7r7w: the first-hauler-pivot safe point (empty ⇒ no in-flight contract cargo to lose on a
+			// loop stop) and the exclusive-purchasing-ship signal (the pre-hauler loop must never restart on
+			// a purchasing-dedicated frigate; the buy paths resolve the purchaser to it).
+			obs.FrigateCargoEmpty = s.CargoUnits() == 0
+			obs.CommandFrigatePurchasing = s.DedicatedFleet() == navigation.PurchasingFleet
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
 		} else if s.DedicatedFleet() == manufacturingFleetTag {
@@ -394,11 +399,15 @@ func contractFleetCoordinatorRunning(ctx context.Context, repo *persistence.Cont
 // BOTH is what distinguishes it from a coordinator-spawned single-shot worker (iterations 1, on a
 // hauler); obs.BatchContractRunning cannot see it because that detects the coordinator TYPE, not this
 // per-hull loop (sp-ehg9 note). Mirrors contractFleetCoordinatorRunning's PENDING+RUNNING scan.
-func frigateContractLoopRunning(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int, frigateSymbol string) (bool, error) {
+// findFrigateContractLoopID returns the container ID of the command frigate's continuous single-hull
+// contract loop (a CONTRACT_WORKFLOW with iterations=-1, the sp-ehg9 batch-contract --loop) if one is
+// running or pending, else "". The earner-signal reader (frigateContractLoopRunning) and the pivot
+// stopper (StopLoop) both resolve the loop the same way, so they can never disagree.
+func findFrigateContractLoopID(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int, frigateSymbol string) (string, error) {
 	for _, st := range []container.ContainerStatus{container.ContainerStatusRunning, container.ContainerStatusPending} {
 		models, err := repo.ListByStatus(ctx, st, &playerID)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		for _, m := range models {
 			if m.ContainerType != string(container.ContainerTypeContractWorkflow) {
@@ -413,11 +422,16 @@ func frigateContractLoopRunning(ctx context.Context, repo *persistence.Container
 			ship, _ := cfg["ship_symbol"].(string)
 			iters, _ := intValue(cfg["iterations"])
 			if ship == frigateSymbol && iters == -1 {
-				return true, nil
+				return m.ID, nil
 			}
 		}
 	}
-	return false, nil
+	return "", nil
+}
+
+func frigateContractLoopRunning(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int, frigateSymbol string) (bool, error) {
+	id, err := findFrigateContractLoopID(ctx, repo, playerID, frigateSymbol)
+	return id != "", err
 }
 
 // --- probe acquirer (shipyard list price-check + BatchPurchaseShips) ---
@@ -490,24 +504,47 @@ func (a *bootstrapAcquirer) priceAtShipyard(ctx context.Context, system, waypoin
 
 // Buy purchases ONE shipType at yard through the money-integrity batch path (which navigates an idle
 // hull to the yard and enforces the sp-e7je type guard). Probes are scouts — no dedicated-fleet tag.
+// It picks ANY idle hull as the purchaser (the DATA-phase default, where the frigate/probes are idle).
 func (a *bootstrapAcquirer) Buy(ctx context.Context, playerID int, shipType, yard string) (bootstrapCmd.BuyResult, error) {
+	return a.buyWith(ctx, playerID, shipType, yard, "")
+}
+
+// buyWith purchases ONE shipType at yard using `purchaser` as the purchasing hull. purchaser=="" keeps
+// the legacy behavior (scan for any idle hull); a set value PINS the purchaser — the sp-7r7w first-hauler
+// pivot and every subsequent cold-start buy pass the exclusive purchasing frigate, so the buy is
+// deterministic rather than dependent on an incidentally-idle hull. The batch path still enforces the
+// sp-e7je money-integrity type guard and navigates the purchaser to the yard.
+func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType, yard, purchaser string) (bootstrapCmd.BuyResult, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
-	ships, err := a.shipRepo.FindAllByPlayer(ctx, pid)
-	if err != nil {
-		return bootstrapCmd.BuyResult{}, err
-	}
-	purchaser := ""
-	for _, s := range ships {
-		if s.IsIdle() {
-			purchaser = s.ShipSymbol()
-			break
-		}
-	}
 	if purchaser == "" {
-		return bootstrapCmd.BuyResult{}, fmt.Errorf("no idle hull available to execute the purchase")
+		ships, err := a.shipRepo.FindAllByPlayer(ctx, pid)
+		if err != nil {
+			return bootstrapCmd.BuyResult{}, err
+		}
+		// sp-7r7w: PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
+		// every cold-start + scaling buy runs through the deterministic, protected buy ship rather than an
+		// incidentally-idle hull. Fall back to any idle hull before the pivot exists (e.g. the DATA probe
+		// buy) or if the purchasing ship is momentarily busy.
+		for _, s := range ships {
+			if s.IsIdle() && s.DedicatedFleet() == navigation.PurchasingFleet {
+				purchaser = s.ShipSymbol()
+				break
+			}
+		}
+		if purchaser == "" {
+			for _, s := range ships {
+				if s.IsIdle() {
+					purchaser = s.ShipSymbol()
+					break
+				}
+			}
+		}
+		if purchaser == "" {
+			return bootstrapCmd.BuyResult{}, fmt.Errorf("no idle hull available to execute the purchase")
+		}
 	}
 
 	resp, err := a.med.Send(ctx, &shipyardCmd.BatchPurchaseShipsCommand{
@@ -544,8 +581,8 @@ type bootstrapHaulerAcquirer struct {
 // exclusive mode — dropping the untagged frigate), then navigates it to its hub. The dedication uses
 // the single fleet-assign write path (shipRepo.AssignFleet); placement reuses the high-level
 // NavigateRouteCommand (route/refuel/flight-mode handled, idempotent if already there).
-func (a *bootstrapHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint string) (bootstrapCmd.BuyResult, error) {
-	bought, err := a.Buy(ctx, playerID, shipType, yard)
+func (a *bootstrapHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (bootstrapCmd.BuyResult, error) {
+	bought, err := a.buyWith(ctx, playerID, shipType, yard, purchaserSymbol)
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
@@ -578,6 +615,18 @@ func (r *bootstrapFrigateRetirer) RetireFromContract(ctx context.Context, player
 		return err
 	}
 	return r.shipRepo.AssignFleet(ctx, shipSymbol, "", pid)
+}
+
+// DedicateAsPurchaser tags the frigate dedicated_fleet="purchasing" at the first-hauler pivot (sp-7r7w),
+// reserving it as the EXCLUSIVE, protected buy ship. Reuses the single fleet-assign write path
+// (shipRepo.AssignFleet); the contract-op selection paths skip a purchasing-dedicated hull like any
+// foreign dedication (RULINGS #7), so it is never re-drafted while it stands by between buys.
+func (r *bootstrapFrigateRetirer) DedicateAsPurchaser(ctx context.Context, playerID int, shipSymbol string) error {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
+	return r.shipRepo.AssignFleet(ctx, shipSymbol, navigation.PurchasingFleet, pid)
 }
 
 // --- contract runner (INCOME: launch the contract fleet coordinator — workflow batch-contract) ---
@@ -620,6 +669,22 @@ func (r *bootstrapFrigateContractLoop) StartLoop(ctx context.Context, playerID i
 		return err
 	}
 	return nil
+}
+
+// StopLoop stops the command frigate's continuous contract-loop container (sp-7r7w first-hauler pivot):
+// it finds the frigate's CONTRACT_WORKFLOW (iterations=-1) container and StopContainer's it, which
+// gracefully cancels the loop goroutine and RELEASES the frigate's work-claim so it goes idle to serve
+// as the purchaser. Idempotent: no loop found ⇒ nil (the frigate is already free). The reconciler gates
+// the pivot on obs.FrigateContractLoopRunning, so StopLoop is invoked only when a loop is observed.
+func (r *bootstrapFrigateContractLoop) StopLoop(ctx context.Context, playerID int, frigateSymbol string) error {
+	id, err := findFrigateContractLoopID(ctx, r.server.containerRepo, playerID, frigateSymbol)
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		return nil
+	}
+	return r.server.StopContainer(id)
 }
 
 // --- scout-post declarer (declare the home COVERAGE target; the boot-standing scout-post

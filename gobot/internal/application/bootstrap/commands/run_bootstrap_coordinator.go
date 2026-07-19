@@ -50,20 +50,26 @@ const (
 	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
 
 	// defaultContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must
-	// still clear AFTER a staged INCOME hauler buy: the buy is affordable when treasury−price ≥ this
-	// floor (sp-acv5, PLAYBOOK §3). It replaces the old PROPORTIONAL reserve_margin×treasury hauler gate,
-	// which only bought once treasury grew past ~2× the hauler price and so delayed the cash-flow scaling
-	// the hauler exists to provide. 50k ≈ one light-hauler contract cycle's goods+fuel working capital (a
-	// ~full cargo of contract goods at typical commodity prices — tens of k — plus fuel and a safety
-	// buffer), so a permitted buy always leaves the contract operation funded. It is the Admiral's
-	// IMMUTABLE working-capital floor (RULINGS #5 + 2026-07-18 Amendment: "the immutable 50k
-	// working-capital floor … deliberately non-tunable per-run"): a documented hard constant, NOT a
-	// live-tunable / config.yaml knob, and NOT the shared reserve_margin (which still paces the DATA probe
-	// buy). sp-bpdf: it is now the codebase-wide SINGLE SOURCE OF TRUTH — common.ImmutableReserveFloor,
-	// the same non-tunable floor the fleet autosizer clamps to (common.EffectiveReserveFloor) and that the
-	// capacity reconciler's DefaultReserveFloorCredits equals — so ALL bootstrap spend (hauler + gate
-	// worker/construction) reserves the identical line the autosizer honors (the two-buyer safety, ktio-B).
-	defaultContractWorkingCapitalFloor int64 = common.ImmutableReserveFloor
+	// still clear AFTER a staged bootstrap contract-op spend — the INCOME hauler buy (incl. the sp-7r7w
+	// first-hauler pivot) AND the GATE-phase gate-worker/construction spend (sp-bpdf): the spend is
+	// affordable when treasury−price ≥ this floor (sp-acv5, PLAYBOOK §3). It replaces the old PROPORTIONAL
+	// reserve_margin×treasury gate, which only bought once treasury grew past ~2× the price and so delayed
+	// the cash-flow scaling the hauler exists to provide.
+	//
+	// 150k is the contract operation's OPERATING capital: a light-hauler contract cycle's goods+fuel plus
+	// enough headroom to keep several concurrent contract cycles funded through a treasury dip — a
+	// deliberately conservative operating floor for the whole contract op, NOT a bare per-buy minimum.
+	//
+	// DISTINCT from the immutable anti-stall bound (Admiral RULINGS #5, 2026-07-18 amendment split): this
+	// contract cushion (150k) is its OWN documented hard constant — no longer common.ImmutableReserveFloor.
+	// common.ImmutableReserveFloor (50k) remains the SEPARATE immutable anti-stall backstop: the outer-max
+	// clamp that keeps mature tour/factory trade able to trade its way out of a low-treasury crunch, and
+	// the line the fleet autosizer clamps to (common.EffectiveReserveFloor) + the capacity reconciler's
+	// DefaultReserveFloorCredits equal (their compile-time lockstep guard is untouched, still 50k). Both
+	// are hard constants — NOT live-tunable / config.yaml knobs, NOT the shared reserve_margin (which still
+	// paces the DATA probe buy). The contract cushion is RAISED above the immutable bound (stricter), so no
+	// money guard is weakened (RULINGS #4/#5): a permitted contract-op buy leaves the op funded at 150k.
+	defaultContractWorkingCapitalFloor int64 = 150_000
 
 	// GATE-phase defaults.
 	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
@@ -202,6 +208,12 @@ type MetricsSink interface {
 // still guards on the observation so a stale tag is cleared exactly once.
 type FrigateRetirer interface {
 	RetireFromContract(ctx context.Context, playerID int, shipSymbol string) error
+	// DedicateAsPurchaser tags the frigate as the EXCLUSIVE purchasing ship (dedicated_fleet=purchasing)
+	// at the first-hauler pivot (sp-7r7w): a protected standing role — idle between buys but reserved as
+	// THE buy ship for every subsequent purchase, and NEVER re-drafted into the contract op (guarded like
+	// a foreign dedication in the reconciler / contract-fleet / autosizer selection paths, RULINGS #7).
+	// Reuses the single fleet-assign write path (AssignShipFleet with Fleet="purchasing").
+	DedicateAsPurchaser(ctx context.Context, playerID int, shipSymbol string) error
 }
 
 // HaulerAcquirer price-checks and buys ONE light hauler, then dedicates it to the contract fleet and
@@ -211,7 +223,11 @@ type FrigateRetirer interface {
 // for shipType (readable=false ⇒ the capital gate fails closed).
 type HaulerAcquirer interface {
 	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
-	BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint string) (BuyResult, error)
+	// BuyAndPlace buys ONE hauler, dedicates it to the contract fleet, and places it on its hub.
+	// purchaserSymbol names the hull that executes the buy (navigate→dock→purchase): "" keeps the legacy
+	// behavior (pick any idle hull), and a set value pins THE purchaser — the first-hauler pivot passes
+	// the freed command frigate so the buy is deterministic, not dependent on an incidentally-idle probe.
+	BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (BuyResult, error)
 }
 
 // ContractRunner launches the contract fleet coordinator (workflow batch-contract) for a player
@@ -233,6 +249,13 @@ type ContractRunner interface {
 // (nil) ⇒ the frigate-earner action is a logged skip (byte-identical to pre-sp-rype).
 type FrigateContractLoopStarter interface {
 	StartLoop(ctx context.Context, playerID int, frigateSymbol string) error
+	// StopLoop stops the frigate's continuous contract-loop container (StopContainer), releasing the
+	// frigate's work-claim so it goes idle — the first-hauler pivot (sp-7r7w) the design already
+	// documents (BatchContractWorkflow: "stops the returned container at the first-hauler pivot"). The
+	// freed frigate then executes the hauler buy and is retired to the exclusive purchasing role; the
+	// loop-start is gated on len(Haulers)==0 so it never restarts post-pivot. Idempotent (stopping an
+	// absent loop is a benign no-op).
+	StopLoop(ctx context.Context, playerID int, frigateSymbol string) error
 }
 
 // --- GATE-phase collaborators (Slice 3). Each is nil-safe (a nil collaborator degrades the GATE

@@ -10,10 +10,12 @@ import (
 // --- INCOME fakes (black-box: the reconciler is driven through its ports only) ---
 
 type fakeRetirer struct {
-	calls int
-	ships []string
-	err   error
-	world *incomeWorld // mutated on a successful retire (frigate untagged)
+	calls       int
+	ships       []string
+	err         error
+	dedications []string // sp-7r7w: ships dedicated as the exclusive purchasing ship
+	dedicateErr error
+	world       *incomeWorld // mutated on a successful retire (frigate untagged)
 }
 
 func (f *fakeRetirer) RetireFromContract(ctx context.Context, playerID int, shipSymbol string) error {
@@ -28,16 +30,28 @@ func (f *fakeRetirer) RetireFromContract(ctx context.Context, playerID int, ship
 	return nil
 }
 
+func (f *fakeRetirer) DedicateAsPurchaser(ctx context.Context, playerID int, shipSymbol string) error {
+	f.dedications = append(f.dedications, shipSymbol)
+	if f.dedicateErr != nil {
+		return f.dedicateErr
+	}
+	if f.world != nil {
+		f.world.dedicatePurchasing()
+	}
+	return nil
+}
+
 type fakeHaulerAcquirer struct {
-	price     int64
-	yard      string
-	readable  bool
-	priceErr  error
-	buyErr    error
-	buys      int
-	priceChks int
-	placedOn  []string // the hub each BuyAndPlace was told to place on (order = buy order)
-	world     *incomeWorld
+	price      int64
+	yard       string
+	readable   bool
+	priceErr   error
+	buyErr     error
+	buys       int
+	priceChks  int
+	placedOn   []string // the hub each BuyAndPlace was told to place on (order = buy order)
+	purchasers []string // sp-7r7w: the purchaser symbol each BuyAndPlace was told to use ("" = scan)
+	world      *incomeWorld
 }
 
 func (f *fakeHaulerAcquirer) PriceCheck(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
@@ -45,12 +59,13 @@ func (f *fakeHaulerAcquirer) PriceCheck(ctx context.Context, playerID int, shipT
 	return f.price, f.yard, f.readable, f.priceErr
 }
 
-func (f *fakeHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint string) (BuyResult, error) {
+func (f *fakeHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (BuyResult, error) {
 	if f.buyErr != nil {
 		return BuyResult{}, f.buyErr
 	}
 	f.buys++
 	f.placedOn = append(f.placedOn, hubWaypoint)
+	f.purchasers = append(f.purchasers, purchaserSymbol)
 	if f.world != nil {
 		f.world.addHauler(hubWaypoint)
 	}
@@ -78,10 +93,13 @@ func (f *fakeContractRunner) StartBatchContract(ctx context.Context, playerID in
 // it was asked to loop; when world is set it flips the world's frigateLoopRunning so a multi-tick test
 // proves the loop is started exactly once (never re-started while running).
 type fakeFrigateLoop struct {
-	calls int
-	ships []string
-	err   error
-	world *incomeWorld
+	calls     int
+	ships     []string
+	err       error
+	stopCalls int      // sp-7r7w: StopLoop invocations (the first-hauler pivot)
+	stopped   []string // ships whose loop StopLoop was asked to stop
+	stopErr   error
+	world     *incomeWorld
 }
 
 func (f *fakeFrigateLoop) StartLoop(ctx context.Context, playerID int, frigateSymbol string) error {
@@ -96,24 +114,38 @@ func (f *fakeFrigateLoop) StartLoop(ctx context.Context, playerID int, frigateSy
 	return nil
 }
 
+func (f *fakeFrigateLoop) StopLoop(ctx context.Context, playerID int, frigateSymbol string) error {
+	f.stopCalls++
+	f.stopped = append(f.stopped, frigateSymbol)
+	if f.stopErr != nil {
+		return f.stopErr
+	}
+	if f.world != nil {
+		f.world.stopFrigateLoop()
+	}
+	return nil
+}
+
 // incomeWorld is a stateful model so a multi-tick INCOME acceptance test can observe the effect of the
 // retire / batch-contract launch / staged hauler buys.
 type incomeWorld struct {
-	mu                 sync.Mutex
-	treasury           int64
-	homeSystem         string
-	marketsTotal       int
-	marketsCovered     int
-	frigateID          string
-	frigateOnContract  bool
-	batchRunning       bool
-	haulers            []HaulerSnapshot
-	markets            []MarketSnapshot
-	contractGoods      []string
-	incomePerHour      float64
-	hasPurchaser       bool
-	probeCount         int  // sp-rype: provisioning progress — the frigate-loop start gates on probes≥target
-	frigateLoopRunning bool // sp-rype: the frigate's own contract loop is running (earner-signal)
+	mu                       sync.Mutex
+	treasury                 int64
+	homeSystem               string
+	marketsTotal             int
+	marketsCovered           int
+	frigateID                string
+	frigateOnContract        bool
+	batchRunning             bool
+	haulers                  []HaulerSnapshot
+	markets                  []MarketSnapshot
+	contractGoods            []string
+	incomePerHour            float64
+	hasPurchaser             bool
+	probeCount               int  // sp-rype: provisioning progress — the frigate-loop start gates on probes≥target
+	frigateLoopRunning       bool // sp-rype: the frigate's own contract loop is running (earner-signal)
+	frigateCargoEmpty        bool // sp-7r7w: the frigate carries no contract cargo (the pivot safe point)
+	commandFrigatePurchasing bool // sp-7r7w: the frigate is the exclusive purchasing ship (post-pivot)
 }
 
 func (w *incomeWorld) snapshot() Observation {
@@ -130,6 +162,8 @@ func (w *incomeWorld) snapshot() Observation {
 		CommandFrigateOnContract:   w.frigateOnContract,
 		BatchContractRunning:       w.batchRunning,
 		FrigateContractLoopRunning: w.frigateLoopRunning,
+		FrigateCargoEmpty:          w.frigateCargoEmpty,
+		CommandFrigatePurchasing:   w.commandFrigatePurchasing,
 		Haulers:                    append([]HaulerSnapshot(nil), w.haulers...),
 		Markets:                    w.markets,
 		ContractGoods:              w.contractGoods,
@@ -143,6 +177,21 @@ func (w *incomeWorld) startFrigateLoop() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.frigateLoopRunning = true
+}
+
+func (w *incomeWorld) stopFrigateLoop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.frigateLoopRunning = false
+}
+
+// dedicatePurchasing models the first-hauler pivot's dedication: the frigate becomes the exclusive
+// purchasing ship (off contract), so the loop-start gate reads it and never restarts the loop.
+func (w *incomeWorld) dedicatePurchasing() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.commandFrigatePurchasing = true
+	w.frigateOnContract = false
 }
 
 func (w *incomeWorld) retireFrigate() {
@@ -548,8 +597,13 @@ func frigateLoopObs() Observation {
 	obs.ProbeCount = 3 // provisioning done (default probe_target 3)
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.FrigateContractLoopRunning = false
-	obs.BatchContractRunning = true         // isolate: don't also launch the coordinator
-	obs.Haulers = make([]HaulerSnapshot, 4) // isolate: hauler cap met, no buy
+	obs.BatchContractRunning = true // isolate: don't also launch the coordinator
+	// sp-7r7w: the frigate loop is the PRE-hauler earner — it starts only at 0 haulers. Isolate the
+	// loop-start from the hauler buy by leaving NO viable hubs (empty markets → desired=0 → not "needed"),
+	// so the loop-start pin is not perturbed by a first-hauler pivot.
+	obs.Haulers = nil
+	obs.Markets = nil
+	obs.ContractGoods = nil
 	return obs
 }
 
@@ -668,10 +722,10 @@ func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
 	world := &incomeWorld{
 		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", frigateOnContract: false, batchRunning: true,
-		probeCount: 3, // provisioned
-		markets:    incomeHubs(), contractGoods: []string{"IRON"},
+		probeCount:    3, // provisioned
 		incomePerHour: 0, hasPurchaser: true,
-		haulers: make([]HaulerSnapshot, 4), // cap met: isolate to the frigate-loop lifecycle
+		// sp-7r7w: the pre-hauler loop starts only at 0 haulers; leave NO viable hubs (markets/goods unset)
+		// so the hauler-buy step is not "needed" — isolating the frigate-loop lifecycle across ticks.
 	}
 	loop := &fakeFrigateLoop{world: world}
 	h := NewRunBootstrapCoordinatorHandler(nil)

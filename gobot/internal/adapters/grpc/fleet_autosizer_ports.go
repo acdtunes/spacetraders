@@ -363,17 +363,27 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.
 	if err != nil {
 		return fleetCmd.BuyResult{}, err
 	}
-	// The purchase needs a hull to travel to and buy at the shipyard. Use an idle hull; the
-	// battle-tested batch path navigates it and enforces the sp-e7je money-integrity type guard.
+	// The purchase needs a hull to travel to and buy at the shipyard. sp-7r7w: PREFER the exclusive
+	// purchasing ship (the pivoted command frigate) when idle — the deterministic, protected buy ship for
+	// every scaling buy — and fall back to any idle hull if it is momentarily busy or not yet established.
+	// The battle-tested batch path navigates it and enforces the sp-e7je money-integrity type guard.
 	ships, err := p.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
 		return fleetCmd.BuyResult{}, err
 	}
 	purchaser := ""
 	for _, s := range ships {
-		if s.IsIdle() {
+		if s.IsIdle() && s.DedicatedFleet() == navigation.PurchasingFleet {
 			purchaser = s.ShipSymbol()
 			break
+		}
+	}
+	if purchaser == "" {
+		for _, s := range ships {
+			if s.IsIdle() {
+				purchaser = s.ShipSymbol()
+				break
+			}
 		}
 	}
 	if purchaser == "" {

@@ -526,12 +526,22 @@ func TestBootstrap_Gate_WorkingCapitalFloor_BlocksAtBoundaryAndLogsFloor(t *test
 	}
 }
 
-// The gate-worker buy uses the SAME floor as the hauler buy, and that floor is the codebase-wide
-// single source of truth (common.ImmutableReserveFloor) the fleet autosizer also honors — so bootstrap
-// spend can never drain below the line the autosizer reserves (the foundational two-buyer safety, ktio-B).
-func TestBootstrap_WorkingCapitalFloor_IsTheSharedImmutableReserveFloor(t *testing.T) {
-	if defaultContractWorkingCapitalFloor != common.ImmutableReserveFloor {
-		t.Fatalf("bootstrap floor (%d) must be the shared immutable reserve floor (%d) — one source of truth",
+// The bootstrap contract-op cushion and the immutable anti-stall bound are now DISTINCT (Admiral RULINGS
+// #5 2026-07-18 amendment split): the gate-worker buy uses the SAME contract cushion as the hauler buy —
+// the 150k contract-operating floor — which is RAISED above (never below) the immutable 50k anti-stall
+// bound, so bootstrap spend stays stricter than the line the autosizer/reconciler reserve. This pins the
+// split so a future edit cannot silently re-unify them or drop the contract cushion below the bound.
+func TestBootstrap_ContractCushion_IsDistinctFromAndAboveTheImmutableBound(t *testing.T) {
+	if defaultContractWorkingCapitalFloor != 150_000 {
+		t.Fatalf("bootstrap contract working-capital cushion (%d) must be the 150k contract-operating floor",
+			defaultContractWorkingCapitalFloor)
+	}
+	if common.ImmutableReserveFloor != 50_000 {
+		t.Fatalf("the immutable anti-stall bound (%d) must remain 50k — unchanged by the cushion raise",
+			common.ImmutableReserveFloor)
+	}
+	if defaultContractWorkingCapitalFloor < common.ImmutableReserveFloor {
+		t.Fatalf("the contract cushion (%d) must never drop below the immutable anti-stall bound (%d)",
 			defaultContractWorkingCapitalFloor, common.ImmutableReserveFloor)
 	}
 }

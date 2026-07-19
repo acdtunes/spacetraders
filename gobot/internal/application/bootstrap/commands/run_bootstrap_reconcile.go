@@ -235,6 +235,7 @@ type reconcileResult struct {
 	FrigateRetired     bool // the command frigate was retired from contract work this tick
 	ContractRun        bool // batch-contract was launched this tick
 	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
+	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + frigate bought hauler #1 + dedicated purchasing (sp-7r7w)
 	ViableHubs         int  // viable contract hubs the selector found (for the heartbeat)
 
 	// GATE tallies.
@@ -965,7 +966,7 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		if !obs.BatchContractRunning {
 			return "launch batch-contract on the contract fleet"
 		}
-		if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning {
+		if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning && len(obs.Haulers) == 0 && !obs.CommandFrigatePurchasing {
 			return "start the command frigate's continuous contract loop (pre-hauler sole earner)"
 		}
 		desired := len(selectContractHubs(obs.Markets, obs.ContractGoods))

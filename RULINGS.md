@@ -29,7 +29,8 @@ This file exists so that class of miss cannot recur.)
 
 5. **Parametrize, don't hardcode.** Operational values (standby stations, systems, thresholds,
    lane targets) are flags/config, not constants — EXCEPT where the Admiral has ruled a hard
-   floor (e.g. the 50k working-capital reserve is deliberately non-tunable per-run).
+   floor. Two such floors are deliberately non-tunable per-run (see the #5 amendment for the split):
+   the **immutable anti-stall bound (50k)** and the **contract working-capital cushion (150k)**.
 
 6. **Fleet purchases follow measured demand + the 25% rule.** Never buy hulls speculatively:
    a purchase requires measured lane/contract demand AND price ≤ ~25% of treasury.
@@ -117,6 +118,15 @@ This file exists so that class of miss cannot recur.)
 - **#5 extended:** spend guards are treasury-RELATIVE above the immutable 50k
   working-capital floor — an absolute cap tuned for a poor treasury must not throttle a
   flush one.
+- **#5 split (2026-07-18):** the contract operation's working-capital cushion and the immutable
+  anti-stall bound are now DISTINCT hard floors. The **contract working-capital cushion = 150k**
+  (contract op's operating capital): bootstrap's hauler + gate-worker/construction spend is affordable
+  only when treasury−price ≥ 150k. The **immutable anti-stall floor = 50k** (unchanged): the outer-max
+  backstop that keeps mature tour/factory trade able to trade its way out of a low-treasury crunch, and
+  the line the fleet autosizer clamps to + the capacity reconciler's DefaultReserveFloorCredits equal
+  (their compile-time lockstep guard stays at 50k). The cushion is RAISED above the bound (stricter),
+  never below it; both are documented hard constants, not live-tunable. (Origin: sp-7r7w / epic sp-ktio;
+  the cushion previously equaled the 50k bound under sp-bpdf and was un-pinned here.)
 - **#9 restated as intent:** strongest available model for command/judgment work; standing
   crew on the mid-tier; the shipwright picks the model per dispatch by task complexity;
   cross-model review panels for high-blast-radius work; review-class models are never

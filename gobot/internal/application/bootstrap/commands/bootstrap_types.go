@@ -81,6 +81,12 @@ type Observation struct {
 	// fleet dedication (so the contract coordinator's dedicated pool would draft it). true ⇒ retire it
 	// (clear the tag); false ⇒ already retired (the idempotency guard).
 	CommandFrigateOnContract bool
+	// CommandFrigatePurchasing reports whether the command frigate carries the "purchasing" dedication —
+	// the EXCLUSIVE purchasing-ship role set at the first-hauler pivot (sp-7r7w). Once true the frigate is
+	// the protected standing buy ship: the pre-hauler contract loop must NEVER (re)start on it (the step-3
+	// gate reads this, so the pivot is durable across restarts even before a hauler is observed), and it
+	// is off-limits to the contract op (never re-drafted).
+	CommandFrigatePurchasing bool
 	// Haulers is the contract-dedicated hauler pool NOW — each with the waypoint it is placed on (or
 	// heading to). Its length is the staged-buy count guard (buy while < one-per-viable-hub, capped at
 	// hauler_target); the waypoints are the "hub already served" placement guard.
@@ -97,6 +103,13 @@ type Observation struct {
 	// does NOT see this per-hull loop container (sp-ehg9 note): the two are separate earners, so the
 	// loop needs its own signal. false ⇒ no frigate loop yet (the fresh cold-start default).
 	FrigateContractLoopRunning bool
+	// FrigateCargoEmpty reports whether the command frigate currently carries NO cargo — the SAFE POINT
+	// for the first-hauler pivot (sp-7r7w). Stopping the frigate's contract loop mid-delivery would
+	// abandon in-flight contract cargo, so the pivot fires ONLY when the frigate is empty (between
+	// contracts); a loaded frigate defers the pivot a tick (the loop delivers + empties). Defaults false
+	// on an unresolved/unreadable frigate ⇒ the pivot is BLOCKED (fail-safe: never stop the earner on an
+	// unknown state), so the buy waits rather than risk losing cargo.
+	FrigateCargoEmpty bool
 	// Markets is the scouted market data for the home system(s) — the contract-hub selector's input
 	// (each marketplace's sourceable goods + purchase prices). Empty ⇒ no hubs selectable this tick
 	// (fail-closed: no hauler buys), which a fresh INCOME entry before scouting completes reads as.
