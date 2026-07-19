@@ -132,6 +132,20 @@ type TradeFleetConfig struct {
 	// Arm by editing config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
 	ClosedTours bool `mapstructure:"closed_tours"`
 
+	// CargoBlocklist names goods the tour planner must NEVER trade as cargo (sp-o4wa, epic
+	// sp-g9td): the economy-analyst's sub-70-cr/u noise goods whose per-leg dock+dwell tempo
+	// cost exceeds the cargo value (recommended value: [FUEL, ALUMINUM, PLASTICS]). UNLIKE the
+	// launch-config tour knobs above (MaxTourSystems/ClosedTours, stamped per-container), this
+	// is a daemon-global list injected straight into the tour coordinator handler via
+	// SetCargoBlocklist at boot — the SAME global-config → setter mechanism the contract
+	// pre_positioning.blocklist uses. The handler filters it out of the market snapshot before
+	// the solver sees it, so a listed good is unselectable as buy source OR sell sink. Absent/
+	// empty ⇒ no filtering ⇒ byte-identical to today (the default-off governance gate: nothing
+	// arms without an explicit captain config change). This is FUEL-as-tradeable-CARGO only —
+	// ship refueling is a separate path that never reads the tour snapshot. Arm by editing
+	// config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
+	CargoBlocklist []string `mapstructure:"cargo_blocklist"`
+
 	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
 	// Daemon-global tour tunings, same for every tour container (the mirror of
 	// reposition_jump_bound/max_tour_systems above): StartTourRun stamps them into every tour

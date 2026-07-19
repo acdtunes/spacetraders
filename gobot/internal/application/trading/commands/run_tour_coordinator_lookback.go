@@ -60,6 +60,26 @@ type lookbackItem struct {
 	DestBid        int
 }
 
+// filterBlocklistedListings drops every GoodListing whose good is in the blocklist (sp-o4wa) —
+// the look-back mirror of filterBlocklistedCargo for the fresh-listing buy universe. Applied to
+// the buy-source rows before the manifest is built, so a blocklisted noise good is never a
+// look-back purchase (look-back only BUYS from src, so barring it as a buy source bars it
+// entirely). An empty/nil blocklist is a true no-op (the SAME slice), keeping the default
+// look-back byte-identical.
+func filterBlocklistedListings(rows []trading.GoodListing, block map[string]bool) []trading.GoodListing {
+	if len(block) == 0 {
+		return rows
+	}
+	kept := make([]trading.GoodListing, 0, len(rows))
+	for _, r := range rows {
+		if block[r.Good] {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept
+}
+
 // buildLookbackManifest pairs departure-system buyable rows (src) against destination-system
 // import rows (dest) into a hold-capped, floor-cleared, best-spread-first manifest — the
 // pure core of look-back loading (sp-ed4i), computed exactly like a cross-system slice of
@@ -221,6 +241,12 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 	}
 	src := freshListings(srcRaw, now, maxListingAge)
 	dst := freshListings(destRaw, now, maxListingAge)
+	// sp-o4wa: bar the noise-goods blocklist from the look-back buy universe — the SECOND
+	// tour cargo-selection path (fresh listings, independent of the solver snapshot). Filtering
+	// the buy-source rows means a blocklisted good (FUEL/ALUMINUM/PLASTICS) is never a look-back
+	// purchase; since look-back only BUYS from src, barring it here bars it entirely. No-op when
+	// the blocklist is unset, so the default look-back is byte-identical.
+	src = filterBlocklistedListings(src, h.cargoBlocklist)
 
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {

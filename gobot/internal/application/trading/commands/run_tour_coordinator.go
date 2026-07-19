@@ -461,6 +461,16 @@ type RunTourCoordinatorHandler struct {
 	prePositioning     tradingsvc.DepositCandidateConfig
 	depositCeilingPct  int
 
+	// cargoBlocklist names goods the tour planner must NEVER trade as cargo (sp-o4wa):
+	// the economy-analyst's sub-70-cr/u noise goods (FUEL/ALUMINUM/PLASTICS) whose per-leg
+	// dock+dwell tempo cost exceeds the cargo value. Filtered out of the market snapshot in
+	// planForState BEFORE it reaches the solver, so a blocklisted good is unselectable as
+	// either a buy source or a sell sink. A set (nil/empty ⇒ no filtering ⇒ byte-identical),
+	// injected via SetCargoBlocklist from cfg.TradeFleet.CargoBlocklist at boot (mirrors the
+	// contract pre_positioning.blocklist mechanism). This is FUEL-as-tradeable-CARGO only —
+	// ship refueling (RefuelShipHandler → API RefuelShip) never consults the tour snapshot.
+	cargoBlocklist map[string]bool
+
 	// depositParked de-dups the pre-positioning parked/dormant verdict so a hull whose
 	// deposits are parked — no ceiling configured, treasury at/below the reserve, or an
 	// unreadable balance — logs ONCE per container per distinct state, not once per
@@ -648,6 +658,16 @@ func (h *RunTourCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 func (h *RunTourCoordinatorHandler) SetScanPolicy(policy shared.ScanPolicy) {
 	h.scanPolicy = policy
 	h.scanPolicySet = true
+}
+
+// SetCargoBlocklist injects the tour cargo good-blocklist (sp-o4wa) from
+// cfg.TradeFleet.CargoBlocklist at daemon boot — the same global-config → handler-setter
+// injection SetPrePositioning/SetScanPolicy use. An empty/absent list leaves the handler's
+// set nil, so planForState's filter is a no-op and the tour plans over the full good
+// universe exactly as before (byte-identical). Arming the noise-goods filter is an
+// explicit config edit (recommended value: FUEL, ALUMINUM, PLASTICS) + daemon restart.
+func (h *RunTourCoordinatorHandler) SetCargoBlocklist(goods []string) {
+	h.cargoBlocklist = stringSet(goods)
 }
 
 // SetModelArtifactPath injects the daemon-configured (absolute) market-model artifact
@@ -1739,6 +1759,13 @@ func (h *RunTourCoordinatorHandler) planForState(
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// sp-o4wa: drop the config-driven noise-goods blocklist from the good universe BEFORE
+	// any downstream consumer sees it, so a blocklisted good (FUEL/ALUMINUM/PLASTICS — sub-
+	// 70-cr/u tempo drag) is never chosen as tour cargo (buy source OR sell sink) and never
+	// misreported as an unreachable lane. No-op (same slice) when the blocklist is unset, so
+	// the default path is byte-identical. This is the tour cargo universe only — refueling
+	// is a separate command that never reads this snapshot.
+	snapshot = filterBlocklistedCargo(snapshot, h.cargoBlocklist)
 	// sp-mtvg: make the 1-gate-hop horizon's dropped exotic lanes LOUD. Best-effort and
 	// read-only — it never touches snapshot/plan and any error is swallowed (RULINGS #4).
 	h.recordUnreachableLanes(ctx, allowedSystems, snapshot, cmd.PlayerID)
@@ -1796,6 +1823,26 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// re-read of the ledger. Nil when the ledger is unwired / consult killed, which
 	// simply yields no burn-in samples.
 	return plan, snapshot, absorptionView, nil
+}
+
+// filterBlocklistedCargo drops every snapshot row whose good is in the blocklist (sp-o4wa),
+// removing the good from the tour's cargo universe entirely — as both a buy source (Ask)
+// and a sell sink (Bid) — so the solver can never plan a buy or sell leg for it. An
+// empty/nil blocklist is a true no-op: the SAME slice is returned (zero copy), keeping the
+// default path byte-identical. Exact good-symbol match, mirroring the pre_positioning
+// blocklist (good symbols are canonical uppercase).
+func filterBlocklistedCargo(snapshot []routing.TourGoodSnapshot, block map[string]bool) []routing.TourGoodSnapshot {
+	if len(block) == 0 {
+		return snapshot
+	}
+	kept := make([]routing.TourGoodSnapshot, 0, len(snapshot))
+	for _, row := range snapshot {
+		if block[row.Good] {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept
 }
 
 // recordUnreachableLanes is the sp-mtvg out-of-horizon lane diagnostic. Given the

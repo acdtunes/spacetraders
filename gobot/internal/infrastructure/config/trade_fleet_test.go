@@ -247,3 +247,47 @@ func TestLoadConfig_CandidateWidening_AbsentIsDefaults(t *testing.T) {
 	require.Equal(t, 0, cfg.TradeFleet.CandidateShortlistTopN,
 		"an absent candidate_shortlist_top_n must be the sentinel 0 (the consumer resolves 0 -> default 6)")
 }
+
+// sp-o4wa cargo_blocklist round-trip pin: the noise-goods blocklist must travel from
+// config.yaml's [trade_fleet] section into the loaded config unchanged, so a captain arms
+// the FUEL/ALUMINUM/PLASTICS filter by editing config.yaml + restarting — no code redeploy.
+// Exercises the REAL viper mapstructure pipeline (trade_fleet.cargo_blocklist ->
+// TradeFleetConfig.CargoBlocklist); a typo in the mapstructure tag would ship a silently-
+// inert knob, and this catches it.
+func TestLoadConfig_CargoBlocklist_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  cargo_blocklist:\n"+
+			"    - FUEL\n"+
+			"    - ALUMINUM\n"+
+			"    - PLASTICS\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"FUEL", "ALUMINUM", "PLASTICS"}, cfg.TradeFleet.CargoBlocklist,
+		"cargo_blocklist must reach the config struct so the captain arms the noise-goods filter by editing config.yaml + restarting")
+}
+
+// An absent cargo_blocklist must be nil/empty — the byte-identical default. The tour
+// coordinator's filter is a no-op on an empty set, so the fleet trades the full good
+// universe exactly as before until a captain explicitly arms the list.
+func TestLoadConfig_CargoBlocklist_AbsentIsEmpty(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	// enabled but NO cargo_blocklist — the default config.yaml shape.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Empty(t, cfg.TradeFleet.CargoBlocklist,
+		"an absent cargo_blocklist must be empty (no filtering ⇒ byte-identical), never a config-layer default")
+}

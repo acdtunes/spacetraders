@@ -1366,6 +1366,12 @@ func run(cfg *config.Config) error {
 	// the shared PlannedTTLSlack sizes reservation lifetimes.
 	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TourConsultDisabled, cfg.Absorption.PlannedTTLSlack)
 	tourCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop event when the dynamic-budget resolve stays unreadable
+	// sp-o4wa: inject the noise-goods cargo blocklist (FUEL/ALUMINUM/PLASTICS are sub-70-cr/u
+	// tempo drag) so the tour planner never selects a listed good as cargo. Global list from
+	// [trade_fleet].cargo_blocklist, mirroring the contract pre_positioning.blocklist boot
+	// injection. Absent/empty ⇒ no filtering ⇒ byte-identical; arming = adding goods to
+	// config.yaml + daemon restart. Cargo only — refueling never reads the tour snapshot.
+	tourCoordinatorHandler.SetCargoBlocklist(cfg.TradeFleet.CargoBlocklist)
 	// sp-v34b: stamp the tour-scan load policy so the shared arrival + post-trade scans
 	// SAMPLE the deliberate price-impact instrumentation (the top API consumer, ~80% of
 	// API) instead of scanning every market around every trade. Resolved from [trade_impact]

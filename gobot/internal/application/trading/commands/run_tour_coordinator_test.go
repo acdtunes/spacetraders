@@ -432,11 +432,16 @@ type tourFakeRoutingClient struct {
 	// the planner as false/"" — the dormant proto3 default, byte-identical to today.
 	closed        []bool
 	anchorSystems []string
+	// snapshots captures the market good-universe the coordinator handed the planner on
+	// each call (sp-o4wa): the seam a noise-goods blocklist test asserts against — a
+	// blocklisted good must never appear in the snapshot the solver plans cargo over.
+	snapshots [][]routing.TourGoodSnapshot
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
+	c.snapshots = append(c.snapshots, snapshot)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
 	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
