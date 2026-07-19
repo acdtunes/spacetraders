@@ -502,6 +502,34 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// Step 1: Build dependency tree
 	dependencyTree, err := h.buildDependencyTree(ctx, cmd)
 	if err != nil {
+		// sp-lor4: a target/input good with a recipe but no in-system EXPORT factory YET is a
+		// supply chain that has not been built (gate-construction materials whose export
+		// factories the construction/reconciler machinery builds later at GATE) — NOT an
+		// unrecoverable fault. HONEST-PAUSE (NoWorkReason + backoff, pre-spend: zero credits,
+		// no worker claimed — we return before Step 3's hauler discovery) so a -1 container
+		// stays ALIVE and self-heals on a later tick once the exporter exists, instead of
+		// returning an error the container runner burns its restart budget on and terminalizes
+		// as a crash. Same self-heal shape as the no-idle-hauler park (waitForIdleHaulers) and
+		// the sp-7yej/sp-f5pr no-work pattern. The resolver cannot tell "built later"
+		// (transient) from "never manufacturable in-system" (a misconfiguration) apart — both
+		// surface as this single condition — so honest-pause is the safe verdict for both: the
+		// cold-start gate case self-heals, and a genuinely-impossible good pauses OBSERVABLY
+		// (backoffNoWork logs the reason + a 10-min heartbeat) at zero cost rather than
+		// crash-looping. Only this condition is caught; ErrUnknownGood / ErrCircularDependency
+		// remain hard errors.
+		var noExporter *goods.ErrNoInSystemExporter
+		if errors.As(err, &noExporter) {
+			response.NoWorkReason = fmt.Sprintf(
+				"no in-system exporter for %s in %s yet - supply chain not built; awaiting factory build",
+				noExporter.Good, noExporter.System)
+			logger.Log("INFO", response.NoWorkReason, map[string]interface{}{
+				"factory_id":          response.FactoryID,
+				"target_good":         cmd.TargetGood,
+				"missing_export_good": noExporter.Good,
+				"system":              noExporter.System,
+			})
+			return nil
+		}
 		return fmt.Errorf("failed to build dependency tree: %w", err)
 	}
 

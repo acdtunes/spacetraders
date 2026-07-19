@@ -202,7 +202,11 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 		return nil, fmt.Errorf("error finding factory for %s: %w", goodSymbol, err)
 	}
 	if factory == nil {
-		return nil, fmt.Errorf("no factory in system %s exports %s - cannot manufacture (only IMPORT/EXCHANGE markets exist)", systemSymbol, goodSymbol)
+		// sp-lor4: a recipe-good with no in-system EXPORT factory is a NOT-YET-BUILT supply
+		// chain (its exporter is built later at GATE), not a hard fault. Return a typed error
+		// so the factory coordinator honest-pauses and retries rather than crashing; the
+		// message is unchanged so existing log greps still match.
+		return nil, &goods.ErrNoInSystemExporter{Good: goodSymbol, System: systemSymbol}
 	}
 
 	// Create fabrication node with factory location and supply info

@@ -202,10 +202,18 @@ func (r *factoryFakeShipRepo) FindByContainer(ctx context.Context, containerID s
 // FAB_PLATE (fed by IRON) and a raw market selling IRON.
 type factoryFakeMarketRepo struct {
 	market.MarketRepository
+
+	// suppressOutputFactory models the gate-construction cold start (sp-lor4): while
+	// true, FindFactoryForGood reports NO in-system EXPORT factory for testOutputGood,
+	// as if its exporter has not been built yet (construction=0%). Flipping it back to
+	// false mid-test simulates the exporter coming online at GATE, exercising self-heal.
+	// Mutated only between Handle() calls (never concurrently with a run), so it needs no
+	// lock — matching FindFactoryForGood's existing lock-free reads.
+	suppressOutputFactory bool
 }
 
 func (r *factoryFakeMarketRepo) FindFactoryForGood(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.FactoryResult, error) {
-	if goodSymbol == testOutputGood {
+	if goodSymbol == testOutputGood && !r.suppressOutputFactory {
 		return &market.FactoryResult{
 			WaypointSymbol: testFactoryWaypoint,
 			TradeSymbol:    goodSymbol,
@@ -357,10 +365,11 @@ func newTestHauler(t *testing.T, symbol string, inventory []*shared.CargoItem) *
 // FAB_PLATE <- IRON supply chain, exposing the fakes so tests can gate ship
 // discovery or drive the run with a cancellable context.
 type factoryFixture struct {
-	handler  *RunFactoryCoordinatorHandler
-	shipRepo *factoryFakeShipRepo
-	mediator *factoryFakeMediator
-	cmd      *RunFactoryCoordinatorCommand
+	handler    *RunFactoryCoordinatorHandler
+	shipRepo   *factoryFakeShipRepo
+	marketRepo *factoryFakeMarketRepo
+	mediator   *factoryFakeMediator
+	cmd        *RunFactoryCoordinatorCommand
 }
 
 // newFactoryFixture builds a coordinator with two idle haulers: the first
@@ -411,10 +420,11 @@ func newFactoryFixture(t *testing.T) *factoryFixture {
 	}
 
 	return &factoryFixture{
-		handler:  handler,
-		shipRepo: shipRepo,
-		mediator: fakeMediator,
-		cmd:      cmd,
+		handler:    handler,
+		shipRepo:   shipRepo,
+		marketRepo: marketRepo,
+		mediator:   fakeMediator,
+		cmd:        cmd,
 	}
 }
 
@@ -492,6 +502,72 @@ func TestFactoryCoordinator_ZeroIdleHaulersAtLaunch_WaitsAndAcquires(t *testing.
 	}
 	if calls := f.shipRepo.findAllCallCount(); calls < 3 {
 		t.Fatalf("expected the factory to poll for idle haulers at least 3 times before acquiring, got %d", calls)
+	}
+}
+
+// No in-system exporter (sp-lor4): a goods_factory whose target good has a recipe but
+// NO in-system EXPORT factory yet — the gate-construction cold start, where that exporter
+// is built later at GATE — must HONEST-PAUSE (NoWorkReason, pre-spend: zero credits, no
+// worker claimed) so its -1 container stays alive and self-heals. It must NOT return an
+// error the container runner treats as an unrecoverable crash and burns its restart budget
+// on. Same self-heal shape as the impatience-crash fix above.
+func TestFactoryCoordinator_NoInSystemExporter_HonestPausesInsteadOfCrashing(t *testing.T) {
+	f := newFactoryFixture(t)
+	f.marketRepo.suppressOutputFactory = true // exporter not built yet (construction=0%)
+
+	resp, err := f.handler.Handle(context.Background(), f.cmd)
+	if err != nil {
+		t.Fatalf("goods_factory with no in-system exporter returned an error — the container runner treats this as an unrecoverable crash and burns the restart budget: %v", err)
+	}
+	coordResp, ok := resp.(*RunFactoryCoordinatorResponse)
+	if !ok || coordResp == nil {
+		t.Fatalf("expected a RunFactoryCoordinatorResponse, got %T", resp)
+	}
+	if coordResp.NoWorkReason == "" {
+		t.Fatalf("expected an honest-pause NoWorkReason (awaiting the factory build), got none: %+v", coordResp)
+	}
+	if coordResp.TotalCost != 0 {
+		t.Fatalf("honest-pause must be pre-spend (zero credits committed), got TotalCost=%d", coordResp.TotalCost)
+	}
+	// The pause is pre-discovery: no hauler is ever claimed for a chain that cannot resolve.
+	if calls := f.shipRepo.findAllCallCount(); calls != 0 {
+		t.Fatalf("honest-pause must return before hauler discovery (no worker claimed), got %d discovery call(s)", calls)
+	}
+	if len(f.shipRepo.claims) != 0 {
+		t.Fatalf("honest-pause must claim no ships, got %d claim(s)", len(f.shipRepo.claims))
+	}
+}
+
+// Self-heal (sp-lor4): once the in-system exporter is built (at GATE), the SAME -1
+// container's next tick resolves the supply chain and produces — no recreate needed.
+// Each container iteration is one Handle() call, so this is modeled as two Handle() calls
+// with the exporter appearing between them: an honest-pause, then a normal completed run.
+func TestFactoryCoordinator_NoInSystemExporter_SelfHealsOnceExporterExists(t *testing.T) {
+	f := newFactoryFixture(t)
+
+	// Tick 1: exporter not built yet -> honest-pause, container stays alive.
+	f.marketRepo.suppressOutputFactory = true
+	resp1, err1 := f.handler.Handle(context.Background(), f.cmd)
+	if err1 != nil {
+		t.Fatalf("tick 1 (exporter absent) returned an error instead of pausing: %v", err1)
+	}
+	coord1, _ := resp1.(*RunFactoryCoordinatorResponse)
+	if coord1 == nil || coord1.NoWorkReason == "" {
+		t.Fatalf("tick 1 expected an honest-pause NoWorkReason, got %+v", coord1)
+	}
+
+	// Tick 2: GATE built the exporter -> the very next tick resolves and produces.
+	f.marketRepo.suppressOutputFactory = false
+	resp2, err2 := f.handler.Handle(context.Background(), f.cmd)
+	if err2 != nil {
+		t.Fatalf("tick 2 (exporter now present) failed to self-heal: %v", err2)
+	}
+	coord2, _ := resp2.(*RunFactoryCoordinatorResponse)
+	if coord2 == nil || !coord2.Completed {
+		t.Fatalf("tick 2 expected a completed production run once the exporter exists, got %+v", coord2)
+	}
+	if coord2.NoWorkReason != "" {
+		t.Fatalf("tick 2 must no longer report the no-exporter pause, got NoWorkReason=%q", coord2.NoWorkReason)
 	}
 }
 
