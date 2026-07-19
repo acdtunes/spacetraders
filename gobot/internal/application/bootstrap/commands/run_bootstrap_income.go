@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 )
 
 // actIncome runs the INCOME phase (Slice 2): the contract-income ramp. Four independently-guarded,
@@ -88,17 +89,19 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 // deferHaulerBuyToAutosizer reports whether bootstrap should hand THIS tick's contract-hauler buy to the
 // standing fleet autosizer (sp-sjvv single-buyer arbitration — the hauler sibling of the sp-tsn2
 // probe→freshsizer deferral). It engages ONLY when armed (autosizer_early_scaling) AND a fleet autosizer
-// is actually running to take over (obs.AutosizerRunning) AND at least one hauler already exists
-// (len(Haulers)>=1) — the sp-7r7w Option-1 threshold: bootstrap KEEPS the FIRST hauler (bought via the
-// first-hauler pivot at acv5's cushion) and defers only SUBSEQUENT scaling to the autosizer. bootstrap
-// never defers into a vacuum, so a cold start cannot wedge if the autosizer is down (bootstrap keeps
-// buying until the early launch lands). The autosizer scales the contract operation against the capacity
-// reconciler's emitted demand behind its own guard stack (reserve floor + ≤25% treasury + era-payback),
-// so exactly ONE buyer grows the contract fleet during the conflict window. Default off ⇒ always false
-// (byte-identical to today: bootstrap buys its haulers itself). A deferral is surfaced on the heartbeat,
-// never silent.
+// is actually running to take over (obs.AutosizerRunning) AND the contract-hauler pool has reached the
+// tier (len(Haulers) >= capacity.ContractHaulerTierSaturation). CLEAN OWNERSHIP BY RANGE: bootstrap SEEDS
+// 0→tier itself (it keeps buying below the tier behind its own capital gate), the autosizer scales tier→N.
+// The tier gate is load-bearing — below it the capacity reconciler withholds ALL contract-delivery demand
+// (ComputeDesired returns empty), so deferring below the tier would leave the pool with no buyer and wedge
+// at 1: the two-buyer deadlock this dissolves. bootstrap also never defers into a vacuum, so a cold start
+// cannot wedge if the autosizer is down (bootstrap keeps buying until the early launch lands). The autosizer
+// scales the contract operation against the reconciler's emitted demand behind its own guard stack (reserve
+// floor + ≤25% treasury + era-payback), so exactly ONE buyer grows the contract fleet in each range. Default
+// off ⇒ always false (byte-identical to today: bootstrap buys its haulers itself). A deferral is surfaced on
+// the heartbeat, never silent.
 func (h *RunBootstrapCoordinatorHandler) deferHaulerBuyToAutosizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
-	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning || len(obs.Haulers) < 1 {
+	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning || len(obs.Haulers) < capacity.ContractHaulerTierSaturation {
 		return false
 	}
 	res.Blocker = "deferred_to_autosizer"
