@@ -127,6 +127,11 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
 	h.SetPurchaseNotifier(&autosizerNotifier{store: eventStore})
 	h.SetMetricsSink(&autosizerMetricsSink{})
+	// sp-sjvv: gate the contract_delivery class on contract graduation (sp-difa.1) — the SAME era-repo
+	// flag the capacity reconciler + bootstrap observer read. A graduated fleet must NOT auto-buy
+	// contract haulers even with the class armed (the demand bridge can hold stale demand post-graduation).
+	// EraRepository.IsContractGraduated fail-opens internally; SetContractGraduationReader is nil-safe too.
+	h.SetContractGraduationReader(persistence.NewEraRepository(server.db))
 	return h
 }
 

@@ -66,16 +66,42 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	}
 
 	// (4) Staged hauler acquisition — one per viable hub, capped at hauler_target. Compute the viable
-	// hubs (pure) and the desired count; the count guard is the double-buy protection.
+	// hubs (pure) and the desired count; the count guard is the double-buy protection. sp-sjvv: when
+	// the single-buyer arbitration is armed and the fleet autosizer has taken over (autosizer running),
+	// DEFER the buy to it so the two never bid on one treasury — this also dissolves the maybeBuyHauler
+	// no_purchaser deadlock (bootstrap just defers, exactly as it already does for probes → freshsizer).
 	hubs := selectContractHubs(obs.Markets, obs.ContractGoods)
 	res.ViableHubs = len(hubs)
 	desired := len(hubs)
 	if desired > cfg.HaulerTarget {
 		desired = cfg.HaulerTarget
 	}
-	if len(obs.Haulers) < desired {
+	if len(obs.Haulers) < desired && !h.deferHaulerBuyToAutosizer(ctx, cmd, cfg, obs, res) {
 		h.maybeBuyHauler(ctx, cmd, cfg, obs, hubs, res)
 	}
+}
+
+// deferHaulerBuyToAutosizer reports whether bootstrap should hand THIS tick's contract-hauler buy to the
+// standing fleet autosizer (sp-sjvv single-buyer arbitration — the hauler sibling of the sp-tsn2
+// probe→freshsizer deferral). It engages ONLY when armed (autosizer_early_scaling) AND a fleet autosizer
+// is actually running to take over (obs.AutosizerRunning) — bootstrap never defers into a vacuum, so a
+// cold start cannot wedge if the autosizer is down (bootstrap keeps buying its own haulers until the
+// early launch lands). The autosizer scales the contract operation against the capacity reconciler's
+// emitted demand behind its own guard stack (reserve floor + ≤25% treasury + era-payback), so exactly
+// ONE buyer grows the contract fleet during the conflict window. Default off ⇒ always false
+// (byte-identical to today: bootstrap buys its haulers itself). A deferral is surfaced on the heartbeat,
+// never silent.
+func (h *RunBootstrapCoordinatorHandler) deferHaulerBuyToAutosizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
+	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning {
+		return false
+	}
+	res.Blocker = "deferred_to_autosizer"
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap contract hauler needed (%d/%d) but DEFERRING the buy to the running fleet autosizer — single-buyer arbitration (sp-sjvv): the autosizer scales the contract op against the capacity reconciler's demand while the frigate keeps earning; the two never bid on one treasury", len(obs.Haulers), cfg.HaulerTarget), map[string]interface{}{
+		"action":       "bootstrap_hauler_deferred",
+		"container_id": cmd.ContainerID,
+		"blocker":      "deferred_to_autosizer",
+	})
+	return true
 }
 
 // retireFrigate clears the command frigate's contract-fleet dedication (reuses fleet unassign). The

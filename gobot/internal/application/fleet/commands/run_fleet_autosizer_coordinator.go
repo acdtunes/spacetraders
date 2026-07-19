@@ -209,14 +209,15 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	// Buy-path collaborators, wired by setters at boot. Every one is nil-safe: a nil reader
 	// yields an unreadable input, which the guard stack fails CLOSED on (no buy) — the API-utilization
 	// reader included (an absent/unreadable utilization holds concurrency growth rather than permitting it).
-	treasury  TreasuryReader
-	era       EraClockReader
-	apiUtil   APIUtilizationReader
-	fleetSize FleetSizeReader
-	yardPrice YardPriceReader
-	purchaser Purchaser
-	notifier  PurchaseNotifier
-	metrics   MetricsSink
+	treasury   TreasuryReader
+	era        EraClockReader
+	apiUtil    APIUtilizationReader
+	fleetSize  FleetSizeReader
+	yardPrice  YardPriceReader
+	purchaser  Purchaser
+	notifier   PurchaseNotifier
+	metrics    MetricsSink
+	graduation ContractGraduationReader // sp-sjvv: gates the contract_delivery class on graduation (nil ⇒ fail-open)
 
 	// warehouse is the typed handle to the warehouse provider. Held in addition to its
 	// slot in providers so the reconcile loop can invoke its DISPATCH step (place idle/stranded hulls
@@ -298,6 +299,13 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetPurchaseNotifier(n PurchaseNoti
 
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunFleetAutosizerCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }
+
+// SetContractGraduationReader wires the contract-graduation gate for the contract_delivery class
+// (sp-sjvv). Unset (nil) ⇒ fail-OPEN: the class is never graduation-gated, so behavior is byte-identical
+// to pre-sjvv (the reconciler's own graduation idle still applies). Wired in production to the era repo.
+func (h *RunFleetAutosizerCoordinatorHandler) SetContractGraduationReader(r ContractGraduationReader) {
+	h.graduation = r
+}
 
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunFleetAutosizerCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {

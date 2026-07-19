@@ -113,6 +113,22 @@ const (
 	// earning). The window must be FULL before it can clear the bar, so a spike on a fresh/short history
 	// (the first ticks after arming, or after a restart drops the window) can never trip GATE.
 	gateIncomeWindowTicks = 5
+
+	// defaultAutosizerEarlyScaling is the sp-sjvv cold-start-contract-scaling flag default: 0 = OFF
+	// (byte-identical — the fleet autosizer stays OFF the whole bootstrap run, exactly as today, and
+	// bootstrap buys its contract haulers itself). Armed to 1 via
+	// `tune --operation bootstrap autosizer_early_scaling 1`, ONE flag arms TWO coupled behaviors so
+	// the capacity reconciler's emitted contract-delivery demand finally has a buyer during cold start
+	// (the ktio-B fix): (1) bootstrap LAUNCHES the fleet autosizer EARLY, during the DATA/INCOME
+	// scaling window, so the reconciler's demand is consumed by the autosizer's guard-gated buy path
+	// (contract_delivery armed via sp-nkqn's own contract_delivery_hulls_enabled config knob); and
+	// (2) bootstrap DEFERS its own contract-hauler buys to that autosizer once it is running
+	// (single-buyer arbitration — the two never bid on one treasury), which also dissolves the
+	// maybeBuyHauler no_purchaser deadlock. The coupling is deliberate: bootstrap only defers to a
+	// buyer it has confirmed running, so a cold start can never wedge on an absent autosizer. This
+	// REVERSES the deliberate "autosizer off the whole bootstrap run" guard; the arbitration + the
+	// ktio-A absolute treasury floor (sp-bpdf) are the load-bearing safety that replaces it.
+	defaultAutosizerEarlyScaling = 0
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —

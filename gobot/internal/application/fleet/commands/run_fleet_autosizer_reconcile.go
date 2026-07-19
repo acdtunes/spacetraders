@@ -278,12 +278,35 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		MaxExplorerHulls:            cfg.FleetCeilingExplorer,
 	}
 
+	// sp-sjvv: contract-graduation gate for the contract_delivery class — defense-in-depth beside the
+	// capacity reconciler's own graduation idle. The ContractDeliveryDemandBridge holds the LATEST
+	// emitted demand and the reconciler simply STOPS emitting when graduated (it never clears a prior
+	// Present demand), so a fleet that emitted contract-delivery demand and THEN graduated would leave
+	// STALE Present demand this coordinator would keep buying against — re-spawning the contract op
+	// difa.1 durably retired. Resolved ONCE per tick, and ONLY when the class is even armed, so a
+	// disarmed contract_delivery class (the default) triggers NO graduation read and the tick is
+	// byte-identical to pre-sjvv. Fail-OPEN (see contractGraduated).
+	contractGraduated := false
+	if !cfg.classDisabled(HullClassContractDelivery) {
+		contractGraduated = h.contractGraduated(ctx, cmd)
+	}
+
 	purchasesThisTick := 0
 	anyUnmetNoBuy := false
 
 	for _, p := range h.providers {
 		class := p.Class()
 		if cfg.classDisabled(class) {
+			continue
+		}
+		// sp-sjvv: a contract-graduated fleet must NOT auto-buy contract haulers even with the class
+		// armed. Skip the class entirely (its provider — the demand bridge — is never consulted), so a
+		// graduated fleet reads no contract-delivery demand and buys nothing, exactly as difa.1 intends.
+		if class == HullClassContractDelivery && contractGraduated {
+			logger.Log("INFO", "Autosizer contract_delivery class SKIPPED: player is contract-graduated (sp-difa.1) — no contract-hauler auto-buy on a graduated fleet even with the class armed (durable; sp-sjvv)", map[string]interface{}{
+				"action":       "autosizer_contract_delivery_graduated_skip",
+				"container_id": cmd.ContainerID,
+			})
 			continue
 		}
 		d, err := p.Demand(ctx, cmd.PlayerID, params)
@@ -341,6 +364,26 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		"purchased":         res.Purchased,
 	})
 	return res, nil
+}
+
+// contractGraduated reports whether the player's current era is contract-graduated (sp-difa.1), gating
+// the contract_delivery class (sp-sjvv). Fail-OPEN: a nil reader (unwired) or a read error is treated as
+// UN-graduated, so a mis-wire or transient DB hiccup never silently suppresses armed routine scaling —
+// the operator's explicit, durable graduation is the ONLY thing that disables the class here (mirroring
+// the capacity reconciler's own fail-open graduation idle).
+func (h *RunFleetAutosizerCoordinatorHandler) contractGraduated(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand) bool {
+	if h.graduation == nil {
+		return false
+	}
+	graduated, err := h.graduation.IsContractGraduated(ctx, cmd.PlayerID)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf("Autosizer contract-graduation read failed — treating as UN-graduated (fail-open), contract_delivery class runs as armed: %v", err), map[string]interface{}{
+			"action":       "autosizer_graduation_read_error",
+			"container_id": cmd.ContainerID,
+		})
+		return false
+	}
+	return graduated
 }
 
 // runZeroEffectAlarm raises ONE edge-triggered WARN when demand has persisted for

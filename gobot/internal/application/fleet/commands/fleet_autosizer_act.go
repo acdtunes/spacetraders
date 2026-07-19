@@ -32,6 +32,20 @@ type EraClockReader interface {
 	HoursToEraEnd(ctx context.Context) (hours float64, readable bool, err error)
 }
 
+// ContractGraduationReader reads the durable per-player era-scoped contract-graduation flag (sp-difa.1)
+// — the SAME flag the capacity reconciler and the bootstrap coordinator consult. It gates the
+// contract_delivery class ONLY (sp-sjvv): a graduated fleet has DURABLY retired the contract-delivery
+// operation, so the autosizer must NOT auto-buy contract haulers for it even with the class armed. This
+// is defense-in-depth beside the reconciler's own graduation idle: the ContractDeliveryDemandBridge
+// holds the LATEST emitted demand and the reconciler simply STOPS emitting when graduated (it never
+// clears a prior Present demand), so a fleet that emitted demand and THEN graduated would leave stale
+// demand the autosizer would otherwise keep buying against — re-spawning the contract op difa.1 killed.
+// Fail-OPEN: a nil reader (unwired) or a read error is treated as UN-graduated, so the class runs exactly
+// as today (a mis-wire / transient DB hiccup never silently suppresses armed routine scaling).
+type ContractGraduationReader interface {
+	IsContractGraduated(ctx context.Context, playerID int) (bool, error)
+}
+
 // APIUtilizationReader reads the sustained request-utilization percent. readable=false ⇒ the
 // API-util guard fails CLOSED: an unreadable/absent utilization surface holds concurrency growth.
 type APIUtilizationReader interface {

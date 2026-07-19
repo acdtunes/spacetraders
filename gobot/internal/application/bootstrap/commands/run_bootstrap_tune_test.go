@@ -59,6 +59,7 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"scaled_gate_entry":         defaultScaledGateEntry,        // 0 (off) — sp-fp3y GATE-entry gate
 		"gate_income_bar":           50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
 		"gate_min_haulers":          defaultGateMinHaulers,         // 2 — sp-fp3y armed-GATE hauler floor
+		"autosizer_early_scaling":   defaultAutosizerEarlyScaling,  // 0 (off) — sp-sjvv cold-start scaling flag
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)

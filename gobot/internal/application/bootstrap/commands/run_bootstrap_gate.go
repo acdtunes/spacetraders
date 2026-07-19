@@ -435,6 +435,17 @@ func (h *RunBootstrapCoordinatorHandler) actComplete(ctx context.Context, cmd *R
 
 	if !obs.AutosizerRunning {
 		h.launchHandoff(ctx, cmd, cfg, res)
+	} else if cfg.AutosizerEarlyScaling && !h.ensureStandingHandoff(ctx, cmd, cfg, res) {
+		// sp-sjvv: cold-start scaling launched the fleet autosizer EARLY, so it is already running here
+		// and launchHandoff's autosizer-gated path (which ALSO launches the standing coordinators) is
+		// skipped — but siting + worker-rebalancer still have to be started (the early launch only
+		// started the autosizer, and siting has no other launch path). Ensure them now; if they cannot
+		// be confirmed this tick, HOLD (return without setting Done) and retry next tick, so bootstrap
+		// never exits with the mature economy half-handed-off. This branch is UNREACHABLE when the flag
+		// is off (byte-identical): with the feature disarmed the autosizer only ever runs by way of the
+		// normal hand-off, which launches the standing coordinators in the same call — so an
+		// autosizer-running-but-standing-coordinators-absent state can only arise under the early launch.
+		return
 	}
 
 	// Terminal exit: only once the standing economy is confirmed live (autosizer already running, or the
@@ -447,6 +458,50 @@ func (h *RunBootstrapCoordinatorHandler) actComplete(ctx context.Context, cmd *R
 			"container_id": cmd.ContainerID,
 		})
 	}
+}
+
+// ensureStandingHandoff finishes the COMPLETE hand-off for the sp-sjvv case where the fleet autosizer was
+// launched EARLY (armed cold-start scaling) and is therefore already running — so launchHandoff's
+// autosizer-gated path is skipped, but its SECOND half (the standing coordinators: siting +
+// worker-rebalancer) still has to run. It reports whether the standing coordinators are confirmed up
+// (launched this tick or already running). Idempotent at the adapter (each launch skips when the
+// coordinator is already RUNNING/PENDING), dry-run-safe, and nil-safe. On success it sets
+// res.HandoffLaunched so the caller's terminal-exit check passes and the COMPLETE line fires; on a
+// blocked/failed launch it sets a blocker and returns false so the caller HOLDS (never exits
+// half-handed-off). Mirrors launchHandoff's standing-coordinator portion.
+func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, res *reconcileResult) bool {
+	logger := common.LoggerFromContext(ctx)
+
+	if cfg.DryRun {
+		logger.Log("INFO", "Bootstrap DRY-RUN: the autosizer was launched early — WOULD launch the standing coordinators (siting + worker-rebalancer) to finish the hand-off (took no action, and holds rather than exiting)", map[string]interface{}{
+			"action":       "bootstrap_would_finish_handoff",
+			"container_id": cmd.ContainerID,
+		})
+		return false
+	}
+	if h.handoff == nil {
+		res.Blocker = "no_handoff_launcher"
+		logger.Log("WARN", "Bootstrap COMPLETE (autosizer launched early) but no hand-off launcher wired — cannot launch the standing coordinators (holding, not exiting)", map[string]interface{}{
+			"action":       "bootstrap_complete_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_handoff_launcher",
+		})
+		return false
+	}
+	if err := h.handoff.LaunchStandingCoordinators(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
+		res.Blocker = "standing_launch_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap hand-off (autosizer already launched early) failed to launch the standing coordinators: %v", err), map[string]interface{}{
+			"action":       "bootstrap_standing_launch_error",
+			"container_id": cmd.ContainerID,
+		})
+		return false
+	}
+	res.HandoffLaunched = true
+	logger.Log("INFO", "Bootstrap finished the hand-off — the fleet autosizer was launched early (cold-start scaling, sp-sjvv), and now the standing coordinators (siting + worker-rebalancer) are launched too; the mature demand-driven economy is fully live", map[string]interface{}{
+		"action":       "bootstrap_handoff_launched",
+		"container_id": cmd.ContainerID,
+	})
+	return true
 }
 
 // launchHandoff launches the standing coordinators — the fleet-autosizer plus the rest — turning fleet
