@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // This file is the depot LIFECYCLE surface (bead sp-38xc): `depot start <name> <spec>`
@@ -31,6 +32,12 @@ type depotContainerRef struct {
 type depotStopSink interface {
 	listDepotContainers(playerID int) []depotContainerRef
 	stopContainer(containerID string) error
+	// releaseDepotHull clears a reaped depot hull's role-fleet dedication (AssignFleet "") so the hull
+	// returns to the general/trade pool after `depot stop` reaps its buffer container (sp-udgc). Without
+	// it a `depot stop` leaves the hull stopped-but-still-"stocker"/"warehouse"-dedicated = off trade
+	// (the claimed-hull half of the decommission strand). *DaemonServer writes the empty fleet tag; a spy
+	// records the symbol.
+	releaseDepotHull(ctx context.Context, shipSymbol string, playerID int) error
 }
 
 // startDepot persists ONE depot (upsert, non-destructive to the rest of the set) then
@@ -57,13 +64,35 @@ func stopDepot(ctx context.Context, store *depotstore.Store, sink depotStopSink,
 	if err != nil {
 		return 0, err
 	}
+	refs := sink.listDepotContainers(playerID)
+	// The crewing ship of each live container, so a reaped container's hull can be released.
+	shipByContainer := make(map[string]string, len(refs))
+	for _, r := range refs {
+		shipByContainer[r.containerID] = r.shipSymbol
+	}
 	stopped := 0
-	for _, id := range planDepotStops(reg, depotID, sink.listDepotContainers(playerID)) {
+	for _, id := range planDepotStops(reg, depotID, refs) {
 		if err := sink.stopContainer(id); err != nil {
 			fmt.Printf("Warning: depot %q stop of container %s skipped: %v\n", depotID, id, err)
 			continue
 		}
 		stopped++
+		// sp-udgc: RELEASE the reaped hull's role-fleet dedication (AssignFleet "") so an explicit
+		// `depot stop` fully returns the warehouse/stocker hull to the general/trade pool. Without this
+		// the stopped-but-still-"stocker"/"warehouse"-dedicated hull stays off trade — the claimed-hull
+		// half of the decommission strand (the boot guard prevents re-strand on restart; this frees what
+		// a running buffer container held). SCOPED to hulls whose container we SUCCESSFULLY reaped just
+		// now: a graceful StopContainer released the hull's work-claim, so clearing the dedication returns
+		// it to the pool; a hull whose container did NOT stop keeps its dedication (never leave a live
+		// container on a poachable hull). Best-effort: a release failure is logged and stepped over so one
+		// bad hull never blocks the rest of the teardown.
+		ship := shipByContainer[id]
+		if ship == "" {
+			continue
+		}
+		if err := sink.releaseDepotHull(ctx, ship, playerID); err != nil {
+			fmt.Printf("Warning: depot %q release of reaped hull %s skipped (left dedicated; operator can `fleet unassign`): %v\n", depotID, ship, err)
+		}
 	}
 	return stopped, nil
 }
@@ -147,4 +176,18 @@ func (s *DaemonServer) listDepotContainers(playerID int) []depotContainerRef {
 // (which also stops child containers).
 func (s *DaemonServer) stopContainer(containerID string) error {
 	return s.StopContainer(containerID)
+}
+
+// releaseDepotHull (depotStopSink) clears a reaped depot hull's role-fleet dedication so it returns
+// to the general/trade pool after `depot stop` reaps its buffer container (sp-udgc). It writes the
+// empty fleet tag through the SAME single AssignFleet dedication column positionDepotElementHull
+// re-dedicates through (the `fleet unassign` idiom), so every idle-grab exclusion built on that tag
+// stops applying and trade re-adopts the hull. A graceful StopContainer already released the hull's
+// work-claim on reap, so clearing the dedication is what actually returns it to the pool. Idempotent:
+// an already-undedicated hull is a no-op write.
+func (s *DaemonServer) releaseDepotHull(ctx context.Context, shipSymbol string, playerID int) error {
+	if s.shipRepo == nil {
+		return fmt.Errorf("release depot hull %s: no ship repository wired", shipSymbol)
+	}
+	return s.shipRepo.AssignFleet(ctx, shipSymbol, "", shared.MustNewPlayerID(playerID))
 }

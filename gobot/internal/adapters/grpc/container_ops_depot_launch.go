@@ -464,9 +464,12 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 	if shipSymbol == "" || warehouseWaypoint == "" {
 		return fmt.Errorf("depot warehouse launch requires a ship symbol and warehouse waypoint")
 	}
-	ship, err := s.positionDepotElementHull(ctx, shipSymbol, warehouseWaypoint, operationWarehouse, false, playerID)
+	ship, crewed, err := s.positionDepotElementHull(ctx, shipSymbol, warehouseWaypoint, operationWarehouse, false, playerID)
 	if err != nil {
 		return err
+	}
+	if !crewed {
+		return nil // never-poach (sp-udgc): the hull is dedicated to a foreign fleet (e.g. "trade") — element left uncrewed, no coordinator launched
 	}
 	if ship == nil {
 		return fmt.Errorf("depot warehouse hull %s not found", shipSymbol)
@@ -613,67 +616,87 @@ func hullCrewsOperation(storageShips []string, shipSymbol string) bool {
 //
 // IDEMPOTENT + fail-open, preserving the shipped delivery behavior: a hull already the role's own
 // skips the claim-release (never yanked mid-role); a hull still flying is a benign skip; a hull
-// already at its waypoint is a no-op. Returns the reloaded ship so a caller (warehouse/stocker
-// launch) can gate its coordinator start on the post-release state.
+// already at its waypoint is a no-op. Returns the reloaded ship plus crewed=true so a caller
+// (warehouse/stocker launch) can gate its coordinator start on the post-release state.
+//
+// NEVER-POACH (bead sp-udgc, RULINGS #7 generalized to depot-launch): if the hull is already
+// dedicated to a DIFFERENT non-empty fleet than this depot role, it is NOT poached — the element goes
+// UNCREWED (crewed=false) and the caller launches no coordinator. An operator's explicit dedication
+// (e.g. the Admiral moved a former depot-crew light to "trade") wins over the depot topology's naming,
+// so a daemon restart never overrides an existing assignment (the Admiral's invariant: a restart must
+// not change ship assignments). This SUPERSEDES the earlier sp-3l64 adoption of a
+// contract/manufacturing hull into a depot role — an already-dedicated hull is now left alone, and
+// only an UNDEDICATED hull (the cold-start bootstrap/reconciler provisioning norm) is crewed. A hull
+// already on THIS role (DedicatedFleet == fleetTag) is not foreign and crews idempotently as before.
 func (s *DaemonServer) positionDepotElementHull(
 	ctx context.Context, shipSymbol, targetWaypoint, fleetTag string, navigateOnAssign bool, playerID int,
-) (*navigation.Ship, error) {
+) (ship *navigation.Ship, crewed bool, err error) {
 	pid := shared.MustNewPlayerID(playerID)
-	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
+	ship, err = s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load depot %s hull %s: %w", fleetTag, shipSymbol, err)
+		return nil, false, fmt.Errorf("failed to load depot %s hull %s: %w", fleetTag, shipSymbol, err)
 	}
 	if ship == nil {
-		return nil, fmt.Errorf("depot %s hull %s not found", fleetTag, shipSymbol)
+		return nil, false, fmt.Errorf("depot %s hull %s not found", fleetTag, shipSymbol)
+	}
+
+	// Never-poach: a hull dedicated to a FOREIGN fleet (non-empty and != this role) is left alone —
+	// the element goes uncrewed rather than overriding the operator's/existing dedication on restart.
+	if fleet := ship.DedicatedFleet(); fleet != "" && fleet != fleetTag {
+		fmt.Printf("depot %s element %s left dedicated to %q, not poached for depot (sp-udgc never-poach)\n",
+			fleetTag, shipSymbol, fleet)
+		return ship, false, nil
 	}
 
 	if depotHullNeedsFreeing(ship, fleetTag) {
-		if err := s.shipRepo.AssignFleet(ctx, shipSymbol, fleetTag, pid); err != nil {
-			return nil, fmt.Errorf("failed to re-dedicate depot hull %s to %q: %w", shipSymbol, fleetTag, err)
+		if err = s.shipRepo.AssignFleet(ctx, shipSymbol, fleetTag, pid); err != nil {
+			return nil, false, fmt.Errorf("failed to re-dedicate depot hull %s to %q: %w", shipSymbol, fleetTag, err)
 		}
-		if _, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, pid,
+		if _, err = s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, pid,
 			fmt.Sprintf("re-dedicated as depot %s hull for %s (sp-3l64)", fleetTag, targetWaypoint)); err != nil {
-			return nil, fmt.Errorf("failed to release prior work-claim on depot hull %s: %w", shipSymbol, err)
+			return nil, false, fmt.Errorf("failed to release prior work-claim on depot hull %s: %w", shipSymbol, err)
 		}
 		// Reload so the idle / location gates below observe the post-release state.
 		ship, err = s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
 		if err != nil {
-			return nil, fmt.Errorf("failed to reload depot hull %s after re-dedication: %w", shipSymbol, err)
+			return nil, false, fmt.Errorf("failed to reload depot hull %s after re-dedication: %w", shipSymbol, err)
 		}
 		if ship == nil {
-			return nil, fmt.Errorf("depot hull %s not found after re-dedication", shipSymbol)
+			return nil, false, fmt.Errorf("depot hull %s not found after re-dedication", shipSymbol)
 		}
 	}
 
 	if !navigateOnAssign {
-		return ship, nil // warehouse/stocker: their own coordinator parks the hull, not this call
+		return ship, true, nil // warehouse/stocker: their own coordinator parks the hull, not this call
 	}
 	if !ship.IsIdle() {
-		return ship, nil // still flying (dispatched, or mid-reposition) — benign skip, never yanked
+		return ship, true, nil // still flying (dispatched, or mid-reposition) — benign skip, never yanked
 	}
 	if loc := ship.CurrentLocation(); loc != nil && loc.Symbol == targetWaypoint {
-		return ship, nil // already parked at its waypoint — nothing to reposition
+		return ship, true, nil // already parked at its waypoint — nothing to reposition
 	}
 	navigate := s.NavigateShip
 	if s.depotNavigateOverride != nil {
 		navigate = s.depotNavigateOverride
 	}
-	if _, err := navigate(ctx, shipSymbol, targetWaypoint, playerID); err != nil {
-		return ship, err
+	if _, err = navigate(ctx, shipSymbol, targetWaypoint, playerID); err != nil {
+		return ship, true, err
 	}
-	return ship, nil
+	return ship, true, nil
 }
 
 // depotHullNeedsFreeing reports whether a depot element's hull must be claim-released + re-dedicated
 // to fleetTag (sp-3l64). It fires when the hull is not already the role's own (DedicatedFleet !=
-// fleetTag) AND it is safe to break its current occupancy — the hull is idle, or it is tagged to a
-// FOREIGN fleet (the exact re-grab / mid-task vector: a "contract"/"manufacturing"-tagged hull).
+// fleetTag) AND it is safe to break its current occupancy.
 //
-// The subtle case it must NOT fire on is a hull that is non-idle AND untagged: it is already flying
-// a coordinator that claimed it while untagged — a warehouse/stocker RESUMING on reload (the boot
-// path re-runs this against a recovered, non-idle buffer hull that StartWarehouse/StartStocker
-// never tagged) — and yanking it would strand the running buffer. That is the untagged-running
-// idempotency that pairs with the tagged-running skip, and it keeps the reload re-run quiet.
+// As of the sp-udgc never-poach guard, positionDepotElementHull SHORT-CIRCUITS any hull dedicated to
+// a FOREIGN fleet BEFORE this is reached, so by the time this runs the hull is either UNDEDICATED
+// (DedicatedFleet == "") or already this role's own. The `|| DedicatedFleet() != ""` clause is thus a
+// defensive no-op for the reachable inputs (kept so the predicate stays self-contained). The live
+// decision is therefore: re-dedicate an UNDEDICATED IDLE hull (fresh crewing); leave an undedicated
+// NON-idle hull alone (the warehouse/stocker RESUMING on reload — a recovered buffer hull that
+// StartWarehouse/StartStocker never tagged — which must not be yanked mid-run); and skip a hull
+// already on this role (idempotent reload).
 func depotHullNeedsFreeing(ship *navigation.Ship, fleetTag string) bool {
 	if ship.DedicatedFleet() == fleetTag {
 		return false // already the role's own — idempotent skip (never yank a hull mid-role)
@@ -692,7 +715,9 @@ func (s *DaemonServer) launchDepotDelivery(ctx context.Context, shipSymbol, hubW
 	if shipSymbol == "" || hubWaypoint == "" {
 		return fmt.Errorf("depot delivery hull launch requires a ship symbol and hub waypoint")
 	}
-	_, err := s.positionDepotElementHull(ctx, shipSymbol, hubWaypoint, depot.DeliveryHullFleet, true, playerID)
+	// crewed is ignored: a poach-refused hull (crewed=false) simply isn't repositioned — it stays on
+	// its foreign fleet, which is the never-poach outcome for a hub role too (sp-udgc).
+	_, _, err := s.positionDepotElementHull(ctx, shipSymbol, hubWaypoint, depot.DeliveryHullFleet, true, playerID)
 	return err
 }
 
@@ -706,7 +731,8 @@ func (s *DaemonServer) launchDepotSourceHub(ctx context.Context, shipSymbol, hub
 	if shipSymbol == "" || hubWaypoint == "" {
 		return fmt.Errorf("depot source-hub launch requires a ship symbol and waypoint")
 	}
-	_, err := s.positionDepotElementHull(ctx, shipSymbol, hubWaypoint, depotSourceHubFleet, true, playerID)
+	// crewed ignored (see launchDepotDelivery): a poach-refused source-hub hull stays on its foreign fleet.
+	_, _, err := s.positionDepotElementHull(ctx, shipSymbol, hubWaypoint, depotSourceHubFleet, true, playerID)
 	return err
 }
 
@@ -736,9 +762,12 @@ func (s *DaemonServer) launchDepotStocker(ctx context.Context, shipSymbol, wareh
 	if shipSymbol == "" || warehouseWaypoint == "" {
 		return fmt.Errorf("depot stocker launch requires a ship symbol and warehouse waypoint")
 	}
-	ship, err := s.positionDepotElementHull(ctx, shipSymbol, warehouseWaypoint, operationStocker, false, playerID)
+	ship, crewed, err := s.positionDepotElementHull(ctx, shipSymbol, warehouseWaypoint, operationStocker, false, playerID)
 	if err != nil {
 		return err
+	}
+	if !crewed {
+		return nil // never-poach (sp-udgc): the hull is dedicated to a foreign fleet (e.g. "trade") — element left uncrewed, no coordinator launched
 	}
 	if ship == nil {
 		return fmt.Errorf("depot stocker hull %s not found", shipSymbol)

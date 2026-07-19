@@ -81,49 +81,38 @@ func insertDepotDeliveryHull(t *testing.T, db *gorm.DB, symbol string, playerID 
 	require.NoError(t, db.Create(model).Error)
 }
 
-// sp-3l64 behaviors 1+2, ROUND 2 (contract): assigning an idle CONTRACT-tagged hull as a depot
-// delivery hull must re-dedicate it to the distinct depot-delivery fleet, so the contract
-// coordinator's OWN dedicated pool (FindIdleShipsByFleet("contract")) can no longer re-grab it and
-// pull it off its hub. This is the exact re-grab vector observed live: hulls added as delivery
-// hulls stayed 'contract'-tagged and were yanked back onto general contracts.
-func TestLaunchDepotDelivery_ReDedicatesIdleContractHullSoCoordinatorCannotReGrabIt(t *testing.T) {
+// sp-udgc never-poach (supersedes sp-3l64 ROUND 2): a delivery hull already dedicated to "contract"
+// is LEFT on "contract" — depot-launch does NOT poach it into the depot-delivery fleet. It stays
+// available to the contract coordinator (its rightful owner); the depot delivery element goes
+// uncrewed rather than steal it. sp-3l64 re-dedicated it to STOP the contract coordinator re-grabbing
+// a depot delivery hull; under never-poach there is no depot delivery hull to protect — an uncrewed
+// element creates no re-grabbable hull, so the concern is moot and the hull simply does contract work.
+func TestLaunchDepotDelivery_DoesNotPoachContractDedicatedHull(t *testing.T) {
 	s, db, playerID, navCalls := newDepotDeliveryTestServer(t)
 	const hub = "X1-VB74-J58"
 	insertDepotDeliveryHull(t, db, "DLV-J58", playerID, "contract", hub, false) // idle, contract-tagged, AT its hub
 	pid := shared.MustNewPlayerID(playerID)
 
-	// The re-grab vector: while it carries the contract tag, the coordinator's dedicated pool sees it.
-	_, before, err := appContract.FindIdleShipsByFleet(context.Background(), pid, s.shipRepo, "contract")
-	require.NoError(t, err)
-	require.Contains(t, before, "DLV-J58",
-		"precondition: a contract-tagged idle hull is grabbable by the contract coordinator (the recurring bug)")
-
 	require.NoError(t, s.launchDepotDelivery(context.Background(), "DLV-J58", hub, playerID))
 
 	var got persistence.ShipModel
 	require.NoError(t, db.First(&got, "ship_symbol = ? AND player_id = ?", "DLV-J58", playerID).Error)
-	require.Equal(t, depot.DeliveryHullFleet, got.DedicatedFleet,
-		"assignment re-dedicates the hull to the distinct depot-delivery fleet")
+	require.Equal(t, "contract", got.DedicatedFleet,
+		"the contract-dedicated hull is left alone — not poached into depot-delivery (never-poach)")
 
 	_, contractPool, err := appContract.FindIdleShipsByFleet(context.Background(), pid, s.shipRepo, "contract")
 	require.NoError(t, err)
-	require.NotContains(t, contractPool, "DLV-J58",
-		"a depot delivery hull is no longer in the contract coordinator's dedicated pool — it cannot be re-grabbed")
+	require.Contains(t, contractPool, "DLV-J58",
+		"the hull stays in the contract coordinator's pool — its rightful owner keeps it")
 
-	_, generalPool, err := appContract.FindIdleLightHaulers(context.Background(), pid, s.shipRepo, "")
-	require.NoError(t, err)
-	require.NotContains(t, generalPool, "DLV-J58",
-		"a depot delivery hull is excluded from the general idle-hauler pool as well")
-
-	require.Empty(t, *navCalls, "a hull already parked at its hub is not repositioned")
+	require.Empty(t, *navCalls, "a hull left dedicated elsewhere is not repositioned")
 }
 
-// sp-3l64 behaviors 1+3, ROUND 1 (manufacturing): a hull added as a delivery hull while it is
-// MID-TASK (busy, manufacturing-tagged, docked away from its hub) must be claim-released from its
-// prior fleet (sp-w3yd), re-dedicated, and — now that it is free — navigated home to its hub. This
-// is the exact stall observed live: hulls stayed DOCKED at I55, still manufacturing-tagged, never
-// navigated, until a manual free-from-fleet unblocked them.
-func TestLaunchDepotDelivery_ReleasesMidTaskManufacturingHullAndNavigatesItToHub(t *testing.T) {
+// sp-udgc never-poach (supersedes sp-3l64 ROUND 1): a delivery hull MID-TASK on "manufacturing" is
+// LEFT on manufacturing — its live work-claim is NOT severed and it is NOT navigated. depot-launch
+// never yanks a hull off another system's live work on restart (the Admiral's invariant: a restart
+// must not change ship assignments).
+func TestLaunchDepotDelivery_DoesNotPoachMidTaskManufacturingHull(t *testing.T) {
 	s, db, playerID, navCalls := newDepotDeliveryTestServer(t)
 	const hub = "X1-VB74-C39"
 	insertDepotDeliveryHull(t, db, "DLV-C39", playerID, "manufacturing", "X1-VB74-I55", true) // busy, manufacturing, OFF hub
@@ -132,14 +121,35 @@ func TestLaunchDepotDelivery_ReleasesMidTaskManufacturingHullAndNavigatesItToHub
 
 	var got persistence.ShipModel
 	require.NoError(t, db.First(&got, "ship_symbol = ? AND player_id = ?", "DLV-C39", playerID).Error)
-	require.Equal(t, depot.DeliveryHullFleet, got.DedicatedFleet,
-		"re-dedicated to depot-delivery, clearing the stale manufacturing tag")
-	require.Equal(t, "idle", got.AssignmentStatus,
-		"its prior manufacturing work-claim is released so the hull is free (sp-w3yd)")
-	require.Nil(t, got.ContainerID, "the released hull no longer belongs to the manufacturing container")
+	require.Equal(t, "manufacturing", got.DedicatedFleet, "the manufacturing tag is untouched — not poached")
+	require.Equal(t, "active", got.AssignmentStatus, "its live manufacturing work-claim is kept — never yanked")
+	require.NotNil(t, got.ContainerID, "the hull still belongs to the manufacturing container")
 
-	require.Len(t, *navCalls, 1, "a freed, off-hub delivery hull is navigated home to its hub")
-	require.Equal(t, "DLV-C39", (*navCalls)[0].ship)
+	require.Empty(t, *navCalls, "a hull left dedicated elsewhere is not navigated")
+}
+
+// An UNDEDICATED delivery hull (the cold-start bootstrap/reconciler provisioning norm) IS crewed:
+// re-dedicated to the distinct depot-delivery fleet and — off its hub — navigated home. Proves the
+// never-poach guard does not break legitimate cold-start delivery-hull crewing.
+func TestLaunchDepotDelivery_CrewsUndedicatedHullAndNavigatesToHub(t *testing.T) {
+	s, db, playerID, navCalls := newDepotDeliveryTestServer(t)
+	const hub = "X1-VB74-C39"
+	insertDepotDeliveryHull(t, db, "DLV-FRESH", playerID, "", "X1-VB74-I55", false) // UNDEDICATED, idle, OFF hub
+	pid := shared.MustNewPlayerID(playerID)
+
+	require.NoError(t, s.launchDepotDelivery(context.Background(), "DLV-FRESH", hub, playerID))
+
+	var got persistence.ShipModel
+	require.NoError(t, db.First(&got, "ship_symbol = ? AND player_id = ?", "DLV-FRESH", playerID).Error)
+	require.Equal(t, depot.DeliveryHullFleet, got.DedicatedFleet,
+		"an undedicated delivery hull is crewed to the depot-delivery fleet")
+
+	_, generalPool, err := appContract.FindIdleLightHaulers(context.Background(), pid, s.shipRepo, "")
+	require.NoError(t, err)
+	require.NotContains(t, generalPool, "DLV-FRESH", "a crewed delivery hull is excluded from the general idle-hauler pool")
+
+	require.Len(t, *navCalls, 1, "a crewed, off-hub delivery hull is navigated home to its hub")
+	require.Equal(t, "DLV-FRESH", (*navCalls)[0].ship)
 	require.Equal(t, hub, (*navCalls)[0].dest)
 	require.Equal(t, playerID, (*navCalls)[0].playerID)
 }

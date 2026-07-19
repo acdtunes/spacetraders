@@ -12,22 +12,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-3l64 REOPENED (role-agnostic): the shipped fix positioned DELIVERY hulls only; a warehouse /
-// stocker hull added to a depot sat DOCKED (registered in config, never freed, never adopted)
-// because its own coordinator could not CLAIM it — a hull still tagged to a prior fleet
-// ("contract"/"manufacturing") is rejected by the operation-checked ClaimShip, and a busy one is
-// not idle. positionDepotElementHull now frees + re-dedicates such a hull to its role's OWN
-// coordinator fleet ("warehouse"/"stocker"), which BOTH excludes it from the contract grab AND
-// satisfies the coordinator's same-tag claim. These tests assert that atomic free against the REAL
-// ship repository (an ADAPTER, integration-tested — no mocked persistence), reusing the delivery
-// harness (real AssignFleet / ReleaseContainerClaim + a navigate spy).
+// sp-udgc NEVER-POACH (RULINGS #7, generalized to depot-launch) — SUPERSEDES the earlier sp-3l64
+// behavior of adopting a foreign-fleet ("contract"/"manufacturing") hull into a depot role.
+// positionDepotElementHull no longer poaches a hull already dedicated to a DIFFERENT fleet: an
+// operator's/existing dedication (e.g. the Admiral moved a former depot-crew light to "trade") wins
+// over the depot topology's naming, so a daemon restart never overrides an existing assignment (the
+// Admiral's invariant). Only an UNDEDICATED hull (the cold-start bootstrap/reconciler provisioning
+// norm) is crewed. These tests assert both halves against the REAL ship repository (an ADAPTER,
+// integration-tested — no mocked persistence), reusing the delivery harness.
 
-// A warehouse/stocker hull assigned from a FOREIGN fleet — whether idle or MID-TASK — is
-// re-dedicated to its role's own coordinator fleet and severed from any prior work-claim, so the
-// contract coordinator can no longer see it and the role's coordinator can finally claim it. The
-// role parks the hull via its OWN coordinator (run_warehouse navigates; the stocker shuttles), so
-// this assignment itself fires NO navigate — the distinction from the delivery/source-hub roles.
-func TestPositionDepotElementHull_FreesForeignHullToRoleCoordinatorFleet(t *testing.T) {
+// A warehouse/stocker hull already dedicated to a FOREIGN fleet — "trade" (the Admiral's explicit
+// dedication, the durability case), or a coordinator pool like "contract"/"manufacturing" — is LEFT
+// ALONE: not re-dedicated, its work-claim not severed, not repositioned. The element goes uncrewed
+// (crewed=false) rather than steal an already-assigned hull. This is what makes the freed VB74 lights
+// durable across the boot re-crew.
+func TestPositionDepotElementHull_DoesNotPoachForeignDedicatedHull(t *testing.T) {
 	const waypoint = "X1-VB74-J58"
 	cases := []struct {
 		name      string
@@ -35,10 +34,10 @@ func TestPositionDepotElementHull_FreesForeignHullToRoleCoordinatorFleet(t *test
 		priorTag  string
 		active    bool // true => a live foreign work-claim (the "mid-task at assign time" shape)
 	}{
-		{"warehouse from idle contract-tagged hull", operationWarehouse, "contract", false},
-		{"warehouse from busy manufacturing hull", operationWarehouse, "manufacturing", true},
-		{"stocker from idle contract-tagged hull", operationStocker, "contract", false},
-		{"stocker from busy manufacturing hull", operationStocker, "manufacturing", true},
+		{"warehouse must not poach a trade-dedicated hull (the Admiral's VB74 decision)", operationWarehouse, operationTrade, false},
+		{"stocker must not poach a trade-dedicated hull", operationStocker, operationTrade, true},
+		{"warehouse must not poach an idle contract-tagged hull", operationWarehouse, "contract", false},
+		{"stocker must not poach a busy manufacturing hull", operationStocker, "manufacturing", true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -46,32 +45,55 @@ func TestPositionDepotElementHull_FreesForeignHullToRoleCoordinatorFleet(t *test
 			s, db, playerID, navCalls := newDepotDeliveryTestServer(t)
 			const hull = "HULL-1"
 			insertDepotDeliveryHull(t, db, hull, playerID, tc.priorTag, "X1-VB74-I55", tc.active)
-			pid := shared.MustNewPlayerID(playerID)
 
-			// navigateOnAssign=false: a warehouse/stocker hull is parked by its OWN coordinator.
-			ship, err := s.positionDepotElementHull(context.Background(), hull, waypoint, tc.roleFleet, false, playerID)
+			ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, tc.roleFleet, false, playerID)
 			require.NoError(t, err)
+			require.False(t, crewed, "a foreign-dedicated hull is not crewed — the element goes uncrewed")
 			require.NotNil(t, ship)
 
 			var got persistence.ShipModel
 			require.NoError(t, db.First(&got, "ship_symbol = ? AND player_id = ?", hull, playerID).Error)
-			require.Equal(t, tc.roleFleet, got.DedicatedFleet,
-				"the hull is re-dedicated to its role's own coordinator fleet (clearing the foreign tag)")
-
+			require.Equal(t, tc.priorTag, got.DedicatedFleet,
+				"the hull keeps its existing dedication — depot-launch does not override it (never-poach)")
 			if tc.active {
-				require.Equal(t, "idle", got.AssignmentStatus,
-					"its prior foreign work-claim is released so the role's coordinator can claim it (sp-w3yd)")
-				require.Nil(t, got.ContainerID, "the released hull no longer belongs to the foreign container")
+				require.Equal(t, "active", got.AssignmentStatus, "its live work-claim is untouched — never yanked")
+				require.NotNil(t, got.ContainerID, "the hull still belongs to its prior container")
 			}
+			require.Empty(t, *navCalls, "a hull left dedicated elsewhere is not repositioned")
+		})
+	}
+}
+
+// An UNDEDICATED warehouse/stocker hull (the cold-start bootstrap/reconciler provisioning norm) IS
+// crewed byte-identically to before: re-dedicated to its role's own coordinator fleet so the SAME tag
+// both excludes it from the contract grab AND satisfies the coordinator's operation-checked claim.
+// This proves the never-poach guard does NOT break legitimate cold-start crewing.
+func TestPositionDepotElementHull_CrewsUndedicatedHullToRoleFleet(t *testing.T) {
+	const waypoint = "X1-VB74-J58"
+	for _, roleFleet := range []string{operationWarehouse, operationStocker} {
+		roleFleet := roleFleet
+		t.Run(roleFleet, func(t *testing.T) {
+			s, db, playerID, navCalls := newDepotDeliveryTestServer(t)
+			const hull = "HULL-FRESH"
+			insertDepotDeliveryHull(t, db, hull, playerID, "", "X1-VB74-I55", false) // UNDEDICATED, idle
+			pid := shared.MustNewPlayerID(playerID)
+
+			ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, roleFleet, false, playerID)
+			require.NoError(t, err)
+			require.True(t, crewed, "an undedicated hull is crewed for the depot role")
+			require.NotNil(t, ship)
+
+			var got persistence.ShipModel
+			require.NoError(t, db.First(&got, "ship_symbol = ? AND player_id = ?", hull, playerID).Error)
+			require.Equal(t, roleFleet, got.DedicatedFleet,
+				"an undedicated hull is re-dedicated to its role's own coordinator fleet")
 
 			_, contractPool, err := appContract.FindIdleShipsByFleet(context.Background(), pid, s.shipRepo, "contract")
 			require.NoError(t, err)
-			require.NotContains(t, contractPool, hull,
-				"a re-dedicated depot hull is no longer in the contract coordinator's dedicated pool")
+			require.NotContains(t, contractPool, hull, "a crewed depot hull is excluded from the contract coordinator's pool")
 			_, generalPool, err := appContract.FindIdleLightHaulers(context.Background(), pid, s.shipRepo, "")
 			require.NoError(t, err)
-			require.NotContains(t, generalPool, hull,
-				"a re-dedicated depot hull is excluded from the general idle-hauler pool (its tag != \"\")")
+			require.NotContains(t, generalPool, hull, "a crewed depot hull is excluded from the general idle-hauler pool")
 
 			require.Empty(t, *navCalls,
 				"a warehouse/stocker assignment fires no navigate here — its own coordinator parks the hull")
@@ -92,8 +114,9 @@ func TestPositionDepotElementHull_LeavesAlreadyRoleDedicatedBusyHullUndisturbed(
 			const hull = "HULL-BUSY"
 			insertDepotDeliveryHull(t, db, hull, playerID, roleFleet, "X1-VB74-E44", true) // already dedicated, busy, off-waypoint
 
-			ship, err := s.positionDepotElementHull(context.Background(), hull, waypoint, roleFleet, false, playerID)
+			ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, roleFleet, false, playerID)
 			require.NoError(t, err)
+			require.True(t, crewed, "a hull already on this role is crewed (idempotent — never-poach applies only to a DIFFERENT fleet)")
 			require.NotNil(t, ship)
 
 			var got persistence.ShipModel
@@ -107,19 +130,21 @@ func TestPositionDepotElementHull_LeavesAlreadyRoleDedicatedBusyHullUndisturbed(
 	}
 }
 
-// A SOURCE-HUB hull (no standing coordinator, like a delivery hull) added from a foreign fleet is
-// re-dedicated to the DISTINCT depot-source-hub fleet AND — because nothing else will park it —
-// navigated to its market waypoint on assign. This is the navigate-on-assign path for a
-// non-delivery role, and it proves a crewed source hub no longer drifts off its configured anchor.
+// A SOURCE-HUB hull (no standing coordinator, like a delivery hull) crewed from an UNDEDICATED hull
+// is re-dedicated to the DISTINCT depot-source-hub fleet AND — because nothing else will park it —
+// navigated to its market waypoint on assign. This is the navigate-on-assign path for a non-delivery
+// role, and it proves a crewed source hub no longer drifts off its configured anchor. (A source-hub
+// hull already dedicated to a FOREIGN fleet is left alone — covered by the never-poach test.)
 func TestPositionDepotElementHull_NavigatesSourceHubHullToItsWaypoint(t *testing.T) {
 	s, db, playerID, navCalls := newDepotDeliveryTestServer(t)
 	const hull = "SRCH-1"
 	const waypoint = "X1-VB74-SRC7"
-	insertDepotDeliveryHull(t, db, hull, playerID, "contract", "X1-VB74-I55", false) // idle, contract-tagged, off its market
+	insertDepotDeliveryHull(t, db, hull, playerID, "", "X1-VB74-I55", false) // idle, UNDEDICATED, off its market
 	pid := shared.MustNewPlayerID(playerID)
 
-	ship, err := s.positionDepotElementHull(context.Background(), hull, waypoint, depotSourceHubFleet, true, playerID)
+	ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, depotSourceHubFleet, true, playerID)
 	require.NoError(t, err)
+	require.True(t, crewed, "an undedicated source-hub hull is crewed and positioned")
 	require.NotNil(t, ship)
 
 	var got persistence.ShipModel

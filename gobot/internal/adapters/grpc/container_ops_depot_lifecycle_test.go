@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -45,18 +46,30 @@ func (f *fakeDepotRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-// spyDepotStopSink records the container ids depot teardown stops, standing in for the
-// live container registry (ListContainers + StopContainer) so the SELECTION logic is
-// proven without spawning containers.
+// spyDepotStopSink records the container ids depot teardown stops and the hulls it releases,
+// standing in for the live container registry (ListContainers + StopContainer) and the hull
+// dedication release (AssignFleet "") so the SELECTION + release logic is proven without spawning
+// containers or a live ship repo. failStop names container ids whose reap fails, so a test can prove
+// a hull whose container did NOT reap is never released.
 type spyDepotStopSink struct {
-	refs    []depotContainerRef
-	stopped []string
+	refs     []depotContainerRef
+	stopped  []string
+	released []string
+	failStop map[string]bool
 }
 
 func (s *spyDepotStopSink) listDepotContainers(int) []depotContainerRef { return s.refs }
 
 func (s *spyDepotStopSink) stopContainer(id string) error {
+	if s.failStop[id] {
+		return fmt.Errorf("stop failed for %s", id)
+	}
 	s.stopped = append(s.stopped, id)
+	return nil
+}
+
+func (s *spyDepotStopSink) releaseDepotHull(_ context.Context, shipSymbol string, _ int) error {
+	s.released = append(s.released, shipSymbol)
 	return nil
 }
 
@@ -169,4 +182,61 @@ func TestStopDepot_StopsOnlyTheDepotsCoordinatorContainers(t *testing.T) {
 		"stop terminates exactly the depot's warehouse + stocker coordinators")
 	require.NotContains(t, sink.stopped, "cont-x", "a container the depot does not own is left running")
 	require.Equal(t, 2, stopped)
+}
+
+// sp-udgc: `depot stop` must RELEASE the reaped warehouse/stocker hulls' role-fleet dedications
+// (AssignFleet "") so they return to the general/trade pool — not leave them stopped-but-still-
+// "stocker"/"warehouse"-dedicated (off trade). This is the claimed-hull half of the decommission
+// strand: the boot guard (sp-udgc (a)) stops the RE-strand on restart; this frees the hulls a running
+// buffer container was holding. A hull the depot does not own is never released.
+func TestStopDepot_ReleasesReapedHullsToPool(t *testing.T) {
+	store := depotstore.New(newFakeDepotRepo())
+	c, err := depot.NewContractDepot("j58",
+		[]depot.Element{{Waypoint: "X1-J58-WH", ShipSymbol: "WH-1"}},
+		[]depot.Element{{Waypoint: "X1-SRC-1", ShipSymbol: "ST-1"}},
+		nil, nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, store.AddDepot(context.Background(), c))
+
+	sink := &spyDepotStopSink{refs: []depotContainerRef{
+		{containerID: "cont-wh", shipSymbol: "WH-1"},    // depot warehouse coordinator
+		{containerID: "cont-st", shipSymbol: "ST-1"},    // depot stocker coordinator
+		{containerID: "cont-x", shipSymbol: "STRANGER"}, // unrelated coordinator
+	}}
+
+	_, err = stopDepot(context.Background(), store, sink, 7, "j58")
+	require.NoError(t, err)
+
+	require.ElementsMatch(t, []string{"WH-1", "ST-1"}, sink.released,
+		"the reaped warehouse+stocker hulls are released to the pool so trade re-adopts")
+	require.NotContains(t, sink.released, "STRANGER", "a hull the depot does not own is never released")
+}
+
+// A hull whose buffer container FAILED to reap must NOT be released: clearing its dedication while its
+// container is still running would leave a live buffer container on a poachable hull. Release is
+// scoped to the hulls we actually reaped this call.
+func TestStopDepot_DoesNotReleaseHullWhoseContainerFailedToStop(t *testing.T) {
+	store := depotstore.New(newFakeDepotRepo())
+	c, err := depot.NewContractDepot("j58",
+		[]depot.Element{{Waypoint: "X1-J58-WH", ShipSymbol: "WH-1"}},
+		[]depot.Element{{Waypoint: "X1-SRC-1", ShipSymbol: "ST-1"}},
+		nil, nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, store.AddDepot(context.Background(), c))
+
+	sink := &spyDepotStopSink{
+		refs: []depotContainerRef{
+			{containerID: "cont-wh", shipSymbol: "WH-1"},
+			{containerID: "cont-st", shipSymbol: "ST-1"},
+		},
+		failStop: map[string]bool{"cont-wh": true}, // the warehouse container fails to stop
+	}
+
+	_, err = stopDepot(context.Background(), store, sink, 7, "j58")
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"ST-1"}, sink.released,
+		"only the successfully-reaped stocker hull is released; the un-reaped warehouse hull stays dedicated")
 }
