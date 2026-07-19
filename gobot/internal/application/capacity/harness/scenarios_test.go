@@ -1,6 +1,6 @@
 package harness
 
-// Scenario assertions for the capacity reconciler (st-6wa). Each test seeds a
+// Scenario assertions for the capacity reconciler. Each test seeds a
 // real DB world, drives N ticks of the REAL sensor->planner->differ through the
 // coordinator, and asserts observable outcomes at the actuation boundary. The
 // four load-bearing assertions:
@@ -136,8 +136,8 @@ func TestHarness_KillSwitchEngaged_IdlesEveryTick(t *testing.T) {
 // assert zero ExecuteCapital calls.
 func TestHarness_CapitalNeverAutoExecutes(t *testing.T) {
 	// (a) With the documented autonomy governor, the real capital gap is FILED as
-	// a proposal — emitted for approval, never bought. (Once st-x00 lands, this
-	// extends to assert the governor's ROI evidence + budget on the proposal.)
+	// a proposal — emitted for approval, never bought. (Once the real governor
+	// lands, this extends to assert its ROI evidence + budget on the proposal.)
 	t.Run("real tier-4 gap is proposed, never bought", func(t *testing.T) {
 		db := newScenarioDB(t)
 		playerID := seedUncoveredCapitalWorld(t, db)
@@ -222,15 +222,13 @@ func TestHarness_DryRunActuatesNothing(t *testing.T) {
 	})
 }
 
-// Assertion 5 — TIER-1 IDLE REUSE (st-780). An uncovered demanded hub with three
-// idle, undedicated, non-cluster hulls waiting closes its WHOLE 1/1/1 shortfall
-// by REUSING those hulls (tier-1 reassign_hull), never proposing tier-4 capital.
-// Before st-780 the SENSE lane never filled Topology.IdleHulls, so the ladder
-// could not see the free hulls and escalated the entire gap to a tier-4
-// add_cluster. Every expected value traces to the seed: the planner wants 1
-// warehouse + 1 stocker + 1 worker (the same demand the capital scenario above
-// proves), and the three seeded idle hulls (IDLE-1..3, taken in ship-symbol
-// order) fill those roles, each retargeted onto the hub anchor.
+// Assertion 5 — TIER-1 IDLE REUSE. An uncovered demanded hub with three idle,
+// undedicated, non-cluster hulls waiting closes its WHOLE 1/1/1 shortfall by
+// REUSING those hulls (tier-1 reassign_hull), never proposing tier-4 capital.
+// Every expected value traces to the seed: the planner wants 1 warehouse + 1
+// stocker + 1 worker (the same demand the capital scenario above proves), and
+// the three seeded idle hulls (IDLE-1..3, taken in ship-symbol order) fill those
+// roles, each retargeted onto the hub anchor.
 func TestHarness_ReusesIdleHullsForUncoveredHub_TierOneNotCapital(t *testing.T) {
 	db := newScenarioDB(t)
 	playerID := seedReusableIdleWorld(t, db)
@@ -251,12 +249,12 @@ func TestHarness_ReusesIdleHullsForUncoveredHub_TierOneNotCapital(t *testing.T) 
 	require.False(t, outcomes[0].Idle)
 }
 
-// Assertion 5b — FALSIFIABILITY / MUTATION GUARD (st-780). The SAME seed, but a
-// wrapper re-empties Topology.IdleHulls after SENSE — reproducing the bug this
-// bead fixes. With the free hulls invisible, the identical 1/1/1 gap re-escalates
-// straight to ONE tier-4 add_cluster proposal and zero reuse. This proves the
-// SENSE lane's IdleHulls population is exactly what makes tier-1 reachable
-// end-to-end: flipping only that signal flips the whole outcome tier-1 <-> tier-4.
+// Assertion 5b — FALSIFIABILITY / MUTATION GUARD. The SAME seed, but a wrapper
+// re-empties Topology.IdleHulls after SENSE. With the free hulls invisible, the
+// identical 1/1/1 gap re-escalates straight to ONE tier-4 add_cluster proposal
+// and zero reuse. This proves the SENSE lane's IdleHulls population is exactly
+// what makes tier-1 reachable end-to-end: flipping only that signal flips the
+// whole outcome tier-1 <-> tier-4.
 func TestHarness_SuppressedIdleHullsReEscalateToCapital_MutationGuard(t *testing.T) {
 	db := newScenarioDB(t)
 	playerID := seedReusableIdleWorld(t, db)

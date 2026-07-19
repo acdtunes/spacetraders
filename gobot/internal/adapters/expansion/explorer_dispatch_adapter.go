@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// This adapter implements expansionCmd.ExplorerDispatchPort (sp-a3yn, slice C) over slice-A's warp
+// This adapter implements expansionCmd.ExplorerDispatchPort (slice C) over slice-A's warp
 // executor. The frontier coordinator decides WHO to warp WHERE (unit-tested at the port); this adapter
 // performs the warp.
 //

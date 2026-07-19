@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// circuit.go holds the deterministic scout-post circuit math (sp-k7q5): the
-// Admiral's freshness model, freshness-per-market ≈ (markets / hulls) × avgHop,
+// circuit.go holds the deterministic scout-post circuit math: the Admiral's
+// freshness model, freshness-per-market ≈ (markets / hulls) × avgHop,
 // where avgHop is the average per-market cost of a tour hop (navigation + scan
 // dwell). It is pure math with no I/O so BOTH the undersized-post warning in the
 // scout-post coordinator (layer 1, daemon process) and the auto-post proposal
@@ -36,9 +36,9 @@ func RequiredHulls(markets int, avgHop, freshness time.Duration) int {
 }
 
 // ClampToMarketCount bounds a proposed probe target to what `markets` markets can justify at
-// the worst-plausible per-market cycle — the sp-iupr issue-3 NOISE CEILING. Per-market cycle
-// telemetry is noisy, and a noisy-HIGH reading can size a small-market system far above what
-// its market count could ever need (the ZY16 pathology: 3 markets read as needing 6 probes).
+// the worst-plausible per-market cycle — the NOISE CEILING. Per-market cycle telemetry is
+// noisy, and a noisy-HIGH reading can size a small-market system far above what its market
+// count could ever need (e.g. 3 markets read as needing 6 probes).
 // The ceiling is RequiredHulls(markets, worstCycle, sla): the static model at a conservative
 // upper-bound cycle. Because RequiredHulls is monotone non-decreasing in markets, so is the
 // ceiling — clamping every system to it enforces "a smaller-market system is never sized above
@@ -55,7 +55,7 @@ func ClampToMarketCount(target, markets int, worstCycle, sla time.Duration) int 
 }
 
 // DampenedCycleSeconds shrinks a system's OWN measured per-market cycle toward the fleet-wide
-// robust median by dampeningPercent — the sp-iupr issue-3 NOISE DAMPENER. Per-system cycle
+// robust median by dampeningPercent — the NOISE DAMPENER. Per-system cycle
 // measurements are noisy estimates of a partly-shared underlying travel pace (probes across
 // systems pay similar per-hop navigation + scan costs), so systems with equal market counts
 // and noisy-but-similar true cycles otherwise diverge into different probe targets purely on
@@ -63,7 +63,7 @@ func ClampToMarketCount(target, markets int, worstCycle, sla time.Duration) int 
 // prior, and pulling each noisy per-system estimate toward it trades a little bias for a large
 // variance reduction, so equal-market systems converge. dampeningPercent is clamped to
 // [0,100]; 0 (or no fleet anchor — a single trusted system whose median IS its own cycle)
-// returns the own cycle unchanged, the pre-dampening behavior.
+// returns the own cycle unchanged.
 func DampenedCycleSeconds(own, fleetMedian float64, dampeningPercent int) float64 {
 	if fleetMedian <= 0 || dampeningPercent <= 0 {
 		return own
@@ -77,7 +77,7 @@ func DampenedCycleSeconds(own, fleetMedian float64, dampeningPercent int) float6
 
 // MedianScanIntervalSeconds MEASURES the empirical per-market cycle — the seconds a
 // probe spends moving to and scanning the next market — as the MEDIAN of the intervals
-// between consecutive market-scan events (sp-orgp). It is the freshness sizer's
+// between consecutive market-scan events. It is the freshness sizer's
 // avgHop input, derived from live scan telemetry (market last-scan timestamps) rather
 // than a hardcoded constant, because travel time varies by system layout. A median
 // (not a mean) is used so a single stalled leg — a probe that parked, refuelled, or
@@ -104,7 +104,7 @@ func MedianScanIntervalSeconds(scanTimes []time.Time) (float64, int) {
 }
 
 // FreshnessRequiredHulls is the CLOSED-LOOP sizing: the static circuit model
-// (RequiredHulls) corrected by the measured worst-case market age (sp-orgp). The static
+// (RequiredHulls) corrected by the measured worst-case market age. The static
 // model estimates how many probes SHOULD hold `markets` fresh within `sla` at the
 // measured `cycle`; but the empirical age is the ground truth. When the oldest market is
 // AT OR UNDER the SLA the model stands. When it is BREACHING (actualAge > sla) the model
@@ -129,7 +129,7 @@ func FreshnessRequiredHulls(markets int, cycle, sla, actualAge time.Duration) in
 	return raised
 }
 
-// CircuitRequiredHulls sizes a post from its DIRECTLY OBSERVED circuit period (sp-tor9): `hulls`
+// CircuitRequiredHulls sizes a post from its DIRECTLY OBSERVED circuit period: `hulls`
 // probes produced a worst-case market age of `actualAge` — the age of the oldest market, i.e.
 // how long since a probe last completed the circuit back to it. The circuit period scales
 // inversely with probe count (period ≈ markets × perMarketHop / hulls), so the product
@@ -158,9 +158,9 @@ func CircuitRequiredHulls(hulls int, actualAge, sla time.Duration) int {
 	return int(math.Ceil(need))
 }
 
-// WeightedPercentileAgeSeconds returns the age at `percentile` across a system's markets
-// (sp-r57g) — the freshness sizer's closed-loop ground truth, superseding the tail-dominated
-// max (OldestAgeSeconds). It is the age at which the cumulative market weight first reaches
+// WeightedPercentileAgeSeconds returns the age at `percentile` across a system's markets —
+// the freshness sizer's closed-loop ground truth, superseding the tail-dominated max
+// (OldestAgeSeconds). It is the age at which the cumulative market weight first reaches
 // `percentile`% of the total (the weighted nearest-rank percentile): walking markets
 // freshest-first, the first market whose running weight crosses the threshold sets the age.
 //
@@ -169,7 +169,7 @@ func CircuitRequiredHulls(hulls int, actualAge, sla time.Duration) int {
 // (it breaches, earning more probes — the arb core stays tight), while an equal-count LOW-value
 // straggler contributes little and stays in the tolerated tail (the periphery lags cheaply).
 // With valueWeighted off every market weighs 1 — a plain count percentile that simply drops the
-// stalest (100−percentile)% of markets (DA78: P90≈62 vs an unachievable max≈167).
+// stalest (100−percentile)% of markets.
 //
 // Boundary behaviour, all deliberate: percentile 100 returns the exact MAX (the mutation guard —
 // reverting the metric to the max re-inflates demand); a single market returns its own age; no

@@ -14,7 +14,7 @@ import (
 // fullShipJSON returns a single ship object with every field populated:
 // role, flightMode, IN_TRANSIT route, cooldown, engine, frame (with
 // moduleSlots/mountingPoints), reactor, crew, modules (with requirements),
-// mounts, cargo (sp-el60).
+// mounts, cargo.
 func fullShipJSON(symbol string) string {
 	return fmt.Sprintf(`{
 		"symbol": %q,
@@ -82,7 +82,7 @@ func assertCommonShipFields(t *testing.T, ship *navigation.ShipData, symbol stri
 	if ship.ArrivalTime != "2024-01-01T12:05:00Z" {
 		t.Errorf("ArrivalTime: want 2024-01-01T12:05:00Z, got %q", ship.ArrivalTime)
 	}
-	// Nav route origin + departure for the IN_TRANSIT ship (sp-vp9k): toShipData
+	// Nav route origin + departure for the IN_TRANSIT ship: toShipData
 	// historically dropped nav.route.origin and nav.route.departureTime, keeping
 	// only waypointSymbol + arrival, so no DB consumer could compute exact transit
 	// progress. Every mapping path (GetShip/ListShips/PurchaseShip) funnels through
@@ -109,7 +109,7 @@ func assertCommonShipFields(t *testing.T, ship *navigation.ShipData, symbol stri
 		t.Errorf("FrameSymbol: want FRAME_MINER, got %q", ship.FrameSymbol)
 	}
 	// Frame's fixed slot budgets - frames have no swap endpoint, so these are
-	// permanent for the life of the hull (sp-el60).
+	// permanent for the life of the hull.
 	if ship.ModuleSlots != 3 || ship.MountingPoints != 2 {
 		t.Errorf("Frame slots: want moduleSlots=3/mountingPoints=2, got %d/%d", ship.ModuleSlots, ship.MountingPoints)
 	}
@@ -120,7 +120,7 @@ func assertCommonShipFields(t *testing.T, ship *navigation.ShipData, symbol stri
 		t.Errorf("Cargo.Inventory: want [IRON_ORE], got %+v", ship.Cargo.Inventory)
 	}
 	// Reactor's fixed power budget - reactors have no swap endpoint, so
-	// PowerOutput is permanent for the life of the hull (sp-el60).
+	// PowerOutput is permanent for the life of the hull.
 	if ship.ReactorSymbol != "REACTOR_FISSION_I" || ship.ReactorName != "Fission Reactor I" || ship.ReactorPowerOutput != 31 {
 		t.Errorf("Reactor: want REACTOR_FISSION_I/Fission Reactor I/31, got %q/%q/%d", ship.ReactorSymbol, ship.ReactorName, ship.ReactorPowerOutput)
 	}
@@ -151,7 +151,7 @@ func assertFullModules(t *testing.T, ship *navigation.ShipData) {
 	}
 }
 
-// assertFullMounts checks the installed-mounts field set (sp-el60): mounts
+// assertFullMounts checks the installed-mounts field set: mounts
 // draw from the same shared power budget as modules but consume a separate
 // mounting-point budget (see navigation.CheckMountInstallFeasibility).
 func assertFullMounts(t *testing.T, ship *navigation.ShipData) {

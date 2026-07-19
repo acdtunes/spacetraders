@@ -34,22 +34,22 @@ const (
 	// the asset is a knob).
 	defaultProbeShipType = "SHIP_PROBE"
 
-	// INCOME-phase defaults (Slice 2).
+	// INCOME-phase defaults.
 	defaultHaulerTarget = 4 // INCOME hull cap: one hauler per viable contract hub, up to 4 (spec 4–5)
 	// defaultIncomeBar is the INCOME→GATE exit: realized NET credits/hour the contract fleet must
 	// clear before the arc drives gate construction. Deliberately CONSERVATIVE (a clearly-earning but
 	// not-huge bar): the Phase-1 objective is building the gate, so the worse failure is a bar set so
 	// HIGH the arc never reaches GATE — a lower bar only risks starting GATE with a still-warming
-	// fleet. This is the primary field-calibration knob (spec Slice-2 open question).
+	// fleet. This is the primary field-calibration knob (an open tuning question).
 	defaultIncomeBar = 10000.0
 	// defaultMinContractEarners is how many haulers stay on contracts through GATE to keep funding
-	// material acquisition (consumed by the GATE phase in Slice 3; plumbed here with the INCOME ramp).
+	// material acquisition (consumed by the GATE phase; plumbed here with the INCOME ramp).
 	defaultMinContractEarners = 1
 	// defaultHaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the
 	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
 	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
 
-	// GATE-phase defaults (Slice 3).
+	// GATE-phase defaults.
 	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
 	// chain + a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of
 	// producing chains + delivery) without letting a wide pipeline drain the treasury; the Analyst tunes
@@ -212,7 +212,7 @@ type HandoffLauncher interface {
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 }
 
-// RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player (sp-3nbe).
+// RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player.
 // Like the fleet-autosizer / siting coordinators it runs an infinite reconcile loop inside a single
 // Handle() call; the container wraps it. All knobs are launch-config keys (RULINGS #5); the zero
 // value falls back to the documented default, so the CLI/daemon passes only what it overrides.
@@ -235,13 +235,13 @@ type RunBootstrapCoordinatorCommand struct {
 	ReserveMargin    float64
 	ProbeShipType    string
 
-	// INCOME-phase knobs (Slice 2, RULINGS #5; the zero value defers to the documented default).
+	// INCOME-phase knobs (RULINGS #5; the zero value defers to the documented default).
 	HaulerTarget       int     // INCOME hull cap — actual = one per viable contract hub, up to this.
 	IncomeBar          float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
-	MinContractEarners int     // haulers kept on contracts through GATE (consumed in Slice 3).
+	MinContractEarners int     // haulers kept on contracts through GATE.
 	HaulerShipType     string  // the shipyard ship-type bought for a contract hauler.
 
-	// GATE-phase knob (Slice 3, RULINGS #5; the zero value defers to the documented default).
+	// GATE-phase knob (RULINGS #5; the zero value defers to the documented default).
 	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
 }
 
@@ -267,14 +267,14 @@ type RunBootstrapCoordinatorHandler struct {
 	scanner   ShipyardScanner // sp-hh0h: positions a hull at the home yard so the cold price reads
 	metrics   MetricsSink
 
-	// INCOME-phase collaborators (Slice 2). Each is nil-safe: a nil collaborator degrades the INCOME
+	// INCOME-phase collaborators. Each is nil-safe: a nil collaborator degrades the INCOME
 	// action it drives to a logged skip (surfaced as a blocker), never a panic.
 	retirer      FrigateRetirer
 	haulAcquirer HaulerAcquirer
 	contractRun  ContractRunner
 	frigateLoop  FrigateContractLoopStarter // sp-rype: the pre-hauler frigate sole-earner contract loop
 
-	// GATE-phase collaborators (Slice 3). Same nil-safe contract.
+	// GATE-phase collaborators. Same nil-safe contract.
 	construction  ConstructionManager
 	manufacturing ManufacturingController
 	repurposer    WorkerRepurposer

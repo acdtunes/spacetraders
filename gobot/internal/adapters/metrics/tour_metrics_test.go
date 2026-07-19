@@ -117,7 +117,7 @@ func gatherSummary(t *testing.T, reg *prometheus.Registry, name string, labels m
 	return 0, 0, false
 }
 
-// TestTourMetrics_LegPriceDrift pins the sp-umyb Plan-vs-Realized drift metric feeding
+// TestTourMetrics_LegPriceDrift pins the Plan-vs-Realized drift metric feeding
 // panel 16: each realized leg observes SIGNED drift (realized-planned)/planned*100 under
 // its side; the metric exports the _sum/_count pair the panel's
 // rate(_sum[$smooth])/rate(_count[$smooth]) windowed-average reads (so two buys sum to
@@ -230,7 +230,7 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 	}
 }
 
-// TestTourMetrics_FactoryGoodAcquisitionCost pins the C1 (sp-64je) T2 series: the
+// TestTourMetrics_FactoryGoodAcquisitionCost pins the C1 T2 series: the
 // per-good acquisition price splits by source, so the stock (basis) and market
 // (ladder) series for one good are distinct and each holds its last-set value —
 // exactly what lets the analyst check that acquisition tracks the rested ask, not
@@ -380,7 +380,7 @@ func TestTourMetrics_NilSafe(t *testing.T) {
 	empty.RecordJumpLoaded(1, false)
 }
 
-// TestTourMetrics_PlanRateHistogram_RegistersExportsAndPairsPhases (sp-1wp8): the
+// TestTourMetrics_PlanRateHistogram_RegistersExportsAndPairsPhases: the
 // tour_plan_rate histogram registers, exports once observed, keys projected and realized
 // as SEPARATE phase series (the pair is what makes ranking quality measurable), and
 // accepts a negative realized rate (a losing tour) without panicking.

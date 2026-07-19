@@ -1,7 +1,7 @@
-// Package commands holds the captain bootstrap coordinator (sp-3nbe): a standing per-player
-// reconciler that encodes the known-good cold-start playbook and drives a fresh agent toward
-// the jump gate — autonomously, idempotently, recoverably — so the captain launches it once and
-// monitors rather than re-deriving the cold-start sequence every era.
+// Package commands holds the captain bootstrap coordinator: a standing per-player reconciler
+// that encodes the known-good cold-start playbook and drives a fresh agent toward the jump gate
+// — autonomously, idempotently, recoverably — so the captain launches it once and monitors
+// rather than re-deriving the cold-start sequence every era.
 //
 // Shape mirrors the fleet-autosizer / siting coordinators (the daemon-container idiom): a
 // registered singleton handler with optional setter-collaborators, one infinite reconcile loop
@@ -9,12 +9,6 @@
 // (RULINGS #5). It is a RECONCILER, not a stored-cursor script — each tick it OBSERVES the live
 // world (the game is the source of truth), DERIVES the phase from that observation (never a
 // persisted enum), and ACTS on the delta with each action guarded "already done / in-flight?".
-//
-// Slice 1 built the whole framework + the DATA phase. Slice 2 (sp-ysgb.1) adds the INCOME phase:
-// retire the command frigate from contract work, select contract hubs from the scouted market data,
-// staged-buy one light hauler per viable hub (capped at hauler_target), run batch-contract, and exit
-// to GATE when realized $/hr clears income_bar. GATE (Slice 3) is still a terminal stub — a phase
-// derived past INCOME holds at "not yet implemented, holding at INCOME-complete", not an error.
 package commands
 
 // Phase is the bootstrap arc phase. It is ALWAYS derived from the current observation (market
@@ -24,16 +18,15 @@ type Phase string
 
 const (
 	// PhaseData is the cold-start data phase: buy probes to target and scout every market so
-	// contract/hub selection has data to work from. The one LIVE phase in Slice 1.
+	// contract/hub selection has data to work from.
 	PhaseData Phase = "DATA"
 	// PhaseIncome is the contract-income ramp: retire the frigate, staged-buy hub haulers, run
-	// batch-contract, exit to GATE when realized $/hr ≥ income_bar (LIVE as of Slice 2).
+	// batch-contract, exit to GATE when realized $/hr ≥ income_bar.
 	PhaseIncome Phase = "INCOME"
-	// PhaseGate is jump-gate construction (Slice 3 — still a terminal stub: a phase derived past
-	// INCOME holds at "not yet implemented, holding at INCOME-complete").
+	// PhaseGate is jump-gate construction: start the construction pipeline, ensure the executor
+	// has adopted it, and size the gate workforce until the site is complete.
 	PhaseGate Phase = "GATE"
-	// PhaseComplete is the terminal: the gate is built, standing coordinators handed off
-	// (Slice 3 — not implemented in Slice 1).
+	// PhaseComplete is the terminal: the gate is built, standing coordinators handed off.
 	PhaseComplete Phase = "COMPLETE"
 )
 
@@ -122,7 +115,7 @@ type Observation struct {
 	// are untouched.
 	ContractGraduated bool
 
-	// --- GATE-phase signals (Slice 3). Zero values are the pre-GATE default (no gate site known, no
+	// --- GATE-phase signals. Zero values are the pre-GATE default (no gate site known, no
 	// construction pipeline, the executor down, no gate workers), so an INCOME-phase observation that
 	// leaves them unset reads as "GATE not started" and the earlier phases' guards are unaffected. ---
 

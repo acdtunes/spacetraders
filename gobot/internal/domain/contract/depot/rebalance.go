@@ -27,7 +27,7 @@ type Migration struct {
 	ToHub      string
 }
 
-// PlanRebalance is the demand-driven rebalance MECHANISM (bead sp-9j9c #3). Because contracts are
+// PlanRebalance is the demand-driven rebalance MECHANISM. Because contracts are
 // serialized (one active at a time), "rebalance" means keeping IDLE delivery hulls optimally
 // PRE-POSITIONED across hubs for the NEXT contract: idle hulls migrate toward hubs with rising
 // observed contract arrival and away from cold ones, so fewer hulls cover more hot clusters with

@@ -14,11 +14,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// Callers that skip the balance fetch pass BalanceBefore/After = 0, which used
-// to corrupt the ledger's running balance (latest balance_after read -216
-// while the real treasury was ~175k). Zero/zero with a nonzero amount is
-// arithmetically impossible, so the handler derives balances from the last
-// recorded transaction instead (the hack passes before=0, after=amount).
+// Callers that skip the balance fetch pass BalanceBefore/After = 0. A zero
+// balance_before with a nonzero amount is arithmetically impossible, so the
+// handler derives balances from the last recorded transaction instead (the
+// hack passes before=0, after=amount).
 func TestZeroBalancesAreDerivedFromLedgerChain(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
@@ -52,8 +51,7 @@ func TestZeroBalancesAreDerivedFromLedgerChain(t *testing.T) {
 
 // In-band agent.credits returned by a transaction's own API response is ground
 // truth: it must re-anchor the running chain even when the reconstructed value
-// would differ. This is the fix for balance_after forking away from the API
-// (sp-sc6u): purchase/sell/refuel/contract responses carry data.agent.credits,
+// would differ. purchase/sell/refuel/contract responses carry data.agent.credits,
 // and the ledger must prefer it over lastBalance+amount reconstruction.
 func TestAuthoritativeBalanceReanchorsTheChain(t *testing.T) {
 	db, err := database.NewTestConnection()
@@ -102,11 +100,8 @@ func TestAuthoritativeBalanceReanchorsTheChain(t *testing.T) {
 }
 
 // Manufacturing records send no balance fields at all (BalanceBefore=0,
-// BalanceAfter=0). The old heuristic only reconstructed when after==amount, so
-// 0/0 fell through to the "explicit" path and either violated the balance
-// invariant or reset the running balance to zero (sp-sc6u root cause #2). A
-// zero balance_before with a nonzero amount must always reconstruct from the
-// chain, never zero it.
+// BalanceAfter=0). A zero balance_before with a nonzero amount must always
+// reconstruct from the chain, never zero it.
 func TestZeroZeroManufacturingRecordReconstructsInsteadOfZeroing(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
@@ -182,8 +177,8 @@ func TestExplicitBalancesAreNotOverridden(t *testing.T) {
 }
 
 // Concurrent recordings with the balance-skip hack must not fork the chain:
-// two writers reading the same "last balance" produced the L28 garbage rows
-// (s39/s51/s55/s63). The handler must serialize per player.
+// two writers reading the same "last balance" must not both apply it. The
+// handler must serialize per player.
 func TestConcurrentZeroBalanceRecordingsDoNotForkTheChain(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

@@ -25,7 +25,6 @@ Examples:
   spacetraders workflow scout-markets --ships SCOUT-1,SCOUT-2 --system X1-GZ7 --markets X1-GZ7-A1,X1-GZ7-B2`,
 	}
 
-	// Add subcommands
 	cmd.AddCommand(newWorkflowBatchContractCommand())
 	cmd.AddCommand(newWorkflowScoutMarketsCommand())
 	cmd.AddCommand(newWorkflowScoutAllMarketsCommand())
@@ -82,25 +81,21 @@ Examples:
   spacetraders workflow batch-contract --ship SHIP-1 --agent ENDURANCE
   spacetraders workflow batch-contract --ship SHIP-1 --loop --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate flags
 			if shipSymbol == "" {
 				return fmt.Errorf("--ship flag is required")
 			}
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Create gRPC client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Execute batch contract workflow command
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
@@ -126,7 +121,6 @@ Examples:
 		},
 	}
 
-	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to use for contracts (required)")
 	cmd.Flags().BoolVar(&loop, "loop", false, "Run a continuous single-hull contract loop (re-negotiate + run until stopped) instead of a single contract (sp-ehg9)")
 
@@ -166,7 +160,6 @@ Examples:
   # Infinite loop
   spacetraders workflow scout-markets --ships SCOUT-1,SCOUT-2,SCOUT-3 --system X1-TEST --markets X1-TEST-A1,X1-TEST-B2,X1-TEST-C3 --iterations -1 --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate flags
 			if shipsCsv == "" {
 				return fmt.Errorf("--ships flag is required")
 			}
@@ -177,7 +170,6 @@ Examples:
 				return fmt.Errorf("--markets flag is required")
 			}
 
-			// Parse CSV inputs
 			ships := parseCsvList(shipsCsv)
 			markets := parseCsvList(marketsCsv)
 
@@ -188,20 +180,17 @@ Examples:
 				return fmt.Errorf("at least one market is required")
 			}
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Create gRPC client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Execute scout markets command
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
@@ -212,13 +201,11 @@ Examples:
 				return fmt.Errorf("scout markets deployment failed: %w", err)
 			}
 
-			// Display results
 			fmt.Println("=== Fleet Deployment Complete ===")
 			fmt.Printf("\nTotal containers: %d\n", len(result.ContainerIDs))
 			fmt.Printf("New containers: %d\n", len(result.ContainerIDs)-len(result.ReusedContainers))
 			fmt.Printf("Reused containers: %d\n\n", len(result.ReusedContainers))
 
-			// Display market assignments
 			if len(result.Assignments) > 0 {
 				fmt.Println("Market Assignments:")
 				fmt.Println("Ship             Markets")
@@ -229,12 +216,10 @@ Examples:
 				fmt.Println()
 			}
 
-			// Display container IDs
 			if len(result.ContainerIDs) > 0 {
 				fmt.Println("Container IDs:")
 				for _, cid := range result.ContainerIDs {
 					fmt.Printf("  - %s", cid)
-					// Mark reused containers
 					for _, reused := range result.ReusedContainers {
 						if cid == reused {
 							fmt.Print(" (reused)")
@@ -253,7 +238,6 @@ Examples:
 		},
 	}
 
-	// Command-specific flags
 	cmd.Flags().StringVar(&shipsCsv, "ships", "", "Comma-separated list of ship symbols (required)")
 	cmd.Flags().StringVar(&system, "system", "", "System symbol (required)")
 	cmd.Flags().StringVar(&marketsCsv, "markets", "", "Comma-separated list of market waypoints (required)")
@@ -290,26 +274,22 @@ Examples:
   # Scout all markets in system X1-TEST
   spacetraders workflow scout-all-markets --system X1-TEST --player-id 1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate flags
 			if system == "" {
 				return fmt.Errorf("--system flag is required")
 			}
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Create gRPC client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Create fleet-assignment container via daemon
-			// Timeout for container creation (30 seconds to handle database contention)
+			// 30s: handles database contention during container creation.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
@@ -320,7 +300,6 @@ Examples:
 				return fmt.Errorf("failed to create fleet assignment container: %w", err)
 			}
 
-			// Display result
 			fmt.Println("✓ Scout fleet assignment started successfully")
 			fmt.Printf("\n  Container ID: %s\n", result.ContainerID)
 			fmt.Printf("  System:       %s\n", system)
@@ -338,7 +317,6 @@ Examples:
 		},
 	}
 
-	// Command-specific flags
 	cmd.Flags().StringVar(&system, "system", "", "System symbol (required)")
 
 	return cmd

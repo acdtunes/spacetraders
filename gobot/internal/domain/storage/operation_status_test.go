@@ -7,12 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStorageOperationStatusProjectsLifecycleState is a characterization test
-// pinning every lifecycle-state -> OperationStatus row of Status() against the
-// CURRENT hand-written switch, before it is delegated to shared.ProjectStatus.
-// All five states are reachable through the aggregate's own transitions, so the
-// full projection table is exercised end-to-end. Every row must stay identical
-// across the refactor.
+// TestStorageOperationStatusProjectsLifecycleState pins every lifecycle-state ->
+// OperationStatus row of Status(). All five states are reachable through the
+// aggregate's own transitions, so the full projection table is exercised
+// end-to-end.
 func TestStorageOperationStatusProjectsLifecycleState(t *testing.T) {
 	cases := []struct {
 		name  string

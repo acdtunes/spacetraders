@@ -8,15 +8,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-qzej regression. The Python routing-service catches any exception inside
-// OptimizeTradeTour and returns a STRUCTURED feasible=false response whose
-// infeasible_reason is "internal_error: <exc>" (handlers/tour_handler.py) — it is not a
-// gRPC transport error, so the Go side sees a "successful" RPC. On 2026-07-11 the C1
-// planner-visible-stock resolution raised AttributeError('stock_sources') (a stale
-// generated proto lacked the field), surfacing as infeasible_reason
-// "internal_error: stock_sources". The pre-fix coordinator routed that to the SAME clean
-// "tour unavailable" fail-open path as a legitimate "no_profitable_tour", so a live
-// planner outage was masked as container success=true — the trade stall the bead names.
+// The Python routing-service catches any exception inside OptimizeTradeTour and
+// returns a STRUCTURED feasible=false response whose infeasible_reason is
+// "internal_error: <exc>" (handlers/tour_handler.py) — it is not a gRPC transport
+// error, so the Go side sees a "successful" RPC. Routing that response through the
+// same clean "tour unavailable" fail-open path as a legitimate "no_profitable_tour"
+// masks a live planner outage as container success=true.
 //
 // A planner internal_error is a real OUTAGE and must terminalize the container FAILED via
 // the honest-completion veto (CompletionOutcome false), surfacing the reason verbatim —

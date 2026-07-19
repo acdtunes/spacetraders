@@ -62,13 +62,14 @@ const (
 	// sized to its own cargo. The contract coordinator opts in because the
 	// command frigate hauls contract legs fine and is frequently the fastest,
 	// largest-cargo hull owned - benching it until zero haulers remain wastes
-	// fleet capacity (sp-4a4e).
+	// fleet capacity.
 	IncludeCommandShip
 )
 
 // CargoCapacityPolicy controls whether a dedicated-fleet lookup excludes hulls
-// with zero cargo capacity. Mirrors the qr3v/sp-9hu8 "unsuitable = UNSELECTABLE,
-// not spawned-then-crashed" pattern for the dedicated pool.
+// with zero cargo capacity, mirroring the "unsuitable = UNSELECTABLE, not
+// spawned-then-crashed" pattern used elsewhere in this package for the
+// dedicated pool.
 type CargoCapacityPolicy int
 
 const (
@@ -78,9 +79,9 @@ const (
 	AnyCargoCapacity CargoCapacityPolicy = iota
 	// RequireCargoCapacity excludes 0-cargo hulls (probes/satellites) from the
 	// pool. The contract coordinator opts in: a 0-cargo hull can never deliver a
-	// contract, so a probe mispinned into the contract fleet (sp-lybx: TORWIND-24)
-	// must be UNSELECTABLE here rather than claimed, spawned, and crashed on
-	// 'deliveries not complete' - the storm this closes at discovery.
+	// contract, so a probe mispinned into the contract fleet must be
+	// UNSELECTABLE here rather than claimed, spawned, and crashed on
+	// 'deliveries not complete'.
 	RequireCargoCapacity
 )
 
@@ -109,9 +110,8 @@ const roleHauler = "HAULER"
 //     system equals it. Single-system callers (manufacturing/factory
 //     coordinators, which never jump cross-system) pass their operating system
 //     so an out-of-system hull they could never operate is UNSELECTABLE here
-//     rather than claimed-then-failed (the sp-9hu8 class, factory-side: sp-qr3v).
-//     Fleet-wide callers (contract) pass "" for the pre-filter's original,
-//     unfiltered behavior.
+//     rather than claimed-then-failed. Fleet-wide callers (contract) pass ""
+//     for the pre-filter's original, unfiltered behavior.
 //   - policies: Optional command-ship policy (default: ExcludeCommandShip). Pass
 //     IncludeCommandShip to treat the command ship as a first-class candidate.
 //
@@ -142,7 +142,7 @@ func FindIdleLightHaulers(
 	var idleHaulers []*navigation.Ship
 
 	// The command frigate is collected separately and admitted only as a LAST
-	// RESORT (sp-sqq5) - see the last-resort merge after the loop.
+	// RESORT - see the last-resort merge after the loop.
 	var idleCommandHulls []*navigation.Ship
 
 	// Track whether ANY haul-capable hull exists (regardless of availability),
@@ -165,18 +165,18 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Claim-filter (sp-snmb): a ship dedicated to a coordinator's exclusive
-		// fleet is invisible to this general-purpose pool, unconditionally.
-		// Every caller of this function (contract, manufacturing, factory,
-		// balance-handler) shares this one exclusion "for free" - a coordinator
-		// finds its own dedicated ships separately via FindIdleShipsByFleet.
-		// This is layer 1 of the two-layer dedication enforcement (sp-l7h2): a
-		// cheap read-side pre-filter. Layer 2 - the correctness guarantee - is
-		// the atomic dedication check inside ShipRepository.ClaimShip. This is
-		// also what makes the sp-sqq5 last-resort rule below apply to exactly the
-		// UNDEDICATED command frigate: a command hull the captain pinned with
-		// `fleet assign --fleet contract` carries the tag and is routed to the
-		// coordinator's own FindIdleShipsByFleet lookup instead of here.
+		// Claim-filter: a ship dedicated to a coordinator's exclusive fleet is
+		// invisible to this general-purpose pool, unconditionally. Every caller
+		// of this function (contract, manufacturing, factory, balance-handler)
+		// shares this one exclusion "for free" - a coordinator finds its own
+		// dedicated ships separately via FindIdleShipsByFleet. This is layer 1 of
+		// the two-layer dedication enforcement: a cheap read-side pre-filter.
+		// Layer 2 - the correctness guarantee - is the atomic dedication check
+		// inside ShipRepository.ClaimShip. This is also what makes the
+		// last-resort rule below apply to exactly the UNDEDICATED command
+		// frigate: a command hull the captain pinned with `fleet assign --fleet
+		// contract` carries the tag and is routed to the coordinator's own
+		// FindIdleShipsByFleet lookup instead of here.
 		if ship.DedicatedFleet() != "" {
 			continue
 		}
@@ -189,14 +189,14 @@ func FindIdleLightHaulers(
 		// At least one haul-capable hull exists in the fleet.
 		candidateShipsExist = true
 
-		// Single-system filter (sp-qr3v): a caller that operates within one
-		// system (manufacturing/factory, which never jumps cross-system) restricts
-		// the pool to hulls CURRENTLY in that system. An out-of-system hull is
+		// Single-system filter: a caller that operates within one system
+		// (manufacturing/factory, which never jumps cross-system) restricts the
+		// pool to hulls CURRENTLY in that system. An out-of-system hull is
 		// invisible here - the coordinator can never navigate it home to work, so
-		// claiming it just fails the worker on every pass (the sp-9hu8 class,
-		// factory-side). A hull whose location is unknown is treated as
-		// out-of-system: the pre-filter fails CLOSED, never surfacing a hull it
-		// cannot confirm is in range. Fleet-wide callers pass "" and skip this.
+		// claiming it just fails the worker on every pass. A hull whose location
+		// is unknown is treated as out-of-system: the pre-filter fails CLOSED,
+		// never surfacing a hull it cannot confirm is in range. Fleet-wide
+		// callers pass "" and skip this.
 		if systemFilter != "" && shipCurrentSystem(ship) != systemFilter {
 			continue
 		}
@@ -220,19 +220,20 @@ func FindIdleLightHaulers(
 		}
 	}
 
-	// LAST-RESORT COMMAND FRIGATE (sp-sqq5, RULINGS #7: "the command frigate
-	// hauls only as last resort"). An undedicated command hull - including one
-	// deliberately RETIRED via `fleet unassign` (tag cleared to "") - is admitted
-	// to the candidate pool ONLY when no regular hauler is idle. This stops the
-	// RUNNING contract coordinator from re-sweeping a retired frigate back onto
-	// contracts while haulers exist (the sp-sqq5 defect: a re-claim that stranded
-	// a mid-delivery contract and put the low-cargo/low-fuel command hull on
-	// contracts), WITHOUT benching it when it is the only hull available. The
-	// exclusion is therefore CONDITIONAL, never an absolute ban: with zero idle
-	// haulers the frigate is the last resort and enters the pool (preserving the
-	// sp-4a4e "don't idle a usable hull for 5h" guarantee). Discovery makes the
-	// last-resort decision because only here is the whole idle fleet visible; the
-	// spawn-side claim guard (spawnContractWorker) is the single-writer backstop.
+	// LAST-RESORT COMMAND FRIGATE (RULINGS #7: "the command frigate hauls only
+	// as last resort"). An undedicated command hull - including one deliberately
+	// RETIRED via `fleet unassign` (tag cleared to "") - is admitted to the
+	// candidate pool ONLY when no regular hauler is idle. This stops the RUNNING
+	// contract coordinator from re-sweeping a retired frigate back onto
+	// contracts while haulers exist - a re-claim would strand whatever
+	// mid-delivery contract is running and put a low-cargo/low-fuel command hull
+	// back on contract duty - WITHOUT benching it when it is the only hull
+	// available. The exclusion is therefore CONDITIONAL, never an absolute ban:
+	// with zero idle haulers the frigate is the last resort and enters the pool
+	// (preserving the "don't idle a usable hull for 5h" guarantee). Discovery
+	// makes the last-resort decision because only here is the whole idle fleet
+	// visible; the spawn-side claim guard (spawnContractWorker) is the
+	// single-writer backstop.
 	commandAdmittedLastResort := false
 	if len(idleHaulers) == 0 && len(idleCommandHulls) > 0 {
 		idleHaulers = append(idleHaulers, idleCommandHulls...)
@@ -266,7 +267,7 @@ func FindIdleLightHaulers(
 // a load an 80-cargo light hauler single-trips, spending its whole speed
 // advantage on the extra leg for a net loss versus just dispatching the
 // hauler - so a stock hull is not a genuine candidate. era-2's upgraded
-// frigate (115 cargo) clears this bar (sp-uj6a).
+// frigate (115 cargo) clears this bar.
 const CommandCargoBaselineDefault = 80
 
 // FilterCommandCargoBaseline drops the command ship from a candidate list
@@ -274,10 +275,9 @@ const CommandCargoBaselineDefault = 80
 // through untouched. This is a SELECTION-time gate only, applied by the
 // caller immediately after FindIdleLightHaulers returns (when it opted in
 // with IncludeCommandShip) - it does not change FindIdleLightHaulers itself,
-// the r6f1 dedication-write floor (AssignShipFleet's cargo_capacity>=1
-// floor), or the sp-4a4e last-resort ranking in SelectHullForCargo (domain
-// contract package), which simply never sees a candidate this gate already
-// removed (sp-uj6a).
+// the dedication-write floor (AssignShipFleet's cargo_capacity>=1 floor), or
+// the last-resort ranking in SelectHullForCargo (domain contract package),
+// which simply never sees a candidate this gate already removed.
 //
 // Parameters:
 //   - ctx: Context for cancellation and logging
@@ -320,10 +320,8 @@ func FilterCommandCargoBaseline(ctx context.Context, ships []*navigation.Ship, b
 // skipped rather than erroring, since fleet composition legitimately varies
 // over the coordinator's lifetime.
 //
-// This replaces the symbol-list FindIdleDedicatedShips (sp-snmb → sp-l7h2):
-// a remembered --dedicated-ships list goes stale the moment the captain
-// reassigns a ship via `fleet assign` without restarting the coordinator.
-// Reading DedicatedFleet() from the DB on every discovery pass is what makes
+// Reading DedicatedFleet() from the DB on every discovery pass (rather than a
+// remembered --dedicated-ships list) is what makes a `fleet assign`
 // reassignment live instead of "live after next restart."
 //
 // Unlike FindIdleLightHaulers, this never filters by ROLE: a ship qualifies
@@ -332,7 +330,7 @@ func FilterCommandCargoBaseline(ctx context.Context, ships []*navigation.Ship, b
 // filtering, by contrast, is OPT-IN via CargoCapacityPolicy: the default keeps
 // every tagged member (idle-arb relies on this for its reserve accounting), and
 // the contract coordinator passes RequireCargoCapacity so a 0-cargo probe
-// mispinned into the contract fleet (sp-lybx) is UNSELECTABLE rather than
+// mispinned into the contract fleet is UNSELECTABLE rather than
 // claimed-spawned-crashed.
 //
 // Parameters:
@@ -343,7 +341,7 @@ func FilterCommandCargoBaseline(ctx context.Context, ships []*navigation.Ship, b
 //     since an empty tag means "general pool", never a fleet of its own
 //   - policies: Optional cargo-capacity policy (default: AnyCargoCapacity). Pass
 //     RequireCargoCapacity to exclude 0-cargo hulls (probes/satellites) that can
-//     never carry a delivery - the sp-lybx exclusion for contract worker selection.
+//     never carry a delivery.
 //
 // Returns:
 //   - ships: List of idle dedicated ship entities
@@ -383,13 +381,13 @@ func FindIdleShipsByFleet(
 		}
 		fleetTotal++
 
-		// Cargo-capacity exclusion (sp-lybx): a caller that opts in
-		// (RequireCargoCapacity) drops 0-cargo hulls, because a probe/satellite
-		// can never carry a contract delivery - claiming it just spawns a worker
-		// that dies instantly on 'deliveries not complete'. Logged by name so the
-		// captain can see WHY a mispinned hull is being ignored (honest exclusion),
-		// and counted into the summary below so an all-probe fleet reads as
-		// "0 dispatchable, N excluded for 0 cargo" rather than a silent empty pool.
+		// Cargo-capacity exclusion: a caller that opts in (RequireCargoCapacity)
+		// drops 0-cargo hulls, because a probe/satellite can never carry a
+		// contract delivery - claiming it just spawns a worker that dies
+		// instantly on 'deliveries not complete'. Logged by name so the captain
+		// can see WHY a mispinned hull is being ignored (honest exclusion), and
+		// counted into the summary below so an all-probe fleet reads as "0
+		// dispatchable, N excluded for 0 cargo" rather than a silent empty pool.
 		if cargoPolicy == RequireCargoCapacity && ship.CargoCapacity() == 0 {
 			zeroCargoExcluded++
 			logger.Log("WARNING", fmt.Sprintf(
@@ -430,13 +428,13 @@ func FindIdleShipsByFleet(
 // which only surfaces dispatchable members, this answers a different
 // question: does this coordinator have an exclusive fleet AT ALL right now?
 //
-// That distinction is what makes EXCLUSIVE MODE (sp-wq7r) correct: a
-// dedicated fleet that is fully busy must still block the coordinator from
-// raiding the general pool. Only the absence of ANY tagged member falls
-// back to shared hulls. Reading the persisted tag on every call (rather than
-// trusting a remembered --dedicated-ships list) keeps this live with the
-// same "no restart needed" guarantee FindIdleShipsByFleet already gives
-// `fleet assign`/`unassign` (sp-l7h2).
+// That distinction is what makes EXCLUSIVE MODE correct: a dedicated fleet
+// that is fully busy must still block the coordinator from raiding the
+// general pool. Only the absence of ANY tagged member falls back to shared
+// hulls. Reading the persisted tag on every call (rather than trusting a
+// remembered --dedicated-ships list) keeps this live with the same "no
+// restart needed" guarantee FindIdleShipsByFleet already gives `fleet
+// assign`/`unassign`.
 //
 // Parameters:
 //   - fleet: The fleet name to look up; "" always returns false, mirroring
@@ -470,7 +468,7 @@ func FleetHasMembers(
 
 // FindFleetMemberSymbols returns the symbols of EVERY ship currently carrying the
 // given DedicatedFleet tag — idle, busy, or in transit — the LIVE membership of a
-// coordinator's dedicated fleet (sp-cmwc). Unlike FindIdleShipsByFleet it applies no
+// coordinator's dedicated fleet. Unlike FindIdleShipsByFleet it applies no
 // idle/role/cargo filter: pure membership by tag, because the callers that need it
 // (the between-legs homing gate and the standby-station occupancy balancer) care who
 // BELONGS to the fleet, not who is dispatchable right now.
@@ -478,8 +476,8 @@ func FleetHasMembers(
 // Reading the persisted tag on every call is what makes membership live: a hull
 // added via `fleet add` (tag set, absent from the immutable --dedicated-ships launch
 // list) is a member immediately, and a hull `fleet remove`d (tag cleared) drops out —
-// no restart, and no dependence on the stale launch snapshot (the sp-cmwc defect).
-// The "" fleet returns nothing, mirroring FindIdleShipsByFleet / FleetHasMembers.
+// no restart, and no dependence on the stale launch snapshot. The "" fleet returns
+// nothing, mirroring FindIdleShipsByFleet / FleetHasMembers.
 func FindFleetMemberSymbols(
 	ctx context.Context,
 	playerID shared.PlayerID,
@@ -507,19 +505,16 @@ func FindFleetMemberSymbols(
 // SelectAvailableShips combines the general and dedicated-fleet candidate
 // pools into the coordinator's working set for one discovery pass.
 //
-// EXCLUSIVE MODE (sp-wq7r): when dedicatedFleetActive is true, the general
-// pool is dropped entirely - the coordinator draws ONLY from
-// dedicatedIdleShips, even when that is empty because every dedicated
-// member is busy, rather than falling back to idle non-dedicated hulls by
-// distance. Before this fix the two pools were unconditionally combined
-// (append(generalShips, dedicatedIdleShips...)) regardless of dedication
-// state, so a coordinator configured with a dedicated fleet still drafted
-// idle pool hulls - once displacing cargo the captain was mid-liquidating
-// on a borrowed hull. "Dedicated" was never actually exclusive.
+// EXCLUSIVE MODE: when dedicatedFleetActive is true, the general pool is
+// dropped entirely - the coordinator draws ONLY from dedicatedIdleShips, even
+// when that is empty because every dedicated member is busy, rather than
+// falling back to idle non-dedicated hulls by distance. A dedicated fleet
+// must be genuinely exclusive: drafting a general-pool hull instead risks
+// displacing cargo the operator is using that hull for elsewhere.
 //
-// When dedicatedFleetActive is false, the two pools are combined exactly as
-// before this fix (dedicatedIdleShips is normally empty in this branch,
-// since the caller's dedication check already says no fleet is tagged).
+// When dedicatedFleetActive is false, the two pools are combined
+// (dedicatedIdleShips is normally empty in this branch, since the caller's
+// dedication check already says no fleet is tagged).
 func SelectAvailableShips(generalShips, dedicatedIdleShips []string, dedicatedFleetActive bool) []string {
 	if dedicatedFleetActive {
 		return dedicatedIdleShips
@@ -531,15 +526,12 @@ func SelectAvailableShips(generalShips, dedicatedIdleShips []string, dedicatedFl
 // claim for a delivery of requiredCargo and those that must be parked
 // instead.
 //
-// NO-CARGO-DUMP CLAIM GUARD (sp-wq7r): a hull already holding cargo that is
-// NOT part of this delivery is never claimed. Before this fix the
-// coordinator picked candidates by distance alone and left the worker's
-// jettison step (CargoManager.JettisonWrongCargoIfNeeded) to silently dump
-// whatever the hull was carrying to make room - once destroying 43 units of
-// EQUIPMENT the captain was mid-liquidating on a borrowed pool hull. The
-// guard runs at selection time, before a hull is ever assigned, so
-// unrelated cargo is never at risk of being jettisoned by this
-// coordinator's own workers.
+// NO-CARGO-DUMP CLAIM GUARD: a hull already holding cargo that is NOT part
+// of this delivery is never claimed, so the worker's jettison step
+// (CargoManager.JettisonWrongCargoIfNeeded) can never silently dump cargo the
+// operator is using the hull for elsewhere. The guard runs at selection
+// time, before a hull is ever assigned, so unrelated cargo is never at risk
+// of being jettisoned by this coordinator's own workers.
 //
 // A ship whose hold is empty, or whose hold contains only requiredCargo
 // (e.g. a partial delivery resumed after a restart), is claimable. A
@@ -604,20 +596,18 @@ func FilterUnrelatedCargo(
 // homeSystem — the contract's HOME system, derived from the delivery destination
 // (shared.ExtractSystemSymbol) exactly as PlanSourcing/market_finder scope contract sourcing
 // (RULINGS #14). A contract worker sources AND delivers in that one system with ZERO jump
-// capability, so a hull idle in a FOREIGN system (a gate hop away — the live TORWIND-E in the
-// arb system X1-DF86, grabbed for a COPPER_ORE -> X1-VB74-H51 contract and stalled 80min
-// reaching cross-gate: sp-ue1s) can reach neither the source market nor the delivery and must
-// be UNSELECTABLE here, never claimed-then-stalled. This is the worker-pool LOCALITY half of
-// the sp-mzdk reserve floor: the floor keeps N HOME haulers undedicated; this ensures the grab
-// only ever takes HOME ones.
+// capability, so a hull idle in a FOREIGN system (a gate hop away) can reach neither the
+// source market nor the delivery and must be UNSELECTABLE here, never claimed-then-stalled.
+// This is the worker-pool LOCALITY half of the reserve floor that keeps N HOME haulers
+// undedicated; this ensures the grab only ever takes HOME ones.
 //
 // homeSystem == "" degrades to a fleet-wide passthrough (fail-open): an un-derivable
 // destination must never block the contract, matching FindIdleLightHaulers' "" convention.
 // A candidate whose CURRENT system cannot be resolved (unknown location) is treated as
-// out-of-home and dropped (fail-closed, matching shipCurrentSystem / the sp-qr3v pre-filter):
-// the pool never surfaces a hull it cannot confirm is in range. A symbol absent from the
-// current fleet snapshot is skipped silently, mirroring FilterUnrelatedCargo's tolerance for
-// fleet composition that varies between passes.
+// out-of-home and dropped (fail-closed, matching shipCurrentSystem's pre-filter): the pool
+// never surfaces a hull it cannot confirm is in range. A symbol absent from the current fleet
+// snapshot is skipped silently, mirroring FilterUnrelatedCargo's tolerance for fleet
+// composition that varies between passes.
 //
 // Parameters:
 //   - symbols: Candidate ship symbols to scope (already idle/dedication/cargo filtered by the caller)

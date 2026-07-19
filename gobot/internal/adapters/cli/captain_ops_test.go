@@ -19,7 +19,7 @@ type fakeEventStore struct {
 	marked      []int64
 	// lastPlayerID records the playerID FindUnprocessed was most recently
 	// called with, so tests can assert a resolved --agent flag reached the
-	// store as a concrete numeric ID (sp-yr3f).
+	// store as a concrete numeric ID.
 	lastPlayerID int
 }
 
@@ -47,12 +47,12 @@ func TestCaptainEventsAckRejectsGarbage(t *testing.T) {
 	require.Empty(t, fs.marked)
 }
 
-// --- sp-yr3f: captain events/report honor global --agent ---
+// --- captain events/report honor global --agent ---
 
-// TestCaptainEventsListResolvedHonorsAgentFlagWithoutPlayerID reproduces the
-// verified repro ("captain events list --agent TORWIND" -> "--player-id flag
-// is required"): with only --agent set, resolution must succeed and the
-// store must be queried with the resolved numeric player ID.
+// TestCaptainEventsListResolvedHonorsAgentFlagWithoutPlayerID guards against
+// "captain events list --agent TORWIND" failing with "--player-id flag is
+// required": with only --agent set, resolution must succeed and the store
+// must be queried with the resolved numeric player ID.
 func TestCaptainEventsListResolvedHonorsAgentFlagWithoutPlayerID(t *testing.T) {
 	setPlayerFlags(t, 0, "TORWIND")
 	fs := &fakeEventStore{}
@@ -80,7 +80,7 @@ func TestCaptainEventsListResolvedErrorsWhenNoPlayerIdentifiable(t *testing.T) {
 	require.Error(t, err)
 }
 
-// --- sp-yr3f: `captain events ack --all` / `--before` batch flags ---
+// --- `captain events ack --all` / `--before` batch flags ---
 
 func TestCaptainEventsAckAllMarksEveryUnprocessedEvent(t *testing.T) {
 	fs := &fakeEventStore{unprocessed: []*captain.Event{{ID: 1}, {ID: 2}, {ID: 3}}}
@@ -128,7 +128,7 @@ func TestCaptainEventsAckBeforeExcludesEventsAtOrAfterCutoff(t *testing.T) {
 	require.Empty(t, fs.marked)
 }
 
-// --- sp-sk68 wake model: `captain wake set` / `captain wake show` ---
+// --- wake model: `captain wake set` / `captain wake show` ---
 
 type fakeWakePolicyStore struct {
 	loaded  watchkeeper.WakePolicy

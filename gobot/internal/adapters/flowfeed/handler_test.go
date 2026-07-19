@@ -1,4 +1,3 @@
-// gobot/internal/adapters/flowfeed/handler_test.go
 package flowfeed
 
 import (
@@ -10,7 +9,7 @@ import (
 	"time"
 )
 
-// fixedClock pins GeneratedAt so the golden bytes are stable.
+// fixedRegistry pins GeneratedAt so the golden bytes are stable.
 func fixedRegistry() *Registry {
 	r := New()
 	r.now = func() time.Time { return time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC) }

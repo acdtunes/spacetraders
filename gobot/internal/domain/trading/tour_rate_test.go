@@ -98,7 +98,7 @@ func TestComputeFleetTourRate_StableTrend_NotDeclining(t *testing.T) {
 	}
 }
 
-// RED#1 (sp-z7ng): β is the per-TOUR MEDIAN realized $/hr, never the mean — so one blowout tour
+// β is the per-TOUR MEDIAN realized $/hr, never the mean — so one blowout tour
 // cannot drag the fleet's placement reference. Three tours at 100k/200k/900k → 200k (the middle),
 // not the mean 400k; an even count averages the two middles.
 func TestMedianTourRate_PerTourMedianOddAndEven(t *testing.T) {
@@ -128,7 +128,7 @@ func TestMedianTourRate_PerTourMedianOddAndEven(t *testing.T) {
 	}
 }
 
-// RED#2 (sp-z7ng): β fails CLOSED — empty rows, buys with no realized sell, and a zero-span tour
+// β fails CLOSED — empty rows, buys with no realized sell, and a zero-span tour
 // each yield ok=false, never a misleading readable 0. A placement caller that cannot see β falls
 // back to the legacy engine; a fabricated 0 would silently arm the park floor at φ*0 = 0.
 // sp-461l (epic sp-g9td): MedianTourRate is the realized-rate SOURCE the reposition rate-floor

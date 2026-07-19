@@ -1,15 +1,13 @@
 package harness
 
-// Acceptance harness for the sp-lk9x buffer value-density fix (epic st-7zk). It
-// seeds the era-3 demand shape the economy-analyst validated — the far-sourced
-// home hub J58 and the mixed hub A1 — into a REAL test DB, drives the REAL SENSE
-// adapter -> HeuristicPlanner, and reads the DesiredTopology buffer each hub
-// wants. The pre-fix divide-by-distance score emptied J58 (every far good fell
-// below the 2e-5 floor -> 0 warehouses desired -> arming would strip the home
-// hub); this proves the corrected score recovers it while leaving the mixed hub
-// correct. Test doubles: only the sensor's live-API treasury boundary (the
-// package's fakeTreasury). Everything else is the production read path over
-// seeded rows.
+// Acceptance harness for the buffer value-density score. It seeds the era-3
+// demand shape the economy-analyst validated — the far-sourced home hub J58 and
+// the mixed hub A1 — into a REAL test DB, drives the REAL SENSE adapter ->
+// HeuristicPlanner, and reads the DesiredTopology buffer each hub wants: J58
+// must recover a non-empty buffer (an empty buffer means 0 warehouses desired,
+// so arming would strip the home hub) while the mixed hub A1 stays correct.
+// Test doubles: only the sensor's live-API treasury boundary (the package's
+// fakeTreasury). Everything else is the production read path over seeded rows.
 
 import (
 	"context"
@@ -118,12 +116,11 @@ func seedEra3DemandWorld(t *testing.T, db *gorm.DB) int {
 // seedHubGoods prices every good in-system and seeds three completed contracts
 // carrying the whole mix, each good at its fixed unit count so AvgUnits resolves
 // to that count. The contracts span t0 → t0-12h, so the observation window is 12h
-// and every good's frequency is a DILUTED 3/12h = 0.25/hr — the established-hub
-// condition the pre-fix score choked on. At 0.25/hr the old freq ÷ (avg·dist)
-// score floors J58's far (700-distance) goods below 2e-5 (empty buffer) but keeps
-// A1's near (200-distance) goods above it: J58 is the RECOVERY case, A1 the
-// unchanged CONTROL. The corrected value-density score has no floor and selects
-// both hubs' full mix regardless of the diluted frequency.
+// and every good's frequency is a DILUTED 3/12h = 0.25/hr. J58's far
+// (700-distance) goods and A1's near (200-distance) goods sit at opposite ends of
+// the distance/frequency spectrum the value-density score must treat alike: J58
+// is the RECOVERY case, A1 the CONTROL. The score has no floor and selects both
+// hubs' full mix regardless of the diluted frequency.
 func seedHubGoods(t *testing.T, db *gorm.DB, playerID int, hub, source, idPrefix string, mix []goodUnits) {
 	t.Helper()
 	for _, g := range mix {

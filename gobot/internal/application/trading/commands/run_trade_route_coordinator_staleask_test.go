@@ -14,12 +14,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// sp-2sam hazard b — the stale-ask guard. The lane is ranked from a market cache
-// that can be many minutes stale (the live run ranked RIFLES off a 13m-old E41 ask
-// whose live value had moved 3.6x that day, a -196k manual-loss precedent). Before
-// the first buy — now that the hull is docked at the source — the coordinator
-// re-reads the source ask live and ABORTS if it has run away from the basis the lane
-// was ranked on, rather than buy into a fill the ranked spread no longer describes.
+// The stale-ask guard. The lane is ranked from a market cache that can be many
+// minutes stale, and a stale ask can diverge sharply from the live price by the time
+// the hull docks. Before the first buy — now that the hull is docked at the source —
+// the coordinator re-reads the source ask live and ABORTS if it has run away from the
+// basis the lane was ranked on, rather than buy into a fill the ranked spread no
+// longer describes.
 
 const (
 	staleSystem = "X1-STALE"

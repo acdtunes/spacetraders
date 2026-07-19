@@ -90,21 +90,19 @@ func (f *FactoryState) CreatedAt() time.Time                    { return f.creat
 // SetID sets the database ID (used after persistence)
 func (f *FactoryState) SetID(id int) { f.id = id }
 
-// RecordDelivery marks an input as delivered
-// BUG FIX #6: Made lenient - logs warning but records delivery anyway if input is unknown
-// This handles cases where API updates factory configuration and our local state is outdated
+// RecordDelivery marks an input as delivered. If inputGood is not a known
+// required input, it is still recorded rather than rejected - the API may have
+// updated factory configuration since local state was built - and tracked
+// dynamically without being added to requiredInputs, which would change the
+// contract.
 func (f *FactoryState) RecordDelivery(inputGood string, quantity int, shipSymbol string) error {
 	state, exists := f.deliveredInputs[inputGood]
 	if !exists {
-		// BUG FIX #6: Log warning but don't fail - API may have updated factory configuration
-		// Create a new input state dynamically to track the delivery
 		state = &InputState{
 			Good:      inputGood,
 			Delivered: false,
 		}
 		f.deliveredInputs[inputGood] = state
-		// Note: We don't add to requiredInputs since that would change the contract
-		// The warning helps operators identify configuration mismatches
 	}
 
 	now := time.Now()
@@ -113,7 +111,6 @@ func (f *FactoryState) RecordDelivery(inputGood string, quantity int, shipSymbol
 	state.DeliveredBy = shipSymbol
 	state.Quantity = quantity
 
-	// Check if all inputs are now delivered
 	f.checkAllInputsDelivered()
 
 	return nil
@@ -138,7 +135,6 @@ func (f *FactoryState) UpdateSupply(supplyLevel string) {
 	}
 	f.currentSupply = supplyLevel
 
-	// Check if now ready for collection
 	f.checkReadyForCollection()
 }
 

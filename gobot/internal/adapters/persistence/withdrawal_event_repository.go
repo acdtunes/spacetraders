@@ -11,7 +11,7 @@ import (
 )
 
 // WithdrawalEventRepositoryGORM is the GORM-backed implementation of the domain
-// storage.WithdrawalRecorder port (sp-kqxe). It maps the domain event DTO to the
+// storage.WithdrawalRecorder port. It maps the domain event DTO to the
 // WarehouseWithdrawalModel row and back, so the contract delivery executor and any
 // warehouse-ROI report never touch GORM types directly.
 type WithdrawalEventRepositoryGORM struct {

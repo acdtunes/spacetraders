@@ -59,9 +59,9 @@ func TestGetPlayerReturnsLiveCreditsWhenTokenPresent(t *testing.T) {
 	require.Equal(t, 175000, result.Player.Credits)
 }
 
-// TestGetPlayerFailsWhenTokenMissing characterizes the original sp-900v defect at the
-// handler boundary: without a token in context (as when the CLI bypassed the injector),
-// the handler cannot reach the agent API and returns "player token not found in context".
+// TestGetPlayerFailsWhenTokenMissing characterizes the handler boundary: without a
+// token in context (as when the CLI bypassed the injector), the handler cannot
+// reach the agent API and returns "player token not found in context".
 func TestGetPlayerFailsWhenTokenMissing(t *testing.T) {
 	repo := &stubPlayerRepo{player: player.NewPlayer(shared.MustNewPlayerID(2), "ENDURANCE", "TOKEN-2")}
 	apiClient := &stubAPIClient{agent: &player.AgentData{Credits: 1}}

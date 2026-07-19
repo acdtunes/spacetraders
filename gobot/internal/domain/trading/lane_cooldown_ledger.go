@@ -15,13 +15,13 @@ type LaneKey struct {
 	Good   string
 }
 
-// LaneCooldownLedger is the shared, decaying, per-lane compression ledger (sp-tl68
-// wire-in #2 — the "recovery is slow" correction). When a hull trades U units on a
-// lane it ADDS compression debt (buyImpact+sellImpact)·(U/tv), timestamped; the debt
-// DECAYS as exp(-dt/tau). The ranker SUBTRACTS the live decayed debt from a lane's
-// expected spread, so once the fleet hammers a lane it stays down-weighted for HOURS
-// (tau≈750min) and hulls ROTATE to fresh lanes instead of re-discovering the
-// compression the expensive way (each wasted leg burns API budget + travel).
+// LaneCooldownLedger is the shared, decaying, per-lane compression ledger. When a
+// hull trades U units on a lane it ADDS compression debt (buyImpact+sellImpact)·(U/tv),
+// timestamped; the debt DECAYS as exp(-dt/tau). The ranker SUBTRACTS the live decayed
+// debt from a lane's expected spread, so once the fleet hammers a lane it stays
+// down-weighted for HOURS (tau≈750min) and hulls ROTATE to fresh lanes instead of
+// re-discovering the compression the expensive way (each wasted leg burns API budget
+// + travel).
 //
 // It is SHARED across the fleet: every hull's trade Accrues, every rank Debt-reads,
 // keyed by lane. The state is an in-memory decaying map — a daemon restart simply

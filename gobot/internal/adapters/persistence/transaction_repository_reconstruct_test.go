@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// TestReadDerivesCategoryFromTypeIgnoringStoredValue is the R1/sp-bt6r drift
+// TestReadDerivesCategoryFromTypeIgnoringStoredValue is the R1 drift
 // regression: category is a pure f(type) relabel (TypeToCategoryMap), so a row
 // whose stored category disagrees with its type — a rogue writer bypassing
 // NewTransaction, or a legacy/out-of-band insert like the briefing_test.go seed

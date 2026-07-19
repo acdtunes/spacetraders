@@ -11,10 +11,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// GormScoutPostRepository persists the desired-state scout posts table (sp-cxpq)
+// GormScoutPostRepository persists the desired-state scout posts table
 // with GORM. Reads are strictly scoped to the open era: a post from a prior,
 // now-closed era is invisible, so the coordinator never tries to man dead-era
-// posts after a universe reset (the sp-njpu class of cross-era zombie). Writes
+// posts after a universe reset (the cross-era zombie class). Writes
 // stamp the open era's id, and a re-add in a new era reuses the (player, system)
 // row rather than colliding on the unique index.
 type GormScoutPostRepository struct {
@@ -103,7 +103,7 @@ func (r *GormScoutPostRepository) Upsert(ctx context.Context, post *domainScouti
 }
 
 // UpdateHulls updates ONLY the hull budget of the (playerID, systemSymbol) post in the
-// open era (sp-orgp): the market-freshness auto-sizer's narrow, manning-preserving resize
+// open era: the market-freshness auto-sizer's narrow, manning-preserving resize
 // seam. Unlike Upsert (which writes the whole row and would clobber any assignment the
 // scout reconciler concurrently wrote), this touches a single column, so resizing a live
 // post can never lose its manning. Updating a post that does not exist is a no-op, not an
@@ -182,8 +182,7 @@ func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 }
 
 // marshalPartition JSON-encodes a slot's market list, returning nil for an empty
-// partition so a single-hull row leaves primary_partition NULL (byte-identical to
-// the pre-enry layout) (sp-enry).
+// partition so a single-hull row leaves primary_partition NULL.
 func marshalPartition(markets []string) *string {
 	if len(markets) == 0 {
 		return nil
@@ -209,7 +208,7 @@ func unmarshalPartition(raw *string) []string {
 	return markets
 }
 
-// extraSlotDTO is the persisted shape of a non-primary manning slot (sp-enry): the
+// extraSlotDTO is the persisted shape of a non-primary manning slot: the
 // same fields as the primary (scalar columns), carried in the extra_slots JSON array.
 type extraSlotDTO struct {
 	AssignedHull          string   `json:"assigned_hull,omitempty"`
@@ -219,7 +218,7 @@ type extraSlotDTO struct {
 }
 
 // marshalExtraSlots JSON-encodes slots 1..N-1, returning nil for a single-hull post
-// so extra_slots stays NULL (byte-identical to the pre-enry layout) (sp-enry).
+// so extra_slots stays NULL.
 func marshalExtraSlots(slots []domainScouting.ScoutPostSlot) *string {
 	if len(slots) == 0 {
 		return nil

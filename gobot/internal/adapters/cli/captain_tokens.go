@@ -23,10 +23,9 @@ type tokenCollector interface {
 	Collect(ctx context.Context, since time.Time) ([]domain.SessionUsage, error)
 }
 
-// QuotaSummary is the sp-1vkr weekly-quota VISIBILITY proxy. No
-// machine-readable Claude/Anthropic billing or quota source exists anywhere
-// in this codebase (confirmed by investigation before this feature was
-// built), so this compares the report's own windowed token total against an
+// QuotaSummary is the weekly-quota VISIBILITY proxy. No machine-readable
+// Claude/Anthropic billing or quota source exists anywhere in this codebase,
+// so this compares the report's own windowed token total against an
 // operator-CONFIGURED weekly budget, styled after the existing
 // credits.threshold alert but computed CLI-side only: it is NOT a live quota
 // read, and it never raises a captain.Event/detector.
@@ -66,7 +65,7 @@ func computeQuotaSummary(usedTokens, budgetTokens int64, alertThresholdPct int) 
 
 // tokenSessionRow is one session's row in the `captain tokens` output: the
 // existing per-session usage fields (promoted from the embedded
-// domain.SessionUsage) plus TokensSinceSpawn (sp-0zx9) — that session's token
+// domain.SessionUsage) plus TokensSinceSpawn — that session's token
 // spend across its ENTIRE transcript, not just the `--days` reporting
 // window, which is what makes the cost of skipping a rollover visible
 // regardless of how narrow a window the operator asked to view.
@@ -78,13 +77,12 @@ type tokenSessionRow struct {
 // tokensReportOutput is the JSON/render shape for `captain tokens`. It
 // embeds domain.Report so WindowDays/TotalTokens/TokensPerDay/TokensPerWake/
 // CaptainAlias are promoted unchanged, but shadows Sessions with the richer
-// tokenSessionRow (sp-0zx9 tokens-since-spawn) and adds Quota (sp-1vkr) —
-// without changing domain.Report/SessionUsage themselves, which live in
-// internal/domain/telemetry, out of this feature's scope. Go's encoding/json
-// promotes an embedded field only when no shallower field shares its JSON
-// key, so the explicit Sessions field below (depth 0) suppresses promotion
-// of the embedded Report.Sessions (depth 1) for both field access and
-// encoding.
+// tokenSessionRow and adds Quota — without changing domain.Report/
+// SessionUsage themselves, which live in internal/domain/telemetry. Go's
+// encoding/json promotes an embedded field only when no shallower field
+// shares its JSON key, so the explicit Sessions field below (depth 0)
+// suppresses promotion of the embedded Report.Sessions (depth 1) for both
+// field access and encoding.
 type tokensReportOutput struct {
 	domain.Report
 	Sessions []tokenSessionRow `json:"sessions"`
@@ -115,7 +113,7 @@ func buildTokenRows(sessions []domain.SessionUsage, sinceSpawn []domain.SessionU
 // the fleet report, and renders it as JSON or a table to w. It is the testable
 // core of the `captain tokens` verb.
 //
-// budgetTokens/alertThresholdPct feed the sp-1vkr quota-visibility block
+// budgetTokens/alertThresholdPct feed the quota-visibility block
 // (computeQuotaSummary); budgetTokens <= 0 disables it entirely (unconfigured).
 func runTokenReport(ctx context.Context, c tokenCollector, captainAlias string, days int, now time.Time, budgetTokens int64, alertThresholdPct int, jsonOut bool, w io.Writer) error {
 	since := now.AddDate(0, 0, -days)
@@ -125,7 +123,7 @@ func runTokenReport(ctx context.Context, c tokenCollector, captainAlias string, 
 	}
 	report := domain.ComputeReport(sessions, captainAlias, days)
 
-	// Tokens-since-spawn (sp-0zx9) is additive visibility layered on top of the
+	// Tokens-since-spawn is additive visibility layered on top of the
 	// windowed report: a second, unbounded collect (Collect's documented
 	// contract: a zero `since` returns the whole transcript) gives each
 	// session's lifetime total. Best-effort — its failure must never break the
@@ -251,7 +249,7 @@ func captainAliasOrDefault(v string) string {
 	return v
 }
 
-// weeklyTokenBudgetOrDefault reads the sp-1vkr configured-budget proxy. Nil
+// weeklyTokenBudgetOrDefault reads the configured-budget proxy. Nil
 // (unconfigured) maps to 0, which computeQuotaSummary treats as "disabled" —
 // there is no default budget, unlike QuotaAlertThresholdPct below, because a
 // fabricated budget number would be actively misleading.
@@ -262,7 +260,7 @@ func weeklyTokenBudgetOrDefault(v *int64) int64 {
 	return *v
 }
 
-// quotaAlertThresholdPctOrDefault reads the sp-1vkr alert-threshold percent.
+// quotaAlertThresholdPctOrDefault reads the alert-threshold percent.
 // defaults.go already back-fills this to 80 when config is loaded normally;
 // the nil-safe fallback here (0, which computeQuotaSummary's
 // `alertThresholdPct > 0` guard treats as "never alert") only matters for

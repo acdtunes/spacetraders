@@ -2,24 +2,22 @@ package trading
 
 import "time"
 
-// cash_rate.go — the DEFINITIVE transactions-cash realized $/hr (sp-rd21, epic sp-g9td).
+// cash_rate.go — the DEFINITIVE transactions-cash realized $/hr.
 //
 // This is the cash-true twin of the telemetry-netting rate (ComputeFleetTourRate /
-// MedianTourRate). The 12h reconciliation that opened sp-g9td proved the telemetry-netting
-// rate reads ~2x inflated because ~1/3 of buy legs were dropped from tour_leg_telemetry
-// (their destination sells were still logged), so telemetry-net = sells − (partial buys)
-// over-counts profit. The transactions ledger, by contrast, records EVERY cargo trade and
-// reconciles to the treasury — SELL_CARGO(+) + PURCHASE_CARGO(−) + REFUEL(−) summed over a
-// window IS the cash the fleet actually earned. Dividing by the window's wall-clock hours
-// (not the active-tour span) yields the duty-cycle $/hr — idle time between tours counts
-// against the rate, exactly as it should for a steering KPI.
+// MedianTourRate). The telemetry-netting rate reads inflated when buy legs are dropped
+// from tour_leg_telemetry while their destination sells are still logged, so
+// telemetry-net = sells − (partial buys) over-counts profit. The transactions ledger,
+// by contrast, records EVERY cargo trade and reconciles to the treasury —
+// SELL_CARGO(+) + PURCHASE_CARGO(−) + REFUEL(−) summed over a window IS the cash the
+// fleet actually earned. Dividing by the window's wall-clock hours (not the active-tour
+// span) yields the duty-cycle $/hr — idle time between tours counts against the rate,
+// exactly as it should for a steering KPI.
 //
-// sp-rd21 delivers this computation; the sibling sp-461l switches the consumers
-// (reposition rate floor / placement β, autosizer realized-rate + era-payback guards,
-// chain-P&L, dashboards) from the telemetry-netting rate onto it. The persistence reader
-// GormTransactionRepository.RealizedCashRate performs the windowed SQL sum and defers here
-// for the arithmetic, so the SQL read and the rate math are independently testable — the
-// same split ComputeFleetTourRate uses against its repository port.
+// The persistence reader GormTransactionRepository.RealizedCashRate performs the
+// windowed SQL sum and defers here for the arithmetic, so the SQL read and the rate
+// math are independently testable — the same split ComputeFleetTourRate uses against
+// its repository port.
 
 // CashRealizedRate is the transactions-cash realized-$/hr summary over a window.
 type CashRealizedRate struct {

@@ -30,7 +30,7 @@ const (
 	defaultHeavyMarginalRateFloor      = 0.7
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
-	// defaultDecliningRateUnservedFloor (sp-zbe6) is the near-zero unserved-lane count at/below
+	// defaultDecliningRateUnservedFloor is the near-zero unserved-lane count at/below
 	// which a DECLINING aggregate realized-rate is a genuine heavy stop-buy; above it the decline is
 	// hull concentration and the buy proceeds. "A couple of lanes" — the resolver never lets it reach
 	// 0, so the declining stop-buy can never be silently disabled (the demand guard forces Shortfall>0).
@@ -49,7 +49,7 @@ const (
 	defaultWarehouseCapacityTargetHours     = 2.0
 	defaultWarehouseFrameClassCeiling       = "light"
 
-	// Explorer class (sp-a3yn slice C). Opt-IN (default OFF, arming knob). The HARD CAP is 1; the
+	// Explorer class. Opt-IN (default OFF, arming knob). The HARD CAP is 1; the
 	// PRICE CEILING defaults to ~819k SHIP_EXPLORER + a premium (a REAL default, never 0=off — the
 	// explorer's price ceiling is a required guard); the 25%-treasury big-ticket affordability rule
 	// applies (the explorer buys an ~819k hull).
@@ -72,20 +72,20 @@ const (
 
 // DemandParams carries the live-resolved config the demand providers need each tick (rotation
 // slots, etc.). The coordinator fills it from its runConfig so the providers, constructed once at
-// boot, still see the current config.yaml value (the sp-ts82 live-config discipline) without
+// boot, still see the current config.yaml value (the live-config discipline) without
 // holding config themselves.
 type DemandParams struct {
 	// LightRotationSlots is the C3 rotation divisor inverted: K chains need K × this workers.
 	LightRotationSlots float64
 	// WarehouseMinTickPersistence is the hysteresis: a chain must sit in the running portfolio this
-	// many consecutive ticks before a warehouse follows it (sp-1j3f).
+	// many consecutive ticks before a warehouse follows it.
 	WarehouseMinTickPersistence int
 	// WarehouseMinRealizedPerHour is the pay gate: only a chain earning at least this realized $/hr
 	// (rh2z chain_pnl) pulls a warehouse.
 	WarehouseMinRealizedPerHour float64
 	// MaxWarehouseHulls caps the warehouse demand regardless of how many durable chains exist.
 	MaxWarehouseHulls int
-	// ExplorerHullsEnabled ARMS the explorer class (sp-a3yn). Default false (opt-in): when false the
+	// ExplorerHullsEnabled ARMS the explorer class. Default false (opt-in): when false the
 	// explorer provider emits ZERO demand unconditionally, so a bare deploy buys no explorer.
 	ExplorerHullsEnabled bool
 	// MaxExplorerHulls is the explorer HARD CAP (the class fleet ceiling, default 1): the provider
@@ -109,7 +109,7 @@ type ClassDemandProvider interface {
 	Demand(ctx context.Context, playerID int, params DemandParams) (ClassDemand, error)
 }
 
-// RunFleetAutosizerCoordinatorCommand launches the standing autosizer for a player (sp-1txd).
+// RunFleetAutosizerCoordinatorCommand launches the standing autosizer for a player.
 // Like the siting / trade-fleet coordinators it runs an infinite reconcile loop inside a single
 // Handle() call; the container wraps it. All knobs are launch-config keys (RULINGS #5); the zero
 // value falls back to the documented default, so the CLI/daemon passes only what it overrides.
@@ -160,7 +160,7 @@ type RunFleetAutosizerCoordinatorCommand struct {
 
 	ZeroEffectAlarmTicks int
 
-	// Warehouse class (sp-1txd M7/M8).
+	// Warehouse class.
 	WarehouseMinChainRealizedPerHour float64
 	WarehouseMinChainTickPersistence int
 	MaxWarehouseHulls                int
@@ -169,7 +169,7 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	MaxModuleSpendPerHull            int64
 	WarehouseFrameClassCeiling       string
 
-	// Explorer class (sp-a3yn slice C). ExplorerHullsEnabled is the opt-IN arming knob (default OFF
+	// Explorer class. ExplorerHullsEnabled is the opt-IN arming knob (default OFF
 	// — nothing boot-arms it). FleetCeilingExplorer is the HARD CAP (default 1); MaxPriceExplorer is
 	// the price ceiling (default ~819k+premium); ExplorerTreasuryPctPerPurchase is the 25% rule.
 	ExplorerHullsEnabled           bool
@@ -206,9 +206,9 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	providers []ClassDemandProvider
 	clock     shared.Clock
 
-	// Buy-path collaborators (M5), wired by setters at boot. Every one is nil-safe: a nil reader
+	// Buy-path collaborators, wired by setters at boot. Every one is nil-safe: a nil reader
 	// yields an unreadable input, which the guard stack fails CLOSED on (no buy) — the API-utilization
-	// reader included, since sp-a5dq (an absent/unreadable utilization now holds concurrency growth).
+	// reader included (an absent/unreadable utilization holds concurrency growth rather than permitting it).
 	treasury  TreasuryReader
 	era       EraClockReader
 	apiUtil   APIUtilizationReader
@@ -218,7 +218,7 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	notifier  PurchaseNotifier
 	metrics   MetricsSink
 
-	// warehouse is the typed handle to the warehouse provider (sp-1j3f). Held in addition to its
+	// warehouse is the typed handle to the warehouse provider. Held in addition to its
 	// slot in providers so the reconcile loop can invoke its DISPATCH step (place idle/stranded hulls
 	// on durable chains) after the buy pass. nil until wired, in which case dispatch is skipped.
 	warehouse *WarehouseDemandProvider
@@ -240,7 +240,7 @@ type autosizerState struct {
 
 // NewRunFleetAutosizerCoordinatorHandler wires the coordinator. clock defaults to the real clock
 // when nil (production). Demand providers are added with AddDemandProvider; the guard stack,
-// purchaser, and notifier are wired with their setters (M2/M5).
+// purchaser, and notifier are wired with their setters.
 func NewRunFleetAutosizerCoordinatorHandler(clock shared.Clock) *RunFleetAutosizerCoordinatorHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -256,7 +256,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) AddDemandProvider(p ClassDemandPro
 	h.providers = append(h.providers, p)
 }
 
-// SetWarehouseProvider wires the warehouse provider (sp-1j3f). It registers the provider in the
+// SetWarehouseProvider wires the warehouse provider. It registers the provider in the
 // evaluation loop (its Demand() feeds the buy path like any class) AND keeps a typed handle so the
 // reconcile loop can run its DISPATCH step each tick — placing idle/stranded warehouse hulls on the
 // durable chains, which the generic buy path cannot do. Call this INSTEAD of AddDemandProvider for
@@ -266,37 +266,37 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetWarehouseProvider(p *WarehouseD
 	h.providers = append(h.providers, p)
 }
 
-// SetTreasuryReader wires the live-treasury source (M5). Unset → treasury unreadable → the
+// SetTreasuryReader wires the live-treasury source. Unset → treasury unreadable → the
 // treasury guards fail closed (no buy).
 func (h *RunFleetAutosizerCoordinatorHandler) SetTreasuryReader(r TreasuryReader) { h.treasury = r }
 
-// SetEraClockReader wires the era-clock source (M5). Unset → era unreadable → the era-payback
+// SetEraClockReader wires the era-clock source. Unset → era unreadable → the era-payback
 // guard fails closed.
 func (h *RunFleetAutosizerCoordinatorHandler) SetEraClockReader(r EraClockReader) { h.era = r }
 
-// SetAPIUtilizationReader wires the API-utilization source (M5). Unset → utilization unreadable →
-// the API-util guard fails CLOSED (sp-a5dq): a mis-wired coordinator holds concurrency growth rather
+// SetAPIUtilizationReader wires the API-utilization source. Unset → utilization unreadable →
+// the API-util guard fails CLOSED: a mis-wired coordinator holds concurrency growth rather
 // than silently permitting unbounded growth into a saturated API.
 func (h *RunFleetAutosizerCoordinatorHandler) SetAPIUtilizationReader(r APIUtilizationReader) {
 	h.apiUtil = r
 }
 
-// SetFleetSizeReader wires the total-hull-count source for the absolute fleet ceiling (M5). Unset
+// SetFleetSizeReader wires the total-hull-count source for the absolute fleet ceiling. Unset
 // or erroring → total unreadable → no buy (fail closed).
 func (h *RunFleetAutosizerCoordinatorHandler) SetFleetSizeReader(r FleetSizeReader) { h.fleetSize = r }
 
-// SetYardPriceReader wires the shipyard price source (M5). Unset → price unreadable → the price
+// SetYardPriceReader wires the shipyard price source. Unset → price unreadable → the price
 // guards fail closed.
 func (h *RunFleetAutosizerCoordinatorHandler) SetYardPriceReader(r YardPriceReader) { h.yardPrice = r }
 
-// SetPurchaser wires the buy+dedicate collaborator (M5). Unset → the coordinator evaluates and
+// SetPurchaser wires the buy+dedicate collaborator. Unset → the coordinator evaluates and
 // logs but never spends (an implicit dry-run, surfaced loudly and by the zero-effect alarm).
 func (h *RunFleetAutosizerCoordinatorHandler) SetPurchaser(p Purchaser) { h.purchaser = p }
 
-// SetPurchaseNotifier wires the captain purchase-notice channel (M5). Optional.
+// SetPurchaseNotifier wires the captain purchase-notice channel. Optional.
 func (h *RunFleetAutosizerCoordinatorHandler) SetPurchaseNotifier(n PurchaseNotifier) { h.notifier = n }
 
-// SetMetricsSink wires the metrics recorder (M5). Optional and nil-safe (pure observation).
+// SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunFleetAutosizerCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -364,7 +364,7 @@ func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 	case HullClassWarehouse:
 		return !c.WarehouseHullsEnabled
 	case HullClassExplorer:
-		// Opt-IN arming (sp-a3yn): the explorer class runs ONLY when explicitly armed, so a bare
+		// Opt-IN arming: the explorer class runs ONLY when explicitly armed, so a bare
 		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
 		return !c.ExplorerHullsEnabled
 	case HullClassContractDelivery:

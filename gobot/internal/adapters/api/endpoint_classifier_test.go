@@ -12,7 +12,7 @@ func TestClassifyNegotiateContractRealPath(t *testing.T) {
 }
 
 // extractShipSymbol identifies which hull an API request belongs to so the
-// budget tracker (sp-51ti) can attribute req/s per hull, not just globally.
+// budget tracker can attribute req/s per hull, not just globally.
 func TestExtractShipSymbolFromShipScopedPath(t *testing.T) {
 	got := extractShipSymbol("/my/ships/TORWIND-1/dock")
 	if got != "TORWIND-1" {

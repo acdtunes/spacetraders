@@ -19,8 +19,8 @@ import (
 )
 
 // watchPolicyStore is the subset of one-shot wake-watch persistence the CLI
-// needs (spec: sp-oyer). It exists so runWatchAdd/runWatchList/runWatchClear
-// can be tested with a fake, without touching the filesystem.
+// needs. It exists so runWatchAdd/runWatchList/runWatchClear can be tested
+// with a fake, without touching the filesystem.
 type watchPolicyStore interface {
 	Load() (watchkeeper.WatchPolicy, error)
 	Save(policy watchkeeper.WatchPolicy) error
@@ -55,14 +55,14 @@ func newCaptainWatchPolicyStore() (watchPolicyStore, error) {
 }
 
 // defaultWatchETAMargin is the fractional margin added atop a ship's live ETA
-// when deriving a ship:arrival watch's default deadline (sp-970u): a ship
+// when deriving a ship:arrival watch's default deadline: a ship
 // with T remaining transit time gets deadline = now + T×(1+margin) — i.e.
 // arrival plus a margin×T cushion, rather than racing the honest ETA.
 // Parametrized per RULINGS #5; the CLI exposes --eta-margin to override it.
 const defaultWatchETAMargin = 0.25
 
 // shipNavReader is the best-effort ship-nav lookup runWatchAdd uses to derive
-// an ETA-based deadline for a ship:arrival watch with --by omitted (sp-970u).
+// an ETA-based deadline for a ship:arrival watch with --by omitted.
 // It exists so the derivation can be tested with a fake, without a live DB
 // connection — mirroring watchPolicyStore. A returned error is never fatal to
 // watch add: the caller falls back to the flat default.
@@ -72,7 +72,7 @@ type shipNavReader interface {
 	ShipNav(ctx context.Context, shipSymbol string) (inTransit bool, arrivalTime *time.Time, err error)
 }
 
-// dbShipNavReader is the production shipNavReader (sp-970u): a lightweight,
+// dbShipNavReader is the production shipNavReader: a lightweight,
 // read-only lookup of a ship's nav_status/arrival_time columns. This mirrors
 // the direct persistence.ShipModel query internal/captain/detectors.go
 // already uses for the same "is this ship IN_TRANSIT" question, rather than
@@ -99,7 +99,7 @@ func (r dbShipNavReader) ShipNav(ctx context.Context, shipSymbol string) (bool, 
 	return model.NavStatus == "IN_TRANSIT", model.ArrivalTime, nil
 }
 
-// newShipNavReader wires the production shipNavReader (sp-970u): connects to
+// newShipNavReader wires the production shipNavReader: connects to
 // the same database the daemon uses, and resolves the effective player via
 // the standard --player-id/--agent/config-default chain
 // (resolvePlayerIdentifier) — watch add needs no new flag of its own. Every
@@ -146,7 +146,7 @@ func resolveNumericPlayerID(ctx context.Context, db *gorm.DB, playerIdent *Playe
 }
 
 // deriveETADeadlineForShip best-effort derives a ship:arrival watch's
-// deadline from the ship's live nav (sp-970u): deadline = now +
+// deadline from the ship's live nav: deadline = now +
 // (ETA-now)×(1+etaMargin). ok is false — caller must fall back to the flat
 // default — whenever navReader is unavailable (nil, e.g. newShipNavReader
 // failed), the nav read errors, the ship isn't IN_TRANSIT, or the arrival
@@ -193,18 +193,18 @@ func parseWatchDeadline(s string, now time.Time) (time.Time, error) {
 // unlike `wake set`'s full-replace): multiple watches coexist independently, so
 // a second `watch add` must not drop the first. When --by is omitted the
 // deadline defaults to now+defaultDeadline so every evented wait is deadline'd
-// at the sensing layer (sp-oyer design note) — a watch whose match event is
-// lost still auto-fires and disarms rather than arming forever.
+// at the sensing layer — a watch whose match event is lost still auto-fires
+// and disarms rather than arming forever.
 //
-// For a ship:arrival watch with --by omitted, sp-970u prefers a tighter,
+// For a ship:arrival watch with --by omitted, the CLI prefers a tighter,
 // ETA-derived deadline over the flat default: a best-effort read of the
 // ship's live nav via navReader gives now+(ETA-now)×(1+etaMargin) when the
 // ship is IN_TRANSIT with a valid arrival timestamp. ANY failure to derive it
 // (nav unavailable, ship not found/docked, bad timestamp) gracefully falls
 // back to the flat default — a nav read never blocks or fails watch add.
 // container:terminal watches are unaffected: there is no ETA concept for
-// them, so they always get the flat default, exactly as before. Either way,
-// one line is printed to w noting which deadline was used.
+// them, so they always get the flat default. Either way, one line is printed
+// to w noting which deadline was used.
 func runWatchAdd(ctx context.Context, store watchPolicyStore, navReader shipNavReader, w io.Writer, now time.Time, spec, by string, defaultDeadline time.Duration, etaMargin float64) error {
 	watch, err := watchkeeper.ParseWatchSpec(spec)
 	if err != nil {
@@ -329,9 +329,9 @@ Examples:
 				return err
 			}
 			ctx := context.Background()
-			// Best-effort: nav unavailable is never fatal to watch add
-			// (sp-970u) — a nil navReader always falls back to the flat
-			// default inside runWatchAdd.
+			// Best-effort: nav unavailable is never fatal to watch add — a
+			// nil navReader always falls back to the flat default inside
+			// runWatchAdd.
 			navReader, _ := newShipNavReader(ctx)
 			if err := runWatchAdd(ctx, store, navReader, os.Stdout, time.Now(), args[0], by, defaultDeadline, etaMargin); err != nil {
 				return err

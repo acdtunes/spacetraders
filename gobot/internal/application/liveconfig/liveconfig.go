@@ -1,15 +1,15 @@
 // Package liveconfig gives a standing coordinator a PER-TICK live view of its own
-// persisted container config (sp-vwek) — the seam that makes a `spacetraders tune`
-// take effect on the NEXT reconcile tick with no container restart.
+// persisted container config — the seam that makes a `spacetraders tune` take
+// effect on the NEXT reconcile tick with no container restart.
 //
 // Background: buildCommandForType runs only at container CREATE and at restart
 // RECOVERY, never per tick. A coordinator's resolveConfig(cmd) re-derives its knobs
 // every tick but from that FROZEN command, so a config-column write was invisible to
-// a running loop (the sp-aoy2 lesson — "reads must come from persisted DB config, not
-// launch-frozen metadata" — applied to numeric knobs). This package replaces the
-// SOURCE of the per-tick resolve, not its cadence: the coordinator snapshots the live
-// column once at tick start and runs the whole tick on that snapshot; the next tick
-// sees any newer value. No polling thread, no notify bus — the tick IS the poll.
+// a running loop: reads must come from persisted DB config, not launch-frozen
+// metadata. This package replaces the SOURCE of the per-tick resolve, not its
+// cadence: the coordinator snapshots the live column once at tick start and runs
+// the whole tick on that snapshot; the next tick sees any newer value. No polling
+// thread, no notify bus — the tick IS the poll.
 //
 // Fallback chain per tunable knob (mirroring FactoryWorkerCapConfigProvider):
 //   - snapshot read SUCCEEDED → the config column is AUTHORITATIVE: a positive value
@@ -32,7 +32,7 @@ type Snapshot map[string]interface{}
 // the grpc adapter over the container repository (the same read path the live
 // worker-cap and standby-hub providers use); coordinators receive it via
 // optional injection and treat a nil reader as "no live config" (launch-frozen
-// behavior, byte-identical to pre-sp-vwek).
+// behavior).
 type Reader interface {
 	// Snapshot returns the container's current persisted config. A missing row or
 	// unreadable config errors, so the caller falls back to its launch command
@@ -44,7 +44,7 @@ type Reader interface {
 // the definition of "a live override is set". It decodes every numeric shape a
 // container config carries: native int/int64/int32 on the fresh-launch path and
 // float64 on the JSON-recovery path (persisted numbers round-trip through
-// float64; omitting a shape was the sp-ggk2 money bug).
+// float64; omitting a shape would silently drop a live override).
 func (s Snapshot) PositiveInt(key string) (int, bool) {
 	if s == nil {
 		return 0, false

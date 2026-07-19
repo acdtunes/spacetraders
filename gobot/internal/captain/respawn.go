@@ -58,8 +58,8 @@ func (s *Supervisor) ensureCaptainAlive(ctx context.Context, now time.Time) {
 // emits a grep-able local log line FIRST, so the outage is visible in the
 // supervisor log even when the Admiral mail cannot be delivered (e.g. during a
 // gc/bd outage), and it logs a mail-delivery failure too rather than swallowing
-// it (the old respawn.go `_ =` swallow was part of the bug). Per-agent throttled
-// to one alert per sessionDownAlertInterval so a session that stays dead across
+// it. Per-agent throttled to one alert per sessionDownAlertInterval so a session
+// that stays dead across
 // 30s polls does not spam the Admiral. The throttle stamp advances on every
 // alert regardless of mail success: the local log is the guaranteed-durable
 // signal, so a flapping mail channel must not turn into per-poll log/mail spam;

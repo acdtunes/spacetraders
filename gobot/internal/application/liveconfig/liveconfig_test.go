@@ -6,11 +6,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The snapshot's PositiveInt is the single primitive the per-tick fallback chain
-// hangs on (sp-vwek): a key is a live override ONLY when present, numeric, and
-// positive. It must decode every numeric shape a container config can carry —
-// native int/int64 on the fresh-launch path AND float64 on the JSON-recovery
-// path (the sp-ggk2 lesson: omitting one shape silently zeroes a money knob).
+// TestSnapshot_PositiveInt pins PositiveInt as the single primitive the per-tick
+// fallback chain hangs on: a key is a live override ONLY when present, numeric,
+// and positive. It must decode every numeric shape a container config can carry —
+// native int/int64 on the fresh-launch path AND float64 on the JSON-recovery path
+// (omitting one shape would silently zero a money knob).
 func TestSnapshot_PositiveInt(t *testing.T) {
 	cases := []struct {
 		name   string

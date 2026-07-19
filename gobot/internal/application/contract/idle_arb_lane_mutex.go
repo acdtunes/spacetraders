@@ -6,17 +6,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// The lane mutex is the dispatcher-level guard against the idle-arb LANE
-// COLLISION (sp-lbbm): the money-loss class where two dedicated hulls were
-// dispatched onto the SAME (good, sell-market) in one recovery window, each
-// having quoted the pre-crush bid. On 2026-07-10 hulls 7+8 concurrently dumped
-// SHIP_PARTS into H50, crushed the bid 19,950→4/unit, and TORWIND-7 kept selling
-// (five tranches for 27 credits total, ~−80k net). The dispatcher launched two
-// full dumps into one vol-6 sink because nothing tracked that a lane was already
-// being worked.
+// The lane mutex is the dispatcher-level guard against dispatching two dedicated
+// hulls onto the SAME (good, sell-market) within one recovery window: concurrent
+// dumps crash the bid, and a hull still selling against the pre-crush quote sells
+// into the crushed price.
 //
 // This tracker enforces ONE hull per (good, sink) per recovery window, covering
-// BOTH the ways a collision arose:
+// both windows a collision can occur in:
 //
 //   - WITHIN a pass: the launch loop marks a lane in-flight the instant it
 //     launches a leg, so a second candidate that would pick the SAME (good, sink)
@@ -43,13 +39,13 @@ import (
 // market_model.json). But that model lives behind the routing service; coupling
 // the contract dispatcher to it would drag a heavy dependency into a decision
 // loop that must stay pure. A parametrized flat hold (DefaultIdleArbRecoveryHold,
-// config-tunable via the ts82 live path) is the honest v1: 20min is far shorter
-// than any modelled half-life, so it does not claim the sink has fully recovered
-// — it is the conservative "do not immediately re-dump" spacer that, together
-// with the in-flight block above and the sp-lbbm per-tranche sell floor (which
-// aborts a re-dump into a still-depressed sink), kills the concurrent-dump loss
-// class. A captain who wants the fuller modelled hold raises the config knob; no
-// code change (RULINGS #5).
+// config-tunable) is the honest v1: 20min is far shorter than any modelled
+// half-life, so it does not claim the sink has fully recovered — it is the
+// conservative "do not immediately re-dump" spacer that, together with the
+// in-flight block above and the per-tranche sell floor (which aborts a re-dump
+// into a still-depressed sink), kills the concurrent-dump loss class. A captain
+// who wants the fuller modelled hold raises the config knob; no code change
+// (RULINGS #5).
 //
 // State is IN-MEMORY and per-dispatcher, mirroring spawnGovernor (which documents
 // the same choice): a daemon restart builds a fresh tracker. That is safe because

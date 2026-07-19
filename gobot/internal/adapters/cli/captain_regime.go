@@ -15,9 +15,8 @@ import (
 )
 
 // regimePolicyStore is the subset of captain regime-tripwire persistence the
-// CLI needs (spec: sp-zlfv price-regime detector). It exists so
-// runRegimeSet/runRegimeList/runRegimeClear can be tested with a fake,
-// without touching the filesystem.
+// CLI needs. It exists so runRegimeSet/runRegimeList/runRegimeClear can be
+// tested with a fake, without touching the filesystem.
 type regimePolicyStore interface {
 	Load() (watchkeeper.RegimePolicy, error)
 	Save(policy watchkeeper.RegimePolicy) error

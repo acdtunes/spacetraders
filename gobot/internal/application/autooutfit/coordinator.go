@@ -1,4 +1,4 @@
-// Package autooutfit is the guarded auto-outfit coordinator (sp-buyd): the module
+// Package autooutfit is the guarded auto-outfit coordinator: the module
 // analogue of hull acquisition. Each tick it MEASURES per-hull cargo saturation from
 // tour_leg_telemetry, CATALOGS the modules available to buy off the persisted market
 // cache, PICKS the highest-marginal-value (hull, module) pair (the pure
@@ -38,7 +38,7 @@ const (
 	// Config defaults (RULINGS #5: every operational value is a config key, filled here
 	// only when neither the live container config nor the launch command carries one).
 	defaultTickSeconds         = 300 // 5m — outfitting is not time-critical
-	defaultMinTelemetrySamples = 8   // fail-closed thin-telemetry floor (the 16/17 caveat: 5 legs is too thin)
+	defaultMinTelemetrySamples = 8   // fail-closed thin-telemetry floor: 5 legs is too thin a sample
 	defaultPriceCeiling        = 500000
 	defaultMaxInstallsPerTick  = 1
 	// defaultPaybackHorizonHours 0 = the absolute payback gate is OFF by default (the
@@ -181,7 +181,7 @@ func (h *RunAutoOutfitCoordinatorHandler) SetNewHullCostReader(r NewHullCostRead
 	h.newHullCost = r
 }
 
-// SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek). Unset
+// SetLiveConfigReader wires the per-tick live-config snapshot source. Unset
 // keeps every knob launch-frozen.
 func (h *RunAutoOutfitCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) { h.liveConfig = r }
 

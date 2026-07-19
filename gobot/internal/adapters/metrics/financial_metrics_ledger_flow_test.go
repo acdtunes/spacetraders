@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// TestRecordTransaction_EmitsLedgerFlowCounters pins sp-miqt.
+// TestRecordTransaction_EmitsLedgerFlowCounters pins the sign-split ledger-flow counters.
 //
 // The financial dashboard's cr/hr panels need a signed-amount SUM per
 // operation_type that PromQL rate() can smooth. Counters must be

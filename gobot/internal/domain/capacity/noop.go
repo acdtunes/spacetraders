@@ -16,7 +16,7 @@ import (
 // invoked instead of pretending success — an accidental invocation must
 // surface, never silently "succeed".
 
-// NoOpSensor returns an empty Signals snapshot (st-7ee replaces it).
+// NoOpSensor returns an empty Signals snapshot; replaced in the live pipeline.
 type NoOpSensor struct{}
 
 func (NoOpSensor) Sense(_ context.Context, playerID int) (Signals, error) {
@@ -24,21 +24,22 @@ func (NoOpSensor) Sense(_ context.Context, playerID int) (Signals, error) {
 }
 
 // NoOpPlanner wants nothing: it returns the empty DesiredTopology every tick,
-// so the loop provably emits zero actions end-to-end (st-hlw replaces it).
+// so the loop provably emits zero actions end-to-end; replaced in the live
+// pipeline.
 type NoOpPlanner struct{}
 
 func (NoOpPlanner) ComputeDesired(_ context.Context, _ Signals, _ Calibration) (DesiredTopology, error) {
 	return DesiredTopology{}, nil
 }
 
-// NoOpDiffer emits zero actions regardless of divergence (st-zr0 replaces it).
+// NoOpDiffer emits zero actions regardless of divergence; replaced in the live pipeline.
 type NoOpDiffer struct{}
 
 func (NoOpDiffer) Diff(_ context.Context, _ DesiredTopology, _ TopologySignals, _ Calibration) ([]Action, error) {
 	return nil, nil
 }
 
-// NoOpGovernor approves nothing and proposes nothing (st-x00 replaces it).
+// NoOpGovernor approves nothing and proposes nothing; replaced in the live pipeline.
 type NoOpGovernor struct{}
 
 func (NoOpGovernor) Govern(_ context.Context, _ []Action, _ EconomicsSignals, _ Calibration) (GovernResult, error) {
@@ -46,7 +47,7 @@ func (NoOpGovernor) Govern(_ context.Context, _ []Action, _ EconomicsSignals, _ 
 }
 
 // NoOpActuator refuses every verb loudly. It exists so the foundation wiring
-// is complete without a single write path; st-5ig replaces it.
+// is complete without a single write path; replaced in the live pipeline.
 type NoOpActuator struct{}
 
 func (NoOpActuator) ReuseIdleHull(_ context.Context, action Action) error {
@@ -69,7 +70,7 @@ func noOpActuatorErr(verb string, action Action) error {
 	return fmt.Errorf("capacity actuator not wired: refusing %s(%s %s)", verb, action.Tier, action.Verb)
 }
 
-// NoOpProposalChannel refuses every submission loudly (st-0h8 replaces it).
+// NoOpProposalChannel refuses every submission loudly; replaced in the live pipeline.
 type NoOpProposalChannel struct{}
 
 func (NoOpProposalChannel) Submit(_ context.Context, proposal Proposal) error {

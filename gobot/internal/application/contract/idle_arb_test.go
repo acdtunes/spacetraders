@@ -141,8 +141,8 @@ func tradeGood(t *testing.T, symbol string, bid, ask int) market.TradeGood {
 }
 
 // tradeGoodVol is tradeGood with an explicit trade volume, so a test can set a
-// sink's absorptive DEPTH (sp-3meh depth-aware consult): the consult excludes a
-// lane only when the remaining unreserved depth can't fit the leg's tranche.
+// sink's absorptive DEPTH: the depth-aware consult excludes a lane only when the
+// remaining unreserved depth can't fit the leg's tranche.
 func tradeGoodVol(t *testing.T, symbol string, bid, ask, volume int) market.TradeGood {
 	t.Helper()
 	g, err := market.NewTradeGood(symbol, nil, nil, bid, ask, volume, market.TradeType("EXCHANGE"))
@@ -167,11 +167,10 @@ const testFleet = "contract"
 
 // hub layout: hull(s) at HUB (0,0); NEAR market at (0,50) INSIDE the 80u leash
 // buying MACHINERY at 350 vs the hub's 100 ask (margin 250/unit — a fat lane that
-// clears the sp-u4tv profitability floor of net >= max(100, 20% of buy) after
-// fuel); FAR market at (0,400) outside both the leash and the 250 hub-radius with
-// an even juicier bid that must be IGNORED. NEAR sits at ~50u — the "legs max ~52u
-// naturally" shape the sp-uohe leash formalizes — so the default 80u leash still
-// admits it.
+// clears the profitability floor of net >= max(100, 20% of buy) after fuel); FAR
+// market at (0,400) outside both the leash and the 250 hub-radius with an even
+// juicier bid that must be IGNORED. NEAR sits at ~50u, so the default 80u leash
+// still admits it.
 func idleArbHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArbDispatcher, *idleArbFakeShipRepo, *fakeIdleArbLauncher) {
 	t.Helper()
 	return idleArbHarnessGoods(t, hulls, cfg, nil)
@@ -210,12 +209,12 @@ func idleArbHarnessGoods(t *testing.T, hulls int, cfg IdleArbConfig, contractGoo
 // --- tests -----------------------------------------------------------------
 
 // idleArbTwoSinkHarness builds a dispatcher over a hub with TWO distinct in-leash
-// sinks for the same good (sp-lbbm): sinkA (0,40) at a fatter margin (300) than
-// sinkB (0,50) (250) — both fat enough to clear the sp-u4tv profitability floor.
-// Because the lane mutex forbids two hulls dumping ONE sink in
-// a window, a reserve/claim-race test that must still launch two legs needs two
-// sinks — the highest-margin hull takes sinkA and the next falls back to sinkB.
-// Hulls are TORWIND-1..N at the shared hub.
+// sinks for the same good: sinkA (0,40) at a fatter margin (300) than sinkB
+// (0,50) (250) — both fat enough to clear the profitability floor. Because the
+// lane mutex forbids two hulls dumping ONE sink in a window, a reserve/claim-race
+// test that must still launch two legs needs two sinks — the highest-margin hull
+// takes sinkA and the next falls back to sinkB. Hulls are TORWIND-1..N at the
+// shared hub.
 func idleArbTwoSinkHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArbDispatcher, *idleArbFakeShipRepo, *fakeIdleArbLauncher) {
 	t.Helper()
 	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
@@ -241,10 +240,10 @@ func idleArbTwoSinkHarness(t *testing.T, hulls int, cfg IdleArbConfig) (*IdleArb
 }
 
 func TestIdleArb_ReserveHullsNeverDispatched(t *testing.T) {
-	// Two distinct in-leash sinks so the lane mutex (sp-lbbm) does not cap the
-	// count: a single shared sink would (correctly) allow only ONE concurrent
-	// dump, confounding the reserve-count assertion. Here the two surplus hulls
-	// spread across the two sinks, isolating reserve discipline.
+	// Two distinct in-leash sinks so the lane mutex does not cap the count: a
+	// single shared sink would (correctly) allow only ONE concurrent dump,
+	// confounding the reserve-count assertion. Here the two surplus hulls spread
+	// across the two sinks, isolating reserve discipline.
 	dispatcher, repo, launcher := idleArbTwoSinkHarness(t, 3, IdleArbConfig{ReserveHulls: 1})
 
 	launched := dispatcher.DispatchOnce(context.Background())
@@ -302,9 +301,9 @@ func TestIdleArb_LaneIsHubLocal_AndSpecInheritsGuards(t *testing.T) {
 	if spec.MaxSpend != 77_000 {
 		t.Errorf("max-spend guard knob must pass through untouched, got %d", spec.MaxSpend)
 	}
-	// Guard 1 (sp-uohe): the spec's MinMargin is the RELATIVE live-verify floor,
-	// max(absolute floor 5, ceil(0.80 × quoted margin 250) = 200) = 200 — NOT the
-	// flat absolute floor. This is what arms the arb run's live-verify gate.
+	// Guard 1: the spec's MinMargin is the RELATIVE live-verify floor, max(absolute
+	// floor 5, ceil(0.80 × quoted margin 250) = 200) = 200 — NOT the flat absolute
+	// floor. This is what arms the arb run's live-verify gate.
 	if spec.MinMargin != 200 {
 		t.Errorf("MinMargin must be the 80%%-of-quote live-verify floor (200), got %d", spec.MinMargin)
 	}
@@ -323,9 +322,9 @@ func TestIdleArb_NoProfitableLane_NoLaunch_TerminatesCleanly(t *testing.T) {
 }
 
 func TestIdleArb_LostClaimRace_SkipsHullAndContinues(t *testing.T) {
-	// Two sinks (sp-lbbm): the two surviving hulls spread across them rather than
-	// collide, so the claim-race-skip-and-continue behavior can still show two
-	// launches without the concurrent same-sink dump the mutex now forbids.
+	// Two sinks: the two surviving hulls spread across them rather than collide,
+	// so the claim-race-skip-and-continue behavior can still show two launches
+	// without a concurrent same-sink dump.
 	dispatcher, repo, launcher := idleArbTwoSinkHarness(t, 3, IdleArbConfig{ReserveHulls: 1})
 	launcher.failNext = true // TORWIND-1's launch loses its claim race
 
@@ -348,9 +347,9 @@ func TestIdleArb_LostClaimRace_SkipsHullAndContinues(t *testing.T) {
 	}
 }
 
-// TestIdleArb_TwentyCycles_ZeroMissedClaims is the sp-1z2h acceptance
-// simulation: 20 contract cycles interleaved with dispatch ticks, arb legs
-// completing between cycles. The invariant under test: whenever the (serial)
+// TestIdleArb_TwentyCycles_ZeroMissedClaims simulates 20 contract cycles
+// interleaved with dispatch ticks, arb legs completing between cycles. The
+// invariant under test: whenever the (serial)
 // coordinator wants a hull for a contract claim, at least one idle dedicated
 // hull exists INSTANTLY — arb never delays or starves a claim — while the
 // harvest still launches real legs.
@@ -428,7 +427,7 @@ func TestIdleArbConfig_WithDefaults_FillsZeroes(t *testing.T) {
 	}
 }
 
-// --- sp-uohe money-guard tests ---------------------------------------------
+// --- money-guard tests ------------------------------------------------------
 
 // Guard 1 (live pre-buy verify): the effective floor is the tighter of the
 // absolute floor and ceil(fraction × quoted margin). This is the value handed to
@@ -449,8 +448,7 @@ func TestIdleArbMinMargin_RelativeFloor(t *testing.T) {
 }
 
 // Guard 1 end-to-end at the dispatch seam: a launched leg carries the 80%-of-
-// quote live-verify floor, not the flat MinMargin=1 that let the −234k
-// ELECTRONICS legs through. Remove idleArbMinMargin and this goes red.
+// quote live-verify floor. Remove idleArbMinMargin and this goes red.
 func TestIdleArb_MarginVerifyFloorArmsTheGate(t *testing.T) {
 	d, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	if launched := d.DispatchOnce(context.Background()); launched != 1 {
@@ -570,13 +568,12 @@ func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
 	}
 }
 
-// sp-nw9v per-candidate verdict logging: every positive-margin candidate emits a
-// terse line carrying the COMPUTED distance the leash used, the two endpoints
-// (with coordinates) it measured between, the quoted margin, and the verdict — in
+// Per-candidate verdict logging: every positive-margin candidate emits a terse
+// line carrying the COMPUTED distance the leash used, the two endpoints (with
+// coordinates) it measured between, the quoted margin, and the verdict — in
 // MESSAGE TEXT. This is the candidate list an all-pairs analyst scan is diffed
 // against; without it, a masked mis-pick (wrong distance, stale row, over-broad
-// exclusion) is invisible (the diagnosis that produced this observable had to be
-// reconstructed from the DB). An ELIGIBLE lane and a leash-SKIPPED lane both log.
+// exclusion) is invisible. An ELIGIBLE lane and a leash-SKIPPED lane both log.
 func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
 	// (a) An eligible in-leash candidate: hub(0,0)->near(0,50), margin 250, dist 50<80.
 	loggerA := &idleArbCapturingLogger{}
@@ -622,11 +619,10 @@ func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
 	}
 }
 
-// sp-nw9v: the dispatcher start-log must surface the LEASH radius (and max-leg
-// cap). Its omission is exactly what hid an effective-80 leash while the operator
-// believed a 150 retune was live — the retune had silently no-op'd, and the
-// start-log printed only the hub radius. Run logs the start line before its first
-// select, so an already-cancelled context exercises it without a tick.
+// The dispatcher start-log must surface the LEASH radius (and max-leg cap), so a
+// retune's actual effect is observable rather than silently no-op'd. Run logs
+// the start line before its first select, so an already-cancelled context
+// exercises it without a tick.
 func TestIdleArb_StartLog_SurfacesLeashRadius(t *testing.T) {
 	logger := &idleArbCapturingLogger{}
 	ctx, cancel := context.WithCancel(common.WithLogger(context.Background(), logger))
@@ -641,14 +637,14 @@ func TestIdleArb_StartLog_SurfacesLeashRadius(t *testing.T) {
 	}
 }
 
-// --- sp-8bpr post-leg re-homing tests --------------------------------------
+// --- post-leg re-homing tests ------------------------------------------------
 
 // fakeShipHomer records the hulls the dispatcher asked to re-home, standing in
 // for the coordinator's mediator-backed HomeShipCommand dispatch. failNext lets
 // a test simulate a homing dispatch that could not even be initiated.
 type fakeShipHomer struct {
 	homed       []string
-	lastStandby []string // sp-jcke: the standby set the dispatcher passed on the last call
+	lastStandby []string // the standby set the dispatcher passed on the last call
 	failNext    bool
 }
 
@@ -678,7 +674,7 @@ func idleArbRehomeHarness(t *testing.T, repo *idleArbFakeShipRepo, standby []str
 		hub.Symbol: hub, near.Symbol: near,
 	}}
 	// Both markets buy MACHINERY at 350 vs a 100 sell — a profitable lane (margin
-	// 250, clearing the sp-u4tv floor) out of hub (hub->near) AND out of near
+	// 250, clearing the profit floor) out of hub (hub->near) AND out of near
 	// (near->hub), so an idle hull at either end would be arbed if re-homing didn't
 	// hold it back.
 	markets := &idleArbFakeMarketRepo{markets: map[string]*market.Market{
@@ -694,9 +690,9 @@ func idleArbRehomeHarness(t *testing.T, repo *idleArbFakeShipRepo, standby []str
 	return d, launcher, homer
 }
 
-// The core gap (sp-8bpr): a hull left idle OFF-station after a leg is re-homed to
-// its standby station and is NOT re-arbed from the drift position that pass,
-// while an ON-station hull still arbs normally. One pass proves both.
+// A hull left idle OFF-station after a leg is re-homed to its standby station
+// and is NOT re-arbed from the drift position that pass, while an ON-station
+// hull still arbs normally. One pass proves both.
 func TestIdleArb_DriftedHullReHomed_OnStationHullStillArbs(t *testing.T) {
 	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
 	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
@@ -743,8 +739,8 @@ func TestIdleArb_HullAtStandby_NotReHomed(t *testing.T) {
 }
 
 // Re-homing is inert with no standby stations configured (mirroring
-// HomeShipCommand's own contract): the drifted hull is left for the arb loop,
-// which harvests it exactly as before this change.
+// HomeShipCommand's own contract): the drifted hull is left for the arb loop to
+// harvest.
 func TestIdleArb_NoStandbyStations_ReHomeOff_ArbUnchanged(t *testing.T) {
 	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
 	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{

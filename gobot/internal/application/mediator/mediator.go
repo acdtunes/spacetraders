@@ -65,11 +65,8 @@ func (m *mediator) Send(ctx context.Context, request Request) (Response, error) 
 		return nil, fmt.Errorf("no handler registered for type %s", requestType)
 	}
 
-	// Build middleware chain from right to left
-	// The innermost function is the handler execution
+	// Wrap in reverse so the first-registered middleware ends up outermost.
 	next := handler.Handle
-
-	// Wrap handler with middleware (in reverse order so first registered executes first)
 	for i := len(m.middlewares) - 1; i >= 0; i-- {
 		middleware := m.middlewares[i]
 		currentNext := next
@@ -78,7 +75,6 @@ func (m *mediator) Send(ctx context.Context, request Request) (Response, error) 
 		}
 	}
 
-	// Execute the middleware chain (which will eventually call the handler)
 	return next(ctx, request)
 }
 

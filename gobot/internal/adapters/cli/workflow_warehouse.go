@@ -8,8 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowWarehouseCommand creates the workflow warehouse subcommand (sp-dchv
-// Lane B).
+// newWorkflowWarehouseCommand creates the workflow warehouse subcommand.
 //
 // It is a THIN CLIENT: it asks the daemon to start a warehouse CONTAINER on an
 // idle, dedicated storage hull parked at a home waypoint. The warehouse is a

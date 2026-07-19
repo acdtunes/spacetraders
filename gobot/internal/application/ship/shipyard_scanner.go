@@ -23,13 +23,13 @@ type shipyardAPI interface {
 // waypointTraitReader checks a waypoint's IMMUTABLE trait (SHIPYARD) from the
 // local cache WITHOUT an API call. It deliberately reads era-agnostic and
 // TTL-agnostic: a physical trait never changes across eras and never goes stale,
-// so a prior-era or long-unsynced row is still authoritative (sp-42ow). Satisfied
+// so a prior-era or long-unsynced row is still authoritative. Satisfied
 // by *persistence.GormWaypointRepository.HasWaypointTrait.
 type waypointTraitReader interface {
 	HasWaypointTrait(ctx context.Context, waypointSymbol, trait string) (bool, error)
 }
 
-// ShipyardScanner piggybacks shipyard scans on scout market visits (sp-42ow):
+// ShipyardScanner piggybacks shipyard scans on scout market visits:
 // when a scout is at a waypoint bearing the SHIPYARD trait, it reads the live
 // shipyard (ship types + priced listings — full prices are visible because the
 // scout IS at the waypoint) and persists the result to the shipyard-inventory

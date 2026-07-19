@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sp-423c (gate hardening): isAlreadyDockedError and isAlreadyInOrbitError are the
+// (gate hardening): isAlreadyDockedError and isAlreadyInOrbitError are the
 // idempotency guards for Dock()/Orbit() (ship_repository.go:307,340) — every daemon
 // dock/orbit call trusts them to tell a genuine failure apart from "already in the
 // requested state, treat as success". Both had zero test coverage before this change,

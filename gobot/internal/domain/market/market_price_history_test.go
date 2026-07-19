@@ -7,15 +7,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-pf60: MarketPriceHistory has carried supply/activity fields since its
-// introduction (commit 6ea64647, 2025-11-24) and migration 016 has had the
-// columns since the table's creation - the tier-at-capture data was never
-// actually missing. What WAS missing is dedicated coverage: this package had
-// zero *_test.go files, so nothing locked in that tier fields survive
-// construction/validation/round-trip. That matters because time-consistent
-// tier tagging (vs. sp-hqrb's bug of tagging historical ladders with
-// CURRENT market_data tiers) depends entirely on these fields staying intact
-// on this entity.
+// This entity's supply/activity fields capture the tier AT OBSERVATION TIME.
+// Callers depend on that time-consistency — retagging a historical row with
+// the CURRENT market_data tier would silently corrupt tier-at-capture semantics.
 func TestNewMarketPriceHistory_CapturesTierAtObservationTime(t *testing.T) {
 	playerID := shared.MustNewPlayerID(1)
 	supply := "LIMITED"

@@ -1,6 +1,6 @@
 package capacity_test
 
-// Unit tests for the capacity CONVERGE actuator (bead st-5ig, epic st-7zk).
+// Unit tests for the capacity CONVERGE actuator.
 //
 // The Actuator is the thin wrapper that translates one governed Action into a
 // call to the EXISTING primitive that already performs that work (fleet-assign,
@@ -18,7 +18,7 @@ package capacity_test
 //  2. tier-2 reposition -> drives the reposition primitive with hull + anchor
 //  3. tier-2 rebalance  -> drives the worker-rebalancer toward the shortfall hub
 //  4. tier-3 buffer     -> drives the buffer-config primitive with good + cap
-//  5. tier-4 capital    -> fails CLOSED, drives NO primitive (st-0h8 owns capital)
+//  5. tier-4 capital    -> fails CLOSED, drives NO primitive
 //  6. primitive failure -> surfaces as the action's converge failure
 
 import (
@@ -284,7 +284,7 @@ func TestAdjustBuffer_DrivesBufferConfiguratorWithDesiredCap(t *testing.T) {
 
 // ---- 4. tier-4 capital: fail closed, no buy ---------------------------------
 
-// ExecuteCapital is post-approval ONLY (st-0h8 owns the capital path). In the
+// ExecuteCapital is post-approval ONLY. In the
 // cheap-tier actuator it fails CLOSED with an explicit not-wired error and
 // drives NO primitive — no buy, no move, nothing — so an approved tier-4 action
 // that somehow reached it can never auto-execute a purchase from here.

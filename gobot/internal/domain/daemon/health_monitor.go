@@ -34,7 +34,6 @@ type HealthMonitor struct {
 	clock               shared.Clock
 }
 
-// NewHealthMonitor creates a new health monitor instance
 func NewHealthMonitor(
 	checkInterval time.Duration,
 	recoveryTimeout time.Duration,
@@ -75,18 +74,16 @@ func (hm *HealthMonitor) SetMaxRecoveryAttempts(attempts int) {
 	hm.maxRecoveryAttempts = attempts
 }
 
-// GetRecoveryAttemptCount returns the number of recovery attempts for a ship
 func (hm *HealthMonitor) GetRecoveryAttemptCount(shipSymbol string) int {
 	return hm.recoveryAttempts[shipSymbol]
 }
 
-// GetMetrics returns current recovery metrics
 func (hm *HealthMonitor) GetMetrics() *RecoveryMetrics {
 	return hm.metrics
 }
 
-// RunCheck performs a complete health check cycle
-// Returns true if check was skipped due to cooldown, false if executed
+// RunCheck runs a health check cycle, returning true if skipped due to
+// cooldown, false if executed.
 func (hm *HealthMonitor) RunCheck(
 	ctx context.Context,
 	assignments map[string]*container.ShipAssignment,
@@ -95,7 +92,6 @@ func (hm *HealthMonitor) RunCheck(
 ) (bool, error) {
 	now := hm.clock.Now()
 
-	// Check cooldown
 	if hm.lastCheckTime != nil {
 		elapsed := now.Sub(*hm.lastCheckTime)
 		if elapsed < hm.checkInterval {
@@ -103,10 +99,8 @@ func (hm *HealthMonitor) RunCheck(
 		}
 	}
 
-	// Update last check time
 	hm.lastCheckTime = &now
 
-	// Clean stale assignments
 	existingContainerIDs := make(map[string]bool)
 	for id := range containers {
 		existingContainerIDs[id] = true
@@ -117,11 +111,9 @@ func (hm *HealthMonitor) RunCheck(
 		return false, err
 	}
 
-	// Detect stuck ships
 	// Note: routes are passed as nil for now - in real implementation this would come from repository
 	_ = hm.DetectStuckShips(ctx, ships, containers, nil)
 
-	// Detect infinite loops
 	_ = hm.DetectInfiniteLoops(ctx, containers)
 
 	return false, nil // Executed
@@ -140,7 +132,6 @@ func (hm *HealthMonitor) CleanStaleAssignments(
 			continue
 		}
 
-		// Check if container exists
 		if !existingContainerIDs[assignment.ContainerID()] {
 			if err := assignment.Release("stale_cleanup"); err != nil {
 				return cleaned, err
@@ -163,21 +154,13 @@ func (hm *HealthMonitor) DetectStuckShips(
 	now := hm.clock.Now()
 
 	for shipSymbol, ship := range ships {
-		// Only check ships in transit
 		if ship.NavStatus() != navigation.NavStatusInTransit {
 			continue
 		}
 
-		// Calculate how long ship has been in transit
-		// Note: We need a way to get the last state change time from the ship
-		// For now, we'll use a simplified approach based on the ship's internal state
-
-		// Check if ship has exceeded recovery timeout
-		// This is a simplified check - in production we'd need proper timestamp tracking
 		if hm.isShipStuck(ship, now) {
 			stuckShips = append(stuckShips, shipSymbol)
 
-			// Check for route-ship state mismatch
 			if routes != nil {
 				if route, exists := routes[shipSymbol]; exists {
 					if route.Status() == navigation.RouteStatusCompleted {
@@ -196,7 +179,6 @@ func (hm *HealthMonitor) DetectStuckShips(
 // This is a placeholder - real implementation would check actual timestamps
 func (hm *HealthMonitor) isShipStuck(ship *navigation.Ship, now time.Time) bool {
 	// TODO: Implement proper timestamp tracking in Ship entity
-	// For now, this is a stub that always returns false
 	return false
 }
 
@@ -214,7 +196,6 @@ func (hm *HealthMonitor) DetectInfiniteLoops(
 
 		// Check for infinite loop containers with rapid iterations
 		if c.MaxIterations() == -1 {
-			// Calculate average iteration duration
 			runtime, exists := c.GetMetadataValue("runtime_seconds")
 			if !exists {
 				continue
@@ -248,15 +229,12 @@ func (hm *HealthMonitor) AttemptRecovery(
 	ship *navigation.Ship,
 	containers map[string]*container.Container,
 ) error {
-	// Check max recovery attempts
 	attempts := hm.recoveryAttempts[shipSymbol]
 	if attempts >= hm.maxRecoveryAttempts {
-		// Abandon ship
 		hm.metrics.AbandonedShips++
 		return nil
 	}
 
-	// Record attempt
 	hm.recoveryAttempts[shipSymbol] = attempts + 1
 
 	// Attempt recovery by forcing arrival
@@ -287,7 +265,6 @@ func (hm *HealthMonitor) RecordRecoveryAttempt(shipSymbol string, success bool) 
 	}
 }
 
-// AddToWatchList adds a ship to the health monitor watch list
 func (hm *HealthMonitor) AddToWatchList(shipSymbol string) {
 	hm.watchList[shipSymbol] = hm.clock.Now()
 }

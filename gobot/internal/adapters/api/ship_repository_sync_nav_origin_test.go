@@ -17,7 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// These tests cover sp-vp9k: nav.route.origin + route.departureTime must be
+// These tests cover: nav.route.origin + route.departureTime must be
 // persisted for IN_TRANSIT ships so DB consumers (the visualizer Contract Ops
 // tab) can compute exact transit progress instead of approximating departure
 // from poll timing. ship_dto.go historically dropped both fields; here we drive
@@ -120,7 +120,7 @@ func TestSyncAllFromAPI_PersistsNavRouteOrigin(t *testing.T) {
 	})
 }
 
-// TestNavRouteOriginSurvivesDomainRoundTrip guards the sp-90a3/w870/bi75 clobber
+// TestNavRouteOriginSurvivesDomainRoundTrip guards the clobber
 // class: every general ship Save rewrites the WHOLE row (UpdateAll upsert) from
 // the in-memory domain ship. If origin/departure were sync-only (not carried on
 // the domain ship), the first routine Save of an in-transit hull would silently

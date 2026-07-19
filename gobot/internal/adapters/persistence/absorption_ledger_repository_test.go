@@ -17,13 +17,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-78ai L1: the cross-engine absorption ledger. Five engines absorb the same
+// The cross-engine absorption ledger. Five engines absorb the same
 // market depth; the only cross-container signal is the market cache, which reflects
 // EXECUTED trades seconds late and never shows in-flight intent or the recovery a
 // dump imposes (design §0). This suite drives the DB-backed substrate that carries
 // both: PLANNED rows (in-flight, undecayed) and EXECUTED shadows (decaying on the
 // fitted per-tier half-life, hard-capped at 12h), reserved all-or-nothing under a
-// per-player advisory lock so a co-dump (sp-lbbm, −80k) cannot slip the cap.
+// per-player advisory lock so a co-dump cannot slip the cap.
 //
 // Fixed recovery artifact below: WEAK half-life 60min, STRONG 120min. So an EXECUTED
 // WEAK shadow of 100 units decays to 50 at 60min and 25 at 120min — deterministic
@@ -350,7 +350,7 @@ func TestAbsorptionLedger_Convert_Idempotent(t *testing.T) {
 	require.Equal(t, int64(1), countAbsorption(t, db), "a second convert writes no second shadow")
 }
 
-// --- ReleaseByContainer: the tour re-plan / restart de-dup seam (sp-78ai L3) ---
+// --- ReleaseByContainer: the tour re-plan / restart de-dup seam ---
 
 func plannedCountFor(t *testing.T, db *gorm.DB, containerID string) int64 {
 	t.Helper()

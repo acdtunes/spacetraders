@@ -6,7 +6,7 @@ import (
 )
 
 // StockingEvent is a structured, queryable record of a single stocker→warehouse buffer
-// DEPOSIT (sp-j6uz) — the stock-IN mirror of the WithdrawalEvent draw. A deposit is a
+// DEPOSIT — the stock-IN mirror of the WithdrawalEvent draw. A deposit is a
 // NON-monetary cargo transfer (the goods' cost basis is booked at the buy, in the financial
 // ledger's PURCHASE_CARGO row; the deposit itself moves credits nowhere), so — exactly like
 // the withdrawal — it does not belong in the financial ledger and is instead its own

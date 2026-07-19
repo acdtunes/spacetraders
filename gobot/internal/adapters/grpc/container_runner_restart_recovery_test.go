@@ -23,12 +23,11 @@ import (
 // FAILED row. RecoverRunningContainers queries only INTERRUPTED+RUNNING rows, and
 // the sp-tit8 lost-guard only diffs THAT candidate set — a FAILED-but-alive
 // container is therefore neither recovered NOR flagged lost when the daemon
-// redeploys (frequent, real-time patching). The hull is left idle-laden with no
-// container and no terminal event: the continuous-tour "silent death" incident
-// (heavies TORWIND-19/2C/2B found laden with no tour container, no workflow.failed).
+// redeploys (frequent, real-time patching), leaving the hull idle-laden with no
+// container and no terminal event.
 
 // errorThenBlockMediator fails the first iteration (a transient leg error — e.g. a
-// 409 jump-cooldown, exactly what killed the incident's heavies), then parks inside
+// 409 jump-cooldown), then parks inside
 // the SECOND (restarted) iteration's Send until released — giving a test a
 // deterministic window to read the persisted status while the container is alive and
 // re-running. Iterations past the second return clean.
@@ -64,10 +63,10 @@ func (m *alwaysErrorMediator) Send(_ context.Context, _ common.Request) (common.
 func (m *alwaysErrorMediator) Register(_ reflect.Type, _ common.RequestHandler) error { return nil }
 func (m *alwaysErrorMediator) RegisterMiddleware(_ common.Middleware)                 {}
 
-// The incident, test-locked: a container that failed one iteration and was RESTARTED
+// Regression pin (sp-v63s): a container that failed one iteration and was RESTARTED
 // (still alive, re-running) must persist a status the recovery path re-adopts
 // (RUNNING/INTERRUPTED) — never the terminal FAILED that drops it from the recovery
-// set and loses the live container at the next daemon redeploy (sp-v63s).
+// set and loses the live container at the next daemon redeploy.
 func TestExecute_IterationErrorThenRestart_PersistsRecoverableNotFailed(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)

@@ -31,5 +31,4 @@ func LoggerFromContext(ctx context.Context) ContainerLogger {
 type noOpLogger struct{}
 
 func (l *noOpLogger) Log(level, message string, metadata map[string]interface{}) {
-	// Do nothing
 }

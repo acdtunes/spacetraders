@@ -12,15 +12,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Default retry/backoff budget for refuelShipWithRetry (sp-vsfn). A transient
-// game-API 500 hitting a refuel step must not terminally crash the caller -
-// goods_factory-SHIP_PARTS-c7e2ecb2 crashed the ENTIRE manufacturing chain on
-// exactly this signature: "failed to refuel: ... max retries exceeded:
-// server error (500)" while docked at a fuel stop (X1-KA42-B7), losing chain
-// state and requiring a ~25 minute manual captain relaunch. These defaults
-// govern the RETRY-AT-THE-SAME-WAYPOINT leg only; once exhausted,
-// refuelShipWithRetryCore hands off to refuelAtAlternateStop rather than
-// retrying the same failing waypoint indefinitely.
+// Default retry/backoff budget for refuelShipWithRetry. A transient game-API 500
+// hitting a refuel step must not terminally crash the caller. These defaults govern
+// the RETRY-AT-THE-SAME-WAYPOINT leg only; once exhausted, refuelShipWithRetryCore
+// hands off to refuelAtAlternateStop rather than retrying the same failing waypoint
+// indefinitely.
 const (
 	// DefaultRefuelMaxAttempts is the number of refuel attempts made at the
 	// original waypoint before rerouting to an alternate fuel stop.

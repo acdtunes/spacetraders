@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// sp-78ai L4: scanLanes' read-only absorption-ledger consult. Trade-analyst Q1
+// scanLanes' read-only absorption-ledger consult. Trade-analyst Q1
 // ruling: circuits are READ-ONLY consumers of the ledger — these tests assert
 // the write methods on the fake ledger are NEVER called, since the handler under
 // test has no write path at all. The single-lane WIDGET fixture (X1-HOME-A

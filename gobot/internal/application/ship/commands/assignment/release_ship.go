@@ -10,7 +10,7 @@ import (
 )
 
 // ReleaseShipCommand clears a captain reservation, returning the ship to
-// idle so normal coordinator discovery can claim it again (sp-i1ku).
+// idle so normal coordinator discovery can claim it again.
 type ReleaseShipCommand struct {
 	ShipSymbol  string // Required: ship symbol to release
 	Reason      string // Optional: free-text release reason, recorded in the audit trail

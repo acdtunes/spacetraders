@@ -27,9 +27,7 @@ type burstCooldownStore interface {
 
 // BurstGroupingRecorder collapses emission-side "retry burst" events — many
 // rows of the same type for the same entity in a short window — to ONE event in
-// the strategic stream, the captain's attention budget (sp-kb61). It generalizes
-// sp-okwk's one-container.crashed-per-death fix from a bespoke source rewrite to
-// a reusable, type-configurable emission filter.
+// the strategic stream, protecting the captain's attention budget (sp-kb61).
 //
 // It reuses the shared HasSince cooldown idiom (sp-1hak: detectIdleShips,
 // detectStaleHeartbeats, detectCrashLoops): before recording a burst-prone event
@@ -37,13 +35,11 @@ type burstCooldownStore interface {
 // if so, suppresses the write. The daemon's raw per-retry rows still go to the
 // container logs — only the EVENT stream is thinned.
 //
-// Reconciliation with sp-no9i: container.crashed is deliberately NOT a burst type
-// here. sp-okwk made it count true (unrecoverable) deaths one row apiece, and
-// detectCrashLoops counts those rows into a single crash-LOOP interrupt. Grouping
-// container.crashed at emission would starve that detector, so this decorator
-// stays out of its way. What it DOES tame is the interrupt-class workflow.failed
-// that container_runner emits alongside every death: that duplicate was still
-// waking the captain per death after no9i demoted the crashed signal.
+// container.crashed is deliberately NOT a burst type here: detectCrashLoops
+// counts each crashed row into a single crash-LOOP interrupt, and grouping
+// them at emission would starve that detector. What this DOES tame is the
+// interrupt-class workflow.failed that container_runner emits alongside every
+// death, which would otherwise wake the captain once per death.
 type BurstGroupingRecorder struct {
 	store  burstCooldownStore
 	window time.Duration

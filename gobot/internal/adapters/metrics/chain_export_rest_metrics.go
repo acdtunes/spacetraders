@@ -5,13 +5,13 @@ import (
 )
 
 // ChainExportRestMetricsCollector houses the export-ask-subsidy REST counter the factory
-// coordinator emits (sp-xdk6, analyst redesign C4). One family, keyed by output good:
+// coordinator emits (C4). One family, keyed by output good:
 //
 //   - chain_export_rest_total{good}: a COUNTER incremented once per REST EPISODE (a chain
 //     crossing from lifting to auto-rested because its OWN-market ask has laddered above the
 //     eligible cross-source median — the 8w40 export-ask-subsidy signal, our own over-lifting
 //     subsidizing tours to pay a premium at our own market). Mirrors the input-pause episode
-//     counter (sp-r5a6) and the chain-P&L kill episode counter (sp-rh2z).
+//     counter and the chain-P&L kill episode counter.
 //
 // This is the OUTPUT-LADDER side of the self-pruning portfolio: the input-pause counts the INPUT
 // side (chain_input_pause_total, no MODERATE+ supply source for an input), the C2 kill counts the
@@ -28,7 +28,7 @@ type ChainExportRestMetricsCollector struct {
 	restsTotal *prometheus.CounterVec
 }
 
-// NewChainExportRestMetricsCollector creates a new export-rest metrics collector (sp-xdk6).
+// NewChainExportRestMetricsCollector creates a new export-rest metrics collector.
 func NewChainExportRestMetricsCollector() *ChainExportRestMetricsCollector {
 	return &ChainExportRestMetricsCollector{
 		restsTotal: prometheus.NewCounterVec(

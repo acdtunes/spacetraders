@@ -14,8 +14,8 @@ import (
 )
 
 // TestReleaseAllActiveScopesToPlayer proves that ReleaseAllActive only releases
-// active ship assignments belonging to the given player. Regression test for
-// sp-s7b7: at daemon startup, ReleaseAllActive previously ran an UPDATE with no
+// active ship assignments belonging to the given player. Regression test:
+// at daemon startup, ReleaseAllActive previously ran an UPDATE with no
 // player_id predicate, releasing every player's active ship assignments. After
 // a universe reset there can be multiple player rows (a dead closed-era player
 // and the live open-era player); an unscoped release corrupts the other
@@ -63,7 +63,7 @@ func TestReleaseAllActiveScopesToPlayer(t *testing.T) {
 // TestReleaseAllActiveExcludesCaptainReservations proves that ReleaseAllActive
 // — invoked unconditionally on every daemon restart (daemon_server.go Start())
 // to clean up zombie coordinator claims from a previous run — never touches a
-// captain reservation. Regression test for sp-i1ku: a captain reservation is
+// captain reservation. Regression test: a captain reservation is
 // persisted as an assignment row with assignment_status="active" (the same
 // status a live coordinator claim uses), so an owner-blind bulk release would
 // silently flip a captain-reserved hull back to idle on the very next daemon

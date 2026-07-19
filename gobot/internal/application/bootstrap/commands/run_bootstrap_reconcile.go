@@ -50,13 +50,13 @@ type bootstrapRunConfig struct {
 	ReserveMargin float64
 	ProbeShipType string
 
-	// INCOME-phase knobs (Slice 2), each resolved to its documented default when unset.
+	// INCOME-phase knobs, each resolved to its documented default when unset.
 	HaulerTarget       int
 	IncomeBar          float64
 	MinContractEarners int
 	HaulerShipType     string
 
-	// GATE-phase knob (Slice 3), resolved to its documented default when unset.
+	// GATE-phase knob, resolved to its documented default when unset.
 	GateWorkerTarget int
 
 	// DeferProbeToFreshsizer arms the sp-tsn2 single-buyer arbitration: when true, bootstrap DEFERS
@@ -171,7 +171,7 @@ type reconcileResult struct {
 	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
 	ViableHubs         int  // viable contract hubs the selector found (for the heartbeat)
 
-	// GATE tallies (Slice 3).
+	// GATE tallies.
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
 	MfgEnsured           bool // the manufacturing coordinator (executor) was ensured-running this tick
 	MfgBounced           bool // the executor was bounced for pipeline adoption this tick (captain L57)
@@ -179,7 +179,7 @@ type reconcileResult struct {
 	GateWorkersBought    int  // gate-worker hulls actually bought this tick (staged: at most 1)
 	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
 
-	// COMPLETE tallies (Slice 3).
+	// COMPLETE tallies.
 	HandoffLaunched bool // the autosizer + standing coordinators were launched this tick (the hand-off)
 	Done            bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 }

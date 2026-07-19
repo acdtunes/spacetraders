@@ -44,73 +44,73 @@ var (
 	// Set by SetGlobalManufacturingCollector() when metrics are enabled
 	globalManufacturingCollector *ManufacturingMetricsCollector
 
-	// globalAbsorptionCollector is the singleton absorption burn-in collector (sp-8cz9).
+	// globalAbsorptionCollector is the singleton absorption burn-in collector.
 	// Set by SetGlobalAbsorptionCollector() when metrics are enabled; the tour
 	// coordinator emits the cap-binding + ladder-incident counters through it.
 	globalAbsorptionCollector *AbsorptionMetricsCollector
 
-	// globalTourCollector is the singleton tour instrumentation collector (sp-fbih).
+	// globalTourCollector is the singleton tour instrumentation collector.
 	// Set by SetGlobalTourCollector() when metrics are enabled; the tour coordinator emits
 	// the reposition/margins-death/reserve-floor/exit/duration/resolved-cap series through it.
 	globalTourCollector *TourMetricsCollector
 
 	// globalTourStalenessCollector is the singleton planner staleness-exclusion
-	// collector (sp-k7q5 layer 2). Set by SetGlobalTourStalenessCollector() when
+	// collector (layer 2). Set by SetGlobalTourStalenessCollector() when
 	// metrics are enabled; the tour planner's two staleness drop sites emit the
 	// tour_lanes_stale_excluded_total counter through it.
 	globalTourStalenessCollector *TourStalenessMetricsCollector
 
-	// globalScoutCollector is the singleton scout metrics collector (sp-dp92 P7).
+	// globalScoutCollector is the singleton scout metrics collector.
 	// Set by SetGlobalScoutCollector() when metrics are enabled; the scout post
 	// coordinator's reconcile sweep emits the market-freshness gauge through it.
 	globalScoutCollector *ScoutMetricsCollector
 
-	// globalFleetHealthCollector is the singleton fleet-health collector (sp-686e).
+	// globalFleetHealthCollector is the singleton fleet-health collector.
 	// Set by SetGlobalFleetHealthCollector() when metrics are enabled; the tour
 	// coordinator's reposition exit path emits the stranded-hull counter through it.
 	globalFleetHealthCollector *FleetHealthMetricsCollector
 
-	// globalChainPnLCollector is the singleton chain-P&L collector (sp-rh2z). Set by
+	// globalChainPnLCollector is the singleton chain-P&L collector. Set by
 	// SetGlobalChainPnLCollector() when metrics are enabled; the goods_factory coordinator's
 	// kill-switch emits the realized-P&L/hr gauge and the kill-episode counter through it.
 	globalChainPnLCollector *ChainPnLMetricsCollector
 
-	// globalChainInputPauseCollector is the singleton input-poison anti-cycle collector
-	// (sp-r5a6). Set by SetGlobalChainInputPauseCollector() when metrics are enabled; the
+	// globalChainInputPauseCollector is the singleton input-poison anti-cycle collector.
+	// Set by SetGlobalChainInputPauseCollector() when metrics are enabled; the
 	// goods_factory coordinator emits the input-pause episode counter through it (the INPUT
 	// side of the self-pruning portfolio, alongside the chain-P&L kill counter above).
 	globalChainInputPauseCollector *ChainInputPauseMetricsCollector
 
-	// globalChainExportRestCollector is the singleton export-ask-subsidy rest collector
-	// (sp-xdk6). Set by SetGlobalChainExportRestCollector() when metrics are enabled; the
+	// globalChainExportRestCollector is the singleton export-ask-subsidy rest collector.
+	// Set by SetGlobalChainExportRestCollector() when metrics are enabled; the
 	// goods_factory coordinator emits the export-rest episode counter through it (the
 	// OUTPUT-LADDER side of the self-pruning portfolio, alongside the input-pause and
 	// chain-P&L kill counters above).
 	globalChainExportRestCollector *ChainExportRestMetricsCollector
 
-	// globalFleetAutosizerCollector is the singleton fleet-autosizer collector (sp-1txd). Set by
+	// globalFleetAutosizerCollector is the singleton fleet-autosizer collector. Set by
 	// SetGlobalFleetAutosizerCollector() when metrics are enabled; the autosizer's ACT path emits
 	// its purchase/blocked/demand/zero-effect series through the package Record funcs below.
 	globalFleetAutosizerCollector *FleetAutosizerMetricsCollector
 
-	// globalBootstrapCollector is the singleton captain-bootstrap collector (sp-3nbe). Set by
+	// globalBootstrapCollector is the singleton captain-bootstrap collector. Set by
 	// SetGlobalBootstrapCollector() when metrics are enabled; the bootstrap reconciler emits its
 	// derived-phase gauge + probe-purchase counter through it.
 	globalBootstrapCollector *BootstrapMetricsCollector
 
-	// globalSitingCollector is the singleton factory-siting collector (sp-vdld). Set by
+	// globalSitingCollector is the singleton factory-siting collector. Set by
 	// SetGlobalSitingCollector() when metrics are enabled; the siting coordinator's ACT and
 	// EMIT steps increment the launch/retire/scout-demand counters through it.
 	globalSitingCollector *SitingMetricsCollector
 
-	// globalAPIBudgetTracker is the singleton API request-budget tracker
-	// (sp-51ti). Set by SetGlobalAPIBudgetTracker() at daemon startup; the API
+	// globalAPIBudgetTracker is the singleton API request-budget tracker. Set
+	// by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
 	// same pattern getMetricsCollector() uses for globalAPICollector.
 	globalAPIBudgetTracker *APIBudgetTracker
 
 	// globalDutyCycleSampler is the singleton duty-cycle KPI sampler
-	// (sp-51ti captain amendment). Set by SetGlobalDutyCycleSampler() at
+	// (captain amendment). Set by SetGlobalDutyCycleSampler() at
 	// daemon startup so a future CLI/gRPC read can reach it without a direct
 	// reference to the daemon's internal sampler instance.
 	globalDutyCycleSampler *DutyCycleSampler
@@ -126,7 +126,7 @@ type MetricsRecorder interface {
 }
 
 // ShipWriteConflictRecorder is implemented by collectors that track the
-// sp-60ff ship-row version tripwire. Separate single-method interface so
+// ship-row version tripwire. Separate single-method interface so
 // existing MetricsRecorder implementations keep compiling.
 type ShipWriteConflictRecorder interface {
 	RecordShipVersionConflict()
@@ -190,7 +190,7 @@ func RecordContainerIteration(containerInfo ContainerInfo) {
 	}
 }
 
-// RecordContainerExit records a container terminal exit event globally (sp-dp92 P9).
+// RecordContainerExit records a container terminal exit event globally.
 func RecordContainerExit(containerInfo ContainerInfo) {
 	if globalCollector != nil {
 		globalCollector.RecordContainerExit(containerInfo)
@@ -198,7 +198,7 @@ func RecordContainerExit(containerInfo ContainerInfo) {
 }
 
 // RecordShipVersionConflict records a ship save whose row version moved past
-// the entity's loaded version (a concurrent-writer clobber, sp-60ff). No-op
+// the entity's loaded version (a concurrent-writer clobber). No-op
 // when metrics are disabled or the global collector doesn't implement the
 // recorder, so a metrics miss never touches the save path (RULINGS #4).
 func RecordShipVersionConflict() {
@@ -211,7 +211,7 @@ func RecordShipVersionConflict() {
 }
 
 // DaemonComponentRecorder is implemented by collectors that track supervised
-// daemon background components (sp-i01z). A separate single-method interface
+// daemon background components. A separate single-method interface
 // (instead of widening MetricsRecorder) so existing MetricsRecorder
 // implementations and test fakes keep compiling.
 type DaemonComponentRecorder interface {
@@ -268,7 +268,7 @@ func SetGlobalFinancialCollector(collector FinancialMetricsRecorder) {
 }
 
 // RecordTransaction records a transaction event globally. operationType
-// (contract/tour/arbitrage/...) drives the sp-miqt ledger-flow counters that
+// (contract/tour/arbitrage/...) drives the ledger-flow counters that
 // back the cr/hr financial panels; pass "" when unknown.
 func RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int, operationType string) {
 	if globalFinancialCollector != nil {
@@ -372,7 +372,7 @@ func RecordManufacturingTaskAssignment(playerID int, taskType string) {
 	}
 }
 
-// SetGlobalAbsorptionCollector sets the global absorption burn-in collector (sp-8cz9).
+// SetGlobalAbsorptionCollector sets the global absorption burn-in collector.
 func SetGlobalAbsorptionCollector(collector *AbsorptionMetricsCollector) {
 	globalAbsorptionCollector = collector
 }
@@ -384,7 +384,7 @@ func GetGlobalAbsorptionCollector() *AbsorptionMetricsCollector {
 }
 
 // RecordAbsorptionCapBinding records one accepted-plan cap-binding classification
-// globally (sp-8cz9 P1). No-op when metrics are disabled, so a metrics miss never
+// globally. No-op when metrics are disabled, so a metrics miss never
 // touches the trade path (RULINGS #4).
 func RecordAbsorptionCapBinding(playerID int, side, outcome string) {
 	if globalAbsorptionCollector != nil {
@@ -392,15 +392,15 @@ func RecordAbsorptionCapBinding(playerID int, side, outcome string) {
 	}
 }
 
-// RecordAbsorptionLadderIncident records one cross-plan ladder incident globally
-// (sp-8cz9 P2). No-op when metrics are disabled.
+// RecordAbsorptionLadderIncident records one cross-plan ladder incident globally.
+// No-op when metrics are disabled.
 func RecordAbsorptionLadderIncident(playerID int, goodSymbol string) {
 	if globalAbsorptionCollector != nil {
 		globalAbsorptionCollector.RecordLadderIncident(playerID, goodSymbol)
 	}
 }
 
-// SetGlobalTourCollector sets the global tour instrumentation collector (sp-fbih).
+// SetGlobalTourCollector sets the global tour instrumentation collector.
 func SetGlobalTourCollector(collector *TourMetricsCollector) {
 	globalTourCollector = collector
 }
@@ -411,8 +411,8 @@ func GetGlobalTourCollector() *TourMetricsCollector {
 	return globalTourCollector
 }
 
-// RecordTourReposition records one margins-death reposition evaluation globally
-// (sp-fbih P3). No-op when metrics are disabled, so a metrics miss never touches the
+// RecordTourReposition records one margins-death reposition evaluation globally.
+// No-op when metrics are disabled, so a metrics miss never touches the
 // trade path (RULINGS #4).
 func RecordTourReposition(playerID int, outcome string) {
 	if globalTourCollector != nil {
@@ -421,7 +421,7 @@ func RecordTourReposition(playerID int, outcome string) {
 }
 
 // RecordTourPlacementDecision records one armed placement/relocation decision globally by
-// verdict (jump|stay|hold_park_floor|fallback_legacy), sp-z7ng. No-op when metrics are disabled,
+// verdict (jump|stay|hold_park_floor|fallback_legacy). No-op when metrics are disabled,
 // so a metrics miss never touches the trade path (RULINGS #4).
 func RecordTourPlacementDecision(playerID int, verdict string) {
 	if globalTourCollector != nil {
@@ -429,8 +429,8 @@ func RecordTourPlacementDecision(playerID int, verdict string) {
 	}
 }
 
-// RecordTourMarginsDeath records one confirmed 3-strike ground tap-out globally
-// (sp-fbih P4). No-op when metrics are disabled.
+// RecordTourMarginsDeath records one confirmed 3-strike ground tap-out globally.
+// No-op when metrics are disabled.
 func RecordTourMarginsDeath(playerID int) {
 	if globalTourCollector != nil {
 		globalTourCollector.RecordMarginsDeath(playerID)
@@ -438,15 +438,15 @@ func RecordTourMarginsDeath(playerID int) {
 }
 
 // RecordTourReserveFloorEngagement records one buy-time working-capital floor engagement
-// globally (sp-fbih P5). No-op when metrics are disabled.
+// globally. No-op when metrics are disabled.
 func RecordTourReserveFloorEngagement(playerID int, action string) {
 	if globalTourCollector != nil {
 		globalTourCollector.RecordReserveFloorEngagement(playerID, action)
 	}
 }
 
-// RecordTourExit records one tour-run terminal completion by exit reason globally
-// (sp-fbih P11). No-op when metrics are disabled.
+// RecordTourExit records one tour-run terminal completion by exit reason globally.
+// No-op when metrics are disabled.
 func RecordTourExit(playerID int, reason string) {
 	if globalTourCollector != nil {
 		globalTourCollector.RecordExit(playerID, reason)
@@ -454,7 +454,7 @@ func RecordTourExit(playerID int, reason string) {
 }
 
 // RecordTourJumpLoaded records one committed margins-death reposition jump globally by
-// whether it carried a look-back manifest (sp-ed4i). No-op when metrics are disabled, so
+// whether it carried a look-back manifest. No-op when metrics are disabled, so
 // a metrics miss never touches the trade path (RULINGS #4).
 func RecordTourJumpLoaded(playerID int, loaded bool) {
 	if globalTourCollector != nil {
@@ -463,15 +463,15 @@ func RecordTourJumpLoaded(playerID int, loaded bool) {
 }
 
 // ObserveTourDuration observes one tour-run wall-time (seconds) globally at honest
-// completion (sp-fbih P12). No-op when metrics are disabled.
+// completion. No-op when metrics are disabled.
 func ObserveTourDuration(playerID int, seconds float64) {
 	if globalTourCollector != nil {
 		globalTourCollector.ObserveDuration(playerID, seconds)
 	}
 }
 
-// SetTourResolvedMaxSpend records the dynamic per-tour spend cap globally as just resolved
-// (sp-fbih P13). No-op when metrics are disabled.
+// SetTourResolvedMaxSpend records the dynamic per-tour spend cap globally as just resolved.
+// No-op when metrics are disabled.
 func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
 	if globalTourCollector != nil {
 		globalTourCollector.SetResolvedMaxSpend(playerID, maxSpend)
@@ -479,7 +479,7 @@ func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
 }
 
 // SetTourFactoryGoodAcquisitionCost records the per-unit price a tour paid to
-// acquire a factory good (source=stock|market) — the C1 (sp-64je) T2 acceptance
+// acquire a factory good (source=stock|market) — the C1 T2 acceptance
 // series. No-op until the global tour collector is wired.
 func SetTourFactoryGoodAcquisitionCost(playerID int, good, source string, unitPrice float64) {
 	if globalTourCollector != nil {
@@ -487,7 +487,7 @@ func SetTourFactoryGoodAcquisitionCost(playerID int, good, source string, unitPr
 	}
 }
 
-// ObserveTourPlanRate observes one tour plan's credits/hour globally (sp-1wp8),
+// ObserveTourPlanRate observes one tour plan's credits/hour globally,
 // phase="projected" at plan-accept or phase="realized" at completion. No-op when
 // metrics are disabled, so a metrics miss never touches the trade path (RULINGS #4).
 func ObserveTourPlanRate(playerID int, phase string, creditsPerHour float64) {
@@ -497,7 +497,7 @@ func ObserveTourPlanRate(playerID int, phase string, creditsPerHour float64) {
 }
 
 // ObserveTourLegPriceDrift observes one realized tour leg's unit-price drift from plan
-// globally (sp-umyb), keyed by side ("buy"|"sell") — (realized-planned)/planned*100,
+// globally, keyed by side ("buy"|"sell") — (realized-planned)/planned*100,
 // skipping a non-positive planned basis. No-op when metrics are disabled, so a metrics
 // miss never touches the trade path (RULINGS #4).
 func ObserveTourLegPriceDrift(side string, planned, realized float64) {
@@ -507,13 +507,13 @@ func ObserveTourLegPriceDrift(side string, planned, realized float64) {
 }
 
 // SetGlobalTourStalenessCollector sets the global planner staleness-exclusion
-// collector (sp-k7q5 layer 2).
+// collector (layer 2).
 func SetGlobalTourStalenessCollector(collector *TourStalenessMetricsCollector) {
 	globalTourStalenessCollector = collector
 }
 
 // RecordTourLanesStaleExcluded records `count` tour lanes dropped for staleness in
-// `system` globally (sp-k7q5 layer 2). No-op when metrics are disabled, so a metrics
+// `system` globally (layer 2). No-op when metrics are disabled, so a metrics
 // miss never touches the tour planning path (RULINGS #4).
 func RecordTourLanesStaleExcluded(playerID int, system string, count int) {
 	if globalTourStalenessCollector != nil {
@@ -522,7 +522,7 @@ func RecordTourLanesStaleExcluded(playerID int, system string, count int) {
 }
 
 // RecordTourCandidateDropped records `count` profitable lanes dropped from tour candidate
-// assembly for `reason` globally (sp-mtvg). No-op when metrics are disabled, so a metrics
+// assembly for `reason` globally. No-op when metrics are disabled, so a metrics
 // miss never touches the tour planning path (RULINGS #4).
 func RecordTourCandidateDropped(playerID int, reason string, count int) {
 	if globalTourStalenessCollector != nil {
@@ -530,8 +530,8 @@ func RecordTourCandidateDropped(playerID int, reason string, count int) {
 	}
 }
 
-// RecordAbsorptionConsultVerdict records one consult-apply verdict globally (sp-dp92
-// P6). engine distinguishes the emitting engine ("idle_arb"|"trade_route"); verdict
+// RecordAbsorptionConsultVerdict records one consult-apply verdict globally. engine
+// distinguishes the emitting engine ("idle_arb"|"trade_route"); verdict
 // uses each engine's own native vocabulary (idle_arb: skip_reserved|pass; trade_route:
 // clear|shadow|reserved-depth|unreadable). No-op when metrics are disabled (RULINGS #4).
 func RecordAbsorptionConsultVerdict(playerID int, verdict, engine string) {
@@ -540,7 +540,7 @@ func RecordAbsorptionConsultVerdict(playerID int, verdict, engine string) {
 	}
 }
 
-// SetGlobalScoutCollector sets the global scout metrics collector (sp-dp92 P7).
+// SetGlobalScoutCollector sets the global scout metrics collector.
 func SetGlobalScoutCollector(collector *ScoutMetricsCollector) {
 	globalScoutCollector = collector
 }
@@ -552,14 +552,14 @@ func GetGlobalScoutCollector() *ScoutMetricsCollector {
 }
 
 // RecordScoutFreshness sets the scout market-freshness gauge for one (player, system)
-// globally (sp-dp92 P7). No-op when metrics are disabled (RULINGS #4).
+// globally. No-op when metrics are disabled (RULINGS #4).
 func RecordScoutFreshness(playerID int, system string, ageSeconds float64) {
 	if globalScoutCollector != nil {
 		globalScoutCollector.RecordFreshness(playerID, system, ageSeconds)
 	}
 }
 
-// SetGlobalFleetHealthCollector sets the global fleet-health collector (sp-686e).
+// SetGlobalFleetHealthCollector sets the global fleet-health collector.
 func SetGlobalFleetHealthCollector(collector *FleetHealthMetricsCollector) {
 	globalFleetHealthCollector = collector
 }
@@ -570,8 +570,8 @@ func GetGlobalFleetHealthCollector() *FleetHealthMetricsCollector {
 	return globalFleetHealthCollector
 }
 
-// RecordHullStranded records one stranded-hull episode for a (ship, system) globally
-// (sp-686e). No-op when metrics are disabled, so a metrics miss never touches the
+// RecordHullStranded records one stranded-hull episode for a (ship, system) globally.
+// No-op when metrics are disabled, so a metrics miss never touches the
 // reposition/tour path (RULINGS #4).
 func RecordHullStranded(ship, system string) {
 	if globalFleetHealthCollector != nil {
@@ -579,7 +579,7 @@ func RecordHullStranded(ship, system string) {
 	}
 }
 
-// SetGlobalChainPnLCollector sets the global chain-P&L collector (sp-rh2z). Pass nil to
+// SetGlobalChainPnLCollector sets the global chain-P&L collector. Pass nil to
 // clear it (e.g. in test cleanup).
 func SetGlobalChainPnLCollector(collector *ChainPnLMetricsCollector) {
 	globalChainPnLCollector = collector
@@ -591,7 +591,7 @@ func GetGlobalChainPnLCollector() *ChainPnLMetricsCollector {
 	return globalChainPnLCollector
 }
 
-// RecordChainPnLRealizedPerHour sets a chain's realized-P&L/hr gauge globally (sp-rh2z).
+// RecordChainPnLRealizedPerHour sets a chain's realized-P&L/hr gauge globally.
 // No-op when metrics are disabled, so a metrics miss never touches the kill-check path
 // (RULINGS #4).
 func RecordChainPnLRealizedPerHour(good string, perHour float64) {
@@ -600,7 +600,7 @@ func RecordChainPnLRealizedPerHour(good string, perHour float64) {
 	}
 }
 
-// RecordChainPnLKill increments a chain's kill-episode counter globally (sp-rh2z). No-op
+// RecordChainPnLKill increments a chain's kill-episode counter globally. No-op
 // when metrics are disabled (RULINGS #4).
 func RecordChainPnLKill(good string) {
 	if globalChainPnLCollector != nil {
@@ -608,7 +608,7 @@ func RecordChainPnLKill(good string) {
 	}
 }
 
-// SetGlobalChainInputPauseCollector sets the global input-pause collector (sp-r5a6). Pass nil
+// SetGlobalChainInputPauseCollector sets the global input-pause collector. Pass nil
 // to clear it (e.g. in test cleanup).
 func SetGlobalChainInputPauseCollector(collector *ChainInputPauseMetricsCollector) {
 	globalChainInputPauseCollector = collector
@@ -620,7 +620,7 @@ func GetGlobalChainInputPauseCollector() *ChainInputPauseMetricsCollector {
 	return globalChainInputPauseCollector
 }
 
-// RecordChainInputPause increments a chain's input-pause-episode counter globally (sp-r5a6).
+// RecordChainInputPause increments a chain's input-pause-episode counter globally.
 // No-op when metrics are disabled, so a metrics miss never touches the pause-check path
 // (RULINGS #4).
 func RecordChainInputPause(good string) {
@@ -629,7 +629,7 @@ func RecordChainInputPause(good string) {
 	}
 }
 
-// SetGlobalChainExportRestCollector sets the global export-ask-subsidy rest collector (sp-xdk6).
+// SetGlobalChainExportRestCollector sets the global export-ask-subsidy rest collector.
 // Pass nil to clear it (e.g. in test cleanup).
 func SetGlobalChainExportRestCollector(collector *ChainExportRestMetricsCollector) {
 	globalChainExportRestCollector = collector
@@ -641,7 +641,7 @@ func GetGlobalChainExportRestCollector() *ChainExportRestMetricsCollector {
 	return globalChainExportRestCollector
 }
 
-// RecordChainExportRest increments a chain's export-rest-episode counter globally (sp-xdk6).
+// RecordChainExportRest increments a chain's export-rest-episode counter globally.
 // No-op when metrics are disabled, so a metrics miss never touches the rest-check path
 // (RULINGS #4).
 func RecordChainExportRest(good string) {
@@ -650,7 +650,7 @@ func RecordChainExportRest(good string) {
 	}
 }
 
-// SetGlobalSitingCollector sets the global factory-siting collector (sp-vdld). Pass nil to
+// SetGlobalSitingCollector sets the global factory-siting collector. Pass nil to
 // clear it (e.g. in test cleanup).
 func SetGlobalSitingCollector(collector *SitingMetricsCollector) {
 	globalSitingCollector = collector
@@ -661,8 +661,8 @@ func GetGlobalSitingCollector() *SitingMetricsCollector {
 	return globalSitingCollector
 }
 
-// RecordSitingLaunch increments the siting launch counter for a (good, system) chain globally
-// (sp-vdld). No-op when metrics are disabled, so a metrics miss never touches the ACT path
+// RecordSitingLaunch increments the siting launch counter for a (good, system) chain globally.
+// No-op when metrics are disabled, so a metrics miss never touches the ACT path
 // (RULINGS #4).
 func RecordSitingLaunch(good, system string) {
 	if globalSitingCollector != nil {
@@ -670,23 +670,23 @@ func RecordSitingLaunch(good, system string) {
 	}
 }
 
-// RecordSitingRetire increments the siting retire counter for a (good, system) chain globally
-// (sp-vdld). No-op when metrics are disabled (RULINGS #4).
+// RecordSitingRetire increments the siting retire counter for a (good, system) chain globally.
+// No-op when metrics are disabled (RULINGS #4).
 func RecordSitingRetire(good, system string) {
 	if globalSitingCollector != nil {
 		globalSitingCollector.RecordRetire(good, system)
 	}
 }
 
-// RecordSitingScoutDemand increments the siting scout-demand counter for a system globally
-// (sp-vdld). No-op when metrics are disabled (RULINGS #4).
+// RecordSitingScoutDemand increments the siting scout-demand counter for a system globally.
+// No-op when metrics are disabled (RULINGS #4).
 func RecordSitingScoutDemand(system string) {
 	if globalSitingCollector != nil {
 		globalSitingCollector.RecordScoutDemand(system)
 	}
 }
 
-// SetGlobalFleetAutosizerCollector sets the global fleet-autosizer collector (sp-1txd). Pass nil
+// SetGlobalFleetAutosizerCollector sets the global fleet-autosizer collector. Pass nil
 // to clear it (e.g. in test cleanup).
 func SetGlobalFleetAutosizerCollector(collector *FleetAutosizerMetricsCollector) {
 	globalFleetAutosizerCollector = collector
@@ -697,7 +697,7 @@ func GetGlobalFleetAutosizerCollector() *FleetAutosizerMetricsCollector {
 	return globalFleetAutosizerCollector
 }
 
-// SetGlobalBootstrapCollector sets the global captain-bootstrap collector (sp-3nbe). Pass nil to
+// SetGlobalBootstrapCollector sets the global captain-bootstrap collector. Pass nil to
 // clear it (e.g. in test cleanup).
 func SetGlobalBootstrapCollector(collector *BootstrapMetricsCollector) {
 	globalBootstrapCollector = collector
@@ -708,23 +708,23 @@ func GetGlobalBootstrapCollector() *BootstrapMetricsCollector {
 	return globalBootstrapCollector
 }
 
-// RecordAutosizerPurchase increments the autosizer purchase counter for a class globally
-// (sp-1txd). No-op when metrics are disabled, so a metrics miss never touches the buy path.
+// RecordAutosizerPurchase increments the autosizer purchase counter for a class globally.
+// No-op when metrics are disabled, so a metrics miss never touches the buy path.
 func RecordAutosizerPurchase(class string) {
 	if globalFleetAutosizerCollector != nil {
 		globalFleetAutosizerCollector.RecordPurchase(class)
 	}
 }
 
-// RecordAutosizerBlocked increments the autosizer blocked counter for a (class, guard) globally
-// (sp-1txd). No-op when metrics are disabled.
+// RecordAutosizerBlocked increments the autosizer blocked counter for a (class, guard) globally.
+// No-op when metrics are disabled.
 func RecordAutosizerBlocked(class, guard string) {
 	if globalFleetAutosizerCollector != nil {
 		globalFleetAutosizerCollector.RecordBlocked(class, guard)
 	}
 }
 
-// RecordAutosizerDemand sets the autosizer demand/current gauges for a class globally (sp-1txd).
+// RecordAutosizerDemand sets the autosizer demand/current gauges for a class globally.
 // No-op when metrics are disabled.
 func RecordAutosizerDemand(class string, demand, current int) {
 	if globalFleetAutosizerCollector != nil {
@@ -732,16 +732,16 @@ func RecordAutosizerDemand(class string, demand, current int) {
 	}
 }
 
-// RecordAutosizerZeroEffectAlarm increments the autosizer zero-effect alarm counter globally
-// (sp-1txd). No-op when metrics are disabled.
+// RecordAutosizerZeroEffectAlarm increments the autosizer zero-effect alarm counter globally.
+// No-op when metrics are disabled.
 func RecordAutosizerZeroEffectAlarm() {
 	if globalFleetAutosizerCollector != nil {
 		globalFleetAutosizerCollector.RecordZeroEffectAlarm()
 	}
 }
 
-// SetGlobalAPIBudgetTracker sets the global API request-budget tracker
-// (sp-51ti). Pass nil to clear it (e.g. in test cleanup).
+// SetGlobalAPIBudgetTracker sets the global API request-budget tracker.
+// Pass nil to clear it (e.g. in test cleanup).
 func SetGlobalAPIBudgetTracker(tracker *APIBudgetTracker) {
 	globalAPIBudgetTracker = tracker
 }
@@ -752,8 +752,8 @@ func GetGlobalAPIBudgetTracker() *APIBudgetTracker {
 	return globalAPIBudgetTracker
 }
 
-// SetGlobalDutyCycleSampler sets the global duty-cycle KPI sampler
-// (sp-51ti). Pass nil to clear it (e.g. in test cleanup).
+// SetGlobalDutyCycleSampler sets the global duty-cycle KPI sampler.
+// Pass nil to clear it (e.g. in test cleanup).
 func SetGlobalDutyCycleSampler(sampler *DutyCycleSampler) {
 	globalDutyCycleSampler = sampler
 }

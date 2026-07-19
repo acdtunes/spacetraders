@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// These tests pin the sp-57g9 wiring at the worker-rebalancer's effect self-check: a pass
+// These tests pin the wiring at the worker-rebalancer's effect self-check: a pass
 // that keeps finding a real, jump-routable vacancy (would-ferry > 0) yet dispatches nothing
 // — the "dry-run survived a day" class the error-streak monitor cannot see because the loop
 // never errors — WARNs exactly once per episode, naming the mode flag that explains it,

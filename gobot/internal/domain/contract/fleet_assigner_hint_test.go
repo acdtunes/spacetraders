@@ -28,10 +28,10 @@ func hintTestWaypoint(t *testing.T, symbol string, x, y float64) *shared.Waypoin
 	return wp
 }
 
-// sp-1ef0 assigner pin A1: a high-confidence pre-position hint biases the idle hull
-// toward the predicted next-source market EVEN THOUGH pure distance round-robin would
-// send it to a nearer market. This is the whole feature: closer to the next source
-// when the delivery starts.
+// A high-confidence pre-position hint biases the idle hull toward the predicted
+// next-source market EVEN THOUGH pure distance round-robin would send it to a
+// nearer market. This is the whole feature: closer to the next source when the
+// delivery starts.
 func TestAssignShipsToTargetsWithHint_HighConfidence_PrePositionsIdleHull(t *testing.T) {
 	assigner := NewFleetAssigner()
 
@@ -57,9 +57,9 @@ func TestAssignShipsToTargetsWithHint_HighConfidence_PrePositionsIdleHull(t *tes
 	}
 }
 
-// sp-1ef0 assigner pin A2 (the guard): a sub-threshold hint must be ignored - the
-// hull falls straight through to distance round-robin and goes to the NEAR market.
-// Low confidence => no wasted move.
+// A sub-threshold hint must be ignored - the hull falls straight through to
+// distance round-robin and goes to the NEAR market. Low confidence => no wasted
+// move.
 func TestAssignShipsToTargetsWithHint_LowConfidence_FallsBackToDistance(t *testing.T) {
 	assigner := NewFleetAssigner()
 
@@ -83,8 +83,8 @@ func TestAssignShipsToTargetsWithHint_LowConfidence_FallsBackToDistance(t *testi
 	}
 }
 
-// sp-1ef0 assigner pin A3: an empty hint leaves the legacy distance behavior exactly
-// as-is (the new path must not perturb the no-signal case).
+// An empty hint leaves the legacy distance behavior exactly as-is (the hinted
+// path must not perturb the no-signal case).
 func TestAssignShipsToTargetsWithHint_EmptyHint_DistanceUnchanged(t *testing.T) {
 	assigner := NewFleetAssigner()
 

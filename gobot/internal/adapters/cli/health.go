@@ -55,7 +55,7 @@ func NewHealthCommand() *cobra.Command {
 	return cmd
 }
 
-// printAPIBudget renders API request-budget observability (sp-51ti): global
+// printAPIBudget renders API request-budget observability: global
 // utilization vs the rate ceiling, top consumers by hull, and the duty-cycle
 // KPI (ship-hours earning/day per hull). PerHull and Hulls arrive pre-sorted
 // descending by consumption from the domain layer (apibudget.ComputeReport,

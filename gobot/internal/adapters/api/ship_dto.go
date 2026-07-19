@@ -8,7 +8,7 @@ import (
 // requirementsDTO mirrors the SpaceTraders API's ShipRequirements schema
 // (power/crew/slots). It is shared by ShipReactor, ShipModule, and ShipMount
 // - every module/mount/reactor declares its own cost against the hull's
-// fixed power, slot, and crew budgets (sp-el60).
+// fixed power, slot, and crew budgets.
 type requirementsDTO struct {
 	Power int `json:"power"`
 	Crew  int `json:"crew"`
@@ -27,10 +27,9 @@ type shipDTO struct {
 		FlightMode     string `json:"flightMode"`
 		Route          *struct {
 			Arrival string `json:"arrival"`
-			// DepartureTime + Origin were historically dropped here (sp-vp9k),
-			// leaving DB consumers unable to compute exact transit progress. The
-			// API's route.origin is a waypoint object (symbol + coordinates) marking
-			// where the current transit began; departureTime is when it began.
+			// The API's route.origin is a waypoint object (symbol + coordinates)
+			// marking where the current transit began; departureTime is when it
+			// began.
 			DepartureTime string `json:"departureTime"`
 			Origin        struct {
 				Symbol string  `json:"symbol"`
@@ -63,13 +62,13 @@ type shipDTO struct {
 		Symbol string `json:"symbol"`
 		// ModuleSlots/MountingPoints are the frame's fixed budgets - frames
 		// have no swap/upgrade endpoint, so these are permanent for the life
-		// of the hull (sp-el60).
+		// of the hull.
 		ModuleSlots    int `json:"moduleSlots"`
 		MountingPoints int `json:"mountingPoints"`
 	} `json:"frame"`
 	// Reactor is the hull's fixed power budget. Reactors have no
 	// swap/upgrade endpoint in the SpaceTraders API - PowerOutput is
-	// permanent for the life of the ship (sp-el60).
+	// permanent for the life of the ship.
 	Reactor struct {
 		Symbol       string          `json:"symbol"`
 		Name         string          `json:"name"`
@@ -88,7 +87,7 @@ type shipDTO struct {
 		Requirements requirementsDTO `json:"requirements"`
 	} `json:"modules"`
 	// Mounts are installed mounts (mining lasers, gas siphons, sensor
-	// arrays, weapons, etc.) - sp-el60.
+	// arrays, weapons, etc.).
 	Mounts []struct {
 		Symbol       string          `json:"symbol"`
 		Name         string          `json:"name"`

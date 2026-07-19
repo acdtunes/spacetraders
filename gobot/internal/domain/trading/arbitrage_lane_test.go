@@ -103,7 +103,7 @@ func TestArbitrageLane_ClearsFloor(t *testing.T) {
 
 // FirstDisciplinedLane must walk RankSpreads-ordered lanes and return the DEEPEST
 // volume-capped lane that clears the floor — skipping a top-ranked lane whose
-// per-unit spread is sub-floor. This is the exact sp-sh6w scenario: the scan ranks
+// per-unit spread is sub-floor. This is the exact scenario: the scan ranks
 // FIREARMS #1 by capped spread (600/u × 20 = 12000) but its per-unit spread (600)
 // is below the 1000 floor, while the lower-ranked GADGETS (1000/u × 2 = 2000)
 // clears it. The executor must select GADGETS, not the sub-floor FIREARMS.
@@ -143,12 +143,12 @@ func TestFirstDisciplinedLane_NoneClearFloor(t *testing.T) {
 	}
 }
 
-// holdWeightFixture reproduces the sp-pnx0 incident shape: one THIN lane (deep
-// per-unit spread, shallow volume cap — a light ship's ideal lane) and one DEEP
-// lane (modest per-unit spread, deep volume cap — what a heavy hull actually
-// needs to avoid crushing the market). Unweighted RankSpreads ranks purely by
-// CappedSpread and picks THINGOOD every time, regardless of which hull will fly
-// it — the exact defect: a 225-cargo heavy sent onto a vol-20 lane.
+// holdWeightFixture pairs one THIN lane (deep per-unit spread, shallow volume cap
+// — a light ship's ideal lane) with one DEEP lane (modest per-unit spread, deep
+// volume cap — what a heavy hull actually needs to avoid crushing the market).
+// Unweighted RankSpreads ranks purely by CappedSpread and picks THINGOOD every
+// time, regardless of which hull will fly it — sending a heavy hull onto a
+// shallow lane it would crush.
 //
 //	THINGOOD: source Ask 1000, dest Bid 9000 -> spread/u 8000; volumes 20/500 -> cap 20;  capped = 160000.
 //	DEEPGOOD: source Ask  500, dest Bid 1500 -> spread/u 1000; volumes 150/150 -> cap 150; capped = 150000.
@@ -163,8 +163,8 @@ func holdWeightFixture() []GoodListing {
 
 // TestRankSpreads_UnweightedPicksThinLaneRegardlessOfHull pins the PRE-EXISTING
 // (unweighted) behavior on the fixture: THINGOOD's deeper CappedSpread
-// (160000 > 150000) wins regardless of hull size. This is the defect sp-pnx0
-// fixes — RankSpreads itself is untouched, so this must keep passing.
+// (160000 > 150000) wins regardless of hull size. RankSpreads itself is
+// untouched by hold-fit weighting, so this must keep passing.
 func TestRankSpreads_UnweightedPicksThinLaneRegardlessOfHull(t *testing.T) {
 	lanes := RankSpreads(holdWeightFixture())
 	if len(lanes) != 2 || lanes[0].Good != "THINGOOD" {
@@ -172,10 +172,10 @@ func TestRankSpreads_UnweightedPicksThinLaneRegardlessOfHull(t *testing.T) {
 	}
 }
 
-// TestRankSpreadsForHold_HeavyHullPrefersDeepLaneOverThinOne is the sp-pnx0 fix
-// itself: a 225-cargo heavy hull must rank DEEPGOOD above THINGOOD, because
-// THINGOOD's volume cap (20) is a small fraction of the hold (225) while
-// DEEPGOOD's (150) covers most of it.
+// TestRankSpreadsForHold_HeavyHullPrefersDeepLaneOverThinOne proves a 225-cargo
+// heavy hull must rank DEEPGOOD above THINGOOD, because THINGOOD's volume cap
+// (20) is a small fraction of the hold (225) while DEEPGOOD's (150) covers most
+// of it.
 //
 //	holdFitWeight(20,225)  = 20/225  = 0.0889 -> THINGOOD weighted = 160000*0.0889 = 14222
 //	holdFitWeight(150,225) = 150/225 = 0.6667 -> DEEPGOOD weighted = 150000*0.6667 = 100000

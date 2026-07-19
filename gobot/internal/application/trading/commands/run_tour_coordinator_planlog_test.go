@@ -9,12 +9,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-bc27 (Admiral ruling C): the planned-manifest log line splits projected
-// profit into fresh-trade profit and held-cargo liquidation revenue so a
-// laden-hull plan's margin is not misread as pure fresh-trade profit. The TOTAL
-// still ranks selection (unchanged); this pins that the SPLIT is greppable in
-// both the message TEXT (`container logs` drops metadata — sp-149h) and the
-// structured payload. Fresh = total - liquidation.
+// The planned-manifest log line splits projected profit into fresh-trade
+// profit and held-cargo liquidation revenue so a laden-hull plan's margin is
+// not misread as pure fresh-trade profit. The TOTAL still ranks selection
+// (unchanged); this pins that the SPLIT is greppable in both the message TEXT
+// (`container logs` drops metadata) and the structured payload.
+// Fresh = total - liquidation.
 func TestTour_PlannedLog_CarriesProfitSplit(t *testing.T) {
 	fx := &tourFixture{
 		cargo: map[string]int{"MEDICINE": 40}, location: "X1-S1-A", cargoCap: 80,

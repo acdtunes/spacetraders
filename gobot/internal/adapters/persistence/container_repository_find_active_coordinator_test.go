@@ -11,12 +11,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-aoy2 (latent hardening): FindActiveCoordinatorByType used First() with no
-// ORDER, so with >=2 active rows of the same type the row returned was whatever
-// the DB volunteered (GORM First orders by primary key — the smallest id — not by
-// recency). A live `fleet hub` mutation could then land on a stale coordinator.
-// The fix adds Order("heartbeat_at DESC") for a deterministic, recency-biased
-// tie-break: the freshest coordinator wins.
+// FindActiveCoordinatorByType orders by heartbeat_at DESC so the freshest
+// coordinator wins among multiple active rows — GORM's First() otherwise falls
+// back to primary-key order, not recency.
 func TestFindActiveCoordinatorByType_ReturnsLatestHeartbeatWhenMultipleActive(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

@@ -27,7 +27,6 @@ var flightModeConfigs = map[FlightMode]flightModeConfig{
 	FlightModeStealth: {"STEALTH", 50, 1.0}, // Very slow, stealthy
 }
 
-// Name returns the mode name
 func (f FlightMode) Name() string {
 	if config, ok := flightModeConfigs[f]; ok {
 		return config.Name
@@ -35,7 +34,6 @@ func (f FlightMode) Name() string {
 	return "UNKNOWN"
 }
 
-// FuelCost calculates fuel cost for given distance
 func (f FlightMode) FuelCost(distance float64) int {
 	if distance == 0 {
 		return 0
@@ -93,7 +91,6 @@ func (f FlightMode) String() string {
 	return f.Name()
 }
 
-// IsValidFlightModeName checks if a mode name string is valid
 func IsValidFlightModeName(modeName string) bool {
 	for _, config := range flightModeConfigs {
 		if config.Name == modeName {

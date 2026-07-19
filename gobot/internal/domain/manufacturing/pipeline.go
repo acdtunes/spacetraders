@@ -92,8 +92,8 @@ type ManufacturingPipeline struct {
 	materials        []*ConstructionMaterialTarget // Materials to deliver with their quantities
 	supplyChainDepth int                           // How deep to go in supply chain (0=full, 1=raw, 2=intermediate)
 	maxWorkers       int                           // Maximum parallel workers (0=unlimited, default 5)
-	minSupply        string                        // Caller-set EXPORT sourcing floor (sp-ezz9/sp-j2hq), e.g. "SCARCE". Empty = unset (defaults to MODERATE).
-	goodOverrides    GoodGatingOverrides           // Per-good buy-gating overrides (sp-sdyo). Persisted so a per-good sourcing-floor override survives a restart (RULINGS #2).
+	minSupply        string                        // Caller-set EXPORT sourcing floor, e.g. "SCARCE". Empty = unset (defaults to MODERATE).
+	goodOverrides    GoodGatingOverrides           // Per-good buy-gating overrides. Persisted so a per-good sourcing-floor override survives a restart (RULINGS #2).
 }
 
 // NewPipeline creates a new fabrication pipeline (counted toward max_pipelines limit)
@@ -223,17 +223,17 @@ func (p *ManufacturingPipeline) MinSupply() string { return p.minSupply }
 
 // SetMinSupply sets the caller-set EXPORT sourcing floor for this construction
 // pipeline. Used both when planning a new pipeline and when resuming an
-// existing one with an updated --min-supply flag (sp-j2hq).
+// existing one with an updated --min-supply flag.
 func (p *ManufacturingPipeline) SetMinSupply(minSupply string) { p.minSupply = minSupply }
 
 // GoodOverrides returns the per-good buy-gating override map persisted on this construction
-// pipeline (sp-sdyo). Empty when no per-good override was supplied at launch, in which case every
+// pipeline. Empty when no per-good override was supplied at launch, in which case every
 // good uses the pipeline's global min-supply floor.
 func (p *ManufacturingPipeline) GoodOverrides() GoodGatingOverrides { return p.goodOverrides }
 
 // SetGoodOverrides stores the per-good buy-gating override map on this construction pipeline. Set
 // at planning time and re-persisted when a resumed launch supplies a changed map, so the
-// deferred-material recovery loop reads the same overrides the initial plan used (sp-sdyo).
+// deferred-material recovery loop reads the same overrides the initial plan used.
 func (p *ManufacturingPipeline) SetGoodOverrides(overrides GoodGatingOverrides) {
 	p.goodOverrides = overrides
 }

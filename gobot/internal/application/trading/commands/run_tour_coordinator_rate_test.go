@@ -1,12 +1,12 @@
 package commands
 
-// sp-1wp8: the reposition ranking normalizes by WALL-CLOCK — candidates are ranked by
+// The reposition ranking normalizes by WALL-CLOCK — candidates are ranked by
 // projected fresh-credits-per-HOUR over the full time-to-value (jump + re-plan + the
 // candidate plan's own projected duration), not by raw fresh profit. The 25k floor
 // stays ABSOLUTE: rate reorders CHOICE among floor-clearing candidates, it never
 // resurrects a sub-floor one. Candidates with no usable time estimate (cph<=0) drop
 // the whole episode back to absolute-fresh ordering — never a divide-by-zero garbage
-// ranking (the sp-1wp8 regression pin).
+// ranking.
 
 import (
 	"context"

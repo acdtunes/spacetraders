@@ -10,7 +10,6 @@ type CargoItem struct {
 	Units       int
 }
 
-// NewCargoItem creates a new cargo item with validation
 func NewCargoItem(symbol, name, description string, units int) (*CargoItem, error) {
 	if units < 0 {
 		return nil, fmt.Errorf("cargo units cannot be negative")
@@ -34,7 +33,6 @@ type Cargo struct {
 	Inventory []*CargoItem
 }
 
-// NewCargo creates a new cargo manifest with validation
 func NewCargo(capacity, units int, inventory []*CargoItem) (*Cargo, error) {
 	if units < 0 {
 		return nil, fmt.Errorf("cargo_units cannot be negative")
@@ -46,7 +44,6 @@ func NewCargo(capacity, units int, inventory []*CargoItem) (*Cargo, error) {
 		return nil, fmt.Errorf("cargo_units cannot exceed cargo_capacity")
 	}
 
-	// Verify inventory sum matches total units
 	inventorySum := 0
 	for _, item := range inventory {
 		inventorySum += item.Units
@@ -62,7 +59,6 @@ func NewCargo(capacity, units int, inventory []*CargoItem) (*Cargo, error) {
 	}, nil
 }
 
-// HasItem checks if cargo contains at least minUnits of specific item
 func (c *Cargo) HasItem(symbol string, minUnits int) bool {
 	return c.GetItemUnits(symbol) >= minUnits
 }
@@ -77,7 +73,6 @@ func (c *Cargo) GetItemUnits(symbol string) int {
 	return 0
 }
 
-// HasItemsOtherThan checks if cargo contains items other than specified symbol
 func (c *Cargo) HasItemsOtherThan(symbol string) bool {
 	for _, item := range c.Inventory {
 		if item.Symbol != symbol && item.Units > 0 {
@@ -87,7 +82,6 @@ func (c *Cargo) HasItemsOtherThan(symbol string) bool {
 	return false
 }
 
-// GetOtherItems returns all cargo items except the specified symbol
 func (c *Cargo) GetOtherItems(symbol string) []*CargoItem {
 	var others []*CargoItem
 	for _, item := range c.Inventory {
@@ -98,17 +92,14 @@ func (c *Cargo) GetOtherItems(symbol string) []*CargoItem {
 	return others
 }
 
-// AvailableCapacity calculates available cargo space
 func (c *Cargo) AvailableCapacity() int {
 	return c.Capacity - c.Units
 }
 
-// IsEmpty checks if cargo hold is empty
 func (c *Cargo) IsEmpty() bool {
 	return c.Units == 0
 }
 
-// IsFull checks if cargo hold is full
 func (c *Cargo) IsFull() bool {
 	return c.Units >= c.Capacity
 }

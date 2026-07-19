@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 )
 
-// AssignFleet is the single write path for the dedication tag (sp-l7h2): set
+// AssignFleet is the single write path for the dedication tag: set
 // persists the name, and fleet == "" clears it — returning the hull to the
 // general pool. Both directions must land in the row itself, because that
 // column is what ClaimShip's atomic guard reads.

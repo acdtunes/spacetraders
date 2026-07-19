@@ -14,10 +14,10 @@ import (
 
 // sp-rxrg: the depot warehouse buffer selector must GATE candidate goods on hub-contract-membership,
 // local-production, and source-distance BEFORE the reward knapsack ranks them, so a locally-produced
-// non-contract good (the DRUGS@J58 incident) is never warehoused. These tests drive the LIVE
-// selection path (depotWarehouseTargetUnits) and the supporting resolvers.
+// non-contract good (the DRUGS@J58 case, modeled below) is never warehoused. These tests drive
+// the LIVE selection path (depotWarehouseTargetUnits) and the supporting resolvers.
 
-// j58Coords models the incident's geography: the J58 warehouse waypoint, DRUGS's OWN co-located
+// j58Coords models the J58 scenario's geography: the J58 warehouse waypoint, DRUGS's OWN co-located
 // source (J58 EXPORTS DRUGS, so its cheapest source IS J58 — distance 0), and a remote in-system
 // ELECTRONICS source. Cross-system sources resolve ok=false here: their reach is decided by the
 // system check, not coordinates.
@@ -31,8 +31,8 @@ func j58Coords(w string) (float64, float64, bool) {
 	return 0, 0, false
 }
 
-// j58Candidates is the mined receipt-demand set at J58: the two goods the incident warehoused wrongly
-// (DRUGS, ELECTRONICS) plus two genuine J58 contract goods the buffer should keep.
+// j58Candidates is the mined receipt-demand set at J58: DRUGS and ELECTRONICS, which the gates must
+// exclude, plus two genuine J58 contract goods the buffer should keep.
 func j58Candidates() []persistence.DemandCandidate {
 	return []persistence.DemandCandidate{
 		// DRUGS: NOT a J58 contract good, and J58 EXPORTS it (co-located source) — fails all three gates.
@@ -133,7 +133,7 @@ func TestDepotWarehouseTargetUnits_EachGateIsLoadBearingOnTheLivePath(t *testing
 // TestDepotWarehouseTargetUnits_EmptyContractMembershipFailsOpen pins the deploy-safety rule: a hub
 // with NO resolvable contract history (empty or nil membership — a thin universe or a transient read
 // gap) must still buffer per gates 2+3, never nothing. A strict "empty => drop all" would EMPTY a
-// warehouse on a data gap — a regression worse than the incident this bead fixes.
+// warehouse on a mere data gap.
 func TestDepotWarehouseTargetUnits_EmptyContractMembershipFailsOpen(t *testing.T) {
 	miner := &fakeReceiptMiner{rows: []persistence.DemandCandidate{
 		{Good: "ASSAULT_RIFLES", ContractCount: 3, MaxContractUnits: 40, ForeignSystem: "X9-FAR", ForeignMarket: "X9-FAR-S1", ContractRewardPerUnit: 5000},

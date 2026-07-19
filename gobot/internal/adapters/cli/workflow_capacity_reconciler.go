@@ -8,12 +8,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowCapacityReconcilerCommand creates the workflow capacity-reconciler subcommand
-// (epic st-7zk, foundation st-fyr): it launches the STANDING capacity reconciler — the
-// declarative engine that continuously drives the contract-delivery machine's actual capacity
-// topology (clusters/hubs/warehouses/stockers/workers) toward a computed desired topology,
-// maximizing per-hull-sustained $/hr with cycle-time as the lever, paced by the treasury capex
-// governor.
+// newWorkflowCapacityReconcilerCommand creates the workflow capacity-reconciler subcommand: it
+// launches the STANDING capacity reconciler — the declarative engine that continuously drives
+// the contract-delivery machine's actual capacity topology (clusters/hubs/warehouses/stockers/
+// workers) toward a computed desired topology, maximizing per-hull-sustained $/hr with
+// cycle-time as the lever, paced by the treasury capex governor.
 //
 // Like the fleet-autosizer / siting coordinators it is a THIN CLIENT: it asks the daemon to
 // start one recovery-safe coordinator container and returns its id. The coordinator survives

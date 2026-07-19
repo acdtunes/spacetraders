@@ -46,13 +46,11 @@ func (h *GetProfitLossHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type: expected *GetProfitLossQuery")
 	}
 
-	// Resolve player ID
 	playerID, err := shared.NewPlayerID(query.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid player ID: %w", err)
 	}
 
-	// Query all transactions in date range
 	opts := ledger.QueryOptions{
 		StartDate: &query.StartDate,
 		EndDate:   &query.EndDate,
@@ -64,7 +62,6 @@ func (h *GetProfitLossHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("failed to query transactions: %w", err)
 	}
 
-	// Calculate P&L
 	return h.calculateProfitLoss(query, transactions), nil
 }
 
@@ -77,7 +74,6 @@ func (h *GetProfitLossHandler) calculateProfitLoss(
 	totalRevenue := 0
 	totalExpenses := 0
 
-	// Group and sum by category
 	for _, tx := range transactions {
 		category := tx.Category().String()
 		amount := tx.Amount()
@@ -92,7 +88,6 @@ func (h *GetProfitLossHandler) calculateProfitLoss(
 		}
 	}
 
-	// Calculate net profit (revenue - expenses)
 	netProfit := totalRevenue - totalExpenses
 
 	return &GetProfitLossResponse{

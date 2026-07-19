@@ -62,7 +62,7 @@ func TestWaypointLiveReadsScopeToOpenEraWhileOldRowsStayReachableByEra(t *testin
 	require.Equal(t, []string{"X1-SYS-OLD"}, symbolsOf(historical))
 }
 
-// TestFindAllMarketsInSystemScopesToOpenEra guards the sp-vapw incident on the one
+// TestFindAllMarketsInSystemScopesToOpenEra guards the one
 // waypoint reader that hits the table directly (MarketRepositoryGORM.
 // FindAllMarketsInSystem) instead of going through the era-scoped repository. It
 // seeds the incident shape — a dead-era row in system X1-PZ28 carrying era_id from a

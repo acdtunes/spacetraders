@@ -5,9 +5,8 @@ import "time"
 // Proposal is one capital action awaiting (or past) human approval — the
 // tiered-autonomy gate's artifact (spec: the capex tier emits a proposal —
 // bead + captain nudge — carrying the ROI evidence; on approval it executes
-// via the same actuator primitives). The proposal-channel lane (st-0h8) owns
-// filing and the approval-execution path; the governor lane (st-x00) mints
-// these.
+// via the same actuator primitives). The proposal-channel lane owns filing
+// and the approval-execution path; the governor lane mints these.
 type Proposal struct {
 	// ID uniquely names the proposal (bead-friendly; stable across re-files
 	// of the same gap so an unapproved proposal is not duplicated every tick).
@@ -32,7 +31,7 @@ type Proposal struct {
 // inputs alone: ProjectedGainPerHour = after×(n+d) − before×n, where
 // after = Action.ProjectedPerHullCrHr, before =
 // EconomicsSignals.FleetPerHullCrHr, n = EconomicsSignals.FleetHullCount
-// (st-7ee fills), d = Action.HullDelta (st-zr0 fills).
+// (the SENSE lane fills), d = Action.HullDelta (the DIFF lane fills).
 //
 // Cold-start convention (bootstrapper INCOME reuse, 0-2 hulls): when
 // FleetHullCount == 0 or the derived gain is non-positive, the payback is

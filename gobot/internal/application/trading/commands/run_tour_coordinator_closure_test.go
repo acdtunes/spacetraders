@@ -7,9 +7,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-im74: closed-tour mode must ride cmd.ClosedTours/cmd.AnchorSystem onto the
+// Closed-tour mode must ride cmd.ClosedTours/cmd.AnchorSystem onto the
 // TourConstraints the planner receives — the cmd→cons hop in planForState (the same
-// wiring seam sp-syaz pinned for MaxTourSystems). An armed closure reaches the
+// wiring seam pinned for MaxTourSystems). An armed closure reaches the
 // planner verbatim; the companion below pins the dormant default.
 func TestTour_PlannerReceivesClosure(t *testing.T) {
 	fx := dynamicCapFixture()
@@ -34,7 +34,7 @@ func TestTour_PlannerReceivesClosure(t *testing.T) {
 	}
 }
 
-// sp-im74 default-safety companion: unset closure reaches the planner as false/"" —
+// Default-safety companion: unset closure reaches the planner as false/"" —
 // the proto3 zero-values that stay OFF the wire — so a run that never opts in plans
 // open tours byte-identical to today. Guards against a threading bug that hardwires
 // closure on for everyone.
@@ -59,7 +59,7 @@ func TestTour_PlannerReceivesOpenDefaultsWhenClosureUnset(t *testing.T) {
 	}
 }
 
-// sp-im74 execution-side pin (Contract B): the closure epilogue APPENDS a trade-less
+// Execution-side pin (Contract B): the closure epilogue APPENDS a trade-less
 // return leg, so a closed plan's final leg carries zero trades. The executor must fly,
 // dock and COUNT that leg like any other — no validation may skip or reject it, or a
 // closed tour silently never returns home. Two trades on three legs proves the return

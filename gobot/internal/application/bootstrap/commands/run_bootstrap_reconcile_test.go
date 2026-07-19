@@ -332,9 +332,8 @@ func TestBootstrap_DerivePhase_BeyondDataAtCoverageBar(t *testing.T) {
 	}
 }
 
-// At/over the coverage bar the arc enters INCOME (Slice 2): the DATA act (probe buy, scout assign)
-// must NOT run — only INCOME acts from here. (Pre-Slice-2 this held at DATA-complete; INCOME is now
-// live, so the assertion is the phase crossover + DATA-act silence, not a "not implemented" hold.)
+// At/over the coverage bar the arc enters INCOME: the DATA act (probe buy, scout assign)
+// must NOT run — only INCOME acts from here.
 func TestBootstrap_CoverageMet_EntersIncome_NoDataAct(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 10, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
@@ -356,8 +355,7 @@ func TestBootstrap_CoverageMet_EntersIncome_NoDataAct(t *testing.T) {
 	if acq.buys != 0 || scout.calls != 0 {
 		t.Fatalf("coverage met: DATA act must not run; buys=%d scouts=%d", acq.buys, scout.calls)
 	}
-	// INCOME is implemented now — no "phase not yet implemented" hold at INCOME (that line is reserved
-	// for GATE, past the income bar).
+	// No "phase not yet implemented" hold at INCOME — that line is reserved for GATE, past the income bar.
 	if log.has("bootstrap_phase_not_implemented") {
 		t.Fatalf("INCOME is live: must not log a 'phase not yet implemented' hold")
 	}

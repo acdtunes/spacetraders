@@ -13,7 +13,7 @@ import (
 
 // RealizedCashRate sums SELL_CARGO(+) / PURCHASE_CARGO(−) / REFUEL(−) over [since, now),
 // player- and window-scoped, and derives the duty-cycle $/hr. It reconciles to the
-// treasury — the cash-true KPI sp-461l will switch the telemetry-netting consumers onto.
+// treasury as the cash-true KPI that telemetry-netting consumers will eventually migrate onto.
 func TestRealizedCashRate_SumsCargoFlowsInWindow(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

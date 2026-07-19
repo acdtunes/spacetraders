@@ -17,10 +17,10 @@ type Hub struct {
 // minHubSourceableGoods is the viability floor: a waypoint qualifies as a contract hub only if it can
 // source at least this many target goods. 1 = "sources something contract-relevant" — a hauler parked
 // where nothing is sourceable is pointless. A documented constant (a later refinement to a config
-// knob), mirroring the Slice-1 bootstrapMarketFreshnessMin precedent.
+// knob), mirroring the bootstrapMarketFreshnessMin precedent.
 const minHubSourceableGoods = 1
 
-// selectContractHubs ranks scouted markets into contract hubs (Slice 2 — this slice's sub-design).
+// selectContractHubs ranks scouted markets into contract hubs.
 //
 // A contract hub is a central, market-dense waypoint where the goods contracts commonly demand are
 // cheaply sourceable, so a hauler staged there minimizes contract cycle-time (little repositioning to

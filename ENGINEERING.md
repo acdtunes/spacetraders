@@ -129,9 +129,10 @@ learned the hard way:
 A comment exists for the NEXT reader of the code, not to narrate your change to a reviewer.
 
 - **NEVER add archaeological / historic / changelog prose.** No "previously we…", no "this
-  was added because…", no dated narration, no bead-ids-as-war-stories, no "the old code
-  did Y". History lives in git and beads — putting it in the source is noise the moment the
-  PR merges, and it accretes into the prose-heavy cruft the comment audit exists to strip.
+  was added because…", no dated narration, no "the old code did Y", no bead-ids in the
+  source — neither as war-stories nor as bare `(sp-xxxx)` provenance tags. History lives in
+  git and beads; in the source it is noise the moment the PR merges. A bead-id may appear
+  only when load-bearing inside a live-constraint sentence — almost never.
 - **Only add a short, focused WHY** the code itself cannot show: a non-obvious constraint,
   an ordering requirement, a guard's rationale, a real gotcha. One or two lines. If the code
   already says it, say nothing.

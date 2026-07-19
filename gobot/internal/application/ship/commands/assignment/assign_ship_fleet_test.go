@@ -18,8 +18,8 @@ import (
 type assignStubShipRepo struct {
 	navigation.ShipRepository
 
-	// FindBySymbol behavior (sp-r6f1: the handler loads the hull to read its
-	// frame + cargo for the eligibility gate and the assigner-named audit line).
+	// FindBySymbol behavior: the handler loads the hull to read its frame +
+	// cargo for the eligibility gate and the assigner-named audit line.
 	ship    *navigation.Ship
 	findErr error
 
@@ -30,7 +30,7 @@ type assignStubShipRepo struct {
 	assignedPlayer shared.PlayerID
 	assignCalled   int
 
-	// ReleaseContainerClaim behavior + capture (sp-w3yd: the `fleet unassign`
+	// ReleaseContainerClaim behavior + capture (the `fleet unassign`
 	// work-claim break). releaseClaimReleased is what the repo reports it did.
 	releaseClaimReleased bool
 	releaseClaimErr      error
@@ -63,8 +63,8 @@ func (s *assignStubShipRepo) AssignFleet(_ context.Context, shipSymbol string, f
 
 // newFleetTestShip builds a docked hull with a given frame, cargo capacity and
 // (optionally) an existing dedication, the minimum surface the assign handler
-// inspects when gating a fleet write (sp-r6f1). A 0-cargo hull models the
-// mispinned satellite (TORWIND-24/25); a positive-cargo hull models a hauler.
+// inspects when gating a fleet write. A 0-cargo hull models an ineligible
+// satellite; a positive-cargo hull models a hauler.
 func newFleetTestShip(t *testing.T, symbol, frame, role string, cargoCap int, currentFleet string) *navigation.Ship {
 	t.Helper()
 	cargo, err := shared.NewCargo(cargoCap, 0, nil)
@@ -110,7 +110,7 @@ type logLine struct {
 }
 
 // captureLogger records every Log call so a test can assert the assigner-named
-// audit line (sp-r6f1 finding #3) and the block/warn lines actually fire.
+// audit line and the block/warn lines actually fire.
 type captureLogger struct {
 	lines []logLine
 }
@@ -128,7 +128,7 @@ func (c *captureLogger) find(level, substr string) (logLine, bool) {
 	return logLine{}, false
 }
 
-// The single write path for the dedication tag (sp-l7h2): the command must
+// The single write path for the dedication tag: the command must
 // deliver exactly the symbol, fleet name and resolved player to the
 // repository, and echo the persisted state back to the caller.
 func TestAssignShipFleet_AssignsFleetAndEchoesPersistedState(t *testing.T) {
@@ -194,7 +194,7 @@ func TestAssignShipFleet_EmptyFleetClearsDedication(t *testing.T) {
 	}
 }
 
-// The sp-w3yd fix: `fleet unassign` must break the LIVE coordinator work-claim,
+// `fleet unassign` must break the LIVE coordinator work-claim,
 // not just clear the dedication tag — otherwise the coordinator keeps routing
 // the hull ("unassign says success but the coordinator keeps routing it"). With
 // BreakWorkClaim set, the handler clears the dedication AND releases the
@@ -298,11 +298,10 @@ func TestAssignShipFleet_RepositoryErrorIsWrappedAndPropagated(t *testing.T) {
 	}
 }
 
-// sp-r6f1 THE FIX — auto path. An automated assigner (the contract coordinator's
-// reconcile) trying to pin a 0-cargo satellite into the "contract" hauling fleet
-// is BLOCKED: no write reaches the repository, and the error names the ineligible
-// hull. This is what stops the reconcile from re-pinning TORWIND-24/25 after the
-// harbormaster unpins them.
+// Auto path: an automated assigner (the contract coordinator's reconcile)
+// trying to pin a 0-cargo satellite into the "contract" hauling fleet is
+// BLOCKED: no write reaches the repository, and the error names the
+// ineligible hull.
 func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoContractFleet(t *testing.T) {
 	log := &captureLogger{}
 	ctx := common.WithLogger(context.Background(), log)
@@ -335,8 +334,8 @@ func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoContractFleet(t *testing.T
 	}
 }
 
-// sp-r6f1 regression — a genuine hauler is still auto-assigned into the contract
-// fleet exactly as before: the eligibility floor excludes only 0-cargo hulls.
+// A genuine hauler is still auto-assigned into the contract fleet exactly as
+// before: the eligibility floor excludes only 0-cargo hulls.
 func TestAssignShipFleet_AutoAssignAllowsHaulerIntoContractFleet(t *testing.T) {
 	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-8", "FRAME_FREIGHTER", "HAULER", 40, "")}
 	handler := NewAssignShipFleetHandler(repo, nil)
@@ -360,10 +359,10 @@ func TestAssignShipFleet_AutoAssignAllowsHaulerIntoContractFleet(t *testing.T) {
 	}
 }
 
-// sp-r6f1 THE FIX — manual path. The captain may deliberately pin anything: a
-// manual (CLI) assign of a 0-cargo hull into contract WARNS loudly but is NOT
-// blocked — the write still reaches the repository (the selection side already
-// refuses to dispatch it, so it is dead weight, not a crash).
+// Manual path: the captain may deliberately pin anything. A manual (CLI)
+// assign of a 0-cargo hull into contract WARNS loudly but is NOT blocked —
+// the write still reaches the repository (the selection side already refuses
+// to dispatch it, so it is dead weight, not a crash).
 func TestAssignShipFleet_ManualAssignWarnsButAllowsZeroCargoIntoContractFleet(t *testing.T) {
 	log := &captureLogger{}
 	ctx := common.WithLogger(context.Background(), log)
@@ -393,12 +392,11 @@ func TestAssignShipFleet_ManualAssignWarnsButAllowsZeroCargoIntoContractFleet(t 
 	}
 }
 
-// sp-m92a — the "stocker" fleet is a durable hauler dedication (continuous
-// stocking): a genuine hauler manually pinned `fleet assign --ship 38 --fleet
-// stocker` PERSISTS to the dedication tag and passes the r6f1 cargo floor
-// cleanly. This is the captain's operational entry point — the pin is what makes
-// the hull invisible to the factory/contract pool and claimable only by the
-// stocker.
+// The "stocker" fleet is a durable hauler dedication (continuous stocking): a
+// genuine hauler manually pinned `fleet assign --ship 38 --fleet stocker`
+// PERSISTS to the dedication tag and passes the cargo floor cleanly. This is
+// the captain's operational entry point — the pin is what makes the hull
+// invisible to the factory/contract pool and claimable only by the stocker.
 func TestAssignShipFleet_ManualAssignPersistsHaulerIntoStockerFleet(t *testing.T) {
 	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-38", "FRAME_LIGHT_FREIGHTER", "HAULER", 40, "")}
 	handler := NewAssignShipFleetHandler(repo, nil)
@@ -425,10 +423,10 @@ func TestAssignShipFleet_ManualAssignPersistsHaulerIntoStockerFleet(t *testing.T
 	}
 }
 
-// sp-m92a — the stocker fleet carries a cargo floor exactly like contract, so an
-// AUTOMATED attempt to pin a 0-cargo hull into it is BLOCKED (a hull that cannot
-// haul is never auto-pinned to a hauling fleet). Proves stocker joined the
-// cargo-required set rather than being an ungated free-for-all.
+// The stocker fleet carries a cargo floor exactly like contract, so an
+// AUTOMATED attempt to pin a 0-cargo hull into it is BLOCKED (a hull that
+// cannot haul is never auto-pinned to a hauling fleet). Proves stocker joined
+// the cargo-required set rather than being an ungated free-for-all.
 func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoStockerFleet(t *testing.T) {
 	log := &captureLogger{}
 	ctx := common.WithLogger(context.Background(), log)
@@ -454,9 +452,9 @@ func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoStockerFleet(t *testing.T)
 	}
 }
 
-// sp-r6f1 scoping — a 0-cargo satellite is perfectly valid in a fleet with no
-// cargo floor (scouts/tours legitimately fly 0-cargo hulls). Only cargo-required
-// hauling fleets gate on capacity, so a scout pin is never blocked or warned.
+// A 0-cargo satellite is perfectly valid in a fleet with no cargo floor
+// (scouts/tours legitimately fly 0-cargo hulls). Only cargo-required hauling
+// fleets gate on capacity, so a scout pin is never blocked or warned.
 func TestAssignShipFleet_AutoAssignAllowsZeroCargoIntoNonCargoFleet(t *testing.T) {
 	log := &captureLogger{}
 	ctx := common.WithLogger(context.Background(), log)
@@ -485,10 +483,10 @@ func TestAssignShipFleet_AutoAssignAllowsZeroCargoIntoNonCargoFleet(t *testing.T
 	}
 }
 
-// sp-r6f1 deployment safety — a hull ALREADY carrying the contract tag (the live
-// state of TORWIND-24/25 today) is an idempotent no-op re-touch, not a new write:
-// the reconcile must not error-spam on every restart while the mispin persists.
-// The gate fires only on a real change (an actual re-pin after an unpin).
+// A hull ALREADY carrying the contract tag is an idempotent no-op re-touch,
+// not a new write: the reconcile must not error-spam on every restart while
+// a mispin persists. The gate fires only on a real change (an actual re-pin
+// after an unpin).
 func TestAssignShipFleet_AutoAssignNoOpOnAlreadyPinnedZeroCargoIsNotBlocked(t *testing.T) {
 	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-25", "FRAME_PROBE", "SATELLITE", 0, "contract")}
 	handler := NewAssignShipFleetHandler(repo, nil)
@@ -509,9 +507,9 @@ func TestAssignShipFleet_AutoAssignNoOpOnAlreadyPinnedZeroCargoIsNotBlocked(t *t
 	}
 }
 
-// sp-r6f1 finding #3 — every actual dedication write emits one assigner-named
-// audit line carrying the hull's frame and cargo, so the next mispin names its
-// culprit in a single grep. (The daemon.log at incident time had NO such line.)
+// Every actual dedication write emits one assigner-named audit line carrying
+// the hull's frame and cargo, so the next mispin names its culprit in a
+// single grep.
 func TestAssignShipFleet_WriteEmitsAssignerNamedAuditLine(t *testing.T) {
 	log := &captureLogger{}
 	ctx := common.WithLogger(context.Background(), log)

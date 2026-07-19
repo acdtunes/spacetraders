@@ -7,8 +7,8 @@
 //
 //	{ source hubs, destination warehouse(s), stocker(s), pinned delivery hull(s) }
 //
-// EVERY position and count is a PARAMETER (bead sp-u9xa). Nothing about
-// placement, sizing, waypoints, or the good-whitelist is hardcoded:
+// EVERY position and count is a PARAMETER. Nothing about placement, sizing,
+// waypoints, or the good-whitelist is hardcoded:
 //
 //   - hull count, warehouse count (incl. multiple co-located), stocker count,
 //     hub count — all arbitrary parameters.

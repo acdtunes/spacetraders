@@ -28,7 +28,7 @@ func (f *pruneStaleFakeAPIClient) ListShips(_ context.Context, _ string) ([]*nav
 	return f.ships, nil
 }
 
-// TestSyncAllFromAPI_PrunesDeadEraGhostHull is the sp-wn8u regression.
+// TestSyncAllFromAPI_PrunesDeadEraGhostHull is the regression.
 //
 // ROOT CAUSE: the agent TORWIND re-registers on every server reset under a NEW
 // players row (new player_id) for the SAME agent_symbol, and ship symbols are

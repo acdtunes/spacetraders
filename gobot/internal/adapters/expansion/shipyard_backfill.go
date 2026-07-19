@@ -10,19 +10,18 @@ import (
 
 // shipyardWaypointLister is the narrow waypoint-repo slice the backfill enumerator reads:
 // every cached waypoint bearing a trait, era-AGNOSTIC (a SHIPYARD trait is an immutable
-// physical fact — a prior-era row is still proof the system holds a yard, the sp-42ow
-// lesson). Satisfied by *persistence.GormWaypointRepository.ListWithTrait.
+// physical fact — a prior-era row is still proof the system holds a yard).
+// Satisfied by *persistence.GormWaypointRepository.ListWithTrait.
 type shipyardWaypointLister interface {
 	ListWithTrait(ctx context.Context, trait string) ([]*shared.Waypoint, error)
 }
 
-// ChartedShipyardEnumerator backs the sp-rhju backfill sweep's charted-shipyard port
+// ChartedShipyardEnumerator backs the backfill sweep's charted-shipyard port
 // (commands.ChartedShipyardEnumerator). It answers "which known-shipyard systems could a
 // probe be relayed to, and how deep are they" by INTERSECTING two facts:
 //
 //   - the era-AGNOSTIC set of systems whose swept waypoints reveal a SHIPYARD trait (the
-//     complete charted-shipyard set — reading it era-scoped would drop ~90% of real yards,
-//     the exact sp-42ow blindness), and
+//     complete charted-shipyard set — reading it era-scoped would drop ~90% of real yards), and
 //   - the CURRENT gate-reachable frontier (the ExpansionScanner's candidates, each with its
 //     hop depth), which supplies the deeper-first ordering key AND filters any dead-universe
 //     or presently-unreachable symbol a relay could never actually reach.
@@ -31,8 +30,7 @@ type shipyardWaypointLister interface {
 // backfill_max_hops knob), NOT baked into the adapter: a CHARTED shipyard is by definition in
 // the gate graph and relay-reachable (the scout relay crosses many hops), so the coordinator
 // passes a large FULL-GRAPH horizon and a deep in-graph charted yard is enumerated rather than
-// dropped as "unreachable" merely for sitting past a shallow bound (sp-b8lf: 43 in-graph
-// unscanned, only ~18 within the old shallow reach). A symbol the BFS still cannot reach within
+// dropped as "unreachable" merely for sitting past a shallow bound. A symbol the BFS still cannot reach within
 // the (large) bound is omitted — a relay can only man a gate-connected post.
 type ChartedShipyardEnumerator struct {
 	scanner   candidateLister

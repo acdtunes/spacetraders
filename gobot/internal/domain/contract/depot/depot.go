@@ -5,10 +5,10 @@ import "fmt"
 // Element is one placed, sized member of a contract depot — a destination
 // warehouse hull, a background stocker, a source hub, or a pinned delivery hull —
 // parked at an arbitrary Waypoint and optionally crewed by a specific ShipSymbol.
-// BOTH fields are PARAMETERS (bead sp-u9xa): the mechanism hardcodes no waypoint and
-// no count, so a depot placed at a different waypoint, or sized with a different
-// number of elements, needs zero code change. An empty ShipSymbol is a
-// declared-but-uncrewed slot — the sizing is known before a specific hull is pinned.
+// BOTH fields are PARAMETERS: the mechanism hardcodes no waypoint and no count, so
+// a depot placed at a different waypoint, or sized with a different number of
+// elements, needs zero code change. An empty ShipSymbol is a declared-but-uncrewed
+// slot — the sizing is known before a specific hull is pinned.
 type Element struct {
 	Waypoint   string
 	ShipSymbol string

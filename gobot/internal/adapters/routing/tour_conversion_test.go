@@ -78,7 +78,7 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		c.ExpectedModelVersion != "1@torwind-2026-07-05" {
 		t.Fatalf("constraints wrong: %+v", c)
 	}
-	// sp-im74: the closure request fields cross the wire verbatim — a dropped Closed
+	// The closure request fields cross the wire verbatim — a dropped Closed
 	// silently plans an open tour forever.
 	if !c.Closed || c.AnchorSystem != "X1-GQ92" {
 		t.Fatalf("closure constraints wrong: closed=%v anchor=%q, want true/%q", c.Closed, c.AnchorSystem, "X1-GQ92")
@@ -87,7 +87,7 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		t.Fatalf("allowed systems wrong: %+v", c.AllowedSystems)
 	}
 
-	// sp-dchv Lane C: deposit candidates map onto the request 1:1 so the planner
+	// Deposit candidates map onto the request 1:1 so the planner
 	// can offer haul-to-storage sinks.
 	if len(req.DepositCandidates) != 1 {
 		t.Fatalf("expected 1 deposit candidate, got %d", len(req.DepositCandidates))
@@ -98,7 +98,7 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 		t.Fatalf("deposit candidate mapping wrong: %+v", d)
 	}
 
-	// sp-78ai L3: absorption rows map onto the request 1:1 and are emitted in
+	// Absorption rows map onto the request 1:1 and are emitted in
 	// deterministic (waypoint, good, side) order — FABRICS/buy before MEDICINE/sell.
 	if len(req.Absorption) != 2 {
 		t.Fatalf("expected 2 absorption rows, got %d", len(req.Absorption))
@@ -112,7 +112,7 @@ func TestBuildTourRequest_MapsAllFields(t *testing.T) {
 	}
 }
 
-// sp-syaz: the default-safety hinge. A tour built WITHOUT MaxTourSystems must put
+// The default-safety hinge. A tour built WITHOUT MaxTourSystems must put
 // the proto3 int32 zero on the wire (never a fabricated 2). Zero is what the solver
 // reads as "fall back to the module default (2)", so an unset cap is byte-identical
 // to today. This pins that the wire carries 0, not a stray non-zero, when unset.
@@ -125,9 +125,9 @@ func TestBuildTourRequest_MaxTourSystemsDefaultsZero(t *testing.T) {
 	}
 }
 
-// sp-im74 default-safety hinge: a tour built WITHOUT closure must put the proto3
+// Default-safety hinge: a tour built WITHOUT closure must put the proto3
 // zero-values (false/"") on the wire — which serialize to ZERO BYTES, so an open
-// request is byte-identical to a pre-sp-im74 binary's. Pins that no mapping ever
+// request is byte-identical to a pre-closure binary's. Pins that no mapping ever
 // fabricates a closed/anchored request the caller didn't ask for.
 func TestBuildTourRequest_ClosureDefaultsZero(t *testing.T) {
 	req := buildTourRequest(nil, nil, domainRouting.TourShipState{},
@@ -183,7 +183,7 @@ func TestTourPlanFromPb_ParsesLegsAndRejects(t *testing.T) {
 		leg.Trades[0].Units != 40 || leg.Trades[0].ExpectedUnitPrice != 1800 || leg.Trades[0].IsDeposit {
 		t.Fatalf("sell trade wrong (sells must come first): %+v", leg.Trades)
 	}
-	// sp-dchv: the deposit tranche round-trips its IsDeposit flag and synthetic price.
+	// The deposit tranche round-trips its IsDeposit flag and synthetic price.
 	if leg.Trades[1].IsBuy || !leg.Trades[1].IsDeposit || leg.Trades[1].Good != "ELECTRONICS" ||
 		leg.Trades[1].Units != 25 || leg.Trades[1].ExpectedUnitPrice != 3400 {
 		t.Fatalf("deposit trade wrong: %+v", leg.Trades)

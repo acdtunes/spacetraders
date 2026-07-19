@@ -44,8 +44,8 @@ func runEventsAck(ctx context.Context, store eventStore, csv string) error {
 }
 
 // runEventsAckMatching acks the subset of playerID's unprocessed events
-// selected by matches (sp-yr3f: batch ack via --all/--before, so a large
-// wake backlog doesn't need a hand-built --ids CSV). No matches is a no-op,
+// selected by matches. Batch ack via --all/--before means a large wake
+// backlog doesn't need a hand-built --ids CSV. No matches is a no-op,
 // not an error — acking an already-clear backlog is harmless.
 func runEventsAckMatching(ctx context.Context, store eventStore, playerID int, matches func(*captain.Event) bool) error {
 	events, err := store.FindUnprocessed(ctx, playerID, 0)
@@ -105,9 +105,8 @@ func runEventsList(ctx context.Context, store eventStore, playerID int, jsonOut 
 
 // runEventsListResolved resolves the effective player — --player-id,
 // --agent, or the persisted default, via the shared resolver — before
-// listing their unprocessed events. Replaces a hard "--player-id is
-// required" error with the same fallback chain "captain report" and other
-// captain-aware commands already honor (sp-yr3f).
+// listing their unprocessed events, matching the fallback chain "captain
+// report" and other captain-aware commands honor.
 func runEventsListResolved(ctx context.Context, store eventStore, playerRepo player.PlayerRepository, jsonOut bool) error {
 	resolved, err := resolveDefaultPlayer(ctx, playerRepo)
 	if err != nil {
@@ -117,8 +116,8 @@ func runEventsListResolved(ctx context.Context, store eventStore, playerRepo pla
 }
 
 // wakePolicyStore is the subset of captain wake-policy persistence the CLI
-// needs (spec: sp-sk68 wake model). It exists so runWakeSet/runWakeShow can
-// be tested with a fake, without touching the filesystem.
+// needs. It exists so runWakeSet/runWakeShow can be tested with a fake,
+// without touching the filesystem.
 type wakePolicyStore interface {
 	Load() (watchkeeper.WakePolicy, error)
 	Save(policy watchkeeper.WakePolicy) error
@@ -263,10 +262,10 @@ func newCaptainEventStore() (eventStore, error) {
 
 // newCaptainPlayerRepo connects to the database and returns a player
 // repository, so captain events/report commands can resolve --player-id/
-// --agent (sp-yr3f) via the shared resolveDefaultPlayer helper instead of
-// hard-requiring --player-id. It opens its own connection independent of
-// newCaptainEventStore/newReportEventSource, matching this package's
-// established one-connection-per-factory convention (see ledger.go).
+// --agent via the shared resolveDefaultPlayer helper. It opens its own
+// connection independent of newCaptainEventStore/newReportEventSource,
+// matching this package's established one-connection-per-factory
+// convention (see ledger.go).
 func newCaptainPlayerRepo() (player.PlayerRepository, error) {
 	cfg, err := config.LoadConfig("")
 	if err != nil {

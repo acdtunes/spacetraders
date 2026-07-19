@@ -68,8 +68,8 @@ func TestHandleErrorDoesNotEmitContainerCrashed(t *testing.T) {
 
 // A true (unrecoverable) crash must (a) record exactly one container.crashed event
 // whose payload carries the container id and underlying error, and (b) log exactly
-// one ERROR line carrying the same signature. This is the observability guarantee
-// the bug demands: a crashing container surfaces its exit cause above INFO.
+// one ERROR line carrying the same signature — the observability guarantee that a
+// crashing container's exit cause always surfaces above INFO.
 func TestRecordCrashSurfacesSignatureAndEmitsOneEvent(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)

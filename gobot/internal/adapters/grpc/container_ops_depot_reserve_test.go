@@ -30,7 +30,7 @@ func inPool(ships ...string) map[string]bool {
 // capped at the floor — pinning stops at (Available - Floor), and the LAST declared delivery hulls
 // are RESERVED (left undedicated + available to the contract grab) so an unbuffered-good contract
 // still has a sourcing worker. The within-budget hulls are NOT reserved, so buffered delivery keeps
-// its pinned fleet (regression). This is the exact live incident: 5 haulers, floor 2 -> reserve 2.
+// its pinned fleet (regression).
 func TestReserveHomeContractWorkers_CapsFreshPinsAtFloorLeavingReserveUndedicated(t *testing.T) {
 	intents := []depotLaunchIntent{
 		deliveryIntent("DLV-1"), deliveryIntent("DLV-2"), deliveryIntent("DLV-3"),
@@ -302,8 +302,7 @@ func TestHomeContractWorkerReserve_CountsOnlyUndedicatedHomeGeneralHaulers(t *te
 // factory / arb / reconciler-tier1 draw from — yet STILL serves contracts through the coordinator's
 // OWN dedicated lookup (FindIdleShipsByFleet("contract")): dedication is TO contract, not a freeze, so
 // there is no self-starvation. The delivery hulls ABOVE the floor ARE pinned to depot-delivery
-// (regression: the pin cap Available-Floor still holds). This is the live poaching incident, fixed:
-// the factory ate 4 of 6 reserve workers precisely because they were undedicated.
+// (regression: the pin cap Available-Floor still holds).
 func TestLaunchDepotCoordinators_ReservedHaulerDedicatedToContractPoachProof(t *testing.T) {
 	s, db, playerID, _ := newDepotDeliveryTestServer(t)
 	s.contractConfig.MinHomeContractWorkers = 2

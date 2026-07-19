@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// sp-xwa1 - the --dest lane-targeting override. These tests cover the three
+// The --dest lane-targeting override. These tests cover the three
 // acceptance bullets directly:
 //   - a directed target PINS that lane instead of whatever the ranker would
 //     otherwise have chosen, and the cross-system gate charge is waived for
@@ -16,7 +16,7 @@ import (
 //   - the undirected auto-scan path is untouched - still surcharges every
 //     cross-system lane's circuit time, still defers to trading.FirstDisciplinedLane
 //     (TestSelectLane_Undirected_*)
-//   - a directed lane still respects the sp-bp6f working-capital spend floor
+//   - a directed lane still respects the working-capital spend floor
 //     (TestTradeRouteCoordinator_TargetDest_DirectedLane_StillRespectsSpendFloor)
 
 // Reuses the same proportions as TestRankLanesByCircuitRate_CloseCall_SameSystemLaneWins
@@ -91,7 +91,7 @@ func TestSelectLane_Undirected_DefersToFirstDisciplinedLane(t *testing.T) {
 // all, or the one that does fails the floor discipline - must report
 // ok=false, never silently substitute a different lane the operator didn't
 // ask for (the same "fail rather than substitute" contract the
-// batch-purchase ship-type guard established, sp-e7je).
+// batch-purchase ship-type guard established).
 func TestSelectLane_Directed_CannotService_ReturnsNotOKWithoutSubstituting(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -125,7 +125,7 @@ func TestSelectLane_Directed_CannotService_ReturnsNotOKWithoutSubstituting(t *te
 }
 
 // A directed --dest still goes through the same coordinator execute() path as
-// the undirected auto-scan, so the sp-bp6f working-capital spend floor must
+// the undirected auto-scan, so the working-capital spend floor must
 // still trip before Leg 1's buy when the live treasury can't clear it - a
 // target waypoint pins WHICH lane is chosen, it does not touch whether the
 // guard runs at all. Mirrors the "default reserve" case of

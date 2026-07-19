@@ -12,14 +12,12 @@ package config
 // it never hardcodes an operational value.
 type ManufacturingConfig struct {
 	// WorkingCapitalReserve is the per-run spend floor threaded into the
-	// goods_factory_coordinator (RunFactoryCoordinatorCommand) command (sp-jav2 X2:
-	// the parallel manufacturing_coordinator that also read it is retired).
+	// goods_factory_coordinator (RunFactoryCoordinatorCommand) command.
 	// 0/absent leaves goods_factory's own immutable 50000 lower bound
-	// untouched (sp-agzj: effectiveReserveFloor = max(50000, WorkingCapitalReserve));
+	// untouched (effectiveReserveFloor = max(50000, WorkingCapitalReserve));
 	// a configured value raises it — e.g. matching the fleet's [trade_fleet]
 	// working_capital_reserve so a factory input buy can no longer ride the 50k
-	// floor into a fleet-wide treasury trough (the 682k-buy / 53k-trough incident
-	// this bead follows up on).
+	// floor into a fleet-wide treasury trough.
 	WorkingCapitalReserve int64 `mapstructure:"working_capital_reserve"`
 
 	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor as a percent of
@@ -33,8 +31,7 @@ type ManufacturingConfig struct {
 	// InputPriceCeilingMultiplier is the ladder-chase ceiling on factory INPUT buys (sp-iv65),
 	// threaded into goods_factory_coordinator (RunFactoryCoordinatorCommand): an input buy
 	// aborts when its live ask exceeds this multiple of the good's trailing-median ask,
-	// stopping a chain from chasing its own supply ladder up (the ADV_CIRC 4x-market leak,
-	// −2.2M/hr). 0/absent → the 1.5 default the guard resolves at the point of use — a
+	// stopping a chain from chasing its own supply ladder up. 0/absent → the 1.5 default the guard resolves at the point of use — a
 	// protective default that turns a GUARD on, not money movement, so a default is correct
 	// (RULINGS #5). Config, not a constant, so a captain retunes it live.
 	InputPriceCeilingMultiplier float64 `mapstructure:"input_price_ceiling_multiplier"`
@@ -59,7 +56,7 @@ type ManufacturingConfig struct {
 	FabricateDepthCapDisabled bool `mapstructure:"fabricate_depth_cap_disabled"`
 
 	// ProductionStrategy is the SupplyChainResolver acquisition strategy the PRODUCTION coordinators
-	// (goods_factory + construction) resolve their trees on (sp-yfzi, Admiral directive 2026-07-13):
+	// (goods_factory + construction) resolve their trees on (sp-yfzi):
 	// "smart" (fabricate a SCARCE/LIMITED intermediate that has a factory, buy an abundant one — the
 	// scarcity-gated recursion this bead re-enables fleet-wide), "prefer-buy" (the sp-jav2 X1
 	// buy-all-inputs posture, the dial-back), or "prefer-fabricate". Empty/absent → the coordinators'
@@ -135,7 +132,7 @@ type ManufacturingConfig struct {
 	// genuine own-market premium. Absent/false keeps the signal on at its default window.
 	RestSignalDisabled bool `mapstructure:"rest_signal_disabled"`
 
-	// UnifiedGateFill is the sp-vh1s master toggle (CONTRACT #1, Admiral sign-off 2026-07-14).
+	// UnifiedGateFill is the sp-vh1s master toggle (CONTRACT #1).
 	// OFF (the default): gate materials are filled by today's thin construction drain + bootstrap
 	// InputsOnly feeders, and the siting portfolio may harvest gate goods — byte-identical to today.
 	// ON: gate construction runs as a generic goods-factory run whose terminal DELIVERS the root

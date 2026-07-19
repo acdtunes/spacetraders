@@ -10,14 +10,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// TestSave_PreservesLiveDedicationAgainstStaleShipWriter is the core sp-90a3
+// TestSave_PreservesLiveDedicationAgainstStaleShipWriter is the core
 // regression. AssignFleet is the single write path for the dedicated_fleet tag,
 // but the general ship Save path upserts EVERY column (UpdateAll) from the
 // domain ship's in-memory snapshot — including dedicated_fleet (shipToModel).
 // A coordinator that loaded a hull BEFORE it was dedicated carries a stale ""
 // tag; its next Save (a routine nav/cargo write-back) silently resurrects that
 // "" over the live `fleet add --operation manufacturing` dedication. Worse, the
-// sp-wa7c version guard is BLIND to it: AssignFleet does not bump ships.version,
+// version guard is BLIND to it: AssignFleet does not bump ships.version,
 // so the CAS upsert's `WHERE version = <loaded>` still matches and clobbers.
 // This is the silent drop that stalled the gate FAB — no error, no warn.
 func TestSave_PreservesLiveDedicationAgainstStaleShipWriter(t *testing.T) {
@@ -44,14 +44,14 @@ func TestSave_PreservesLiveDedicationAgainstStaleShipWriter(t *testing.T) {
 	require.Equal(t, "manufacturing", model.DedicatedFleet,
 		"a stale ship writer must not silently drop a live `fleet add` dedication (sp-90a3)")
 
-	// The prevented drop must be observable, not silent (sp-90a3 requirement 3).
+	// The prevented drop must be observable, not silent.
 	require.Equal(t, before+1, dedicatedFleetClobbersPrevented.Load(),
 		"a prevented dedication clobber must be counted + logged, not silently swallowed")
 }
 
 // TestSave_StaleWriterStillWinsNonDedicationColumns pins the fix's blast radius:
 // the tag is preserved, but every OTHER column keeps today's last-write-wins
-// behavior (sp-60ff). A stale writer that refuelled must still land its fuel —
+// behavior. A stale writer that refuelled must still land its fuel —
 // the fix protects the single-write-path dedication tag, nothing else.
 func TestSave_StaleWriterStillWinsNonDedicationColumns(t *testing.T) {
 	repo, db, playerID := newShipWriteTestRepo(t)

@@ -16,11 +16,9 @@ import (
 //
 // Captain-configurable tripwires emit a DEFERRED market.regime_shift event
 // when a good-class or symbol's market price crosses a threshold.
-// Mechanizes the per-wake price sweep the captain used to hand-roll ("any
-// ore bid >=200 or gas bid >=150 (~3x baseline) triggers an immediate
-// extraction re-consult" — captain transcript). Edge-triggered with cooldown
-// via HasSince (sp-1hak lesson): one event per crossing, not per poll. No
-// tripwires configured means no scan at all (zero overhead when unset).
+// Edge-triggered with cooldown via HasSince (sp-1hak lesson): one event per
+// crossing, not per poll. No tripwires configured means no scan at all (zero
+// overhead when unset).
 
 func regimeThresholdPtr(v int) *int          { return &v }
 func regimeMultiplierPtr(v float64) *float64 { return &v }

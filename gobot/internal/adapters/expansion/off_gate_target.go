@@ -37,8 +37,8 @@ type UniverseSystemsProvider interface {
 
 // OffGateWarpTargetSelector ranks off-gate systems — universe systems NOT on our gate
 // network — by warp-fuel distance from the frontier EDGE (the nearest gate-connected system)
-// and exploration value, and picks the nearest-highest-value one within warp range (sp-k645,
-// slice B). It joins the universe roster (UniverseSystemsProvider) against the gate graph
+// and exploration value, and picks the nearest-highest-value one within warp range (slice B).
+// It joins the universe roster (UniverseSystemsProvider) against the gate graph
 // (gateAdjacencyReader): the adjacency's key set plus its edge targets are the on-network
 // systems, and everything else in the roster is off-gate. Warp fuel reuses slice A's model
 // (shared.FlightModeCruise.FuelCost of the inter-system distance). It implements the

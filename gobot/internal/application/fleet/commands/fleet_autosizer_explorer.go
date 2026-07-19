@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// The EXPLORER demand provider (sp-a3yn, slice C of sp-4imi). It sizes the off-gate warp-exploration
+// The EXPLORER demand provider. It sizes the off-gate warp-exploration
 // pool to slice-B's off-gate demand signal, DOUBLE-GATED so a bare deploy buys nothing:
 //
 //	(a) ARMED — explorer_hulls_enabled (default OFF). Disarmed ⇒ ZERO demand unconditionally. (The

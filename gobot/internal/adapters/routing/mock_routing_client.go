@@ -9,7 +9,6 @@ import (
 )
 
 // MockRoutingClient provides simple routing for testing (no OR-Tools required)
-// This is a POC implementation that returns basic routes without sophisticated optimization
 type MockRoutingClient struct {
 	// CannedTourPlan, if set, is returned verbatim by OptimizeTradeTour; TourErr, if
 	// set, is returned instead (transport-failure simulation). Both zero → a benign
@@ -25,12 +24,6 @@ func NewMockRoutingClient() *MockRoutingClient {
 
 // PlanRoute returns a simple direct route
 func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
-	// Simple implementation for POC:
-	// 1. Find start and goal waypoints in the waypoint list
-	// 2. Calculate distance
-	// 3. Calculate fuel cost and time
-	// 4. Return a single-step route if we have enough fuel
-	// 5. If not enough fuel, add refuel stop at nearest fuel station
 
 	var startWP, goalWP *system.WaypointData
 	for _, wp := range req.Waypoints {
@@ -42,23 +35,18 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 		}
 	}
 
-	// Calculate distance between start and goal
 	distance := calculateDistance(startWP.X, startWP.Y, goalWP.X, goalWP.Y)
 
 	// Simple fuel calculation: 1 fuel per distance unit, rounded up
 	fuelCost := int(math.Ceil(distance))
 
-	// Time calculation: distance / speed (in seconds)
 	timeSeconds := int(math.Ceil(distance / float64(req.EngineSpeed) * 60)) // Approximate: 60 seconds per speed unit
 
-	// Check if we need to refuel
 	steps := []*domainRouting.RouteStepData{}
 
 	if fuelCost > req.CurrentFuel {
-		// Need to refuel - find nearest fuel station
 		fuelStation := findNearestFuelStation(startWP, req.Waypoints)
 		if fuelStation != nil {
-			// Add travel to fuel station
 			distToFuel := calculateDistance(startWP.X, startWP.Y, fuelStation.X, fuelStation.Y)
 			fuelToStation := int(math.Ceil(distToFuel))
 			timeToStation := int(math.Ceil(distToFuel / float64(req.EngineSpeed) * 60))
@@ -70,7 +58,6 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 				TimeSeconds: timeToStation,
 			})
 
-			// Add refuel action
 			steps = append(steps, &domainRouting.RouteStepData{
 				Action:      domainRouting.RouteActionRefuel,
 				Waypoint:    fuelStation.Symbol,
@@ -78,7 +65,6 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 				TimeSeconds: 10, // Assume 10 seconds for refuel
 			})
 
-			// Add travel from fuel station to goal
 			distFromFuel := calculateDistance(fuelStation.X, fuelStation.Y, goalWP.X, goalWP.Y)
 			fuelFromStation := int(math.Ceil(distFromFuel))
 			timeFromStation := int(math.Ceil(distFromFuel / float64(req.EngineSpeed) * 60))
@@ -102,7 +88,6 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 		}
 	}
 
-	// Direct route - we have enough fuel
 	steps = append(steps, &domainRouting.RouteStepData{
 		Action:      domainRouting.RouteActionTravel,
 		Waypoint:    goalWP.Symbol,
@@ -120,7 +105,6 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 
 // OptimizeTour returns waypoints in order (no optimization for POC)
 func (c *MockRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {
-	// Simple implementation: return waypoints in the order they were provided
 	return &domainRouting.TourResponse{
 		VisitOrder:       req.Waypoints,
 		CombinedRoute:    []*domainRouting.RouteStepData{},
@@ -130,7 +114,6 @@ func (c *MockRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 
 // OptimizeFueledTour returns waypoints with basic fuel planning (no global optimization for POC)
 func (c *MockRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainRouting.FueledTourRequest) (*domainRouting.FueledTourResponse, error) {
-	// Simple implementation: return waypoints in order with basic legs
 	legs := make([]*domainRouting.TourLegData, len(req.TargetWaypoints))
 
 	prevWaypoint := req.StartWaypoint
@@ -159,12 +142,10 @@ func (c *MockRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainR
 
 // PartitionFleet returns simple 1:1 ship-to-market assignment (no VRP optimization)
 func (c *MockRoutingClient) PartitionFleet(ctx context.Context, req *domainRouting.VRPRequest) (*domainRouting.VRPResponse, error) {
-	// Simple implementation: assign first N markets to first N ships
 	assignments := make(map[string]*domainRouting.ShipTourData)
 
 	for i, ship := range req.ShipSymbols {
 		if i < len(req.MarketWaypoints) {
-			// Assign one market per ship
 			assignments[ship] = &domainRouting.ShipTourData{
 				Waypoints: []string{req.MarketWaypoints[i]},
 				Route:     []*domainRouting.RouteStepData{},
@@ -196,8 +177,6 @@ func (c *MockRoutingClient) OptimizeTradeTour(
 	}
 	return &domainRouting.TourPlan{Feasible: false, InfeasibleReason: "mock: no canned tour plan configured"}, nil
 }
-
-// Helper functions
 
 // calculateDistance computes Euclidean distance between two points
 func calculateDistance(x1, y1, x2, y2 float64) float64 {

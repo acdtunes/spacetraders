@@ -1,13 +1,14 @@
 package commands
 
-// run_tour_coordinator_reposition_offcircuit_test.go — sp-jeou: a trade hull bought at a FAR,
-// off-circuit yard (X1-UF64, the only heavy yard) whose 1-gate-hop neighbours carry no fresh
-// cached market found ZERO reposition candidates and stranded, even though a profitable circuit
-// system sat 2-4 gate hops away — well within the 12-jump bound the reposition FLIGHT already
-// routes over. maybeReposition's candidate DISCOVERY was 1-hop while its travel reach was 12.
-// The fix broadens discovery (buildRepositionCandidates) to a bounded multi-hop BFS over the
-// DURABLE gate graph ONLY when the 1-hop scan is empty, so discovery reach == travel reach and
-// the adopted off-circuit hull reposositions to the circuit via the existing machinery.
+// run_tour_coordinator_reposition_offcircuit_test.go — a trade hull bought at a FAR,
+// off-circuit yard whose 1-gate-hop neighbours carry no fresh cached market must not
+// find ZERO reposition candidates and strand, even when a profitable circuit system
+// sits 2-4 gate hops away — well within the 12-jump bound the reposition FLIGHT
+// already routes over. maybeReposition's candidate DISCOVERY must match its travel
+// reach: buildRepositionCandidates broadens discovery to a bounded multi-hop BFS over
+// the DURABLE gate graph ONLY when the 1-hop scan is empty, so discovery reach ==
+// travel reach and the adopted off-circuit hull repositions to the circuit via the
+// existing machinery.
 
 import (
 	"context"
@@ -56,11 +57,11 @@ func roundTripSH23() *routing.TourPlan {
 	}}
 }
 
-// THE sp-jeou UNLOCK (RED before the fix, GREEN after). A continuous tour on a hull stranded at
-// the far off-circuit yard X1-UF64 — whose only 1-hop neighbour is barren — must BROADEN its
-// reposition discovery over the durable gate graph, find the profitable circuit ground X1-SH23
-// two gate hops away (within the 12-jump bound), JUMP there via the existing flight, and trade.
-// Before the fix the 1-hop-only discovery yields zero candidates and the hull strands forever.
+// A continuous tour on a hull stranded at the far off-circuit yard X1-UF64 — whose
+// only 1-hop neighbour is barren — must BROADEN its reposition discovery over the
+// durable gate graph, find the profitable circuit ground X1-SH23 two gate hops away
+// (within the 12-jump bound), JUMP there via the existing flight, and trade. A
+// 1-hop-only discovery yields zero candidates and strands the hull forever.
 func TestTour_OffCircuit_BroadensDiscovery_RepositionsToCircuit(t *testing.T) {
 	fx := jeouOffCircuitFixture()
 	sh23Calls := 0

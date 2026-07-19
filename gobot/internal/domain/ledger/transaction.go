@@ -92,9 +92,9 @@ func NewTransaction(
 // category is DERIVED from transactionType (category = f(type); see
 // TypeToCategoryMap), never taken from storage. category is a pure, deterministic
 // relabel of type, persisted only as a reporting convenience — NOT an independent
-// field. Re-deriving it on read (R1/sp-bt6r) means a stored category that
-// disagrees with type, or is structurally invalid, can never surface: type is the
-// single source of truth.
+// field. Re-deriving it on read means a stored category that disagrees with
+// type, or is structurally invalid, can never surface: type is the single
+// source of truth.
 func ReconstructTransaction(
 	id TransactionID,
 	playerID shared.PlayerID,

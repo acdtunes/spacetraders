@@ -17,10 +17,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// Absorption-ledger integration constants (sp-78ai L2). The engine tag attributes a
-// row's origin for telemetry and dead-container reclaim; the TTL knobs bound a
-// PLANNED hold whose container dies without releasing (dead-container reclaim is the
-// primary cleanup, these are the backstop).
+// The engine tag attributes a row's origin for telemetry and dead-container
+// reclaim; the TTL knobs bound a PLANNED hold whose container dies without
+// releasing (dead-container reclaim is the primary cleanup, these are the
+// backstop).
 const (
 	absorptionEngineIdleArb = "idle-arb"
 	// defaultAbsorptionPlannedTTLSlack pads a leg's projected round-trip so a healthy
@@ -31,34 +31,20 @@ const (
 	minAbsorptionPlannedTTL          = 30 * time.Minute
 )
 
-// Idle-gap arbitrage (sp-1z2h). The contract fleet's dedicated hulls sit
-// homed+unclaimed 89% of wall-time (sp-5bmq: 5.9 active hull-hours of 54);
-// the pipeline is SERIAL (one contract worker ever), so at most one hull is
-// contract-active while the rest park at their hub standby stations. This
-// dispatcher harvests that idle time with hub-local ONE-SHOT arb legs run
-// through the proven guarded arb-run machinery (sp-p4ua), dispatched by the
-// CONTRACT coordinator itself — l7h2 exclusivity stays intact because the arb
-// containers claim with the contract fleet's own identity, through the same
-// atomic operation-checked ClaimShip every contract worker uses.
+// IdleArbDispatcher harvests the contract fleet's idle wall-time with
+// hub-local, one-shot arb legs, dispatched through the CONTRACT coordinator's
+// own claim identity so ship-dedication exclusivity stays intact (the arb
+// containers claim through the same atomic operation-checked ClaimShip every
+// contract worker uses).
 //
-// WHY NO RECALLABLE LEASE: the brief allowed either a lease-with-instant-recall
-// primitive or "an arbing hull isn't counted as available and the claim takes
-// the next hull". The second is strictly smaller and gives a hard bound, so it
-// wins. The RESERVE rule makes it airtight:
-//
-//   - The dispatcher never claims a hull while claimable idle hulls ≤
-//     ReserveHulls, and it RECOUNTS from the repository before EVERY claim.
-//   - Contract claims are serial (one worker at a time), and every contract
-//     completion releases a hull back to idle.
-//   - Therefore a contract claim always finds ≥ReserveHulls unclaimed, homed
-//     hulls: added claim latency from arb = ZERO. The only idle-reducing event
-//     inside the recount→claim race window is the coordinator's own claim —
-//     which by definition already succeeded, un-delayed. If that race lands,
-//     the pool transiently dips below reserve with NO waiting claim, and
-//     refills within one hub-local leg (≤ ~8 min at DefaultIdleArbHubRadius)
-//     — well inside the ~18 min claim cadence. A recall primitive would add
-//     persisted lease state (RULINGS #2), a recall protocol, and mid-leg
-//     cargo cleanup to improve on a bound that is already zero.
+// WHY NO RECALLABLE LEASE: the dispatcher never claims a hull while claimable
+// idle hulls ≤ ReserveHulls, and it RECOUNTS from the repository before EVERY
+// claim. Contract claims are serial (one worker at a time) and every
+// completion releases a hull back to idle, so a contract claim always finds
+// ≥ReserveHulls unclaimed, homed hulls — added claim latency from arb is
+// ZERO. A recall primitive would add persisted lease state, a recall
+// protocol, and mid-leg cargo cleanup to improve on a bound that is already
+// zero.
 //
 // HUB-LOCAL is physical, not advisory: the leg's BuyAt is the hull's CURRENT
 // waypoint (its hub) — the arb run's location guard refuses to buy anywhere
@@ -85,68 +71,66 @@ type IdleArbConfig struct {
 	// duration and how far a hull can drift from its hub. This is the OUTER
 	// hub-local filter; LeashRadius (below) is the tighter money-guard leash.
 	HubRadius float64
-	// LeashRadius (sp-uohe) is the formal money-guard leash: the maximum
-	// distance (distance units) from the home hub a leg's sell market may sit.
-	// Legs naturally max ~52u, so 80 formalizes that boundary with headroom;
+	// LeashRadius is the formal money-guard leash: the maximum distance
+	// (distance units) from the home hub a leg's sell market may sit. Legs
+	// naturally max ~52u, so 80 formalizes that boundary with headroom;
 	// tighter than HubRadius, it is the binding radius in practice. A candidate
 	// beyond it is skipped (leash counter), never dispatched.
 	LeashRadius float64
-	// MaxLegDuration (sp-uohe) caps a leg's projected one-way flight time to
-	// the sell market (CRUISE estimate from the hull's engine speed). It bites
-	// where LeashRadius does not: a slow hull whose in-radius leg still
-	// projects longer than this is skipped (leash counter).
+	// MaxLegDuration caps a leg's projected one-way flight time to the sell
+	// market (CRUISE estimate from the hull's engine speed). It bites where
+	// LeashRadius does not: a slow hull whose in-radius leg still projects
+	// longer than this is skipped (leash counter).
 	MaxLegDuration time.Duration
 	// MaxSpendPerLeg caps each leg's buy (the arb run's --max-spend guard).
 	MaxSpendPerLeg int
 	// MinMarginPerUnit is the absolute per-unit floor handed to the arb run's
 	// margin gate (which re-reads live prices and fails closed).
 	MinMarginPerUnit int
-	// MarginVerifyFraction (sp-uohe) is the RELATIVE per-unit floor: a leg's
-	// effective MinMargin is raised to ceil(MarginVerifyFraction × quoted
-	// margin), so the arb run's existing live-verify gate aborts fail-closed
-	// unless the live margin holds ≥ this fraction of the cached quote. This is
-	// the −234k fix: it gives the gate teeth the flat MinMarginPerUnit=1 floor
-	// never had (which tolerated a near-total collapse from the quote). 0.80 =
-	// tolerate at most a 20% margin slip between quote and live.
+	// MarginVerifyFraction is the RELATIVE per-unit floor: a leg's effective
+	// MinMargin is raised to ceil(MarginVerifyFraction × quoted margin), so the
+	// arb run's existing live-verify gate aborts fail-closed unless the live
+	// margin holds ≥ this fraction of the cached quote. 0.80 = tolerate at most
+	// a 20% margin slip between quote and live.
 	MarginVerifyFraction float64
-	// Blacklist (sp-uohe) is the config-driven excluded-goods list checked at
-	// dispatch: a leg is never dispatched on a listed good. Nil → the package
-	// default (ELECTRONICS); an explicit empty list disables the blacklist.
-	// The captain flips a good back by editing config and restarting (no code
+	// Blacklist is the config-driven excluded-goods list checked at dispatch: a
+	// leg is never dispatched on a listed good. Nil → the package default
+	// (ELECTRONICS); an explicit empty list disables the blacklist. The
+	// captain flips a good back by editing config and restarting (no code
 	// redeploy). RULINGS #5.
 	Blacklist []string
-	// StandbyStations (sp-8bpr) are the operator's standby waypoint symbols — the
-	// SAME --standby-stations set the contract coordinator's contract-handoff
-	// homing uses (l7h2 Phase 3). The post-leg re-home (rehomeDriftedHulls) sends
-	// any idle dedicated hull NOT sitting at one of these back to its balanced
-	// standby station, so an arb leg that ends off-station doesn't dead-idle at
-	// the sell waypoint. Empty (or a nil homer) disables re-homing entirely,
+	// StandbyStations are the operator's standby waypoint symbols — the SAME
+	// --standby-stations set the contract coordinator's contract-handoff
+	// homing uses. The post-leg re-home (rehomeDriftedHulls) sends any idle
+	// dedicated hull NOT sitting at one of these back to its balanced standby
+	// station, so an arb leg that ends off-station doesn't dead-idle at the
+	// sell waypoint. Empty (or a nil homer) disables re-homing entirely,
 	// mirroring HomeShipCommand's own "empty stations = no relocation" contract.
 	// RULINGS #5: the tunable is the station set, already an operator flag.
 	StandbyStations []string
 	// Interval is the dispatch tick.
 	Interval time.Duration
-	// RecoveryHold (sp-lbbm) is the lane mutex's post-termination hold: after a
-	// leg on a (good, sink) lane terminates, the dispatcher keeps that lane closed
-	// for this long before another hull may work it, so back-to-back passes never
-	// re-dump a sink the last leg just depressed. In-flight legs block their lane
-	// regardless of this value; it only spaces SEQUENTIAL legs on one sink. See
-	// laneMutex for why a flat hold (not the routing service's recovery model) is
-	// the honest v1 and how it cites the model's half-lives.
+	// RecoveryHold is the lane mutex's post-termination hold: after a leg on a
+	// (good, sink) lane terminates, the dispatcher keeps that lane closed for
+	// this long before another hull may work it, so back-to-back passes never
+	// re-dump a sink the last leg just depressed. In-flight legs block their
+	// lane regardless of this value; it only spaces SEQUENTIAL legs on one
+	// sink. See laneMutex for why a flat hold (not the routing service's
+	// recovery model) is deliberate, and how it cites the model's half-lives.
 	RecoveryHold time.Duration
 
-	// --- sp-u4tv per-trip live-profitability floor ---------------------------
-	// The dispatcher launches one arb leg (one buy->sell round trip) per lane per
-	// pass, RE-PRICED every pass from the freshly-read ask/bid (never a cached
-	// spread). A lane clears only when, at current live prices,
+	// Per-trip live-profitability floor: the dispatcher launches one arb leg
+	// (one buy->sell round trip) per lane per pass, RE-PRICED every pass from
+	// the freshly-read ask/bid (never a cached spread). A lane clears only
+	// when, at current live prices,
 	//   net_per_u = (sink bid − hub ask) − FuelCostPerUnit
 	// meets the BINDING floor: max(MinNetProfitPerUnit, ceil(NetProfitFraction ×
-	// hub ask)). This is the −net-negative-tail fix (sp-u4tv): the fleet's OWN
-	// repeated buys walk a thin EXPORT price up (and its dumps walk the IMPORT
-	// price down), so a good that quoted a healthy spread degrades trip-over-trip;
-	// re-pricing every pass catches it and the lane AUTO-RE-ENTERS when the price
-	// recovers. GENERIC — no per-good knowledge; the floors are tunable config
-	// (RULINGS #5), never a hardcoded good list.
+	// hub ask)). Re-pricing matters because the fleet's OWN repeated buys walk a
+	// thin EXPORT price up (and its dumps walk the IMPORT price down), so a good
+	// that quoted a healthy spread can degrade trip-over-trip; re-pricing every
+	// pass catches it and the lane AUTO-RE-ENTERS when the price recovers.
+	// GENERIC — no per-good knowledge; the floors are tunable config (RULINGS
+	// #5), never a hardcoded good list.
 
 	// MinNetProfitPerUnit is the ABSOLUTE after-fuel net floor a lane must clear.
 	MinNetProfitPerUnit int
@@ -158,26 +142,24 @@ type IdleArbConfig struct {
 	NetProfitFraction float64
 	// FuelCostPerUnit is the per-cargo-unit fuel estimate subtracted from the gross
 	// spread to get net. It is a flat hub-local estimate (the leash bounds every leg
-	// to a short, similar hop, so a flat figure is honest here) grounded in the
-	// sp-u4tv incident (~35/u on central lanes); a captain whose lanes differ retunes
-	// it. The within-trip price ladder is guarded downstream by the arb run's live
-	// per-tranche buy ceiling / sell floor — this floor is the CROSS-trip decision:
-	// should this lane be flown AT ALL this pass, at current live prices.
+	// to a short, similar hop, so a flat figure is honest here); ~35/u on central
+	// lanes, a captain whose lanes differ retunes it. The within-trip price ladder is
+	// guarded downstream by the arb run's live per-tranche buy ceiling / sell floor —
+	// this floor is the CROSS-trip decision: should this lane be flown AT ALL this
+	// pass, at current live prices.
 	FuelCostPerUnit int
 }
 
-// Idle-arb defaults. Sizing notes: HubRadius 250 is the loose outer hub-local
-// filter; LeashRadius 80 is the tight money-guard leash (legs naturally max
-// ~52u, sp-5bmq, so 80 formalizes that boundary with headroom) and the
-// 8-minute cap catches slow hulls the radius alone would not; spend 100k/leg ×
-// ≤5 concurrent legs bounds exposure at ~500k against a multi-million treasury,
-// before the arb run's own working-capital floor (non-tunable, sp-bp6f) even
-// engages. MinMargin 1 is the ABSOLUTE floor; the capital protection is the
-// RELATIVE MarginVerifyFraction (0.80): sp-uohe autopsy — a flat floor of 1 let
-// the arb run's live-verify gate pass legs whose quoted margin had collapsed to
-// +1/unit, and selling ~52u of volatile ELECTRONICS into that razor cushion
-// realized −234k. The 80%-of-quote floor gives the gate the teeth to abort
-// those pre-buy.
+// Idle-arb defaults. HubRadius 250 is the loose outer hub-local filter;
+// LeashRadius 80 is the tight money-guard leash (legs naturally max ~52u, so
+// 80 formalizes that boundary with headroom) and the 8-minute cap catches
+// slow hulls the radius alone would not; spend 100k/leg × ≤5 concurrent legs
+// bounds exposure at ~500k against a multi-million treasury, ahead of the arb
+// run's own non-tunable working-capital floor. MinMargin 1 is the ABSOLUTE
+// floor; the capital protection is the RELATIVE MarginVerifyFraction (0.80) —
+// a flat floor of 1 lets the live-verify gate pass a leg whose quoted margin
+// has nearly collapsed, so the 80%-of-quote floor gives the gate teeth to
+// abort those pre-buy.
 const (
 	DefaultIdleArbReserveHulls         = 1
 	DefaultIdleArbHubRadius            = 250.0
@@ -187,29 +169,26 @@ const (
 	DefaultIdleArbMinMargin            = 1
 	DefaultIdleArbMarginVerifyFraction = 0.80
 	DefaultIdleArbInterval             = 90 * time.Second
-	// DefaultIdleArbRecoveryHold (sp-lbbm) is the lane mutex's post-termination
-	// hold. 20min is deliberately shorter than any modelled recovery half-life
-	// (market_model.json: 180min GROWING … 413min RESTRICTED, ~1074min baseline) —
-	// it does not claim full recovery, only that a sink is not re-dumped
-	// back-to-back. The in-flight lane block and the per-tranche sell floor carry
-	// the rest of the defense; a captain wanting the fuller modelled hold raises
-	// the config knob with no code change.
+	// DefaultIdleArbRecoveryHold is the lane mutex's post-termination hold,
+	// deliberately shorter than any modelled recovery half-life: it does not
+	// claim full recovery, only that a sink is not re-dumped back-to-back. The
+	// in-flight lane block and the per-tranche sell floor carry the rest of the
+	// defense; a captain wanting the fuller modelled hold raises the config
+	// knob with no code change.
 	DefaultIdleArbRecoveryHold = 20 * time.Minute
-	// Per-trip profitability floor defaults (sp-u4tv). 100/u absolute after fuel and
-	// 20% of the buy price are the bead-grounded floors: on central lanes fuel is
-	// ~35/u, so POLYNUCLEOTIDES at +33/u gross correctly nets below the floor and is
-	// refused, while fat lanes (FABRICS/CLOTHING/JEWELRY/MACHINERY/MEDICINE, ~800–1800/u)
-	// clear it 10×+. The 20% relative floor stops a high-priced good with a thin
-	// absolute spread from sneaking through on the flat floor. 35/u fuel matches the
-	// same central-lane grounding.
+	// Per-trip profitability floor defaults: 100/u absolute after fuel (fuel
+	// runs ~35/u on central lanes) and 20% of the buy price. The relative
+	// floor stops a high-priced good with a thin absolute spread from sneaking
+	// through on the flat floor alone.
 	DefaultIdleArbMinNetProfit      = 100
 	DefaultIdleArbNetProfitFraction = 0.20
 	DefaultIdleArbFuelCostPerUnit   = 35
 )
 
-// DefaultIdleArbBlacklist is the initial excluded-goods list (sp-uohe): the
-// −234k bleed was on ELECTRONICS. A nil IdleArbConfig.Blacklist takes this;
-// an explicit empty list disables the blacklist entirely.
+// DefaultIdleArbBlacklist is the initial excluded-goods list — ELECTRONICS
+// proved too volatile for the live-verify margin floor to safely price. A nil
+// IdleArbConfig.Blacklist takes this; an explicit empty list disables the
+// blacklist entirely.
 var DefaultIdleArbBlacklist = []string{"ELECTRONICS"}
 
 // WithDefaults fills zero-valued fields with the package defaults.
@@ -246,9 +225,10 @@ func (c IdleArbConfig) WithDefaults() IdleArbConfig {
 	if c.RecoveryHold <= 0 {
 		c.RecoveryHold = DefaultIdleArbRecoveryHold
 	}
-	// sp-u4tv: the per-trip profitability floor is DEFAULT-ON — a config that omits
-	// it must not silently disable a money guard (RULINGS #4, matching the sibling
-	// MarginVerifyFraction/Blacklist defaults). A captain retune sets a non-zero value.
+	// The per-trip profitability floor is DEFAULT-ON — a config that omits it
+	// must not silently disable a money guard (RULINGS #4, matching the
+	// sibling MarginVerifyFraction/Blacklist defaults). A captain retune sets
+	// a non-zero value.
 	if c.MinNetProfitPerUnit <= 0 {
 		c.MinNetProfitPerUnit = DefaultIdleArbMinNetProfit
 	}
@@ -273,9 +253,9 @@ type IdleArbSpec struct {
 	MaxSpend   int
 	MinMargin  int
 	PlayerID   int
-	Operation  string // claim identity, e.g. "contract" (l7h2)
-	// SellFloorFraction (sp-lbbm) arms the arb run's per-tranche sell floor: each
-	// sell tranche aborts the remainder when the LIVE bid falls below this fraction
+	Operation  string // claim identity, e.g. "contract"
+	// SellFloorFraction arms the arb run's per-tranche sell floor: each sell
+	// tranche aborts the remainder when the LIVE bid falls below this fraction
 	// of the quoted bid. It reuses the SAME 80% knob the buy-side live-verify uses
 	// (cfg.MarginVerifyFraction), so a captain retune moves both floors together.
 	// 0 → the arb run's own default (defaultArbSellFloorFraction).
@@ -292,31 +272,29 @@ type IdleArbLauncher interface {
 }
 
 // ShipHomer re-homes ONE idle dedicated hull to its balanced standby station
-// through the EXISTING HomeShipCommand path (sp-d3kd / l7h2 Phase 3) — never a
-// parallel homing algorithm (RULINGS #7). A narrow port, implemented by the
-// coordinator over the mediator and faked trivially in tests, that keeps the
-// dispatcher a pure decision loop.
+// through the EXISTING HomeShipCommand path — never a parallel homing
+// algorithm (RULINGS #7). A narrow port, implemented by the coordinator over
+// the mediator and faked trivially in tests, that keeps the dispatcher a pure
+// decision loop.
 //
-// The implementation dispatches the homing FIRE-AND-FORGET: HomeShipCommand
-// navigates synchronously and blocks until the hull arrives (navigate_route
-// executes the whole route), so a blocking call would stall an entire dispatch
-// tick for a full flight. HomeShip therefore returns as soon as the home is
-// DISPATCHED, not when the hull lands — exactly as the coordinator's own
-// contract-handoff homing goroutine behaves. The hull is marked in-transit
-// within a hop, so the next discovery pass excludes it (FindIdleShipsByFleet
-// skips in-transit hulls); a returned error means the home could not even be
-// dispatched, and the dispatcher leaves the hull for the next pass.
+// HomeShip must return as soon as the home is DISPATCHED, not when the hull
+// lands: HomeShipCommand navigates synchronously and blocks until the hull
+// arrives, so a blocking call here would stall an entire dispatch tick for a
+// full flight. The hull is marked in-transit within a hop, so the next
+// discovery pass excludes it (FindIdleShipsByFleet skips in-transit hulls); a
+// returned error means the home could not even be dispatched, and the
+// dispatcher leaves the hull for the next pass.
 type ShipHomer interface {
 	// HomeShip re-homes shipSymbol to the balanced standby station of the given
-	// standbyStations set. The set is passed per call (sp-jcke) rather than frozen
-	// in the homer, so the dispatcher can hand it the LIVE hub set it resolved this
+	// standbyStations set. The set is passed per call rather than frozen in the
+	// homer, so the dispatcher can hand it the LIVE hub set it resolved this
 	// pass — a `fleet hub add|remove` is honored with no restart.
 	HomeShip(ctx context.Context, shipSymbol string, standbyStations []string) error
 }
 
-// ContractGoodsProvider lists the delivery goods of the player's OPEN contracts
-// (sp-uohe guard 3) so the dispatcher never dispatches an arb leg on a good we
-// are actively sourcing for a contract — the idle harvest must never compete
+// ContractGoodsProvider lists the delivery goods of the player's OPEN
+// contracts so the dispatcher never dispatches an arb leg on a good we are
+// actively sourcing for a contract — the idle harvest must never compete
 // with, or bid up, our own contract sourcing. A narrow port (not the full
 // ContractRepository) keeps the dispatcher testable with a trivial fake.
 type ContractGoodsProvider interface {
@@ -369,49 +347,49 @@ type IdleArbDispatcher struct {
 	marketRepo      market.MarketRepository
 	graphProvider   system.ISystemGraphProvider
 	launcher        IdleArbLauncher
-	homer           ShipHomer // sp-8bpr: post-leg re-homing (nil → re-home off)
+	homer           ShipHomer // post-leg re-homing (nil → re-home off)
 	contractGoods   ContractGoodsProvider
 	clock           shared.Clock
 	playerID        shared.PlayerID
 	fleet           string
 	cfg             IdleArbConfig
 	blacklist       map[string]struct{}            // upper-cased cfg.Blacklist, built once
-	launchStandby   []string                       // sp-8bpr/sp-jcke: the launch standby set — the fallback when no live resolver is wired
-	standbyResolver func(context.Context) []string // sp-jcke: resolves the LIVE standby set each pass (nil → launchStandby)
-	lanes           *laneMutex                     // sp-lbbm: one hull per (good, sink) per recovery window
+	launchStandby   []string                       // the launch standby set — the fallback when no live resolver is wired
+	standbyResolver func(context.Context) []string // resolves the LIVE standby set each pass (nil → launchStandby)
+	lanes           *laneMutex                     // one hull per (good, sink) per recovery window
 
-	// sp-78ai L2: the cross-engine absorption ledger. nil → integration inert (the
-	// same optional-port contract the other guards use). When wired, the dispatcher
+	// The cross-engine absorption ledger. nil → integration inert (the same
+	// optional-port contract the other guards use). When wired, the dispatcher
 	// CONSULTS it once per pass (skip:reserved) and RECORDS each launched leg's sell
 	// side so tours and other dispatchers see this leg's in-flight absorption — the
-	// lane mutex + flat hold above STAY ARMED IN PARALLEL (belt to this suspenders;
-	// L5 retires them after burn-in). consultDisabled is the kill-switch: when set,
-	// the consult (skip:reserved) is suppressed but recording continues, so the
-	// ledger still populates for other engines while an operator diagnoses it.
+	// lane mutex + flat hold above stay armed in parallel as a second layer.
+	// consultDisabled is the kill-switch: when set, the consult (skip:reserved) is
+	// suppressed but recording continues, so the ledger still populates for other
+	// engines while an operator diagnoses it.
 	ledger          absorption.Ledger
 	consultDisabled bool
 	plannedTTLSlack time.Duration
 	skipReserved    int // legs skipped: sink reserved/recovering in the absorption ledger
 
-	// Observability counters (sp-uohe guard 5). In-memory and reset on restart
-	// by design: they measure THIS process's harvest rate, not operational
-	// state — a restart legitimately restarts the window. The operational state
-	// (claims, reservations, container rows) is persisted by the existing
-	// mechanisms (RULINGS #2), untouched here. DispatchOnce is called serially
-	// (Run's single goroutine), so these need no locking.
+	// Observability counters. In-memory and reset on restart by design: they
+	// measure THIS process's harvest rate, not operational state — a restart
+	// legitimately restarts the window. The operational state (claims,
+	// reservations, container rows) is persisted by the existing mechanisms
+	// (RULINGS #2), untouched here. DispatchOnce is called serially (Run's
+	// single goroutine), so these need no locking.
 	startTime        time.Time
 	attempts         int // legs launch-attempted
 	launched         int // legs successfully launched
 	skipBlacklist    int // legs skipped: good on the blacklist
 	skipContractGood int // legs skipped: good under an open contract
 	skipLeash        int // legs skipped: only profit was beyond the leash/leg-time
-	skipLaneHeld     int // sp-lbbm: legs skipped: best lane held by a live/recovering leg
-	skipUnprofitable int // sp-u4tv: legs skipped: live net_per_u below the profitability floor
-	rehomed          int // sp-8bpr: hulls re-homed post-leg (cumulative)
+	skipLaneHeld     int // legs skipped: best lane held by a live/recovering leg
+	skipUnprofitable int // legs skipped: live net_per_u below the profitability floor
+	rehomed          int // hulls re-homed post-leg (cumulative)
 }
 
 // NewIdleArbDispatcher wires a dispatcher for the given dedicated fleet. A nil
-// contractGoods provider leaves the contract-good exclusion (guard 3) inert —
+// contractGoods provider leaves the contract-good exclusion inert —
 // the same optional-port contract the other guards use for missing wiring.
 func NewIdleArbDispatcher(
 	shipRepo navigation.ShipRepository,
@@ -436,10 +414,10 @@ func NewIdleArbDispatcher(
 		blacklist[strings.ToUpper(strings.TrimSpace(g))] = struct{}{}
 	}
 	// The launch standby set is the fallback the at-home filter uses when no LIVE
-	// resolver is wired (sp-jcke); trimmed of blank entries here so the per-pass
-	// lookup (standbyLookup) need not. When a resolver IS wired (production), the
-	// coordinator resolves the CURRENT hub set from its container config each pass
-	// so a `fleet hub` change is honored with no restart.
+	// resolver is wired; trimmed of blank entries here so the per-pass lookup need
+	// not. When a resolver IS wired (production), the coordinator resolves the
+	// CURRENT hub set from its container config each pass so a `fleet hub` change
+	// is honored with no restart.
 	return &IdleArbDispatcher{
 		shipRepo:      shipRepo,
 		marketRepo:    marketRepo,
@@ -470,11 +448,10 @@ func trimmedStandby(stations []string) []string {
 	return out
 }
 
-// SetStandbyResolver wires the LIVE standby-station resolver (sp-jcke): the
-// dispatcher calls it once per pass to get the CURRENT hub set instead of the
-// frozen launch set, so a `fleet hub add|remove` on the running coordinator is
-// honored with no restart. Nil (unset) keeps the launch set — the pre-jcke
-// behavior, which every existing test exercises.
+// SetStandbyResolver wires the LIVE standby-station resolver: the dispatcher
+// calls it once per pass to get the CURRENT hub set instead of the frozen
+// launch set, so a `fleet hub add|remove` on the running coordinator is
+// honored with no restart. Nil (unset) keeps the launch set.
 func (d *IdleArbDispatcher) SetStandbyResolver(resolver func(context.Context) []string) {
 	d.standbyResolver = resolver
 }
@@ -488,9 +465,9 @@ func (d *IdleArbDispatcher) resolveStandby(ctx context.Context) []string {
 	return d.launchStandby
 }
 
-// SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L2), the
+// SetAbsorptionLedger wires the cross-engine absorption ledger, the
 // optional-port idiom the other dispatcher dependencies use. A nil ledger leaves the
-// consult and the launch-record inert (pre-L2 behavior). consultDisabled is the
+// consult and the launch-record inert. consultDisabled is the
 // consult kill-switch (recording continues so the ledger still serves other
 // engines); plannedTTLSlack pads a recorded leg's projected round-trip TTL (0 → the
 // package default).
@@ -504,7 +481,7 @@ func (d *IdleArbDispatcher) SetAbsorptionLedger(ledger absorption.Ledger, consul
 }
 
 // absorptionConsult is one pass's batched read of the ledger plus its fail-closed
-// state. Built once per DispatchOnce (design §2: one outstanding query per pass) and
+// state. Built once per DispatchOnce (one outstanding query per pass) and
 // threaded to every candidate — the within-pass collision is the lane mutex's job,
 // the cross-pass/cross-engine collision is this.
 type absorptionConsult struct {
@@ -513,8 +490,7 @@ type absorptionConsult struct {
 	pools      map[absorption.LaneKey]absorption.KeyOccupancy
 }
 
-// reserved reports whether a (good, sink) sell is blocked by the ledger, DEPTH-AWARE
-// (sp-3meh — the trade-route evaluate() shape ported to idle-arb):
+// reserved reports whether a (good, sink) sell is blocked by the ledger, DEPTH-AWARE:
 //   - unreadable ledger → blocks EVERY candidate (fail-closed: never dispatch blind
 //     into depth another engine may have reserved or just crushed, RULINGS #4);
 //   - a recovering EXECUTED shadow (RecoveringResidual > 0, Outstanding already drops
@@ -523,10 +499,7 @@ type absorptionConsult struct {
 //   - in-flight PLANNED units → block ONLY when the remaining unreserved depth can't
 //     fit THIS leg's tranche at the quoted price. The tranche is the smaller of the
 //     sink's absorptive depth (sinkDepthCap = the sink good's trade volume) and the
-//     leg's own lot (legUnits — a leg dumps at most one hold). This is the fix for the
-//     old BINARY block that vetoed a whole lane on ANY positive occupancy and launched
-//     0 legs at shared hubs; idle-arb now flies into partially-reserved sinks the way
-//     the trade-route circuit already does, without abandoning absorption safety.
+//     leg's own lot (legUnits — a leg dumps at most one hold).
 //
 // An unknown/absent depth (sinkDepthCap <= 0) falls back to the conservative binary
 // block on any PLANNED occupancy — never relax depth we can't measure.
@@ -572,7 +545,7 @@ func (d *IdleArbDispatcher) readAbsorption(ctx context.Context) absorptionConsul
 }
 
 // recordAbsorption publishes a just-launched leg's sell-side occupancy to the ledger
-// so tours and other dispatchers consult it (sp-78ai L2). Called at the SAME seam the
+// so tours and other dispatchers consult it. Called at the SAME seam the
 // lane mutex is marked (noteLaunch) — the leg has committed, so this is a fail-open
 // RECORD, not a gate: a write failure loses cross-engine visibility (the armed mutex
 // and the arb run's sell floor still guard the leg) but never strands the launched
@@ -609,7 +582,7 @@ func (d *IdleArbDispatcher) isBlacklisted(good string) bool {
 }
 
 // idleArbSkipReason names why a hull's would-be leg was refused at dispatch, so
-// the skip counters (guard 5) can attribute pressure by cause.
+// the skip counters can attribute pressure by cause.
 type idleArbSkipReason int
 
 const (
@@ -618,20 +591,20 @@ const (
 	skipReasonContractGood
 	skipReasonLeash
 	skipReasonLaneHeld
-	// skipReasonReserved (sp-78ai L2): the (good, sink) is occupied in the
-	// cross-engine absorption ledger — a PLANNED leg (any engine) is in flight there,
-	// or a recovering EXECUTED shadow still blocks above its floor. This is the
+	// skipReasonReserved: the (good, sink) is occupied in the cross-engine
+	// absorption ledger — a PLANNED leg (any engine) is in flight there, or a
+	// recovering EXECUTED shadow still blocks above its floor. This is the
 	// lane-mutex's guarantee generalized CROSS-ENGINE and across a restart: a tour or
 	// another dispatcher's leg the in-memory mutex cannot see is caught here.
 	skipReasonReserved
-	// skipReasonUnprofitable (sp-u4tv): at current LIVE prices the lane's per-unit net
+	// skipReasonUnprofitable: at current LIVE prices the lane's per-unit net
 	// (spread − fuel) is below the binding profitability floor. This is the per-trip
 	// money guard that stops the fleet's own self-inflated thin lanes from flying
 	// net-negative; a below-floor lane auto-re-enters when its price recovers.
 	skipReasonUnprofitable
 )
 
-// String names the skip reason for the per-candidate verdict line (sp-nw9v). It
+// String names the skip reason for the per-candidate verdict line. It
 // mirrors the reason names the harvest-summary counters already use, so a
 // candidate's "skipped:<reason>" reads consistently with the cumulative totals.
 func (r idleArbSkipReason) String() string {
@@ -653,12 +626,11 @@ func (r idleArbSkipReason) String() string {
 	}
 }
 
-// idleArbMinMargin (sp-uohe guard 1) is the effective per-unit floor a leg
-// hands the arb run's live-verify gate: the tighter of the absolute floor and
-// the relative one (ceil(fraction × quoted margin)). Passing THIS as the run's
-// MinMargin makes the run's existing live-refresh + fail-closed abort reject a
-// leg whose live margin has slipped below the fraction of its quote — the
-// −234k hole was the dispatcher handing this gate a flat floor of 1.
+// idleArbMinMargin is the effective per-unit floor a leg hands the arb run's
+// live-verify gate: the tighter of the absolute floor and the relative one
+// (ceil(fraction × quoted margin)). Passing THIS as the run's MinMargin makes
+// the run's existing live-refresh + fail-closed abort reject a leg whose live
+// margin has slipped below the fraction of its quote.
 func idleArbMinMargin(cfg IdleArbConfig, quotedMargin int) int {
 	relative := int(math.Ceil(cfg.MarginVerifyFraction * float64(quotedMargin)))
 	if relative > cfg.MinMarginPerUnit {
@@ -667,7 +639,7 @@ func idleArbMinMargin(cfg IdleArbConfig, quotedMargin int) int {
 	return cfg.MinMarginPerUnit
 }
 
-// laneNetPerUnit (sp-u4tv) is the lane's per-unit net at the prices passed in:
+// laneNetPerUnit is the lane's per-unit net at the prices passed in:
 // the gross spread (sink bid − hub ask) minus the per-unit fuel estimate. Callers
 // pass the FRESHLY-READ ask/bid every pass, so a lane the fleet's own repeated
 // buys have inflated (or whose sink its dumps have decayed) is re-scored down
@@ -676,7 +648,7 @@ func (d *IdleArbDispatcher) laneNetPerUnit(hubAsk, sinkBid int) int {
 	return (sinkBid - hubAsk) - d.cfg.FuelCostPerUnit
 }
 
-// netProfitFloor (sp-u4tv) is the BINDING per-unit floor for a lane bought at
+// netProfitFloor is the BINDING per-unit floor for a lane bought at
 // hubAsk: the greater of the absolute after-fuel floor and the fraction-of-buy
 // floor. The relative floor is what stops a HIGH-PRICED good with a thin absolute
 // spread from clearing on the flat floor alone (e.g. buy 5000/u, +265 net clears
@@ -689,7 +661,7 @@ func (d *IdleArbDispatcher) netProfitFloor(hubAsk int) int {
 	return d.cfg.MinNetProfitPerUnit
 }
 
-// laneClearsProfitFloor (sp-u4tv) reports whether the lane's live net_per_u meets
+// laneClearsProfitFloor reports whether the lane's live net_per_u meets
 // its binding floor — the per-trip go/no-go the dispatcher applies to an otherwise
 // eligible lane before launching. A lane that fails auto-re-enters the next pass
 // its price recovers (a profitability skip never latches the lane mutex).
@@ -723,11 +695,11 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 	logger := common.LoggerFromContext(ctx)
 
 	launched := 0
-	passSkips := 0 // dispatch-time guard skips THIS pass (guard-5 summary trigger)
+	passSkips := 0 // dispatch-time guard skips THIS pass (drives the harvest-summary trigger)
 
-	// POST-LEG RE-HOMING (sp-8bpr): send every idle dedicated hull that finished
+	// POST-LEG RE-HOMING: send every idle dedicated hull that finished
 	// off-station back to its balanced standby station FIRST — before the arb
-	// loop, and before the guard-3 contract-goods read below (which is arb-only
+	// loop, and before the contract-goods read below (which is arb-only
 	// and fail-closed) so a contract-read failure never skips the re-home. This
 	// returns the hulls homed THIS pass; the arb loop excludes them so a hull is
 	// never re-arbed from a drift position the same tick it is being sent home
@@ -736,7 +708,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 	homingThisPass := d.rehomeDriftedHulls(ctx)
 	rehomedThisPass := len(homingThisPass)
 
-	// LANE MUTEX reconcile (sp-lbbm): observe which of the legs this dispatcher
+	// LANE MUTEX reconcile: observe which of the legs this dispatcher
 	// launched have terminated, so their (good, sink) lanes can begin the recovery
 	// hold and eventually free. A terminated leg is one whose hull no longer
 	// carries the leg's container id (released to idle, or re-claimed by a
@@ -747,15 +719,15 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		d.lanes.reconcile(shipContainerIDs)
 	}
 
-	// Emit the harvest summary (guard 5) on every return path of a pass that did
-	// something, so the captain's acceptance can read the attempt rate, the
-	// per-reason skip pressure, and the re-home count from message text.
+	// Emit the harvest summary on every return path of a pass that did
+	// something, so the attempt rate, the per-reason skip pressure, and the
+	// re-home count are readable from message text.
 	defer func() { d.logHarvestSummary(ctx, launched, passSkips, rehomedThisPass) }()
 
-	// Guard 3 dependency: the goods under the player's OPEN contracts. Read ONCE
-	// per pass (not per hull) and fail CLOSED — a contract-read failure skips the
-	// whole tick rather than risk dispatching a leg that competes with our own
-	// sourcing. A nil provider leaves the exclusion inert (empty set).
+	// The goods under the player's OPEN contracts. Read ONCE per pass (not per
+	// hull) and fail CLOSED — a contract-read failure skips the whole tick
+	// rather than risk dispatching a leg that competes with our own sourcing.
+	// A nil provider leaves the exclusion inert (empty set).
 	openGoods := map[string]struct{}{}
 	if d.contractGoods != nil {
 		g, err := d.contractGoods.OpenContractGoods(ctx, d.playerID.Value())
@@ -767,11 +739,11 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		openGoods = g
 	}
 
-	// sp-78ai L2: one batched absorption-ledger read per pass (design §2). The
-	// consult skips candidates whose (good, sink) another engine has reserved in
-	// flight or just crushed (a recovering shadow above its floor) — the cross-engine
-	// generalization the in-memory lane mutex cannot see. Fail-closed: an unreadable
-	// ledger declines every candidate this pass rather than dispatch blind.
+	// One batched absorption-ledger read per pass. The consult skips candidates
+	// whose (good, sink) another engine has reserved in flight or just crushed
+	// (a recovering shadow above its floor) — the cross-engine generalization
+	// the in-memory lane mutex cannot see. Fail-closed: an unreadable ledger
+	// declines every candidate this pass rather than dispatch blind.
 	consult := d.readAbsorption(ctx)
 
 	// tried tracks hulls already handled this pass (launched, or skipped for
@@ -792,7 +764,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 
 		var candidates []*navigation.Ship
 		for _, s := range idleShips {
-			// A hull sent home this pass (sp-8bpr) is off-limits to arb: it is
+			// A hull sent home this pass is off-limits to arb: it is
 			// being repositioned to standby, and its in-transit mark can lag the
 			// homer's fire-and-forget return, so exclude it explicitly rather than
 			// trust the recount to have caught it yet.
@@ -816,7 +788,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		lane, skip := d.pickHubLocalLane(ctx, hull, openGoods, consult)
 		if lane == nil {
 			// A guard refused this hull's only profitable lane → attribute the
-			// skip by cause (guard 5). skipNone means there simply was no
+			// skip by cause. skipNone means there simply was no
 			// profitable local lane, i.e. idle-for-lack-of-opportunity, not a
 			// guard skip.
 			if d.recordSkip(skip) {
@@ -825,11 +797,11 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			continue
 		}
 
-		// Guard 1 (the −234k fix): hand the arb run's live-verify gate the
-		// RELATIVE floor ceil(fraction × quoted margin), not the flat absolute
-		// floor. The run re-reads live prices and fails closed, so a leg whose
-		// live margin has collapsed below that fraction of its quote aborts
-		// pre-buy (zero spend) instead of buying on a razor cushion.
+		// Hand the arb run's live-verify gate the RELATIVE floor
+		// ceil(fraction × quoted margin), not the flat absolute floor. The run
+		// re-reads live prices and fails closed, so a leg whose live margin
+		// has collapsed below that fraction of its quote aborts pre-buy (zero
+		// spend) instead of buying on a razor cushion.
 		spec := IdleArbSpec{
 			ShipSymbol: hull.ShipSymbol(),
 			Good:       lane.Good,
@@ -839,7 +811,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			MinMargin:  idleArbMinMargin(d.cfg, lane.MarginPerUnit),
 			PlayerID:   d.playerID.Value(),
 			Operation:  d.fleet,
-			// sp-lbbm: arm the arb run's per-tranche sell floor with the SAME
+			// Arm the arb run's per-tranche sell floor with the SAME
 			// 80%-of-quote knob the buy-side live-verify uses (cfg.MarginVerifyFraction).
 			SellFloorFraction: d.cfg.MarginVerifyFraction,
 		}
@@ -855,13 +827,13 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		}
 		launched++
 		d.launched++
-		// LANE MUTEX (sp-lbbm): mark this (good, sink) held the instant the leg
+		// LANE MUTEX: mark this (good, sink) held the instant the leg
 		// launches, so a later candidate THIS pass that would pick the same sink is
 		// skipped:lane-held (within-pass dedupe), and the next pass holds it until
 		// the leg terminates + the recovery window elapses (cross-pass).
 		d.lanes.noteLaunch(laneKey{good: lane.Good, sink: lane.SellAt}, hull.ShipSymbol(), containerID)
-		// sp-78ai L2: publish this leg's sell-side absorption to the cross-engine
-		// ledger at the same seam the mutex is marked, so a tour or another dispatcher
+		// Publish this leg's sell-side absorption to the cross-engine ledger at
+		// the same seam the mutex is marked, so a tour or another dispatcher
 		// consults it. Fail-open record (the leg has committed) — see recordAbsorption.
 		d.recordAbsorption(ctx, hull, lane, containerID)
 
@@ -884,7 +856,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 
 // fleetShipContainerIDs returns the dedicated fleet's live ship→container map
 // (symbol → current container id, "" when idle/unassigned) — the input the lane
-// mutex reconciles its launched legs against (sp-lbbm). It reads the same
+// mutex reconciles its launched legs against. It reads the same
 // repository the reserve recount does. ok is false on a read failure, so the
 // caller skips reconcile and leaves lane holds untouched rather than free a lane
 // it cannot confirm terminated.
@@ -903,19 +875,14 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 	return out, true
 }
 
-// rehomeDriftedHulls (sp-8bpr) sends every idle dedicated hull that is NOT
-// sitting at one of the configured standby stations back to its balanced standby
-// station via the EXISTING HomeShipCommand (l7h2 Phase 3), and returns the set
-// of hulls homed this pass so the caller keeps them out of the arb loop.
+// rehomeDriftedHulls sends every idle dedicated hull that is NOT sitting at one
+// of the configured standby stations back to its balanced standby station via
+// the EXISTING HomeShipCommand, and returns the set of hulls homed this pass so
+// the caller keeps them out of the arb loop.
 //
-// THE GAP IT CLOSES: an idle-arb leg (sp-1z2h) ends with the hull idle at the
-// SELL waypoint — within a hop of its hub, but off-station. Nothing repositions
-// it until a contract-handoff homing or another balance pass happens to catch
-// it, so it dead-idles at a random market. This pass re-homes it directly, which
-// also keeps the hub-local leash honest: the leash (sp-uohe) is measured from
-// the hull's CURRENT waypoint, so a hull left at a drift position could chain
-// legs arbitrarily far from home; returning it to standby between legs makes
-// "leash-from-current" equal "leash-from-hub" again.
+// Re-homing off-station hulls between legs also keeps the hub-local leash
+// honest: the leash is measured from the hull's CURRENT waypoint, so a hull
+// left at a drift position could chain legs arbitrarily far from home.
 //
 // WHY ONLY OFF-STATION HULLS: a hull already parked at ANY standby station is
 // left alone. Re-firing HomeShipCommand on it would chase the balancer's
@@ -923,21 +890,18 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 // (churn); the balancer only needs to run when a hull is actually being brought
 // back. Claimed and in-transit hulls never appear here — FindIdleShipsByFleet
 // already excludes them — so an active contract claim or an in-flight leg is
-// never disturbed (RULINGS #7); and if a contract claim lands on a hull the
-// instant it finishes homing, that claim wins, exactly as it does for the
-// coordinator's own contract-handoff homing (homing never holds a claim).
+// never disturbed (RULINGS #7).
 //
 // Best-effort and inert when re-homing is off (nil homer or no standby stations
-// configured — matching HomeShipCommand's own "empty stations disables
-// relocation" contract), so the harvest behaves exactly as before when the
-// operator has not configured standby stations.
+// configured), matching HomeShipCommand's own "empty stations disables
+// relocation" contract.
 func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]bool {
 	homed := map[string]bool{}
 	if d.homer == nil {
 		return homed
 	}
 
-	// LIVE standby set for this pass (sp-jcke): a `fleet hub add|remove` is honored
+	// LIVE standby set for this pass: a `fleet hub add|remove` is honored
 	// with no restart. An empty set disables re-homing entirely, matching
 	// HomeShipCommand's own "empty stations = no relocation" contract.
 	liveStandby := d.resolveStandby(ctx)
@@ -991,7 +955,7 @@ func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]b
 // re-gates the margin fail-closed (now against the tighter relative floor) before
 // any credit moves, so a stale pick here costs at worst a wasted (refused) leg.
 //
-// The return distinguishes three outcomes for the skip counters (guard 5):
+// The return distinguishes three outcomes for the skip counters:
 //   - a lane + skipNone: fly it.
 //   - nil + a guard reason: a profitable lane existed but EVERY candidate was
 //     refused by a guard (blacklist / open-contract good / leash) — a
@@ -1061,7 +1025,7 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 			if destGood == nil {
 				continue
 			}
-			// sp-9mkf (Bug 3): never sell into an EXPORT market's bid — an exporter's bid
+			// Never sell into an EXPORT market's bid — an exporter's bid
 			// is a low sellback price, not a real import sink. A valid sink is IMPORT or
 			// EXCHANGE; unknown trade type is left eligible (fail-open, matching the
 			// manufacturing sell_market_distributor reference filter).
@@ -1093,24 +1057,23 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 				DestBid:       bid,
 			}
 
-			// sp-3meh: the sink's absorptive depth (its trade volume) and this leg's
+			// The sink's absorptive depth (its trade volume) and this leg's
 			// lot feed the depth-aware absorption consult, so a partially-reserved sink
 			// with room for the tranche is not vetoed.
 			reason := d.laneSkipReason(hubGood.Symbol(), wp, distance, excludedContractGoods, hull.EngineSpeed(), consult, destGood.TradeVolume(), units)
 
-			// Per-trip live-profitability gate (sp-u4tv): the FINAL money guard on an
-			// otherwise-eligible lane. Re-priced this pass from the ask/bid read above
-			// (never a cached spread), it refuses a lane whose live net_per_u (spread −
-			// fuel) is below the binding floor — the fix for the fleet's own buys walking
-			// a thin export up until the leg goes net-negative. Only checked when nothing
-			// cheaper already excluded the lane, so a below-floor lane is attributed to
-			// this gate (not masked by a policy/leash skip), and it auto-re-enters the
-			// pass its price recovers.
+			// The FINAL money guard on an otherwise-eligible lane. Re-priced
+			// this pass from the ask/bid read above (never a cached spread), it
+			// refuses a lane whose live net_per_u (spread − fuel) is below the
+			// binding floor. Only checked when nothing cheaper already excluded
+			// the lane, so a below-floor lane is attributed to this gate (not
+			// masked by a policy/leash skip), and it auto-re-enters the pass
+			// its price recovers.
 			if reason == skipNone && !d.laneClearsProfitFloor(ask, bid) {
 				reason = skipReasonUnprofitable
 			}
 
-			// Per-candidate verdict logging (sp-nw9v): emit one terse line for
+			// Per-candidate verdict logging: emit one terse line for
 			// every positive-margin candidate with the COMPUTED distance the leash
 			// check used, the two endpoints (with coordinates) it measured between,
 			// the quoted margin, the buy/sell market read ages, and the verdict.
@@ -1145,12 +1108,12 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 }
 
 // logCandidate emits one terse per-candidate verdict line in MESSAGE TEXT
-// (sp-nw9v observability; the CLI renderer drops metadata maps). It carries every
+// (the CLI renderer drops metadata maps). It carries every
 // value the leash decision turned on so a masked mis-pick is impossible to hide:
 // the good, the buy/sell waypoints WITH the coordinates the distance was measured
 // between, that computed distance against the live leash/hub radii, the projected
 // CRUISE leg-time against the cap, the quoted margin (bid−ask), the per-unit net
-// after fuel against the binding profitability floor (sp-u4tv — so a
+// after fuel against the binding profitability floor (so a
 // skipped:unprofitable verdict shows the numbers that refused it), the buy/sell
 // market read ages, and the verdict (eligible, or skipped:<reason>). This is the
 // surface an all-pairs analyst scan is diffed against. It is LOG-ONLY: it reads
@@ -1159,7 +1122,7 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 	verdict := "eligible"
 	if reason != skipNone {
 		verdict = "skipped:" + reason.String()
-		// sp-lbbm: for a lane-held verdict, name the holding hull and (once its leg
+		// For a lane-held verdict, name the holding hull and (once its leg
 		// has terminated) when the lane frees, so a collision the mutex prevented is
 		// legible in the same candidate line the analyst scan is diffed against.
 		if reason == skipReasonLaneHeld {
@@ -1190,10 +1153,10 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, hull *navigation.S
 
 // laneSkipReason applies the dispatch-time exclusions to one (good, market)
 // candidate and returns the FIRST reason it is refused, or skipNone if it may
-// fly. Order: blacklist (guard 4) → open-contract good (guard 3) → leash (guard
-// 2: the LeashRadius bound, then the projected CRUISE leg-time from the hull's
-// engine speed against MaxLegDuration). None weakens the pre-existing HubRadius
-// filter; each only tightens (RULINGS #4).
+// fly. Order: blacklist → open-contract good → leash (the LeashRadius bound,
+// then the projected CRUISE leg-time from the hull's engine speed against
+// MaxLegDuration). None weakens the pre-existing HubRadius filter; each only
+// tightens (RULINGS #4).
 func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, excludedContractGoods map[string]struct{}, engineSpeed int, consult absorptionConsult, sinkDepthCap, legUnits int) idleArbSkipReason {
 	if d.isBlacklisted(good) {
 		return skipReasonBlacklist
@@ -1208,7 +1171,7 @@ func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, 
 	if time.Duration(legSeconds)*time.Second > d.cfg.MaxLegDuration {
 		return skipReasonLeash
 	}
-	// LANE MUTEX (sp-lbbm): a (good, sink) already worked by a live or still-
+	// LANE MUTEX: a (good, sink) already worked by a live or still-
 	// recovering leg — including one launched earlier THIS pass — is held. Checked
 	// before the ledger consult so a sink THIS dispatcher already holds keeps
 	// reporting lane-held (existing behavior), and because pickHubLocalLane scans ALL
@@ -1217,13 +1180,11 @@ func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, 
 	if d.lanes.held(laneKey{good: good, sink: sink}) {
 		return skipReasonLaneHeld
 	}
-	// ABSORPTION LEDGER (sp-78ai L2, depth-aware sp-3meh): a sink the in-memory mutex
+	// ABSORPTION LEDGER (depth-aware): a sink the in-memory mutex
 	// does NOT hold but another engine has reserved in flight (only blocking when the
 	// remaining depth can't fit this leg's tranche), or a recovering shadow still
-	// blocks — the cross-engine / cross-restart generalization of the mutex. Same
-	// structural hole as sp-i8vx (in-flight exposure), closed here from the
-	// market-absorption side. Metrics (sp-dp92 P6): observation only, mirrors the two
-	// outcomes of this guard.
+	// blocks — the cross-engine / cross-restart generalization of the mutex, closed
+	// here from the market-absorption side.
 	if consult.reserved(good, sink, sinkDepthCap, legUnits) {
 		metrics.RecordAbsorptionConsultVerdict(d.playerID.Value(), "skip_reserved", absorptionEngineIdleArb)
 		return skipReasonReserved
@@ -1233,7 +1194,7 @@ func (d *IdleArbDispatcher) laneSkipReason(good, sink string, distance float64, 
 }
 
 // recordSkip increments the cumulative counter for a dispatch-time guard skip
-// (guard 5) and reports whether it was one. skipNone is not a skip — the hull
+// and reports whether it was one. skipNone is not a skip — the hull
 // simply had no profitable local lane this tick.
 func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
 	switch reason {
@@ -1255,14 +1216,13 @@ func (d *IdleArbDispatcher) recordSkip(reason idleArbSkipReason) bool {
 	return true
 }
 
-// logHarvestSummary emits the guard-5 observability line in MESSAGE TEXT (not a
+// logHarvestSummary emits the harvest observability line in MESSAGE TEXT (not a
 // metadata map — the CLI renderer drops metadata), carrying the attempt rate and
-// the cumulative per-reason skip counts the captain's acceptance and the
-// fleet-sizing rule read. Margin-aborts are a POST-launch refusal the arb run
-// logs per-leg in its own message text ("... aborting before buy"); they are not
-// summed here because the dispatcher's launch is fire-and-forget and never
-// observes the run's outcome. Emitted only when the pass did something, to keep
-// idle ticks quiet.
+// the cumulative per-reason skip counts. Margin-aborts are a POST-launch refusal
+// the arb run logs per-leg in its own message text ("... aborting before buy");
+// they are not summed here because the dispatcher's launch is fire-and-forget
+// and never observes the run's outcome. Emitted only when the pass did
+// something, to keep idle ticks quiet.
 func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisPass, skipsThisPass, rehomedThisPass int) {
 	if launchedThisPass == 0 && skipsThisPass == 0 && rehomedThisPass == 0 {
 		return

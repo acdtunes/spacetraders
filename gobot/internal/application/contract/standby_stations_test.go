@@ -9,12 +9,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// These tests cover the OPERATION-LEVEL live hub model (sp-jcke): the contract
-// coordinator's standby-station SET (its "hubs") must be mutable on a RUNNING
-// coordinator with no restart and resolved LIVE each discovery pass — the exact
-// symmetry the dedicated-fleet ship tag already has (sp-4s9m / sp-cmwc). The
-// persisted set is authoritative and a live change is not reverted by the launch
-// snapshot (RULINGS #2, tested against a simulated restart in the grpc package).
+// These tests cover the contract coordinator's standby-station SET (its "hubs"):
+// it must be mutable on a RUNNING coordinator with no restart and resolved LIVE
+// each discovery pass — the same symmetry the dedicated-fleet ship tag already
+// has. The persisted set is authoritative and a live change is not reverted by
+// the launch snapshot (RULINGS #2, tested against a simulated restart in the
+// grpc package).
 
 // --- ApplyStandbyStationChange (the pure hub-set mutation) ------------------
 
@@ -124,10 +124,10 @@ func (l *standbyCapturingLogger) hasWarning() bool {
 	return false
 }
 
-// TestResolveStandbyStations_LiveSetWins is the core PART-2 behavior: the LIVE
-// set from the provider — not the frozen launch snapshot — is what homing reads
-// each pass. A hub added live (present in the provider, absent from the launch
-// list) is returned; the launch list is not consulted.
+// TestResolveStandbyStations_LiveSetWins: the LIVE set from the provider — not
+// the frozen launch snapshot — is what homing reads each pass. A hub added live
+// (present in the provider, absent from the launch list) is returned; the
+// launch list is not consulted.
 func TestResolveStandbyStations_LiveSetWins(t *testing.T) {
 	provider := &fakeStandbyProvider{live: []string{"X1-TW-A1", "X1-TW-C3"}}
 	launchList := []string{"X1-TW-A1"} // C3 was `fleet hub add`ed after launch
@@ -154,10 +154,9 @@ func TestResolveStandbyStations_EmptyLiveSet_HomingDisabled(t *testing.T) {
 	}
 }
 
-// TestResolveStandbyStations_ReadError_FallsBackToLaunchList proves the resolver
-// never regresses below the pre-fix behavior: a provider read failure falls back
-// to the launch snapshot and warns, rather than losing all hub data (mirrors
-// resolveDedicatedMembersForHoming's fallback, sp-cmwc).
+// TestResolveStandbyStations_ReadError_FallsBackToLaunchList: a provider read
+// failure falls back to the launch snapshot and warns, rather than losing all
+// hub data (mirrors resolveDedicatedMembersForHoming's fallback).
 func TestResolveStandbyStations_ReadError_FallsBackToLaunchList(t *testing.T) {
 	provider := &fakeStandbyProvider{err: fmt.Errorf("db unavailable")}
 	launchList := []string{"X1-TW-A1", "X1-TW-B2"}
@@ -174,8 +173,8 @@ func TestResolveStandbyStations_ReadError_FallsBackToLaunchList(t *testing.T) {
 }
 
 // TestResolveStandbyStations_NilProvider_UsesLaunchList proves the optional-port
-// contract: with no provider wired (tests, or a daemon that predates the wiring)
-// the coordinator behaves exactly as before — the launch snapshot is used.
+// contract: with no provider wired, the coordinator falls back to the launch
+// snapshot.
 func TestResolveStandbyStations_NilProvider_UsesLaunchList(t *testing.T) {
 	launchList := []string{"X1-TW-A1"}
 

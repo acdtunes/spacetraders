@@ -56,7 +56,7 @@ func TestDarkMarketScanner_ReturnsChartedMarketSystemsWithNoScanData(t *testing.
 	require.NotContains(t, bySystem, "X1-SCANNED", "a charted market system with FRESH player market_data is not dark")
 }
 
-// sp-pvw3 COVERAGE GAP (found live): the dark-market backlog must be "charted + has marketplaces +
+// COVERAGE GAP: the dark-market backlog must be "charted + has marketplaces +
 // no OR STALE market_data", not just NEVER-scanned. A charted market whose price data has gone stale
 // re-enters the backlog even though it carries market_data — so it is NOT in the old zero-only
 // internal queue but IS in the honest backlog (and discovery_share=0 will re-declare a scan for it).
@@ -88,7 +88,7 @@ func TestDarkMarketScanner_IncludesStaleMarkets_NotJustNeverScanned(t *testing.T
 	require.Contains(t, bySystem, "X1-STALE", "a STALE charted market is in the honest backlog though NOT in the old zero-only queue")
 	require.NotContains(t, bySystem, "X1-FRESH", "a freshly-scanned market is not dark")
 
-	// Staleness disabled (threshold <= 0) → only NEVER-scanned systems are dark (the pre-sp-pvw3 rule).
+	// Staleness disabled (threshold <= 0) → only NEVER-scanned systems are dark.
 	zeroOnly := NewDarkMarketScanner(src, 0)
 	got, err = zeroOnly.ChartedUnscannedMarketSystems(context.Background(), 3)
 	require.NoError(t, err)

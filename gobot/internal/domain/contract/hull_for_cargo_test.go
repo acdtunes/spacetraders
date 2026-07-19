@@ -26,14 +26,9 @@ func selectHull(t *testing.T, ships []*navigation.Ship, units int) *SelectionRes
 	return result
 }
 
-// Tier 1 (sp-f66z): among hulls that FIT the load, the NEAREST wins even when
-// a farther hull is smaller - the exact far-source claim the ladder used to
-// make. Smallest-fit-anywhere let the coordinator claim a far small hull while
-// a nearer adequate hull idled at a hub (5/8 stall-tails); nearest-adequate-
-// first stops it. Both are regular haulers at the same speed, so only hold size
-// and distance differ and travel time isolates proximity. (Was
-// SmallestFittingHullBeatsCloserHeavy: the captain+analyst doctrine change
-// inverts that expected pick.)
+// Tier 1: among hulls that FIT the load, the NEAREST wins even when a farther
+// hull is smaller. Both are regular haulers at the same speed, so only hold
+// size and distance differ and travel time isolates proximity.
 func TestSelectHullForCargo_NearestAdequateHullBeatsFartherSmaller(t *testing.T) {
 	nearHeavy := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 10, 0, 30, 120)
 	farLight := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 200, 0, 30, 40)
@@ -45,10 +40,9 @@ func TestSelectHullForCargo_NearestAdequateHullBeatsFartherSmaller(t *testing.T)
 	}
 }
 
-// Tier 1 (sp-f66z): proximity is measured by cruise travel time, which is
-// speed-aware - two equal-hold hulls at the same distance are split by engine
-// speed, so the faster hull that clears the leg sooner is the "nearer" one
-// (sp-snmb, now the primary key rather than a within-capacity-tier tie-break).
+// Tier 1: proximity is measured by cruise travel time, which is speed-aware -
+// two equal-hold hulls at the same distance are split by engine speed, so the
+// faster hull that clears the leg sooner is the "nearer" one.
 func TestSelectHullForCargo_NearestByTravelTimeIsSpeedAware(t *testing.T) {
 	slow := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 100, 0, 10, 40)
 	fast := newSelectorTestShipWithHull(t, "TORWIND-4", "HAULER", 100, 0, 30, 40)
@@ -60,10 +54,8 @@ func TestSelectHullForCargo_NearestByTravelTimeIsSpeedAware(t *testing.T) {
 	}
 }
 
-// Tier 1 tie-break (sp-f66z): when two adequate hulls are equidistant (same
-// travel time), the smaller fitting hold wins - hold-size right-sizing is kept
-// as the SECONDARY key, so l7h2 P3's anti-waste survives wherever proximity
-// does not decide.
+// Tier 1 tie-break: when two adequate hulls are equidistant (same travel
+// time), the smaller fitting hold wins as the secondary key.
 func TestSelectHullForCargo_EqualDistanceTieBreaksOnSmallerHold(t *testing.T) {
 	bigHold := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 100, 0, 30, 120)
 	smallHold := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 100, 0, 30, 40)
@@ -91,7 +83,7 @@ func TestSelectHullForCargo_HeavyWinsWhenLoadNeedsTheHold(t *testing.T) {
 
 // Tier 2 gate: the command frigate stays benched while any regular hull fits,
 // even when the frigate is closer AND a tighter fit - last-resort means
-// last-resort (sp-4a4e refined by l7h2 Phase 3).
+// last-resort.
 func TestSelectHullForCargo_CommandFrigateBenchedWhileRegularHullFits(t *testing.T) {
 	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 10, 0, 36, 60)
 	hauler := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 200, 0, 15, 80)
@@ -104,8 +96,8 @@ func TestSelectHullForCargo_CommandFrigateBenchedWhileRegularHullFits(t *testing
 }
 
 // Tier 2: the command frigate is drafted when it is the only hull whose hold
-// fits the load - it stays an eligible candidate (sp-4a4e), stepping in
-// exactly when its hold is the differentiator.
+// fits the load - it stays an eligible candidate, stepping in exactly when
+// its hold is the differentiator.
 func TestSelectHullForCargo_CommandFrigateDraftedWhenOnlyHullThatFits(t *testing.T) {
 	hauler := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 10, 0, 30, 8)
 	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 200, 0, 36, 60)
@@ -120,11 +112,10 @@ func TestSelectHullForCargo_CommandFrigateDraftedWhenOnlyHullThatFits(t *testing
 	}
 }
 
-// sp-uj6a: the command-cargo-baseline gate lives upstream, at selection time
+// The command-cargo-baseline gate lives upstream, at selection time
 // (ship_pool_manager.FilterCommandCargoBaseline) - SelectHullForCargo itself
-// never changes, so the sp-4a4e last-resort tier must still draft an
-// UPGRADED frigate (era-2's 115-cargo hull, the realistic candidate once the
-// upstream gate is in place) exactly as it drafts the smaller one above.
+// never changes, so the last-resort tier must still draft an UPGRADED frigate
+// (era-2's 115-cargo hull) exactly as it drafts the smaller one above.
 func TestSelectHullForCargo_UpgradedCommandFrigateDraftedWhenOnlyHullThatFits(t *testing.T) {
 	hauler := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 10, 0, 30, 8)
 	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 200, 0, 36, 115)

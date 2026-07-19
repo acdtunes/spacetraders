@@ -1,7 +1,7 @@
 package commands
 
-// Behavioral tests for the tiered-autonomy APPROVAL-EXECUTION path (bead st-0h8,
-// epic st-7zk). This is the ONLY route a tier-4 capital action executes under v1:
+// Behavioral tests for the tiered-autonomy APPROVAL-EXECUTION path. This is the
+// ONLY route a tier-4 capital action executes under v1:
 // CONVERGE structurally refuses every Approved tier-4 at/over the threshold (see
 // run_capacity_reconciler_coordinator_test.go), so capital reaches
 // Actuator.ExecuteCapital exclusively via a human-approved proposal, and only
@@ -30,8 +30,8 @@ import (
 )
 
 // fakeApprovedSource is the approval seam: it yields the proposals a human/captain
-// has approved and that await execution. The future arming lane (st-cpc) backs it
-// with the real captain approval signal; st-0h8 proves the path against it.
+// has approved and that await execution. A future arming lane backs it with the
+// real captain approval signal.
 type fakeApprovedSource struct {
 	proposals []capacity.Proposal
 	err       error

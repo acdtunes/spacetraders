@@ -47,7 +47,7 @@ type APIClient interface {
 	// live SpaceTraders API requires "waypointSymbol" in the request body.
 	JumpShip(ctx context.Context, shipSymbol, waypointSymbol, token string) (*JumpResult, error)
 	// WarpShip warps a ship OFF the jump-gate network to a destination waypoint
-	// in another system (sp-0xd0). Requires a MODULE_WARP_DRIVE_I; fuel is
+	// in another system. Requires a MODULE_WARP_DRIVE_I; fuel is
 	// consumed by inter-system distance. Mirrors NavigateShip's fuel + arrival
 	// return envelope.
 	WarpShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error)
@@ -62,7 +62,7 @@ type APIClient interface {
 	ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error)
 	// GetWaypoint reads a single waypoint's detail, including whether it is still
 	// UNDER CONSTRUCTION. The gate graph uses this to learn a jump gate's build
-	// state (an unbuilt gate must never be routed through — sp-8qhu): the API's
+	// state (an unbuilt gate must never be routed through): the API's
 	// jump-gate connections list carries symbols only, so construction is resolved
 	// with a per-gate waypoint read.
 	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*WaypointDetail, error)
@@ -172,11 +172,9 @@ type ModuleInfo struct {
 	// modules that grant no capacity.
 	Capacity int
 	Range    int
-	// Power, Crew, and Slots are the module's own install requirements
-	// (sp-el60) - what installing it draws from the ship's reactor power
-	// budget, crew capacity, and module-slot budget respectively. Previously
-	// dropped by every caller that builds a ModuleInfo from the API's
-	// modules responses, leaving outfitting feasibility uncomputable.
+	// Power, Crew, and Slots are the module's own install requirements —
+	// what installing it draws from the ship's reactor power budget, crew
+	// capacity, and module-slot budget respectively.
 	Power int
 	Crew  int
 	Slots int
@@ -243,7 +241,7 @@ type JumpGateData struct {
 // WaypointDetail is the slice of a single waypoint's detail the gate graph needs:
 // its symbol and whether it is still under construction. An unbuilt jump gate
 // (IsUnderConstruction true) is a dead edge the multi-jump BFS must not traverse
-// (sp-8qhu) — a jump INTO it fails at hop time (API error 4262).
+// — a jump INTO it fails at hop time (API error 4262).
 type WaypointDetail struct {
 	Symbol              string
 	IsUnderConstruction bool
@@ -284,7 +282,7 @@ type ShipListingData struct {
 	Description   string
 	PurchasePrice int
 	// Supply is the listing's supply tier (e.g. HIGH/MODERATE/LOW) as reported
-	// by the shipyard API (sp-42ow) — persisted by the shipyard-inventory scan.
+	// by the shipyard API — persisted by the shipyard-inventory scan.
 	Supply  string
 	Frame   map[string]interface{}
 	Reactor map[string]interface{}

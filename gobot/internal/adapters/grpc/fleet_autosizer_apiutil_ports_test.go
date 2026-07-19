@@ -59,8 +59,8 @@ func TestAutosizerAPIUtilReader_AbsentSurface_FailsClosed(t *testing.T) {
 }
 
 // sp-a5dq: the REAL *metrics.APIBudgetTracker (the daemon-startup singleton) satisfies the reader's
-// reporter seam and yields a readable utilization once wired — proving the ceiling is no longer an
-// unreadable stub. Uses a mock clock so the recorded events land inside the rolling window instantly.
+// reporter seam and yields a readable utilization once wired. Uses a mock clock so the recorded
+// events land inside the rolling window instantly.
 func TestAutosizerAPIUtilReader_RealTracker_IsReadable(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: shared.NewRealClock().Now()}
 	tracker := metrics.NewAPIBudgetTracker(2.0, clock) // 2 req/s ceiling — the live limiter's rate

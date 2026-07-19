@@ -64,16 +64,13 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 		return false, &DistributionMetrics{}, nil
 	}
 
-	// Check for clustering: count ships at each waypoint
 	waypointCounts := make(map[string]int)
 	for _, ship := range ships {
 		waypointCounts[ship.CurrentLocation().Symbol]++
 	}
 
-	// If any waypoint has more than allowed, clustering detected
 	for waypoint, count := range waypointCounts {
 		if count > MaxShipsPerWaypoint {
-			// Clustering detected - immediate rebalancing needed
 			return true, &DistributionMetrics{
 				AverageDistance: 0, // Not relevant when clustering
 				IsClustered:     true,
@@ -82,7 +79,6 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 		}
 	}
 
-	// Calculate average distance from each ship to its nearest target
 	totalDistance := 0.0
 	for _, ship := range ships {
 		currentLocation := ship.CurrentLocation()
@@ -101,7 +97,7 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 }
 
 // PrePositionHint biases one idle hull toward a predicted next-source market during
-// assignment (sp-1ef0 contract pre-position). It is honored only when TargetWaypoint is
+// assignment. It is honored only when TargetWaypoint is
 // set AND Confidence clears Threshold — the confidence guard that bounds wasted-move
 // risk. A zero-value hint (or any sub-threshold one) leaves distance-based round-robin
 // exactly as it was, so the no-signal path is untouched.
@@ -142,7 +138,7 @@ func (fa *FleetAssigner) AssignShipsToTargets(
 }
 
 // AssignShipsToTargetsWithHint is AssignShipsToTargets plus an optional contract
-// pre-position hint (sp-1ef0). When the hint clears its confidence guard, the idle hull
+// pre-position hint. When the hint clears its confidence guard, the idle hull
 // nearest the predicted next-source market is placed onto it FIRST — overriding pure
 // distance so it is already close when the contract's next same-good delivery begins —
 // and the remaining hulls distribute by distance as before. Below the guard (or with an
@@ -161,7 +157,6 @@ func (fa *FleetAssigner) AssignShipsToTargetsWithHint(
 		return []Assignment{}, nil
 	}
 
-	// Calculate max ships per target for balanced distribution
 	// E.g., 5 ships, 3 targets -> max 2 ships per target (ceiling division)
 	maxPerTarget := (len(ships) + len(targetWaypoints) - 1) / len(targetWaypoints)
 
@@ -170,13 +165,11 @@ func (fa *FleetAssigner) AssignShipsToTargetsWithHint(
 		maxPerTarget = MaxShipsPerMarket
 	}
 
-	// Track how many ships assigned to each target
 	targetCounts := make(map[string]int)
 	for _, waypoint := range targetWaypoints {
 		targetCounts[waypoint.Symbol] = 0
 	}
 
-	// Assignment list
 	var assignments []Assignment
 	remaining := ships
 
@@ -198,7 +191,6 @@ func (fa *FleetAssigner) AssignShipsToTargetsWithHint(
 		}
 	}
 
-	// For each remaining ship, find nearest target with available capacity
 	for _, ship := range remaining {
 		bestTarget, bestDistance := nearestTargetWithCapacity(ship, targetWaypoints, targetCounts, maxPerTarget)
 		if bestTarget != nil {

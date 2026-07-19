@@ -1,6 +1,6 @@
 package persistence_test
 
-// Integration test for the sp-42ow live regression (shipped-but-never-emits):
+// Integration test for the live regression (shipped-but-never-emits):
 // the scout's piggybacked shipyard scan silently no-ops at virtually every
 // shipyard because the immutable SHIPYARD trait was read through FindBySymbol,
 // whose era-scope + 24h-TTL gates are correct only for VOLATILE price/nav data.

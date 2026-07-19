@@ -32,10 +32,9 @@ func (detectorErrStore) LatestByType(context.Context, int, captain.EventType) (*
 	return nil, nil
 }
 
-// D4 (1): a transient detector/DB error must NOT abort the whole tick. The old
-// `return false, fmt.Errorf("detectors: %w", err)` skipped cadence/interrupt/
-// credits wake evaluation entirely, so repeated transient errors could freeze
-// wake decisions with only a generic 'tick error' line. Synthetic events are
+// D4 (1): a transient detector/DB error must NOT abort the whole tick — an
+// aborted tick skips cadence/interrupt/credits wake evaluation entirely, so
+// repeated transient errors could freeze wake decisions. Synthetic events are
 // best-effort enrichment; wake evaluation must survive them.
 func TestTickContinuesToWakeEvaluationWhenDetectorsError(t *testing.T) {
 	sup, _, gw := newBridgeSupervisor(t)
@@ -46,7 +45,7 @@ func TestTickContinuesToWakeEvaluationWhenDetectorsError(t *testing.T) {
 	sup.lastSession = time.Now().Add(-2 * time.Hour) // cadence due
 
 	// Break the DB: the detectors' state queries now error (a transient DB
-	// failure), which the old code turned into an aborted tick.
+	// failure) — the tick must survive it, not abort.
 	sqlDB, err := sup.db.DB()
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())

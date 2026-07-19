@@ -35,7 +35,7 @@ type UniverseLister interface {
 }
 
 // UniverseSystemsCache crawls the whole universe system list ONCE (all pages) and serves it
-// from memory for a long TTL (sp-k645). The roster is near-static within an era and large
+// from memory for a long TTL. The roster is near-static within an era and large
 // (thousands of systems, many pages), so a per-tick refetch would burn the API budget for
 // nothing. The first AllSystems after construction or TTL expiry pays the full paginated
 // crawl; every call within the TTL is a pure in-memory read. Once a roster is cached, a

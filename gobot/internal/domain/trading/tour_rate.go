@@ -6,7 +6,7 @@ import (
 )
 
 // tour_rate.go — the realized fleet-tour-rate summary the fleet autosizer's heavy-demand economic
-// gate consumes (sp-4ewi). It is the READ-side twin of the tour graduation report's $/hr math
+// gate consumes. It is the READ-side twin of the tour graduation report's $/hr math
 // (adapters/cli/tour_report.go computeTourGateMetrics): net = Σ(sell − buy) over a leg span, $/hr =
 // net / wall-clock hours. Pure over the persisted per-leg telemetry (trading.TourLegTelemetry), so
 // the autosizer port is a thin repo-read + this call, and every rate/decline case is unit-tested in
@@ -28,7 +28,7 @@ import (
 // must not spend; a readable zero is reserved for genuinely-earning-zero, which the data here can
 // never assert (a computable rate needs a realized sell).
 
-// FleetTourRateResult is the realized fleet-tour-rate summary (sp-4ewi). Readable=false means no
+// FleetTourRateResult is the realized fleet-tour-rate summary. Readable=false means no
 // computable rate existed — the heavy realized-rate/payback guards then fail closed on their own.
 type FleetTourRateResult struct {
 	// FleetAvg is the mean of per-ship realized $/hr over the window (0 when unreadable).
@@ -113,7 +113,7 @@ func computableRates(groups map[string]*legGroup) []float64 {
 	return rates
 }
 
-// ComputeFleetTourRate summarises the realized fleet-tour rate from per-leg telemetry (sp-4ewi). It
+// ComputeFleetTourRate summarises the realized fleet-tour rate from per-leg telemetry. It
 // is pure and window-agnostic — the caller passes only the rows inside its read window (the port
 // applies `since` at the repository read), and the computation derives its own span from those rows.
 func ComputeFleetTourRate(rows []TourLegTelemetry) FleetTourRateResult {
@@ -176,7 +176,7 @@ func meanRate(tours []tourRatePoint) float64 {
 }
 
 // MedianTourRate is the fleet rolling-MEDIAN realized tour $/hr over the rows the caller passes
-// (the placement engine's β, sp-z7ng): it reuses the same per-TourID legGroup fold as
+// (the placement engine's β): it reuses the same per-TourID legGroup fold as
 // tourRateDeclining — group by TourID, .add() each row, keep the tours whose .rate() is computable
 // (a realized sell over a positive wall-clock span) — then returns the MEDIAN of those per-tour
 // rates (an even count averages the two middle values). The median, not the mean, is deliberate:

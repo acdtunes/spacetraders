@@ -16,7 +16,7 @@ import (
 )
 
 // sfFakeAPIClient is a minimal live-treasury fake for the working-capital spend
-// floor (sp-bp6f fix #1). It embeds domainPorts.APIClient (left nil) so only
+// floor. It embeds domainPorts.APIClient (left nil) so only
 // GetAgent needs overriding, mirroring the stubAPIClient/wpRefreshFakeAPIClient
 // pattern already used by the player-queries and shipyard-batch-purchase tests.
 // A non-nil err simulates a live-read failure (GetAgent itself erroring),
@@ -238,8 +238,8 @@ func TestTradeRouteCoordinator_SpendFloor_DoesNotAbortWhenTreasuryClearsReserve(
 // sfVariableMediator returns caller-scripted per-visit buy/sell unit economics
 // (indexed by call order), so a test can construct a circuit whose REALIZED
 // fills lose money even though the underlying trFakeMarketRepo's cached ranked
-// spread stays positive throughout - the exact incident shape (sp-bp6f fix #2):
-// repeated tranches walk the source ask up and crush the destination bid in
+// spread stays positive throughout: repeated tranches walk the source ask up and
+// crush the destination bid in
 // reality, while the stale ranked basis the lane was selected on keeps
 // reporting a healthy spread. trFakeMediator cannot model this - its buy/sell
 // prices are fixed constants that are always profitable by construction.

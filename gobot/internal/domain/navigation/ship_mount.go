@@ -28,12 +28,10 @@ func NewShipMount(symbol, name string, strength int, deposits []string, requirem
 	}
 }
 
-// Symbol returns the mount symbol identifier (e.g., "MOUNT_MINING_LASER_I")
 func (m *ShipMount) Symbol() string {
 	return m.symbol
 }
 
-// Name returns the mount's display name.
 func (m *ShipMount) Name() string {
 	return m.name
 }
@@ -53,7 +51,6 @@ func (m *ShipMount) Deposits() []string {
 	return m.deposits
 }
 
-// Requirements returns the mount's power/crew/slot cost.
 func (m *ShipMount) Requirements() ShipRequirements {
 	return m.requirements
 }

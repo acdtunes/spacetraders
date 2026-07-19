@@ -53,16 +53,15 @@ func (s stubCreditsGaugeContainerInfo) RestartCount() int                 { retu
 func (s stubCreditsGaugeContainerInfo) CurrentIteration() int             { return 0 }
 func (s stubCreditsGaugeContainerInfo) RuntimeDuration() time.Duration    { return 0 }
 
-// TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero pins sp-m1n2.
+// TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero pins the poller's
+// must-not-overwrite guarantee.
 //
 // player_credits_balance has two writers: the 60s P&L poller
 // (updateProfitLoss) and RecordTransaction (fired per ledger entry with the
-// authoritative/reconstructed balance). The poller used to source its value
-// from playerRepo.FindByID(...).Credits - but GormPlayerRepository.FindByID
-// never populates Credits from the DB (by design; real credits require a
-// live API fetch the poller never makes). So every poll tick unconditionally
-// stomped the gauge to 0, racing the accurate per-transaction value and
-// producing the observed 0<->balance oscillation.
+// authoritative/reconstructed balance). GormPlayerRepository.FindByID never
+// populates Credits from the DB (by design; real credits require a live API
+// fetch the poller never makes), so the poller must never write this gauge —
+// RecordTransaction is its sole writer.
 func TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero(t *testing.T) {
 	const playerID = 42
 	const agentSymbol = "TEST_AGENT"

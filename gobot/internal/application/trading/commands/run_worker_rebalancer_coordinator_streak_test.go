@@ -11,7 +11,7 @@ import (
 )
 
 // TestRebalancerStreak_ReconcileFailsRepeatedly_EmitsErrorLoopEvent pins the
-// sp-6wxq wiring at the worker-rebalancer reconcile checkpoint: a pass that fails
+// wiring at the worker-rebalancer reconcile checkpoint: a pass that fails
 // with the identical error for DefaultStreakThreshold consecutive ticks crosses
 // exactly once and emits one interrupt-class coordinator error-loop event, while a
 // below-threshold run stays silent.

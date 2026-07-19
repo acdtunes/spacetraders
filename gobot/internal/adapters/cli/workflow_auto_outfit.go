@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowAutoOutfitCommand creates the workflow auto-outfit subcommand (sp-buyd): it
+// newWorkflowAutoOutfitCommand creates the workflow auto-outfit subcommand: it
 // launches the STANDING guarded auto-outfit coordinator — the module analogue of hull
 // acquisition. Each tick it measures per-hull cargo saturation from tour_leg_telemetry,
 // catalogs the modules available to buy off the market cache, and installs the

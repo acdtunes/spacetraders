@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-rxrg gate 1: ContractGoodCountsForDeliveryWaypoint must scope to the EXACT delivery WAYPOINT,
+// ContractGoodCountsForDeliveryWaypoint must scope to the EXACT delivery WAYPOINT,
 // not the whole system — the demand miner already scopes to the system, so the buffer selector needs
 // this finer signal to exclude a good contracted elsewhere in the system but never to THIS hub. The
 // shared fixture delivers IRON_ORE to X1-HOME-A1 (c-a), X1-HOME-A2 (c-b), and X1-FOREIGN-B1 (c-c);

@@ -11,7 +11,7 @@ import (
 )
 
 // ShipyardInventoryRepositoryGORM implements shipyard.InventoryRepository over
-// GORM (sp-42ow) — the persisted shipyard-inventory store the scout tour's
+// GORM — the persisted shipyard-inventory store the scout tour's
 // piggybacked shipyard scan writes and the reachable-yard ranking reads. Reads
 // are era-scoped exactly like GormGateEdgeRepository (openEraID +
 // eraScopePredicate) so dead-era yards never leak into a live buy signal; a
@@ -115,7 +115,7 @@ func (r *ShipyardInventoryRepositoryGORM) ListByTypes(ctx context.Context, playe
 }
 
 // ScannedSystems returns the DISTINCT systems the player has a live-era shipyard
-// scan for — the SCANNED set the sp-rhju backfill sweep excludes when enumerating
+// scan for — the SCANNED set the backfill sweep excludes when enumerating
 // the charted-but-unscanned blind spot. Era-SCOPED (mirroring the other reads): a
 // scan booked in a DEAD era does not count as scanned in the open era, so a universe
 // reset correctly re-backfills every shipyard this era (the scanned set is empty

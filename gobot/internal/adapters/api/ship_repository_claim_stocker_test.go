@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// The stocker hull is a durably dedicated hauler (sp-m92a, mirroring the
+// The stocker hull is a durably dedicated hauler (mirroring the
 // warehouse RULINGS #7): a hull dedicated to the "stocker" fleet must reject a
 // claim from any other operation, even while idle, so no factory/contract
 // coordinator can poach the continuous-stocking hull between the stocker
@@ -69,7 +69,7 @@ func TestClaimShip_StockerOperationClaimsItsDedicatedHull(t *testing.T) {
 	require.Equal(t, "stocker-X1-HOME-A1", *model.ContainerID)
 }
 
-// The durability guarantee end-to-end (sp-m92a): a stocker-dedicated hull that
+// The durability guarantee end-to-end: a stocker-dedicated hull that
 // is claimed, then released when its container ends (crash/restart/between legs),
 // keeps its "stocker" dedication — only the container claim is dropped — and the
 // NEXT stocker container re-claims it cleanly. Between release and re-claim the

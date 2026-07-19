@@ -1,5 +1,3 @@
-// gobot/internal/adapters/flowfeed/registry.go
-
 // Package flowfeed is an in-memory, read-only registry of active trading flows
 // (tour / trade-route / arb) that the daemon exposes at GET /api/flows.
 //
@@ -76,7 +74,7 @@ type Flow struct {
 	Program       string      `json:"program"`
 	Ship          string      `json:"ship"`
 	TourID        *string     `json:"tourId"`
-	Closed        bool        `json:"closed"` // closed-tour mode: the plan returns to its anchor (sp-im74)
+	Closed        bool        `json:"closed"` // closed-tour mode: the plan returns to its anchor
 	CurrentLeg    *Leg        `json:"currentLeg"`
 	Cargo         []CargoItem `json:"cargo"`
 	RemainingHops []Hop       `json:"remainingHops"`

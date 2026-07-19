@@ -7,14 +7,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the sp-ve3q fix: relaunching a previously-stopped frontier
-// coordinator via `frontier start` must RE-ADOPT the last persisted live-tuned config
-// (source=live-config) instead of silently reverting every knob to config-file defaults
-// — the live-observed P1 where the sp-3u5d max_probe_price overpay ceiling reset 60000→0
-// (0 = disabled = buy at any price). The seam under test is frontierStartConfig: the same
-// build the start handler runs before it persists the new container, so the assertion is
-// made through ShowTunableConfig — the exact `tune --operation frontier` view the operator
-// used to observe the bug.
+// These tests pin the sp-ve3q fix: relaunching a stopped frontier coordinator via
+// `frontier start` must RE-ADOPT the last persisted live-tuned config (source=live-config)
+// instead of silently reverting every knob to config-file defaults — including the
+// safety-critical max_probe_price overpay ceiling (sp-3u5d; 0 = disabled = buy at any
+// price). The seam under test is frontierStartConfig: the same build the start handler
+// runs before it persists the new container, so the assertion is made through
+// ShowTunableConfig — the `tune --operation frontier` view an operator checks.
 //
 // Test budget: 4 distinct behaviors (re-apply, byte-identical fresh start, safety warning,
 // merge precedence) × 2 = 8 max. This file holds 3.

@@ -7,8 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// newReservationTestShip builds a plain idle ship for captain-reservation tests
-// (sp-i1ku).
+// newReservationTestShip builds a plain idle ship for captain-reservation tests.
 func newReservationTestShip(t *testing.T, symbol string) *navigation.Ship {
 	t.Helper()
 	fuel, err := shared.NewFuel(80, 100)
@@ -45,7 +44,7 @@ func newReservationTestShip(t *testing.T, symbol string) *navigation.Ship {
 
 // Reserving an idle hull for the captain makes it both "assigned" (so every
 // coordinator's existing IsAssigned() guard already skips it) and identifiable
-// as a captain reservation specifically, carrying the given reason (sp-i1ku).
+// as a captain reservation specifically, carrying the given reason.
 func TestReserveByCaptain_MarksShipAssignedAndReservedWithReason(t *testing.T) {
 	ship := newReservationTestShip(t, "ENDURANCE-1")
 	clock := &shared.MockClock{CurrentTime: shared.NewRealClock().Now()}
@@ -69,7 +68,7 @@ func TestReserveByCaptain_MarksShipAssignedAndReservedWithReason(t *testing.T) {
 // This is the load-bearing proof point: a captain reservation must be invisible
 // to coordinator discovery via the EXACT SAME mechanism every coordinator already
 // uses today (AssignToContainer's IsAssigned() guard) — no coordinator code
-// changes for sp-i1ku to take effect.
+// changes are required.
 func TestReserveByCaptain_BlocksCoordinatorAssignToContainer(t *testing.T) {
 	ship := newReservationTestShip(t, "ENDURANCE-1")
 	clock := &shared.MockClock{CurrentTime: shared.NewRealClock().Now()}

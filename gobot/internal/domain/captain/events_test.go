@@ -2,28 +2,12 @@ package captain
 
 import "testing"
 
-// TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default
-// interrupt set to the eleven event types the design approved: everything
-// else (workflow.finished, contract.completed, credits.threshold, ship.idle,
-// and — per sp-no9i — the self-healing single container.crashed) is deferred
-// and rides the next wake's batch instead of forcing one. The actionable
-// crash signal is the crash LOOP (container.crashloop), not the single
-// death. coordinator.error_loop (sp-e2l1) joined the set because its entire
-// purpose is surfacing a coordinator that is silently stuck — the
-// 2026-07-05 negotiate-nil incident ran 18h emitting nothing, so deferring
-// this signal to "whichever wake fires next" would defeat it. container.lost
-// (sp-tit8) joined because a container that failed to come back at boot
-// recovery does not self-heal — it stays dead until someone acts, so a single
-// loss must force a wake. hull.containerless (sp-v63s) joined for the same
-// reason: a fleet-pinned hull sitting with no container is a stranded revenue
-// hull that stays dead until someone acts. prometheus.alert_firing (sp-y0f6)
-// joined because the 2026-07-11 incident (sp-4hl5) it closes rode silently
-// for 2h50m — zero fleet revenue — precisely because nothing forced a wake; a
-// human caught it only by eyeballing a treasury chart ~60min after onset.
-// daemon.component_crashloop (sp-i01z) joined for the same reason as
-// coordinator.error_loop: a supervised safety-net component (the arrival
-// sweeper) crash-looping silently degrades the whole fleet, so the LOOP —
-// edge-triggered once per window — must force a wake, not ride the next one.
+// TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default interrupt
+// set to exactly the eleven approved event types: everything else
+// (workflow.finished, contract.completed, credits.threshold, ship.idle, and the
+// self-healing single container.crashed) is deferred and rides the next wake's
+// batch instead of forcing one. The actionable crash signal is the crash LOOP
+// (container.crashloop), not the single death.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
 		EventWorkflowFailed:           true,

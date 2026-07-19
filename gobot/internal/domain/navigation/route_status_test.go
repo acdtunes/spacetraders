@@ -2,11 +2,10 @@ package navigation
 
 import "testing"
 
-// TestRouteStatusProjectsLifecycleState is a characterization test pinning the
-// lifecycle-state -> RouteStatus projection of Status() against the CURRENT
-// hand-written switch, before it is delegated to shared.ProjectStatus. Route
-// uses domain-specific strings (PLANNED/EXECUTING/ABORTED), so these rows are
-// the most divergent of the three aggregates and must stay identical.
+// TestRouteStatusProjectsLifecycleState pins the lifecycle-state -> RouteStatus
+// projection of Status(). Route uses domain-specific strings
+// (PLANNED/EXECUTING/ABORTED), so these rows are the most divergent of the
+// three aggregates and must stay identical.
 //
 // The Stopped -> ABORTED row is intentionally absent: Route exposes no stop
 // transition and no reconstruct-from-persistence path, so its lifecycle can

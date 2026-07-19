@@ -4,7 +4,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// SitingMetricsCollector houses the factory-SITING coordinator's decision counters (sp-vdld).
+// SitingMetricsCollector houses the factory-SITING coordinator's decision counters.
 // The coordinator is the standing "brain" that automates factory discovery, placement, and
 // capacity planning; these series make its portfolio decisions observable on /metrics. Three
 // counters, one per action the coordinator takes on the running factory portfolio:
@@ -32,7 +32,7 @@ type SitingMetricsCollector struct {
 	scoutDemandsTotal *prometheus.CounterVec
 }
 
-// NewSitingMetricsCollector creates a new factory-siting metrics collector (sp-vdld).
+// NewSitingMetricsCollector creates a new factory-siting metrics collector.
 func NewSitingMetricsCollector() *SitingMetricsCollector {
 	return &SitingMetricsCollector{
 		launchesTotal: prometheus.NewCounterVec(

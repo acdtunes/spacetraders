@@ -2,14 +2,8 @@ package manufacturing
 
 import "testing"
 
-// Regression guard for sp-mvcr (construction defect #5).
-//
-// The defect hypothesis was that the worker-dispatch decision is "type-selective"
-// and skips DELIVER_TO_CONSTRUCTION while selecting its siblings. The only place the
-// dispatch decision enumerates task types is WorkerReservationPolicy.ShouldAssign
-// (consulted per task in TaskAssignmentManager.AssignTasks). This test pins the
-// invariant that the reservation gate never skips a construction task, including in
-// the exact allocation state where a sibling IS skipped for starvation-prevention.
+// Regression guard: WorkerReservationPolicy.ShouldAssign must never skip a
+// DELIVER_TO_CONSTRUCTION task, in any allocation state the gate can observe.
 func TestShouldAssign_ConstructionIsNeverSkippedByReservationGate(t *testing.T) {
 	policy := NewWorkerReservationPolicy()
 

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// ShipTypeAvailability is one scanned shipyard fact (sp-42ow): at scan time,
+// ShipTypeAvailability is one scanned shipyard fact: at scan time,
 // this (system, waypoint) shipyard offered ship_type, at purchase_price, with
 // the listing's supply tier. It is a CQRS read-model row (quality-framework
 // Rule 9 relaxation): the scanner writes it, the reachable-yard ranking and the
@@ -22,7 +22,7 @@ type ShipTypeAvailability struct {
 	LastScanned    time.Time
 }
 
-// DefaultHeavyShipTypes is the default heavy-freight hull set (sp-42ow): the
+// DefaultHeavyShipTypes is the default heavy-freight hull set: the
 // classes whose first discovered yard is fleet-strategy news (the autosizer's
 // heavy branch fails closed until one is known and reachable). Overridable via
 // [scouting] heavy_ship_types in config.yaml (RULINGS #5).
@@ -69,7 +69,7 @@ func (s HeavyShipTypeSet) Members() []string {
 }
 
 // InventoryRepository is the driven port for the persisted shipyard-inventory
-// store (sp-42ow) — the shipyard twin of the market_data cache. One row per
+// store — the shipyard twin of the market_data cache. One row per
 // (player, waypoint, ship_type); a re-scan REPLACES the waypoint's row set
 // (upsert semantics: prices/last_scanned refresh, delisted types disappear,
 // never a duplicate row). Reads are era-scoped by the implementation so a

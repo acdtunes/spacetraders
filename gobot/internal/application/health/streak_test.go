@@ -8,11 +8,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 )
 
-// These tests pin sp-e2l1: a coordinator retry loop that repeats the exact
-// same error forever must become observable after N consecutive occurrences,
-// exactly once per streak-length (edge-triggered) — not once per iteration,
-// and never falsely on an intermittent/recovering loop. See the 2026-07-05
-// negotiate-nil incident report: 18h of identical errors, zero events.
+// These tests pin the streak-tracking contract: a coordinator retry loop that
+// repeats the exact same error forever must become observable after N
+// consecutive occurrences, exactly once per streak-length (edge-triggered) —
+// not once per iteration, and never falsely on an intermittent/recovering
+// loop.
 
 // TestErrorStreakTracker_BelowThreshold_NeverCrosses pins that a streak
 // shorter than the threshold never reports a crossing — no premature alarm.

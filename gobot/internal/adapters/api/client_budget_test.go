@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/apibudget"
 )
 
-// These tests exercise the sp-51ti budget-tracker instrumentation wired
+// These tests exercise the budget-tracker instrumentation wired
 // through doWithRetry, the single choke point every SpaceTradersClient method
 // calls through (via c.request / c.requestWithErrorParsing).
 

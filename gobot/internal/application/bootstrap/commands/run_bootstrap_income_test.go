@@ -463,7 +463,7 @@ func TestBootstrap_Income_DryRunTakesNoAction(t *testing.T) {
 	}
 }
 
-// --- INCOME→GATE crossover (Slice 3): income ≥ bar derives GATE, and the INCOME acts stop running.
+// --- INCOME→GATE crossover: income ≥ bar derives GATE, and the INCOME acts stop running.
 // From the INCOME fixture (no gate site discovered, no GATE collaborators wired) GATE blocks on the
 // undiscovered site rather than doing any INCOME work — the phase crossover is clean. ---
 

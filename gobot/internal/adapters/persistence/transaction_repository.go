@@ -59,17 +59,14 @@ func (r *GormTransactionRepository) FindByID(ctx context.Context, id ledger.Tran
 func (r *GormTransactionRepository) FindByPlayer(ctx context.Context, playerID shared.PlayerID, opts ledger.QueryOptions) ([]*ledger.Transaction, error) {
 	query := r.db.WithContext(ctx).Where("player_id = ?", playerID.Value())
 
-	// Apply filters
 	query = r.applyFilters(query, opts)
 
-	// Apply sorting
 	orderBy := "timestamp DESC"
 	if opts.OrderBy != "" {
 		orderBy = opts.OrderBy
 	}
 	query = query.Order(orderBy)
 
-	// Apply pagination
 	if opts.Limit > 0 {
 		query = query.Limit(opts.Limit)
 	}
@@ -83,7 +80,6 @@ func (r *GormTransactionRepository) FindByPlayer(ctx context.Context, playerID s
 		return nil, fmt.Errorf("failed to find transactions: %w", result.Error)
 	}
 
-	// Convert models to domain entities
 	transactions := make([]*ledger.Transaction, len(models))
 	for i, model := range models {
 		tx, err := r.modelToTransaction(&model)
@@ -100,7 +96,6 @@ func (r *GormTransactionRepository) FindByPlayer(ctx context.Context, playerID s
 func (r *GormTransactionRepository) CountByPlayer(ctx context.Context, playerID shared.PlayerID, opts ledger.QueryOptions) (int, error) {
 	query := r.db.WithContext(ctx).Model(&TransactionModel{}).Where("player_id = ?", playerID.Value())
 
-	// Apply filters
 	query = r.applyFilters(query, opts)
 
 	var count int64
@@ -114,7 +109,6 @@ func (r *GormTransactionRepository) CountByPlayer(ctx context.Context, playerID 
 
 // applyFilters applies query options to a GORM query
 func (r *GormTransactionRepository) applyFilters(query *gorm.DB, opts ledger.QueryOptions) *gorm.DB {
-	// Date range filtering
 	if opts.StartDate != nil {
 		query = query.Where("timestamp >= ?", *opts.StartDate)
 	}
@@ -122,17 +116,14 @@ func (r *GormTransactionRepository) applyFilters(query *gorm.DB, opts ledger.Que
 		query = query.Where("timestamp <= ?", *opts.EndDate)
 	}
 
-	// Category filtering
 	if opts.Category != nil {
 		query = query.Where("category = ?", opts.Category.String())
 	}
 
-	// Transaction type filtering
 	if opts.TransactionType != nil {
 		query = query.Where("transaction_type = ?", opts.TransactionType.String())
 	}
 
-	// Related entity filtering
 	if opts.RelatedEntityType != nil {
 		query = query.Where("related_entity_type = ?", *opts.RelatedEntityType)
 	}
@@ -145,25 +136,21 @@ func (r *GormTransactionRepository) applyFilters(query *gorm.DB, opts ledger.Que
 
 // modelToTransaction converts database model to domain entity
 func (r *GormTransactionRepository) modelToTransaction(model *TransactionModel) (*ledger.Transaction, error) {
-	// Parse transaction ID
 	id, err := ledger.NewTransactionIDFromString(model.ID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction ID in database: %w", err)
 	}
 
-	// Parse player ID
 	playerID, err := shared.NewPlayerID(model.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid player ID in database: %w", err)
 	}
 
-	// Parse transaction type
 	transactionType, err := ledger.ParseTransactionType(model.TransactionType)
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction type in database: %w", err)
 	}
 
-	// Parse metadata
 	var metadata map[string]interface{}
 	if model.Metadata != "" {
 		if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {
@@ -173,7 +160,7 @@ func (r *GormTransactionRepository) modelToTransaction(model *TransactionModel) 
 	}
 
 	// Reconstruct transaction entity. category is intentionally NOT read from the
-	// model: ReconstructTransaction re-derives it from type (R1/sp-bt6r), so a
+	// model: ReconstructTransaction re-derives it from type, so a
 	// divergent or invalid stored category can never surface on read.
 	return ledger.ReconstructTransaction(
 		id,
@@ -193,7 +180,6 @@ func (r *GormTransactionRepository) modelToTransaction(model *TransactionModel) 
 
 // transactionToModel converts domain entity to database model
 func (r *GormTransactionRepository) transactionToModel(tx *ledger.Transaction) (*TransactionModel, error) {
-	// Marshal metadata to JSON
 	var metadataJSON string
 	if tx.Metadata() != nil {
 		bytes, err := json.Marshal(tx.Metadata())

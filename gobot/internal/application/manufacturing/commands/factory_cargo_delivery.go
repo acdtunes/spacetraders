@@ -94,7 +94,6 @@ func (h *RunFactoryCoordinatorHandler) deliverExistingCargo(
 		"location": destination,
 	})
 
-	// Return result with negative cost (revenue from selling)
 	return &mfgServices.ProductionResult{
 		QuantityAcquired: deliveryResult.UnitsSold,
 		TotalCost:        -deliveryResult.TotalRevenue, // Negative because we earned money

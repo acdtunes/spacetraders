@@ -17,10 +17,10 @@ import (
 
 // liquidationOpCtxMediator drives the navigate->dock->sell leg like the recording
 // mediator, but ALSO records the operation_type carried on the ctx of each sell and
-// navigate dispatch. It is the observation point for sp-zc8i: the liquidation worker
-// must stamp its ctx at the boundary so its SELL_CARGO row — and every refuel the
-// RouteExecutor fires inside the navigate to the sink — inherits the liquidation
-// operation instead of falling through to operation_type='manual'.
+// navigate dispatch: the liquidation worker must stamp its ctx at the boundary so its
+// SELL_CARGO row — and every refuel the RouteExecutor fires inside the navigate to the
+// sink — inherits the liquidation operation instead of falling through to
+// operation_type='manual'.
 type liquidationOpCtxMediator struct {
 	sawSell, sawNav       bool
 	sellOpType, navOpType string
@@ -58,11 +58,9 @@ func (m *liquidationOpCtxMediator) Send(ctx context.Context, request common.Requ
 func (m *liquidationOpCtxMediator) Register(reflect.Type, common.RequestHandler) error { return nil }
 func (m *liquidationOpCtxMediator) RegisterMiddleware(common.Middleware)               {}
 
-// The context-less loss-dump (sp-zc8i). The liquidation worker delegates its SELL to
-// the shared cargo command, which is ctx-transparent: whatever operation context sits
-// on the Handle ctx is what the SELL_CARGO row records. Because the coordinator never
-// stamped one, the loss-dump sale — and the refuels of the hop to the sink — landed
-// operation_type='manual'. This asserts the observable outcome at the ledger-dispatch
+// The liquidation worker delegates its SELL to the shared cargo command, which is
+// ctx-transparent: whatever operation context sits on the Handle ctx is what the
+// SELL_CARGO row records. This asserts the observable outcome at the ledger-dispatch
 // boundary: a run bearing a CoordinatorID records its sell (and its sink navigate)
 // under operation_type='liquidation'.
 func TestLiquidateCargo_SellLeg_CarriesLiquidationOperationContext(t *testing.T) {

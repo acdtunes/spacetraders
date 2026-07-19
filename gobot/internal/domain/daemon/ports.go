@@ -19,21 +19,21 @@ const (
 	ContainerKindGasSiphonWorker  ContainerKind = "gas_siphon_worker"
 	ContainerKindStorageShip      ContainerKind = "storage_ship"
 	// ContainerKindScoutTour is a scout_tour spawned as a managed worker by the
-	// scout_post_coordinator (sp-cxpq): persisted with a coordinator_id so restart
+	// scout_post_coordinator: persisted with a coordinator_id so restart
 	// recovery skips it and the coordinator respawns it.
 	ContainerKindScoutTour ContainerKind = "scout_tour"
 	// ContainerKindScoutReposition is a one-shot cross-gate relay the
 	// scout_post_coordinator spawns to jump-route an idle satellite to an unmanned
-	// frontier post (sp-s232). Like a scout_tour it is a coordinator-managed worker
+	// frontier post. Like a scout_tour it is a coordinator-managed worker
 	// (coordinator_id → restart recovery skips it, preserving the claim; the
 	// coordinator re-adopts). It reuses the trade-route coordinator's multi-jump
 	// travel() (no new jump logic) to fly the satellite to the post's system, then
 	// exits; the next in-system reconcile mans the post — manning stays in-system
-	// only (the sp-qxa4 invariant), reposition just moves the hull there first.
+	// only, reposition just moves the hull there first.
 	ContainerKindScoutReposition ContainerKind = "scout_reposition"
 	// ContainerKindWorkerFerry is a one-shot cross-system relay the
 	// worker_rebalancer_coordinator spawns to jump-route an idle light-hauler to a
-	// worker-starved factory system (sp-f5pr). Like a scout_reposition relay it is a
+	// worker-starved factory system. Like a scout_reposition relay it is a
 	// coordinator-managed worker (coordinator_id → restart recovery skips it, preserving
 	// the claim; the coordinator reclaims it on arrival or interruption). It reuses the
 	// trade-route coordinator's multi-jump travel() (no new jump logic) to fly the hull
@@ -41,8 +41,8 @@ const (
 	// discovery claims the now-idle hull in-system.
 	ContainerKindWorkerFerry ContainerKind = "worker_ferry"
 	// ContainerKindCargoLiquidation is a one-shot worker the contract fleet coordinator
-	// spawns on a parked-with-cargo hull to self-clear its stranded leftover cargo
-	// (sp-39oi): sell at the best in-system bid, jettison only as a last resort below a
+	// spawns on a parked-with-cargo hull to self-clear its stranded leftover cargo:
+	// sell at the best in-system bid, jettison only as a last resort below a
 	// configured value floor, hold otherwise. Like worker_ferry it is a
 	// coordinator-managed worker (coordinator_id → restart recovery skips it, preserving
 	// the claim; the coordinator re-evaluates the now-cleared hull on its next pass). It
@@ -52,7 +52,6 @@ const (
 
 // ContainerInfo represents container metadata for daemon client communication.
 // This is a lightweight DTO used at the gRPC boundary.
-// PlayerID uses the domain standard int type.
 type ContainerInfo struct {
 	ID       string
 	PlayerID int    // Domain standard int type

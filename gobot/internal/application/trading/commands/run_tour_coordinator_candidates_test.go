@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// sp-jsng — "Wider candidate set" tests. These drive the allowedSystems PRODUCER seam
+// "Wider candidate set" tests. These drive the allowedSystems PRODUCER seam
 // (tourSystems / tourSystemsFrom) directly: enter with a RunTourCoordinatorCommand and a
 // legs mediator wired to (a) a live 1-hop neighbor source (GetJumpGateConnectionsQuery via
 // the fixture's neighbors map) and (b) a durable gate graph (a spy recording Connections),
@@ -315,7 +315,7 @@ func TestTourCandidateSystems_HomeRetainedAndDeduped(t *testing.T) {
 }
 
 // RED #7 — the composed arming gate (effectiveCandidateHopDepth). This is the DOUBLE
-// default-safety the config plumbing (sp-jsng) rides on, proven end-to-end at the gate itself:
+// default-safety the config plumbing rides on, proven end-to-end at the gate itself:
 // the configured depth only takes EFFECT once BOTH (a) depth resolves > 1 AND (b) the solver
 // clamp is lifted (cmd.MaxTourSystems > 2). Complements RED #1b (which proves the gate HOLDS at
 // MaxTourSystems ∈ {0,2} via the produced set) by pinning the transition at the > 2 boundary —

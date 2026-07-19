@@ -298,7 +298,6 @@ func (r *GormMarketPriceHistoryRepository) GetMarketStability(
 		return nil, fmt.Errorf("no price history data for market %s and good %s", waypointSymbol, goodSymbol)
 	}
 
-	// Calculate price range
 	priceRange := res.MaxPrice - res.MinPrice
 
 	// Calculate stability score (0-100, higher = more stable)

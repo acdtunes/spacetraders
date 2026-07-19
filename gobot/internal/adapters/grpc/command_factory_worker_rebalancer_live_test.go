@@ -59,13 +59,9 @@ func buildRecoveredWorkerRebalancerCoordinator(t *testing.T, s *DaemonServer, pe
 // the pin-test class the lane lacked (prior unit tests set the field directly,
 // bypassing the whole config pipeline).
 //
-// sp-nivi's actual bug — 900,000,000,000 logged where "15m" was meant — lived
-// entirely inside Handle()'s startup-log Sprintf (a time.Duration wrongly passed to
-// %d), a component this round trip does not exercise, so this test is expected to
-// PASS both before and after the sp-nivi source fix. It stands as a permanent guard
-// that the CONFIG PIPELINE itself — the component the bug report's suspect chain
-// named as the likely source — carries no ns/minutes confusion, now or in the
-// future.
+// This guards the CONFIG PIPELINE itself against ns/minutes confusion — the
+// component most likely to silently reintroduce it — independent of any one
+// call site's formatting bug.
 func TestWorkerRebalancerCoordinatorResolvesVacancyMinFromLiveConfig(t *testing.T) {
 	cases := []struct {
 		name        string

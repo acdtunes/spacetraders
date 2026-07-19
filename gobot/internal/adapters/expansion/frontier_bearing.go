@@ -7,7 +7,7 @@ import (
 )
 
 // bfsBranchRoots annotates every gate-reachable system with its CORRIDOR identity: the hop-1
-// ancestor on the shortest BFS path from the anchor set (sp-rjgr). It mirrors bfsHops's traversal
+// ancestor on the shortest BFS path from the anchor set. It mirrors bfsHops's traversal
 // exactly — multi-source, hop-bounded, under-construction edges skipped, first (shortest) visit
 // wins — but carries the hop-1 root forward instead of the hop count:
 //   - an anchor (hop 0) has no corridor ("");

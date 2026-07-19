@@ -1,38 +1,23 @@
 package commands
 
-// sp-f1yk Deliverable 5 — OR-Tools placement/relocation black-box acceptance tests.
+// OR-Tools placement/relocation black-box acceptance tests, driven through the
+// Handle port. These assert on OUTCOME only (relocation committed to the rich
+// pocket vs park held on the current ground) and the driven jump/persist side
+// effects — NEVER on internal score values or the decision log; white-box tests of
+// score(x) and the phi park-floor math live in
+// run_tour_coordinator_placement_z7ng_test.go.
 //
-// WAVE-1 / W4 — the fleet-median placement engine (sp-z7ng: score(x)=E_x - beta*D_x with the
-// park floor phi = 0.3 * fleet-median, sourced from TourTelemetryRepository) is MERGED. The two
-// behavioral scenarios below are un-skipped and driven against the REAL engine.
-//
-// SEAM CHECK (z7ng put the engine in run_tour_coordinator_placement.go — NOT
-// run_tour_coordinator_reposition.go where the W1 scaffold guessed; corrected in W4):
-//
-//	grep -nE "maybeRepositionPlacement|placement\.Decide|placement\.Score|senseBeta|MedianTourRate|resolvePlacementParkFloorPct" run_tour_coordinator_placement.go
-//
-// proves the WHOLE seam on one file: the armed entry (maybeRepositionPlacement, dispatched from
-// maybeReposition on margins-death when PlacementScoreEnabled), score(x)=E_x-beta*D_x with the
-// phi=0.3 park floor (placement.Score / placement.Decide / resolvePlacementParkFloorPct), and
-// beta sourced as the fleet rolling-median tour $/hr from the telemetry repo (senseBeta ->
+// The fleet-median placement engine lives in run_tour_coordinator_placement.go:
+// score(x) = E_x - beta*D_x with park floor phi = 0.3 * fleet-median, beta sourced
+// as the fleet rolling-median tour $/hr from the telemetry repo (senseBeta ->
 // h.telemetry.ListByPlayer -> trading.MedianTourRate).
 //
-// OWNERSHIP (resolves the layer/duplication finding): z7ng owns the WHITE-BOX tests of score(x)
-// and the phi park-floor math (run_tour_coordinator_placement_z7ng_test.go asserts the decision
-// LOG internals — beta=, hops=, ex=, d=, score=, jump/hold verdict, persist ordering). f1yk owns
-// ONLY these two BLACK-BOX acceptance scenarios through the Handle port, asserting on OUTCOME
-// (relocation committed to the rich pocket vs park held on the current ground) and the driven
-// jump/persist side effects — NEVER on internal score values or the decision log.
-//
-// W4 WIRING (z7ng's real harness):
-//   - E_x           : tourFakeRoutingClient{planFn} returns a per-system ProjectedCreditsPerHour
-//                     (feasiblePlan/placementPlan); ship.Cargo == nil marks the clean-hold E_x
-//                     pre-flight vs the laden productive re-plan.
-//   - fleet-median  : seededTelemetry{rows: betaSeedRows(rate)} — ListByPlayer returns rows that
-//     (beta, phi)     MedianTourRate folds into beta; phi=0.3 default lifts the park floor phi*beta.
-//   - entry         : h := newTourHandler(t, fx, planner, tel); h.Handle(ctx, cmd) with
-//                     PlacementScoreEnabled; assert r.Repositions, fx.jumps, fx.location, and
-//                     fakeRepositionPersister.recorded() (the driven persistence boundary).
+// Fixture wiring: E_x comes from tourFakeRoutingClient{planFn}'s per-system
+// ProjectedCreditsPerHour (ship.Cargo == nil marks the clean-hold pre-flight E_x vs
+// the laden productive re-plan); fleet-median comes from
+// seededTelemetry{rows: betaSeedRows(rate)}; entry is h.Handle(ctx, cmd) with
+// PlacementScoreEnabled, asserting r.Repositions, fx.jumps, fx.location, and
+// fakeRepositionPersister.recorded().
 
 import (
 	"context"

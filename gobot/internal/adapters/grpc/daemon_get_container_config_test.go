@@ -15,17 +15,13 @@ import (
 // sp-aoy2: `container get` must display the config as it is persisted in the
 // database (Store A — the source of truth that live mutations write), NOT the
 // in-memory entity's Metadata() which NewContainer freezes at launch (Store B).
-//
-// The bug: GetContainer serialized container.Metadata(), so a live config mutation
-// (UpdateContainerConfig, e.g. `fleet hub add`) was INVISIBLE to `container get`
-// until a daemon restart rebuilt the entity — twice causing captain false-rejects
-// of working code (sp-jcke, sp-ki6q). This locks the read path onto Store A while
-// keeping the runtime/lifecycle fields sourced from the live in-memory entity.
+// This locks the read path onto Store A while keeping the runtime/lifecycle
+// fields sourced from the live in-memory entity.
 
 // TestGetContainer_ReflectsLivePersistedConfigWithoutRestart is the core
 // regression: after a live config mutation rewrites only the persisted config
 // (no restart, the in-memory entity untouched), GetContainer returns the NEW
-// config. Before the fix it returned the launch-frozen Metadata.
+// config, not a launch-frozen snapshot.
 func TestGetContainer_ReflectsLivePersistedConfigWithoutRestart(t *testing.T) {
 	s, _, playerID := newRecoveryTestServer(t)
 	ctx := context.Background()

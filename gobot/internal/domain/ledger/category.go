@@ -36,10 +36,8 @@ func AllCategories() []Category {
 // TypeToCategoryMap maps transaction types to their categories.
 //
 // category is a pure function of type — category = f(type) — a fixed,
-// deterministic relabel (category audit 2026-07-14: 0/33833 live divergence).
-// It is stored/read purely as a reporting convenience; it is NOT an independent
-// axis. Do not set or vary category apart from type. (R1/sp-bt6r will derive it
-// from type at the read edge rather than persisting it.)
+// deterministic relabel. It is stored/read purely as a reporting convenience;
+// it is NOT an independent axis. Do not set or vary category apart from type.
 var TypeToCategoryMap = map[TransactionType]Category{
 	TransactionTypeRefuel:            CategoryFuelCosts,
 	TransactionTypePurchaseCargo:     CategoryTradingCosts,

@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// tourDurationBuckets bounds the tour_duration_seconds histogram (sp-fbih P12). A tour_run
+// tourDurationBuckets bounds the tour_duration_seconds histogram. A tour_run
 // container spans a fail-open no-op (sub-second: model artifact unreadable / first-tour
 // infeasible) through a one-shot tour (~minutes) to a continuous engine that rotates
 // grounds for hours before margins finally die — so the buckets run 5s → 12h with the
@@ -14,20 +14,20 @@ import (
 // _seconds suffix convention.
 var tourDurationBuckets = []float64{5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800, 43200}
 
-// tourPlanRateBuckets bounds the tour_plan_rate histogram (sp-1wp8): credits/hour, from
+// tourPlanRateBuckets bounds the tour_plan_rate histogram: credits/hour, from
 // break-even (a realized loss lands in the le=0 bucket) through the manual-lane class
 // (~390k/hr, the 42-min-rifles evidence) up past the fleet-level 1.6-3.2M/hr band, densest
 // in the 100-800k range where single-hull plan rates live.
 var tourPlanRateBuckets = []float64{0, 25000, 50000, 100000, 150000, 200000, 300000, 400000, 600000, 800000, 1200000, 1600000, 2400000, 3200000}
 
-// TourMetricsCollector holds the six tour/trading emission counters+histogram+gauge the
-// sp-fbih instrumentation sweep adds (bopj P3-P5 + nj2b P11-P13). Like the absorption
-// burn-in collector (sp-8cz9) they are EVENT-EMITTED from the tour coordinator via the
+// TourMetricsCollector holds the six tour/trading emission counters+histogram+gauge
+// this instrumentation sweep adds (bopj P3-P5 + nj2b P11-P13). Like the absorption
+// burn-in collector they are EVENT-EMITTED from the tour coordinator via the
 // package-level Record*/Observe*/Set* globals (no polling goroutine), and they are pure
 // OBSERVATION (RULINGS #4): every method is nil-safe and best-effort, so a recording miss
 // can never touch a decision path or block a trade.
 type TourMetricsCollector struct {
-	// repositionsTotal increments once per margins-death reposition EVALUATION (sp-zhii),
+	// repositionsTotal increments once per margins-death reposition EVALUATION,
 	// by outcome: success (the hull jumped to a fresh ground and re-planned), no_candidate
 	// (no jump-reachable system cleared the reposition floor — the map-wide margin
 	// exhaustion signal bopj P3 wants), or failed (the jump/ship-load errored and the run
@@ -35,7 +35,7 @@ type TourMetricsCollector struct {
 	// they are not evaluations, and counting them would pollute the no_candidate rate.
 	repositionsTotal *prometheus.CounterVec
 
-	// placementDecisionsTotal increments once per armed placement/relocation decision (sp-z7ng),
+	// placementDecisionsTotal increments once per armed placement/relocation decision,
 	// by verdict: jump (scored a foreign argmax and repositioned), stay (the current-system E_s
 	// won), hold_park_floor (nothing cleared φ·β), or fallback_legacy (β unreadable → the legacy
 	// engine ran this episode). Only the ARMED path (placement_score_enabled) emits; the legacy
@@ -43,14 +43,14 @@ type TourMetricsCollector struct {
 	// series materialize only on first increment ⇒ /metrics is unchanged until a captain arms.
 	placementDecisionsTotal *prometheus.CounterVec
 
-	// marginsDeathTotal increments once per confirmed 3-strike tap-out (sp-m5kv
-	// tourStarvationLimit), whether or not a reposition then rescues the run — so it
+	// marginsDeathTotal increments once per confirmed 3-strike tap-out (tourStarvationLimit),
+	// whether or not a reposition then rescues the run — so it
 	// measures the ground rich->tapped cadence (bopj P4's 3-strike calibration), distinct
 	// from tour_exit_total{reason=starvation} which counts only the final honest exit.
 	marginsDeathTotal *prometheus.CounterVec
 
 	// reserveFloorEngagementsTotal increments when the buy-time working-capital floor
-	// (sp-agzj / RULINGS #4) binds a tranche: action=skip (even one unit pierces the
+	// (RULINGS #4) binds a tranche: action=skip (even one unit pierces the
 	// floor, the buy is dropped) or action=shrink (the buy is cut to the units the reserve
 	// can still afford). Frequent shrink means the 25%-of-treasury caps outrun liquidity
 	// (bopj P5's working-capital sizing decision).
@@ -70,15 +70,15 @@ type TourMetricsCollector struct {
 	durationSeconds *prometheus.HistogramVec
 
 	// resolvedMaxSpend records the dynamic per-tour spend cap each time defaultMaxSpend
-	// resolves it (sp-7z7j: 25% of live treasury) — the exact value nj2b P13's Guards
+	// resolves it (25% of live treasury) — the exact value nj2b P13's Guards
 	// panel proxies with a treasury x 0.25 line. A gauge (last-write-wins per player):
 	// concurrent hulls resolve ~the same 25%-of-treasury figure, so the series tracks the
 	// current cap. Not set on the explicit --max-spend constant path (nothing dynamic to
 	// track there).
 	resolvedMaxSpend *prometheus.GaugeVec
 
-	// jumpLoadedTotal increments once per COMMITTED margins-death reposition jump
-	// (sp-ed4i), labeled loaded=true when the jump carried a look-back manifest
+	// jumpLoadedTotal increments once per COMMITTED margins-death reposition jump,
+	// labeled loaded=true when the jump carried a look-back manifest
 	// (departure-system exports bought for the destination's imports) and loaded=false
 	// when it flew empty (no cross-system lane cleared the money floors). The empty-rate
 	// (loaded=false / total) is the deadhead metric the look-back-loading acceptance bar
@@ -86,18 +86,18 @@ type TourMetricsCollector struct {
 	// travel failure counts nothing), so it measures real crossings.
 	jumpLoadedTotal *prometheus.CounterVec
 
-	// planRate observes each tour plan's credits-per-hour twice (sp-1wp8): once at
+	// planRate observes each tour plan's credits-per-hour twice: once at
 	// plan-accept with the solver's PROJECTED cph (phase=projected), once at the tour's
 	// honest completion with the REALIZED cash profit over actual wall-clock
 	// (phase=realized). The projected/realized pair is what makes ranking quality
 	// MEASURABLE: a systematic projected≫realized gap means the time or price estimator
-	// is flattering plans, and any future long-haul lane (sp-mepj) is judged on this
+	// is flattering plans, and any future long-haul lane is judged on this
 	// same yardstick. Samples pair 1:1 per flown tour (the initial accepted plan only —
 	// intra-tour replans are recovery, not selection).
 	planRate *prometheus.HistogramVec
 
 	// factoryGoodAcquisitionCost records the per-unit price a tour paid to ACQUIRE a
-	// factory good, labeled by good and source=stock|market (C1, sp-64je). It is the
+	// factory good, labeled by good and source=stock|market (C1). It is the
 	// T2 acceptance series for planner-visible stock: as tours withdraw factory output
 	// from warehouse stock at cost basis (source=stock) instead of buying our own
 	// output at laddered market asks (source=market), the acquisition cost must track
@@ -106,8 +106,8 @@ type TourMetricsCollector struct {
 	factoryGoodAcquisitionCost *prometheus.GaugeVec
 
 	// legPriceDriftPercent observes each realized tour leg's unit-price drift from the
-	// solver's plan — (realized-planned)/planned*100 — keyed by side (buy|sell)
-	// (sp-umyb). A SummaryVec with NO objectives: it exports only _sum and _count (no
+	// solver's plan — (realized-planned)/planned*100 — keyed by side (buy|sell).
+	// A SummaryVec with NO objectives: it exports only _sum and _count (no
 	// quantile streams), so the Plan-vs-Realized panel reads
 	// rate(_sum[$smooth])/rate(_count[$smooth]) = the windowed AVERAGE drift, exactly
 	// the SQL AVG it replaces. Deliberately UNLABELED by player_id: the panel is a
@@ -119,7 +119,7 @@ type TourMetricsCollector struct {
 	legPriceDriftPercent *prometheus.SummaryVec
 }
 
-// NewTourMetricsCollector creates a new tour metrics collector (sp-fbih).
+// NewTourMetricsCollector creates a new tour metrics collector.
 func NewTourMetricsCollector() *TourMetricsCollector {
 	return &TourMetricsCollector{
 		repositionsTotal: prometheus.NewCounterVec(
@@ -328,7 +328,7 @@ func (c *TourMetricsCollector) SetResolvedMaxSpend(playerID int, maxSpend int64)
 }
 
 // SetFactoryGoodAcquisitionCost records the per-unit price a tour paid to acquire
-// a factory good (source=stock|market) — the C1 (sp-64je) T2 acceptance series.
+// a factory good (source=stock|market) — the C1 T2 acceptance series.
 func (c *TourMetricsCollector) SetFactoryGoodAcquisitionCost(playerID int, good, source string, unitPrice float64) {
 	if c == nil || c.factoryGoodAcquisitionCost == nil {
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
@@ -337,7 +337,7 @@ func (c *TourMetricsCollector) SetFactoryGoodAcquisitionCost(playerID int, good,
 }
 
 // RecordJumpLoaded records one committed margins-death reposition jump by whether it
-// carried a look-back manifest (sp-ed4i). loaded=true → the departure-export manifest
+// carried a look-back manifest. loaded=true → the departure-export manifest
 // rode the jump; loaded=false → an empty deadhead.
 func (c *TourMetricsCollector) RecordJumpLoaded(playerID int, loaded bool) {
 	if c == nil || c.jumpLoadedTotal == nil {
@@ -346,7 +346,7 @@ func (c *TourMetricsCollector) RecordJumpLoaded(playerID int, loaded bool) {
 	c.jumpLoadedTotal.WithLabelValues(strconv.Itoa(playerID), strconv.FormatBool(loaded)).Inc()
 }
 
-// ObservePlanRate observes one tour plan's credits/hour (sp-1wp8) under
+// ObservePlanRate observes one tour plan's credits/hour under
 // phase="projected" (plan-accept, the solver's cph) or phase="realized" (tour
 // completion, cash profit over actual wall-clock; may be negative — a loss lands in
 // the le=0 bucket).
@@ -358,7 +358,7 @@ func (c *TourMetricsCollector) ObservePlanRate(playerID int, phase string, credi
 }
 
 // ObserveLegPriceDrift observes one realized tour leg's unit-price drift from the
-// solver's plan, keyed by side ("buy"|"sell") (sp-umyb). Drift is
+// solver's plan, keyed by side ("buy"|"sell"). Drift is
 // (realized-planned)/planned*100 (SIGNED: buy over plan is positive, sell under plan
 // is negative). A non-positive planned basis is SKIPPED — there is no basis to divide
 // by (mirrors the SQL NULLIF(planned,0)). Best-effort/nil-safe: a recording miss never

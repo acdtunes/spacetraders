@@ -10,8 +10,8 @@ import (
 
 // autosizerRunConfig is the launch command with every default resolved, so the reconcile logic
 // never repeats the "<= 0 → default" fallback (RULINGS #5, the siting resolveConfig idiom). It
-// holds ALL knobs (not just the ones M1 reads) so resolveFleetAutosizerConfig is written once and
-// the later-milestone guard/demand math reads resolved values directly.
+// holds ALL knobs so resolveFleetAutosizerConfig is written once and the guard/demand math reads
+// resolved values directly.
 type autosizerRunConfig struct {
 	Disabled              bool
 	DryRun                bool
@@ -61,7 +61,7 @@ type autosizerRunConfig struct {
 	MaxModuleSpendPerHull            int64
 	WarehouseFrameClassCeiling       string
 
-	// Explorer class (sp-a3yn slice C).
+	// Explorer class.
 	ExplorerHullsEnabled           bool
 	FleetCeilingExplorer           int
 	ExplorerTreasuryPctPerPurchase int
@@ -196,7 +196,7 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	if c.WarehouseFrameClassCeiling == "" {
 		c.WarehouseFrameClassCeiling = defaultWarehouseFrameClassCeiling
 	}
-	// Explorer defaults (sp-a3yn). ExplorerHullsEnabled has NO fallback — its false zero value IS the
+	// Explorer defaults. ExplorerHullsEnabled has NO fallback — its false zero value IS the
 	// default (disarmed), so nothing boot-arms it. MaxPriceExplorer resolves to a REAL default (never
 	// 0=off, unlike MaxPrice{Lights,Heavies}) because the explorer's price ceiling is a required guard.
 	if c.FleetCeilingExplorer <= 0 {
@@ -256,8 +256,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		return res, nil
 	}
 
-	// No-silent-dry-run (sp-1txd guard): dry-run WARNs every tick — it is opt-in watch mode, not
-	// a silent no-op (the f5pr lesson: a coordinator sat in silent dry-run for a day).
+	// No-silent-dry-run: dry-run WARNs every tick — it is opt-in watch mode, not a silent no-op.
 	if cfg.DryRun {
 		logger.Log("WARN", "Fleet autosizer in DRY-RUN — every buy decision is evaluated and logged but NOTHING is spent (set dry_run=false to arm)", map[string]interface{}{
 			"action":       "autosizer_dry_run",
@@ -268,7 +267,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 	st := h.coordinatorState(cmd.ContainerID)
 	in := h.readTickInputs(ctx, cmd.PlayerID)
 
-	// The live-resolved params every provider reads this tick (sp-ts82 live-config discipline): the
+	// The live-resolved params every provider reads this tick (the live-config discipline): the
 	// providers are constructed once at boot but see the current config.yaml value through here.
 	params := DemandParams{
 		LightRotationSlots:          cfg.LightRotationSlots,
@@ -314,7 +313,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		}
 	}
 
-	// Warehouse DISPATCH (sp-1j3f): after the buy pass, place idle/stranded warehouse hulls onto the
+	// Warehouse DISPATCH: after the buy pass, place idle/stranded warehouse hulls onto the
 	// durable chains. This runs every tick the warehouse class is enabled — a hull stranded when vdld
 	// retires its chain must be re-sited even on a tick that buys nothing. The plan was computed by
 	// the warehouse provider's Demand() above; here we apply it (respecting dry-run).
@@ -345,9 +344,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 }
 
 // runZeroEffectAlarm raises ONE edge-triggered WARN when demand has persisted for
-// zero_effect_alarm_ticks consecutive ticks with zero purchases — the mechanized f5pr silent-dry
-// -run lesson. A purchase (or a tick with no demand pressure at all) resets the streak and re-arms
-// the alarm for the next episode.
+// zero_effect_alarm_ticks consecutive ticks with zero purchases. A purchase (or a tick with no
+// demand pressure at all) resets the streak and re-arms the alarm for the next episode.
 func (h *RunFleetAutosizerCoordinatorHandler) runZeroEffectAlarm(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand, cfg autosizerRunConfig, st *autosizerState, anyUnmetNoBuy bool, purchased int) {
 	logger := common.LoggerFromContext(ctx)
 	if purchased > 0 || !anyUnmetNoBuy {

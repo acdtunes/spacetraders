@@ -360,9 +360,9 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 }
 
 // BestSinksAcrossSystems returns, for each requested good, the single highest-bid
-// sell destination ACROSS ALL SYSTEMS for the player (sp-mtvg). EXPORT markets are
+// sell destination ACROSS ALL SYSTEMS for the player. EXPORT markets are
 // excluded so the result mirrors the tour snapshot's sink eligibility — an EXPORT bid
-// is a low sellback the solver zeroes (sp-9mkf), never a real sell destination. Rows
+// is a low sellback the solver zeroes, never a real sell destination. Rows
 // older than maxAge (relative to now) are excluded so a moved price never reports a
 // phantom sink. A good with no fresh non-EXPORT sink is simply absent from the map.
 //
@@ -426,7 +426,7 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 	// Query waypoints table for marketplaces excluding fuel stations
 	// Same filtering logic as scout operation (assign_scouting_fleet.go:216-219).
 	// Era-scoped (eraScopePredicate) exactly like GormWaypointRepository so a
-	// dead-era waypoint row (sp-vapw) can never surface as a live market: this
+	// dead-era waypoint row can never surface as a live market: this
 	// query hits the waypoints table directly instead of going through the
 	// era-scoped repository, so it must apply the predicate itself.
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
@@ -447,7 +447,7 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 }
 
 // ChartedMarketSystemCounts returns every CHARTED market system (current era) mapped to its
-// count of real marketplace waypoints — the sp-jide scan-only backlog's charted side. It applies
+// count of real marketplace waypoints — the scan-only backlog's charted side. It applies
 // the IDENTICAL filter as FindAllMarketsInSystem (a non-FUEL_STATION waypoint bearing the
 // MARKETPLACE trait, era-scoped so a dead-era row can never surface as a live market), only global
 // and grouped by system instead of scoped to one, so it enumerates the FULL discovered market set
@@ -483,8 +483,8 @@ func (r *MarketRepositoryGORM) ChartedMarketSystemCounts(ctx context.Context) (m
 // MaxAgeSecondsBySystem returns, for every system with at least one cached
 // market row for playerID, the current worst-case staleness in seconds —
 // MAX(now - last_updated) across that system's markets, i.e. the age of the
-// single OLDEST row (sp-dp92 P7: backs the scout_freshness_actual_seconds
-// gauge). One query per sweep covers every system in a single pass rather
+// single OLDEST row (backs the scout_freshness_actual_seconds gauge). One
+// query per sweep covers every system in a single pass rather
 // than one query per POSTED system; the coordinator's sweep looks up just
 // the systems it has POSTED coverage for in the returned map. System is
 // derived from each row's waypoint_symbol via shared.ExtractSystemSymbol so
@@ -526,7 +526,7 @@ func (r *MarketRepositoryGORM) MaxAgeSecondsBySystem(
 }
 
 // SystemsFreshness returns the per-system freshness census the market-freshness
-// auto-sizer reconciles against (sp-orgp): for every system with cached market rows,
+// auto-sizer reconciles against: for every system with cached market rows,
 // its market count, worst-case market age, and the EMPIRICALLY MEASURED per-market scan
 // cycle. All three come from the market_data scan timestamps in a single pass, so the
 // coordinator holds no telemetry of its own.
@@ -540,7 +540,7 @@ func (r *MarketRepositoryGORM) MaxAgeSecondsBySystem(
 // corrects. Attributing scans to the specific probe that made them (for a pure single-probe
 // cycle even under multi-probe manning) needs a scanner id on the scan row and is deferred.
 //
-// sp-r57g: each market also carries a VALUE WEIGHT = Σ(trade_volume × mid-price) over its goods
+// Each market also carries a VALUE WEIGHT = Σ(trade_volume × mid-price) over its goods
 // (mid-price = (purchase+sell)/2, side-neutral), the per-market throughput proxy the sizer's
 // value-weighted percentile uses so a high-value stale arb market pulls the P90 up while a
 // low-traffic peripheral straggler stays in the tolerated tail. The percentile itself is computed
@@ -736,8 +736,7 @@ func scoreMarketForBuying(tradeType, supply, activity string) int {
 }
 
 // MarketGoodListing represents one cached market's trade data for a single good,
-// including data age so callers can judge staleness before acting on it (L58:
-// a stale-availability premise flipped an entire plan).
+// including data age so callers can judge staleness before acting on it.
 type MarketGoodListing struct {
 	WaypointSymbol string
 	TradeType      string

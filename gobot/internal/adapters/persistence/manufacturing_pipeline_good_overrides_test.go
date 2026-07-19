@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-sdyo (RULINGS #2): the per-good buy-gating override map is persisted on the construction
+// (RULINGS #2): the per-good buy-gating override map is persisted on the construction
 // pipeline row and must survive a daemon bounce. This test saves a pipeline carrying a per-good
 // override, reloads it through a fresh repository read (the restart-equivalent), and asserts every
 // override field round-trips — so a per-good sourcing-floor loosening is not lost on restart.

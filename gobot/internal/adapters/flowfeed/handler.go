@@ -1,4 +1,3 @@
-// gobot/internal/adapters/flowfeed/handler.go
 package flowfeed
 
 import (

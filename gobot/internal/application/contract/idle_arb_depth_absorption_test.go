@@ -10,20 +10,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// --- sp-3meh depth-aware absorption exclusion -------------------------------
-//
-// Before sp-3meh the idle-arb absorption consult was a BINARY block: ANY positive
-// occupancy on a (good, sink, SELL) key vetoed the whole lane, so idle-arb launched
-// 0 legs at shared hubs even for profitable lanes while the trade-route circuit —
-// which uses DEPTH-AWARE exclusion — flew the same hubs. This ports the trade-route
-// evaluate() shape: an EXECUTED recovery shadow still blocks outright (the sink is
-// actively healing), but PLANNED occupancy only excludes when the remaining
-// unreserved depth can't fit this leg's tranche at the quoted price.
+// Depth-aware absorption exclusion (matches the trade-route circuit's evaluate()
+// shape): an EXECUTED recovery shadow blocks a sink outright (actively healing),
+// but PLANNED occupancy only excludes when the remaining unreserved depth can't
+// fit this leg's tranche at the quoted price.
 
 // idleArbDepthHarness wires a profitable hub->sink lane (margin 250, clearing the
-// sp-u4tv profit floor) whose SINK good carries an explicit trade volume, so a
-// test sets the sink's absorptive DEPTH and the depth-aware consult math is
-// explicit. A stateful absorption ledger is wired so presets drive the consult.
+// profit floor) whose SINK good carries an explicit trade volume, so a test sets
+// the sink's absorptive DEPTH and the depth-aware consult math is explicit. A
+// stateful absorption ledger is wired so presets drive the consult.
 func idleArbDepthHarness(t *testing.T, hulls int, cfg IdleArbConfig, sinkVolume int) (*IdleArbDispatcher, *fakeIdleArbLauncher, *fakeAbsorptionLedger, absorption.LaneKey) {
 	t.Helper()
 	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
@@ -47,10 +42,9 @@ func idleArbDepthHarness(t *testing.T, hulls int, cfg IdleArbConfig, sinkVolume 
 	return d, launcher, ledger, key
 }
 
-// The sp-3meh core fix: a sink another engine has PARTIALLY reserved — but with
-// depth left for this leg's tranche — is launched into, where the old binary block
-// vetoed it. A 40-unit hull leg into a 200-deep sink with 100 units PLANNED has 100
-// units of room: depth-aware flies it.
+// A sink another engine has PARTIALLY reserved — but with depth left for this
+// leg's tranche — is launched into. A 40-unit hull leg into a 200-deep sink with
+// 100 units PLANNED has 100 units of room: depth-aware flies it.
 func TestIdleArb_DepthAwareAbsorption_LaunchesIntoPartiallyRecoveredSink(t *testing.T) {
 	d, launcher, ledger, key := idleArbDepthHarness(t, 2, IdleArbConfig{ReserveHulls: 1}, 200)
 	ledger.preset(key, absorption.KeyOccupancy{PlannedUnits: 100}) // 100 of 200 depth taken

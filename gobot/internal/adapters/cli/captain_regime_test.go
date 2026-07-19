@@ -13,7 +13,7 @@ import (
 
 var errRegimeStoreTest = errors.New("regime store test error")
 
-// --- sp-zlfv price-regime detector: `captain regime set` / `list` / `clear` ---
+// --- price-regime detector: `captain regime set` / `list` / `clear` ---
 
 type fakeRegimePolicyStore struct {
 	loaded  watchkeeper.RegimePolicy

@@ -7,7 +7,7 @@ import (
 )
 
 // TestSitingMetrics_RegisterAndExport proves all three siting counter families REGISTER on the
-// daemon's registry AND actually appear by name once observed (sp-vdld). A registered vec
+// daemon's registry AND actually appear by name once observed. A registered vec
 // exports nothing until a label combination is incremented — the trap where a family is
 // "registered" yet never shows on /metrics — so the export path is proven with real
 // observations.

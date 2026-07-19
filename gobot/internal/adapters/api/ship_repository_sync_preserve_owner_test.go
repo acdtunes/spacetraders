@@ -50,8 +50,8 @@ func (syncPreserveOwnerFakeWaypointProvider) GetWaypoint(_ context.Context, _, _
 	return nil, errors.New("stub: waypoint lookup not needed by this test")
 }
 
-// TestSyncAllFromAPI_PreservesCaptainReservation is a regression test for
-// sp-w870: ReleaseAllActive (sp-i1ku) correctly excludes captain reservations
+// TestSyncAllFromAPI_PreservesCaptainReservation is a regression test:
+// ReleaseAllActive correctly excludes captain reservations
 // from the daemon-restart zombie release (see
 // TestReleaseAllActiveExcludesCaptainReservations), but daemon_server.go's
 // Start() runs syncAllShipsOnStartup() -> SyncAllFromAPI() immediately

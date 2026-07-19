@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowFleetAutosizerCommand creates the workflow fleet-autosizer subcommand (sp-1txd): it
+// newWorkflowFleetAutosizerCommand creates the workflow fleet-autosizer subcommand: it
 // launches the STANDING fleet capacity autosizer — the coordinator that sizes the hull pool to
 // demand and AUTO-BUYS hulls (lights to factory-chain demand, heavies to unserved trade demand)
 // behind the full fail-closed money-guard stack.

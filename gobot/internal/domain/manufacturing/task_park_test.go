@@ -5,7 +5,7 @@ import "testing"
 // A construction delivery that reaches execution with no buy source is a transient
 // supply gap, not a failure. ParkForResupply returns the EXECUTING task to PENDING
 // so the SupplyMonitor can re-source it - WITHOUT consuming the retry budget, and
-// releasing the ship so any ship can take it once supply recovers (sp-hs2j).
+// releasing the ship so any ship can take it once supply recovers.
 func TestParkForResupply_FromExecuting_ReturnsToPendingDeferredWithoutRetry(t *testing.T) {
 	task := NewDeliverToConstructionTask("pipeline-1", 1, "FAB_MATS", "", "", "X1-TEST-I67", nil)
 	if err := task.MarkReady(); err != nil {
@@ -59,7 +59,7 @@ func TestParkForResupply_DoesNotTouchRetryCount(t *testing.T) {
 // A construction delivery whose source market turns out to be DRY at execution time
 // must be reverted to the deferred/unsourceable signature so the SupplyMonitor
 // re-sources it. ClearSourceForResupply drops both the source market and the factory,
-// making an otherwise-sourced construction task IsDeferredConstruction() (sp-izh8).
+// making an otherwise-sourced construction task IsDeferredConstruction().
 func TestClearSourceForResupply_DropsSourceAndFactory_MakesDeferred(t *testing.T) {
 	task := NewDeliverToConstructionTask("pipeline-1", 1, "FAB_MATS", "X1-TEST-F45", "", "X1-TEST-I67", nil)
 	_ = task.MarkReady()

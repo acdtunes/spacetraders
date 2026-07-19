@@ -13,12 +13,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// --- sp-lbbm lane mutex tests ----------------------------------------------
-//
-// The lane mutex enforces ONE hull per (good, sink) per recovery window — the
-// fix for the H50 collision where hulls 7+8 concurrently dumped SHIP_PARTS into
-// one sink and crushed the bid. These drive the dispatcher on a MockClock so the
-// termination + recovery-hold lifecycle is deterministic.
+// The lane mutex enforces ONE hull per (good, sink) per recovery window. These
+// drive the dispatcher on a MockClock so the termination + recovery-hold
+// lifecycle is deterministic.
 
 // idleArbSingleSinkClockHarness builds a dispatcher over a hub and a SINGLE
 // in-leash sink for MACHINERY, on a caller-supplied clock so the recovery hold
@@ -56,9 +53,9 @@ func releaseHull(repo *idleArbFakeShipRepo, symbol string, clock shared.Clock) {
 }
 
 // Within one pass, surplus hulls sharing the only sink must launch exactly ONE
-// leg — the first claims the lane, the rest are skipped:lane-held. This is the
-// direct fix for the concurrent H50 dump. (Reserve 1 of 3 hulls leaves TWO
-// dispatchable onto the single sink — the contention the mutex governs.)
+// leg — the first claims the lane, the rest are skipped:lane-held. (Reserve 1 of
+// 3 hulls leaves TWO dispatchable onto the single sink — the contention the
+// mutex governs.)
 func TestIdleArbLaneMutex_WithinPass_SecondSameSinkHullSkipped(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	d, _, launcher := idleArbSingleSinkClockHarness(t, clock, 3, IdleArbConfig{ReserveHulls: 1})

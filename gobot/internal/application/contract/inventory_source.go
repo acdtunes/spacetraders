@@ -2,15 +2,15 @@ package contract
 
 import "context"
 
-// Inventory-first contract sourcing (sp-dchv Lane D).
+// Inventory-first contract sourcing.
 //
 // The parallel trade engine pre-positions cheap cross-system goods into a HOME
-// warehouse (sp-dchv Lanes A-C). This file adds the CONTRACT side: a seam the
-// sourcing optimizer consults BEFORE the market candidate so a contract whose
-// delivery system holds the good in inventory withdraws it at zero marginal ask
-// instead of buying it. Withdrawal is a single-system, ship-to-ship transfer at
-// the warehouse waypoint (RULINGS #14) — the contract worker never leaves its
-// system and never claims the warehouse hull (RULINGS #7); it only transfers.
+// warehouse. This file adds the CONTRACT side: a seam the sourcing optimizer
+// consults BEFORE the market candidate so a contract whose delivery system holds
+// the good in inventory withdraws it at zero marginal ask instead of buying it.
+// Withdrawal is a single-system, ship-to-ship transfer at the warehouse waypoint
+// (RULINGS #14) — the contract worker never leaves its system and never claims
+// the warehouse hull (RULINGS #7); it only transfers.
 
 // SourcingSource marks where a SourcingPlan sources its good from.
 type SourcingSource string
@@ -21,8 +21,8 @@ const (
 
 	// SourceInventory sources the good from an in-system warehouse at zero
 	// marginal ask — the units were already paid for by the trade engine's
-	// deposit, so the cost basis is sunk (sp-dchv). The plan's Market is the
-	// storage waypoint and UnitAsk is 0; the contract worker WITHDRAWS via a
+	// deposit, so the cost basis is sunk. The plan's Market is the storage
+	// waypoint and UnitAsk is 0; the contract worker WITHDRAWS via a
 	// ship-to-ship transfer rather than a market purchase.
 	SourceInventory SourcingSource = "INVENTORY"
 )
@@ -50,8 +50,8 @@ type InventorySource struct {
 }
 
 // InventorySourceFinder locates in-system warehouse inventory for a contract
-// good. It is the seam sp-dchv Lane D slots ahead of the market candidate in the
-// sourcing optimizer, and that a contract worker re-consults at withdrawal time.
+// good. It is the seam that slots ahead of the market candidate in the sourcing
+// optimizer, and that a contract worker re-consults at withdrawal time.
 //
 // Fail-open contract (RULINGS #1, never-skip): an implementation returns nil for
 // "no inventory here" for ANY reason — no warehouse in the system, none holding
@@ -65,8 +65,7 @@ type InventorySourceFinder interface {
 
 // SourcingOption configures optional inputs to PlanSourcing / PlanDeliverySourcing
 // without breaking the existing positional callers — they pass no options and get
-// byte-identical market-only behavior (the sp-9hu8 pins and the defer math are
-// unaffected).
+// byte-identical market-only behavior.
 type SourcingOption func(*sourcingConfig)
 
 type sourcingConfig struct {

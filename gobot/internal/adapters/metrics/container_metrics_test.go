@@ -27,7 +27,7 @@ func (f fakeContainerInfo) RestartCount() int                 { return f.restart
 func (f fakeContainerInfo) CurrentIteration() int             { return f.currentIteration }
 func (f fakeContainerInfo) RuntimeDuration() time.Duration    { return f.runtimeDuration }
 
-// TestContainerMetrics_RegisterAndExport proves container_exit_total (sp-dp92 P9)
+// TestContainerMetrics_RegisterAndExport proves container_exit_total
 // REGISTERS on the daemon's registry AND actually appears by name once observed —
 // the bopj P10 trap where a family was "registered" yet never showed on /metrics.
 func TestContainerMetrics_RegisterAndExport(t *testing.T) {

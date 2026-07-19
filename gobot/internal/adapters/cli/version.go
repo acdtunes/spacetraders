@@ -13,8 +13,8 @@ import (
 // per-invocation, so the stamp lives behind an explicit `version` subcommand
 // (and the `--version` flag wired on the root) rather than printing on every
 // command. This answers "which spacetraders binary am I running?" — the same
-// stale-binary question the startup banners answer for the long-lived services
-// (sp-898q).
+// stale-binary question the startup banners answer for the long-lived
+// services.
 //
 // It does not talk to the daemon: build info is baked into the binary, so the
 // command works even when the daemon is down.

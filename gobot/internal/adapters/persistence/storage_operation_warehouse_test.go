@@ -13,7 +13,7 @@ import (
 )
 
 // newWarehouseRepoTest builds a real FK-enforcing SQLite repo plus one player
-// row. NewTestConnection turns PRAGMA foreign_keys ON (sp-55aa), so the
+// row. NewTestConnection turns PRAGMA foreign_keys ON, so the
 // storage_operations.player_id -> players.id constraint is live here exactly as
 // it is in production Postgres.
 func newWarehouseRepoTest(t *testing.T) (*persistence.StorageOperationRepository, int) {
@@ -86,7 +86,7 @@ func TestStorageOperationRepository_FindRunningReturnsWarehouse(t *testing.T) {
 // The FK is genuinely enforced: persisting a warehouse for a player that does
 // not exist must be REJECTED, not silently accepted. This proves the round-trip
 // above passed because the constraint was satisfied, not because enforcement
-// was off (the sp-55aa gap this harness closes).
+// was off (the gap this harness closes).
 func TestStorageOperationRepository_WarehouseRejectsMissingPlayerFK(t *testing.T) {
 	repo, playerID := newWarehouseRepoTest(t)
 	ctx := context.Background()

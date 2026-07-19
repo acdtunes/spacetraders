@@ -223,7 +223,7 @@ func TestReconcile_HeavyStreakGate(t *testing.T) {
 }
 
 // The zero-effect alarm fires ONCE (edge-triggered) after demand persists with no buy for
-// zero_effect_alarm_ticks consecutive ticks — the mechanized silent-dry-run lesson.
+// zero_effect_alarm_ticks consecutive ticks.
 func TestReconcile_ZeroEffectAlarm_EdgeTriggered(t *testing.T) {
 	h, _, metrics, _ := armedHandler(lightShortfall())
 	h.SetTreasuryReader(&fakeTreasury{ok: false}) // every tick blocks on treasury_floor
@@ -245,7 +245,7 @@ func TestReconcile_ZeroEffectAlarm_EdgeTriggered(t *testing.T) {
 	}
 }
 
-// sp-a5dq: when API utilization is at/over the ceiling, the autosizer does NOT increase
+// When API utilization is at/over the ceiling, the autosizer does NOT increase
 // concurrency — the shortfall class is held (no buy) and the block is metered against api_util.
 func TestReconcile_APIUtilSaturated_HoldsGrowth(t *testing.T) {
 	h, purchaser, metrics, _ := armedHandler(lightShortfall())
@@ -262,9 +262,9 @@ func TestReconcile_APIUtilSaturated_HoldsGrowth(t *testing.T) {
 	}
 }
 
-// sp-a5dq: when the utilization metric is unreadable, the autosizer fails CLOSED — it HOLDS growth
-// (no buy) rather than the old fail-OPEN that grew concurrency into an unmeasured API. A transient
-// read failure holds steady; it never errors or tears the fleet down (the autosizer only ever buys).
+// When the utilization metric is unreadable, the autosizer fails CLOSED — it HOLDS growth (no
+// buy). A transient read failure holds steady; it never errors or tears the fleet down (the
+// autosizer only ever buys).
 func TestReconcile_APIUtilUnreadable_HoldsGrowth(t *testing.T) {
 	h, purchaser, metrics, _ := armedHandler(lightShortfall())
 	h.SetAPIUtilizationReader(&fakeAPIUtil{ok: false}) // utilization surface unreadable
@@ -280,8 +280,8 @@ func TestReconcile_APIUtilUnreadable_HoldsGrowth(t *testing.T) {
 	}
 }
 
-// sp-a5dq non-regression: an UNWIRED utilization reader (nil) fails CLOSED too — a mis-wired
-// coordinator holds growth rather than silently permitting unbounded concurrency.
+// An UNWIRED utilization reader (nil) fails CLOSED too — a mis-wired coordinator holds growth
+// rather than silently permitting unbounded concurrency.
 func TestReconcile_APIUtilReaderUnwired_HoldsGrowth(t *testing.T) {
 	h, purchaser, _, _ := armedHandler(lightShortfall())
 	h.SetAPIUtilizationReader(nil) // never wired
@@ -324,14 +324,13 @@ func containsGuard(gs []GuardName, want GuardName) bool {
 	return false
 }
 
-// --- sp-zbe6: the declining-aggregate-rate stop-buy is a CONCENTRATION false-positive when
+// --- The declining-aggregate-rate stop-buy is a CONCENTRATION false-positive when
 // profitable unserved lanes sit unflown -----------------------------------------------------------
 
-// ACCEPTANCE (the live incident, 2026-07-15 player-3): a heavy-freighter buy where every other
-// guard passes and the aggregate realized tour-rate is DECLINING, but 28 profitable trade lanes are
-// UNSERVED. The declining aggregate is a hull-CONCENTRATION artifact (the fleet piled onto a few fat
-// lanes and compressed them) — the NEXT heavy flies a FRESH unserved lane at fresh economics, so the
-// buy MUST proceed. Before the fix the declining stop-buy wrongly blocked this valid capital buy.
+// A heavy-freighter buy where every other guard passes and the aggregate realized tour-rate is
+// DECLINING, but 28 profitable trade lanes are UNSERVED. The declining aggregate is a
+// hull-CONCENTRATION artifact (the fleet piled onto a few fat lanes and compressed them) — the NEXT
+// heavy flies a FRESH unserved lane at fresh economics, so the buy MUST proceed.
 func TestReconcile_HeavyDecliningRateWithUnservedLanes_StillBuys(t *testing.T) {
 	// Demand 34, current 6 → shortfall 28 unserved profitable lanes; aggregate rate DECLINING;
 	// marginal 80000 clears the 0.7×fleet-avg floor (0.7 × 100000 = 70000).
@@ -355,10 +354,9 @@ func TestReconcile_HeavyDecliningRateWithUnservedLanes_StillBuys(t *testing.T) {
 	}
 }
 
-// REGRESSION (critical, the guard that prevents over-buying into a saturated market): a genuinely
-// saturated heavy market — aggregate rate DECLINING and unserved demand near-zero (shortfall 1, at
-// or below the floor) — STILL stops buying. This is the whole point of the declining-rate stop-buy;
-// the sp-zbe6 fix must NOT loosen it away.
+// REGRESSION (critical): a genuinely saturated heavy market — aggregate rate DECLINING and
+// unserved demand near-zero (shortfall 1, at or below the floor) — STILL stops buying. This is the
+// whole point of the declining-rate stop-buy; it must not be loosened away.
 func TestReconcile_HeavyDecliningRateSaturated_StillStops(t *testing.T) {
 	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
 		Demand: 7, Current: 6, MarginalRate: 80000, FleetAvgRate: 100000, // shortfall 1 (near-zero)

@@ -113,11 +113,11 @@ func TestPlanSourcing_PicksHomeSystemMarket(t *testing.T) {
 	}
 }
 
-// The core of CORRECTION #1: a cheaper source in ANOTHER system must never be
-// selected. Even when the repository can enumerate all-systems markets and a
-// foreign one is far cheaper, contract sourcing considers ONLY the delivery's
-// HOME system (RULINGS #14) — the in-system worker cannot reach a foreign source
-// (sp-9hu8), so it must be UNSELECTABLE, not dispatched-then-crashed.
+// A cheaper source in ANOTHER system must never be selected. Even when the
+// repository can enumerate all-systems markets and a foreign one is far
+// cheaper, contract sourcing considers ONLY the delivery's HOME system
+// (RULINGS #14) — the in-system worker cannot reach a foreign source, so it
+// must be UNSELECTABLE, not dispatched-then-crashed.
 func TestPlanSourcing_NeverSelectsCrossSystemSource_EvenWhenCheaper(t *testing.T) {
 	repo := &fakeCrossSystemRepo{
 		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{
@@ -173,7 +173,7 @@ func TestPlanSourcing_NoMarketAnywhere_ErrorsLikeTheOldMiss(t *testing.T) {
 }
 
 // The negative projection must re-project on the home ask (the only ask the worker
-// can actually pay), and the run SOURCES on it (never parks — sp-x8ck). Composing
+// can actually pay), and the run SOURCES on it (never parks). Composing
 // PlanSourcing → EvaluateSourcingDefer proves the projection basis even when a
 // cheaper foreign market exists in the repository.
 func TestPlanSourcing_NegativeReprojectsOnHomeAsk(t *testing.T) {
@@ -244,11 +244,9 @@ func TestEvaluateSourcingDefer_ExactlyAtThreshold_Proceeds(t *testing.T) {
 }
 
 func TestEvaluateSourcingDefer_NegativeWithRunway_SourcesNeverParks(t *testing.T) {
-	// The −891k shape: payout 120k, sourcing 6000×804 ≈ 4.8M, a full 7 days of
-	// runway. Before sp-x8ck this DEFERRED (parked) until asks reverted; the
-	// Admiral override makes never-skip govern the contract path, so it now
-	// SOURCES at the loss (Overridden) and never parks — runway no longer gates
-	// the decision.
+	// payout 120k, sourcing 6000×804 ≈ 4.8M, a full 7 days of runway: even with
+	// ample runway, RULINGS #1 never-skip governs — the run SOURCES at the loss
+	// (Overridden) and never parks; runway does not gate the decision.
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)
 	now := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC) // 7 days of runway
 
@@ -264,16 +262,13 @@ func TestEvaluateSourcingDefer_NegativeWithRunway_SourcesNeverParks(t *testing.T
 	}
 }
 
-// TestSourcing_UnsourceableAtProfit_StillSources is the sp-x8ck regression: the
-// live deadlock. A contract whose ONLY in-system source is priced above payout
-// (6 ANTIMATTER, sole market an IMPORT @ 14912 → 89472 effective vs payout
-// 70140; net −19332, worse than the −20%-of-payout line −14028) with a full
-// ~7-day runway used to DEFER/park FOREVER, deadlocking the serial one-active-
-// contract pipeline for the whole deadline window (zero contract income).
-// RULINGS #1 never-skip GOVERNS the contract sourcing path over the profit guard
-// (Admiral override, sp-x8ck): the run must SOURCE at the negative margin
-// (Overridden = source-and-log-the-loss), NEVER park (Defer). No defer/parking
-// decision may be produced.
+// TestSourcing_UnsourceableAtProfit_StillSources: a contract whose ONLY
+// in-system source is priced above payout (6 ANTIMATTER, sole market an
+// IMPORT @ 14912 → 89472 effective vs payout 70140; net −19332, worse than the
+// −20%-of-payout line −14028) with a full ~7-day runway. RULINGS #1 never-skip
+// GOVERNS the contract sourcing path over the profit guard: the run must
+// SOURCE at the negative margin (Overridden = source-and-log-the-loss), NEVER
+// park (Defer). No defer/parking decision may be produced.
 func TestSourcing_UnsourceableAtProfit_StillSources(t *testing.T) {
 	c := testContract(t, 70_140, "2026-07-19T00:00:00Z", 6) // ~7 days runway, well outside any window
 	now := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)

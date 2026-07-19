@@ -13,12 +13,10 @@ import (
 )
 
 // sp-wxf2: the depot receipt path (depotWarehouseTargetUnits -> DemandMiner.Mine ->
-// PlanReceiptCaps) used to REUSE the SOURCE-side stocker ranking, which pre-culls candidates by
-// buy-leg SAVINGS and truncates to TopN BEFORE the reward knapsack ever runs. A high
-// contract-reward good with a small source spread (a MEDICINE/CLOTHING-like good — low savings,
-// so ranked last and TopN-culled) was therefore dropped before its reward was ever weighed, while
-// a low-reward/high-savings filler survived. The fix ranks the DEPOT candidate selection by
-// contract-reward value, so the high-reward good survives the cull and reaches the caps.
+// PlanReceiptCaps) ranks the DEPOT candidate selection by contract-reward value, not by the
+// SOURCE-side stocker ranking's buy-leg SAVINGS — so a high contract-reward good with a small
+// source spread (a MEDICINE/CLOTHING-like good) survives the TopN cull and reaches the reward
+// knapsack, instead of being dropped before its reward is ever weighed.
 //
 // This test drives the REAL miner + REAL receipt knapsack over an in-memory demand/market
 // fixture (no DB), asserting the observable outcome: the destination warehouse's receipt caps.
@@ -39,8 +37,8 @@ func (f rewardRankDemandSource) CurrentEraID(_ context.Context, _ int) (*int, er
 // rewardRankMarkets is a fake persistence.marketAskFinder. Every good gets a CROSS-system source
 // (so the receipt residual leg is equal across goods — contract reward and recurrence are the
 // only differentiators), and an optional per-good HOME ask drives the source-side buy-leg savings
-// the buggy path ranked by. A good absent from homeByGood has no home ask, so its projected
-// savings is 0 and it is stock-INELIGIBLE — ranked dead last by the old savings cull.
+// the STOCKER-side ranking uses (see file header). A good absent from homeByGood has no home ask,
+// so its projected savings is 0 and it is stock-INELIGIBLE — ranked dead last by that ranking.
 type rewardRankMarkets struct {
 	sourceAsk  int
 	homeByGood map[string]int

@@ -18,8 +18,8 @@ type fakeTokenCollector struct {
 	err      error
 
 	// sinceSpawn/sinceSpawnErr optionally override the response when Collect is
-	// called with a zero `since` — the tokens-since-spawn unbounded query
-	// (sp-0zx9). sinceSpawnSet distinguishes "not configured" (fall back to
+	// called with a zero `since` — the tokens-since-spawn unbounded query.
+	// sinceSpawnSet distinguishes "not configured" (fall back to
 	// sessions/err, exactly like any other call) from "deliberately set to
 	// empty/erroring", so existing tests that don't know about since-spawn are
 	// completely unaffected.
@@ -91,8 +91,8 @@ func TestRunTokenReportEmptyIsNotAnError(t *testing.T) {
 	require.Contains(t, buf.String(), "No token telemetry")
 }
 
-// TestRunTokenReportIncludesTokensSinceSpawnPerSession is the core sp-0zx9(b)
-// case: each session row carries its lifetime (since-spawn) token total,
+// TestRunTokenReportIncludesTokensSinceSpawnPerSession verifies each session
+// row carries its lifetime (since-spawn) token total,
 // joined by SessionKey, from a SEPARATE unbounded collect call — not an echo
 // of the windowed total. The since-spawn sample data is deliberately
 // different from the windowed sample data so a bug that collapsed the two
@@ -156,8 +156,8 @@ func TestRunTokenReportSinceSpawnBestEffortOnCollectorError(t *testing.T) {
 	}
 }
 
-// TestRunTokenReportQuotaBlockPresentWhenBudgetConfigured is the core sp-1vkr
-// case: a configured weekly_token_budget produces a quota block comparing
+// TestRunTokenReportQuotaBlockPresentWhenBudgetConfigured verifies a
+// configured weekly_token_budget produces a quota block comparing
 // this window's total against it.
 func TestRunTokenReportQuotaBlockPresentWhenBudgetConfigured(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
@@ -196,7 +196,7 @@ func TestRunTokenReportQuotaBlockOmittedWhenBudgetUnconfigured(t *testing.T) {
 
 // TestRunTokenReportQuotaAlertFlagsWhenThresholdCrossed proves the human
 // render surfaces a clearly grep-able alert line once usage crosses the
-// configured threshold percent — the sp-1vkr "budget alerting" requirement.
+// configured threshold percent.
 func TestRunTokenReportQuotaAlertFlagsWhenThresholdCrossed(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}

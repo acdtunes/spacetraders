@@ -25,12 +25,10 @@ func closedLocalAddr(t *testing.T) string {
 	return addr
 }
 
-// The resilience property itself (sp-g5ct): constructing the routing client must
-// NOT fail when the routing service is down. Before the lazy-conn change the
-// constructor blocked on the dial (grpc.WithBlock) and errored when nothing was
-// listening, which made the whole daemon refuse to boot if routing happened to be
-// down during a restart (RULINGS #2). The connection is now established lazily, so
-// construction succeeds regardless of service availability.
+// Constructing the routing client must NOT fail when the routing service is down:
+// the daemon must boot even if routing is down during a restart (RULINGS #2). The
+// connection is established lazily, so construction succeeds regardless of service
+// availability.
 func TestNewGRPCRoutingClient_SucceedsWhenServiceDown(t *testing.T) {
 	client, err := NewGRPCRoutingClient(closedLocalAddr(t))
 	if err != nil {

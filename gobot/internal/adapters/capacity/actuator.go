@@ -1,6 +1,6 @@
 package capacity
 
-// The capacity CONVERGE actuator (bead st-5ig, epic st-7zk): the thin wrapper
+// The capacity CONVERGE actuator: the thin wrapper
 // over the EXISTING primitives for the CHEAP tiers (1-3). It drives — never
 // reinvents — fleet-assign (tier 1), reposition/navigate + the worker-rebalancer
 // (tier 2), and the depot warehouse buffer config (tier 3). It DECIDES nothing:
@@ -14,7 +14,7 @@ package capacity
 // token-scoped identity the SENSE lane's treasury read rides.
 //
 // ExecuteCapital (tier 4) is a fail-closed stub here: capital is post-approval
-// ONLY, wired by the proposal-approval lane (st-0h8 / st-x00), and the CONVERGE
+// ONLY, wired by the proposal-approval lane, and the CONVERGE
 // capital gate already refuses tier-4 under the v1 threshold, so this is never
 // reached in armed cheap-tier operation. It builds NO purchase.
 
@@ -45,7 +45,7 @@ type HullRepositioner interface {
 	RepositionHull(ctx context.Context, playerID shared.PlayerID, shipSymbol, destinationWaypoint string) error
 }
 
-// WorkerRebalancer drives the existing worker-rebalancer (sp-f5pr) toward a
+// WorkerRebalancer drives the existing worker-rebalancer toward a
 // shortfall hub (tier 2); the rebalancer owns the actual per-worker moves.
 type WorkerRebalancer interface {
 	RebalanceWorkers(ctx context.Context, playerID shared.PlayerID, hubSymbol, workerWaypoint string, count int) error
@@ -157,7 +157,7 @@ func (a *Actuator) AdjustBuffer(ctx context.Context, action domainCapacity.Actio
 }
 
 // ExecuteCapital (tier 4) is fail-closed in the cheap-tier actuator: capital is
-// executed ONLY post-approval by the proposal lane (st-0h8). It builds no
+// executed ONLY post-approval by the proposal lane. It builds no
 // purchase and never reaches an autobuy path from here.
 func (a *Actuator) ExecuteCapital(_ context.Context, action domainCapacity.Action) error {
 	return fmt.Errorf(

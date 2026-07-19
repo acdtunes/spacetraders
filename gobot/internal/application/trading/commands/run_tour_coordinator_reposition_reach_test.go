@@ -1,10 +1,10 @@
 package commands
 
-// run_tour_coordinator_reposition_reach_test.go — sp-uf64: the reposition-reach improvement.
-// buildRepositionCandidates was 1-hop-FIRST: it broadened to the multi-hop scan ONLY when the
-// 1-hop set was empty (the sp-jeou off-circuit gate), so a hull with ANY fresh-market 1-hop
-// neighbour — even a money-losing one — never saw richer systems 2-4 gate hops away. Behind the
-// default-OFF RepositionReachEnabled flag the scan now (1) ALWAYS broadens and merges, (2) RANKS
+// run_tour_coordinator_reposition_reach_test.go — the reposition-reach improvement.
+// buildRepositionCandidates is 1-hop-FIRST by default: it broadens to the multi-hop scan ONLY
+// when the 1-hop set is empty, so a hull with ANY fresh-market 1-hop neighbour — even a
+// money-losing one — never sees richer systems 2-4 gate hops away. Behind the
+// default-OFF RepositionReachEnabled flag the scan instead (1) ALWAYS broadens and merges, (2) RANKS
 // with a per-hop deadhead decay so a rich distant ground wins only when its spread beats the
 // travel penalty, and (3) EXCLUDES systems already saturated with active trade hulls (anti-herd).
 // Every assertion is on the OBSERVABLE candidate set buildRepositionCandidates returns — the same
@@ -47,7 +47,7 @@ func reachFixture(nearScore, farScore int) *tourFixture {
 			"X1-FAR-A": {"K": 10}, "X1-FAR-B": {"K": 10},
 		},
 		// The sink waypoint of each system must be an IMPORT (not the EXPORT default), else
-		// bestLaneForGood (sp-9mkf) refuses to sell into it and the system scores a bare 0.
+		// bestLaneForGood refuses to sell into it and the system scores a bare 0.
 		tradeType: map[string]map[string]string{
 			"X1-NEAR-B": {"G": "IMPORT"},
 			"X1-FAR-B":  {"K": "IMPORT"},

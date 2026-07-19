@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// TransitionEra is the era-flip half of `universe transition` (sp-nax3): it closes
+// TransitionEra is the era-flip half of `universe transition`: it closes
 // the currently-open era and opens a new one for a freshly-registered player WITHOUT
 // truncating the player-partitioned market_data / system_graphs caches (migration 032).
 func TestTransitionEraClosesOpenAndOpensNewWithoutTruncatingCaches(t *testing.T) {

@@ -34,10 +34,10 @@ func TestTickRespectsHourlyCap(t *testing.T) {
 
 // --- sp-sk68 wake model: Tick-level gate behavior ---
 //
-// The bug: Tick woke on ANY unprocessed event, so routine events like
-// workflow.finished triggered a full captain session. The fix changes only
-// the wake GATE (when to wake), never delivery: bridgeWake still receives
-// the full unprocessed batch once a wake is decided.
+// Tick's wake GATE (when to wake) is independent from delivery: routine
+// events like workflow.finished must not force a full captain session, while
+// bridgeWake still receives the full unprocessed batch once a wake IS
+// decided.
 
 func TestTickDefersRoutineEventsWithoutWaking(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
@@ -55,11 +55,10 @@ func TestTickDefersRoutineEventsWithoutWaking(t *testing.T) {
 	require.Len(t, left, 1, "the deferred event stays unprocessed, riding whichever wake fires next")
 }
 
-// sp-soh9 FIX B: when the wake gate keeps firing into a full hourly cap (as it
-// did every 30s during the one-shot-alarm regression), the "session cap
-// reached" line must NOT spam once per tick. It is rate-limited to one line per
-// cap engagement window, so three consecutive capped ticks emit it once — while
-// keeping the informative content intact.
+// sp-soh9 FIX B: when the wake gate keeps firing into a full hourly cap, the
+// "session cap reached" line must NOT spam once per tick. It is rate-limited
+// to one line per cap engagement window, so three consecutive capped ticks
+// emit it once — while keeping the informative content intact.
 func TestCapReachedLogIsRateLimitedAcrossConsecutiveTicks(t *testing.T) {
 	sup, _, gw := newBridgeSupervisor(t)
 	now := time.Now()
@@ -68,7 +67,7 @@ func TestCapReachedLogIsRateLimitedAcrossConsecutiveTicks(t *testing.T) {
 	}
 	// Overdue heartbeat: the gate wakes on every tick, and because the cap
 	// blocks bridgeWake, last_session never advances — so it stays overdue and
-	// keeps re-waking into the cap, exactly the live spam loop.
+	// keeps re-waking into the cap on every tick.
 	sup.lastSession = now.Add(-2 * time.Hour)
 
 	out := captureOutput(t, func() {
@@ -106,23 +105,17 @@ func TestTickHourlyCapSuppressesEvenAnInterruptEvent(t *testing.T) {
 
 // --- sp-ftgq: the hourly cap must track NEW sessions only ---
 //
-// Bug: recordWake charged every wake DELIVERY — firstWake (a genuinely new
-// event), renudge (re-poking the captain about an event already mailed),
-// and the empty-heartbeat nudge — against the very same hourly cap. A
-// backlog of unacked events kept re-nudging (or a quiet fleet kept
-// heartbeating) and that traffic ALONE could exhaust the cap, at which
-// point Tick's cap gate blocked bridgeWake entirely — including a brand
-// new event's firstWake — so genuinely new events sat queued forever even
-// though no runaway NEW-session creation was actually happening.
-//
-// Fix: only firstWake (delivery of a never-before-mailed event batch)
-// charges the cap now, via recordNewSession. renudge and the heartbeat
-// path still call recordWake for their cadence/backoff bookkeeping, but
-// recordWake no longer appends to sessionStarts.
+// Only firstWake (delivery of a never-before-mailed event batch) charges the
+// hourly cap, via recordNewSession. renudge (re-poking the captain about an
+// event already mailed) and the empty-heartbeat nudge still call recordWake
+// for their cadence/backoff bookkeeping, but recordWake does not append to
+// sessionStarts — so a backlog of unacked events re-nudging, or a quiet fleet
+// heartbeating, can never by itself exhaust the cap and starve a genuinely
+// new event.
 
 func TestNewEventWakeNotStarvedByRenudgeBacklog(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
-	sup.cfg.MaxSessionsPerHour = 2 // tight: two old-accounting renudges alone would have exhausted this
+	sup.cfg.MaxSessionsPerHour = 2 // tight enough that renudges alone would exhaust it if they wrongly counted
 	recordEvent(t, s, captain.EventWorkflowFailed)
 
 	t0 := time.Now()
@@ -133,7 +126,7 @@ func TestNewEventWakeNotStarvedByRenudgeBacklog(t *testing.T) {
 	require.Len(t, gw.mails, 1)
 
 	// Two re-nudge cycles of the SAME still-unacked event, each past the ack
-	// timeout. Under the old accounting these alone fill the 2-session cap.
+	// timeout — renudges alone must never fill the 2-session cap.
 	_, err = sup.Tick(context.Background(), t0.Add(11*time.Minute))
 	require.NoError(t, err)
 	_, err = sup.Tick(context.Background(), t0.Add(22*time.Minute))

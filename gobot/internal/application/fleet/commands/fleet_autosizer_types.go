@@ -1,4 +1,4 @@
-// Package commands holds the fleet capacity autosizer (sp-1txd): a standing per-player
+// Package commands holds the fleet capacity autosizer: a standing per-player
 // coordinator that SIZES the hull pool to demand and AUTO-BUYS hulls behind the full
 // money-guard stack. It is the buy-side twin of the vdld siting coordinator (which sizes the
 // factory-chain portfolio at zero cost); this one spends real credits, so its guard stack is
@@ -20,10 +20,10 @@ const (
 	// HullClassHeavy is the trade-tour pool (DedicatedFleet "trade"), sized to trade demand.
 	HullClassHeavy HullClass = "heavy"
 	// HullClassWarehouse is the storage/stocker pool (DedicatedFleet "warehouse"), sized to
-	// producing-chain export demand (sp-1txd M7).
+	// producing-chain export demand.
 	HullClassWarehouse HullClass = "warehouse"
-	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer", sp-a3yn
-	// slice C of sp-4imi). It is sized to slice-B off-gate demand and is the ONE class EXEMPT from
+	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer").
+	// It is sized to slice-B off-gate demand and is the ONE class EXEMPT from
 	// the realized-$/hr payback guards: an explorer buys REACH (it charts new systems so the cheap
 	// probe frontier resumes via growFrontierGraph), NOT income, so it has no marginal realized
 	// rate. That exemption is REPLACED — not dropped — by three explorer-only bounds enforced in

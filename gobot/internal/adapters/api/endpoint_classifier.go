@@ -140,8 +140,8 @@ func looksLikeShipSymbol(s string) bool {
 // extractShipSymbol returns the ship symbol embedded in a ship-scoped API
 // path (e.g. "/my/ships/TORWIND-1/dock" -> "TORWIND-1"), or "" if the path
 // is not scoped to a single hull (e.g. "/my/ships" list/purchase, or a
-// waypoint/system/contract path). Used by the budget tracker (sp-51ti) to
-// attribute request-budget consumption per hull.
+// waypoint/system/contract path). Used by the budget tracker to attribute
+// request-budget consumption per hull.
 func extractShipSymbol(path string) string {
 	path = stripQueryString(path)
 	parts := strings.Split(path, "/")

@@ -7,9 +7,9 @@ import (
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 )
 
-// ExplorerOffGateBridge is the sp-a3yn cross-coordinator seam between slice B's off-gate demand
+// ExplorerOffGateBridge is the cross-coordinator seam between slice B's off-gate demand
 // (raised in the FRONTIER expansion coordinator) and slice C's explorer BUY (in the FLEET autosizer).
-// One object plays two ports — the st-x00 contract_delivery_bridge idiom:
+// One object plays two ports — the contract_delivery_bridge idiom:
 //
 //   - expansionCmd.OffGateDemandSink (WRITE): the frontier coordinator mirrors each tick's off-gate
 //     signal here (emitOffGateDemand);

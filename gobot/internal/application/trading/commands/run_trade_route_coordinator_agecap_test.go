@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// sp-xwa1 ranker age-cap: lanes priced off market observations older than
+// Ranker age-cap: lanes priced off market observations older than
 // maxListingAge are excluded from UNDIRECTED ranking — a stale lane can't win
 // selection and then execute at prices that already moved — while a captain-
 // DIRECTED --dest lane is NOT vetoed by staleness (it is re-verified live at

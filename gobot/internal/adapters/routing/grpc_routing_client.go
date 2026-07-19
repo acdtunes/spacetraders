@@ -31,13 +31,9 @@ type GRPCRoutingClient struct {
 // no network I/O, the transport connects on the first RPC, and gRPC transparently
 // reconnects for the life of the process. The daemon therefore boots even when the
 // routing service is down — RPCs issued during an outage fail fast with
-// codes.Unavailable and self-heal once the service returns (sp-g5ct). The
+// codes.Unavailable and self-heal once the service returns. The
 // constructor only errors on a malformed target/credentials, never on the service
 // being unreachable.
-//
-// Note: grpc.NewClient uses the "dns" resolver by default (the deprecated
-// DialContext used "passthrough"). The configured address is a host:port such as
-// localhost:50051, which the dns resolver resolves correctly.
 func NewGRPCRoutingClient(address string) (*GRPCRoutingClient, error) {
 	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -58,7 +54,7 @@ func NewGRPCRoutingClient(address string) (*GRPCRoutingClient, error) {
 // READY or ctx expires, returning nil on success and an error naming the last
 // observed state otherwise. It is a boot-time observability probe only: nothing in
 // the engine depends on it, and a failed probe simply means route planning is
-// degraded until the service returns (the conn reconnects on its own). (sp-g5ct)
+// degraded until the service returns (the conn reconnects on its own).
 func (c *GRPCRoutingClient) WaitForReady(ctx context.Context) error {
 	c.conn.Connect()
 	for {
@@ -82,7 +78,6 @@ func (c *GRPCRoutingClient) Close() error {
 
 // PlanRoute implements RoutingClient.PlanRoute using gRPC
 func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
-	// Convert to protobuf request
 	pbReq := &pb.PlanRouteRequest{
 		SystemSymbol:  req.SystemSymbol,
 		StartWaypoint: req.StartWaypoint,
@@ -95,7 +90,6 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 		PreferCruise:  req.PreferCruise,
 	}
 
-	// Call gRPC service
 	pbResp, err := c.client.PlanRoute(ctx, pbReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC PlanRoute failed: %w", err)
@@ -105,7 +99,6 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 		return nil, fmt.Errorf("routing failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
-	// Convert response
 	return &domainRouting.RouteResponse{
 		Steps:            convertRouteStepsFromPb(pbResp.Steps),
 		TotalFuelCost:    int(pbResp.TotalFuelCost),
@@ -117,7 +110,6 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 // OptimizeTour implements RoutingClient.OptimizeTour using gRPC
 // Tours always return to start by definition
 func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {
-	// Convert to protobuf request
 	pbReq := &pb.OptimizeTourRequest{
 		SystemSymbol:    req.SystemSymbol,
 		StartWaypoint:   req.StartWaypoint,
@@ -127,7 +119,6 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 		AllWaypoints:    convertWaypointsToPb(req.AllWaypoints),
 	}
 
-	// Call gRPC service
 	pbResp, err := c.client.OptimizeTour(ctx, pbReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC OptimizeTour failed: %w", err)
@@ -137,7 +128,6 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 		return nil, fmt.Errorf("tour optimization failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
-	// Convert response
 	return &domainRouting.TourResponse{
 		VisitOrder:       pbResp.VisitOrder,
 		CombinedRoute:    convertRouteStepsFromPb(pbResp.RouteSteps),
@@ -148,7 +138,6 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 // OptimizeFueledTour implements RoutingClient.OptimizeFueledTour using gRPC
 // This endpoint globally optimizes visit order + flight modes + refuel stops
 func (c *GRPCRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainRouting.FueledTourRequest) (*domainRouting.FueledTourResponse, error) {
-	// Convert to protobuf request
 	pbReq := &pb.OptimizeFueledTourRequest{
 		SystemSymbol:    req.SystemSymbol,
 		StartWaypoint:   req.StartWaypoint,
@@ -159,12 +148,10 @@ func (c *GRPCRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainR
 		AllWaypoints:    convertWaypointsToPb(req.AllWaypoints),
 	}
 
-	// Set optional return waypoint
 	if req.ReturnWaypoint != "" {
 		pbReq.ReturnWaypoint = &req.ReturnWaypoint
 	}
 
-	// Call gRPC service
 	pbResp, err := c.client.OptimizeFueledTour(ctx, pbReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC OptimizeFueledTour failed: %w", err)
@@ -174,10 +161,8 @@ func (c *GRPCRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainR
 		return nil, fmt.Errorf("fueled tour optimization failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
-	// Convert legs from protobuf
 	legs := make([]*domainRouting.TourLegData, len(pbResp.Legs))
 	for i, pbLeg := range pbResp.Legs {
-		// Convert intermediate stops
 		stops := make([]*domainRouting.IntermediateStopData, len(pbLeg.IntermediateStops))
 		for j, pbStop := range pbLeg.IntermediateStops {
 			stops[j] = &domainRouting.IntermediateStopData{
@@ -219,7 +204,6 @@ func (c *GRPCRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainR
 
 // PartitionFleet implements RoutingClient.PartitionFleet using gRPC
 func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouting.VRPRequest) (*domainRouting.VRPResponse, error) {
-	// Convert ship configs to protobuf
 	pbShipConfigs := make(map[string]*pb.ShipConfig)
 	for ship, config := range req.ShipConfigs {
 		pbShipConfigs[ship] = &pb.ShipConfig{
@@ -230,7 +214,6 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 		}
 	}
 
-	// Convert to protobuf request
 	pbReq := &pb.PartitionFleetRequest{
 		SystemSymbol:    req.SystemSymbol,
 		ShipSymbols:     req.ShipSymbols,
@@ -240,7 +223,6 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 		Iterations:      1, // Default to single iteration
 	}
 
-	// Call gRPC service
 	pbResp, err := c.client.PartitionFleet(ctx, pbReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC PartitionFleet failed: %w", err)
@@ -250,7 +232,6 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 		return nil, fmt.Errorf("fleet partitioning failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
-	// Convert assignments
 	assignments := make(map[string]*domainRouting.ShipTourData)
 	for ship, tour := range pbResp.Assignments {
 		assignments[ship] = &domainRouting.ShipTourData{
@@ -263,8 +244,6 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 		Assignments: assignments,
 	}, nil
 }
-
-// Helper functions for conversion
 
 func responseErrorMessage(errorMessage *string) string {
 	if errorMessage == nil {
@@ -311,7 +290,7 @@ func convertRouteStepsFromPb(pbSteps []*pb.RouteStep) []*domainRouting.RouteStep
 	return steps
 }
 
-// OptimizeTradeTour implements RoutingClient.OptimizeTradeTour (sp-1ek0). It
+// OptimizeTradeTour implements RoutingClient.OptimizeTradeTour. It
 // marshals the request-carried snapshot + waypoint coordinates + ship + constraints
 // into the proto request, calls the stateless Python planner, and converts the
 // response into a domain TourPlan. A transport error surfaces as an error; an
@@ -374,7 +353,7 @@ func buildTourRequest(
 	}
 	sort.Slice(pbCargo, func(i, j int) bool { return pbCargo[i].GoodSymbol < pbCargo[j].GoodSymbol })
 
-	// Deposit candidates (sp-dchv Lane C): the haul-to-storage sinks the daemon
+	// Deposit candidates: the haul-to-storage sinks the daemon
 	// assembled and capped. Emitted in a deterministic (waypoint, good) order so
 	// request payloads and their logs are reproducible.
 	pbDeposits := make([]*pb.DepositCandidate, 0, len(deposits))
@@ -394,7 +373,7 @@ func buildTourRequest(
 		return pbDeposits[i].GoodSymbol < pbDeposits[j].GoodSymbol
 	})
 
-	// Absorption (sp-78ai L3): the outstanding cross-container depth per
+	// Absorption: the outstanding cross-container depth per
 	// (waypoint, good, side) the daemon netted from the ledger. Emitted in a
 	// deterministic (waypoint, good, side) order so request payloads and their logs
 	// are reproducible, mirroring the snapshot/deposit ordering.
@@ -439,7 +418,7 @@ func buildTourRequest(
 			MaxSnapshotAgeMinutes: int32(cons.MaxSnapshotAgeMinutes),
 			ExpectedModelVersion:  cons.ExpectedModelVersion,
 			MaxTourSystems:        int32(cons.MaxTourSystems),
-			// sp-im74: closure mode. Zero-values (false/"") serialize to nothing —
+			// Closure mode. Zero-values (false/"") serialize to nothing —
 			// an open request is byte-identical to a pre-closure binary's.
 			Closed:       cons.Closed,
 			AnchorSystem: cons.AnchorSystem,

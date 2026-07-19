@@ -7,17 +7,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// The MONEY-GUARD HEART (sp-1txd M2). A purchase fires ONLY when every guard passes; this is the
+// The MONEY-GUARD HEART. A purchase fires ONLY when every guard passes; this is the
 // fail-CLOSED inversion of vdld's fail-open kill-switch — spending is irreversible, not-buying is
 // safe, so any UNREADABLE input (price, era clock, realized rate, treasury, API utilization) BLOCKS.
-// The API-utilization guard used to be the lone fail-OPEN exception; sp-a5dq made it fail CLOSED too
-// (BurstSaturation was alerted but concurrency growth into a saturated API was never prevented), so
-// every guard now holds growth on an unreadable bound.
 //
 // EvaluateGuards is PURE: it judges a fully-populated PurchaseRequest and reports every guard's
-// verdict plus the full arithmetic (the iv65 park-line idiom — the captain reads one line and
+// verdict plus the full arithmetic (the park-line idiom — the captain reads one line and
 // knows exactly which knob to retune and to what value). The I/O that populates the request
-// (reading treasury / era / price / rate) lives in the coordinator's ACT step (M5); keeping the
+// (reading treasury / era / price / rate) lives in the coordinator's ACT step; keeping the
 // judgement pure makes every guard's refusal unit-testable in isolation.
 
 // GuardName identifies a purchase guard for the decision log and the autosizer_blocked metric.
@@ -31,7 +28,7 @@ const (
 	GuardPriceCeiling   GuardName = "price_ceiling"   // per-class absolute + premium-over-cheapest cap
 	GuardEraPayback     GuardName = "era_payback"     // buy pays back before era reset; hard T-cutoff
 	GuardRealizedRate   GuardName = "realized_rate"   // marginal $/hr clears the floor, not decaying
-	GuardExplorerExempt GuardName = "explorer_exempt" // sp-a3yn: exploration-justified — REPLACES the two income guards for the explorer ONLY
+	GuardExplorerExempt GuardName = "explorer_exempt" // exploration-justified — REPLACES the two income guards for the explorer ONLY
 	GuardTreasuryPct    GuardName = "treasury_pct"    // a single hull ≤ pct% of live treasury (analyst rule)
 	GuardAPIUtil        GuardName = "api_util"        // sustained request-utilization below ceiling (fail-closed)
 	GuardTreasuryFloor  GuardName = "treasury_floor"  // treasury net of the reserve floor covers price+margin
@@ -86,13 +83,13 @@ type PurchaseRequest struct {
 	RateFloor     float64 // absolute $/hr floor the class must clear (fraction × fleet-avg, resolved upstream).
 	RateReadable  bool
 	RateDeclining bool // realized rate trending down (heavy stop-buy).
-	// UnservedDemandFloor (sp-zbe6) is the near-zero unserved-lane count — the heavy class's OWN
+	// UnservedDemandFloor is the near-zero unserved-lane count — the heavy class's OWN
 	// Shortfall — at or BELOW which a DECLINING aggregate realized-rate is treated as genuine
 	// absorption saturation and STOPS the buy. ABOVE it, a declining aggregate rate is a hull-
 	// CONCENTRATION artifact (the fleet piled onto a few fat lanes and compressed their realized
 	// rate while profitable lanes sit UNFLOWN) — the next heavy flies a FRESH lane at fresh
 	// economics, so the declining signal must NOT stop the buy. For heavies Shortfall is the
-	// unserved profitable-lane count (sp-4ewi). Resolved from autosizer_declining_rate_unserved_floor
+	// unserved profitable-lane count. Resolved from autosizer_declining_rate_unserved_floor
 	// (default 2); the config resolver never lets it reach 0, so the stop-buy can never be silently
 	// disabled (the demand guard already forces Shortfall>0).
 	UnservedDemandFloor int
@@ -105,7 +102,7 @@ type PurchaseRequest struct {
 	MarginOverFloor   int64 // credits of headroom required above the reserve floor after the buy.
 	TreasuryPctPerBuy int   // analyst affordability rule: a single hull ≤ this pct% of treasury (0 = not applied).
 
-	// API utilization (dynamic; fails CLOSED when unreadable — sp-a5dq). Holds concurrency growth
+	// API utilization (dynamic; fails CLOSED when unreadable). Holds concurrency growth
 	// when sustained utilization is at/over the ceiling OR the signal cannot be read.
 	APIUtilPct      float64
 	APIUtilReadable bool
@@ -121,7 +118,7 @@ type PurchaseDecision struct {
 	Verdicts  []GuardVerdict
 }
 
-// Arithmetic renders the full per-guard arithmetic on one line (the iv65 park-line idiom).
+// Arithmetic renders the full per-guard arithmetic on one line (the park-line idiom).
 func (d PurchaseDecision) Arithmetic() string {
 	segs := make([]string, 0, len(d.Verdicts))
 	for _, v := range d.Verdicts {
@@ -146,7 +143,7 @@ func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 		guardPriceRead(req),
 		guardPriceCeiling(req),
 	}
-	// THE EXPLORER PAYBACK EXEMPTION (sp-a3yn) — the single, class-gated carve-out.
+	// THE EXPLORER PAYBACK EXEMPTION — the single, class-gated carve-out.
 	//
 	// The explorer buys REACH, not income: it warps off the gate network to chart new systems so
 	// the cheap probe frontier resumes (growFrontierGraph picks up the charted cluster next cycle).
@@ -289,8 +286,8 @@ func guardRealizedRate(req PurchaseRequest) GuardVerdict {
 		return GuardVerdict{Guard: GuardRealizedRate, Passed: false, Detail: "realized rate unreadable"}
 	}
 	if req.RateDeclining {
-		// The CONCENTRATION carve-out (sp-zbe6) applies to the TRADE (heavy) pool ONLY: for a heavy,
-		// req.Shortfall IS the count of profitable trade lanes that sit UNFLOWN (sp-4ewi). When that
+		// The CONCENTRATION carve-out applies to the TRADE (heavy) pool ONLY: for a heavy,
+		// req.Shortfall IS the count of profitable trade lanes that sit UNFLOWN. When that
 		// count is ABOVE the floor, a DECLINING aggregate tour-rate is a hull-CONCENTRATION artifact —
 		// the fleet piled onto a few fat lanes and compressed THEIR realized rate — not true absorption
 		// saturation: the next heavy flies a FRESH unserved lane at fresh economics, so the decline must
@@ -336,12 +333,11 @@ func guardTreasuryPct(req PurchaseRequest) GuardVerdict {
 }
 
 func guardAPIUtil(req PurchaseRequest) GuardVerdict {
-	// FAILS CLOSED (sp-a5dq): an unreadable utilization holds concurrency GROWTH — the old fail-OPEN
-	// let the autosizer grow into a saturated API that BurstSaturation (sp-yeiq) alerted but nothing
-	// PREVENTED. RULINGS #4: a guard that cannot read its bound never permits the spend. Holding a buy
-	// only stops GROWTH (the autosizer never sells), so failing closed cannot shrink a healthy fleet;
-	// the live reader (metrics.APIBudgetTracker) makes the signal readable in the normal case, so this
-	// blocks only genuine saturation or a genuinely-absent metrics surface, never wedging forever.
+	// FAILS CLOSED: an unreadable utilization holds concurrency GROWTH. RULINGS #4: a guard that
+	// cannot read its bound never permits the spend. Holding a buy only stops GROWTH (the autosizer
+	// never sells), so failing closed cannot shrink a healthy fleet; the live reader
+	// (metrics.APIBudgetTracker) makes the signal readable in the normal case, so this blocks only
+	// genuine saturation or a genuinely-absent metrics surface, never wedging forever.
 	if !req.APIUtilReadable {
 		return GuardVerdict{Guard: GuardAPIUtil, Passed: false, Detail: "utilization unreadable — fail-CLOSED (hold growth; RULINGS #4)"}
 	}

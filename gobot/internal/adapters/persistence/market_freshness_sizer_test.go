@@ -60,7 +60,7 @@ func TestMarketRepo_SystemsFreshness(t *testing.T) {
 	require.Equal(t, 2, aa.CycleSamples, "two consecutive-interval samples from three scans")
 	require.InDelta(t, 300, aa.OldestAgeSeconds, 5, "worst-case age is the oldest market (~300s)")
 
-	// sp-r57g: the per-market breakdown carries one (age, value-weight) sample per market — the
+	// The per-market breakdown carries one (age, value-weight) sample per market — the
 	// value-weighted percentile's raw material. The weight is Σ(trade_volume × mid-price) over the
 	// market's goods: each AA market has TWO goods at trade_volume 100 and a mid-price (10+12)/2 = 11,
 	// so its weight is 2 × 100 × 11 = 2200 — proving the census sums throughput×value across goods.
@@ -86,7 +86,7 @@ func TestMarketRepo_SystemsFreshness(t *testing.T) {
 }
 
 // UpdateHulls resizes a live standing post's budget WITHOUT clobbering its manning: the
-// assignment and tour columns the scout reconciler wrote survive the resize (sp-orgp).
+// assignment and tour columns the scout reconciler wrote survive the resize.
 func TestScoutPostRepo_UpdateHullsPreservesManning(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

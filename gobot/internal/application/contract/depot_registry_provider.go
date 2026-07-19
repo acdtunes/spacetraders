@@ -9,11 +9,11 @@ import (
 )
 
 // DepotRegistryProvider is the narrow driven port the contract coordinator consults
-// each pass to obtain the LIVE contract-depot routing registry (bead sp-u9xa, the
-// final seam). The durable store owns no in-memory authority, so every call re-derives
-// the registry from the persisted rows — which is what makes a `depot add|remove` on a
-// running daemon honored on the next pass with no restart, exactly as the boot-time
-// rebuild sees it. The daemon server satisfies this via its existing per-player
+// each pass to obtain the LIVE contract-depot routing registry. The durable store
+// owns no in-memory authority, so every call re-derives the registry from the
+// persisted rows — which is what makes a `depot add|remove` on a running daemon
+// honored on the next pass with no restart, exactly as the boot-time rebuild sees
+// it. The daemon server satisfies this via its existing per-player
 // LoadDepotRegistry method (mirroring how it already satisfies IdleArbLauncher).
 type DepotRegistryProvider interface {
 	LoadDepotRegistry(ctx context.Context, playerID int) (*depot.Registry, error)

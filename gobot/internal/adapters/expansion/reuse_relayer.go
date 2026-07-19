@@ -1,6 +1,6 @@
 package expansion
 
-// sp-6vep reuse-before-buy the deep frontier. These adapters back the frontier coordinator's two new
+// reuse-before-buy the deep frontier. These adapters back the frontier coordinator's two new
 // optional ports:
 //   - ProbeReuseRelayer: hop an EXISTING probe from the charted edge onto a target virgin (the
 //     deadlock fix), anchoring relay-reach to the nearest usable probe rather than the far buyer home.
@@ -304,10 +304,10 @@ type reuseRepositioner interface {
 // carry into the target — how growFrontierGraph reached the virgin in the first place) and relays the
 // probe onto it. If no inbound gate is known it fails closed, so the coordinator falls back to buying.
 //
-// ARMING NOTE (sp-6vep): this dispatch is the one pre-arming validation point — the inbound-gate
+// ARMING NOTE: this dispatch is the one pre-arming validation point — the inbound-gate
 // resolution and charting-on-arrival must be confirmed against the live gate semantics before
 // probe_reuse_enabled is turned on next era. The unify follow-up (route virgin relays through the
-// scout coordinator's proven nn0y virgin-relay) would retire this seam entirely.
+// scout coordinator's proven virgin-relay) would retire this seam entirely.
 type RepositionerRelayDispatcher struct {
 	repositioner reuseRepositioner
 	gates        neighborAdjGraph

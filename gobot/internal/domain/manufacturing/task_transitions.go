@@ -120,7 +120,6 @@ func (t *ManufacturingTask) ResetForRetry() error {
 	t.completedAt = nil
 	t.readyAt = nil     // Reset so MarkReady() sets fresh timestamp for fair aging
 	t.assignedShip = "" // Release ship so it can be reassigned
-	// BUG FIX #3: Reset phase tracking for fresh retry
 	t.ResetPhaseTracking()
 	return nil
 }
@@ -159,7 +158,6 @@ func (t *ManufacturingTask) RollbackExecution() error {
 	// NOTE: We intentionally DO NOT clear assignedShip here.
 	// For SELL tasks, the ship has cargo from the COLLECT task and must complete the sell.
 	// The coordinator will use this to re-assign the same ship.
-	// t.assignedShip = "" // REMOVED - preserve ship for recovery
 	t.startedAt = nil
 	// Reset readyAt to prevent accumulating aging priority after recovery
 	// Without this, recovered tasks would have artificially high priority
@@ -188,11 +186,11 @@ func (t *ManufacturingTask) ResetToPending() error {
 // without counting a retry, so it can be re-sourced and re-dispatched once supply
 // recovers. Used when a construction/acquire task reaches execution with no buy
 // source - a transient supply gap that must be treated as a pending-supply state
-// rather than a permanent failure (sp-hs2j). The ship is released so any ship can
+// rather than a permanent failure. The ship is released so any ship can
 // take the task after it is re-sourced, and the retry budget is left untouched
 // because no delivery was attempted. For a construction delivery whose source and
 // factory are both empty this leaves it IsDeferredConstruction(), so the existing
-// SupplyMonitor re-sourcing path (sp-r900) picks it up when supply regenerates.
+// SupplyMonitor re-sourcing path picks it up when supply regenerates.
 func (t *ManufacturingTask) ParkForResupply() error {
 	if t.status != TaskStatusExecuting && t.status != TaskStatusAssigned {
 		return &ErrInvalidTaskTransition{
@@ -217,11 +215,10 @@ func (t *ManufacturingTask) ParkForResupply() error {
 // execution time - the market was reachable but sold nothing. This reverts the task
 // to the deferred/unsourceable signature, so that once it is parked back to PENDING
 // (ParkForResupply) it reads as IsDeferredConstruction() and the SupplyMonitor
-// re-sources it when the market refills (sp-r900). Without dropping the dry source the
+// re-sources it when the market refills. Without dropping the dry source the
 // task would keep the same empty market and retry to permanent death, dead-stalling
-// its leg. This is the execution-time twin of the planner's no-source deferral: the
-// dry-market self-heal (sp-izh8), mirroring the no-source park path (sp-hs2j).
-// Construction-only: no other task type has the deferred-construction re-sourcing path.
+// its leg. Construction-only: no other task type has the deferred-construction
+// re-sourcing path.
 func (t *ManufacturingTask) ClearSourceForResupply() error {
 	if t.taskType != TaskTypeDeliverToConstruction {
 		return fmt.Errorf("can only clear source for resupply on DELIVER_TO_CONSTRUCTION tasks, got %s", t.taskType)
@@ -271,7 +268,7 @@ func (t *ManufacturingTask) UpdateSourceMarket(newSource string) error {
 	return nil
 }
 
-// BUG FIX #3: Phase completion methods
+// Phase completion methods
 
 // MarkCollectPhaseComplete marks the collect phase as completed for COLLECT_SELL tasks.
 // Called after successfully purchasing goods from the factory.

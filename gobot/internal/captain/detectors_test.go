@@ -256,10 +256,8 @@ func TestDetectIncomeStallSilentWhenIncomeFlowing(t *testing.T) {
 // TestDetectEngineIncomeStallFiresForContractWhileTradingHealthy is the sp-2cdu
 // acceptance criterion verbatim: kill the contract coordinator with factories/
 // trading running -> a contract-line stall fires within one detection window,
-// even though the aggregate ledger looks healthy (real 2026-07-09 incident: the
-// contract engine flatlined at 42k/4h while TRADING_REVENUE kept flowing at
-// +1.13M/4h, and the old aggregate-only detectIncomeStall never fired because
-// SOME income existed system-wide).
+// even though the aggregate ledger looks healthy (a per-engine stall can hide
+// behind healthy system-wide income).
 func TestDetectEngineIncomeStallFiresForContractWhileTradingHealthy(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()
@@ -272,7 +270,7 @@ func TestDetectEngineIncomeStallFiresForContractWhileTradingHealthy(t *testing.T
 		ContainerType: "CONTRACT_FLEET_COORDINATOR", StartedAt: &started,
 	}).Error)
 	// Trading engine is running and healthy -> masks the collapse in the
-	// aggregate (any amount>0 transaction silences the old detector).
+	// aggregate (any amount>0 transaction silences an aggregate-only check).
 	require.NoError(t, db.Create(&persistence.ContainerModel{
 		ID: "trade-coord", PlayerID: playerID, Status: "RUNNING",
 		ContainerType: "TRADING", CommandType: "trade_route", StartedAt: &started,
@@ -490,8 +488,7 @@ func TestIdleShipEpisodeDedup(t *testing.T) {
 	require.NoError(t, store.MarkProcessed(context.Background(), []int64{events[0].ID}, now))
 
 	// Stay: the ship never left idle, so it must NOT re-emit even hours later
-	// with no state change — the old cooldown WOULD have re-fired here purely
-	// because a time window lapsed; that is exactly the behavior sp-6g96 removes.
+	// with no state change — the dedup is keyed on state, not the clock.
 	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(4*time.Hour)))
 	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
 	require.NoError(t, err)

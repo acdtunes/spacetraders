@@ -2,9 +2,8 @@ package shared
 
 import "testing"
 
-// TraitGrantsFuel owns the fuel-rule vocabulary (MARKETPLACE | FUEL_STATION) that
-// was previously duplicated in the api adapter. These characterization tests pin
-// that vocabulary so the extraction is provably behavior-preserving.
+// TraitGrantsFuel owns the fuel-rule vocabulary (MARKETPLACE | FUEL_STATION). These
+// tests pin that vocabulary so it cannot silently drift.
 func TestTraitGrantsFuel(t *testing.T) {
 	cases := []struct {
 		name  string

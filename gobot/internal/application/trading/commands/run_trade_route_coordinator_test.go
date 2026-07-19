@@ -127,10 +127,9 @@ func (c *trFakeClock) Now() time.Time        { return time.Now() }
 func (c *trFakeClock) Sleep(d time.Duration) {}
 
 // trFakeShipRepo returns the one hull the daemon container runner has already claimed
-// for the circuit. Post sp-zewt the coordinator no longer claims or releases the hull
-// itself (the runner owns that lifecycle via the container's ship_symbol metadata), so
-// this fake only needs to serve the ship on FindBySymbol; Save is a no-op the circuit
-// never calls.
+// for the circuit. The coordinator does not claim or release the hull itself (the
+// runner owns that lifecycle via the container's ship_symbol metadata), so this fake
+// only needs to serve the ship on FindBySymbol; Save is a no-op the circuit never calls.
 type trFakeShipRepo struct {
 	navigation.ShipRepository
 	ship *navigation.Ship
@@ -244,19 +243,19 @@ func TestTradeRouteCoordinator_RunsDisciplinedCircuitUntilMarginDies(t *testing.
 		t.Fatalf("expected net 81000, got %d", coord.NetProfit)
 	}
 
-	// NOTE: post sp-zewt the hull claim/release is the daemon container runner's job
+	// NOTE: hull claim/release is the daemon container runner's job
 	// (createShipAssignments/releaseShipAssignments via the container's ship_symbol
 	// metadata), not this handler's. Release-on-death is covered by the grpc-package
 	// container tests; here we only assert the circuit economics.
 }
 
-// NOTE (sp-zewt): two behaviors that used to live here moved out of this handler:
-//   - The FK-safe self-claim ordering (sp-r3cl) is retired — the daemon container
-//     runner now persists the container row and assigns the hull before this handler
-//     runs, so there is no CLI-side self-claim to order against the FK.
-//   - Refusing a non-idle hull (the idle-gap discipline) moved to the container-start
-//     boundary, DaemonServer.StartTradeRoute, which checks IsIdle before persisting
-//     the container. See the grpc-package tests TestStartTradeRoute_* and
+// NOTE: hull claim/release and the idle-gap discipline are NOT this handler's
+// responsibility:
+//   - The daemon container runner persists the container row and assigns the hull
+//     before this handler runs, so there is no CLI-side self-claim to order against the FK.
+//   - Refusing a non-idle hull is enforced at the container-start boundary,
+//     DaemonServer.StartTradeRoute, which checks IsIdle before persisting the
+//     container. See the grpc-package tests TestStartTradeRoute_* and
 //     TestRecoveryRestartsTradeRouteContainer.
 
 // trEmptyMarketRepo has no markets, so no lane can be ranked.

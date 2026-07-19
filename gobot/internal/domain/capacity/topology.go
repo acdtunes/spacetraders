@@ -2,9 +2,8 @@ package capacity
 
 // DesiredTopology is the PLAN phase's output: the capacity topology the
 // contract-delivery machine SHOULD have right now, recomputed from live
-// Signals every tick (spec: PLAN). The heuristic planner lane (st-hlw)
-// computes it; the DIFF lane (st-zr0) compares it against
-// TopologySignals.Clusters.
+// Signals every tick (spec: PLAN). The heuristic planner lane computes it;
+// the DIFF lane compares it against TopologySignals.Clusters.
 //
 // An empty DesiredTopology (zero hubs) is the valid "want nothing" plan — the
 // foundation's NoOpPlanner emits it, and DIFF over it must produce zero

@@ -53,25 +53,25 @@ const (
 	ContainerTypeTradeFleetCoordinator    ContainerType = "TRADE_FLEET_COORDINATOR"
 	ContainerTypeScoutReposition          ContainerType = "SCOUT_REPOSITION"
 	// ContainerTypeWorkerRebalancerCoordinator is the standing coordinator that ferries
-	// idle light-haulers cross-system to worker-starved factory systems (sp-f5pr); like
-	// the trade-fleet/scout-post coordinators it loops forever inside one Handle().
+	// idle light-haulers cross-system to worker-starved factory systems; like the
+	// trade-fleet/scout-post coordinators it loops forever inside one Handle().
 	ContainerTypeWorkerRebalancerCoordinator ContainerType = "WORKER_REBALANCER_COORDINATOR"
 	// ContainerTypeWorkerFerry is the one-shot cross-system ferry worker the
-	// worker_rebalancer_coordinator spawns (sp-f5pr), twin of ContainerTypeScoutReposition.
+	// worker_rebalancer_coordinator spawns, twin of ContainerTypeScoutReposition.
 	ContainerTypeWorkerFerry ContainerType = "WORKER_FERRY"
 	// ContainerTypeCargoLiquidation is the one-shot cargo-liquidation worker the contract
-	// fleet coordinator spawns on a parked-with-cargo hull (sp-39oi), twin of
+	// fleet coordinator spawns on a parked-with-cargo hull, twin of
 	// ContainerTypeWorkerFerry: coordinator-managed, one iteration, self-clears the strand.
 	ContainerTypeCargoLiquidation  ContainerType = "CARGO_LIQUIDATION"
 	ContainerTypeFrontierExpansion ContainerType = "FRONTIER_EXPANSION_COORDINATOR"
-	// ContainerTypeMarketFreshnessSizer is the standing market-freshness auto-sizer (sp-orgp):
-	// a per-player coordinator that loops forever inside one Handle() sizing each market-bearing
+	// ContainerTypeMarketFreshnessSizer is the standing market-freshness auto-sizer: a
+	// per-player coordinator that loops forever inside one Handle() sizing each market-bearing
 	// system's standing scout post to a freshness SLA and auto-buying probes behind the shared
 	// money-guard stack. Like the frontier/siting/autosizer coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeMarketFreshnessSizer ContainerType = "MARKET_FRESHNESS_SIZER_COORDINATOR"
-	// ContainerTypeShipyardBackfillCoordinator is the standing shipyard-backfill sweep (sp-rhju):
-	// a per-player coordinator that loops forever inside one Handle() closing the charted-but-
+	// ContainerTypeShipyardBackfillCoordinator is the standing shipyard-backfill sweep: a
+	// per-player coordinator that loops forever inside one Handle() closing the charted-but-
 	// unscanned shipyard blind spot the market-tour-only scan left behind — enumerating known-
 	// shipyard systems the depth frontier reached but no market tour toured and declaring deeper-
 	// first sweep-once posts the reconciler mans. Like the frontier/siting/autosizer coordinators
@@ -79,24 +79,24 @@ const (
 	ContainerTypeShipyardBackfillCoordinator ContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 	ContainerTypePurchase                    ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator    ContainerType = "MANUFACTURING_COORDINATOR"
-	// ContainerTypeSitingCoordinator is the standing factory-siting brain (sp-vdld): a
+	// ContainerTypeSitingCoordinator is the standing factory-siting brain: a
 	// per-player coordinator that loops forever inside one Handle() scanning/scoring/sizing
 	// the factory-chain portfolio and launching/retiring goods_factory chains through the
 	// existing guard stack. Like the trade-fleet/frontier coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeSitingCoordinator ContainerType = "SITING_COORDINATOR"
-	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer (sp-1txd): a
+	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer: a
 	// per-player coordinator that loops forever inside one Handle() sizing the hull pool to
 	// demand and auto-buying hulls (lights to factory demand, heavies to trade demand) behind
 	// the full money-guard stack. Like the trade-fleet/siting coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeFleetAutosizer ContainerType = "FLEET_AUTOSIZER_COORDINATOR"
-	// ContainerTypeBootstrapCoordinator is the standing captain bootstrap coordinator (sp-3nbe):
-	// a per-player reconciler that loops forever inside one Handle() driving a cold agent through
+	// ContainerTypeBootstrapCoordinator is the standing captain bootstrap coordinator: a
+	// per-player reconciler that loops forever inside one Handle() driving a cold agent through
 	// the cold-start arc to the jump gate (DATA→INCOME→GATE). Like the siting/autosizer
 	// coordinators it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeBootstrapCoordinator ContainerType = "BOOTSTRAP_COORDINATOR"
-	// ContainerTypeCapacityReconciler is the standing capacity reconciler (epic st-7zk): a
+	// ContainerTypeCapacityReconciler is the standing capacity reconciler: a
 	// per-player coordinator that loops forever inside one Handle() driving the
 	// contract-delivery machine's actual topology toward a computed desired topology
 	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced. Like the siting/autosizer
@@ -104,8 +104,8 @@ const (
 	// boot-standing-armed — it runs only when explicitly started, then survives restarts
 	// through the persisted-container recovery idiom.
 	ContainerTypeCapacityReconciler ContainerType = "CAPACITY_RECONCILER_COORDINATOR"
-	// ContainerTypeAutoOutfitCoordinator is the standing guarded auto-outfit coordinator
-	// (sp-buyd): a per-player coordinator that loops forever inside one Handle() reading
+	// ContainerTypeAutoOutfitCoordinator is the standing guarded auto-outfit coordinator: a
+	// per-player coordinator that loops forever inside one Handle() reading
 	// per-hull cargo saturation from tour_leg_telemetry, cataloguing available modules,
 	// and installing the highest-marginal-value (hull, module) upgrade behind a
 	// fail-closed money/ceiling/cap guard stack — the module analogue of the autosizer's
@@ -114,8 +114,8 @@ const (
 	// runs only when explicitly started, then survives restarts through the
 	// persisted-container recovery idiom.
 	ContainerTypeAutoOutfitCoordinator ContainerType = "AUTO_OUTFIT_COORDINATOR"
-	// ContainerTypeConstructionCoordinator is the standing construction-supply drain (sp-382j):
-	// a per-player coordinator that loops forever inside one Handle() sourcing and delivering a
+	// ContainerTypeConstructionCoordinator is the standing construction-supply drain: a
+	// per-player coordinator that loops forever inside one Handle() sourcing and delivering a
 	// gate-construction pipeline's READY DELIVER_TO_CONSTRUCTION tasks on the shared
 	// ProductionExecutor engine. Like the siting/autosizer/bootstrap coordinators it is NOT a
 	// CoordinatorOwnsIterations type. It is the dedicated executor the bootstrap GATE adoption
@@ -130,7 +130,7 @@ const (
 	ContainerTypeJump                    ContainerType = "JUMP"
 	ContainerTypeOutfitting              ContainerType = "OUTFITTING"
 	// ContainerTypeRoute is the one-shot cross-system point-to-point move behind the
-	// `ship route` verb (sp-6hjw). Unlike ContainerTypeNavigate (in-system only) it
+	// `ship route` verb. Unlike ContainerTypeNavigate (in-system only) it
 	// reuses the trade-route coordinator's multi-jump travel() to cross gates. Like the
 	// other one-shot ship ops it is a single-iteration, CoordinatorOwnsIterations type.
 	ContainerTypeRoute ContainerType = "ROUTE"
@@ -249,7 +249,7 @@ func (c *Container) LastError() error      { return c.lifecycle.LastError() }
 // Container-facing status. The Container-specific extension states (STOPPING,
 // INTERRUPTED) are resolved by Status() BEFORE this table because they are not
 // lifecycle states. A lifecycle state absent here falls back to
-// ContainerStatusPending (the former switch's safe default).
+// ContainerStatusPending.
 var containerStatusByLifecycle = map[shared.LifecycleStatus]ContainerStatus{
 	shared.LifecycleStatusPending:   ContainerStatusPending,
 	shared.LifecycleStatusRunning:   ContainerStatusRunning,
@@ -261,7 +261,6 @@ var containerStatusByLifecycle = map[shared.LifecycleStatus]ContainerStatus{
 // Status returns the current container status
 // Maps LifecycleStatus to ContainerStatus with Container-specific extensions
 func (c *Container) Status() ContainerStatus {
-	// Check Container-specific states first
 	if c.stopping {
 		return ContainerStatusStopping
 	}
@@ -346,7 +345,6 @@ func (c *Container) MarkStopped() error {
 
 // Iteration management
 
-// IncrementIteration advances the iteration counter
 func (c *Container) IncrementIteration() error {
 	if c.Status() != ContainerStatusRunning {
 		return fmt.Errorf("cannot increment iteration in %s state", c.Status())
@@ -357,7 +355,6 @@ func (c *Container) IncrementIteration() error {
 	return nil
 }
 
-// ShouldContinue checks if container should continue iterating
 func (c *Container) ShouldContinue() bool {
 	// Infinite loop: maxIterations = -1
 	if c.maxIterations == -1 {
@@ -370,7 +367,6 @@ func (c *Container) ShouldContinue() bool {
 
 // Restart management
 
-// CanRestart checks if container is eligible for restart
 func (c *Container) CanRestart() bool {
 	if c.Status() != ContainerStatusFailed {
 		return false
@@ -379,7 +375,6 @@ func (c *Container) CanRestart() bool {
 	return c.restartCount < c.maxRestarts
 }
 
-// IncrementRestartCount advances the restart counter
 func (c *Container) IncrementRestartCount() {
 	c.restartCount++
 	c.lifecycle.UpdateTimestamp()
@@ -415,7 +410,6 @@ func (c *Container) UpdateMetadata(updates map[string]interface{}) {
 	c.lifecycle.UpdateTimestamp()
 }
 
-// GetMetadataValue retrieves a specific metadata value
 func (c *Container) GetMetadataValue(key string) (interface{}, bool) {
 	if c.metadata == nil {
 		return nil, false
@@ -427,12 +421,10 @@ func (c *Container) GetMetadataValue(key string) (interface{}, bool) {
 
 // State queries
 
-// IsRunning returns true if container is currently executing
 func (c *Container) IsRunning() bool {
 	return c.Status() == ContainerStatusRunning
 }
 
-// IsFinished returns true if container has completed or failed
 func (c *Container) IsFinished() bool {
 	status := c.Status()
 	return status == ContainerStatusCompleted ||
@@ -440,7 +432,6 @@ func (c *Container) IsFinished() bool {
 		status == ContainerStatusStopped
 }
 
-// IsStopping returns true if container is gracefully shutting down
 func (c *Container) IsStopping() bool {
 	return c.stopping
 }
@@ -453,7 +444,6 @@ func (c *Container) RuntimeDuration() time.Duration {
 	return c.lifecycle.RuntimeDuration()
 }
 
-// String provides human-readable representation
 func (c *Container) String() string {
 	return fmt.Sprintf("Container[%s, type=%s, status=%s, iteration=%d/%d, restarts=%d]",
 		c.id, c.containerType, c.Status(), c.currentIteration, c.maxIterations, c.restartCount)

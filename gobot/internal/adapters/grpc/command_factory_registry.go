@@ -108,14 +108,9 @@ func (r *configReader) OptionalInt(key string, fallback int) int {
 // PresentOrFailInt reads a numeric knob that, WHEN THE KEY IS PRESENT, MUST parse — a
 // present-but-unparseable value is a hard build failure (RULINGS #4 fail-closed) rather
 // than a silent fallback to the caller's default. Absent → fallback (a genuinely omitted
-// knob still defers to the coordinator's own default).
-//
-// It exists because OptionalInt collapses "key absent" and "key present but wrong type"
-// to the SAME fallback — exactly how sp-ggk2 hid: a working_capital_reserve that was
-// PRESENT and non-zero was indistinguishable from absent once its type failed to parse,
-// so a corrupt reserve resolved to the 50k floor invisibly. For a money guard, a failed
-// build (no tour, no buy — the hull is released cleanly) is the correct fail-closed; a
-// tour must never spend beneath a floor it could not determine.
+// knob still defers to the coordinator's own default). For a money guard a failed build
+// (no tour, no buy — the hull is released cleanly) is correct: a tour must never spend
+// beneath a floor it could not determine.
 func (r *configReader) PresentOrFailInt(key string, fallback int) int {
 	raw, present := r.values[key]
 	if !present {
@@ -129,9 +124,9 @@ func (r *configReader) PresentOrFailInt(key string, fallback int) int {
 	return value
 }
 
-// OptionalFloat reads a float config value (e.g. sp-lbbm's sell_floor_fraction),
-// returning fallback when the key is absent or non-numeric. JSON numbers
-// round-trip through float64, and an int is accepted too.
+// OptionalFloat reads a float config value, returning fallback when the key is
+// absent or non-numeric. JSON numbers round-trip through float64, and an int is
+// accepted too.
 func (r *configReader) OptionalFloat(key string, fallback float64) float64 {
 	value, ok := floatValue(r.values[key])
 	if !ok {
@@ -147,8 +142,8 @@ func (r *configReader) OptionalBool(key string) bool {
 
 // PresentBool reads a bool knob and reports whether the key was present, for a
 // genuinely optional bool whose ABSENCE means "defer to a default" that is not
-// simply false (sp-1txd's prefer_demand_proximal_yard defaults TRUE — OptionalBool
-// would collapse "unset" into false and silently disable the default-on behaviour).
+// simply false — OptionalBool would collapse "unset" into false and silently
+// disable a default-on behaviour.
 func (r *configReader) PresentBool(key string) (bool, bool) {
 	value, ok := r.values[key].(bool)
 	return value, ok
@@ -167,11 +162,9 @@ func (r *configReader) RequiredStringSlice(key string, aliases ...string) []stri
 	return nil
 }
 
-// OptionalStringSlice reads a string-slice config value with no required
-// default (e.g. sp-snmb's --dedicated-ships/--standby-stations, which are
-// opt-in and disabled entirely when absent). Unlike RequiredStringSlice, a
-// missing or wrong-typed key is not a validation failure - it simply
-// returns nil.
+// OptionalStringSlice reads a string-slice config value with no required default
+// (opt-in knobs disabled entirely when absent). Unlike RequiredStringSlice, a
+// missing or wrong-typed key is not a validation failure - it simply returns nil.
 func (r *configReader) OptionalStringSlice(key string, aliases ...string) []string {
 	if value, ok := stringSliceValue(r.values[key]); ok {
 		return value
@@ -184,7 +177,7 @@ func (r *configReader) OptionalStringSlice(key string, aliases ...string) []stri
 	return nil
 }
 
-// OptionalGoodGatingOverrides reads the per-good buy-gating override map (sp-sdyo) from a launch
+// OptionalGoodGatingOverrides reads the per-good buy-gating override map from a launch
 // config key holding the map's JSON encoding (GoodGatingOverrides.Encode). A missing, non-string,
 // or malformed value yields nil (no overrides) — the guard-tightening default that keeps every
 // good on the global gates, matching the lenient Optional* family. This is a PER-LAUNCH key (not a
@@ -206,12 +199,8 @@ func (r *configReader) OptionalGoodGatingOverrides(key string) manufacturingDoma
 // config can carry on EITHER build path: float64 (the JSON-recovery path — persisted
 // numbers round-trip through float64) AND the native int/int64 the daemon stores on the
 // fresh-start/coordinator-launch path (buildCommandForType is called directly on the
-// in-memory map before any JSON round-trip). Omitting int64 was the sp-ggk2 money bug: a
-// native int64 working_capital_reserve fell through to (0,false), OptionalInt returned its
-// fallback 0, and the 1M reserve silently became the 50k floor on a live-launched tour —
-// while the SAME config read back correctly after a restart (JSON→float64), which is why
-// it was invisible. int is 64-bit on the daemon's target so the int64→int narrowing never
-// overflows a credit value.
+// in-memory map before any JSON round-trip). int is 64-bit on the daemon's target so the
+// int64→int narrowing never overflows a credit value.
 func intValue(raw interface{}) (int, bool) {
 	switch v := raw.(type) {
 	case int:
@@ -286,8 +275,8 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 // containerSpecList is the registry AND the container lifecycle contract's
 // per-type semantics table (sp-7yej invariants 3+4). Every container type the
 // daemon creates MUST appear here — a type absent from this list is marked
-// FAILED at restart recovery ("unknown command type") and its in-flight work is
-// abandoned, which is exactly how the TORWIND-18/12 navigates orphaned.
+// FAILED at restart recovery ("unknown command type") and its in-flight work
+// is abandoned.
 //
 // ITERATION SEMANTICS (invariant 3) — one operator-facing meaning everywhere:
 //
@@ -435,14 +424,11 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "stocker", build: buildStockerCoordinatorCommand, CoordinatorOwnsIterations: true},
-		// One-shot ship operations (sp-7yej invariant 4): these were created by
-		// container_ops_ship.go but never registered, so a daemon restart
-		// mid-operation marked them FAILED ("unknown command type") and dropped
-		// the work on the floor — the TORWIND-18/12 orphaned navigates. Each
-		// rebuilds trivially from its persisted config and is safe to re-run:
-		// navigate resumes/waits out the live transit via RouteExecutor,
-		// dock/orbit/refuel no-op when already done, and a re-run jettison of
-		// already-jettisoned cargo fails honestly rather than silently.
+		// One-shot ship operations (sp-7yej invariant 4). Each rebuilds trivially
+		// from its persisted config and is safe to re-run: navigate resumes/waits
+		// out the live transit via RouteExecutor, dock/orbit/refuel no-op when
+		// already done, and a re-run jettison of already-jettisoned cargo fails
+		// honestly rather than silently.
 		{CommandType: "navigate_ship", build: buildNavigateShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "route_ship", build: buildRouteShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "dock_ship", build: buildDockShipCommand, CoordinatorOwnsIterations: true},
@@ -470,10 +456,10 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// from the daemon's boot-loaded config.yaml on EVERY build. Both creation
 	// (ContractFleetCoordinator) and restart recovery (recoverContainer) funnel
 	// through here, so a config.yaml retune + daemon restart actually retunes a
-	// recovered coordinator — the documented path (sp-uohe) finally true. The
-	// persisted idle_arb_* keys are dead: resolveIdleArbConfig clears them and
-	// re-injects the live values, making config.yaml the one source of truth. No
-	// coordinator recreate is ever needed for these knobs.
+	// recovered coordinator. The persisted idle_arb_* keys are dead:
+	// resolveIdleArbConfig clears them and re-injects the live values, making
+	// config.yaml the one source of truth. No coordinator recreate is ever
+	// needed for these knobs.
 	if commandType == "contract_fleet_coordinator" {
 		s.resolveIdleArbConfig(config)
 		// sp-39oi: same live-config discipline for the parked-hull auto-liquidation knobs
@@ -501,8 +487,7 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// reserve (singleton ProductionExecutor, sp-agzj's max(50000, configured) input-buy floor):
 	// [manufacturing].working_capital_reserve is resolved fresh on every build — creation and
 	// restart recovery alike — so a config.yaml retune reaches a recovered coordinator with no
-	// redeploy. (sp-jav2 X2: the parallel manufacturing_coordinator that shared this branch is
-	// retired.)
+	// redeploy.
 	if commandType == "goods_factory_coordinator" {
 		s.resolveManufacturingConfig(config)
 	}
@@ -557,10 +542,8 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	// Unified iteration semantics (sp-7yej invariant 3): 0 means "the type's
 	// default" (one tour, matching the CLI flag's default), never "zero work".
-	// Before this, iterations=0 completed the container instantly without
-	// scouting anything — the "0 tours vanished" half of tonight's scout
-	// divergence. Normalized here so creation and restart recovery (both build
-	// through this factory) agree.
+	// Normalized here so creation and restart recovery (both build through this
+	// factory) agree.
 	iterations := cfg.RequiredInt("iterations")
 	if iterations == 0 {
 		iterations = 1
@@ -847,14 +830,13 @@ func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID st
 		DestinationWaypoint: cfg.RequiredString("destination"),
 		CoordinatorID:       cfg.OptionalString("coordinator_id"),
 		// sp-o34q: reload the expendable-probe reposition bound the coordinator selected.
-		// WITHOUT this the rebuilt relay ran at 0 -> travelWithJumpBound degraded to the
-		// strict fetch-through resolver -> a >5-jump post produced the verbatim ErrUnroutable
-		// "within N jumps" and crash-looped (8k9m's bound reached the in-memory command but was
-		// dropped across the persist/rebuild boundary). Absent (0) is the strict-resolver
-		// fallback, so a legacy/mis-wired config can never accidentally relax the sp-qxa4
-		// unreadable-gate discipline; only an explicitly persisted positive bound routes past
-		// unreadable gates. resolveScoutingConfig deliberately does NOT run for scout_reposition
-		// (only scout_tour/scout_post_coordinator), so this per-relay value is never clobbered.
+		// Without it, the rebuilt relay runs unbounded — travelWithJumpBound degrades to the
+		// strict fetch-through resolver, which fails a >5-jump post with the verbatim
+		// ErrUnroutable "within N jumps". Absent (0) is the strict-resolver fallback, so a
+		// legacy/mis-wired config can never accidentally relax the sp-qxa4 unreadable-gate
+		// discipline; only an explicitly persisted positive bound routes past unreadable
+		// gates. resolveScoutingConfig deliberately does NOT run for scout_reposition (only
+		// scout_tour/scout_post_coordinator), so this per-relay value is never clobbered.
 		MaxRepositionJumps: cfg.OptionalInt("max_reposition_jumps", 0),
 		// sp-4yse: reload the 0-hop gate-charting intent. Absent (false) is the plain market
 		// reposition — a legacy/manning relay never charts the gate; only a relay the sweep
@@ -865,11 +847,9 @@ func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID st
 
 // buildNavigateShipCommand rebuilds a one-shot navigate from its persisted
 // launch config so restart recovery re-adopts a RUNNING navigate instead of
-// orphaning it (sp-7yej invariant 4 — the TORWIND-18/12 incident: daemon
-// restarted mid-transit, recovery hit "unknown command type 'navigate_ship'",
-// the hull was released and the flight abandoned). Re-running the command is
-// safe: NavigateRoute no-ops when the ship is already at the destination and
-// the RouteExecutor waits out a transit already in progress (the boot-time
+// orphaning it (sp-7yej invariant 4). Re-running the command is safe:
+// NavigateRoute no-ops when the ship is already at the destination and the
+// RouteExecutor waits out a transit already in progress (the boot-time
 // ShipStateScheduler.ScheduleAllPending re-arms the arrival timer).
 func buildNavigateShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &shipNavCmd.NavigateRouteCommand{
@@ -1392,10 +1372,9 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionMinMargin:     cfg.OptionalInt("reposition_min_margin", 0),
 		RepositionMaxCandidates: cfg.OptionalInt("reposition_max_candidates", 0),
 		// sp-kl16: the stored-adjacency reposition jump bound (0/absent → the coordinator's own
-		// default 12). This is the o34q READ side — the scout bug (sp-o34q) was buildScoutRepositionCommand
-		// never reading the persisted bound back, degrading the live relay to the strict 5-jump
-		// resolver; reading it here (paired with the container_ops_tour.go write) is what makes the
-		// bound survive the launch-config → rebuild round-trip a recovery restart runs.
+		// default 12). This is the READ side, paired with the container_ops_tour.go WRITE side —
+		// together they make the bound survive the launch-config → rebuild round-trip a recovery
+		// restart runs.
 		RepositionJumpBound:      cfg.OptionalInt("reposition_jump_bound", 0),
 		RepositionInProgress:     cfg.OptionalBool("reposition_in_progress"),
 		RepositionTargetSystem:   cfg.OptionalString("reposition_target_system"),

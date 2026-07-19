@@ -12,7 +12,7 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// sp-4bm3 (production wiring, permanent case): a terminal non-2xx GetJumpGate response must
+// (production wiring, permanent case): a terminal non-2xx GetJumpGate response must
 // surface as a typed *ports.APIError carrying the status code, so the gate graph can negative-
 // cache a PERMANENT 400 (uncharted / no ship present / not a gate). The error STRING stays
 // byte-identical ("API error (status %d): %s") so the existing message/JSON parsers keep matching.
@@ -51,7 +51,7 @@ func TestGetJumpGate_400_SurfacesTypedClientError(t *testing.T) {
 	}
 }
 
-// sp-4bm3 (production wiring, transient case): a 5xx is retried and, once exhausted, surfaces as
+// (production wiring, transient case): a 5xx is retried and, once exhausted, surfaces as
 // a "max retries exceeded" error — NOT a *ports.APIError. This is the other half of the boundary:
 // the gategraph classifier declines to negative-cache it (isPermanentGateAbsence is false), so a
 // transient server blip is re-probed on the next miss rather than suppressed for the backoff window.

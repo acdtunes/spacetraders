@@ -180,8 +180,8 @@ func TestResolveConfig_Defaults(t *testing.T) {
 	if cfg.HeavyMarginalRateFloor != defaultHeavyMarginalRateFloor {
 		t.Errorf("heavy marginal rate floor default = %v, want %v", cfg.HeavyMarginalRateFloor, defaultHeavyMarginalRateFloor)
 	}
-	// sp-zbe6: the declining-rate unserved floor must resolve to its documented default (never 0 —
-	// a 0 floor would silently disable the declining stop-buy since the demand guard forces Shortfall>0).
+	// The declining-rate unserved floor must resolve to its documented default (never 0 — a 0 floor
+	// would silently disable the declining stop-buy since the demand guard forces Shortfall>0).
 	if cfg.DecliningRateUnservedFloor != defaultDecliningRateUnservedFloor {
 		t.Errorf("declining-rate unserved floor default = %d, want %d", cfg.DecliningRateUnservedFloor, defaultDecliningRateUnservedFloor)
 	}

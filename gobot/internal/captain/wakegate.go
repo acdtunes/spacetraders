@@ -57,9 +57,8 @@ func evaluateWakeGate(in wakeGateInput) wakeGateDecision {
 	// to nil in the persisted WakePolicy — exactly like a fired sp-oyer one-shot
 	// watch is dropped from its policy. So a still-present bound here has never
 	// fired, and the plain level check is correct: there is no separate "fired"
-	// edge-state to guard against, because a consumed bound is simply absent (nil).
-	// This is what stops the event-less wake storm the reverted sp-l6pz edge gate
-	// papered over with a re-arming flag: a consumed bound cannot re-cross.
+	// edge-state to guard against, because a consumed bound is simply absent (nil)
+	// and can never re-cross.
 	if in.Policy.CreditsAbove != nil && in.Credits >= *in.Policy.CreditsAbove {
 		return wakeGateDecision{ShouldWake: true, Reason: "credits crossed at/above CreditsAbove"}
 	}
@@ -77,19 +76,13 @@ func evaluateWakeGate(in wakeGateInput) wakeGateDecision {
 // The anchor is later(LastSession, Policy.DeclaredAt), never LastSession
 // alone (sp-sk68 D2): a wake-policy declaration is positive proof the captain
 // was alive at DeclaredAt, so both the heartbeat-derived next-wake AND the
-// never-wake ceiling must count from that proof. Anchoring to LastSession
-// alone let a wake-delivery outage — which freezes LastSession — make an
-// already-overdue heartbeat look due forever, or (with an accompanying
-// NextWakeAt defer) silently cancel it below a stale ceiling.
+// never-wake ceiling must count from that proof.
 //
 // NextWakeAt is a ONE-SHOT alarm, not a standing wake condition (sp-soh9): it
 // governs the next wake only while UNSERVICED — i.e. still ahead of the last
 // session that ran (*NextWakeAt > LastSession). Once a session runs at or after
 // the alarm instant the alarm is spent, and the heartbeat cadence resumes
-// exactly as when no alarm is set. Without this, a captain-declared alarm that
-// passed without being re-declared kept `now >= *NextWakeAt` true on every 30s
-// tick and woke the captain each tick until the hourly cap tripped (the live
-// regression from the sk68 merge).
+// exactly as when no alarm is set.
 func effectiveNextWake(in wakeGateInput) time.Time {
 	maxInterval := in.MaxWakeIntervalMinutes
 	if maxInterval <= 0 {

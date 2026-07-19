@@ -8,13 +8,9 @@ import (
 )
 
 // TestManufacturingMetrics_RegisterAndExport proves manufacturing_tasks_completed_total
-// (sp-dp92 P10) REGISTERS on the daemon's registry AND actually appears by name once
+// REGISTERS on the daemon's registry AND actually appears by name once
 // observed — the bopj P10 trap where a family was "registered" yet never showed on
-// /metrics. Investigation confirmed this family (collector field, constructor block,
-// Register() entry, RecordTaskCompletion method, package-level
-// RecordManufacturingTaskCompletion wrapper) was already fully wired, including live
-// call sites in run_manufacturing_task_worker.go and worker_lifecycle_manager.go — this
-// test adds the missing export-proof coverage, no production code changed.
+// /metrics.
 func TestManufacturingMetrics_RegisterAndExport(t *testing.T) {
 	prev := Registry
 	t.Cleanup(func() { Registry = prev })
@@ -83,14 +79,11 @@ func TestManufacturingMetrics_LabelsAndValues(t *testing.T) {
 	}
 }
 
-// No NilSafe subtest here (unlike the absorption/container P6/P9 families): unlike
-// AbsorptionMetricsCollector's methods and the P9 RecordContainerExit method added for
-// sp-dp92, RecordTaskCompletion is pre-existing code (out of scope for this bead) and
-// carries no self-guard — calling it on a nil *ManufacturingMetricsCollector or a bare
-// &ManufacturingMetricsCollector{} panics on the nil CounterVec/HistogramVec fields.
-// Its RULINGS #4 nil-safety instead comes entirely from the package-level
-// RecordManufacturingTaskCompletion wrapper (prometheus_collector.go), which every real
-// call site uses and which checks globalManufacturingCollector != nil before ever
+// No NilSafe subtest here (unlike the absorption/container families): RecordTaskCompletion
+// is pre-existing code and carries no self-guard — calling it on a nil
+// *ManufacturingMetricsCollector or a bare &ManufacturingMetricsCollector{} panics on the nil
+// CounterVec/HistogramVec fields. Its RULINGS #4 nil-safety instead comes entirely from the
+// package-level RecordManufacturingTaskCompletion wrapper (prometheus_collector.go), which
+// every real call site uses and which checks globalManufacturingCollector != nil before ever
 // calling this method — the same convention container_metrics.go's pre-existing sibling
-// methods (RecordContainerCompletion etc.) already rely on. Retrofitting a guard onto
-// RecordTaskCompletion itself was judged out of scope for sp-dp92.
+// methods (RecordContainerCompletion etc.) already rely on.

@@ -10,7 +10,6 @@ import (
 // DB-as-Source-of-Truth Methods
 // =============================================================================
 
-// FlightMode returns the ship's current flight mode
 func (s *Ship) FlightMode() string {
 	if s.flightMode == "" {
 		return defaultFlightModeName
@@ -23,19 +22,17 @@ func (s *Ship) ArrivalTime() *time.Time {
 	return s.arrivalTime
 }
 
-// CooldownExpiration returns when the ship's cooldown expires
 func (s *Ship) CooldownExpiration() *time.Time {
 	return s.cooldownExpiration
 }
 
 // DedicatedFleet returns the coordinator this ship is permanently reserved
 // for (e.g. "contract"), or "" if the ship is unreserved and available to
-// any coordinator's normal discovery (sp-snmb).
+// any coordinator's normal discovery.
 func (s *Ship) DedicatedFleet() string {
 	return s.dedicatedFleet
 }
 
-// SetFlightMode sets the ship's flight mode
 func (s *Ship) SetFlightMode(mode string) {
 	s.flightMode = mode
 }
@@ -43,12 +40,11 @@ func (s *Ship) SetFlightMode(mode string) {
 // SetDedicatedFleet marks (or clears, with "") the ship as permanently
 // reserved for the named coordinator. Used by repositories when loading from
 // database, and by a coordinator's startup reconciliation of its configured
-// --dedicated-ships list (sp-snmb).
+// --dedicated-ships list.
 func (s *Ship) SetDedicatedFleet(fleet string) {
 	s.dedicatedFleet = fleet
 }
 
-// SetArrivalTime sets when the ship will arrive
 func (s *Ship) SetArrivalTime(t time.Time) {
 	s.arrivalTime = &t
 }
@@ -58,30 +54,30 @@ func (s *Ship) ClearArrivalTime() {
 	s.arrivalTime = nil
 }
 
-// OriginSymbol returns the waypoint the current transit departed from (sp-vp9k),
+// OriginSymbol returns the waypoint the current transit departed from,
 // or "" when the ship is not in transit.
 func (s *Ship) OriginSymbol() string {
 	return s.originSymbol
 }
 
-// OriginX returns the x coordinate of the current transit's origin (sp-vp9k).
+// OriginX returns the x coordinate of the current transit's origin.
 func (s *Ship) OriginX() float64 {
 	return s.originX
 }
 
-// OriginY returns the y coordinate of the current transit's origin (sp-vp9k).
+// OriginY returns the y coordinate of the current transit's origin.
 func (s *Ship) OriginY() float64 {
 	return s.originY
 }
 
-// DepartureTime returns when the current transit departed (sp-vp9k), or nil when
+// DepartureTime returns when the current transit departed, or nil when
 // the ship is not in transit.
 func (s *Ship) DepartureTime() *time.Time {
 	return s.departureTime
 }
 
 // SetTransitOrigin records where the current transit departed from (waypoint
-// symbol + coordinates) and when (sp-vp9k). Set from the API nav.route on sync
+// symbol + coordinates) and when. Set from the API nav.route on sync
 // and reloaded on reconstruct so the values survive a domain Save. A nil
 // departure and empty symbol represent a ship that is not in transit.
 func (s *Ship) SetTransitOrigin(symbol string, x, y float64, departure *time.Time) {
@@ -91,7 +87,6 @@ func (s *Ship) SetTransitOrigin(symbol string, x, y float64, departure *time.Tim
 	s.departureTime = departure
 }
 
-// SetCooldown sets the cooldown expiration time
 func (s *Ship) SetCooldown(t time.Time) {
 	s.cooldownExpiration = &t
 }
@@ -101,7 +96,6 @@ func (s *Ship) ClearCooldown() {
 	s.cooldownExpiration = nil
 }
 
-// SetLocation updates the ship's current location
 func (s *Ship) SetLocation(w *shared.Waypoint) {
 	s.currentLocation = w
 }
@@ -116,7 +110,7 @@ func (s *Ship) SetNavStatus(status NavStatus) {
 // the reactor's own requirements). Used by repositories when loading from
 // database and when enriching a ship from a fresh API sync. Reactors have no
 // swap/upgrade endpoint in the SpaceTraders API - powerOutput is permanent
-// for the life of the hull (sp-el60).
+// for the life of the hull.
 func (s *Ship) SetReactor(symbol, name string, powerOutput int, requirements ShipRequirements) {
 	s.reactorSymbol = symbol
 	s.reactorName = name
@@ -126,7 +120,7 @@ func (s *Ship) SetReactor(symbol, name string, powerOutput int, requirements Shi
 
 // SetSlots sets the frame's fixed module slot and mounting point budgets.
 // Frames have no swap/upgrade endpoint - these values are permanent for the
-// life of the hull (sp-el60).
+// life of the hull.
 func (s *Ship) SetSlots(moduleSlots, mountingPoints int) {
 	s.moduleSlots = moduleSlots
 	s.mountingPoints = mountingPoints

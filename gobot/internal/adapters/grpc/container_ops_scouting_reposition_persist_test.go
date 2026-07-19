@@ -11,15 +11,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-o34q REGRESSION PIN. 8k9m wired the expendable-probe reposition bound through the
-// in-memory call chain (RepositionToWaypointWithinJumps -> travelWithJumpBound -> jumpPath
-// -> RepositionPath) and every coordinator test passed — because fakeScoutDaemonClient
-// CAPTURES the *ScoutRepositionCommand struct directly and never crosses the real
-// serialize->config->rebuild boundary. That boundary dropped MaxRepositionJumps at three
-// sites: DaemonClientLocal.PersistContainer's scout_reposition case, PersistScoutRepositionWorker's
-// config map, and buildScoutRepositionCommand's read-back. So the LIVE reposition container ran
-// with bound 0, jumpPath fell through to the strict fetch-through Path, and a 12-jump post
-// produced the verbatim ErrUnroutable "within 5 jumps" — four corpses, crash-loop.
+// sp-o34q REGRESSION PIN: a coordinator-level fake (fakeScoutDaemonClient) CAPTURES the
+// *ScoutRepositionCommand struct directly and never crosses the real
+// serialize->config->rebuild boundary, so a coordinator test alone cannot catch
+// MaxRepositionJumps being dropped across DaemonClientLocal.PersistContainer's
+// scout_reposition case, PersistScoutRepositionWorker's config map, or
+// buildScoutRepositionCommand's read-back.
 //
 // This pins the WHOLE round-trip the coordinator fakes cannot: persist a relay at bound 9 ->
 // the persisted launch config carries max_reposition_jumps -> a start/recovery rebuild reloads

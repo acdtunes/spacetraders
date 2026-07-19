@@ -183,8 +183,7 @@ type ManufacturingTask struct {
 	totalRevenue   int // Revenue earned (for SELL)
 	errorMessage   string
 
-	// BUG FIX #3: Phase tracking for multi-phase tasks
-	// Tracks which phase has completed so recovery can skip completed work
+	// Tracks which phase has completed so recovery can skip completed work.
 	collectPhaseCompleted bool       // COLLECT_SELL: did we collect from factory?
 	acquirePhaseCompleted bool       // ACQUIRE_DELIVER: did we buy from market?
 	phaseCompletedAt      *time.Time // When phase completed
@@ -334,7 +333,7 @@ func (t *ManufacturingTask) TotalCost() int             { return t.totalCost }
 func (t *ManufacturingTask) TotalRevenue() int          { return t.totalRevenue }
 func (t *ManufacturingTask) ErrorMessage() string       { return t.errorMessage }
 
-// BUG FIX #3: Phase tracking getters
+// Phase tracking getters
 func (t *ManufacturingTask) CollectPhaseCompleted() bool  { return t.collectPhaseCompleted }
 func (t *ManufacturingTask) AcquirePhaseCompleted() bool  { return t.acquirePhaseCompleted }
 func (t *ManufacturingTask) PhaseCompletedAt() *time.Time { return t.phaseCompletedAt }
@@ -480,7 +479,7 @@ func ReconstituteTask(
 	readyAt *time.Time,
 	startedAt *time.Time,
 	completedAt *time.Time,
-	// BUG FIX #3: Phase tracking fields
+	// Phase tracking fields
 	collectPhaseCompleted bool,
 	acquirePhaseCompleted bool,
 	phaseCompletedAt *time.Time,
@@ -512,7 +511,7 @@ func ReconstituteTask(
 		readyAt:            readyAt,
 		startedAt:          startedAt,
 		completedAt:        completedAt,
-		// BUG FIX #3: Phase tracking fields
+		// Phase tracking fields
 		collectPhaseCompleted: collectPhaseCompleted,
 		acquirePhaseCompleted: acquirePhaseCompleted,
 		phaseCompletedAt:      phaseCompletedAt,

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// sp-lv2n: CreateChart PUBLICLY charts the ship's current waypoint so an uncharted frontier gate
+// CreateChart PUBLICLY charts the ship's current waypoint so an uncharted frontier gate
 // becomes GetJumpGate-readable forever without a ship present. The live endpoint is
 // POST /my/ships/{shipSymbol}/chart (charts the ship's CURRENT waypoint — no body-supplied
 // waypoint). This pins the actual wire method+path the adapter sends, independent of the caller.
@@ -39,7 +39,7 @@ func TestCreateChart_PostsToShipChartPath(t *testing.T) {
 
 // The already-charted verdict (HTTP 400, code 4230) must surface as an ERROR that carries the
 // wire body, so the gate-graph caller's isAlreadyCharted can classify it as a benign no-op and
-// swallow it (sp-lv2n) rather than error-spamming. This exercises the real request() typed-error
+// swallow it rather than error-spamming. This exercises the real request() typed-error
 // path end-to-end against a test server — closing the loop the gategraph unit test asserts on.
 func TestCreateChart_AlreadyCharted_SurfacesClassifiableError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

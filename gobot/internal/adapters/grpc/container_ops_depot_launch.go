@@ -103,11 +103,10 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 				targetWaypoint: anchor, // every depot stocker deposits into the anchor
 			})
 		}
-		// sp-9j9c #2: place each crewed delivery hull at its OWN hub waypoint. This is what makes
-		// the topology's multi-hub delivery fleet no longer inert — the hulls are positioned across
-		// hubs so the nearest-selection router (#1) can route each cluster's contract to its local
-		// hull. A declared-but-uncrewed slot yields no launch (no hull to fly yet), matching the
-		// warehouse/stocker discipline.
+		// sp-9j9c #2: place each crewed delivery hull at its OWN hub waypoint — the hulls are
+		// positioned across hubs so the nearest-selection router (#1) can route each cluster's
+		// contract to its local hull. A declared-but-uncrewed slot yields no launch (no hull to fly
+		// yet), matching the warehouse/stocker discipline.
 		for _, dh := range c.DeliveryHulls() {
 			if dh.ShipSymbol == "" {
 				continue

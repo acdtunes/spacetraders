@@ -53,21 +53,10 @@ import (
 //	shouldRefuel := service.ShouldRefuelOpportunistically(fuel, capacity, waypoint, 0.9)
 type ShipFuelService struct{}
 
-// NewShipFuelService creates a new fuel service instance
 func NewShipFuelService() *ShipFuelService {
 	return &ShipFuelService{}
 }
 
-// CalculateFuelRequired calculates fuel required for a trip between two waypoints
-// using the specified flight mode.
-//
-// Parameters:
-//   - from: Starting waypoint
-//   - to: Destination waypoint
-//   - mode: Flight mode to use
-//
-// Returns:
-//   - Fuel units required for the journey
 func (s *ShipFuelService) CalculateFuelRequired(
 	from *shared.Waypoint,
 	to *shared.Waypoint,
@@ -79,14 +68,6 @@ func (s *ShipFuelService) CalculateFuelRequired(
 
 // CanShipNavigateTo checks if a ship has enough fuel to navigate to destination
 // using the most fuel-efficient mode (DRIFT).
-//
-// Parameters:
-//   - currentFuel: Ship's current fuel
-//   - from: Starting waypoint
-//   - to: Destination waypoint
-//
-// Returns:
-//   - true if ship has sufficient fuel
 func (s *ShipFuelService) CanShipNavigateTo(
 	currentFuel int,
 	from *shared.Waypoint,
@@ -97,17 +78,9 @@ func (s *ShipFuelService) CanShipNavigateTo(
 	return currentFuel >= minFuelRequired
 }
 
-// ShouldRefuelForJourney determines if a ship needs refueling before a journey
-// based on fuel requirements and a safety margin.
-//
-// Parameters:
-//   - fuel: Ship's current fuel state
-//   - from: Starting waypoint
-//   - to: Destination waypoint
-//   - safetyMargin: Safety margin multiplier (e.g., 0.1 = 10% extra)
-//
-// Returns:
-//   - true if refueling is needed
+// ShouldRefuelForJourney determines if a ship needs refueling before a
+// journey. safetyMargin is a fractional multiplier (e.g., 0.1 = 10% extra),
+// not an absolute fuel amount.
 func (s *ShipFuelService) ShouldRefuelForJourney(
 	fuel *shared.Fuel,
 	from *shared.Waypoint,
@@ -121,14 +94,6 @@ func (s *ShipFuelService) ShouldRefuelForJourney(
 
 // SelectOptimalFlightMode selects the best flight mode for a journey based on
 // available fuel. Prioritizes faster modes when fuel permits, with a safety margin.
-//
-// Parameters:
-//   - currentFuel: Ship's current fuel level
-//   - distance: Distance to destination
-//   - safetyMargin: Minimum fuel to keep as reserve
-//
-// Returns:
-//   - Optimal flight mode (BURN, CRUISE, or DRIFT)
 func (s *ShipFuelService) SelectOptimalFlightMode(
 	currentFuel int,
 	distance float64,
@@ -145,15 +110,6 @@ func (s *ShipFuelService) SelectOptimalFlightMode(
 //   - Waypoint has fuel available
 //   - Ship's fuel is below safety threshold
 //   - Ship has fuel capacity > 0
-//
-// Parameters:
-//   - fuel: Ship's current fuel state
-//   - fuelCapacity: Ship's maximum fuel capacity
-//   - waypoint: Current waypoint
-//   - safetyThreshold: Fuel percentage threshold (e.g., 0.9 = 90%)
-//
-// Returns:
-//   - true if opportunistic refueling is recommended
 func (s *ShipFuelService) ShouldRefuelOpportunistically(
 	fuel *shared.Fuel,
 	fuelCapacity int,
@@ -173,14 +129,6 @@ func (s *ShipFuelService) ShouldRefuelOpportunistically(
 	return fuelPercentage < safetyThreshold
 }
 
-// CalculateFuelNeededToFull calculates how much fuel is needed to fill ship to capacity
-//
-// Parameters:
-//   - currentFuel: Ship's current fuel level
-//   - fuelCapacity: Ship's maximum fuel capacity
-//
-// Returns:
-//   - Fuel units needed to reach full capacity
 func (s *ShipFuelService) CalculateFuelNeededToFull(currentFuel int, fuelCapacity int) int {
 	fuelNeeded := fuelCapacity - currentFuel
 	if fuelNeeded < 0 {
@@ -196,16 +144,6 @@ func (s *ShipFuelService) CalculateFuelNeededToFull(currentFuel int, fuelCapacit
 //   - Segment uses DRIFT mode
 //   - Starting waypoint has fuel
 //   - Fuel is below safety threshold
-//
-// Parameters:
-//   - fuel: Ship's current fuel state
-//   - fuelCapacity: Ship's maximum fuel capacity
-//   - segmentFlightMode: Flight mode of the route segment to evaluate
-//   - fromWaypointHasFuel: Whether the departure waypoint sells fuel
-//   - safetyThreshold: Fuel percentage threshold (e.g., 0.9 = 90%)
-//
-// Returns:
-//   - true if refueling is recommended before drift mode
 func (s *ShipFuelService) ShouldPreventDriftMode(
 	fuel *shared.Fuel,
 	fuelCapacity int,

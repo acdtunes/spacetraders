@@ -15,11 +15,10 @@ import (
 // fleetForRole) to fill a desired topology driven by contract HISTORY. When the
 // contract-delivery domain is operationally decommissioned that history lingers, so
 // the running reconciler keeps re-dedicating hulls to dead buffer roles — and a daemon
-// restart faithfully recovers it and re-strands them (the sp-2jrz incident).
+// restart faithfully recovers it and re-strands them.
 //
 // On a DURABLE operator STOP this releases the reconciler's own role-fleet dedications
-// back to the general pool so trade re-adopts the hulls — the missing half that forced
-// the captain to manually re-dedicate the stranded lights. Recovery already skips a
+// back to the general pool so trade re-adopts the hulls. Recovery already skips a
 // STOPPED container, so the domain then stays retired across a restart (the Admiral's
 // invariant that a restart must not change ship assignments).
 //

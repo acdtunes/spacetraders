@@ -38,7 +38,6 @@ func (r *ShipAssignmentRepositoryGORM) Assign(
 	ctx context.Context,
 	assignment *container.ShipAssignment,
 ) error {
-	// Check for existing active assignment
 	existingAssignment, err := r.FindByShip(ctx, assignment.ShipSymbol(), assignment.PlayerID())
 	if err != nil {
 		return fmt.Errorf("failed to check existing assignment: %w", err)
@@ -235,7 +234,7 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 //
 // Captain reservations (assignment_owner="captain") are deliberately excluded:
 // they use the same assignment_status="active" as a live coordinator claim, but
-// a reservation's whole purpose (sp-i1ku) is to survive daemon restarts, so an
+// a reservation's whole purpose is to survive daemon restarts, so an
 // owner-blind release here would silently un-reserve a captain-held hull on
 // every restart.
 func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
@@ -272,22 +271,22 @@ type ShipAssignmentInfo struct {
 	ContainerID string // empty when the ship is idle
 	SyncedAt    time.Time
 
-	// AssignmentOwner is "captain" for a captain reservation (sp-i1ku), or
+	// AssignmentOwner is "captain" for a captain reservation, or
 	// "container"/"" otherwise. ContainerID is always empty for a captain
 	// reservation, so callers must check this field to distinguish "reserved
 	// by the captain" from "genuinely idle" — both would otherwise render
 	// identically as an empty ContainerID.
 	AssignmentOwner string
-	// AssignmentReason is the free-text reason recorded at reserve time
-	// (sp-i1ku). Empty when the ship isn't captain-reserved, or when the
+	// AssignmentReason is the free-text reason recorded at reserve time.
+	// Empty when the ship isn't captain-reserved, or when the
 	// captain gave no reason.
 	AssignmentReason string
 
-	// DedicatedFleet (sp-snmb) is the ship's permanent fleet dedication (e.g.
+	// DedicatedFleet is the ship's permanent fleet dedication (e.g.
 	// "contract"), or "" when unreserved. Unlike ContainerID/AssignmentOwner
 	// above, this is independent of any transient container claim. Surfaced
-	// by `ship list` (sp-ioqt) so a hull pinned to the wrong fleet at
-	// purchase — the sp-lybx class of mistake — is visible at a glance
+	// by `ship list` so a hull pinned to the wrong fleet at
+	// purchase — that class of mistake — is visible at a glance
 	// instead of requiring a per-ship cross-check against `fleet list`.
 	DedicatedFleet string
 }

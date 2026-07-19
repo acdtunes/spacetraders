@@ -46,7 +46,7 @@ func (f *fakeUniversePlayerRepo) FindByAgentSymbol(context.Context, string) (*pl
 func (f *fakeUniversePlayerRepo) ListAll(context.Context) ([]*player.Player, error) { return nil, nil }
 func (f *fakeUniversePlayerRepo) Add(context.Context, *player.Player) error         { return nil }
 
-// TestUniverseSystemsCache_CrawlsAllPagesOnceThenServesFromCache pins the sp-k645 frugality
+// TestUniverseSystemsCache_CrawlsAllPagesOnceThenServesFromCache pins the frugality
 // bound: the universe roster is near-static within an era and large (many pages), so the
 // cache pays the full paginated crawl ONCE and serves every subsequent AllSystems from
 // memory for the TTL — a per-tick refetch would burn the API budget for nothing. Past the

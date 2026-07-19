@@ -1,5 +1,5 @@
 // Package expansion holds the infrastructure adapters that back the frontier
-// expansion coordinator's optional ports (sp-8w89): the live-treasury reader, the
+// expansion coordinator's optional ports: the live-treasury reader, the
 // probe price-and-buy port over the existing purchase_ship machinery, and the
 // gate-graph/market-data expansion scanner. The coordinator's decision logic lives in
 // internal/application/expansion/commands; these adapters are the seams the daemon
@@ -57,7 +57,7 @@ func (r *TreasuryReader) LiveCredits(ctx context.Context, playerID shared.Player
 
 // ---- ProbePurchaser --------------------------------------------------------
 
-// probeYardFinder is the narrow slice of the sp-42ow ReachableYardFinder the demand-proximal
+// probeYardFinder is the narrow slice of the ReachableYardFinder the demand-proximal
 // selection needs: the scout-scanned probe-selling yards near a target system, ranked
 // hops-then-price off the persisted gate graph (a pure store read — no API). Satisfied by
 // *shipyardQueries.ReachableYardFinder. Nil-safe: a nil finder disables target-aware selection,
@@ -67,12 +67,12 @@ type probeYardFinder interface {
 }
 
 // ProbePurchaser prices and buys one probe through the existing purchase_ship mediator
-// path (RULINGS #3, the daemon is the single writer). It is DEMAND-PROXIMAL (sp-hej4): given a
+// path (RULINGS #3, the daemon is the single writer). It is DEMAND-PROXIMAL: given a
 // target system it spawns the probe at the scanned probe-yard NEAREST that system (fewest gate
 // hops, arbitrated against price by the caller's tunable), so the reconciler's relay is short
 // instead of always buying at the home yard and relaying across the network. The purchase runs
 // through an idle, UNDEDICATED hull (never a pinned or working one — RULINGS #7); a target-yard
-// buy navigates that hull to the yard (the sp-1txd demand-proximal pattern), a home-yard buy uses
+// buy navigates that hull to the yard (the demand-proximal pattern), a home-yard buy uses
 // an in-place hull movement-free. FAIL-OPEN by construction: no target, no finder, an empty/sparse
 // scan store, or an unreadable rank all fall back to the home yard exactly as before — missing
 // shipyard data never fails a buy closed.
@@ -98,7 +98,7 @@ type probeBuyPlan struct {
 }
 
 // QuoteProbe returns the demand-proximal probe price and yard: the scanned probe-yard nearest
-// target (sp-hej4), or — with no target / no finder / no scanned yard — the cheapest live in-place
+// target, or — with no target / no finder / no scanned yard — the cheapest live in-place
 // yard exactly as before. The price feeds the caller's unchanged money guards.
 func (p *ProbePurchaser) QuoteProbe(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget) (int, string, error) {
 	plan, err := p.resolveProbeBuy(ctx, playerID, target)
@@ -110,11 +110,11 @@ func (p *ProbePurchaser) QuoteProbe(ctx context.Context, playerID shared.PlayerI
 
 // BuyProbe purchases one probe at the demand-proximal (or fallback home) yard, refusing a fill
 // whose price exceeds maxBudget (the 25% treasury ceiling the coordinator computed). A target-yard
-// plan RELAYS an idle undedicated hull to the winning yard (sp-iqv2 — never a movement-free buy
-// where a hull happens to sit, which spiked the home hub to 4.2x) and RE-CHECKS the live dock price
+// plan RELAYS an idle undedicated hull to the winning yard (never a movement-free buy
+// where a hull happens to sit) and RE-CHECKS the live dock price
 // there so the guard judges the ACTUAL price and not a stale scan; a home-yard fallback plan buys
 // through the in-place hull movement-free at its already-live price. It verifies the yard delivered
-// a probe and not a substituted hull (sp-e7je money integrity), then returns the price paid and the
+// a probe and not a substituted hull (money integrity), then returns the price paid and the
 // new hull's symbol.
 func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int, target probebuy.ProbeTarget) (int, string, error) {
 	plan, err := p.resolveProbeBuy(ctx, playerID, target)
@@ -131,7 +131,7 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 		}
 	}
 
-	// Guard on the ACTUAL price the buy will pay (sp-iqv2): the live dock re-check for a relayed
+	// Guard on the ACTUAL price the buy will pay: the live dock re-check for a relayed
 	// target-yard buy, or the already-live in-place price for a home-yard fallback — never a stale
 	// scan that lets a depleted yard slip past the 25% treasury ceiling.
 	if price > maxBudget {
@@ -160,7 +160,7 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 // resolveProbeBuy picks the buy yard: the demand-proximal scanned yard nearest the target when one
 // is known, else the home-yard in-place buyer. The proximal branch FAILS OPEN — any gap (no
 // target, no finder, empty/unreadable scan store) returns ok=false and the in-place fallback runs,
-// so missing shipyard data can never fail a buy closed (sp-hej4).
+// so missing shipyard data can never fail a buy closed.
 func (p *ProbePurchaser) resolveProbeBuy(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget) (probeBuyPlan, error) {
 	if plan, ok := p.resolveProximalBuy(ctx, playerID, target); ok {
 		return plan, nil
@@ -171,7 +171,7 @@ func (p *ProbePurchaser) resolveProbeBuy(ctx context.Context, playerID shared.Pl
 // resolveProximalBuy selects the scanned probe-yard nearest the target, arbitrating hops against
 // price by the target's tunable penalty. ok=false signals "no proximal yard — fall back to home"
 // for every fail-open case (no target, no finder, empty/unreadable scan store), so missing
-// shipyard data never fails a buy closed (sp-hej4). The plan carries no buyer: a target-yard buy
+// shipyard data never fails a buy closed. The plan carries no buyer: a target-yard buy
 // resolves the navigating hull lazily at purchase time.
 func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget) (probeBuyPlan, bool) {
 	if target.System == "" || p.yardFinder == nil {
@@ -186,10 +186,10 @@ func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared
 }
 
 // pickBuyYard selects the buy yard across ALL reachable candidates: the demand-proximal
-// hop-penalty winner (sp-hej4), UNLESS a cheaper reachable sibling undercuts it by more than
-// siblingMargin — the sp-iqv2 supply-depletion override. Repeated buys raise a yard's scanned
+// hop-penalty winner, UNLESS a cheaper reachable sibling undercuts it by more than
+// siblingMargin — the supply-depletion override. Repeated buys raise a yard's scanned
 // price (LIMITED→SCARCE); the override abandons a yard the moment a sibling beats it by more than
-// the margin, so the buy spreads instead of spiraling one market to 4x (the home hub 20k→86k). A
+// the margin, so the buy spreads instead of spiraling one market to 4x. A
 // siblingMargin<=0 disables the override, degenerating to pure hop-penalty selection (rollback).
 func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, siblingMargin int) shipyardQueries.YardCandidate {
 	proximal := pickProximalYard(candidates, hopPenalty)
@@ -204,7 +204,7 @@ func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, sibling
 }
 
 // pickProximalYard chooses the scanned probe-yard minimizing effectiveCost = PurchasePrice +
-// Hops*hopPenalty — the demand-proximal tradeoff (sp-hej4). A high penalty makes proximity
+// Hops*hopPenalty — the demand-proximal tradeoff. A high penalty makes proximity
 // dominate (buy NEAREST the post); a zero penalty degenerates to the cheapest reachable yard. The
 // finder pre-sorts candidates hops-then-price, so a strict-less comparison keeps the FIRST minimum
 // — the nearest, then cheapest — on a tie.
@@ -235,7 +235,7 @@ func cheapestYard(candidates []shipyardQueries.YardCandidate) shipyardQueries.Ya
 
 // resolveInPlaceBuy scans idle, undedicated ships for one sitting at a shipyard that sells
 // SHIP_PROBE, returning the cheapest such plan (buyer present, live price). Movement-free and
-// poach-free by construction — the home-yard path unchanged since before sp-hej4.
+// poach-free by construction.
 func (p *ProbePurchaser) resolveInPlaceBuy(ctx context.Context, playerID shared.PlayerID) (probeBuyPlan, error) {
 	ships, err := p.shipRepo.FindIdleByPlayer(ctx, playerID)
 	if err != nil {
@@ -264,9 +264,9 @@ func (p *ProbePurchaser) resolveInPlaceBuy(ctx context.Context, playerID shared.
 	return best, nil
 }
 
-// prepareTargetYardBuyer readies a target-yard buy (sp-iqv2): it resolves an idle undedicated
+// prepareTargetYardBuyer readies a target-yard buy: it resolves an idle undedicated
 // hull, RELAYS it to the winning yard when it is not already there (never a movement-free buy
-// wherever a hull sits — the 4.2x spiral), and RE-CHECKS the live dock price so the money guard
+// wherever a hull sits), and RE-CHECKS the live dock price so the money guard
 // judges the ACTUAL price rather than a stale scan. Returns the buyer symbol and the re-checked
 // live price. A relay that cannot route, or a dock whose live price is unreadable after arrival,
 // fails the buy CLOSED — the fail-OPEN home fallback covers only MISSING selection data, not a
@@ -289,7 +289,7 @@ func (p *ProbePurchaser) prepareTargetYardBuyer(ctx context.Context, playerID sh
 }
 
 // navigateBuyerToYard relays the buyer to the winning yard via the shared high-level navigation
-// command, which routes CROSS-SYSTEM through the sp-9l4p gate-crosser wired on the NavigateRoute
+// command, which routes CROSS-SYSTEM through the gate-crosser wired on the NavigateRoute
 // handler — a frontier yard is almost always in another system. A relay error surfaces so the buy
 // fails closed rather than buying at the wrong (current) location.
 func (p *ProbePurchaser) navigateBuyerToYard(ctx context.Context, playerID shared.PlayerID, buyerSymbol, yard string) error {
@@ -368,15 +368,15 @@ func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.Playe
 // persisted cross-system gate graph in one era-scoped read (what the BFS walks). Connections
 // is the per-system fetch-through read that CHARTS a covered frontier system's own jump gate
 // on a miss (a single live GetJumpGate that persists the edge set) — the seam that grows the
-// walkable graph one ring at a time so expansion does not freeze at the last charted ring
-// (sp-dc50). The real *gategraph.Service satisfies both.
+// walkable graph one ring at a time so expansion does not freeze at the last charted ring.
+// The real *gategraph.Service satisfies both.
 type GateGraph interface {
 	Adjacency(ctx context.Context) (map[string][]system.GateEdge, error)
 	Connections(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error)
 }
 
 // WaypointCatalog is the narrow slice of system.WaypointRepository the scanner reads to decide
-// whether a system's full waypoint set was SWEPT (sp-gb7h). ListBySystem returns the persisted
+// whether a system's full waypoint set was SWEPT. ListBySystem returns the persisted
 // waypoint rows for a system — non-empty (with real bodies) only after a sweep persisted them
 // via BuildSystemGraph. Narrowing to the one method keeps the port intent-revealing and the
 // scanned-discriminator trivially fakeable.
@@ -388,9 +388,9 @@ type WaypointCatalog interface {
 // It runs one multi-source BFS over the persisted gate adjacency from the anchor set
 // (HQ + the systems the fleet currently occupies), bounded by maxHops, and annotates
 // each reached system with its known-market count, a charted flag, and a scanned flag
-// (whether its full waypoint set was swept — sp-gb7h). Charted-only reachability: virgin
+// (whether its full waypoint set was swept). Charted-only reachability: virgin
 // systems surface as edge targets of a charted neighbor (a probe relayed there charts it
-// on arrival, nn0y).
+// on arrival).
 type ExpansionScanner struct {
 	gateGraph    GateGraph
 	marketRepo   market.MarketRepository
@@ -429,7 +429,7 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 		return nil, nil // no anchor to measure from → no queue this cycle
 	}
 
-	// Grow the walkable graph one ring BEFORE the BFS enumerates candidates (sp-dc50). The
+	// Grow the walkable graph one ring BEFORE the BFS enumerates candidates. The
 	// sweep charts a scouted frontier system's markets but not its jump gate, so its onward
 	// edges never reach the persisted adjacency and the BFS below would dead-end at the last
 	// charted ring — the frozen frontier / empty queue. Charting the covered ring's gate here
@@ -437,7 +437,7 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 	s.growReachableFrontierGates(ctx, playerID, adj, anchors, maxHops)
 
 	hops := bfsHops(adj, anchors, maxHops)
-	// Corridor (branch) identity per reachable system — the depth slice's bearing (sp-rjgr).
+	// Corridor (branch) identity per reachable system — the depth slice's bearing.
 	branchRoots := bfsBranchRoots(adj, anchors, maxHops)
 
 	candidates := make([]expansionCmd.ExpansionCandidate, 0, len(hops))
@@ -488,7 +488,7 @@ func (s *ExpansionScanner) knownMarketCount(ctx context.Context, playerID int, s
 	return len(markets)
 }
 
-// systemScanned reports whether a system's FULL waypoint set has been SWEPT — the sp-gb7h signal
+// systemScanned reports whether a system's FULL waypoint set has been SWEPT — the signal
 // distinct from KnownMarkets (market_data rows exist only for systems that HAVE a market, so it
 // cannot tell a swept-but-barren system from a never-scanned one) and from Charted (a gate edge
 // means reachable, not swept). It reads the persisted waypoint catalog and asks hasNonGateWaypoint
@@ -504,7 +504,7 @@ func (s *ExpansionScanner) systemScanned(ctx context.Context, systemSymbol strin
 }
 
 // growReachableFrontierGates charts+persists the jump-gate edges of covered frontier systems
-// so the reachability graph grows one ring per cycle (sp-dc50). It supplies growFrontierGraph
+// so the reachability graph grows one ring per cycle. It supplies growFrontierGraph
 // with the two live collaborators: a charted-predicate (a system a probe has SWEPT has known
 // markets — only then is its gate chartable; a virgin system's live gate 400s "no ship
 // present") and the fetch-through Connections call (a miss triggers one live GetJumpGate that
@@ -519,7 +519,7 @@ func (s *ExpansionScanner) growReachableFrontierGates(ctx context.Context, playe
 }
 
 // hasNonGateWaypoint reports whether a system's persisted waypoint rows prove its FULL set was
-// actually SWEPT, as opposed to merely gate-charted (sp-gb7h). It is true iff at least one
+// actually SWEPT, as opposed to merely gate-charted. It is true iff at least one
 // persisted waypoint is NOT a jump gate. The ONLY writer of waypoint rows is BuildSystemGraph
 // (graph_builder.go), which persists a system's ENTIRE paginated waypoint list — planets, moons,
 // asteroids, the gate — the moment a probe sweeps it; gate-charting persists jump-gate EDGES to
@@ -527,8 +527,7 @@ func (s *ExpansionScanner) growReachableFrontierGates(ctx context.Context, playe
 // So a persisted non-gate waypoint is proof of a real sweep, whereas a never-swept system has no
 // such row. Requiring a NON-gate row (not merely "≥1 row") is deliberate: even if a lone
 // jump-gate row were ever persisted, a gate-only-charted system must still read as NOT scanned so
-// it stays a scout target — the exact discriminator the bead's "full waypoint set was swept, NOT
-// ≥1 row exists" warning demands. It is pure over its input (a resolved waypoint list), so the
+// it stays a scout target. It is pure over its input (a resolved waypoint list), so the
 // discriminator is unit-testable with no store, mirroring bfsHops/growFrontierGraph.
 func hasNonGateWaypoint(waypoints []*shared.Waypoint) bool {
 	for _, waypoint := range waypoints {
@@ -541,7 +540,7 @@ func hasNonGateWaypoint(waypoints []*shared.Waypoint) bool {
 
 // bfsHops runs a multi-source BFS over the gate adjacency from the anchor set, returning
 // each reachable system's minimum hop distance (<= maxHops). Under-construction edges are
-// skipped (a multi-jump route can never traverse them, sp-7gr2) — Adjacency does not
+// skipped (a multi-jump route can never traverse them) — Adjacency does not
 // filter them, so the BFS must. Anchors are included at hop 0.
 func bfsHops(adj map[string][]system.GateEdge, anchors map[string]bool, maxHops int) map[string]int {
 	hops := make(map[string]int)
@@ -580,8 +579,8 @@ func bfsHops(adj map[string][]system.GateEdge, anchors map[string]bool, maxHops 
 	return hops
 }
 
-// growFrontierGraph grows the walkable gate graph by ONE ring, mutating adj in place
-// (sp-dc50). The frozen-frontier bug: a scouted ring's MARKETS are charted by the sweep but
+// growFrontierGraph grows the walkable gate graph by ONE ring, mutating adj in place.
+// The frozen-frontier bug: a scouted ring's MARKETS are charted by the sweep but
 // its JUMP GATE is not, so its onward edges never enter the persisted adjacency and the
 // multi-source BFS dead-ends at the last charted ring — the expansion queue empties. For each
 // system reachable within the hop bound that is CHARTED (a probe reached it) but whose OWN
@@ -596,7 +595,7 @@ func bfsHops(adj map[string][]system.GateEdge, anchors map[string]bool, maxHops 
 // API-frugality is structural, so a wide frontier is never stormed:
 //   - a system already carrying edges is never fetched (served from the map, zero API);
 //   - an UNCHARTED system (charted==false — no probe has arrived) is never probed, because its
-//     live gate would 400 "no ship present" and trip the sp-ikx1 negative-result backoff;
+//     live gate would 400 "no ship present" and trip the negative-result backoff;
 //   - a system AT the hop bound is never charted onward (its neighbors fall beyond maxHops and
 //     the bounded BFS would discard them).
 //
@@ -623,7 +622,7 @@ func growFrontierGraph(
 		}
 		edges, err := fetchConnections(systemSymbol)
 		if err != nil || len(edges) == 0 {
-			continue // unreadable/backed-off (sp-ikx1/qxa4) — the graph just doesn't grow through it
+			continue // unreadable/backed-off — the graph just doesn't grow through it
 		}
 		adj[systemSymbol] = edges
 	}

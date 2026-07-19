@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// RecentContractDemand feeds the contract-hub placement coordinator's demand EWMA (sp-q2zq).
+// RecentContractDemand feeds the contract-hub placement coordinator's demand EWMA.
 // The EWMA folds contracts OLDEST→NEWEST, so the read must return that order; it must dedupe
 // a good repeated within one contract (recurrence is measured ACROSS contracts, not within),
 // and it must skip a single corrupt deliveries blob rather than blind the whole signal (the

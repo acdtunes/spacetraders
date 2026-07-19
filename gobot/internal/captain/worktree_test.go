@@ -126,7 +126,7 @@ func branchWithFix(t *testing.T, repo, branch string) Worktree {
 
 // (a) The guard refuses loudly, naming the offending file, when a peer has an
 // unrelated file staged in the shared checkout — a pathspec-less commit would
-// otherwise sweep it into the merge commit (realized: Frankenstein commit 71221b2).
+// otherwise sweep it into the merge commit.
 func TestSquashMergeGuardAbortsOnForeignStaged(t *testing.T) {
 	t.Parallel()
 	repo := initScratchRepo(t)
@@ -298,8 +298,7 @@ func TestWorktreeDirtyCleanWhenCommitted(t *testing.T) {
 
 // sp-k0di check 2: a branch with zero commits ahead of main squashes main's own
 // tree back onto main — a message-only commit. The guard refuses it as an empty
-// merge and leaves main untouched, instead of reporting Merged=true (the exact bug
-// that lost three fixes).
+// merge and leaves main untouched, instead of reporting Merged=true.
 func TestSquashMergeRefusesBranchWithNoCommits(t *testing.T) {
 	t.Parallel()
 	repo := initScratchRepo(t)
@@ -338,13 +337,12 @@ func TestSquashMergeRollsBackEmptyDiffMerge(t *testing.T) {
 		"the post-squash safety net must roll main back to pre-merge")
 }
 
-// sp-jgtw: the real stray-sweep vector k0di's smoke tests missed. In the shared
-// city the beads pre-commit hook re-exports and stages the ROOT issues.jsonl INTO
-// the fix commit made in the worktree, so branch^{tree} ITSELF carries a churn the
-// agent never intended. A verbatim `commit-tree branch^{tree}` squash rides that
-// stray straight into the merge (evidence: 6947af6 carried a 119-line root
-// issues.jsonl in as a 9th file). The squash must pin every beads-export path to
-// main's version so the merge commit's diff is exactly the branch's real change.
+// sp-jgtw: in the shared city the beads pre-commit hook re-exports and stages
+// the ROOT issues.jsonl INTO the fix commit made in the worktree, so
+// branch^{tree} ITSELF carries a churn the agent never intended. A verbatim
+// `commit-tree branch^{tree}` squash rides that stray straight into the
+// merge. The squash must pin every beads-export path to main's version so the
+// merge commit's diff is exactly the branch's real change.
 func TestSquashMergeStripsBranchTreeBeadsExport(t *testing.T) {
 	t.Parallel()
 	repo := initScratchRepo(t)

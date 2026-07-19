@@ -24,20 +24,17 @@ import (
 )
 
 // shipVersionConflicts counts Save calls whose row version moved past the
-// entity's loaded version — i.e. another writer committed in between and is
-// about to be last-write-wins clobbered (sp-60ff probe; the mailbox, sp-eum3,
-// is gated on this reading). Mirrored to prometheus; kept as a package
-// atomic so tests and debuggers can read it without a registry.
+// entity's loaded version (a concurrent writer committed in between, about to be
+// last-write-wins clobbered). Mirrored to prometheus; kept as a package atomic so
+// tests and debuggers can read it without a registry.
 var shipVersionConflicts atomic.Int64
 
 // dedicatedFleetClobbersPrevented counts general ship Save calls that carried a
-// STALE dedicated_fleet tag (the in-memory snapshot disagreed with the persisted
-// value) and were prevented from silently overwriting a live `fleet add`/`remove`
-// dedication (sp-90a3). AssignFleet is the single write path for that tag; a
-// coordinator holding a pre-dedication Ship snapshot must never resurrect its
-// stale tag through the whole-row UpdateAll upsert. Kept as a package atomic —
-// mirroring shipVersionConflicts — so the WARN is not the only signal and tests
-// can observe the prevention without scraping logs.
+// STALE dedicated_fleet tag and were prevented from overwriting a live dedication.
+// AssignFleet is the single write path for that tag; a coordinator holding a
+// pre-dedication Ship snapshot must never resurrect its stale tag through the
+// whole-row UpdateAll upsert. Kept as a package atomic so the WARN is not the only
+// signal and tests can observe the prevention without scraping logs.
 var dedicatedFleetClobbersPrevented atomic.Int64
 
 // shipListCacheTTL defines how long ship list cache is valid
@@ -71,11 +68,10 @@ type ShipRepository struct {
 	// Optional arrival scheduler - notified after navigation to schedule state transition
 	arrivalScheduler navigation.ArrivalScheduler
 
-	// CAS-retry knob (sp-01wc). maxCASRetries<=0 means "use defaultMaxCASRetries";
-	// casRetryDisabled forces the legacy last-write-wins-on-conflict path (sp-60ff).
-	// Both default to their zero value so retry is LIVE by default across every
-	// construction path (RULINGS #5); the daemon overrides them from DaemonConfig
-	// via SetCASRetryPolicy.
+	// CAS-retry knob. maxCASRetries<=0 means "use defaultMaxCASRetries";
+	// casRetryDisabled forces the last-write-wins-on-conflict path. Both default to
+	// their zero value so retry is LIVE by default across every construction path
+	// (RULINGS #5); the daemon overrides them from DaemonConfig via SetCASRetryPolicy.
 	maxCASRetries    int
 	casRetryDisabled bool
 }
@@ -115,19 +111,17 @@ func (r *ShipRepository) SetArrivalScheduler(scheduler navigation.ArrivalSchedul
 }
 
 // SetCASRetryPolicy configures the optimistic-concurrency retry knob for
-// SaveWithRetry (sp-01wc). maxRetries<=0 selects the built-in default
-// (defaultMaxCASRetries); disabled=true forces the legacy last-write-wins path
-// (sp-60ff behavior), disabling re-apply retry entirely. Wired from DaemonConfig
-// at boot; setter injection mirrors SetArrivalScheduler so the 4 constructor call
-// sites stay untouched.
+// SaveWithRetry. maxRetries<=0 selects the built-in default (defaultMaxCASRetries);
+// disabled=true forces the last-write-wins path, disabling re-apply retry entirely.
+// Wired from DaemonConfig at boot; setter injection mirrors SetArrivalScheduler.
 func (r *ShipRepository) SetCASRetryPolicy(maxRetries int, disabled bool) {
 	r.maxCASRetries = maxRetries
 	r.casRetryDisabled = disabled
 }
 
 // resolvedCASRetries reports the effective retry bound: 0 when disabled (straight
-// to last-write-wins on the first conflict, i.e. today's behavior), otherwise the
-// configured value or defaultMaxCASRetries when unset.
+// to last-write-wins on the first conflict), otherwise the configured value or
+// defaultMaxCASRetries when unset.
 func (r *ShipRepository) resolvedCASRetries() int {
 	if r.casRetryDisabled {
 		return 0
@@ -519,7 +513,7 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 
 	// Create fuel value object from the authoritative API snapshot, clamping a
 	// transient current>capacity over-report to capacity so it doesn't sideline
-	// the hull (sp-xxhn).
+	// the hull.
 	fuel, err := shared.ReconstructFuel(data.FuelCurrent, data.FuelCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fuel: %w", err)
@@ -573,7 +567,7 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 		return nil, err
 	}
 
-	// Enrich with power/slot/crew data (sp-el60) so a ship built straight
+	// Enrich with power/slot/crew data so a ship built straight
 	// from a fresh API payload is immediately outfit-feasibility computable.
 	mounts := make([]*navigation.ShipMount, len(data.Mounts))
 	for i, mnt := range data.Mounts {
@@ -607,14 +601,10 @@ func isAlreadyDockedError(err error) bool {
 // isAlreadyInOrbitError checks if the error is due to ship already being in orbit
 // API returns error code when trying to orbit an already orbiting ship
 //
-// sp-423c: the old fallback also matched the bare substring "in orbit", which
-// "already in orbit" is trivially a superset of (making the fallback both
-// redundant for the true positive AND a false-positive risk for any other
-// real API error that merely mentions orbit as a precondition, e.g. "Ship
-// must be in orbit to jettison cargo"). Orbit() (ship_repository.go) treats a
-// true result as "not a real error, proceed as success", so the broad match
-// could have silently swallowed a genuine failure - exactly the class of
-// real-API-contract mismatch this gate exists to catch.
+// Matches only the exact "already in orbit" phrase, not the bare substring "in
+// orbit" (which any orbit-precondition error could also contain) — Orbit()
+// treats a match as success, so a broader match risks silently swallowing a
+// real failure.
 func isAlreadyInOrbitError(err error) bool {
 	if err == nil {
 		return false
@@ -698,7 +688,7 @@ func (r *ShipRepository) modelToAssignment(model *persistence.ShipModel) *naviga
 		assignedAt = *model.AssignedAt
 	}
 
-	// Default to "container" for rows written before sp-i1ku's migration
+	// Default to "container" for rows written before the migration
 	// backfilled this column.
 	owner := navigation.AssignmentOwner(model.AssignmentOwner)
 	if owner == "" {
@@ -736,10 +726,10 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	model.FlightMode = ship.FlightMode()
 	model.ArrivalTime = ship.ArrivalTime()
 
-	// Nav route origin + departure (sp-vp9k): persist from the domain ship so a
+	// Nav route origin + departure: persist from the domain ship so a
 	// whole-row Save upsert (UpdateAll) does not clobber the synced transit origin
-	// back to zero — the sp-90a3/w870/bi75 clobber class. modelToDomain reloads
-	// these onto the ship, so this write is the round-trip's return leg.
+	// back to zero. modelToDomain reloads these onto the ship, so this write is
+	// the round-trip's return leg.
 	model.OriginSymbol = ship.OriginSymbol()
 	model.OriginX = ship.OriginX()
 	model.OriginY = ship.OriginY()
@@ -801,7 +791,7 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 		model.Modules = string(modulesJSON)
 	}
 
-	// Mounts (sp-el60)
+	// Mounts
 	mountItems := make([]persistence.MountJSON, 0)
 	for _, mnt := range ship.Mounts() {
 		req := mnt.Requirements()
@@ -821,7 +811,7 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 		model.Mounts = string(mountsJSON)
 	}
 
-	// Reactor/slots/crew (sp-el60): fixed for the life of the hull.
+	// Reactor/slots/crew: fixed for the life of the hull.
 	model.ReactorSymbol = ship.ReactorSymbol()
 	model.ReactorName = ship.ReactorName()
 	model.ReactorPowerOutput = ship.ReactorPowerOutput()
@@ -838,11 +828,11 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	// Cooldown
 	model.CooldownExpiration = ship.CooldownExpiration()
 
-	// Dedicated fleet (sp-snmb): permanent coordinator reservation, independent
+	// Dedicated fleet: permanent coordinator reservation, independent
 	// of the transient container assignment below.
 	model.DedicatedFleet = ship.DedicatedFleet()
 
-	// Reservation overrides (sp-1vhv): the per-hull cargo do-not-sell override set.
+	// Reservation overrides: the per-hull cargo do-not-sell override set.
 	// A marshal failure leaves the column at its zero value rather than persisting a
 	// corrupt string; ReservationOverrides() never returns nil, so this is "{}" for
 	// an empty set.
@@ -874,7 +864,7 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 			model.ReleaseReason = *assignment.ReleaseReason()
 		}
 
-		// sp-i1ku: persist who holds the assignment (container vs captain) and
+		// Persist who holds the assignment (container vs captain) and
 		// the captain's free-text reservation reason, if any.
 		if assignment.Owner() != "" {
 			model.AssignmentOwner = string(assignment.Owner())
@@ -891,10 +881,8 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 // When the entity carries a known row version, the upsert is guarded with
 // `DO UPDATE ... WHERE ships.version = <loaded>` (postgres and sqlite both
 // support upsert-where): RowsAffected == 0 means another writer committed
-// since this entity was loaded. That is DETECTION-ONLY telemetry (sp-60ff):
-// we count + log, then apply the legacy last-write-wins upsert so behavior
-// is unchanged. The reading gates the mailbox (sp-eum3), which then migrates
-// the remaining writers (sp-wa7c).
+// since this entity was loaded. That is DETECTION-ONLY telemetry: we count +
+// log, then apply the legacy last-write-wins upsert so behavior is unchanged.
 func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error {
 	if r.db == nil {
 		return fmt.Errorf("database not configured")
@@ -909,8 +897,8 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 			return nil
 		}
 		// Conflict: the row moved past our loaded version. Preserve today's
-		// last-write-wins behavior (sp-60ff); SaveWithRetry is the opt-in path
-		// that re-applies on fresh state instead (sp-01wc).
+		// last-write-wins behavior; SaveWithRetry is the opt-in path
+		// that re-applies on fresh state instead.
 		log.Printf("ERROR: ship %s save conflict — row version moved past %d (concurrent writer; sp-60ff probe); applying last-write-wins fallback",
 			ship.ShipSymbol(), loaded)
 	}
@@ -925,7 +913,7 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 // row moved past the loaded version (RowsAffected == 0): a concurrent-writer
 // conflict, counted + mirrored to prometheus so the caller can decide between
 // retry (SaveWithRetry) and last-write-wins (Save). The conflict counter is
-// incremented per attempt, so retries keep the sp-60ff telemetry intact.
+// incremented per attempt, so retries keep the conflict telemetry intact.
 func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) (committed bool, err error) {
 	loaded := ship.PersistedVersion()
 	model := r.shipToModel(ship)
@@ -954,8 +942,8 @@ func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) 
 
 // saveLastWriteWins performs the legacy unconditional upsert. It clobbers any
 // concurrent writer's mutation and is the fallback both for entities with no
-// loaded version (API-born inserts / first sync) and for CAS-retry exhaustion
-// (sp-01wc) — so behavior never regresses below sp-60ff's tripwire.
+// loaded version (API-born inserts / first sync) and for CAS-retry exhaustion —
+// so behavior never regresses below the conflict-detection tripwire.
 func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation.Ship) error {
 	model := r.shipToModel(ship)
 	r.preserveDedicatedFleetTag(ctx, &model)
@@ -978,13 +966,13 @@ func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation
 }
 
 // preserveDedicatedFleetTag defends the single-write-path invariant for the
-// dedicated_fleet tag (sp-90a3). AssignFleet is the ONLY writer of that column,
+// dedicated_fleet tag. AssignFleet is the ONLY writer of that column,
 // but every general ship upsert (Save/CAS/last-write-wins/SaveAll) rewrites the
 // WHOLE row (UpdateAll) from the domain ship's in-memory snapshot — including
 // dedicated_fleet (shipToModel). A coordinator that materialised a hull BEFORE a
 // live `fleet add`/`remove` therefore carries a stale tag and would silently
 // resurrect it over the operator's change on its next routine write-back. The
-// sp-wa7c version guard does not catch it either: AssignFleet mutates only the
+// version guard does not catch it either: AssignFleet mutates only the
 // tag column and does not bump ships.version, so the CAS `WHERE version=<loaded>`
 // still matches and clobbers. This reloads the persisted tag and, when the
 // outgoing snapshot disagrees, rewrites the model with the DB value so the upsert
@@ -992,8 +980,8 @@ func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation
 // never silent again.
 //
 // Cost is one indexed primary-key lookup of a single column per save — the same
-// read SyncAllFromAPI already performs per ship to preserve this exact tag
-// (sp-bi75), and cheap relative to the state-changing writes a save accompanies.
+// read SyncAllFromAPI already performs per ship to preserve this exact tag,
+// and cheap relative to the state-changing writes a save accompanies.
 // A brand-new row (ErrRecordNotFound) has nothing persisted to protect: the
 // model's own value (a fresh insert, normally "") is authoritative, left as-is.
 // Counted per upsert attempt, mirroring shipVersionConflicts, so a rare
@@ -1031,10 +1019,10 @@ func (r *ShipRepository) preserveDedicatedFleetTag(ctx context.Context, model *p
 
 // SaveWithRetry implements navigation.ShipRepository. See that interface for the
 // contract. It re-finds the fresh row and re-applies mutate on every
-// ships.version conflict (sp-01wc), bounded by resolvedCASRetries(), then falls
+// ships.version conflict, bounded by resolvedCASRetries(), then falls
 // back to last-write-wins on exhaustion so behavior never regresses below
-// sp-60ff. When the knob disables retry (resolvedCASRetries()==0) the very first
-// conflict falls straight through to last-write-wins — exactly today's Save.
+// today's baseline. When the knob disables retry (resolvedCASRetries()==0) the
+// very first conflict falls straight through to last-write-wins — exactly today's Save.
 func (r *ShipRepository) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	if r.db == nil {
 		return nil, false, fmt.Errorf("database not configured")
@@ -1079,7 +1067,7 @@ func (r *ShipRepository) SaveWithRetry(ctx context.Context, symbol string, playe
 		// Conflict. Retry on fresh state unless retries are disabled/exhausted.
 		if attempt >= maxRetries {
 			// maxRetries==0 (disabled) lands here on the first conflict →
-			// exactly sp-60ff's last-write-wins. maxRetries>0 exhausted →
+			// exactly the legacy last-write-wins. maxRetries>0 exhausted →
 			// last-write-wins on the freshest re-applied state (never regress).
 			log.Printf("ERROR: ship %s save conflict — %d CAS attempt(s) exhausted (concurrent writer; sp-01wc); applying last-write-wins fallback",
 				symbol, attempt+1)
@@ -1209,7 +1197,7 @@ func (r *ShipRepository) CountByContainerPrefix(ctx context.Context, prefix stri
 //
 // Captain reservations (assignment_owner="captain") are deliberately excluded:
 // they use the same assignment_status="active" as a live coordinator claim, but
-// a reservation's whole purpose (sp-i1ku) is to survive daemon restarts, so an
+// a reservation's whole purpose is to survive daemon restarts, so an
 // owner-blind release here would silently un-reserve a captain-held hull on
 // every restart.
 func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.PlayerID, reason string) (int, error) {
@@ -1245,7 +1233,7 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.P
 // different fleet is rejected with ShipDedicatedToOtherFleetError — inside
 // the same locked transaction as the other guards, so a claim racing a
 // concurrent `fleet assign` cannot slip through on stale discovery data
-// (sp-l7h2, layer 2; the FindIdleLightHaulers exclude filter is layer 1).
+// (layer 2; the FindIdleLightHaulers exclude filter is layer 1).
 func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID, operation string) error {
 	if r.db == nil {
 		return fmt.Errorf("database not configured")
@@ -1266,7 +1254,7 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			return fmt.Errorf("failed to lock ship: %w", err)
 		}
 
-		// sp-i1ku: a captain reservation has no container_id (it was never a
+		// A captain reservation has no container_id (it was never a
 		// container claim), so it would otherwise fall through both of the
 		// container-comparison guards below and get silently overwritten by
 		// the unconditional assign-to-container update. Reject it explicitly,
@@ -1282,7 +1270,7 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 
 		// Already assigned to this container - idempotent success. Checked
 		// BEFORE the dedication guard on purpose: dedication is ownership of
-		// the NEXT acquisition, not eviction of the current holder (sp-l7h2).
+		// the NEXT acquisition, not eviction of the current holder.
 		// A worker re-claiming its own hull mid-job (crash recovery) must keep
 		// it even if the captain re-dedicated the ship while the job ran — the
 		// new fleet takes over when this claim is released, not by yanking a
@@ -1291,7 +1279,7 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			return nil
 		}
 
-		// sp-l7h2: the hull is free — a NEW acquisition. A dedicated ship may
+		// The hull is free — a NEW acquisition. A dedicated ship may
 		// only be newly claimed by its own fleet's operation. Symmetric to the
 		// captain-reservation guard above, and atomic with the assignment
 		// write below: the discovery-time exclude filter alone has a TOCTOU
@@ -1326,8 +1314,8 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 // ReserveForCaptain atomically reserves an idle ship for the captain's direct,
 // manual use, using the same row-level locking as ClaimShip so a concurrent
 // coordinator claim can never be silently overwritten by a captain reservation,
-// or vice versa (sp-i1ku). This is the exact claim-race class the bead exists to
-// kill, applied to the write path: a plain FindBySymbol + Save read-modify-write
+// or vice versa. This is the exact claim-race class this guard exists to
+// prevent, applied to the write path: a plain FindBySymbol + Save read-modify-write
 // would have a TOCTOU window where a coordinator's ClaimShip could commit between
 // the read and the write, and the reservation's Save (a full-row upsert) would
 // silently clobber it. Returns ShipAlreadyAssignedError if a container already
@@ -1392,7 +1380,7 @@ func (r *ShipRepository) ReserveForCaptain(ctx context.Context, shipSymbol strin
 
 // ReleaseCaptainReservation atomically clears a captain reservation, returning
 // the ship to idle so normal coordinator discovery can claim it again. Uses the
-// same row-level locking as ClaimShip/ReserveForCaptain (sp-i1ku).
+// same row-level locking as ClaimShip/ReserveForCaptain.
 // Returns ShipNotReservedError if the ship is not currently reserved by the
 // captain — release is specifically for captain reservations, not a generic
 // "clear any assignment" escape hatch (that already exists as ReleaseAllActive /
@@ -1444,7 +1432,7 @@ func (r *ShipRepository) ReleaseCaptainReservation(ctx context.Context, shipSymb
 
 // PreemptForCaptain atomically REVOKES a coordinator's live container claim and
 // transfers ownership of the hull to the captain — the operator-authority
-// preempt behind `ship reserve --force` (sp-w3yd). It is the ONLY path that may
+// preempt behind `ship reserve --force`. It is the ONLY path that may
 // take a hull out from under a running coordinator, and it does so in a single
 // row-locked transaction (RULING #7): the claim swap — clear container_id, set
 // assignment_owner=captain — is one atomic write, so a coordinator re-grabbing
@@ -1501,16 +1489,16 @@ func (r *ShipRepository) PreemptForCaptain(ctx context.Context, shipSymbol strin
 		//
 		// version is advanced so a coordinator that loaded this hull BEFORE the
 		// preempt (and is mid-operation) loses the optimistic-concurrency CAS race
-		// when it writes back through the SaveWithRetry seam (sp-01wc): the conflict
+		// when it writes back through the SaveWithRetry seam: the conflict
 		// forces it to RELOAD the fresh (captain-owned) row and re-apply only its
 		// nav/cargo mutation, so it cannot resurrect its stale container claim. This
 		// closes the clobber for every writer already migrated to SaveWithRetry
 		// (sell/purchase, siphon, mfg supply write-back, route-executor legs). NOTE:
 		// the plain-Save operation methods still on the un-migrated path (Navigate/
-		// Dock/Orbit/Refuel/SetFlightMode — the sp-wa7c migration target) fall back
+		// Dock/Orbit/Refuel/SetFlightMode) fall back
 		// to last-write-wins on a version conflict and CAN still re-assert the claim
-		// within a single-operation window; that residual is sp-wa7c territory, not
-		// closed here (see sp-w3yd report). This is the "no lost update" half of
+		// within a single-operation window; that residual is not
+		// closed here. This is the "no lost update" half of
 		// RULING #7 for the migrated seam.
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
@@ -1541,7 +1529,7 @@ func (r *ShipRepository) PreemptForCaptain(ctx context.Context, shipSymbol strin
 
 // ReleaseContainerClaim atomically breaks a hull's LIVE coordinator work-claim,
 // returning it to idle so the claiming coordinator stops routing it — its own
-// per-tick FindByContainer derivation no longer returns the hull (sp-w3yd). This
+// per-tick FindByContainer derivation no longer returns the hull. This
 // is the extra step `fleet unassign` performs beyond clearing the DedicatedFleet
 // tag, closing the documented "unassign says success but the coordinator keeps
 // routing it" gap: clearing dedication alone governs only the NEXT acquisition,
@@ -1583,7 +1571,7 @@ func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol s
 		// a coordinator mid-operation on this hull loses the CAS race on its next
 		// SaveWithRetry write-back and reloads the fresh (idle) row, so it cannot
 		// re-assert the broken claim. Same residual as PreemptForCaptain: the
-		// un-migrated plain-Save operation methods (sp-wa7c) can still re-assert
+		// un-migrated plain-Save operation methods can still re-assert
 		// within a single-operation window (RULING #7 for the migrated seam).
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
@@ -1612,7 +1600,7 @@ func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol s
 }
 
 // AssignFleet atomically sets the ship's DedicatedFleet tag — the single
-// write path for fleet dedication (sp-l7h2). fleet == "" clears it. Uses the
+// write path for fleet dedication. fleet == "" clears it. Uses the
 // same row-level locking as ClaimShip so an assignment can never interleave
 // with a concurrent claim's read-check-write. Deliberately does NOT reject a
 // claimed or captain-reserved hull: dedication is permanent ownership ("who
@@ -1650,8 +1638,7 @@ func (r *ShipRepository) AssignFleet(ctx context.Context, shipSymbol string, fle
 		}
 
 		// Invalidate the ship-list cache: a freshly-dedicated ship must not
-		// linger in another coordinator's discovery for a stale-cache window
-		// (design note, sp-l7h2).
+		// linger in another coordinator's discovery for a stale-cache window.
 		r.shipListCache.Delete(playerID.Value())
 
 		return nil
@@ -1659,7 +1646,7 @@ func (r *ShipRepository) AssignFleet(ctx context.Context, shipSymbol string, fle
 }
 
 // SetCargoReservation atomically sets or releases a single cargo do-not-sell
-// override on a hull (sp-1vhv) — the single write path behind the
+// override on a hull — the single write path behind the
 // `ship reserve-cargo`/`unreserve-cargo` verbs. reserved=true force-protects the
 // good; reserved=false force-allows its sale, releasing the default MODULE_/MOUNT_
 // reservation for a deliberate resale. Uses the same row-level SELECT FOR UPDATE
@@ -1730,7 +1717,7 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 
 	// Create fuel value object from the persisted (API-derived) snapshot,
 	// clamping a stored current>capacity to capacity so restart ship-refresh
-	// doesn't sideline the hull (sp-xxhn).
+	// doesn't sideline the hull.
 	fuel, err := shared.ReconstructFuel(model.FuelCurrent, model.FuelCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fuel: %w", err)
@@ -1769,7 +1756,7 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		}
 	}
 
-	// Parse mounts from JSON (sp-el60)
+	// Parse mounts from JSON
 	var mounts []*navigation.ShipMount
 	if model.Mounts != "" && model.Mounts != "[]" {
 		var mountsJSON []persistence.MountJSON
@@ -1784,7 +1771,7 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	// Build assignment from model
 	assignment := r.modelToAssignment(model)
 
-	// Reactor requirements (sp-el60)
+	// Reactor requirements
 	reactorRequirements := navigation.NewShipRequirements(
 		model.ReactorRequirementsPower,
 		model.ReactorRequirementsCrew,
@@ -1825,14 +1812,14 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		return nil, err
 	}
 
-	// Reservation overrides (sp-1vhv): load the per-hull cargo do-not-sell set. A
+	// Reservation overrides: load the per-hull cargo do-not-sell set. A
 	// malformed column reconstructs the hull with the corrupt flag set, so the
 	// domain guard fails CLOSED (treats all cargo as reserved) rather than dropping
 	// protections it cannot read.
 	overrides, corrupt := parseReservationOverrides(model.ReservationOverrides)
 	ship.SetReservationOverrides(overrides, corrupt)
 
-	// Nav route origin + departure (sp-vp9k): reload the persisted transit origin
+	// Nav route origin + departure: reload the persisted transit origin
 	// onto the domain ship so it survives a subsequent whole-row Save instead of
 	// being clobbered to zero (see shipToModel).
 	ship.SetTransitOrigin(model.OriginSymbol, model.OriginX, model.OriginY, model.DepartureTime)
@@ -1841,8 +1828,8 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	return ship, nil
 }
 
-// parseReservationOverrides decodes the per-hull cargo do-not-sell override JSON
-// (sp-1vhv). Empty/absent/"{}"/"null" is a clean empty set. A malformed value
+// parseReservationOverrides decodes the per-hull cargo do-not-sell override JSON.
+// Empty/absent/"{}"/"null" is a clean empty set. A malformed value
 // returns corrupt=true so the domain guard fails CLOSED (treats all cargo as
 // reserved) rather than silently dropping protections a garbled column may hold.
 func parseReservationOverrides(raw string) (map[string]bool, bool) {
@@ -1896,7 +1883,7 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 		}
 	}
 
-	// Nav route origin + departure (sp-vp9k): carried directly from the API
+	// Nav route origin + departure: carried directly from the API
 	// nav.route (not the waypoint provider) so an IN_TRANSIT ship persists where
 	// and when its current transit began, letting DB consumers compute exact
 	// transit progress. Empty/zero and NULL for a ship that is not in transit.
@@ -1926,7 +1913,7 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 	}
 
 	// Fuel — clamp a transient API over-report (current>capacity) at the
-	// persistence boundary so we never store an invariant-violating row (sp-xxhn).
+	// persistence boundary so we never store an invariant-violating row.
 	model.FuelCurrent = min(data.FuelCurrent, data.FuelCapacity)
 	model.FuelCapacity = data.FuelCapacity
 
@@ -1971,7 +1958,7 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 		model.Modules = string(modulesJSON)
 	}
 
-	// Mounts (sp-el60)
+	// Mounts
 	mountItems := make([]persistence.MountJSON, 0)
 	for _, mnt := range data.Mounts {
 		mountItems = append(mountItems, persistence.MountJSON{
@@ -1990,7 +1977,7 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 		model.Mounts = string(mountsJSON)
 	}
 
-	// Reactor/slots/crew (sp-el60): fixed for the life of the hull.
+	// Reactor/slots/crew: fixed for the life of the hull.
 	model.ReactorSymbol = data.ReactorSymbol
 	model.ReactorName = data.ReactorName
 	model.ReactorPowerOutput = data.ReactorPowerOutput
@@ -2040,7 +2027,7 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			model.AssignedAt = existingModel.AssignedAt
 			model.ReleasedAt = existingModel.ReleasedAt
 			model.ReleaseReason = existingModel.ReleaseReason
-			// sp-w870: AssignmentOwner/AssignmentReason must also be preserved.
+			// AssignmentOwner/AssignmentReason must also be preserved.
 			// shipDataToModel builds the fresh model from raw API data, which has
 			// no concept of captain reservations, so these are left at their Go
 			// zero value on every ship synced from the API. Without copying them
@@ -2050,7 +2037,7 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			// immediately after ReleaseAllActive correctly leaves it alone).
 			model.AssignmentOwner = existingModel.AssignmentOwner
 			model.AssignmentReason = existingModel.AssignmentReason
-			// sp-bi75: DedicatedFleet (sp-l7h2) must also be preserved, same
+			// DedicatedFleet must also be preserved, same
 			// bug class as AssignmentOwner/AssignmentReason above. shipDataToModel
 			// builds the fresh model from raw API data, which has no concept of
 			// the bot's fleet-dedication tag, so it is left at its Go zero value
@@ -2060,11 +2047,11 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			// unconditionally) - re-opening the hull to poaching by whichever
 			// coordinator claims it first.
 			model.DedicatedFleet = existingModel.DedicatedFleet
-			// sp-1vhv: ReservationOverrides is a standing per-hull tag like
+			// ReservationOverrides is a standing per-hull tag like
 			// DedicatedFleet above — raw API data has no concept of it, so without
 			// copying it forward the UpdateAll upsert wipes every do-not-sell
 			// reservation on the next restart, re-exposing a staged outfitting module
-			// to coordinator liquidation (the exact loss this bead closes).
+			// to coordinator liquidation.
 			model.ReservationOverrides = existingModel.ReservationOverrides
 		}
 
@@ -2084,19 +2071,17 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 		}
 	}
 
-	// sp-wn8u: reconcile the persisted fleet to the live source of truth. The
+	// reconcile the persisted fleet to the live source of truth. The
 	// upsert above only ADDS/UPDATES the ships GET /my/ships returned; it never
 	// removed rows the live API no longer reports, so stale rows lingered forever:
 	//   (1) a hull sold/destroyed within the current era, and
-	//   (2) — the sp-wn8u incident — a PRIOR ERA's fleet. The agent re-registers
+	//   (2) a PRIOR ERA's fleet. The agent re-registers
 	//       on every server reset under a NEW players row (new player_id) for the
-	//       SAME agent_symbol, and ship symbols are REUSED across eras (TORWIND-2B
-	//       was a heavy freighter last era, a probe this era). A dead-era player
+	//       SAME agent_symbol, and ship symbols are REUSED across eras. A dead-era player
 	//       row carries a dead token, so its own SyncAllFromAPI fails and its ship
 	//       rows are never revisited — they persist as ghosts. Any read that
 	//       aggregates by agent_symbol (not the exact live player_id) then unions
-	//       the live fleet with dead-era rows and reads a stale frame_symbol (the
-	//       operator's "19 heavies" = 9 live + 10 dead-era). ListShips is fully
+	//       the live fleet with dead-era rows and reads a stale frame_symbol. ListShips is fully
 	//       paginated and returns error-or-complete, so a successful, non-empty
 	//       response IS the authoritative fleet: every ships row for this agent
 	//       that is not one we just upserted under playerID is stale. At most one
@@ -2119,7 +2104,7 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 
 // reconcileFleetToLive deletes every ships row belonging to playerID's agent
 // that is NOT part of the live fleet just synced under playerID — the durable
-// half of the sp-wn8u fix (see the call-site comment for the full root cause).
+// half of the reconcile (see the call-site comment for the full rationale).
 // The keep-set is derived from the raw live API response, not the post-convert
 // models, so a transient per-ship conversion failure can never delete a
 // genuinely-live hull. Guarded to never prune on an empty live fleet: a live
@@ -2180,16 +2165,16 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 		model.AssignedAt = existingModel.AssignedAt
 		model.ReleasedAt = existingModel.ReleasedAt
 		model.ReleaseReason = existingModel.ReleaseReason
-		// sp-w870: see matching comment in SyncAllFromAPI - without this, a
+		// see matching comment in SyncAllFromAPI - without this, a
 		// captain reservation's ownership is silently clobbered back to the
 		// "container" default the next time this ship is synced from the API.
 		model.AssignmentOwner = existingModel.AssignmentOwner
 		model.AssignmentReason = existingModel.AssignmentReason
-		// sp-bi75: see matching comment in SyncAllFromAPI - without this, a
+		// see matching comment in SyncAllFromAPI - without this, a
 		// `fleet assign` pin is silently wiped back to "" the next time this
 		// ship is synced from the API, opening it up to poaching.
 		model.DedicatedFleet = existingModel.DedicatedFleet
-		// sp-1vhv: see the matching comment in SyncAllFromAPI — without this a
+		// see the matching comment in SyncAllFromAPI — without this a
 		// do-not-sell reservation is silently wiped the next time this ship is
 		// synced from the API, re-exposing a staged outfitting module.
 		model.ReservationOverrides = existingModel.ReservationOverrides
@@ -2270,8 +2255,7 @@ func (r *ShipRepository) FindWithFutureCooldown(ctx context.Context) ([]*navigat
 }
 
 // FindModuleRequirements resolves symbol's own power/crew/slot requirements
-// by scanning every ship's installed module list for a match (sp-el60
-// acceptance fix). There is no catalog of unowned module specs anywhere in
+// by scanning every ship's installed module list for a match. There is no catalog of unowned module specs anywhere in
 // this codebase or the SpaceTraders API, so a candidate's requirements can
 // only come from having been observed installed somewhere - the same module
 // symbol has identical requirements on every hull that carries it. Unscoped

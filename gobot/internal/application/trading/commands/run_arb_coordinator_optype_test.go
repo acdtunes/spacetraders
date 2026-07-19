@@ -15,10 +15,10 @@ import (
 // arbOpCtxMediator drives the one-shot buy->travel->sell legs on the same lane
 // economics the other arb cases use (buy at trSourceAsk, sell at trSellRevenue) but
 // ALSO records the operation_type carried on the ctx of each buy, sell, and travel
-// dispatch. It is the observation point for sp-ieqj: the arb coordinator must stamp
-// its ctx so the shared trade-route legs — and every refuel the RouteExecutor fires
-// inside travel — inherit the arb operation instead of falling through to
-// operation_type='manual', which credited 46.9M of arbitrage P&L to no engine.
+// dispatch. It is the observation point for the invariant that the arb coordinator must
+// stamp its ctx so the shared trade-route legs — and every refuel the RouteExecutor
+// fires inside travel — inherit the arb operation instead of falling through to
+// operation_type='manual', misattributing arbitrage P&L to no engine.
 type arbOpCtxMediator struct {
 	sawBuy, sawSell, sawTravel          bool
 	buyOpType, sellOpType, travelOpType string
@@ -68,12 +68,12 @@ func newArbOpCtxHandler(ship *navigation.Ship) (*RunArbCoordinatorHandler, *arbO
 	return handler, med
 }
 
-// FIX (b) — the context-less goods-trader (sp-ieqj). The arb coordinator delegates its
-// buy and sell to the shared trade-route legs, which are ctx-transparent: whatever
-// operation context sits on the Handle ctx is what the PURCHASE_CARGO / SELL_CARGO rows
-// record. Because the coordinator never stamped one, both legs landed
-// operation_type='manual'. This asserts the observable outcome at the ledger-dispatch
-// boundary: a run bearing a ContainerID records BOTH legs under operation_type='arb_run'.
+// The context-less goods-trader: the arb coordinator delegates its buy and sell to the
+// shared trade-route legs, which are ctx-transparent — whatever operation context sits on
+// the Handle ctx is what the PURCHASE_CARGO / SELL_CARGO rows record. An unstamped ctx
+// lands both legs under operation_type='manual'. This asserts the observable outcome at
+// the ledger-dispatch boundary: a run bearing a ContainerID records BOTH legs under
+// operation_type='arb_run'.
 func TestArbCoordinator_BuyAndSell_CarryArbRunOperationContext(t *testing.T) {
 	ship := newTradeHauler(t, "ARB-OPTYPE-1")
 	h, med := newArbOpCtxHandler(ship)
@@ -100,8 +100,8 @@ func TestArbCoordinator_BuyAndSell_CarryArbRunOperationContext(t *testing.T) {
 	}
 }
 
-// FIX (a) — refuels inherit their operation (sp-ieqj). Refuels fire inside travel's
-// RouteExecutor, which propagates the travel ctx verbatim to every RefuelShipCommand
+// Refuels inherit their operation: refuels fire inside travel's RouteExecutor, which
+// propagates the travel ctx verbatim to every RefuelShipCommand
 // (route_executor.refuelShip sends on the same ctx; refuel_ship.go then reads
 // OperationContextFromContext or falls back to 'manual'). So the single ctx the
 // coordinator hands to travel decides whether that run's refuels are attributed. This

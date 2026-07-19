@@ -68,7 +68,7 @@ func TestFindUnprocessedOrdersOldestFirstAndScopesPlayer(t *testing.T) {
 }
 
 // TestLatestByTypeReturnsNilWhenNoneExists proves the zero-migration baseline
-// query (sp-ess3) signals "no prior event" as (nil, nil) rather than an error,
+// query signals "no prior event" as (nil, nil) rather than an error,
 // so RecordDeployIfChanged can treat a fresh player/event-type pair as a
 // first-boot case cleanly.
 func TestLatestByTypeReturnsNilWhenNoneExists(t *testing.T) {

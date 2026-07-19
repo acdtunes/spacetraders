@@ -184,10 +184,10 @@ func heavyRequest() PurchaseRequest {
 	return r
 }
 
-// sp-zbe6 REGRESSION (the guard that prevents over-buying into a saturated market): a genuinely
+// REGRESSION (the guard that prevents over-buying into a saturated market): a genuinely
 // saturated TRADE market — realized rate DECLINING with unserved lanes AT or BELOW the floor (the
 // fleet has already spread to nearly every profitable lane) — STILL stops buying, even though the
-// marginal clears the rate floor. The concentration fix must not loosen this away.
+// marginal clears the rate floor. The concentration carve-out must not loosen this away.
 func TestGuard_RealizedRate_DecliningStopsBuy(t *testing.T) {
 	r := heavyRequest()
 	r.RateDeclining = true
@@ -195,14 +195,14 @@ func TestGuard_RealizedRate_DecliningStopsBuy(t *testing.T) {
 	assertBlockedBy(t, r, GuardRealizedRate)
 }
 
-// sp-zbe6: a DECLINING aggregate tour-rate does NOT stop a HEAVY buy when unserved lanes sit ABOVE
+// A DECLINING aggregate tour-rate does NOT stop a HEAVY buy when unserved lanes sit ABOVE
 // the floor — that decline is hull CONCENTRATION (the fleet compressed a few fat lanes), not
 // absorption saturation; the next heavy flies a FRESH unserved lane. The buy proceeds (the marginal
 // still clears the floor). The decision-log detail names the unserved-lane count so it is auditable.
 func TestGuard_RealizedRate_DecliningWithUnservedInventory_Proceeds(t *testing.T) {
 	r := heavyRequest()
 	r.RateDeclining = true
-	r.Shortfall = 28 // the live incident: 28 profitable lanes unflown, floor 2
+	r.Shortfall = 28 // 28 profitable lanes unflown, floor 2
 	d := EvaluateGuards(r)
 	if !d.Approved {
 		t.Fatalf("a declining rate with 28 unserved lanes (> floor 2) must NOT block — concentration, not saturation; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
@@ -216,7 +216,7 @@ func TestGuard_RealizedRate_DecliningWithUnservedInventory_Proceeds(t *testing.T
 	}
 }
 
-// sp-zbe6 off-by-one boundary + mutation anchor (heavy): with the floor at 2, the declining stop-buy
+// Off-by-one boundary + mutation anchor (heavy): with the floor at 2, the declining stop-buy
 // fires for unserved lanes AT or BELOW 2 (genuine near-zero saturation) and is bypassed ABOVE 2
 // (unserved inventory present). Input variations of one behavior → one parametrized test (Mandate 5).
 func TestGuard_RealizedRate_DecliningStopBuyFloorBoundary(t *testing.T) {
@@ -246,7 +246,7 @@ func TestGuard_RealizedRate_DecliningStopBuyFloorBoundary(t *testing.T) {
 	}
 }
 
-// sp-zbe6 class-scope guard (lens 3 "no behavior change to non-trade classes" + class-gate mutation
+// Class-scope guard ("no behavior change to non-trade classes" + class-gate mutation
 // anchor): the concentration carve-out is TRADE-ONLY. A NON-heavy class (light) with a declining
 // realized rate STILL stops buying even with a large shortfall — a light's Shortfall is worker slots,
 // not unserved lanes, so it carries no concentration story and keeps the unconditional stop-buy.
@@ -293,17 +293,16 @@ func TestGuard_APIUtil_AboveCeilingBlocks(t *testing.T) {
 	assertBlockedBy(t, r, GuardAPIUtil)
 }
 
-// sp-a5dq: the guard blocks concurrency GROWTH the moment utilization reaches the ceiling — the
-// bead's "at/over the ceiling" boundary (a pass requires strictly-below).
+// The guard blocks concurrency GROWTH the moment utilization reaches the ceiling — the
+// "at/over the ceiling" boundary (a pass requires strictly-below).
 func TestGuard_APIUtil_AtCeilingBlocks(t *testing.T) {
 	r := passingRequest()
 	r.APIUtilPct = 85 // == the 85 ceiling
 	assertBlockedBy(t, r, GuardAPIUtil)
 }
 
-// sp-a5dq: an unreadable utilization signal fails CLOSED (holds growth) — the fail-OPEN inversion
-// let the autosizer grow concurrency into a saturated API that was ALERTED but never PREVENTED.
-// RULINGS #4: a guard that cannot read its bound never permits the spend.
+// An unreadable utilization signal fails CLOSED (holds growth). RULINGS #4: a guard that cannot
+// read its bound never permits the spend.
 func TestGuard_APIUtil_UnreadableFailsClosed(t *testing.T) {
 	r := passingRequest()
 	r.APIUtilReadable = false // utilization surface unreadable → fail-CLOSED (hold, do not grow)
@@ -339,7 +338,7 @@ func TestGuard_TreasuryFloor_UnreadableFailsClosed(t *testing.T) {
 	assertBlockedBy(t, r, GuardTreasuryFloor)
 }
 
-// The counter-cyclical proportional floor (sp-yqx4) binds below ≈ absolute ÷ (pct/100) of
+// The counter-cyclical proportional floor binds below ≈ absolute ÷ (pct/100) of
 // treasury, keeping a (1−pct%) slice spendable — so a mid treasury with a high absolute reserve
 // still permits an affordable buy rather than dead-locking.
 func TestGuard_TreasuryFloor_ProportionalFloorPermitsBuy(t *testing.T) {
@@ -356,7 +355,7 @@ func TestGuard_TreasuryFloor_ProportionalFloorPermitsBuy(t *testing.T) {
 	}
 }
 
-// The decision log carries the full arithmetic for every guard (the iv65 idiom).
+// The decision log carries the full arithmetic for every guard (the park-line idiom).
 func TestDecision_ArithmeticLogsEveryGuard(t *testing.T) {
 	d := EvaluateGuards(passingRequest())
 	arith := d.Arithmetic()
@@ -382,7 +381,7 @@ func TestDecision_BlockedByFirstFailure(t *testing.T) {
 	}
 }
 
-// --- sp-a3yn: the EXPLORER payback exemption (the crux) ----------------------
+// --- The EXPLORER payback exemption (the crux) ----------------------
 
 // explorerPassingRequest is an EXPLORER candidate where every REUSED guard passes and the
 // realized-rate inputs are UNSET (MarginalRate=0, RateReadable=false, EraReadable=false) — exactly
@@ -505,7 +504,7 @@ func TestGuard_Explorer_ReusedTreasuryGuardsStillBite(t *testing.T) {
 	assertBlockedBy(t, tooExpensive, GuardTreasuryPct)
 
 	apiSaturated := explorerPassingRequest()
-	apiSaturated.APIUtilReadable = false // sp-a5dq fail-closed still holds for the explorer
+	apiSaturated.APIUtilReadable = false // fail-closed still holds for the explorer
 	assertBlockedBy(t, apiSaturated, GuardAPIUtil)
 }
 

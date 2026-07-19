@@ -1,7 +1,7 @@
 package commands
 
-// run_trade_route_coordinator_impact.go — sp-tl68: the era-3 price-impact + cooldown
-// model folded into lane ranking. The analyst fitted a per-trade price-impact +
+// run_trade_route_coordinator_impact.go — the era-3 price-impact + cooldown model folded
+// into lane ranking. The analyst fitted a per-trade price-impact +
 // weak-recovery model on era-3 telemetry that beats snapshot pricing 40-49%
 // out-of-sample; this wires it into rankLanesByCircuitRate so a lane a hull's own
 // volume would compress, or one the fleet has recently hammered, ranks below its
@@ -13,8 +13,8 @@ import "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 // laneImpactModel folds the era-3 price-impact coefficients and a live shared
 // compression-debt lookup into lane ranking. Its ZERO VALUE is INERT — zero impact
 // coefficients and a nil debt lookup — so effectiveSpreadPerUnit returns the snapshot
-// spread unchanged and every ranking caller that supplies no model (all pre-sp-tl68
-// tests) ranks exactly as the snapshot ranker did.
+// spread unchanged and every ranking caller that supplies no model (every existing
+// test) ranks exactly as the snapshot ranker did.
 type laneImpactModel struct {
 	buyImpact  float64 // era-3 config: fractional ask rise per full tradeVolume bought (~0.050)
 	sellImpact float64 // era-3 config: fractional bid fall per full tradeVolume sold (~0.015)
@@ -31,7 +31,7 @@ type laneImpactModel struct {
 // Written as snapshot-minus-deltas rather than (EffectiveSellPrice − EffectiveBuyPrice)
 // so it is mathematically identical yet returns the snapshot EXACTLY when the model is
 // inert or when a lane carries only SpreadPerUnit with Ask/Bid unpopulated (the shape
-// of every pre-sp-tl68 ranker test) — the delta terms vanish, never re-deriving a zero
+// of every snapshot-only ranker test) — the delta terms vanish, never re-deriving a zero
 // spread from unset prices.
 func (m laneImpactModel) effectiveSpreadPerUnit(l trading.ArbitrageLane, plannedUnits int) float64 {
 	return float64(l.SpreadPerUnit) - m.selfCompressionCredits(l, plannedUnits) - m.decayedDebtCredits(l)

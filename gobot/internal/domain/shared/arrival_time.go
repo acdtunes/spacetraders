@@ -65,7 +65,6 @@ func (a *ArrivalTime) CalculateWaitTime() int {
 	return int(waitSeconds)
 }
 
-// Timestamp returns the raw ISO8601 timestamp string
 func (a *ArrivalTime) Timestamp() string {
 	return a.timestamp
 }

@@ -7,16 +7,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// The ACT step (sp-1txd M5): the coordinator reads the tick's shared inputs (treasury, era clock,
+// The ACT step: the coordinator reads the tick's shared inputs (treasury, era clock,
 // API utilization, total fleet size) once, then for each class with unmet demand assembles a fully
-// -resolved PurchaseRequest, runs it through the fail-closed guard stack (M2), and on approval buys
-// ONE hull and dedicates it to its class fleet IN THE SAME BREATH (dedicate-at-purchase — the hard
-// 3-of-5-absorbed lesson). Every decision logs its full arithmetic (the iv65 park-line idiom), so
-// the captain retunes the blocking knob from evidence. Purchases are bounded per tick by
+// -resolved PurchaseRequest, runs it through the fail-closed guard stack, and on approval buys
+// ONE hull and dedicates it to its class fleet IN THE SAME BREATH (dedicate-at-purchase). Every
+// decision logs its full arithmetic (the park-line idiom), so the captain retunes the
+// blocking knob from evidence. Purchases are bounded per tick by
 // purchase_cap_per_tick; the heavy class additionally requires its unserved-lane shortfall to
 // persist heavy_unserved_lanes_min consecutive ticks (anti-thrash). A tick that has demand but buys
 // nothing for zero_effect_alarm_ticks consecutive passes raises ONE edge-triggered alarm (the
-// no-silent-dry-run corollary — the f5pr silent-dry-run lesson).
+// no-silent-dry-run corollary).
 
 // --- buy-path ports (wired by setters at boot; every one nil-safe, fail-closed on unread) ---
 
@@ -33,8 +33,7 @@ type EraClockReader interface {
 }
 
 // APIUtilizationReader reads the sustained request-utilization percent. readable=false ⇒ the
-// API-util guard fails CLOSED (sp-a5dq): an unreadable/absent utilization surface holds concurrency
-// growth rather than the old fail-open that grew into a saturated API.
+// API-util guard fails CLOSED: an unreadable/absent utilization surface holds concurrency growth.
 type APIUtilizationReader interface {
 	UtilizationPct(ctx context.Context) (pct float64, readable bool, err error)
 }
@@ -68,7 +67,7 @@ type BuyResult struct {
 }
 
 // Purchaser buys ONE hull and dedicates it to its class fleet in the same breath (dedicate-at
-// -purchase). The concrete impl (M6) buys through the batch-purchase money-integrity path and
+// -purchase). The concrete impl buys through the batch-purchase money-integrity path and
 // stamps the ship's DedicatedFleet before any coordinator tick can see an undedicated idle hull.
 type Purchaser interface {
 	BuyAndDedicate(ctx context.Context, order BuyOrder) (BuyResult, error)
@@ -102,7 +101,7 @@ type tickInputs struct {
 }
 
 // readTickInputs reads the shared inputs once per tick. Every read is fail-safe: a nil reader or an
-// error yields readable=false, and the guards fail closed on that (API-util included, sp-a5dq).
+// error yields readable=false, and the guards fail closed on that (API-util included).
 // totalOK=false (nil/erroring fleet-size reader) blocks all buys — the ceiling cannot be judged
 // without the total.
 func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context, playerID int) tickInputs {
@@ -140,11 +139,11 @@ func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string,
 	case HullClassHeavy:
 		return cfg.ShipTypeHeavies, cfg.FleetCeilingHeavies, cfg.MaxPriceHeavies, cfg.HeavyTreasuryPctPerPurchase
 	case HullClassWarehouse:
-		// Warehouse buys a light frame by default (the capacity ladder, M8); the big-ticket
+		// Warehouse buys a light frame by default (the capacity ladder); the big-ticket
 		// affordability rule applies.
 		return cfg.ShipTypeLights, cfg.FleetCeilingWarehouse, cfg.MaxPriceLights, cfg.HeavyTreasuryPctPerPurchase
 	case HullClassExplorer:
-		// sp-a3yn: the explorer's ship type (SHIP_EXPLORER), its HARD-CAP-1 class ceiling, its price
+		// The explorer's ship type (SHIP_EXPLORER), its HARD-CAP-1 class ceiling, its price
 		// ceiling (~819k+premium — a REAL cap, not 0=off), and the 25% big-ticket affordability rule.
 		// The realized-$/hr payback exemption is applied class-gated INSIDE EvaluateGuards, not here —
 		// every knob returned here is a REAL guard bound the explorer must still clear.

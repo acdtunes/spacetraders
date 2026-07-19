@@ -14,12 +14,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// TestPeriodicResync_PreservesDedicatedFleetAcrossRepeatedSyncs is the sp-p1ci
-// regression guard for the sp-90a3 hazard. The new hourly resync calls the SAME
+// TestPeriodicResync_PreservesDedicatedFleetAcrossRepeatedSyncs is the
+// regression guard for the dedication-clobber hazard. The new hourly resync calls the SAME
 // SyncAllFromAPI write path as the startup sync, REPEATEDLY. SyncAllFromAPI is
 // already dedicated_fleet-safe: its "preserve existing assignment data" block
-// copies existingModel.DedicatedFleet forward (sp-bi75), the same preservation
-// sp-90a3's preserveDedicatedFleetTag mirrors for the general Save path. This
+// copies existingModel.DedicatedFleet forward, the same preservation
+// preserveDedicatedFleetTag mirrors for the general Save path. This
 // test locks that in for the periodic case by driving the sync TWICE — so the
 // tag must survive not just the first API overwrite but the second, which reads
 // back the row the first one wrote. A naive hourly resync that routed through a

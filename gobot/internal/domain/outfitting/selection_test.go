@@ -26,11 +26,11 @@ func baseCfg() SelectionConfig {
 	}
 }
 
-// THE headline proof (live-validated, sp-buyd): marginal value picks the SATURATED
-// hull, not the busiest-but-empty one. TORWIND-7 is the busiest hauler (highest
-// throughput) yet runs half-empty (40/80 → 0.5): a cargo module would sit idle on it.
-// TORWIND-16 runs nearly full (76/80 → 0.95): the added capacity is immediately used.
-// So 16 must outrank 7 even though 7 is busier.
+// THE headline proof: marginal value picks the SATURATED hull, not the
+// busiest-but-empty one. TORWIND-7 is the busiest hauler (highest throughput)
+// yet runs half-empty (40/80 → 0.5): a cargo module would sit idle on it.
+// TORWIND-16 runs nearly full (76/80 → 0.95): the added capacity is
+// immediately used. So 16 must outrank 7 even though 7 is busier.
 func TestSelectUpgrade_PicksSaturatedHullOverBusiestButEmpty(t *testing.T) {
 	hulls := []HullBottleneck{
 		{ShipSymbol: "TORWIND-7", IsCargoHauler: true, FreeModuleSlots: 1, CargoCapacity: 80,

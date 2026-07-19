@@ -5,13 +5,13 @@ import (
 	"strings"
 )
 
-// sp-sdyo — per-good buy-gating overrides. The supply-chain buy-gating knobs (supply strategy,
+// Per-good buy-gating overrides. The supply-chain buy-gating knobs (supply strategy,
 // input price ceiling, construction min-supply floor) are all GLOBAL: to unstick ONE bottleneck
 // good you had to loosen gating chain-wide, over-buying every good. This type is the surgical
 // per-good knob: a map good -> { strategy?, priceCeilingMult?, minSupply? } layered on the three
 // global gates. At each gate's decision point the caller looks up the good; if an override is
 // present it is used, otherwise the existing GLOBAL default is returned UNCHANGED — so a
-// non-overridden good behaves byte-identically to today (the bead's regression requirement).
+// non-overridden good behaves byte-identically to today.
 //
 // The analyst owns the override VALUES (which goods, what tuning). The plumbing, lookup, and the
 // money-integrity guardrail below are the mechanism.
@@ -43,13 +43,13 @@ type GoodGatingOverride struct {
 type GoodGatingOverrides map[string]GoodGatingOverride
 
 // MaxPriceCeilingMultiplier is the ABSOLUTE hard cap on a per-good price-ceiling override
-// (RULINGS #4 — a per-good price override is exactly the sp-iv65 −6.6M ladder-chase bleed
-// surface). A per-good priceCeilingMult tunes the per-tranche ladder ceiling ONLY, and even a
-// fat-finger value can never exceed this cap — so the ladder-chase guard can be LOOSENED for a
-// stuck good but never DISABLED. This is a deliberate safety bound (like the immutable 50k
-// working-capital floor), NOT an operational knob, so a constant is correct here (RULINGS #5's
-// hard-floor exception). It sits comfortably above the analyst's expected surgical range
-// (the bead's worked example uses 3.0) while refusing anything that would neutralise the guard.
+// (RULINGS #4 — a per-good price override is a ladder-chase bleed surface). A per-good
+// priceCeilingMult tunes the per-tranche ladder ceiling ONLY, and even a fat-finger value can
+// never exceed this cap — so the ladder-chase guard can be LOOSENED for a stuck good but never
+// DISABLED. This is a deliberate safety bound (like the immutable 50k working-capital floor),
+// NOT an operational knob, so a constant is correct here (RULINGS #5's hard-floor exception).
+// It sits comfortably above the expected surgical range while refusing anything that would
+// neutralise the guard.
 const MaxPriceCeilingMultiplier = 5.0
 
 // StrategyFor returns the acquisition strategy for a good: the per-good override when present and

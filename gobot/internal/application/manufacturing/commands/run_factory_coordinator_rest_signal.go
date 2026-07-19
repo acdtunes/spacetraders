@@ -11,28 +11,27 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 )
 
-// sp-xdk6 (analyst redesign C4, from sp-hzz5): mechanize the export-ask-subsidy REST signal. The
-// 8w40 finding is that tours paying a PREMIUM at OUR OWN markets is the leading symptom of a chain
-// over-lifting its own output: our draw ladders the factory's ask above what the same good costs at
-// healthy cross-source sellers, and tours (and our own C1 lifts) then pay that laddered ask — an
-// inversion where we subsidize our own tours to overpay. A human used to notice it; this automates
-// it. When the chain's OWN-market ask exceeds the eligible cross-source median (the SAME a5j7
-// poison-proof baseline the input ceiling uses — EligibleSourceMedianAsk, reused verbatim), the
-// chain RESTS one recovery window before its next lift, letting the over-drawn market regenerate.
+// Mechanizes the export-ask-subsidy REST signal. Tours paying a PREMIUM at OUR OWN markets is
+// the leading symptom of a chain over-lifting its own output: our draw ladders the factory's
+// ask above what the same good costs at healthy cross-source sellers, and our own tours then pay
+// that laddered ask — an inversion where we subsidize our own tours to overpay. When the chain's
+// OWN-market ask exceeds the eligible cross-source median (the SAME poison-proof baseline the
+// input ceiling uses — EligibleSourceMedianAsk, reused verbatim), the chain RESTS one recovery
+// window before its next lift, letting the over-drawn market regenerate.
 //
 // It completes the self-pruning set, and slots between its two siblings on DETECTION SIGNAL:
 //
-//   - the r5a6 input-pause is the INPUT side (no MODERATE+ supply source for a required input),
+//   - the input-pause is the INPUT side (no MODERATE+ supply source for a required input),
 //   - this is the OUTPUT-LADDER side (our own output market's ask laddered above the eligible
 //     median), the LEADING indicator of the same phenomenon the
-//   - C2 chain-P&L kill catches LATE on the LAGGING realized-P&L symptom.
+//   - chain-P&L kill catches LATE on the LAGGING realized-P&L symptom.
 //
 // PRECEDENCE. The input-pause runs FIRST (run_factory_coordinator Step 2.4, before this at Step
 // 2.45): if the chain is already input-paused, the rest is moot — an input-poisoned chain isn't
 // lifting anything to over-draw its output market, and the input pause is the upstream cause. The
 // input-pause returns pre-spend before this guard ever evaluates, so the two never fight; each is a
-// returns-early pre-spend gate keyed to its own state map. This runs BEFORE the sp-2dv4 margin
-// guard and the C2 kill for the same reason the input-pause does: an over-lifted chain gets the
+// returns-early pre-spend gate keyed to its own state map. This runs BEFORE the chain-margin guard
+// and the chain-P&L kill for the same reason the input-pause does: an over-lifted chain gets the
 // proper recovery-window rest rather than the margin guard's short 45s park or a lagging P&L kill.
 //
 // REST ONLY on POSITIVE evidence of subsidy — the deliberate parity with the input-pause, whose
@@ -42,19 +41,18 @@ import (
 // be identified, or when there is no eligible (MODERATE+) cross-source baseline at all (count==0):
 // the signal is DEFINED relative to a cross-source median, so with none there is simply no signal,
 // and a false rest on a transient miss would idle a healthy chain. All of those fall through to
-// ordinary production. RULINGS #4 (rest = the fail-safe direction on spend) is honored: this can
-// only STOP a chain from lifting, never start one, and it weakens no money guard.
+// ordinary production. This can only STOP a chain from lifting, never start one, and it weakens
+// no money guard (rest is the fail-safe direction on spend).
 
 const (
-	// defaultRestWindowMinutes is how long a chain rests before its next lift is re-attempted
-	// (sp-xdk6). Keyed to the K2 rotation math from the redesign brief: chains sustain ~1 visit per
-	// 1.5h recovery, so "one recovery window" for an over-drawn OUTPUT market is 90min. This is a
-	// DIFFERENT quantity from the input-market regeneration half-life the input-pause uses (~194min,
-	// InputRecoveryReattemptMinutes) — that is how long a SCARCE input source takes to regenerate;
-	// this is the OUTPUT rotation cadence. A 0/absent config value resolves to this at the point of
-	// use — a protective default that turns the rest signal ON (it can only STOP a lift, RULINGS
-	// #5), so a default is correct. Config, not a constant, so the analyst retunes it live (e.g. to
-	// a fitted output half-life if one is measured).
+	// defaultRestWindowMinutes is how long a chain rests before its next lift is re-attempted.
+	// Chains sustain ~1 visit per 1.5h recovery, so "one recovery window" for an over-drawn
+	// OUTPUT market is 90min. This is a DIFFERENT quantity from the input-market regeneration
+	// half-life the input-pause uses (~194min, InputRecoveryReattemptMinutes) — that is how long
+	// a SCARCE input source takes to regenerate; this is the OUTPUT rotation cadence. A 0/absent
+	// config value resolves to this at the point of use — a protective default that turns the
+	// rest signal ON, since it can only STOP a lift. Config, not a constant, so the analyst
+	// retunes it live (e.g. to a fitted output half-life if one is measured).
 	defaultRestWindowMinutes = 90
 )
 
@@ -63,15 +61,15 @@ type exportRestReason string
 
 const (
 	exportRestProceed    exportRestReason = "proceed"               // own ask at/below the eligible median, lift
-	exportRestDisabled   exportRestReason = "rest_signal_disabled"  // off-switch (RULINGS #5)
+	exportRestDisabled   exportRestReason = "rest_signal_disabled"  // off-switch
 	exportRestNoFactory  exportRestReason = "no_own_factory"        // own producing market unreadable — fail toward production
 	exportRestNoBaseline exportRestReason = "no_eligible_baseline"  // no MODERATE+ cross-source median to judge against
 	exportRestSubsidized exportRestReason = "export_ask_subsidized" // the REST verdict
 )
 
 // exportRestVerdict is the structured, loggable result of an export-ask-subsidy evaluation. Every
-// number/name goes in the log message TEXT (the container-log renderer drops metadata, sp-iqyq);
-// the same fields are exposed for structured consumers.
+// number/name goes in the log message TEXT, since the container-log renderer drops metadata; the
+// same fields are exposed for structured consumers.
 type exportRestVerdict struct {
 	Rested         bool
 	Reason         exportRestReason
@@ -95,7 +93,7 @@ type exportRestEntry struct {
 }
 
 // evaluateExportRest decides whether this chain's OWN output market has laddered above the eligible
-// cross-source median (sp-xdk6). It NEVER returns an error and rests ONLY on positive evidence of
+// cross-source median. It NEVER returns an error and rests ONLY on positive evidence of
 // subsidy — our factory's ask readable AND strictly above a non-empty eligible median (see file
 // header on why every other path falls toward production). The verdict is pure; arming the recovery
 // clock + the metric/log is recordExportRest's job.
@@ -124,8 +122,9 @@ func (h *RunFactoryCoordinatorHandler) evaluateExportRest(ctx context.Context, c
 	v.OwnAsk = own.Price
 	v.OwnWaypoint = own.WaypointSymbol
 
-	// Eligible cross-source median — the a5j7 poison-proof baseline, reused verbatim (sp-xdk6 does
-	// NOT reinvent it): the median ask across MODERATE+ EXPORT sellers of the output good in-system.
+	// Eligible cross-source median — the supply-first selector's poison-proof baseline, reused
+	// verbatim, not reinvented: the median ask across MODERATE+ EXPORT sellers of the output good
+	// in-system.
 	// A laddered own factory degrades out of MODERATE+ and drops OUT of this median, so it cannot
 	// poison the baseline it is judged against.
 	median, count, err := h.marketLocator.EligibleSourceMedianAsk(ctx, cmd.TargetGood, cmd.SystemSymbol, cmd.PlayerID)
@@ -139,8 +138,8 @@ func (h *RunFactoryCoordinatorHandler) evaluateExportRest(ctx context.Context, c
 	v.EligibleCount = count
 	if count == 0 {
 		// No eligible cross-source baseline (our factory is the only source, or every other seller is
-		// depleted). The 8w40 signal is defined as a PREMIUM over eligible sources; with none, there
-		// is no premium to measure — proceed.
+		// depleted). The subsidy signal is defined as a PREMIUM over eligible sources; with none,
+		// there is no premium to measure — proceed.
 		v.Reason = exportRestNoBaseline
 		return v
 	}
@@ -159,7 +158,7 @@ func (h *RunFactoryCoordinatorHandler) evaluateExportRest(ctx context.Context, c
 }
 
 // resolveRestWindowMinutes resolves the rest window for a rest: the command's configured value, or
-// the 90min default at the point of use for a 0/absent value (RULINGS #5).
+// the 90min default at the point of use for a 0/absent value.
 func resolveRestWindowMinutes(cmd *RunFactoryCoordinatorCommand) int {
 	if cmd.RestWindowMinutes > 0 {
 		return cmd.RestWindowMinutes
@@ -226,9 +225,9 @@ func (h *RunFactoryCoordinatorHandler) exportRestReattemptDelay(containerID stri
 // recordExportRest arms (or re-arms) the recovery window for a resting chain and emits the rest
 // signal with once-per-EPISODE dedup: on the lifting→resting transition it increments the rest
 // counter and logs one WARNING with the numbers in the text; a re-attempt that finds the market
-// still subsidized re-arms the window but is SILENT (same episode — the chain never resumed lifting),
-// mirroring the input-pause / C2 episode dedup. Returns whether this call was the lifting→resting
-// transition (emitted). Keyed by ContainerID.
+// still subsidized re-arms the window but is SILENT (same episode — the chain never resumed
+// lifting), mirroring the input-pause / chain-P&L kill episode dedup. Returns whether this call
+// was the lifting→resting transition (emitted). Keyed by ContainerID.
 func (h *RunFactoryCoordinatorHandler) recordExportRest(ctx context.Context, cmd *RunFactoryCoordinatorCommand, v exportRestVerdict) bool {
 	liftAllowedAt := h.clock.Now().Add(time.Duration(v.WindowMinutes) * time.Minute)
 
@@ -279,9 +278,9 @@ func (h *RunFactoryCoordinatorHandler) clearExportRest(ctx context.Context, cmd 
 	return true
 }
 
-// RestMessage renders the human/greppable rest reason with every name/number in the TEXT (the
-// container-log renderer drops metadata, sp-iqyq). It doubles as the response NoWorkReason, and is
-// the Guard-1-style verdict the brief calls for: chain, own-ask, eligible-median, rest-until window.
+// RestMessage renders the human/greppable rest reason with every name/number in the TEXT, since
+// the container-log renderer drops metadata. It doubles as the response NoWorkReason, reporting
+// chain, own-ask, eligible-median, and rest-until window.
 func (v exportRestVerdict) RestMessage() string {
 	return fmt.Sprintf(
 		"RESTING chain %s: own-market export ask %d at %s exceeds the eligible cross-source median %d (%d healthy sources) — our own over-lifting has subsidized the market (8w40). Resting %dmin (one recovery window) before the next lift so the market regenerates; worker released, one-iteration re-attempt through the launch guards after the window (sp-xdk6).",

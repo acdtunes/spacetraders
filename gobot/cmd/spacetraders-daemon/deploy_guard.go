@@ -26,11 +26,10 @@ type deployEventStore interface {
 }
 
 // recordDeployIfPlayerExists guards RecordDeployIfChanged for the fresh-DB
-// cold-boot path (sp-7pri). captain_events.player_id is an FK onto players.id,
+// cold-boot path (sp-7pri): captain_events.player_id is an FK onto players.id,
 // so on first boot against an empty database — before genesis registration
-// commits a player row — recording deploy.completed violates
-// fk_captain_events_player (SQLSTATE 23503). The event is best-effort and the
-// violation was only logged "continuing", but it polluted the first-boot log.
+// commits a player row — recording deploy.completed would violate
+// fk_captain_events_player (SQLSTATE 23503).
 //
 // This resolves the target player first and emits only when it exists. The
 // deploy signal is re-evaluated on every boot (RecordDeployIfChanged compares
@@ -38,11 +37,10 @@ type deployEventStore interface {
 // boot loses nothing — the first boot after registration emits it.
 //
 // Normal path (a DB with the configured player) is byte-identical: FindByID
-// returns the player and the call forwards to RecordDeployIfChanged exactly as
-// before. Only the no-player branch changes. A FindByID error (fresh DB reports
-// "player not found") is treated as "no player yet" and skips — safe for a
-// self-healing, best-effort boot signal, and strictly quieter than the FK error
-// it replaces.
+// returns the player and the call forwards to RecordDeployIfChanged. Only the
+// no-player branch changes. A FindByID error (fresh DB reports "player not
+// found") is treated as "no player yet" and skips — safe for a self-healing,
+// best-effort boot signal.
 func recordDeployIfPlayerExists(ctx context.Context, players playerLookup, store deployEventStore, playerID int, info buildinfo.Info, beadID func() string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {

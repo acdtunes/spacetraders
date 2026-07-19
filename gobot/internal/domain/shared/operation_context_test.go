@@ -5,7 +5,7 @@ import "testing"
 // NormalizedOperationType is the single point where a coordinator's raw operation
 // string becomes the operation_type persisted on every ledger row it writes. The
 // tour_run → tour mapping is what lets the graduation baseline (tour_report.go)
-// exclude tour trades via operation_type <> 'tour' (sp-lgnh); the other rows pin
+// exclude tour trades via operation_type <> 'tour'; the other rows pin
 // that adding it re-tagged nothing else — every existing coordinator's value is
 // byte-identical to before.
 func TestNormalizedOperationType(t *testing.T) {
@@ -13,15 +13,15 @@ func TestNormalizedOperationType(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{"tour_run", "tour"}, // sp-lgnh: the mapping this change adds
+		{"tour_run", "tour"},
 		{"contract_workflow", "contract"},
 		{"balance_ship_position", "fleet rebalancing"},
 		{"manufacturing_worker", "manufacturing"},
 		{"trade_route", "trade_route"},           // passthrough (unmapped) — unchanged
 		{"factory_workflow", "factory_workflow"}, // passthrough (unmapped) — unchanged
-		// sp-xdr6: arbitrage_worker/goods_factory_coordinator branches removed as
+		// arbitrage_worker/goods_factory_coordinator branches removed as
 		// dead — no coordinator ever constructs an OperationContext with these raw
-		// types (audit F4; detectors.go concurs). They now pass through unchanged;
+		// types (detectors.go concurs). They now pass through unchanged;
 		// these cases guard against the dead mappings being reintroduced.
 		{"arbitrage_worker", "arbitrage_worker"},
 		{"goods_factory_coordinator", "goods_factory_coordinator"},

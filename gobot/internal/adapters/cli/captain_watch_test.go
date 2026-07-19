@@ -15,7 +15,7 @@ import (
 var errWatchStoreTest = errors.New("watch store test error")
 var errShipNavTest = errors.New("ship nav test error")
 
-// --- sp-oyer one-shot wake watches: `captain wake watch add` / `list` / `clear` ---
+// --- one-shot wake watches: `captain wake watch add` / `list` / `clear` ---
 
 type fakeWatchPolicyStore struct {
 	loaded  watchkeeper.WatchPolicy
@@ -33,7 +33,7 @@ func (f *fakeWatchPolicyStore) Save(policy watchkeeper.WatchPolicy) error {
 	return f.saveErr
 }
 
-// fakeShipNavReader is the sp-970u test double for shipNavReader: a fixed
+// fakeShipNavReader is the test double for shipNavReader: a fixed
 // in-transit/arrival/error triple, plus a call counter so tests can assert a
 // path (e.g. container:terminal, or an explicit --by) never even consults it.
 type fakeShipNavReader struct {
@@ -94,10 +94,9 @@ func TestRunWatchAddArmsAndListShowsIt(t *testing.T) {
 }
 
 // Acceptance: --by omitted still deadlines the watch (mandatory-default).
-// sp-970u regression: container:terminal has no ETA concept, so it must
-// always get the flat default — even with a navReader that (if consulted)
-// would report an in-transit ship, proving the container path never touches
-// it.
+// container:terminal has no ETA concept, so it must always get the flat
+// default — even with a navReader that (if consulted) would report an
+// in-transit ship, proving the container path never touches it.
 func TestRunWatchAddDefaultsDeadlineWhenByOmitted(t *testing.T) {
 	store := &fakeWatchPolicyStore{}
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -145,7 +144,7 @@ func TestRunWatchAddPropagatesLoadError(t *testing.T) {
 	require.Nil(t, store.saved, "a load failure must not attempt a save")
 }
 
-// sp-970u: ship:arrival watch, --by omitted, ship IN_TRANSIT with a known
+// ship:arrival watch, --by omitted, ship IN_TRANSIT with a known
 // arrival time → the deadline is derived from the live ETA plus margin, not
 // the flat default.
 func TestRunWatchAddDerivesETADeadlineForInTransitShip(t *testing.T) {
@@ -166,7 +165,7 @@ func TestRunWatchAddDerivesETADeadlineForInTransitShip(t *testing.T) {
 	require.Contains(t, buf.String(), "derived from ETA")
 }
 
-// sp-970u: ANY nav-read failure (error, docked, no arrival time, or a
+// ANY nav-read failure (error, docked, no arrival time, or a
 // past/invalid timestamp) must gracefully fall back to the flat default —
 // never block or fail watch add.
 func TestRunWatchAddFallsBackToFlatDefaultWhenNavUnavailable(t *testing.T) {
@@ -195,9 +194,9 @@ func TestRunWatchAddFallsBackToFlatDefaultWhenNavUnavailable(t *testing.T) {
 	}
 }
 
-// sp-970u regression: a nil navReader (e.g. newShipNavReader itself failed —
-// no DB, no player resolved) must behave exactly like any other derivation
-// failure: flat default, no blocking, no error.
+// A nil navReader (e.g. newShipNavReader itself failed — no DB, no player
+// resolved) must behave exactly like any other derivation failure: flat
+// default, no blocking, no error.
 func TestRunWatchAddFallsBackToFlatDefaultWhenNavReaderNil(t *testing.T) {
 	store := &fakeWatchPolicyStore{}
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -210,8 +209,8 @@ func TestRunWatchAddFallsBackToFlatDefaultWhenNavReaderNil(t *testing.T) {
 	require.Contains(t, buf.String(), "flat default")
 }
 
-// sp-970u regression: an explicit --by always wins — the ETA derivation must
-// not even be attempted, regardless of what the ship's nav looks like.
+// An explicit --by always wins — the ETA derivation must not even be
+// attempted, regardless of what the ship's nav looks like.
 func TestRunWatchAddByGivenSkipsETADerivation(t *testing.T) {
 	store := &fakeWatchPolicyStore{}
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)

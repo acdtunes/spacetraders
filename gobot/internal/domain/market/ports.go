@@ -117,9 +117,9 @@ type BestMarketBuyingResult struct {
 
 // GlobalSinkResult is the best sell destination for a good ACROSS ALL SYSTEMS (the
 // single highest bid, EXPORT markets excluded so it mirrors the tour snapshot's sink
-// eligibility — an EXPORT bid is a low sellback, zeroed there per sp-9mkf). It backs the
-// tour coordinator's out-of-horizon lane diagnostic (sp-mtvg): a sink whose System falls
-// outside the 1-gate-hop tour graph is a profitable lane the planner structurally cannot
+// eligibility — an EXPORT bid is a low sellback, zeroed there). It backs the tour
+// coordinator's out-of-horizon lane diagnostic: a sink whose System falls outside
+// the 1-gate-hop tour graph is a profitable lane the planner structurally cannot
 // see. SystemSymbol is derived from the waypoint (X1-XT71-A1 → X1-XT71).
 type GlobalSinkResult struct {
 	WaypointSymbol string

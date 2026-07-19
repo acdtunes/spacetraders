@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// score computes each candidate's ranking score (SCORE step, sp-vdld M3):
+// score computes each candidate's ranking score (the SCORE step):
 //
 //	alignmentFactor  = 1 + WeightTourAlignment × tourSignal        (>= 1; tour-pull boost)
 //	overlapFraction  = share of the candidate's feed markets contended by other candidates ∈ [0,1]
@@ -21,14 +21,14 @@ import (
 //
 // The additive penalties are scaled by ProjectedPL so they rank on the same credit scale as
 // the projection (a weight ~1 then means "a fully-contended / fully-stale / fully-unstaffable
-// site loses ~its whole projected value"). The worker-reachability penalty (sp-3vg8) is the
+// site loses ~its whole projected value"). The worker-reachability penalty is the
 // manning-feasibility check that complements the launch guard's margin check: a far-cluster
-// chain that clears margin but has no in-system idle worker AND no ferry path in (C81/GS93) is
-// deprioritized instead of launched workerless. The Analyst owns every weight (RULINGS #5); this is only the
-// structure. A candidate the launch guard vetoes (Proceed=false) — or one that cannot be
-// priced — is dropped at ZERO cost (the sp-2dv4 veto: never launched, never retried this
-// tick). Alignment read errors do NOT drop a candidate (alignment is an enhancement, not a
-// gate) — the signal falls back to 0 (neutral).
+// chain that clears margin but has no in-system idle worker and no ferry path in is
+// deprioritized instead of launched workerless. The Analyst owns every weight; this is only
+// the structure. A candidate the launch guard vetoes (Proceed=false) — or one that cannot be
+// priced — is dropped at ZERO cost (the chain-margin guard's veto: never launched, never
+// retried this tick). Alignment read errors do NOT drop a candidate (alignment is an
+// enhancement, not a gate) — the signal falls back to 0 (neutral).
 func (h *RunSitingCoordinatorHandler) score(ctx context.Context, cmd *RunSitingCoordinatorCommand, cfg sitingRunConfig, candidates []SitingCandidate) []ScoredCandidate {
 	type staged struct {
 		cand   SitingCandidate
@@ -102,7 +102,7 @@ func (h *RunSitingCoordinatorHandler) tourSignal(ctx context.Context, playerID i
 }
 
 // reachabilitySignal reads the candidate system's worker-staffing reachability signal, clamped
-// to [0,1] (1 = fully staffable, 0 = no worker can reach it; sp-3vg8). A nil provider, a read
+// to [0,1] (1 = fully staffable, 0 = no worker can reach it). A nil provider, a read
 // error, or an out-of-range value falls back to 1.0 (fully reachable / neutral) so the term
 // never drops or wrongly penalizes a candidate — reachability deprioritizes an unmannable site
 // but a transient gate-graph read must not nuke the portfolio (the alignment fail-open idiom).
@@ -171,10 +171,10 @@ func dedupeStrings(s []string) []string {
 	return out
 }
 
-// resolveK sizes the target portfolio (MAINTAIN step, sp-vdld M4). Precedence:
+// resolveK sizes the target portfolio (the MAINTAIN step). Precedence:
 //   - TopK config override (> 0) wins directly.
-//   - else floor(workers / WorkersPerChain) from the WorkerCounter (C3 rotation math). K may
-//     legitimately be 0 for a tiny fleet — capacity-without-workers is the era-1 lesson.
+//   - else floor(workers / WorkersPerChain) from the WorkerCounter. K may legitimately be 0 for
+//     a tiny fleet: capacity without workers to run it is a valid, expected state, not a bug.
 //
 // It returns ok=false only when K cannot be determined at all (no override AND no readable
 // worker count); the caller then leaves the portfolio untouched this tick rather than churning

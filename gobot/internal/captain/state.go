@@ -39,8 +39,7 @@ type WakePolicy struct {
 // watchkeeper's price-regime detector emits a deferred market.regime_shift
 // event once a matching good's market price crosses Threshold — or, in
 // relative mode, Multiplier times a recorded baseline price — in Direction.
-// Exactly one of Threshold/Multiplier is set. Mechanizes the per-wake price
-// sweep the captain used to hand-roll.
+// Exactly one of Threshold/Multiplier is set.
 type RegimeTripwire struct {
 	// Good is either a good-class keyword ("ORE", "GAS") or a comma-separated
 	// literal symbol list (e.g. "IRON_ORE,COPPER_ORE").

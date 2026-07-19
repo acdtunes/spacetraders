@@ -1,6 +1,6 @@
 package manufacturing
 
-// Chain P&L raw ledger types (sp-rh2z, analyst redesign C2). These are the raw per-good
+// Chain P&L raw ledger types are the raw per-good
 // realized cashflow aggregates the chain kill-switch judges, read straight from the ledger.
 // They live in the domain package (not the application service that computes on them) for the
 // same reason market.MarketPriceHistory does: the persistence adapter that reads them must
@@ -16,7 +16,7 @@ type ChainGoodFlow struct {
 	Good string
 	// FactoryCost is SUM(amount) FILTER (transaction_type='PURCHASE_CARGO') over
 	// operation_type IN ('manufacturing','factory_workflow') for this good_symbol — NEGATIVE
-	// (spend). Input buys are tagged with the input's OWN symbol (sp-i0hl atomic attribution),
+	// (spend). Input buys are tagged with the input's OWN symbol,
 	// never rolled up to the output good the schema has no linkage for.
 	FactoryCost int
 	// FactorySell is SUM(amount) FILTER (transaction_type='SELL_CARGO') for this good_symbol —

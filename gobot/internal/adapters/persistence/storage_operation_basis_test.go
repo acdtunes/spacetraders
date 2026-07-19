@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// C1 (sp-64je): the cost_basis column round-trips through the shared
+// C1: the cost_basis column round-trips through the shared
 // storage_operations repository, and is managed OUT-OF-BAND — a normal operation
 // Update must not clobber it, and a basis write must not disturb the operation.
 

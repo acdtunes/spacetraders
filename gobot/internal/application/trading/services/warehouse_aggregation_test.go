@@ -39,9 +39,9 @@ func readerFor(ships ...*storage.StorageShip) *fakeSpaceReader {
 	return &fakeSpaceReader{ships: m}
 }
 
-// TestTotalFreeSpace_SumsAcrossCoLocatedGroup pins the additive-capacity core
-// (sp-5q2c): two warehouses at one waypoint (light-12's 80 + heavy-4B's 225) read as
-// 305 aggregate slots, not the newest-only 225.
+// TestTotalFreeSpace_SumsAcrossCoLocatedGroup pins the additive-capacity core: two
+// warehouses at one waypoint (light-12's 80 + heavy-4B's 225) read as 305 aggregate
+// slots, not the newest-only 225.
 func TestTotalFreeSpace_SumsAcrossCoLocatedGroup(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	light, lightShip := coLocatedWarehouse(t, "light-12", "X1-KA42-E42", t0, 80, allGoods, nil)
@@ -54,7 +54,7 @@ func TestTotalFreeSpace_SumsAcrossCoLocatedGroup(t *testing.T) {
 	}
 }
 
-// TestTotalFreeSpace_ZombieContributesZero confirms a stale sp-3lj5 zombie row (its
+// TestTotalFreeSpace_ZombieContributesZero confirms a stale zombie row (its
 // storage ship unregistered, so the reader returns no ships for it) adds 0 — the sum
 // is the live hull's capacity, never inflated by the dead operation.
 func TestTotalFreeSpace_ZombieContributesZero(t *testing.T) {
@@ -216,9 +216,9 @@ func TestBuildDepositCandidates_AggregateFreeSpaceCapsUnits(t *testing.T) {
 	}
 }
 
-// TestTotalCapacity_SumsRealHullCapacity pins the auto-cap knapsack's capacity term
-// (sp-5n7v): C is the SUM of the REAL cargo_capacity of every running warehouse hull in
-// the co-located group — never assume-80. A 2nd hull (or a heavy/cargo-module frame)
+// TestTotalCapacity_SumsRealHullCapacity pins the auto-cap knapsack's capacity term:
+// C is the SUM of the REAL cargo_capacity of every running warehouse hull in the
+// co-located group — never assume-80. A 2nd hull (or a heavy/cargo-module frame)
 // simply raises C.
 func TestTotalCapacity_SumsRealHullCapacity(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
@@ -246,7 +246,7 @@ func TestTotalCapacity_ReflectsFullCapacityNotFreeSpace(t *testing.T) {
 	}
 }
 
-// TestTotalCapacity_ZombieContributesZero confirms a stale sp-3lj5 zombie op (no registered
+// TestTotalCapacity_ZombieContributesZero confirms a stale zombie op (no registered
 // storage ship) adds 0 to C, mirroring TotalFreeSpace.
 func TestTotalCapacity_ZombieContributesZero(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)

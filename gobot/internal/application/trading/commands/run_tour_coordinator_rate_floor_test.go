@@ -1,6 +1,6 @@
 package commands
 
-// run_tour_coordinator_rate_floor_test.go — epic sp-fguo Part 2: white-box tests of the rate-floor
+// run_tour_coordinator_rate_floor_test.go — white-box tests of the rate-floor
 // early-reposition trigger through the driving Handle port. Every test drives a continuous run whose
 // FIRST tour is PRODUCTIVE (so the trigger — which fires only after a productive tour — is reached),
 // seeds telemetry so the hull's realized rate and the fleet median are both controlled, and asserts
@@ -218,7 +218,7 @@ func TestTourRateFloor_Dwell_StaysWhenRecentlyRelocated(t *testing.T) {
 }
 
 // FAIL-CLOSED on a bad median. A rate-floor relocation is NEVER decided off an unreadable or
-// non-positive fleet median (mirrors the sp-z7ng senseBeta contract): a nil telemetry repo, empty
+// non-positive fleet median (mirrors the senseBeta contract): a nil telemetry repo, empty
 // telemetry (no computable tour), and an all-losing fleet (median <= 0) each leave the hull touring
 // its ground even though a richly-better candidate is one hop away and the flag is armed.
 func TestTourRateFloor_FailClosed_UnreadableOrNonPositiveMedian(t *testing.T) {

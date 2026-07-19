@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// AbsorptionMetricsCollector handles the two L5 burn-in counters (sp-8cz9): the
+// AbsorptionMetricsCollector handles the two L5 burn-in counters: the
 // fraction of profitable tour plans the fleet-wide absorption cap actually constrains
 // (cap-binding), and the cross-plan "ladder" incidents where a tour re-buys into ground
 // still recovering from its own dump. Both are event-emitted from the tour coordinator
@@ -29,7 +29,7 @@ type AbsorptionMetricsCollector struct {
 	ladderIncidentsTotal *prometheus.CounterVec
 
 	// consultVerdictsTotal increments once per absorption-consult verdict applied at a
-	// lane/plan exclusion site (sp-dp92 P6): verdict is "skip_reserved"|"pass", engine
+	// lane/plan exclusion site: verdict is "skip_reserved"|"pass", engine
 	// distinguishes which caller consulted (idle_arb's tour planner vs the trade-route
 	// coordinator's lane filter) since both apply the same verdict shape against the
 	// same underlying absorption read.

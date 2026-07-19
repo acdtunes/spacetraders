@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// sp-94du: UpdateSupportedGoods re-applies a freshly-recomputed receipt whitelist to an
+// UpdateSupportedGoods re-applies a freshly-recomputed receipt whitelist to an
 // already-running warehouse via a TARGETED column update, so a redeployed cap selector reaches
 // the running buffer. It must overwrite ONLY supported_goods — never disturb the live status or
 // storage-ship registration — which is why it is a targeted update, not a full-row Save.

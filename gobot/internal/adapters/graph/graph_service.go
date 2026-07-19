@@ -10,9 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// GraphService provides unified access to system graphs and waypoints
-// This service replaces both SystemGraphProvider and WaypointProvider
-// with a single, cohesive interface for graph-related operations
+// GraphService provides unified access to system graphs and waypoints.
 //
 // Caching Strategy (Two-Tier):
 // - Tier 1: In-memory cache (waypointCache) - infinite TTL during daemon lifetime
@@ -39,21 +37,13 @@ func NewGraphService(
 	}
 }
 
-// GetGraph retrieves system navigation graph (implements ISystemGraphProvider)
-//
-// Flow:
-// 1. Check graph cache (unless forceRefresh is true)
-// 2. If not cached, build from API and cache
-// 3. Populate in-memory waypoint cache for fast lookups
-// 4. Return graph with metadata about source
+// GetGraph retrieves system navigation graph (implements ISystemGraphProvider).
 func (s *GraphService) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool, playerID int) (*system.GraphLoadResult, error) {
-	// Try loading from database cache first (unless force refresh)
 	if !forceRefresh {
 		graph, err := s.graphRepo.Get(ctx, systemSymbol)
 		if err != nil {
 			log.Printf("Error loading graph from database: %v", err)
 		} else if graph != nil {
-			// Populate in-memory waypoint cache from loaded graph
 			s.populateWaypointCache(systemSymbol, graph)
 			return &system.GraphLoadResult{
 				Graph:   graph,
@@ -63,14 +53,12 @@ func (s *GraphService) GetGraph(ctx context.Context, systemSymbol string, forceR
 		}
 	}
 
-	// Build from API and cache it
 	log.Printf("Building navigation graph for %s from API", systemSymbol)
 	graph, err := s.graphBuilder.BuildSystemGraph(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build graph for %s: %w", systemSymbol, err)
 	}
 
-	// Save to database cache
 	if err := s.graphRepo.Add(ctx, systemSymbol, graph); err != nil {
 		log.Printf("Warning: failed to cache graph for %s: %v", systemSymbol, err)
 		// Don't fail - caching failure shouldn't break the operation
@@ -78,7 +66,6 @@ func (s *GraphService) GetGraph(ctx context.Context, systemSymbol string, forceR
 		log.Printf("Graph for %s cached in database", systemSymbol)
 	}
 
-	// Populate in-memory waypoint cache from built graph
 	s.populateWaypointCache(systemSymbol, graph)
 
 	return &system.GraphLoadResult{
@@ -99,16 +86,7 @@ func (s *GraphService) populateWaypointCache(systemSymbol string, graph *system.
 	}
 }
 
-// GetWaypoint retrieves waypoint data with two-tier caching (implements IWaypointProvider)
-//
-// Two-Tier Caching Strategy:
-// 1. TIER 1: Check in-memory cache (infinite TTL, zero latency)
-// 2. TIER 2: Check database cache (1-day TTL, persists across restarts)
-// 3. TIER 3: Cache miss - fetch from API via graph build (with per-system lock)
-//
-// Concurrent Protection:
-// - Per-system mutex prevents duplicate graph builds
-// - Double-check pattern after acquiring lock
+// GetWaypoint retrieves waypoint data with two-tier caching (implements IWaypointProvider).
 func (s *GraphService) GetWaypoint(ctx context.Context, waypointSymbol, systemSymbol string, playerID int) (*shared.Waypoint, error) {
 	cacheKey := waypointCacheKey(systemSymbol, waypointSymbol)
 
@@ -165,10 +143,8 @@ func (s *GraphService) GetWaypoint(ctx context.Context, waypointSymbol, systemSy
 		log.Printf("Warning: failed to cache graph for %s: %v", systemSymbol, saveErr)
 	}
 
-	// Populate memory cache with ALL waypoints from the built graph
 	s.populateWaypointCache(systemSymbol, graph)
 
-	// Return the requested waypoint
 	if wp, ok := graph.Waypoints[waypointSymbol]; ok {
 		return wp, nil
 	}

@@ -141,7 +141,7 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 			return err
 		}
 
-		// Record one budget event per attempt (sp-51ti) — this single call
+		// Record one budget event per attempt — this single call
 		// site covers both terminal and retry paths, since it runs before
 		// classify() branches on the outcome.
 		if tracker := c.getBudgetTracker(); tracker != nil {

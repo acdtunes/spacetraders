@@ -10,7 +10,7 @@ import (
 )
 
 // streakCaptureRecorder captures the error-loop events a coordinator emits so the
-// streak-breach rollout (sp-6wxq) is observable without a real captain outbox.
+// streak-breach rollout is observable without a real captain outbox.
 type streakCaptureRecorder struct{ events []*captain.Event }
 
 func (r *streakCaptureRecorder) Record(_ context.Context, e *captain.Event) error {
@@ -19,7 +19,7 @@ func (r *streakCaptureRecorder) Record(_ context.Context, e *captain.Event) erro
 }
 
 // TestTradeFleetStreak_ReconcileFailsRepeatedly_EmitsErrorLoopEvent pins the
-// sp-6wxq wiring at the trade-fleet reconcile checkpoint: a pass that fails with
+// wiring at the trade-fleet reconcile checkpoint: a pass that fails with
 // the identical error for DefaultStreakThreshold consecutive ticks crosses the
 // streak exactly once and emits one interrupt-class coordinator error-loop event
 // (the s88 silent-stuck class — e.g. a launcher never wired — made visible),

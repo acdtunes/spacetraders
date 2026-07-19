@@ -1,6 +1,6 @@
 package capacity_test
 
-// Integration tests for the capacity SENSE adapter (bead st-7ee, epic st-7zk).
+// Integration tests for the capacity SENSE adapter.
 //
 // The Sensor is an ADAPTER (hexagonal driven side): per the testing mandates it
 // gets integration tests against a REAL database (the sqlite :memory: harness
@@ -29,7 +29,7 @@ package capacity_test
 //  9. Reuse       — Topology.IdleHulls carries the reuse-eligible idle subset of
 //                   the SAME Utilization.Hulls snapshot (idle && undedicated &&
 //                   not already serving a cluster role) so DIFF's tier-1 rung has
-//                   a free lever (st-780).
+//                   a free lever.
 
 import (
 	"context"
@@ -295,7 +295,7 @@ func TestSense_AggregatesHubDemandFromContractHistory(t *testing.T) {
 	}, hub.GoodMix)
 }
 
-// Behavior 1 (anti-dilution, bead sp-lk9x): demand frequency is measured over
+// Behavior 1 (anti-dilution): demand frequency is measured over
 // the recent-N COUNT window — the most recent N contracts and the span THEY
 // occupy — not the ever-growing wall-clock gap back to the player's first-ever
 // contract. An established hub whose ancient history has accumulated far past N
@@ -503,7 +503,7 @@ func TestSense_ScopesToRequestedPlayer(t *testing.T) {
 	require.InDelta(t, 59000.0, signals.Economics.IncomeVelocityPerHour, 1e-9)
 }
 
-// Behavior 9 (st-780): the SENSE lane fills Topology.IdleHulls with the tier-1
+// Behavior 9: the SENSE lane fills Topology.IdleHulls with the tier-1
 // REUSE-ELIGIBLE subset of the SAME hull snapshot Utilization carries — idle AND
 // undedicated AND not already serving a cluster role. Diff receives ONLY
 // TopologySignals, so an unfilled slice silently starves the reuse-first rung and

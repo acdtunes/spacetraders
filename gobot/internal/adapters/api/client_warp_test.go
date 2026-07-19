@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// sp-0xd0: the live SpaceTraders warp API takes the destination as
+// The live SpaceTraders warp API takes the destination as
 // "waypointSymbol" in the POST body (mirroring navigate) and returns the ship's
 // fuel + nav.route envelope. This asserts the actual wire format WarpShip sends
 // and that the post-warp fuel state + arrival time are parsed back onto the

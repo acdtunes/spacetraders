@@ -29,12 +29,9 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 	// Create container for this operation. The COMMAND owns the tour count
 	// (ScoutTourCommand.Iterations, built from the config above): the container
 	// wraps exactly ONE iteration of it (sp-7yej invariant 3). Passing the raw
-	// tour count here as well was the scout double-loop defect — the runner
-	// re-entered a handler that had already flown its whole budget, so
-	// iterations=N flew N×N tours (and 0, which the old wrapper read as "zero
-	// runner iterations", completed instantly without scouting at all — the "0
-	// tours vanished" divergence). Restart recovery pins the same 1 via the
-	// spec's CoordinatorOwnsIterations.
+	// tour count here as well would double-fly it — the runner would re-enter
+	// a handler that already flew its whole budget. Restart recovery pins the
+	// same 1 via the spec's CoordinatorOwnsIterations.
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeScout,

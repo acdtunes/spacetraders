@@ -68,7 +68,7 @@ type Ship struct {
 	assignment      *ShipAssignment // Container assignment state (persisted to DB)
 	fuelService     *ShipFuelService
 
-	// Power/slot/crew data (sp-el60). Reactors and frames have no swap/upgrade
+	// Power/slot/crew data. Reactors and frames have no swap/upgrade
 	// endpoint in the SpaceTraders API - reactorPowerOutput, moduleSlots, and
 	// mountingPoints are fixed for the life of the hull. Only modules/mounts
 	// can be installed or removed to fit within these permanent budgets.
@@ -88,7 +88,7 @@ type Ship struct {
 	arrivalTime        *time.Time // When IN_TRANSIT ship will arrive
 	cooldownExpiration *time.Time // When cooldown expires (mining, surveying, etc.)
 
-	// Nav route origin + departure for the current transit (sp-vp9k), carried
+	// Nav route origin + departure for the current transit, carried
 	// from the API nav.route so a persisted IN_TRANSIT ship exposes where it
 	// departed from and when — the DB consumers compute exact transit progress
 	// from these. originSymbol/X/Y are empty/zero and departureTime nil when the
@@ -102,11 +102,11 @@ type Ship struct {
 	// dedicatedFleet marks the ship as permanently reserved for a specific
 	// coordinator (e.g. "contract"), set by the operator via CLI/config rather
 	// than derived at runtime. Empty means unreserved - the ship is fair game
-	// for any coordinator's normal discovery (sp-snmb).
+	// for any coordinator's normal discovery.
 	dedicatedFleet string
 
-	// reservationOverrides is the per-hull cargo do-not-sell override set
-	// (sp-1vhv): good symbol -> explicit reservation decision that WINS over the
+	// reservationOverrides is the per-hull cargo do-not-sell override set:
+	// good symbol -> explicit reservation decision that WINS over the
 	// default MODULE_*/MOUNT_* classification. true force-reserves a good the
 	// default would sell; false force-allows the sale of a default-reserved module
 	// (the rare deliberate resale). A good absent from the map follows
@@ -116,17 +116,16 @@ type Ship struct {
 	// reservationStateCorrupt is set when the persisted override state could not be
 	// parsed. It fails the guard CLOSED: IsCargoReserved then treats EVERY good as
 	// reserved (nothing is sold from this hull) rather than risk selling a good the
-	// unreadable override set had protected (sp-1vhv, RULINGS #4).
+	// unreadable override set had protected (RULINGS #4).
 	reservationStateCorrupt bool
 
 	// persistedVersion is the ships.version value this entity was loaded at
 	// (0 = never loaded from a row, e.g. API-born). Infrastructure carries it
-	// for the Save CAS tripwire (sp-60ff): it is NOT domain state and has no
+	// for the Save CAS tripwire: it is NOT domain state and has no
 	// behavior here.
 	persistedVersion int
 }
 
-// NewShip creates a new Ship entity with validation
 func NewShip(
 	shipSymbol string,
 	playerID shared.PlayerID,
@@ -242,8 +241,8 @@ func (s *Ship) FuelCapacity() int {
 // This allows avoiding a separate GetShip API call after navigation/refuel.
 // The API is authoritative and can over-report current fuel against a shrunk
 // capacity; that snapshot is clamped to capacity rather than rejected so a
-// transient value never leaves stale fuel driving routing (sp-xxhn). Genuinely
-// invalid data (negative values) still surfaces an error (#12).
+// transient value never leaves stale fuel driving routing. Genuinely
+// invalid data (negative values) still surfaces an error.
 func (s *Ship) UpdateFuelFromAPI(current, capacity int) error {
 	fuel, err := shared.ReconstructFuel(current, capacity)
 	if err != nil {
@@ -266,17 +265,14 @@ func (s *Ship) FrameSymbol() string {
 	return s.frameSymbol
 }
 
-// Role returns the ship's role from registration
 func (s *Ship) Role() string {
 	return s.role
 }
 
-// Modules returns the ship's installed modules
 func (s *Ship) Modules() []*ShipModule {
 	return s.modules
 }
 
-// HasJumpDrive checks if ship has any jump drive module installed
 func (s *Ship) HasJumpDrive() bool {
 	for _, module := range s.modules {
 		if module.IsJumpDrive() {
@@ -298,7 +294,7 @@ func (s *Ship) GetJumpDriveRange() int {
 
 // HasWarpDrive reports whether the ship has a warp drive module installed
 // (MODULE_WARP_DRIVE_*). Only a ship with a warp drive can execute an off-gate
-// warp leg between systems (sp-0xd0); RouteExecutor fails a warp request closed
+// warp leg between systems; RouteExecutor fails a warp request closed
 // when this is false rather than letting the live API reject it.
 func (s *Ship) HasWarpDrive() bool {
 	for _, module := range s.modules {
@@ -315,14 +311,13 @@ func (s *Ship) IsScoutType() bool {
 	return s.role == roleSatellite
 }
 
-// Power/Slot/Crew Queries (sp-el60)
+// Power/Slot/Crew Queries
 
 // ReactorSymbol returns the reactor type symbol (e.g., "REACTOR_SOLAR_I").
 func (s *Ship) ReactorSymbol() string {
 	return s.reactorSymbol
 }
 
-// ReactorName returns the reactor's display name.
 func (s *Ship) ReactorName() string {
 	return s.reactorName
 }
@@ -358,7 +353,6 @@ func (s *Ship) Mounts() []*ShipMount {
 	return s.mounts
 }
 
-// CrewCurrent returns the ship's current crew count.
 func (s *Ship) CrewCurrent() int {
 	return s.crewCurrent
 }
@@ -369,7 +363,6 @@ func (s *Ship) CrewRequired() int {
 	return s.crewRequired
 }
 
-// CrewCapacity returns the maximum crew the ship can carry.
 func (s *Ship) CrewCapacity() int {
 	return s.crewCapacity
 }
@@ -424,7 +417,6 @@ func (s *Ship) EnsureDocked() (bool, error) {
 	return true, nil
 }
 
-// depart transitions from docked to orbit (internal state transition)
 func (s *Ship) depart() error {
 	if s.navStatus != NavStatusDocked {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be docked to depart, currently: %s", s.navStatus))
@@ -433,7 +425,6 @@ func (s *Ship) depart() error {
 	return nil
 }
 
-// dock transitions from orbit to docked (internal state transition)
 func (s *Ship) dock() error {
 	if s.navStatus != NavStatusInOrbit {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in orbit to dock, currently: %s", s.navStatus))
@@ -442,7 +433,6 @@ func (s *Ship) dock() error {
 	return nil
 }
 
-// Arrive transitions from in-transit to orbit
 func (s *Ship) Arrive() error {
 	if s.navStatus != NavStatusInTransit {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in transit to arrive, currently: %s", s.navStatus))
@@ -451,7 +441,6 @@ func (s *Ship) Arrive() error {
 	return nil
 }
 
-// StartTransit begins transit to destination
 func (s *Ship) StartTransit(destination *shared.Waypoint) error {
 	if s.navStatus != NavStatusInOrbit {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in orbit to start transit, currently: %s", s.navStatus))
@@ -466,7 +455,6 @@ func (s *Ship) StartTransit(destination *shared.Waypoint) error {
 
 // Fuel Management
 
-// ConsumeFuel consumes fuel from ship's tanks
 func (s *Ship) ConsumeFuel(amount int) error {
 	if amount < 0 {
 		return fmt.Errorf("fuel amount cannot be negative")
@@ -484,7 +472,6 @@ func (s *Ship) ConsumeFuel(amount int) error {
 	return nil
 }
 
-// Refuel adds fuel to ship's tanks
 func (s *Ship) Refuel(amount int) error {
 	if amount < 0 {
 		return fmt.Errorf("fuel amount cannot be negative")
@@ -498,7 +485,6 @@ func (s *Ship) Refuel(amount int) error {
 	return nil
 }
 
-// RefuelToFull refuels ship to full capacity and returns amount added
 func (s *Ship) RefuelToFull() (int, error) {
 	fuelNeeded := s.fuelService.CalculateFuelNeededToFull(s.fuel.Current, s.fuelCapacity)
 	if fuelNeeded > 0 {
@@ -511,17 +497,14 @@ func (s *Ship) RefuelToFull() (int, error) {
 
 // State Queries
 
-// IsDocked checks if ship is docked
 func (s *Ship) IsDocked() bool {
 	return s.navStatus == NavStatusDocked
 }
 
-// IsInOrbit checks if ship is in orbit
 func (s *Ship) IsInOrbit() bool {
 	return s.navStatus == NavStatusInOrbit
 }
 
-// IsInTransit checks if ship is in transit
 func (s *Ship) IsInTransit() bool {
 	return s.navStatus == NavStatusInTransit
 }

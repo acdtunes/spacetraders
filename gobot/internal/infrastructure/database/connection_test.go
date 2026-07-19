@@ -97,12 +97,6 @@ func TestAutoMigrate_GateConstructionColumnAdded_InvalidatesCacheOnce(t *testing
 // exactly as observed intermittently in internal/adapters/grpc tests that spawn
 // real ContainerRunners (which write and read the containers/container_logs
 // tables from concurrent goroutines) alongside the test's own assertions.
-//
-// Before the fix: with enough concurrent queries this reliably surfaces a
-// "no such table: manufacturing_pipelines" error on at least one goroutine.
-// After the fix (pinning the sqlite pool to a single physical connection):
-// every goroutine shares the one migrated connection and none can miss the
-// schema.
 func TestConcurrentQueriesSeeMigratedSchema(t *testing.T) {
 	db, err := NewTestConnection()
 	if err != nil {

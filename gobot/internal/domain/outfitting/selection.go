@@ -1,11 +1,11 @@
 // Package outfitting holds the pure selection model behind the guarded auto-outfit
-// coordinator (sp-buyd): the module analogue of hull acquisition. Given a per-hull
+// coordinator: the module analogue of hull acquisition. Given a per-hull
 // saturation/range read (aggregated from tour_leg_telemetry) and a catalog of
 // available ship modules, it picks the highest-marginal-value (hull, module) pair —
 // the hull whose measured bottleneck an available module most relieves per credit.
 //
-// The load-bearing insight (live-validated on TORWIND): the right hull to upgrade is
-// the SATURATED one, not the busiest one. A hull running 40/80 has spare capacity a
+// The load-bearing insight: the right hull to upgrade is the SATURATED one, not
+// the busiest one. A hull running 40/80 has spare capacity a
 // cargo module would leave idle; a hull running 76/80 is genuinely capacity-bound, so
 // the same module is immediately used. Benefit is therefore gated by MEASURED
 // saturation, and a hull with too little telemetry to trust is never upgraded at all

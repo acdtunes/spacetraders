@@ -13,14 +13,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// sp-94du: a redeployed depot cap-selector never reached an already-running warehouse.
-//
-// On boot, container recovery re-adopts a warehouse's hull (it is now NON-IDLE) and resumes
-// its PERSISTED storage_operations row (whose supported_goods whitelist is whatever was
-// stamped at the last launch — STALE after a selector redeploy). reloadDepotRegistryAtBoot
-// then re-runs launchDepotWarehouse, whose IsIdle gate skipped BOTH the cap re-solve and the
-// coordinator launch for the non-idle hull — so the new selector's high-value goods never
-// reached the running buffer, and the stocker filtered every one of them out as "unsupported".
+// sp-94du: on registry reload, a non-idle hull's warehouse operation row must have its
+// supported_goods whitelist re-solved and PERSISTED — never skipped — so a cap-selector
+// redeploy reaches an already-running warehouse.
 //
 // The stocker re-reads each warehouse's supported_goods from the STORE every pass
 // (warehousesAt -> FindRunning), so persisting the freshly-recomputed whitelist to the running
@@ -45,7 +40,7 @@ func nonIdleDepotWarehouseFixture(
 	ctx := context.Background()
 
 	// A hull whose warehouse coordinator was already re-adopted by recovery is NOT idle — the
-	// exact condition under which the old IsIdle gate skipped the re-solve.
+	// exact condition the re-solve must not skip.
 	ship := newIdleTradeShip(t, shipSymbol, playerID)
 	require.NoError(t, ship.AssignToContainer("warehouse-RUNNING-"+shipSymbol, shared.NewRealClock()))
 	require.False(t, ship.IsIdle(), "the recovered warehouse hull must be non-idle for this regression")
@@ -64,7 +59,7 @@ func nonIdleDepotWarehouseFixture(
 }
 
 // (a) On registry reload, a depot warehouse whose hull is NON-IDLE still gets its receipt
-// caps recomputed and PERSISTED — proving the IsIdle skip no longer blocks the re-solve. The
+// caps recomputed and PERSISTED — proving the re-solve is not skipped for a non-idle hull. The
 // stale generic whitelist is REPLACED by the recomputed selector's goods on the running
 // operation's row (fresh good present, stale good gone), so the stocker re-reads the new set.
 func TestLaunchDepotWarehouse_NonIdleReload_RecomputesAndPersistsCaps(t *testing.T) {

@@ -32,17 +32,14 @@ func FindPurchaseMarket(
 ) (string, error) {
 	deliveries := contract.Terms().Deliveries
 
-	// Find the first unfulfilled delivery
 	for _, delivery := range deliveries {
 		unitsNeeded := delivery.UnitsRequired - delivery.UnitsFulfilled
 		if unitsNeeded == 0 {
-			continue // Already fulfilled, skip
+			continue
 		}
 
-		// Extract system from destination (e.g., X1-GZ7-A1 -> X1-GZ7)
 		system := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
 
-		// Find cheapest market selling this good
 		cheapestMarket, err := marketRepo.FindCheapestMarketSelling(
 			ctx,
 			delivery.TradeSymbol,

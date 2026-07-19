@@ -8,14 +8,14 @@ package contract
 const defaultHullLoadForPrediction = 40
 
 // SourcePrediction is the same-contract / same-good / multi-delivery-remaining
-// pre-position signal (sp-1ef0). It names the good whose next delivery will
+// pre-position signal. It names the good whose next delivery will
 // near-certainly be sourced from the same market, with a confidence the caller
 // gates against a threshold before moving an idle hull.
 //
 // It deliberately carries the GOOD, not a market: resolving good -> source market is
-// the caller's job and must use live market availability, never the persisted
-// purchase-history tracking removed in 71aceda (which biased coverage toward
-// frequently-used markets over true availability).
+// the caller's job and must use live market availability, never persisted
+// purchase-history tracking (biases coverage toward frequently-used markets over true
+// availability).
 type SourcePrediction struct {
 	// Good is the trade symbol the next delivery will need.
 	Good string
@@ -32,9 +32,9 @@ type SourcePrediction struct {
 }
 
 // PredictNextContractSource derives the same-good/multi-delivery-remaining signal from
-// a contract's live delivery progress (sp-1ef0).
+// a contract's live delivery progress.
 //
-// Rules (near-certain only, per the bead's restriction):
+// Rules (near-certain only):
 //   - No good outstanding (contract complete) => no prediction.
 //   - Candidate = the outstanding good with the most remaining units.
 //   - If the candidate's remainder fits a single hull-load, the current delivery leg

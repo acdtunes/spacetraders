@@ -15,9 +15,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// --- sp-13tl: pre-positioning capital-ceiling enablement + parked-log de-dup ---
+// --- Pre-positioning capital-ceiling enablement + parked-log de-dup ---
 //
-// These tests pin the two halves of sp-13tl at the depositCandidates seam:
+// These tests pin the two halves of this behavior at the depositCandidates seam:
 //  1. ENABLEMENT: a 0/absent capital ceiling PARKS opportunistic tour deposits
 //     (fail closed, dormant) instead of silently defaulting to 10% of treasury —
 //     money movement is a captain/analyst decision (RULINGS #5). The funnel
@@ -264,7 +264,7 @@ func TestDepositCandidates_DedupIsPerContainer(t *testing.T) {
 }
 
 // The deliberate off-switch (Enabled=false) stays fully silent: no candidates, no log,
-// no funnel — unchanged from pre-sp-13tl.
+// no funnel.
 func TestDepositCandidates_DisabledIsSilent(t *testing.T) {
 	h, finder := newPPCeilHandler(false, 10, &ppCeilAPI{credits: 100_000_000})
 	logger := &propFloorCapturingLogger{}

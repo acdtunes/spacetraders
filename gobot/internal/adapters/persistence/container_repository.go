@@ -114,13 +114,13 @@ func (r *ContainerRepositoryGORM) UpdateStatus(
 	return nil
 }
 
-// UpdateContainerConfig overwrites just the persisted config JSON of a container
-// (sp-dkj7). It is a SINGLE-COLUMN GORM Updates, so it never touches status,
-// heartbeat_at, or any other column the runner writes concurrently — and config has no
-// other writer during a run (it is set once at Add and only ever amended here), so a
-// caller's read-modify-write of the config map is race-free at the column level. Used by
-// the arb run to durably record its already-incurred buy cost so a restart-rebuilt
-// resume reports honest P&L (RULINGS #2).
+// UpdateContainerConfig overwrites just the persisted config JSON of a container. It
+// is a SINGLE-COLUMN GORM Updates, so it never touches status, heartbeat_at, or any
+// other column the runner writes concurrently — and config has no other writer during
+// a run (it is set once at Add and only ever amended here), so a caller's
+// read-modify-write of the config map is race-free at the column level. Used by the
+// arb run to durably record its already-incurred buy cost so a restart-rebuilt resume
+// reports honest P&L (RULINGS #2).
 func (r *ContainerRepositoryGORM) UpdateContainerConfig(
 	ctx context.Context,
 	containerID string,
@@ -207,7 +207,7 @@ func (r *ContainerRepositoryGORM) ListByStatus(
 }
 
 // ListByCommandTypeSince lists containers of a command type for a player that started
-// at/after `since` (sp-f5pr). The worker-rebalancer coordinator uses it to read recent
+// at/after `since`. The worker-rebalancer coordinator uses it to read recent
 // worker_ferry rows for the per-vacancy cooldown — a focused query that avoids scanning
 // every container. StartedAt is the persisted launch time, so the cooldown clock survives
 // a daemon restart with zero new state (RULINGS #2).
@@ -291,7 +291,6 @@ func (r *ContainerRepositoryGORM) ListByStatusSimple(
 		return nil, fmt.Errorf("failed to list containers by status: %w", err)
 	}
 
-	// Convert to ContainerSummary
 	result := make([]ContainerSummary, len(models))
 	for i, model := range models {
 		result[i] = ContainerSummary{
@@ -315,7 +314,6 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 	var created bool
 
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Lock and check for existing active workers
 		var count int64
 		if err := tx.Model(&ContainerModel{}).
 			Where("container_type = ? AND status = ? AND player_id = ?",
@@ -325,12 +323,10 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 		}
 
 		if count > 0 {
-			// Another worker already exists
 			created = false
 			return nil
 		}
 
-		// No active worker, create new one
 		configJSON, err := json.Marshal(containerEntity.Metadata())
 		if err != nil {
 			return fmt.Errorf("failed to serialize config: %w", err)
@@ -401,7 +397,6 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
 ) (*ContainerModel, error) {
 	var model ContainerModel
 
-	// Search for active coordinators with matching system in config
 	// Config is JSON with "system_symbol" field
 	result := r.db.WithContext(ctx).
 		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
@@ -420,7 +415,7 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
 }
 
 // FindActiveCoordinatorByType finds an active (PENDING or RUNNING) coordinator of
-// the given type for a player, regardless of system (sp-jcke). Unlike
+// the given type for a player, regardless of system. Unlike
 // FindActiveCoordinatorByTypeAndSystem this applies no system filter — the
 // contract coordinator is not system-scoped, so the live `fleet hub` mutation
 // locates it by type alone. Returns nil if none is active.
@@ -428,7 +423,7 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
 // With >=2 active rows of the same type the result is made deterministic by
 // Order("heartbeat_at DESC") — the freshest (most-recently heartbeating)
 // coordinator wins, so a live mutation never lands on a stale row on the whim of
-// the DB's default ordering (sp-aoy2 latent hardening).
+// the DB's default ordering.
 func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
 	ctx context.Context,
 	containerType string,
@@ -455,7 +450,7 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
 // FindMostRecentByType returns the most-recently-STARTED container of a type for a
 // player REGARDLESS of status (STOPPED/INTERRUPTED included), or nil if none exists.
 // Unlike FindActiveCoordinatorByType it applies NO PENDING/RUNNING filter — it is the
-// source of the last persisted live-config a coordinator (re)start re-applies (sp-ve3q):
+// source of the last persisted live-config a coordinator (re)start re-applies:
 // relaunching a previously-stopped coordinator via `frontier start` must re-adopt its
 // live-tuned knobs (the persisted config column) instead of reverting to config-file
 // defaults, exactly as the daemon-restart recovery path already does. Ordered by
@@ -574,8 +569,6 @@ func (r *ContainerRepositoryGORM) StopStaleManufacturingWorkers(
 	cutoffTime := now.Add(-staleTimeout)
 	exitCode := 1
 
-	// Find RUNNING workers with stale heartbeat
-	// heartbeat_at < cutoffTime means no heartbeat for staleTimeout duration
 	result := r.db.WithContext(ctx).
 		Model(&ContainerModel{}).
 		Where("container_type = ? AND player_id = ? AND status = ?",
@@ -622,7 +615,6 @@ func (r *ContainerRepositoryGORM) FindActiveGasCoordinator(
 ) (*ContainerModel, error) {
 	var model ContainerModel
 
-	// Search for active gas coordinators with matching gas_giant in config
 	result := r.db.WithContext(ctx).
 		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
 			"GAS_COORDINATOR", playerID, containerStatusPending, containerStatusRunning).

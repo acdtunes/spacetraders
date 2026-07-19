@@ -215,16 +215,14 @@ func TestRecoverySkipsCoordinatorSpawnedScoutTour(t *testing.T) {
 
 // TestRecoveryRestoresFactoryIterationBudgetFromMaxIterationsKey is the sp-perx
 // regression: StartGoodsFactory persists a factory's iteration budget under the
-// "max_iterations" config key (see container_ops_goods.go), but recoverContainer
-// only ever read "iterations" when reconstructing the container entity on restart.
-// Every recovered factory silently collapsed to the hardcoded default of 1, ran one
-// more production cycle, then self-completed (Container.ShouldContinue is false once
-// currentIteration reaches 1) — indistinguishable from "didn't survive restart" to
-// the captain, even though the persisted budget said run forever (-1) or for N more
-// cycles. Unlike goods_factory_coordinator, contract_fleet_coordinator and
-// manufacturing_coordinator loop forever inside a single Handle() call, so the same
-// stale-budget bug is latent but harmless for them; this only bites handlers that
-// return after one cycle and rely on the container-level budget to keep going.
+// "max_iterations" config key (see container_ops_goods.go); recoverContainer must
+// read that same key when reconstructing the container entity on restart, so a
+// persisted run-forever (-1) or N-more-cycles budget survives instead of silently
+// collapsing to the hardcoded default of 1. Unlike goods_factory_coordinator,
+// contract_fleet_coordinator and manufacturing_coordinator loop forever inside a
+// single Handle() call, so the same stale-budget bug is latent but harmless for
+// them; this only bites handlers that return after one cycle and rely on the
+// container-level budget to keep going.
 func TestRecoveryRestoresFactoryIterationBudgetFromMaxIterationsKey(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -299,7 +297,7 @@ func TestRecoveryFailsInvalidConfigJSON(t *testing.T) {
 // player, so recovery must skip it and mark it terminally as dead_era.
 func TestRecoverySkipsDeadEraCoordinator(t *testing.T) {
 	s, db, _ := newRecoveryTestServer(t)
-	// A player from a prior, now-closed era (universe reset 2026-07-05 in the bug).
+	// A player from a prior, now-closed era.
 	deadPlayer := persistence.PlayerModel{AgentSymbol: "DEAD-ERA-AGENT", Token: "dead-tok", CreatedAt: time.Now()}
 	require.NoError(t, db.Create(&deadPlayer).Error)
 	insertRunningContainer(t, db, "zombie-fleet-1", "contract_fleet_coordinator", "CONTRACT_FLEET_COORDINATOR",
@@ -315,7 +313,7 @@ func TestRecoverySkipsDeadEraCoordinator(t *testing.T) {
 // TestRecoverySkipsDeadEraWorkerBeforeCoordinatorCheck proves the era guard fires
 // ahead of the worker-adoption path: an era-1 worker (parent coordinator) from a
 // dead-era player is marked dead_era, not worker_interrupted, so the whole dead-era
-// subtree stays down (era-1 workers were resurrecting in the bug report).
+// subtree stays down.
 func TestRecoverySkipsDeadEraWorkerBeforeCoordinatorCheck(t *testing.T) {
 	s, db, _ := newRecoveryTestServer(t)
 	deadPlayer := persistence.PlayerModel{AgentSymbol: "DEAD-ERA-WORKER-AGENT", Token: "dead-tok-2", CreatedAt: time.Now()}

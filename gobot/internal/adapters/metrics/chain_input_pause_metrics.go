@@ -5,12 +5,12 @@ import (
 )
 
 // ChainInputPauseMetricsCollector houses the input-poison anti-cycle counter the factory
-// coordinator emits (sp-r5a6). One family, keyed by output good:
+// coordinator emits. One family, keyed by output good:
 //
 //   - chain_input_pause_total{good}: a COUNTER incremented once per PAUSE EPISODE (a chain
 //     crossing from running to auto-paused because its input layer went ineligible — no
 //     MODERATE+ supply source in-system for a required input), mirroring the chain-P&L kill
-//     episode counter (sp-rh2z) and the stranded-hull episode counter (sp-686e). Backs the
+//     episode counter and the stranded-hull episode counter. Backs the
 //     input-pause rate view and any anti-cycle alert.
 //
 // This is the INPUT side of the self-pruning portfolio (the C2 kill-switch counts the OUTPUT
@@ -27,7 +27,7 @@ type ChainInputPauseMetricsCollector struct {
 	pausesTotal *prometheus.CounterVec
 }
 
-// NewChainInputPauseMetricsCollector creates a new input-pause metrics collector (sp-r5a6).
+// NewChainInputPauseMetricsCollector creates a new input-pause metrics collector.
 func NewChainInputPauseMetricsCollector() *ChainInputPauseMetricsCollector {
 	return &ChainInputPauseMetricsCollector{
 		pausesTotal: prometheus.NewCounterVec(

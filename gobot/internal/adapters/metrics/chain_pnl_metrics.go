@@ -5,7 +5,7 @@ import (
 )
 
 // ChainPnLMetricsCollector houses the per-chain realized-P&L series the factory kill-switch
-// emits (sp-rh2z). Two families, both keyed by output good:
+// emits. Two families, both keyed by output good:
 //
 //   - chain_pnl_realized_per_hour{good}: a GAUGE of the chain's realized P&L per hour over the
 //     rolling window, refreshed every time the coordinator runs a kill-check. This is the
@@ -13,8 +13,8 @@ import (
 //     actually nets (factory local sells + tour realized net − input cost − lift), the
 //     accounting the realization side previously lacked.
 //   - chain_pnl_kills_total{good}: a COUNTER incremented once per kill EPISODE (a chain
-//     crossing from running to auto-paused), mirroring the stranded-hull episode counter
-//     (sp-686e). Backs the ChainPnLKill alert.
+//     crossing from running to auto-paused), mirroring the stranded-hull episode counter.
+//     Backs the ChainPnLKill alert.
 //
 // Pure OBSERVATION (RULINGS #4): a recording miss must never touch the kill decision, so every
 // method is nil-safe and best-effort. The kill-switch itself fails OPEN independently of this
@@ -28,7 +28,7 @@ type ChainPnLMetricsCollector struct {
 	killsTotal *prometheus.CounterVec
 }
 
-// NewChainPnLMetricsCollector creates a new chain-P&L metrics collector (sp-rh2z).
+// NewChainPnLMetricsCollector creates a new chain-P&L metrics collector.
 func NewChainPnLMetricsCollector() *ChainPnLMetricsCollector {
 	return &ChainPnLMetricsCollector{
 		realizedPerHour: prometheus.NewGaugeVec(

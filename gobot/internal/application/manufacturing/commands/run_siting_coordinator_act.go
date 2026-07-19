@@ -8,17 +8,17 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// act reconciles the running portfolio against the desired top-K (ACT step, sp-vdld M5):
-// launch chains in desired-but-not-running THROUGH the guard stack (Launch → the
-// goods_factory container runs 2dv4 + a5j7 + C2 + r5a6 on its own iterations, guards veto
-// at zero cost), and retire chains running-but-not-desired via a clean container stop, with
-// hysteresis (a chain must fall out of top-K for RetireHysteresisTicks consecutive ticks
-// before it is retired — anti-thrash). Returns (launched, retired) counts.
+// act reconciles the running portfolio against the desired top-K: launch chains in
+// desired-but-not-running THROUGH the guard stack (Launch → the goods_factory container runs
+// its own chain-margin, fail-closed sourcing, chain-P&L kill, and input-poison anti-cycle
+// guards on its own iterations, guards veto at zero cost), and retire chains
+// running-but-not-desired via a clean container stop, with hysteresis (a chain must fall out
+// of top-K for RetireHysteresisTicks consecutive ticks before it is retired — anti-thrash).
+// Returns (launched, retired) counts.
 //
-// The r5a6 seam: per-chain INPUT-rest (an input-poisoned chain resting and self-recovering)
-// is the running goods_factory coordinator's own job (container-internal state, not a
-// cross-chain API). This coordinator drives PORTFOLIO membership only; it does not
-// reimplement pause/re-attempt.
+// Per-chain INPUT-rest (an input-poisoned chain resting and self-recovering) is the running
+// goods_factory coordinator's own job (container-internal state, not a cross-chain API). This
+// coordinator drives PORTFOLIO membership only; it does not reimplement pause/re-attempt.
 //
 // FAIL-SAFE: if the running set cannot be read, ACT does nothing this tick (never launch a
 // duplicate or retire blindly on a stale view). Per-chain launch/retire errors are logged and

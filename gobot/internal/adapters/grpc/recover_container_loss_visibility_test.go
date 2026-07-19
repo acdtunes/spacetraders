@@ -43,8 +43,7 @@ func (r *syncRecorder) lost() []*captain.Event {
 // a container that was expected to be RUNNING but fails to recover must announce
 // itself with exactly one interrupt-class container.lost event NAMING it (id +
 // type + why), while a coordinator-managed worker skipped in the same pass stays
-// silent. Silent absence — the +200k/hr MEDICINE factory dead ~100 min, caught
-// only by eyeball — is the incident this makes impossible.
+// silent. Silent absence is the failure mode this makes impossible.
 func TestRecoveryEmitsNamedLostEventForFailedContainer(t *testing.T) {
 	rec := &syncRecorder{}
 	SetCaptainEventRecorder(rec)

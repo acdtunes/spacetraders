@@ -9,7 +9,7 @@ import (
 )
 
 // bfsBranchRoots annotates every reachable system with its CORRIDOR identity — the hop-1
-// ancestor on the shortest BFS path from the anchor set (sp-rjgr). It is the depth slice's
+// ancestor on the shortest BFS path from the anchor set. It is the depth slice's
 // "bearing": two deep virgins with different roots lie down different branches. These pin its
 // contract with in-memory adjacency, mirroring the pure bfsHops cases.
 

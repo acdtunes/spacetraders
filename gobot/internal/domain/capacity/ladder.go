@@ -1,6 +1,6 @@
 package capacity
 
-// The DIFF escalation ladder (st-zr0, spec: DIFF + CONVERGE). Gap = desired −
+// The DIFF escalation ladder (spec: DIFF + CONVERGE). Gap = desired −
 // actual, closed by the CHEAPEST lever able to close it — this ordering is
 // what preserves per-hull-sustained $/hr:
 //

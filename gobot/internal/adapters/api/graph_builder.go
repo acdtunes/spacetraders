@@ -40,7 +40,6 @@ func NewGraphBuilder(
 func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string, playerID int) (*system.NavigationGraph, error) {
 	log.Printf("Building graph for system %s...", systemSymbol)
 
-	// Get player token
 	playerIDValue, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid player ID: %w", err)
@@ -50,7 +49,6 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		return nil, fmt.Errorf("failed to get player: %w", err)
 	}
 
-	// Fetch all waypoints with pagination
 	allWaypoints := []system.WaypointAPIData{}
 	page := 1
 	limit := 20
@@ -70,7 +68,6 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 
 		log.Printf("  Fetched page %d: %d waypoints", page, len(result.Data))
 
-		// Check if we have more pages
 		totalPages := (result.Meta.Total / limit)
 		if result.Meta.Total%limit > 0 {
 			totalPages++
@@ -87,15 +84,11 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		return nil, fmt.Errorf("no waypoints found for system %s", systemSymbol)
 	}
 
-	// Build NavigationGraph for navigation (infinite TTL)
 	graph := system.NewNavigationGraph(systemSymbol)
 
-	// Prepare waypoint objects for trait cache (2hr TTL)
 	waypointObjects := []*shared.Waypoint{}
 
-	// Process waypoints with dual-cache strategy
 	for _, wp := range allWaypoints {
-		// Extract orbitals
 		orbitals := []string{}
 		for _, orbital := range wp.Orbitals {
 			if symbol, ok := orbital["symbol"]; ok {
@@ -103,7 +96,6 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 			}
 		}
 
-		// Extract traits
 		traits := []string{}
 		for _, trait := range wp.Traits {
 			if symbol, ok := trait["symbol"]; ok {
@@ -113,10 +105,8 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 			}
 		}
 
-		// Determine has_fuel
 		hasFuel := shared.TraitsGrantFuel(traits)
 
-		// Create full waypoint object with traits
 		waypointObj, err := shared.NewWaypoint(wp.Symbol, wp.X, wp.Y)
 		if err != nil {
 			log.Printf("Warning: failed to create waypoint %s: %v", wp.Symbol, err)
@@ -129,14 +119,11 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		waypointObj.HasFuel = hasFuel
 		waypointObj.Orbitals = orbitals
 
-		// Add to navigation graph
 		graph.AddWaypoint(waypointObj)
 
-		// Add to waypoint cache list
 		waypointObjects = append(waypointObjects, waypointObj)
 	}
 
-	// Build edges (bidirectional graph)
 	waypointList := make([]string, 0, len(graph.Waypoints))
 	for symbol := range graph.Waypoints {
 		waypointList = append(waypointList, symbol)
@@ -149,7 +136,6 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		for _, wp2Symbol := range waypointList[i+1:] {
 			wp2 := graph.Waypoints[wp2Symbol]
 
-			// Check if this is an orbital relationship (zero distance)
 			isOrbital := false
 			for _, orbital := range wp1.Orbitals {
 				if orbital == wp2Symbol {
@@ -173,19 +159,16 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 				distance = 0.0
 				edgeType = system.EdgeTypeOrbital
 			} else {
-				// Use domain Waypoint.DistanceTo() method
 				distance = wp1.DistanceTo(wp2)
 				edgeType = system.EdgeTypeNormal
 			}
 
-			distance = math.Round(distance*100) / 100 // Round to 2 decimal places
+			distance = math.Round(distance*100) / 100
 
-			// Add bidirectional edges using NavigationGraph method
 			graph.AddEdge(wp1Symbol, wp2Symbol, distance, edgeType)
 		}
 	}
 
-	// Save waypoints with traits to waypoints table (2hr TTL)
 	for _, waypointObj := range waypointObjects {
 		if err := b.waypointRepo.Add(ctx, waypointObj); err != nil {
 			log.Printf("Warning: failed to save waypoint %s: %v", waypointObj.Symbol, err)

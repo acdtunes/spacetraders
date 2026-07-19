@@ -26,28 +26,24 @@ type TradeRouteOperationResult struct {
 const operationTrade = "trade"
 
 // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
-// daemon container (sp-zewt), replacing the CLI in-process runner that produced five
-// live-only bugs (r3cl/sh6w/2sam/sj7p + the vjwb orphan-on-death). Templated on the
-// gas/factory coordinator start path:
+// daemon container (sp-zewt). Templated on the gas/factory coordinator start path:
 //
 //   - Idle-gap discipline: it refuses any hull that is not genuinely idle BEFORE
 //     persisting anything, so a refused start has no side effects and never steals a
-//     hull the daemon is actively flying (the old CLI claimShip refusal, moved to the
-//     start boundary). The ContainerRunner's AssignToContainer is the secondary guard
-//     for the narrow check→assign race.
+//     hull the daemon is actively flying. The ContainerRunner's AssignToContainer is
+//     the secondary guard for the narrow check→assign race.
 //   - Single-writer + release-on-death: the ContainerRunner claims the hull through the
 //     normal lifecycle (createShipAssignments via the ship_symbol metadata) and
 //     force-releases it on every terminal path (completion, crash, cancel), so the hull
-//     is never stranded — retiring vjwb.
+//     is never stranded.
 //   - Recovery-safe: the row is created RUNNING (runner.Start transitions PENDING→RUNNING),
 //     and "trade_route" is registered in the command factory, so a daemon restart rebuilds
-//     the circuit from its launch config or cleanly releases the hull. The CLI runner's
-//     PENDING row was invisible to recovery, which is exactly what stranded vjwb.
+//     the circuit from its launch config or cleanly releases the hull.
 //
 // Ship movement inside the circuit goes through the daemon mediator's NavigateRouteCommand
 // handler, which is backed by the RouteExecutor (orbit → refuel → NavigateDirect →
-// arrival events) — so the container never spawns a re-claiming child navigate, and the
-// four CLI nav patches (2sam self-collision, sj7p orbit-before-nav) are subsumed for free.
+// arrival events) — so the container never spawns a re-claiming child navigate, avoiding
+// self-collision and orbit-before-nav races.
 //
 // destWaypoint is the optional --dest lane-targeting override (sp-xwa1): a destination
 // waypoint or system symbol that pins the circuit to that lane instead of the ranker's

@@ -8,10 +8,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Observability (sp-4a4e): the coordinator's "Ship selection completed" log named
-// only the winner, so a 746-unit pick was impossible to diagnose - was the closer
-// command ship even in the pool? The candidate summary must enumerate every
-// candidate with its distance to the target and mark the command ship, e.g.
+// Observability: the "Ship selection completed" log naming only the winner
+// makes a pick impossible to audit - was a closer candidate even in the pool?
+// The candidate summary must enumerate every candidate with its distance to
+// the target and mark the command ship, e.g.
 // "TORWIND-3@0.00, TORWIND-1@50.00(command)".
 func TestSummarizeCandidates_EnumeratesEveryCandidateWithDistanceMarkingCommand(t *testing.T) {
 	target, err := shared.NewWaypoint("X1-TW-MKT", 0, 0)

@@ -1,6 +1,6 @@
 package commands
 
-// The tiered-autonomy APPROVAL-EXECUTION path (bead st-0h8, epic st-7zk).
+// The tiered-autonomy APPROVAL-EXECUTION path.
 //
 // Under v1 tiered autonomy the CONVERGE backstop structurally refuses EVERY
 // Approved tier-4 action at/over the approval threshold (exceedsApprovalGate),
@@ -12,14 +12,11 @@ package commands
 // purpose) means there is NO second guard stack to drift out of lockstep with
 // the money gate.
 //
-// DEPLOY-INERT: st-0h8 builds and proves the mechanism; it does NOT wire a live
-// trigger into the reconcile loop, and st-cpc (pre-arm cleanup) HARDENED it for
-// concurrent sweeps WITHOUT arming it. A future arming lane backs
-// ApprovedProposalSource with the real captain approval signal (a bead
-// status/label transition) and drives ExecuteApproved on a cadence. Until then
-// nothing is ever approved, so nothing executes — and the production
-// Actuator.ExecuteCapital is itself still a fail-closed stub (st-5ig), a third
-// independent layer between an approval and a real purchase.
+// DEPLOY-INERT: no live trigger drives ExecuteApproved from the reconcile loop,
+// and ApprovedProposalSource has no real approval-signal backing yet, so nothing
+// is ever approved and nothing executes. Actuator.ExecuteCapital is itself a
+// fail-closed stub — a third independent layer between an approval and a real
+// purchase.
 
 import (
 	"context"
@@ -31,10 +28,8 @@ import (
 
 // ApprovedProposalSource yields the capital proposals a human/captain has
 // APPROVED and that await execution. INTEGRATION POINT for a future arming lane:
-// back this with the captain approval signal (a bead status/label transition — a
-// proposal whose backing EventCapacityCapexProposal the captain declared/approved).
-// st-0h8 proves the execution path against this seam; st-cpc serialized the sweep
-// against double-execution (see ProposalApprovalExecutor.sweep). If a future arming
+// back this with the captain approval signal (a proposal whose backing
+// EventCapacityCapexProposal the captain declared/approved). If a future arming
 // lane ever fans execution across processes, add an atomic approved→in-flight claim
 // HERE — the in-process sweep lock cannot serialize across separate instances.
 type ApprovedProposalSource interface {
@@ -64,14 +59,13 @@ type ProposalApprovalExecutor struct {
 
 	// sweep serializes ExecuteApproved END-TO-END (the ApprovedProposals READ
 	// included) so two OVERLAPPING sweeps can never both grab the same approved
-	// proposal before either marks it Executed — the double capital-spend hazard
-	// (st-cpc item 4). Wrapping the read is what makes it correct: a second sweep
-	// reads the approved-and-awaiting set only AFTER the first sweep's MarkExecuted
+	// proposal before either marks it Executed — the double capital-spend hazard.
+	// Wrapping the read is what makes it correct: a second sweep reads the
+	// approved-and-awaiting set only AFTER the first sweep's MarkExecuted
 	// has moved every executed proposal out of it, so the second finds nothing left
-	// to re-spend. Preserves every st-0h8 invariant VERBATIM — the per-proposal path
-	// (gate → verb/tier → ExecuteCapital → mark-on-success, skip-and-retry on
-	// failure) is untouched; serialization only removes the interleave, adding no
-	// per-proposal state.
+	// to re-spend. Serialization only removes the interleave, adding no per-proposal
+	// state — the per-proposal path (gate → verb/tier → ExecuteCapital →
+	// mark-on-success, skip-and-retry on failure) is untouched.
 	//
 	// Assumes a SINGLE executor instance, which the ONE standing capacity reconciler
 	// guarantees (the executor is a stateless in-process helper it drives, never

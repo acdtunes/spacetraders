@@ -68,7 +68,6 @@ func NewRecordTransactionHandler(
 	transactionRepo ledger.TransactionRepository,
 	clock shared.Clock,
 ) *RecordTransactionHandler {
-	// Default to real clock if not provided
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
@@ -89,19 +88,16 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		return nil, fmt.Errorf("invalid request type: expected *RecordTransactionCommand")
 	}
 
-	// Parse and validate transaction type
 	transactionType, err := ledger.ParseTransactionType(cmd.TransactionType)
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction type: %w", err)
 	}
 
-	// Create player ID
 	playerID, err := shared.NewPlayerID(cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid player ID: %w", err)
 	}
 
-	// Determine timestamp
 	timestamp := h.clock.Now()
 	if cmd.Timestamp != nil {
 		timestamp = *cmd.Timestamp
@@ -111,9 +107,8 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Single-writer balance derivation. Three sources, in strict order of
-	// authority (this is the sp-sc6u fix — balance_after had forked +~470k from
-	// the live API by trusting reconstructed/stale values over API truth):
+	// Single-writer balance derivation, three sources in strict order of
+	// authority:
 	//
 	//  1. AuthoritativeBalance — the agent's credits as returned in-band by
 	//     this transaction's OWN API response (data.agent.credits). Ground
@@ -125,7 +120,7 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	//     it for me": manufacturing sends 0/0, cargo/refuel send 0/amount —
 	//     both reconstruct rather than corrupt or zero the chain.
 	//  3. Explicit — caller supplied a self-consistent before/after pair it is
-	//     sure of (no production caller does this anymore; retained for a
+	//     sure of (no production caller does this today; retained for a
 	//     genuine first-ever transaction and for callers that fetched truth).
 	//
 	// The serialized writer keeps the running balance in memory because
@@ -142,7 +137,6 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		balanceAfter = balanceBefore + cmd.Amount
 	}
 
-	// Create transaction entity
 	transaction, err := ledger.NewTransaction(
 		playerID,
 		timestamp,
@@ -160,7 +154,6 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Persist transaction
 	if err := h.transactionRepo.Create(ctx, transaction); err != nil {
 		return nil, fmt.Errorf("failed to persist transaction: %w", err)
 	}
@@ -171,28 +164,23 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	h.lastBalance[cmd.PlayerID] = balanceAfter
 	h.balanceWarm[cmd.PlayerID] = true
 
-	// Record transaction metrics
-	// Extract category from transaction metadata (if available)
 	category := ""
 	if transaction.Category() != "" {
 		category = string(transaction.Category())
 	}
 
-	// Extract agent symbol from metadata (if available)
 	agentSymbol := ""
 	if cmd.Metadata != nil {
 		if agent, ok := cmd.Metadata["agent"].(string); ok {
 			agentSymbol = agent
 		}
 	}
-	// Fallback to a default agent if not provided
 	if agentSymbol == "" {
 		agentSymbol = "UNKNOWN"
 	}
 
-	// Record the transaction metrics. cmd.OperationType (contract/tour/
-	// arbitrage/factory/...) drives the sp-miqt ledger-flow counters behind the
-	// cr/hr financial panels; it was previously dropped here.
+	// cmd.OperationType (contract/tour/arbitrage/factory/...) drives the
+	// ledger-flow counters behind the cr/hr financial panels; must be forwarded.
 	metrics.RecordTransaction(
 		cmd.PlayerID,
 		agentSymbol,

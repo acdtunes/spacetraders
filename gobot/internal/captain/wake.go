@@ -181,20 +181,16 @@ func (s *Supervisor) hasUnmailedEvents(events []*captain.Event) bool {
 }
 
 // recordWake resets the heartbeat/backoff clocks and persists scheduling
-// state, exactly as a legacy session start did. It is called on every
-// successful wake delivery — firstWake, renudge, and the empty-heartbeat
-// nudge alike — so it also clears the delivery-failure backoff (sp-sk68 D1):
-// any delivered wake proves the channel is healthy again, regardless of
-// whether it carried a new event.
+// state. It is called on every successful wake delivery — firstWake, renudge,
+// and the empty-heartbeat nudge alike — so it also clears the delivery-failure
+// backoff (sp-sk68 D1): any delivered wake proves the channel is healthy
+// again, regardless of whether it carried a new event.
 //
 // recordWake deliberately does NOT charge the hourly session cap. Only a
 // genuinely new event batch does that — see recordNewSession (sp-ftgq): a
 // re-nudge of an already-mailed event or a no-op heartbeat is not a new
 // captain session, and must not compete with genuinely new events for the
-// cap that exists to bound runaway NEW-session creation. Before this split,
-// every wake delivery charged the cap, so a backlog of unacked events being
-// re-nudged (or a quiet fleet's heartbeats) could exhaust it on its own and
-// starve a brand-new event of ever waking the captain.
+// cap that exists to bound runaway NEW-session creation.
 func (s *Supervisor) recordWake(now time.Time) {
 	s.lastSession = now
 	s.deliveryFailures = 0
@@ -339,9 +335,9 @@ func (s *Supervisor) consumeCreditsBounds(policy WakePolicy) {
 // tripwire that PRODUCED that crossing is CONSUMED — removed from the persisted
 // RegimePolicy — so it never re-fires until the captain re-declares it. The
 // persisted policy IS the durable one-shot state (a consumed tripwire is simply
-// absent), so a watchkeeper restart never resurrects it (RULINGS #2). This is
-// what retires the old Window-based re-fire cooldown: a consumed tripwire cannot
-// re-cross, so no timer is needed to suppress the re-fire.
+// absent), so a watchkeeper restart never resurrects it (RULINGS #2). A
+// consumed tripwire cannot re-cross, so no separate timer is needed to
+// suppress a re-fire.
 //
 // Call ONLY after a successful delivery (ran==true, no error): a fired crossing
 // stays armed through a delivery outage until it truly reaches the captain,

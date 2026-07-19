@@ -59,11 +59,10 @@ type Supervisor struct {
 
 	// Wake-delivery backoff (sp-sk68 D1). recordWake is the ONLY writer of
 	// last_session, so when gw.SendMail/Nudge fails persistently the cadence
-	// stays "due" forever and the old code retried on every 30s tick with no
-	// throttle, no progress, and no distinct signal. These in-memory (never
-	// persisted) fields throttle repeated failed deliveries on an exponential
-	// backoff and make the outage grep-able. A brand-new interrupt-class event
-	// always bypasses the backoff so interrupt delivery is never regressed.
+	// stays "due" forever. These in-memory (never persisted) fields throttle
+	// repeated failed deliveries on an exponential backoff and make the outage
+	// grep-able. A brand-new interrupt-class event always bypasses the backoff
+	// so interrupt delivery is never regressed.
 	lastDeliveryAttempt   time.Time
 	deliveryFailures      int
 	firstDeliveryFailure  time.Time
@@ -117,9 +116,9 @@ type Supervisor struct {
 	// IdleEpisodes/ContainerlessEpisodes are nil-safe-by-design (see episodeTracker
 	// in detectors.go) specifically so a caller that forgets to wire them keeps
 	// compiling — but that safety net means a fresh nil tracker built inside Tick
-	// every 30s would silently reproduce the exact pre-sp-6g96 spam (no dedup at
-	// all) instead of gating on state transitions. Constructing these once here,
-	// not per-tick, is what makes the dedup real in production.
+	// every 30s would silently disable dedup entirely, spamming on every state
+	// transition instead of gating on them. Constructing these once here, not
+	// per-tick, is what makes the dedup real in production.
 	idleEpisodes          *episodeTracker
 	containerlessEpisodes *episodeTracker
 

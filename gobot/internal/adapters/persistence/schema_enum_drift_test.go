@@ -13,8 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// This file is the durable schema-drift gate for the sp-8ind defect class,
-// generalized from the original valid_task_type-only guard (sp-tvcm).
+// This file is the durable schema-drift gate for the defect class.
 //
 // The defect class: a domain enum grows a value the code persists to a column,
 // but the column's CHECK(... IN (...)) constraint is never migrated to accept it,
@@ -105,7 +104,7 @@ func registeredEnumConstraints() []enumConstraint {
 			},
 		},
 		{
-			// sp-cu42: domain is derived from storage.AllOperationTypes() rather
+			// Domain is derived from storage.AllOperationTypes() rather
 			// than hand-copied here. The Lane C WAREHOUSE addition drifted
 			// undetected because this list was a separate, easy-to-forget copy of
 			// the domain constants — it stayed at the original three values while
@@ -369,7 +368,7 @@ func keys(set map[string]struct{}) []string {
 }
 
 // allOperationTypeStrings stringifies storage.AllOperationTypes() for use as
-// the valid_operation_type domain list (sp-cu42) — see the registration
+// the valid_operation_type domain list — see the registration
 // comment above for why this is derived rather than hand-copied.
 func allOperationTypeStrings() []string {
 	types := storage.AllOperationTypes()

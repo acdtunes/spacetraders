@@ -18,7 +18,6 @@ type Waypoint struct {
 	Orbitals     []string `json:"orbitals,omitempty"`
 }
 
-// NewWaypoint creates a new waypoint with validation
 func NewWaypoint(symbol string, x, y float64) (*Waypoint, error) {
 	if symbol == "" {
 		return nil, NewValidationError("symbol", "cannot be empty")
@@ -74,8 +73,7 @@ func (w *Waypoint) String() string {
 //   - "UNCHARTED": Not yet explored
 //   - etc.
 //
-// This method encapsulates trait checking logic that was previously scattered
-// across application layer (RouteExecutor, etc.), following Tell Don't Ask principle.
+// This method encapsulates trait checking logic, following Tell Don't Ask principle.
 func (w *Waypoint) HasTrait(trait string) bool {
 	for _, t := range w.Traits {
 		if t == trait {
@@ -87,7 +85,6 @@ func (w *Waypoint) HasTrait(trait string) bool {
 
 // IsMarketplace checks if this waypoint has a marketplace.
 //
-// This is a convenience method for the common trait check.
 // Marketplaces allow ships to buy/sell cargo and refuel.
 func (w *Waypoint) IsMarketplace() bool {
 	return w.HasTrait("MARKETPLACE")

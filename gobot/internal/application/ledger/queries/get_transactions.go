@@ -71,31 +71,26 @@ func (h *GetTransactionsHandler) Handle(ctx context.Context, request mediator.Re
 		return nil, fmt.Errorf("invalid request type: expected *GetTransactionsQuery")
 	}
 
-	// Resolve player ID
 	playerID, err := h.resolvePlayerID(query.PlayerID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build query options
 	opts, err := h.buildQueryOptions(query)
 	if err != nil {
 		return nil, err
 	}
 
-	// Query transactions
 	transactions, err := h.transactionRepo.FindByPlayer(ctx, playerID, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query transactions: %w", err)
 	}
 
-	// Get total count
 	total, err := h.transactionRepo.CountByPlayer(ctx, playerID, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count transactions: %w", err)
 	}
 
-	// Convert to DTOs
 	dtos := make([]*TransactionDTO, len(transactions))
 	for i, tx := range transactions {
 		dtos[i] = h.toDTO(tx)
@@ -114,7 +109,6 @@ func (h *GetTransactionsHandler) resolvePlayerID(playerID int) (shared.PlayerID,
 func (h *GetTransactionsHandler) buildQueryOptions(query *GetTransactionsQuery) (ledger.QueryOptions, error) {
 	opts := ledger.DefaultQueryOptions()
 
-	// Date range
 	if query.StartDate != nil {
 		opts.StartDate = query.StartDate
 	}
@@ -122,7 +116,6 @@ func (h *GetTransactionsHandler) buildQueryOptions(query *GetTransactionsQuery) 
 		opts.EndDate = query.EndDate
 	}
 
-	// Category filter
 	if query.Category != nil {
 		category, err := ledger.ParseCategory(*query.Category)
 		if err != nil {
@@ -131,7 +124,6 @@ func (h *GetTransactionsHandler) buildQueryOptions(query *GetTransactionsQuery) 
 		opts.Category = &category
 	}
 
-	// Transaction type filter
 	if query.TransactionType != nil {
 		txType, err := ledger.ParseTransactionType(*query.TransactionType)
 		if err != nil {
@@ -140,7 +132,6 @@ func (h *GetTransactionsHandler) buildQueryOptions(query *GetTransactionsQuery) 
 		opts.TransactionType = &txType
 	}
 
-	// Related entity filters
 	if query.RelatedEntityType != nil {
 		opts.RelatedEntityType = query.RelatedEntityType
 	}
@@ -148,13 +139,11 @@ func (h *GetTransactionsHandler) buildQueryOptions(query *GetTransactionsQuery) 
 		opts.RelatedEntityID = query.RelatedEntityID
 	}
 
-	// Pagination
 	if query.Limit > 0 {
 		opts.Limit = query.Limit
 	}
 	opts.Offset = query.Offset
 
-	// Sorting
 	if query.OrderBy != "" {
 		opts.OrderBy = query.OrderBy
 	}

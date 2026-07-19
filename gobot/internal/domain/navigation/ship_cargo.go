@@ -21,7 +21,6 @@ func (s *Ship) CargoUnits() int {
 	return s.cargo.Units
 }
 
-// HasCargoSpace checks if ship has available cargo space
 func (s *Ship) HasCargoSpace(units int) bool {
 	if s.cargo == nil {
 		return units <= s.cargoCapacity
@@ -29,7 +28,6 @@ func (s *Ship) HasCargoSpace(units int) bool {
 	return (s.cargo.Units + units) <= s.cargoCapacity
 }
 
-// AvailableCargoSpace returns available cargo space
 func (s *Ship) AvailableCargoSpace() int {
 	if s.cargo == nil {
 		return s.cargoCapacity
@@ -37,7 +35,6 @@ func (s *Ship) AvailableCargoSpace() int {
 	return s.cargo.AvailableCapacity()
 }
 
-// IsCargoEmpty checks if cargo hold is empty
 func (s *Ship) IsCargoEmpty() bool {
 	if s.cargo == nil {
 		return true
@@ -45,7 +42,6 @@ func (s *Ship) IsCargoEmpty() bool {
 	return s.cargo.IsEmpty()
 }
 
-// IsCargoFull checks if cargo hold is full
 func (s *Ship) IsCargoFull() bool {
 	if s.cargo == nil {
 		return false

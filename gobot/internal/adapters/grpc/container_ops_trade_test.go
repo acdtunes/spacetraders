@@ -135,11 +135,10 @@ func TestStartTradeRoute_RefusesNonIdleShip(t *testing.T) {
 // An idle hull must produce a recovery-visible trade_route container: persisted with
 // the trade_route command_type and a config carrying ship_symbol/system_symbol so
 // restart recovery can rebuild it, and driven by a live runner (which claims the hull
-// and flips the row to RUNNING). This is the recovery-visibility that retires the vjwb
-// PENDING-orphan — the CLI runner's claim lived in a PENDING row no runner ever owned,
-// so recovery could not see it. The RUNNING transition and adoption on restart are
-// asserted by TestRecoveryAdoptsRunningTradeRouteContainer (the runner's async status
-// write lands on a different pooled :memory: connection than this goroutine can read).
+// and flips the row to RUNNING) — recovery must never find it stuck in PENDING, which no
+// runner would own. The RUNNING transition and adoption on restart are asserted by
+// TestRecoveryAdoptsRunningTradeRouteContainer (the runner's async status write lands
+// on a different pooled :memory: connection than this goroutine can read).
 func TestStartTradeRoute_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	ship := newIdleTradeShip(t, "TRADER-1", playerID)

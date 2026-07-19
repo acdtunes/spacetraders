@@ -1,9 +1,9 @@
 // Package liquidation provides a standing, workflow-neutral mechanism for clearing
-// stranded leftover cargo off an idle hull so it can re-enter candidacy (sp-39oi).
+// stranded leftover cargo off an idle hull so it can re-enter candidacy.
 //
 // A hull ends a trading/contract workflow with leftover cargo aboard on many exit
-// paths (sell-floor abort, margin abort, max-spend abort, error exits — enumerated
-// on sp-39oi). The contract spawn filter (contract.FilterUnrelatedCargo) then parks
+// paths (sell-floor abort, margin abort, max-spend abort, error exits). The
+// contract spawn filter (contract.FilterUnrelatedCargo) then parks
 // any laden hull out of candidacy, so a fleet-wide crop of strands jams the contract
 // pool to zero fulfillments. This package is the self-clearing leg: a one-shot worker
 // container the contract coordinator spawns on each parked-with-cargo hull. It mirrors
@@ -38,7 +38,7 @@ type LiquidateCargoCommand struct {
 	// may be jettisoned as a LAST resort. 0 (the default) disables jettison entirely,
 	// so nothing is ever destroyed without an explicit captain-set threshold: a lot
 	// with no in-system bid is HELD, and a lot with a bid is always SOLD (value
-	// recovered, never dumped — sp-39oi RULINGS #5). A positive value opts in: a lot
+	// recovered, never dumped — RULINGS #5). A positive value opts in: a lot
 	// whose recoverable value is below it (including an unsellable lot, value 0) is
 	// jettisoned to free the hull.
 	MinJettisonValue int
@@ -90,18 +90,17 @@ func (h *LiquidateCargoHandler) Handle(ctx context.Context, request common.Reque
 	}
 	logger := common.LoggerFromContext(ctx)
 
-	// sp-zc8i: stamp this worker's operation context so its SELL_CARGO row AND every
-	// refuel the sink-hop navigate fires inherit operation_type="liquidation" instead of
-	// the 'manual' fallback. The navigate/sell legs are ctx-transparent (they record
-	// whatever operation context rides the ctx), so without this stamp the loss-dump sale
-	// and its travel refuels landed unattributed. A worker spawned without a CoordinatorID
-	// (direct/CLI) yields a nil context and honestly stays 'manual'. Mirrors how every
-	// sibling coordinator tags its writes at the boundary (arb/tour/stocker/…).
+	// Stamp this worker's operation context so its SELL_CARGO row and every refuel the
+	// sink-hop navigate fires inherit operation_type="liquidation" instead of the
+	// 'manual' fallback: the navigate/sell legs are ctx-transparent (they record
+	// whatever operation context rides the ctx). A worker spawned without a
+	// CoordinatorID (direct/CLI) yields a nil context and stays 'manual'. Mirrors how
+	// every sibling coordinator tags its writes at the boundary (arb/tour/stocker/…).
 	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.CoordinatorID, "liquidation"))
 
 	// Reconcile against the server before touching cargo: a cached non-empty hold can
-	// be a phantom foreign-cargo desync (cluster L47), and a lot count is about to
-	// drive real sell/jettison I/O. Failing closed here is honest — better to fail the
+	// be a phantom foreign-cargo desync, and a lot count is about to drive real
+	// sell/jettison I/O. Failing closed here is honest — better to fail the
 	// container and retry than sell or dump against a state we cannot confirm.
 	ship, err := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {

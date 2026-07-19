@@ -15,24 +15,23 @@ import (
 // AbsorptionLedgerGORM implements the domain absorption.Ledger port.
 var _ absorption.Ledger = (*AbsorptionLedgerGORM)(nil)
 
-// Absorption-ledger tuning. All three are trade-analyst rulings (sp-78ai Q2) and
-// flow in as config (RULINGS #5) — the constants are only the fail-safe defaults
-// NewAbsorptionLedger applies when a caller passes the zero value.
+// Absorption-ledger tuning. All three flow in as config (RULINGS #5) — the constants
+// are only the fail-safe defaults NewAbsorptionLedger applies when a caller passes the
+// zero value.
 const (
 	// DefaultExecutedHardCap bounds how long an EXECUTED recovery shadow may block
-	// before the sweep wipes it regardless of decay. Trade-analyst Q2: 12h, NOT 24h
-	// — 24h is >half the remaining era, so a stuck shadow would embargo a sink for
-	// most of the game; 12h ≈ two half-lives of the slowest TAGGED tier (RESTRICTED,
-	// ~6.9h) and, with probes re-reading hourly, the cap should almost never be what
-	// clears a shadow. It is the belt to the decay curve's suspenders.
+	// before the sweep wipes it regardless of decay. 12h, NOT 24h — 24h is >half the
+	// remaining era, so a stuck shadow would embargo a sink for most of the game; 12h
+	// ≈ two half-lives of the slowest TAGGED tier (RESTRICTED, ~6.9h) and, with probes
+	// re-reading hourly, the cap should almost never be what clears a shadow. It is
+	// the belt to the decay curve's suspenders.
 	DefaultExecutedHardCap = 12 * time.Hour
 	// DefaultShadowFloorFraction is the fraction of one tranche (trade_volume) of
 	// still-occupied depth below which a recovering shadow STOPS blocking a new sell.
-	// Trade-analyst Q2: 0.5 — at 50% of a tranche recovered a new sell takes the
-	// recovered half-tranche near full price with the bp6f 80%-of-quote floor armed
-	// downstream; earlier unblocking rebuilds ladders, later strands capital.
-	// Expressed as a fraction of DEPTH (not wall-clock), so it composes with the
-	// per-tier decay curve.
+	// 0.5 — at 50% of a tranche recovered a new sell takes the recovered half-tranche
+	// near full price with the 80%-of-quote floor armed downstream; earlier unblocking
+	// rebuilds ladders, later strands capital. Expressed as a fraction of DEPTH (not
+	// wall-clock), so it composes with the per-tier decay curve.
 	DefaultShadowFloorFraction = 0.5
 
 	// absorptionReclaimGrace is the small margin before a PLANNED row whose container
@@ -80,11 +79,10 @@ func (c AbsorptionLedgerConfig) withDefaults() AbsorptionLedgerConfig {
 
 // ContainerLivenessProvider reports which container IDs are currently live for a
 // player, so the reserve sweep can reclaim a PLANNED row whose owning container has
-// died without releasing it (the sp-vjwb orphan-reconcile idiom). Optional: a nil
-// provider (or a read error) disables dead-container reclaim for that pass — the
-// safe direction, since a hold we cannot confirm dead is left to its TTL rather
-// than freed. A narrow port so the ledger stays a pure persistence type, faked
-// trivially in tests.
+// died without releasing it. Optional: a nil provider (or a read error) disables
+// dead-container reclaim for that pass — the safe direction, since a hold we cannot
+// confirm dead is left to its TTL rather than freed. A narrow port so the ledger
+// stays a pure persistence type, faked trivially in tests.
 type ContainerLivenessProvider interface {
 	LiveContainerIDs(ctx context.Context, playerID int) (map[string]struct{}, error)
 }
@@ -94,13 +92,13 @@ func laneKeyOf(e absorption.ReserveEntry) absorption.LaneKey {
 	return absorption.LaneKey{Waypoint: e.Waypoint, Good: e.Good, Side: e.Side}
 }
 
-// AbsorptionLedgerGORM is the DB-backed cross-engine absorption ledger (sp-78ai
-// L1). It is the ONLY place cross-container absorption coordination can live: the
-// market cache reflects only EXECUTED trades seconds late, and an in-memory
-// coordinator loses the recovery shadow on the daemon restart that co-dumps punish
-// (design §1). Modeled on the proven SpendReservationLedgerGORM (sp-w3he):
-// insert-then-check under a per-player advisory lock, release on every exit, a
-// self-cleaning sweep inside Reserve with no background job.
+// AbsorptionLedgerGORM is the DB-backed cross-engine absorption ledger. It is the
+// ONLY place cross-container absorption coordination can live: the market cache
+// reflects only EXECUTED trades seconds late, and an in-memory coordinator loses the
+// recovery shadow on the daemon restart that co-dumps punish (design §1). Modeled on
+// the proven SpendReservationLedgerGORM: insert-then-check under a per-player
+// advisory lock, release on every exit, a self-cleaning sweep inside Reserve with no
+// background job.
 type AbsorptionLedgerGORM struct {
 	db       *gorm.DB
 	recovery *absorptionRecoveryModel
@@ -297,10 +295,9 @@ func (r *AbsorptionLedgerGORM) Outstanding(ctx context.Context, playerID int) (m
 // activity read live at sale, trancheSize its trade_volume — so the shadow decays
 // on the right curve and sizes its own recovery floor.
 //
-// UNTAGGED sinks or a zero-unit sale leave NO shadow (trade-analyst Q2): the PLANNED
-// row is deleted, exactly as if the leg had released it. Idempotent: a retry after
-// conversion finds no PLANNED row and is a no-op. A missing row (already swept) is
-// not an error.
+// UNTAGGED sinks or a zero-unit sale leave NO shadow: the PLANNED row is deleted,
+// exactly as if the leg had released it. Idempotent: a retry after conversion finds
+// no PLANNED row and is a no-op. A missing row (already swept) is not an error.
 func (r *AbsorptionLedgerGORM) ConvertByContainer(
 	ctx context.Context,
 	containerID string,
@@ -358,12 +355,11 @@ func (r *AbsorptionLedgerGORM) Release(ctx context.Context, reservationID string
 }
 
 // ReleaseByContainer drops every still-PLANNED reservation a container holds in one
-// statement (the tour re-plan/restart de-dup seam, sp-78ai L3). EXECUTED recovery
-// shadows are deliberately EXCLUDED (state = PLANNED filter): a converted shadow is
-// real market damage still recovering, which the container's own next plan must keep
-// avoiding — only the in-flight intent is stale. Deleting zero rows is a no-op, so a
-// fresh-launch (nothing planned yet) or a double-release is safe. Returns the count
-// dropped.
+// statement (the tour re-plan/restart de-dup seam). EXECUTED recovery shadows are
+// deliberately EXCLUDED (state = PLANNED filter): a converted shadow is real market
+// damage still recovering, which the container's own next plan must keep avoiding —
+// only the in-flight intent is stale. Deleting zero rows is a no-op, so a fresh-launch
+// (nothing planned yet) or a double-release is safe. Returns the count dropped.
 func (r *AbsorptionLedgerGORM) ReleaseByContainer(ctx context.Context, containerID string, playerID int) (int, error) {
 	if containerID == "" {
 		return 0, nil
@@ -497,8 +493,8 @@ func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key ab
 // blockingResidual is an EXECUTED row's decayed occupied depth, but only while it is
 // still AT OR ABOVE its own recovery floor (ShadowFloorFraction × trade_volume). A
 // shadow that has recovered past the floor no longer blocks — it contributes 0, so a
-// new sell may take the recovered depth (trade-analyst Q2). A row with no stored
-// tranche size falls back to blocking on any positive residual (fail closed).
+// new sell may take the recovered depth. A row with no stored tranche size falls back
+// to blocking on any positive residual (fail closed).
 func (r *AbsorptionLedgerGORM) blockingResidual(row *MarketAbsorptionLedgerModel, now time.Time) float64 {
 	if row.ExecutedAt == nil {
 		return 0

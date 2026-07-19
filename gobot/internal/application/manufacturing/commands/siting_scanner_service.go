@@ -5,19 +5,19 @@ import (
 	"sort"
 )
 
-// This file is the SCAN step's engine (sp-vdld M2): SitingScannerService enumerates every
-// candidate (good, system) factory site and applies the gates —
+// This file is the SCAN step's engine: SitingScannerService enumerates every candidate (good,
+// system) factory site and applies the gates —
 //
-//	HARD GATE  an EXPORT market for the good exists in-system (the XX56 lesson: a factory is
-//	           map-fixed; you cannot manufacture where the good only IMPORTs/EXCHANGEs).
+//	HARD GATE  an EXPORT market for the good exists in-system: a factory is map-fixed, so it
+//	           cannot manufacture where the good only IMPORTs/EXCHANGEs.
 //	SOFT GATES the recipe resolves entirely in-system (every fabricated sub-node has an
 //	           in-system EXPORT factory), AND every BUY-leaf feed input has an ELIGIBLE
-//	           in-system source (a5j7 supply-first: a MODERATE+ EXPORT market; the UQ16 lesson:
-//	           IMPORT listings do not count), AND the market data is fresh enough to trust.
+//	           in-system source (supply-first: a MODERATE+ EXPORT market — IMPORT listings do
+//	           not count), AND the market data is fresh enough to trust.
 //
 // It depends only on narrow ports (SitingMarketSource / RecipeFeedResolver / EligibleInputSource)
 // with slim value types, so the gate logic is unit-tested with fakes; the concrete adapters over
-// the market repository, SupplyChainResolver, and MarketLocator are wired in the daemon (M7).
+// the market repository, SupplyChainResolver, and MarketLocator are wired in the daemon.
 //
 // FAIL-CLOSED: siting spends money to launch a chain, so any per-candidate read error excludes
 // that candidate (never launch on uncertain data). A system-level enumeration error skips that
@@ -54,7 +54,7 @@ type RecipeFeedResolver interface {
 // MarketLocator.FindExportMarketBySupplyPriority in wiring).
 type EligibleInputSource interface {
 	// Source returns the chosen source waypoint for the feed. eligible is false when NO
-	// MODERATE+ EXPORT source exists in-system (a5j7 supply-first) — the candidate is excluded.
+	// MODERATE+ EXPORT source exists in-system (supply-first) — the candidate is excluded.
 	Source(ctx context.Context, good, systemSymbol string, playerID int) (waypoint string, eligible bool, err error)
 }
 
@@ -108,7 +108,7 @@ func (s *SitingScannerService) ScanCandidates(ctx context.Context, playerID int,
 			if err != nil || !inSystem || len(feeds) == 0 {
 				continue
 			}
-			// SOFT GATE 2: every feed has an eligible in-system source (a5j7 supply-first).
+			// SOFT GATE 2: every feed has an eligible in-system source (supply-first).
 			inputMarkets, ok := s.resolveInputs(ctx, feeds, systemSymbol, playerID)
 			if !ok {
 				continue

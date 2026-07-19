@@ -1,6 +1,6 @@
 // Package probebuy holds the guarded probe-purchase decision extracted from the frontier
-// expansion coordinator (sp-8w89) so a SECOND standing coordinator — the market-freshness
-// auto-sizer (sp-orgp) — reuses the identical money-guard stack instead of re-deriving it.
+// expansion coordinator so a SECOND standing coordinator — the market-freshness auto-sizer —
+// reuses the identical money-guard stack instead of re-deriving it.
 // The DEMAND signal differs per coordinator (frontier: unmanned coverage slots; freshness:
 // aggregate per-system probe sizing) but the SUPPLY-vs-guards decision is the same: buy one
 // probe iff demand outruns supply AND every guard passes.
@@ -41,31 +41,31 @@ type TreasuryReader interface {
 }
 
 // ProbeTarget threads the demand-proximal purchase hint from a coordinator that knows which
-// system the bought probe will serve (sp-hej4). System is the post's system; the EMPTY string
-// is the NO-TARGET path — buy at the home/anchor yard exactly as before this seam existed, for
-// callers with no single target (the freshness sizer's aggregate demand can still name its
-// neediest system, but any caller may leave it empty). HopPenaltyCredits is the price/distance
+// system the bought probe will serve. System is the post's system; the EMPTY string is the
+// NO-TARGET path — buy at the home/anchor yard, for callers with no single target (the
+// freshness sizer's aggregate demand can still name its neediest system, but any caller may
+// leave it empty). HopPenaltyCredits is the price/distance
 // tradeoff knob: the credits of price premium the buyer accepts to spawn the probe ONE gate-hop
 // closer to System, so a nearer-but-pricier yard beats a far-but-cheaper one iff the per-hop
 // saving clears the penalty (a yard's effective cost is PurchasePrice + Hops*HopPenaltyCredits;
 // the lowest wins). It is a SIGNAL only: the fail-closed money guards (25% treasury, spend cap,
 // cooldown, fleet cap) are unchanged and still gate every buy on the yard the target selected.
 //
-// SiblingPriceMarginCredits is the sp-iqv2 supply-depletion / load-balance threshold: repeated
+// SiblingPriceMarginCredits is the supply-depletion / load-balance threshold: repeated
 // buys at one yard raise its price (LIMITED→SCARCE), so once the hop-penalty-preferred yard's
 // scanned price exceeds the CHEAPEST reachable sibling by more than this margin, the buy spreads
 // to that sibling instead of spiraling one market to 4x. It bounds the premium the proximity
 // preference may pay: a yard is abandoned the moment a sibling undercuts it by more than the
-// margin. <=0 disables the override (pure HopPenaltyCredits selection — the pre-sp-iqv2 lever).
+// margin. <=0 disables the override (pure HopPenaltyCredits selection).
 //
-// MaxProbePriceCredits is the sp-3u5d per-unit PRICE CEILING — the BACKSTOP for the deepest-frontier
+// MaxProbePriceCredits is the per-unit PRICE CEILING — the BACKSTOP for the deepest-frontier
 // tail whose ONLY reachable yard is a depleted deep one (no cheaper reachable sibling for the
 // SiblingPriceMarginCredits spread to fall to), where the price spirals to 210-235k with nothing to
 // stop it. It gates the FINAL chosen quote (after the sibling-spread already ran inside QuoteProbe):
 // when set (>0) and the quote exceeds it, the buy DEFERS — the post is left unmanned to retry next
 // cycle (price may recover or a nearer yard become reachable), a normal no-op exactly like the spend
-// cap. 0 (or absent) = DISABLED, byte-identical to pre-sp-3u5d. Only a caller that governs deep-yard
-// spend sets it (the frontier coordinator's live max_probe_price knob); the freshness sizer leaves it 0.
+// cap. 0 (or absent) = DISABLED. Only a caller that governs deep-yard spend sets it (the
+// frontier coordinator's live max_probe_price knob); the freshness sizer leaves it 0.
 type ProbeTarget struct {
 	System                    string
 	HopPenaltyCredits         int
@@ -76,12 +76,12 @@ type ProbeTarget struct {
 // DefaultHopPenaltyCredits is the demand-proximal tradeoff a caller applies when it resolves a
 // target but carries no tuned per-hop penalty of its own (the freshness sizer, whose knob set is
 // separate from the frontier coordinator's). ~one probe's price, so proximity dominates the
-// typical yard price spread by default — the bead's "buy NEAREST the post" policy — while the
-// frontier coordinator's live proximal_yard_hop_penalty knob can raise it toward absolute
-// proximity or lower it toward the cheapest reachable yard.
+// typical yard price spread by default, while the frontier coordinator's live
+// proximal_yard_hop_penalty knob can raise it toward absolute proximity or lower it toward the
+// cheapest reachable yard.
 const DefaultHopPenaltyCredits = 50_000
 
-// DefaultSiblingPriceMarginCredits is the sp-iqv2 supply-depletion margin a caller applies when it
+// DefaultSiblingPriceMarginCredits is the supply-depletion margin a caller applies when it
 // carries no tuned per-yard-spread knob of its own (the freshness sizer). ~a probe's price: it
 // abandons a yard once a reachable sibling undercuts it by more than this, so a market can never
 // spiral toward the observed 4x (home hub 20k→86k) — the proximity preference may pay a modest
@@ -92,7 +92,7 @@ const DefaultSiblingPriceMarginCredits = 30_000
 // ProbePurchaser prices and buys ONE probe through the existing purchase_ship machinery.
 // A nil purchaser or any error fails the buy CLOSED. Structurally satisfied by the same
 // mediator-backed purchaser the frontier coordinator wires (expansion.ProbePurchaser). The
-// target carries the demand-proximal yard hint (sp-hej4); an empty ProbeTarget is the home-yard
+// target carries the demand-proximal yard hint; an empty ProbeTarget is the home-yard
 // path — yard SELECTION only, the guard stack is unchanged.
 type ProbePurchaser interface {
 	QuoteProbe(ctx context.Context, playerID shared.PlayerID, target ProbeTarget) (price int, yard string, err error)
@@ -142,7 +142,7 @@ func NewGuardedProbeBuyer(treasury TreasuryReader, purchaser ProbePurchaser, led
 // cycle rarely touches the network.
 func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.PlayerID, demand, supply int, dryRun bool, target ProbeTarget) Outcome {
 	// Fleet short? If supply already covers demand, an existing probe serves it — buying
-	// would over-provision (the sp-njwy over-buy: supply counts idle + in-flight + manning).
+	// would over-provision (supply counts idle + in-flight + manning).
 	if supply >= demand {
 		return Outcome{Reason: fmt.Sprintf("no purchase: supply covers demand (%d supply >= %d demand)", supply, demand)}
 	}
@@ -182,12 +182,12 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 		return Outcome{Reason: fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", err)}
 	}
 
-	// Per-unit price ceiling (sp-3u5d): the BACKSTOP applied to the FINAL chosen quote — QuoteProbe
+	// Per-unit price ceiling: the BACKSTOP applied to the FINAL chosen quote — QuoteProbe
 	// has already run the sibling-spread, so `price` is the cheapest reachable yard's price. When the
 	// ceiling is set (>0) and even that final price exceeds it, DEFER: leave the post unmanned and
 	// retry next cycle (price may recover or a nearer yard become reachable). A normal no-op exactly
-	// like the spend cap below — never spends, never errors. Ceiling 0 = DISABLED (byte-identical to
-	// pre-sp-3u5d). Placed before the dry-run branch so a dry-run reports the deferral, not a "would buy".
+	// like the spend cap below — never spends, never errors. Ceiling 0 = DISABLED. Placed before the
+	// dry-run branch so a dry-run reports the deferral, not a "would buy".
 	if target.MaxProbePriceCredits > 0 && price > target.MaxProbePriceCredits {
 		return Outcome{Reason: fmt.Sprintf("no purchase: probe price %d exceeds ceiling %d at yard %s (deferred, retry next cycle)", price, target.MaxProbePriceCredits, yard)}
 	}

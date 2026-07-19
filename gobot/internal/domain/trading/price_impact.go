@@ -2,7 +2,7 @@ package trading
 
 import "time"
 
-// --- era-3 price-impact model (sp-tl68, economy-analyst-fitted, out-of-sample validated) ---
+// --- era-3 price-impact model (economy-analyst-fitted, out-of-sample validated) ---
 //
 // The economy analyst fit a per-trade price-impact + weak-recovery model on era-3
 // telemetry that beats snapshot pricing 40-49% out-of-sample on next-leg price MAE.
@@ -25,8 +25,7 @@ const (
 	DefaultSellImpactCoefficient = 0.015
 	// DefaultCooldownTau is the era-3 pooled compression-debt decay constant. Organic
 	// mean-reversion is WEAK — a compressed lane's price-deviation half-life is ~520 min
-	// pooled (the old "lanes recover in ~30 min" assumption was other traffic refilling,
-	// not organic reversion). Debt decays as exp(-dt/tau); tau=750 min gives a half-life
+	// pooled. Debt decays as exp(-dt/tau); tau=750 min gives a half-life
 	// of tau·ln2 ≈ 520 min, matching the pooled fit. Per-tv-tier half-lives (339/663/1681
 	// min for tv ≤40 / 41-80 / 81-240) are folded into this pooled default for now; a
 	// per-tier tau is a clean future refit (config already carries the single knob).

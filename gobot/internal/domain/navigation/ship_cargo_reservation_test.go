@@ -8,7 +8,7 @@ import (
 )
 
 // newCargoReservationTestShip builds a plain docked hull for cargo-reservation
-// tests (sp-1vhv). Reservation overrides are applied by the individual tests.
+// tests. Reservation overrides are applied by the individual tests.
 func newCargoReservationTestShip(t *testing.T) *navigation.Ship {
 	t.Helper()
 	fuel, err := shared.NewFuel(80, 100)
@@ -33,8 +33,8 @@ func newCargoReservationTestShip(t *testing.T) *navigation.Ship {
 	return ship
 }
 
-// The incident good: a MODULE_ symbol is reserved by DEFAULT with no per-hull
-// state at all — the pure-code money guard that fixes the auto-sale.
+// A MODULE_ symbol is reserved by DEFAULT with no per-hull state at all — the
+// pure-code money guard against auto-selling ship hardware.
 func TestIsDefaultReservedCargo_ModulesAndMountsReservedGoodsSellable(t *testing.T) {
 	reserved := []string{"MODULE_CARGO_HOLD_III", "MODULE_JUMP_DRIVE_I", "MOUNT_MINING_LASER_II"}
 	for _, good := range reserved {

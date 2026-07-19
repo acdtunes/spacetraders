@@ -2,12 +2,13 @@ package health
 
 import "testing"
 
-// These tests pin sp-57g9: a coordinator that keeps DETECTING actionable
-// candidates (there IS work to do) yet takes ZERO effect-actions, sustained
-// over N consecutive ticks, is effectively inert but looks alive — the
-// "dry-run survived a day" class (verified RUNNING at deploy, never at its
-// EFFECT). It must WARN exactly ONCE per continuous no-effect episode, never
-// on a healthy loop that is simply idle (nothing to do) or productive.
+// These tests pin the effect-tracking contract: a coordinator that keeps
+// DETECTING actionable candidates (there IS work to do) yet takes ZERO
+// effect-actions, sustained over N consecutive ticks, is effectively inert but
+// looks alive — the "dry-run survived a day" class (verified RUNNING at
+// deploy, never at its EFFECT). It must WARN exactly ONCE per continuous
+// no-effect episode, never on a healthy loop that is simply idle (nothing to
+// do) or productive.
 
 // TestEffectTracker_NoEffectOverThreshold_WarnsExactlyOnce pins the core
 // edge-triggered contract: of N consecutive candidates-but-zero-effect ticks,

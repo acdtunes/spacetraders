@@ -11,8 +11,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// SaveWithRetry (sp-01wc) resolves the concurrent-writer conflict class that
-// sp-60ff's tripwire only *detected*. These tests reuse newShipWriteTestRepo /
+// SaveWithRetry resolves the concurrent-writer conflict class that the prior
+// version-conflict tripwire only *detected*. These tests reuse newShipWriteTestRepo /
 // seedShip (ship_repository_version_test.go) and drive real conflicts against
 // the same sqlite test DB, mirroring TestSave_DetectsVersionConflictAndFallsBack.
 
@@ -69,8 +69,8 @@ func TestSaveWithRetry_ReappliesOnConflict_BothMutationsSurvive(t *testing.T) {
 }
 
 // No-regression / "today's behavior": with the escape hatch engaged
-// (CASRetryDisabled), a conflict falls straight through to last-write-wins —
-// exactly sp-60ff. Our stale +10 clobbers B's +400 (100 + 10 = 110, NOT 510).
+// (CASRetryDisabled), a conflict falls straight through to last-write-wins.
+// Our stale +10 clobbers B's +400 (100 + 10 = 110, NOT 510).
 func TestSaveWithRetry_Disabled_FallsBackToLastWriteWins(t *testing.T) {
 	repo, db, pid := newShipWriteTestRepo(t)
 	repo.SetCASRetryPolicy(0, true) // disabled → legacy last-write-wins

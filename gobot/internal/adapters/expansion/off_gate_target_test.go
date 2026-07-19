@@ -35,7 +35,7 @@ func selectParams() expansionCmd.OffGateSelectionParams {
 	return expansionCmd.OffGateSelectionParams{WarpRangeFuel: 100, ValueWeight: 10, FuelWeight: 1}
 }
 
-// TestOffGateSelect_EnumeratesOffGateSystemsOnly pins the sp-k645 off-gate enumeration
+// TestOffGateSelect_EnumeratesOffGateSystemsOnly pins the off-gate enumeration
 // (test 1): a universe system NOT in the gate-connected graph is a candidate; a
 // gate-connected system NEVER is — even when it sits nearer the frontier edge. The gate
 // graph's key set plus its edge targets are the on-network systems; everything else in the

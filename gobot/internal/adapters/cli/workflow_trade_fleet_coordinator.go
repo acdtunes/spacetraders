@@ -9,7 +9,7 @@ import (
 )
 
 // newWorkflowTradeFleetCoordinatorCommand creates the workflow trade-fleet-coordinator
-// subcommand (sp-1278): it launches the STANDING trade-fleet coordinator, the tour twin
+// subcommand: it launches the STANDING trade-fleet coordinator, the tour twin
 // of `contract start` / `scout start`. The coordinator watches every 'trade'-dedicated
 // hull and, whenever one is parked by an honest tour exit (margins died in both systems,
 // or a completion), relaunches a fresh CONTINUOUS tour on it after a cooldown — retiring

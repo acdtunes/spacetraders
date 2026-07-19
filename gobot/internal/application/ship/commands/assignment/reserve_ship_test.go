@@ -20,7 +20,7 @@ type reserveStubShipRepo struct {
 	reservedReason string
 	reserveCalled  int
 
-	// PreemptForCaptain behavior + capture (sp-w3yd: the --force path). preemptedFrom
+	// PreemptForCaptain behavior + capture (the --force path). preemptedFrom
 	// is the container id the atomic swap reports it revoked the claim from ("" when
 	// the hull was idle).
 	preemptErr      error
@@ -183,7 +183,7 @@ func TestReserveShip_RejectsWhenShipHeldByContainer(t *testing.T) {
 	}
 }
 
-// The sp-w3yd fix: `ship reserve --force` (Force=true) must route through the
+// `ship reserve --force` (Force=true) must route through the
 // atomic PREEMPT path, revoking a coordinator's live claim, NOT the plain
 // reserve path that rejects a claimed hull. The handler must surface the
 // preemption (Preempted + the revoked container) so the operator is told what

@@ -12,30 +12,25 @@ import (
 )
 
 // Default grace period and wait-budget margin for WaitForShipArrival's
-// timeout->resync->park backstop (sp-pafv). ShipEventBus delivers ARRIVED
-// events via a non-blocking, non-replaying send (PublishArrived): if
-// PublishArrived races ahead of SubscribeArrived, or a subscriber's buffered
-// channel is already full, the event is dropped forever with no redelivery.
-// Without a bound, a lost/raced event stalls the waiting worker/coordinator
-// permanently. These defaults only govern the timeout leg - the happy path
-// (event arrives) is unaffected and still returns as soon as the event shows up.
+// timeout->resync->park backstop. ShipEventBus delivers ARRIVED events via a
+// non-blocking, non-replaying send (PublishArrived): if PublishArrived races
+// ahead of SubscribeArrived, or a subscriber's buffered channel is already
+// full, the event is dropped forever with no redelivery. Without a bound, a
+// lost/raced event stalls the waiting worker/coordinator permanently. These
+// defaults only govern the timeout leg - the happy path (event arrives) is
+// unaffected and still returns as soon as the event shows up.
 //
-// sp-pafv originally shipped this as a FIXED grace*maxAttempts budget
-// (~90s total) regardless of the ship's actual route ETA, so every transit
-// longer than ~90s aborted early even though it was legitimately still
-// IN_TRANSIT with the real arrival simply not due yet (e.g. the real-world
-// navigate-TORWIND-F-a36d793d 23-minute DF9E->B10D leg, aborted at ~2
-// minutes). sp-ht1f replaces the fixed attempt count with a budget that
-// scales with the route's own ETA - see calculateArrivalWaitBudget.
+// The wait budget scales with the route's own ETA rather than a fixed
+// attempt count, so a legitimately long transit is never aborted early just
+// because a fixed number of grace periods elapsed - see
+// calculateArrivalWaitBudget.
 const (
 	// DefaultArrivalGracePeriod is the poll cadence once the arrival is due
 	// (or its ETA unknown), the delay of the FIRST safety poll (the fast check
 	// for an event lost before the subscription existed), and the slack added
 	// past the expected arrival before polling. While the arrival is still
 	// ahead, polls are ETA-ALIGNED — one sleep to arrival+grace — not fired
-	// every grace period (sp-7yej invariant 5: the event path is the norm,
-	// the poll the exception; the old fixed 30s tick logged every healthy
-	// minutes-long transit as a stream of WARNING "event not received").
+	// every grace period: the event path is the norm, the poll the exception.
 	DefaultArrivalGracePeriod = 30 * time.Second
 
 	// DefaultArrivalMarginFactor and DefaultArrivalMinMargin size the safety
@@ -58,17 +53,17 @@ const (
 // (ShipStateScheduler.handleArrival, non-replaying) — gets exactly one more local
 // re-read (one gracePeriod later) for that transition to commit before any park
 // decision is taken. It is a LOCAL DB re-read, never an API call, so tightening it
-// costs zero API budget. Only active when the live-reconfirm kill-switch is on; the
-// pre-fix path parks on the first past-ETA observation.
+// costs zero API budget. Only active when the live-reconfirm kill-switch is on; with
+// it off, the wait parks on the first past-ETA observation.
 const requiredPastETAObservationsBeforePark = 2
 
-// arrivalWaitLiveReconfirm is the kill-switch for the arrival-wait fix (sp-arrwait:
-// Fix A live-API re-confirm before parking + Fix B short-leg debounce). It DEFAULTS
-// ON — the false-park bug is fixed out of the box — and is flipped by the daemon at
-// boot from config via SetArrivalWaitLiveReconfirm. Setting it false instantly
-// reverts WaitForShipArrival to the pre-fix DB-only park behavior without a code
-// rollback (config arrival_wait_live_reconfirm_disabled=true). It is read exactly
-// ONCE per wait, at the public entry point (WaitForShipArrival), and threaded as a
+// arrivalWaitLiveReconfirm is the kill-switch for the arrival-wait behavior
+// (Fix A: live-API re-confirm before parking; Fix B: short-leg debounce). It
+// DEFAULTS ON and is flipped by the daemon at boot from config via
+// SetArrivalWaitLiveReconfirm. Setting it false instantly reverts
+// WaitForShipArrival to the DB-only park behavior without a code rollback
+// (config arrival_wait_live_reconfirm_disabled=true). It is read exactly ONCE
+// per wait, at the public entry point (WaitForShipArrival), and threaded as a
 // plain bool into the testable core, so the core stays free of global state.
 var arrivalWaitLiveReconfirm atomic.Bool
 
@@ -79,7 +74,7 @@ func init() {
 // SetArrivalWaitLiveReconfirm flips the arrival-wait live-reconfirm kill-switch
 // (default ON). Wired from DaemonConfig at boot, mirroring
 // ShipRepository.SetCASRetryPolicy's setter injection; enabled=false reverts
-// WaitForShipArrival to the pre-fix DB-only park behavior (Fix A + Fix B off).
+// WaitForShipArrival to the DB-only park behavior (Fix A + Fix B off).
 func SetArrivalWaitLiveReconfirm(enabled bool) {
 	arrivalWaitLiveReconfirm.Store(enabled)
 }
@@ -108,15 +103,14 @@ func (e *ErrArrivalWaitExhausted) Error() string {
 // non-replaying send - see ship_event_bus.go), this falls back to
 // periodically resyncing ship against shipRepo instead of blocking forever.
 // This is the shared safety net for every evented arrival wait in the
-// codebase (sp-pafv).
+// codebase.
 //
 // The overall wait budget scales with waitTimeSeconds (the route's own ETA)
 // via calculateArrivalWaitBudget, so a legitimately long transit is not
-// parked early just because a fixed number of grace periods elapsed
-// (sp-ht1f). Within that budget, a resync that still shows IN_TRANSIT is
-// only treated as a genuinely lost event - and parked immediately - once the
-// ship's own ArrivalTime has passed; a future ArrivalTime means the wait
-// keeps polling.
+// parked early just because a fixed number of grace periods elapsed. Within
+// that budget, a resync that still shows IN_TRANSIT is only treated as a
+// genuinely lost event - and parked immediately - once the ship's own
+// ArrivalTime has passed; a future ArrivalTime means the wait keeps polling.
 //
 // On success, ship's own NavStatus is transitioned via Arrive() so the
 // caller's existing pointer reflects the new state - callers do not need to
@@ -146,9 +140,9 @@ func WaitForShipArrival(
 // at least eta+minMargin, so short or unknown ETAs still get a sane floor,
 // and it grows proportionally with eta via marginFactor, so long transits
 // get a proportionally larger absolute cushion against scheduler jitter and
-// API latency around the real arrival instant (sp-ht1f). A negative eta
-// (e.g. from API/clock skew already putting "now" past the reported arrival)
-// is clamped to zero before either term is computed.
+// API latency around the real arrival instant. A negative eta (e.g. from
+// API/clock skew already putting "now" past the reported arrival) is clamped
+// to zero before either term is computed.
 func calculateArrivalWaitBudget(eta time.Duration, marginFactor float64, minMargin time.Duration) time.Duration {
 	if eta < 0 {
 		eta = 0
@@ -166,16 +160,15 @@ func calculateArrivalWaitBudget(eta time.Duration, marginFactor float64, minMarg
 // timeout->resync->park backstop without slowing down the suite; production
 // always goes through WaitForShipArrival's fixed defaults above.
 //
-// liveReconfirm is the sp-arrwait kill-switch, threaded as a plain bool so the
-// core is deterministic and free of global state. When true (default): a
-// would-be park requires two consecutive past-ETA local-DB observations (Fix B
+// liveReconfirm is the kill-switch, threaded as a plain bool so the core is
+// deterministic and free of global state. When true (default): a would-be
+// park requires two consecutive past-ETA local-DB observations (Fix B
 // short-leg debounce) and is then re-confirmed ONCE against the authoritative
 // live API (Fix A) before parking - the ship's local row can lag the async
 // IN_TRANSIT->IN_ORBIT transition on a short leg, so a DB-only park is a false
-// positive. When false: the exact pre-fix behavior - park on the first past-ETA
-// observation off the DB read alone (no API call). Either way the happy path
-// (ARRIVED event, or a DB poll that already shows the hull left transit) makes
-// ZERO API calls.
+// positive. When false: park on the first past-ETA observation off the DB
+// read alone (no API call). Either way the happy path (ARRIVED event, or a DB
+// poll that already shows the hull left transit) makes ZERO API calls.
 func waitForShipArrivalCore(
 	ctx context.Context,
 	shipRepo domainNavigation.ShipQueryRepository,
@@ -204,22 +197,19 @@ func waitForShipArrivalCore(
 
 	// expectedArrival is the best current estimate of when the ship actually
 	// lands: seeded from the caller's ETA, refined to the resynced ship's own
-	// ArrivalTime after each safety poll. It drives two things (sp-7yej
-	// invariant 5 — the event path is the norm, the poll the exception):
+	// ArrivalTime after each safety poll. It drives two things — the event
+	// path is the norm, the poll the exception:
 	//
 	//   - the poll SCHEDULE: the first poll fires after one gracePeriod (the
 	//     fast check for an event lost BEFORE this subscription existed), then
 	//     each subsequent poll sleeps all the way to expectedArrival plus one
-	//     gracePeriod of slack in a single tick instead of waking every 30s of
-	//     a minutes-long transit. A healthy 23-minute leg now costs ~2 resyncs
-	//     instead of ~46 — and the event, which the select still watches
-	//     throughout, interrupts any of these sleeps the instant it lands.
+	//     gracePeriod of slack in a single tick rather than waking on a fixed
+	//     cadence — the event, which the select still watches throughout,
+	//     interrupts any of these sleeps the instant it lands.
 	//   - the poll SEVERITY: a poll while the arrival is not yet due is routine
 	//     (INFO); only a poll past the expected arrival means the event is
-	//     genuinely overdue and worth a WARNING. The old code logged every
-	//     30-second tick of every healthy transit as a WARNING "event not
-	//     received", drowning the real lost-event signal in ~46 false alarms
-	//     per leg.
+	//     genuinely overdue and worth a WARNING, so the real lost-event signal
+	//     is never drowned in routine-poll noise.
 	expectedArrival := time.Now().Add(time.Duration(waitTimeSeconds) * time.Second)
 	nextTick := gracePeriod
 
@@ -281,28 +271,22 @@ func waitForShipArrivalCore(
 
 			case fresh.NavStatus() != domainNavigation.NavStatusInTransit:
 				pastETAObservations = 0 // Fix B: not IN_TRANSIT breaks the past-ETA streak.
-				// fresh is no longer IN_TRANSIT — normally the arrival. But a
-				// resync can also return a STALE PRE-DEPARTURE snapshot: a
-				// repo/nav-cache read that has not yet caught up to this leg's
-				// departure still shows the hull DOCKED/IN_ORBIT at the ORIGIN
-				// (the sp-n7yp/sp-ynuf nav-cache race, in the "hasn't propagated
-				// the departure yet" direction). Confirming off that snapshot
-				// reports the hull at its destination while it is really still at
-				// the start of the leg — the sp-d6gl false positive (TORWIND-37: a
-				// 2m33s gate hop "confirmed" ~30s in off a stale pre-departure
-				// snapshot, the tour completed with the hull at origin, the
-				// downstream jump hard-crashed).
+				// fresh is no longer IN_TRANSIT — normally the arrival. But a resync can
+				// also return a STALE PRE-DEPARTURE snapshot: a repo/nav-cache read that
+				// has not yet caught up to this leg's departure still shows the hull
+				// DOCKED/IN_ORBIT at the ORIGIN. Confirming off that snapshot would
+				// report the hull at its destination while it is really still at the
+				// start of the leg.
 				//
-				// At/after the scheduled arrival (dueIn<=0) a not-in-transit read
-				// is overwhelmingly the genuine arrival, so the on-time path is
-				// unchanged — confirm on the status change alone as before. BEFORE
-				// it, confirm only when the AUTHORITATIVE position proves the hull
-				// actually reached the destination it is heading to (a genuine
-				// early arrival, which must still pass) rather than still sitting
-				// at the origin. A stale origin snapshot falls through to keep
-				// polling until the cache catches up (then this same branch
-				// confirms at the destination, or the IN_TRANSIT branches take
-				// over) or the budget deadline parks it (sp-7yej honest exit).
+				// At/after the scheduled arrival (dueIn<=0) a not-in-transit read is
+				// overwhelmingly the genuine arrival, so the on-time path confirms on
+				// the status change alone. BEFORE it, confirm only when the
+				// AUTHORITATIVE position proves the hull actually reached the
+				// destination it is heading to (a genuine early arrival, which must
+				// still pass) rather than still sitting at the origin. A stale origin
+				// snapshot falls through to keep polling until the cache catches up
+				// (then this same branch confirms at the destination, or the
+				// IN_TRANSIT branches take over) or the budget deadline parks it.
 				if dueIn <= 0 || arrivedAtDestination(fresh, ship) {
 					logger.Log("INFO", "Arrival resync confirmed ship left transit", map[string]interface{}{
 						"ship_symbol": shipSymbol,
@@ -322,19 +306,17 @@ func waitForShipArrivalCore(
 				})
 
 			case arrivalIsPast(fresh, time.Now()):
-				// The LOCAL DB poll shows the ship still IN_TRANSIT with its own
-				// ETA already past. Historically (sp-pafv) this was treated as a
-				// genuinely lost/raced ARRIVED event and parked immediately. On a
-				// SHORT leg (ETA <= ~gracePeriod) that is a FALSE positive: the hull
-				// has physically arrived, but the async, best-effort local
-				// IN_TRANSIT->IN_ORBIT transition (ShipStateScheduler.handleArrival,
-				// non-replaying) has not committed to the DB row yet, so the stale
-				// row still reads IN_TRANSIT-past-ETA on the first poll. A DB-only
-				// park here fails the route segment and crash-loops the container
-				// (sp-arrwait).
+				// The LOCAL DB poll shows the ship still IN_TRANSIT with its own ETA
+				// already past. On a SHORT leg (ETA <= ~gracePeriod) that can be a
+				// FALSE positive: the hull has physically arrived, but the async,
+				// best-effort local IN_TRANSIT->IN_ORBIT transition
+				// (ShipStateScheduler.handleArrival, non-replaying) has not committed
+				// to the DB row yet, so the stale row still reads IN_TRANSIT-past-ETA
+				// on the first poll. A DB-only park here fails the route segment and
+				// crash-loops the container — hence Fix B's debounce below.
 				if !liveReconfirm {
-					// Kill-switch OFF: exact pre-fix behavior — park on the first
-					// past-ETA poll, off the DB read alone, no API call.
+					// Kill-switch OFF: park on the first past-ETA poll, off the DB
+					// read alone, no API call.
 					return parkLostEvent(logger, shipSymbol, attempt)
 				}
 
@@ -386,13 +368,10 @@ func waitForShipArrivalCore(
 
 			default:
 				pastETAObservations = 0 // Fix B: a future-ETA poll breaks the past-ETA streak.
-				// Still IN_TRANSIT with a future (or unknown) ETA: the ship
-				// is healthy and legitimately still travelling. Keep
-				// waiting rather than parking - this is the sp-ht1f fix.
-				// sp-pafv's fixed grace*maxAttempts budget parked here
-				// regardless of how far away the real arrival was. The
-				// resynced ship's own ArrivalTime is the authoritative ETA,
-				// so it refines the poll schedule below.
+				// Still IN_TRANSIT with a future (or unknown) ETA: the ship is
+				// healthy and legitimately still travelling. Keep waiting rather
+				// than parking. The resynced ship's own ArrivalTime is the
+				// authoritative ETA, so it refines the poll schedule below.
 				if arrival := fresh.ArrivalTime(); arrival != nil {
 					expectedArrival = *arrival
 				}
@@ -413,12 +392,12 @@ func waitForShipArrivalCore(
 				return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: attempt}
 			}
 
-			// ETA-aligned schedule (sp-7yej invariant 5): while the arrival is
-			// still ahead, sleep to just past it in ONE tick — the event wins
-			// the select the moment it lands, so a long sleep never delays the
-			// happy path. Once at/past the ETA (or when it is unknown), poll at
-			// the gracePeriod cadence. Capped so a tick never sleeps far past
-			// the budget deadline — the check above must get its turn.
+			// ETA-aligned schedule: while the arrival is still ahead, sleep to
+			// just past it in ONE tick — the event wins the select the moment
+			// it lands, so a long sleep never delays the happy path. Once
+			// at/past the ETA (or when it is unknown), poll at the gracePeriod
+			// cadence. Capped so a tick never sleeps far past the budget
+			// deadline — the check above must get its turn.
 			nextTick = gracePeriod
 			if remaining := time.Until(expectedArrival) + gracePeriod; remaining > nextTick {
 				nextTick = remaining
@@ -433,8 +412,7 @@ func waitForShipArrivalCore(
 // parkLostEvent logs the genuine lost/stuck-event park and returns the typed
 // exhaustion error. Factored out so all three park paths — the kill-switch-off
 // path, the debounce-satisfied-but-live-confirmed-stuck path, and the live-API
-// error fallback — emit one identical ERROR log and error (byte-identical to the
-// pre-fix park line, so flag-off behavior is unchanged).
+// error fallback — emit one identical ERROR log and error.
 func parkLostEvent(logger common.ContainerLogger, shipSymbol string, attempt int) error {
 	logger.Log("ERROR", "Arrival resync still IN_TRANSIT past its own ETA - lost event, parking", map[string]interface{}{
 		"ship_symbol": shipSymbol,
@@ -464,10 +442,10 @@ func liveAPIShowsLeftTransit(ctx context.Context, shipRepo domainNavigation.Ship
 
 // arrivalIsPast reports whether fresh's own ArrivalTime is already behind
 // now while fresh is still IN_TRANSIT - the signature of a genuinely
-// lost/raced ARRIVED event (sp-pafv's original target) as opposed to a
-// healthy transit that simply is not finished yet. An unknown ArrivalTime
-// (nil) cannot be proven past, so it is treated as "not yet due" and the
-// wait falls back to the overall budget deadline instead (sp-ht1f).
+// lost/raced ARRIVED event, as opposed to a healthy transit that simply is
+// not finished yet. An unknown ArrivalTime (nil) cannot be proven past, so
+// it is treated as "not yet due" and the wait falls back to the overall
+// budget deadline instead.
 func arrivalIsPast(fresh *domainNavigation.Ship, now time.Time) bool {
 	arrival := fresh.ArrivalTime()
 	return arrival != nil && now.After(*arrival)
@@ -475,7 +453,7 @@ func arrivalIsPast(fresh *domainNavigation.Ship, now time.Time) bool {
 
 // arrivedAtDestination reports whether the resynced snapshot fresh proves the
 // hull has actually reached the destination the in-transit ship is heading to,
-// as opposed to a stale pre-departure snapshot still at the origin (sp-d6gl).
+// as opposed to a stale pre-departure snapshot still at the origin.
 // While IN_TRANSIT, ship.CurrentLocation() is the destination (StartTransit sets
 // it on departure), and a genuine arrival leaves the hull there; a pre-departure
 // snapshot is still at the origin, which — because a leg's origin and

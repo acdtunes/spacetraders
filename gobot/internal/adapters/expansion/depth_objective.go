@@ -9,12 +9,12 @@ import (
 )
 
 // heavyYardInventory is the narrow shipyard-inventory slice the objective reads: whether ANY
-// heavy-freighter yard has been discovered this era (sp-42ow). Satisfied by the inventory repo.
+// heavy-freighter yard has been discovered this era. Satisfied by the inventory repo.
 type heavyYardInventory interface {
 	HasAnyOfTypes(ctx context.Context, playerID int, shipTypes []string) (bool, error)
 }
 
-// heavyLaneCounter is the profitable-heavy-lane count across systems (the autosizer's sp-4ewi
+// heavyLaneCounter is the profitable-heavy-lane count across systems (the autosizer's
 // unserved-demand basis). Satisfied by *trading/queries.ProfitableLaneReader — read-only, off the
 // persisted market cache, so the objective read never perturbs the trade coordinator.
 type heavyLaneCounter interface {
@@ -31,9 +31,9 @@ type heavyFleetReader interface {
 // heavy case). A hull under this tag is heavy capacity already in the fleet.
 const heavyDedicatedFleet = "trade"
 
-// DepthObjectiveReader is the frontier depth slice's deep-resource objective (sp-rjgr §4): it
-// combines the autosizer's heavy capacity shortfall (sp-4ewi profitable-but-unflown lanes beyond
-// the current heavy pool) with the shipyard-inventory yard-known predicate (sp-42ow). The depth
+// DepthObjectiveReader is the frontier depth slice's deep-resource objective: it
+// combines the autosizer's heavy capacity shortfall (profitable-but-unflown lanes beyond
+// the current heavy pool) with the shipyard-inventory yard-known predicate. The depth
 // slice biases toward depth while the fleet needs heavies (shortfall > 0) AND cannot yet buy them
 // (no heavy yard discovered) — punch outward to FIND the yard — and relaxes once a yard is known.
 // Every read fails SAFE to "no bias" (readable=false): this shifts a policy split, never a spend,

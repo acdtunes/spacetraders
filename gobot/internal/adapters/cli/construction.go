@@ -13,7 +13,7 @@ import (
 )
 
 // validMinSupplyLevels enumerates the actual manufacturing.SupplyLevel values
-// accepted by --min-supply (sp-ezz9). Kept separate from
+// accepted by --min-supply. Kept separate from
 // manufacturing.ParseSupplyLevel, which is intentionally lenient (it defaults
 // unrecognized strings to MODERATE for parsing scanned market data) - CLI
 // input instead gets strict validation with a clear rejection error.
@@ -41,7 +41,7 @@ func parseMinSupplyFlag(s string) (manufacturing.SupplyLevel, error) {
 }
 
 // validGatingStrategies enumerates the acquisition-strategy values a per-good buy-gating override
-// accepts (sp-pdb3 / sp-sdyo). These mirror the services.AcquisitionStrategy constants
+// accepts. These mirror the services.AcquisitionStrategy constants
 // (prefer-buy | prefer-fabricate | smart) documented on manufacturing.GoodGatingOverride; the CLI
 // validates against them at the boundary so an unknown strategy is rejected before it can reach the
 // persisted override map. Kept as a CLI-local allowlist (like validMinSupplyLevels) rather than
@@ -146,7 +146,7 @@ func parseGoodOverrideSpec(spec string) (string, manufacturing.GoodGatingOverrid
 
 // buildLaunchGoodOverrides merges repeatable --good-override specs and an optional --overrides JSON
 // blob into a single validated GoodGatingOverrides map, ready to persist on the pipeline exactly
-// like the global --min-supply floor (sp-ezz9). The JSON blob is applied first (bulk load), then
+// like the global --min-supply floor. The JSON blob is applied first (bulk load), then
 // each --good-override spec overrides its good (the explicit command-line form wins). Every entry
 // is validated (strategy/tier rejected if unknown) and its price-ceiling multiplier clamped to the
 // domain cap at the boundary. Returns nil when both inputs are empty, preserving today's
@@ -272,11 +272,11 @@ Examples:
 				return err
 			}
 
-			// Build + validate the optional per-good buy-gating overrides (sp-sdyo values,
-			// sp-pdb3 launch surface) before touching infrastructure — same flag-validation-first
-			// pattern. Empty inputs yield a nil map, preserving the global default for every good.
-			// Each entry's strategy/tier is validated and its price-ceiling multiplier clamped to
-			// the domain cap here at the boundary (RULINGS #4).
+			// Build + validate the optional per-good buy-gating overrides before touching
+			// infrastructure — same flag-validation-first pattern. Empty inputs yield a nil map,
+			// preserving the global default for every good. Each entry's strategy/tier is validated
+			// and its price-ceiling multiplier clamped to the domain cap here at the boundary
+			// (RULINGS #4).
 			goodOverrides, err := buildLaunchGoodOverrides(goodOverrideSpecs, overridesJSON)
 			if err != nil {
 				return err
@@ -284,38 +284,33 @@ Examples:
 
 			constructionSite := args[0]
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Create gRPC client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Start construction pipeline
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			// Convert systemSymbol to pointer (nil if empty)
 			var systemSymbolPtr *string
 			if systemSymbol != "" {
 				systemSymbolPtr = &systemSymbol
 			}
 
-			// Convert minSupply to pointer (nil if unset)
 			var minSupplyPtr *string
 			if minSupplyLevel != "" {
 				s := string(minSupplyLevel)
 				minSupplyPtr = &s
 			}
 
-			// Encode the per-good overrides for the wire; nil when there are none so the pipeline
-			// keeps today's global-default behaviour for every good.
+			// nil when there are none so the pipeline keeps today's global-default
+			// behaviour for every good.
 			var goodOverridesPtr *string
 			if len(goodOverrides) > 0 {
 				encoded := goodOverrides.Encode()
@@ -337,7 +332,6 @@ Examples:
 				return fmt.Errorf("failed to start construction pipeline: %w", err)
 			}
 
-			// Display result
 			if result.IsResumed {
 				fmt.Println("Resumed existing construction pipeline")
 			} else {
@@ -360,11 +354,11 @@ Examples:
 				}
 			}
 
-			// sp-560b: name every material that couldn't be sourced this pass,
-			// instead of a generic "no market with good supply" message. sp-ooba:
-			// planning is never all-or-nothing, so this can be non-empty even
-			// though the pipeline above started successfully - it's the gap the
-			// captain needs to go source manually.
+			// Names every material that couldn't be sourced this pass, instead of a
+			// generic "no market with good supply" message. Planning is never
+			// all-or-nothing, so this can be non-empty even though the pipeline
+			// above started successfully - it's the gap the captain needs to go
+			// source manually.
 			if len(result.DeferredMaterials) > 0 {
 				fmt.Println("\nDeferred (no source found yet):")
 				for _, mat := range result.DeferredMaterials {
@@ -408,20 +402,17 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			constructionSite := args[0]
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Create gRPC client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Get construction status
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
@@ -435,7 +426,6 @@ Examples:
 				return fmt.Errorf("failed to get construction status: %w", err)
 			}
 
-			// Display result
 			fmt.Printf("Construction Site: %s\n", result.ConstructionSite)
 			if result.IsComplete {
 				fmt.Println("Status: COMPLETE")
@@ -460,7 +450,6 @@ Examples:
 				}
 			}
 
-			// Pipeline info (if any)
 			if result.PipelineID != nil && *result.PipelineID != "" {
 				fmt.Println("\nActive Pipeline:")
 				fmt.Printf("  ID: %s\n", *result.PipelineID)
@@ -500,20 +489,17 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			constructionSite := args[0]
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Create gRPC client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Stop construction pipeline
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
@@ -544,12 +530,12 @@ Examples:
 	return cmd
 }
 
-// --- sp-pdb3: live `construction override` verb --------------------------------------------------
+// --- live `construction override` verb -----------------------------------------------------------
 
 // constructionOverrideMutator is the narrow daemon surface the `construction override` verb needs.
 // By construction it exposes ONLY the ConstructionGoodOverride RPC — no pipeline restart/stop — so
 // "no restart" is guaranteed by the surface this verb can reach, exactly as the goods-factory
-// worker-cap verb (sp-ev0n) guarantees it for the factory fan-out.
+// worker-cap verb guarantees it for the factory fan-out.
 type constructionOverrideMutator interface {
 	ConstructionGoodOverride(ctx context.Context, req *pb.ConstructionGoodOverrideRequest) (*pb.ConstructionGoodOverrideResponse, error)
 }
@@ -673,9 +659,9 @@ func formatOverrideKnobs(resp *pb.ConstructionGoodOverrideResponse) string {
 }
 
 // newConstructionOverrideCommand creates the `construction override` subcommand — live per-good
-// tuning of the sp-sdyo buy-gating override map on a RUNNING construction pipeline (sp-pdb3), the
-// construction analogue of `goods factory workers`. No restart: the coordinator re-reads the
-// persisted overrides on its next discovery pass, and the value survives a daemon bounce (RULINGS #2).
+// tuning of the buy-gating override map on a RUNNING construction pipeline, the construction
+// analogue of `goods factory workers`. No restart: the coordinator re-reads the persisted
+// overrides on its next discovery pass, and the value survives a daemon bounce (RULINGS #2).
 func newConstructionOverrideCommand() *cobra.Command {
 	var f constructionOverrideFlags
 

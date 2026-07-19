@@ -10,8 +10,8 @@ import (
 )
 
 // ContractDeliveryDemandBridge is the seam between the capacity reconciler's
-// CAPITAL tier (st-7zk / st-x00) and the sp-1txd fleet autosizer's single
-// guarded buy path (re-scoped by st-5le). One object plays two ports:
+// CAPITAL tier and the fleet autosizer's single
+// guarded buy path. One object plays two ports:
 //   - capacity.CapitalDemandSink (write): the reconciler's GOVERN emitter
 //     publishes each tick's contract-delivery capital demand here;
 //   - fleetCmd.ClassDemandProvider (read): the autosizer consumes it as just
@@ -22,19 +22,19 @@ import (
 //     is built in this lane.
 //
 // DORMANT until armed: HullClassContractDelivery is outside the {light, heavy,
-// warehouse} set sp-1txd's classDisabled recognizes, and its documented default
+// warehouse} set the autosizer's classDisabled recognizes, and its documented default
 // ("unknown class: never act") SKIPS the class every tick. So registering this
 // provider adds a pluggable slot that reads no demand and buys nothing until an
-// arming lane (paired with st-0h8's proposal gate) explicitly wires the class
+// arming lane (paired with the proposal gate) explicitly wires the class
 // into classDisabled + classGuardConfig. Combined with the reconciler being
 // deploy-inert, that is the structural "nothing auto-buys yet" guarantee.
 //
 // The bridge is written on the reconciler's goroutine and read on the
 // autosizer's, so access is mutex-guarded.
 
-// HullClassContractDelivery is the sp-1txd hull-class label for the st-7zk
+// HullClassContractDelivery is the hull-class label for the
 // contract-delivery capital pool (delivery hulls + contract-depot warehouses +
-// contract-depot stockers) — DISTINCT from HullClassWarehouse (sp-1txd's
+// contract-depot stockers) — DISTINCT from HullClassWarehouse (the autosizer's
 // production-chain warehouse pool), so the two providers' demands ADD rather
 // than collide on one shared class (the ownership split). It ALIASES the
 // canonical constant in the fleetCmd package (sp-nkqn wired the class into the
@@ -49,7 +49,7 @@ type ContractDeliveryDemandBridge struct {
 }
 
 // NewContractDeliveryDemandBridge builds an empty bridge. Until the reconciler's
-// first emit it reads UNREADABLE, so sp-1txd fails closed (never buys on a
+// first emit it reads UNREADABLE, so the autosizer fails closed (never buys on a
 // demand it was never told).
 func NewContractDeliveryDemandBridge() *ContractDeliveryDemandBridge {
 	return &ContractDeliveryDemandBridge{}
@@ -72,8 +72,8 @@ func (b *ContractDeliveryDemandBridge) Class() fleetCmd.HullClass { return HullC
 //
 // The reconciler's DIFF gap surfaces as the shortfall directly: Demand=Hulls,
 // Current=0 (delta semantics — the gap is already net of actual and recomputed
-// fresh each stateless tick, so it shrinks as sp-1txd buys). This is safe for
-// the HARD ceiling the lane must preserve: sp-1txd's ABSOLUTE fleet ceiling +
+// fresh each stateless tick, so it shrinks as the autosizer buys). This is safe for
+// the HARD ceiling the lane must preserve: the autosizer's ABSOLUTE fleet ceiling +
 // per-tick cap are judged over the real total hull count (in.totalHulls),
 // unaffected by this Current; the per-class contract-delivery sub-ceiling is the
 // arming lane's concern (it does not exist until the class is wired into

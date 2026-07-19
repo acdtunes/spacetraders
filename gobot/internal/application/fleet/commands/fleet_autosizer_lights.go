@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-// The LIGHT (factory-worker) demand model (sp-1txd M3). Lights are the HAULER pool the factory
+// The LIGHT (factory-worker) demand model. Lights are the HAULER pool the factory
 // chains rotate through; the autosizer sizes that pool to the number of factory chains the fleet
 // could profitably run, inverting the vdld siting coordinator's C3 rotation math:
 //
@@ -19,7 +19,7 @@ import (
 // with no in-system idle worker is a concrete, immediate worker shortfall regardless of the chain
 // math. The realized-worker-$/hr gate (chain_pnl NetPerHour) rides along for the guard stack.
 
-// LightDemandSources are the reads the light-demand model consumes. Concrete impls (M6) wrap the
+// LightDemandSources are the reads the light-demand model consumes. Concrete impls wrap the
 // ship repo (HAULER count), the running-chains controller, the rebalancer vacancy query, and the
 // chain-P&L reader; tests inject fakes.
 type LightDemandSources interface {

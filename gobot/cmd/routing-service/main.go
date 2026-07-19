@@ -25,12 +25,9 @@ func main() {
 	port := getEnv("ROUTING_PORT", defaultPort)
 	tspTimeout := getEnv("TSP_TIMEOUT", defaultTSPTimeout)
 	vrpTimeout := getEnv("VRP_TIMEOUT", defaultVRPTimeout)
-	// sp-1wp8: tour selection objective, LAUNCH default "rate" ($/hour-primary) per
-	// the offline replay verdict (+29-32% projected fleet-$/hr vs profit-primary on
-	// 48h of reconstructed real snapshots; services/routing-service/replay_objective.py).
-	// The solver's in-code default stays "profit" (fail-safe): the launch paths (this
-	// manager and run.sh) are where the flip ships, and TOUR_SOLVER_OBJECTIVE=profit
-	// reverts it without a code change.
+	// Tour objective launch default is "rate" ($/hour-primary); the solver's in-code
+	// default stays "profit" (fail-safe). This manager and run.sh are the launch paths
+	// where the flip ships, and TOUR_SOLVER_OBJECTIVE=profit reverts it without a code change.
 	tourObjective := getEnv("TOUR_SOLVER_OBJECTIVE", "rate")
 
 	log.Println("Starting Routing Service Manager...")
@@ -199,7 +196,7 @@ func startRoutingService(ctx context.Context, servicePath, host, port, tspTimeou
 	cmd.Dir = servicePath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// sp-1wp8: the resolved objective must be SET explicitly — in the default case
+	// The resolved objective must be SET explicitly — in the default case
 	// ("rate" with no operator env) the manager's own environment does not carry it,
 	// and child processes only inherit what the parent actually has.
 	cmd.Env = append(os.Environ(), "TOUR_SOLVER_OBJECTIVE="+tourObjective)

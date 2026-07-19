@@ -25,9 +25,9 @@ func newPredictorTestContract(t *testing.T, deliveries ...Delivery) *Contract {
 	return c
 }
 
-// sp-1ef0 signal pin S1: a single-good contract whose remaining units exceed a
-// hull-load still needs more than one trip of that good, so the NEXT source is
-// near-certainly the SAME market. The predictor must flag it with full confidence.
+// A single-good contract whose remaining units exceed a hull-load still needs
+// more than one trip of that good, so the NEXT source is near-certainly the SAME
+// market. The predictor must flag it with full confidence.
 func TestPredictNextContractSource_SingleGoodMultiTripRemaining_NearCertain(t *testing.T) {
 	c := newPredictorTestContract(t, Delivery{
 		TradeSymbol:    "IRON_ORE",
@@ -51,9 +51,9 @@ func TestPredictNextContractSource_SingleGoodMultiTripRemaining_NearCertain(t *t
 	}
 }
 
-// sp-1ef0 signal pin S2: when what remains of the good fits in a single hull-load,
-// the current delivery leg finishes it - there is no NEXT delivery to pre-position
-// for. The predictor must NOT flag it (guards against a wasted move on the last trip).
+// When what remains of the good fits in a single hull-load, the current delivery
+// leg finishes it - there is no NEXT delivery to pre-position for. The predictor
+// must NOT flag it (guards against a wasted move on the last trip).
 func TestPredictNextContractSource_LastTripFits_NoPrediction(t *testing.T) {
 	c := newPredictorTestContract(t, Delivery{
 		TradeSymbol:    "COPPER_ORE",
@@ -71,10 +71,10 @@ func TestPredictNextContractSource_LastTripFits_NoPrediction(t *testing.T) {
 	}
 }
 
-// sp-1ef0 signal pin S3: two different goods still outstanding makes the NEXT source
-// ambiguous (either good's market could be next). The restriction is same-good only,
-// so the signal must come back weak (below any sane threshold) - the confidence guard
-// rejects it rather than gamble a move on the wrong market.
+// Two different goods still outstanding makes the NEXT source ambiguous (either
+// good's market could be next). The restriction is same-good only, so the signal
+// must come back weak (below any sane threshold) - the confidence guard rejects it
+// rather than gamble a move on the wrong market.
 func TestPredictNextContractSource_MultipleGoodsOutstanding_LowConfidence(t *testing.T) {
 	c := newPredictorTestContract(t,
 		Delivery{TradeSymbol: "IRON_ORE", UnitsRequired: 100, UnitsFulfilled: 0},
@@ -91,8 +91,8 @@ func TestPredictNextContractSource_MultipleGoodsOutstanding_LowConfidence(t *tes
 	}
 }
 
-// sp-1ef0 signal pin S4: a fully-fulfilled contract has no outstanding good, so there
-// is nothing to pre-position toward.
+// A fully-fulfilled contract has no outstanding good, so there is nothing to
+// pre-position toward.
 func TestPredictNextContractSource_AllDelivered_NoPrediction(t *testing.T) {
 	c := newPredictorTestContract(t, Delivery{
 		TradeSymbol:    "IRON_ORE",

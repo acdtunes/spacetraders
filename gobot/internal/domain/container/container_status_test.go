@@ -5,15 +5,13 @@ import (
 	"testing"
 )
 
-// TestContainerStatusProjectsLifecycleState is a characterization test that
-// pins the exact lifecycle-state -> ContainerStatus projection (and the
-// Container-specific STOPPING extension that precedes it) BEFORE the projection
-// is delegated to shared.ProjectStatus. Every row must remain identical across
-// that refactor. INTERRUPTED and the switch default are intentionally absent:
+// TestContainerStatusProjectsLifecycleState pins the lifecycle-state ->
+// ContainerStatus projection, including the Container-specific STOPPING
+// extension. INTERRUPTED and the switch default are intentionally untested:
 // `interrupted` is never set true anywhere in the codebase (dormant recovery
 // state) and the lifecycle machine is always in one of its five valid states,
-// so neither is reachable through the public API. They are preserved verbatim
-// in production and covered structurally by the shared primitive's own tests.
+// so neither is reachable through the public API — both are covered
+// structurally by shared.ProjectStatus's own tests instead.
 func TestContainerStatusProjectsLifecycleState(t *testing.T) {
 	cases := []struct {
 		name  string

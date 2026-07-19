@@ -1,11 +1,10 @@
 // Package telemetry aggregates per-session token/usage telemetry for the
-// autonomous fleet. Token cost is unobservable in the engine (sp-593x): the
-// watchkeeper wakes the captain and dispatches shipwright workflows as external
+// autonomous fleet. Token cost is unobservable in the engine: the watchkeeper
+// wakes the captain and dispatches shipwright workflows as external
 // `gc`-managed claude sessions, and the only durable record of what each wake
 // costs is the claude-code transcript. This package parses those transcripts
 // into per-session usage and derives the fleet-level rates (tokens/day) and the
-// captain's per-wake cost (tokens/wake) that the surveyor ritual needs but has
-// had no data source for.
+// captain's per-wake cost (tokens/wake) the surveyor ritual needs.
 //
 // Everything here is pure: it reads an io.Reader and computes over in-memory
 // values. Locating transcripts and shelling out to `gc` lives in the telemetry
@@ -198,8 +197,8 @@ func isToolResult(content json.RawMessage) bool {
 }
 
 // Report is the fleet-level token telemetry surfaced by the read verb: the
-// per-session breakdown plus the two rates the bead calls for — tokens/day
-// (fleet burn) and tokens/wake (the captain's per-activation cost).
+// per-session breakdown plus two rates — tokens/day (fleet burn) and
+// tokens/wake (the captain's per-activation cost).
 type Report struct {
 	WindowDays    int            `json:"window_days"`
 	TotalTokens   int64          `json:"total_tokens"`

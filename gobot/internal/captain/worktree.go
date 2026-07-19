@@ -14,9 +14,9 @@ import (
 
 // errEmptyMerge marks a squash-merge refusal because the merge would (or did)
 // change nothing on main: a branch with no commits ahead, or one whose net tree
-// equals main's. gateAndMergeWith surfaces it as GateResult.EmptyMerge. Before
-// sp-k0di such a merge produced a message-only commit and reported Merged=true,
-// silently losing the agent's (uncommitted) fix.
+// equals main's. gateAndMergeWith surfaces it as GateResult.EmptyMerge — left
+// unrefused, such a merge would report Merged=true while silently losing the
+// agent's (uncommitted) fix.
 var errEmptyMerge = errors.New("empty merge")
 
 const worktreeRoot = ".captain-worktrees"
@@ -97,10 +97,9 @@ func RunGate(dir string, timeout time.Duration) (bool, string) {
 // unstaged) or untracked source changes that a squash-merge would silently drop.
 // The gate merges COMMITS, not working-tree files: an agent that edits files but
 // never commits leaves a branch with zero commits ahead of main, which
-// squash-merges to a message-only commit (sp-k0di — three fixes lost exactly this
-// way, gated green then merged empty). Refusing a dirty worktree PRE-gate forces
-// the runner to commit first. The returned detail lists the offending porcelain
-// lines for a loud, actionable error.
+// squash-merges to a message-only commit (sp-k0di). Refusing a dirty worktree
+// PRE-gate forces the runner to commit first. The returned detail lists the
+// offending porcelain lines for a loud, actionable error.
 //
 // Beads issue exports (issues.jsonl anywhere) are excluded: the beads pre-commit
 // hook re-exports and re-stages them on every commit in the shared city, so they
@@ -151,9 +150,7 @@ func worktreeStatusPath(porcelainLine string) string {
 // perpetual noise, never an agent's fix. Every gate stage treats them as such: the
 // pre-gate dirty check ignores them (WorktreeDirty), the foreign-staged guard
 // exempts them (assertNoForeignStaged), and the squash pins them to main's version
-// so none can ride into a merge (branchTreePinnedToMain). Covers both the root and
-// .beads/ issues.jsonl, per the sp-k0di dirty-noise list (sp-jgtw folded the stray
-// root export — once deliberately surfaced — into the same uniform noise handling).
+// so none can ride into a merge (branchTreePinnedToMain).
 func beadsExportNoise(path string) bool {
 	return path == "issues.jsonl" || strings.HasSuffix(path, "/issues.jsonl")
 }
@@ -182,12 +179,10 @@ func DiffLines(repoDir, branch string) (int, error) {
 // containing EXACTLY the branch's own diff — never files other agents have staged
 // in the shared checkout, and never the beads hook's issues.jsonl export.
 //
-// The original ran `git merge --squash` then a pathspec-less `git commit` in the
-// shared main checkout, which commits the whole INDEX. In the multi-agent city
-// that index routinely holds peers' staged work, so the merge swept in foreign
-// files (realized: 2026-07-03 data-loss; Frankenstein commit 71221b2, which swept
-// AGENTS.md, CLAUDE.md, .claude/settings.json and the beads exports). Two defenses,
-// smallest blast radius first:
+// A naive `git merge --squash` + pathspec-less `git commit` in the shared main
+// checkout commits the whole INDEX, which in the multi-agent city routinely
+// holds peers' staged work and would sweep their files into the merge. Two
+// defenses, smallest blast radius first:
 //
 //  1. Guard (assertNoForeignStaged): refuse loudly if the shared index holds any
 //     foreign staged file, so the gate reports it instead of contaminating main.
@@ -211,9 +206,9 @@ func SquashMerge(repoDir, branch, message string) error {
 // Beads issues.jsonl exports (root, .beads/, or nested — anything beadsExportNoise
 // matches) are EXEMPT: the beads pre-commit hook re-exports and stages them on every
 // commit in the shared city, so aborting on them would self-brick every gated merge.
-// Unlike the pre-sp-jgtw guard, a stray ROOT issues.jsonl is exempt too — a racing
-// beads auto-committer legitimately stages it, and squashMergeClean pins every export
-// path to main's version so none can ride in regardless.
+// A stray ROOT issues.jsonl is exempt too — a racing beads auto-committer legitimately
+// stages it, and squashMergeClean pins every export path to main's version so none
+// can ride in regardless.
 func assertNoForeignStaged(repoDir string) error {
 	out, err := gitRun(repoDir, "diff", "--cached", "--name-only")
 	if err != nil {
@@ -260,9 +255,8 @@ func squashMergeClean(repoDir, branch, message string) error {
 
 	// PRE-MERGE (sp-k0di check 2): the branch must add at least one commit on top
 	// of main. A branch with zero commits ahead squashes main's OWN tree back onto
-	// main — a message-only commit with no file changes. This is the exact hole
-	// that lost three fixes: agents edited files but never committed, so the branch
-	// had nothing to squash. Fail loudly before building the commit.
+	// main — a message-only commit with no file changes. Fail loudly before
+	// building the commit.
 	ahead, err := gitRun(repoDir, "rev-list", "--count", parent+".."+branch)
 	if err != nil {
 		return err
@@ -274,12 +268,11 @@ func squashMergeClean(repoDir, branch, message string) error {
 	// Build the squash tree from the BRANCH's tree alone, then pin every beads-export
 	// path (issues.jsonl anywhere) to main's version. In the shared city the beads
 	// pre-commit hook re-exports and stages issues.jsonl INTO the worktree fix commit,
-	// so branch^{tree} ITSELF carries a churn the agent never intended (sp-jgtw;
-	// evidence 6947af6 rode a 119-line root issues.jsonl in as a 9th file). Pinning to
-	// the parent makes the squash change issues.jsonl by exactly nothing, so no stray —
-	// from the branch tree OR a racing auto-committer — can ride in. The tree is
-	// assembled in a PRIVATE index (GIT_INDEX_FILE) so the shared checkout's index and
-	// working tree are never read or written.
+	// so branch^{tree} ITSELF carries a churn the agent never intended (sp-jgtw).
+	// Pinning to the parent makes the squash change issues.jsonl by exactly nothing,
+	// so no stray — from the branch tree OR a racing auto-committer — can ride in. The
+	// tree is assembled in a PRIVATE index (GIT_INDEX_FILE) so the shared checkout's
+	// index and working tree are never read or written.
 	tree, err := branchTreePinnedToMain(repoDir, branch, parent)
 	if err != nil {
 		return err

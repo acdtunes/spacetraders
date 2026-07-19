@@ -11,14 +11,12 @@ import (
 // timestamp tie by the higher ID for full determinism. Returns nil for an empty
 // slice.
 //
-// Ties happen when a container stops without terminalizing its storage_operations
-// row (sp-3lj5): the stale "zombie" row keeps reading RUNNING forever alongside its
-// live replacement (e.g. warehouse-TORWIND-12-bad719ff, stopped at 15:24Z but never
-// terminalized, next to the live warehouse-TORWIND-12-3477282e at the same
-// waypoint). A naive first-match or lowest-ID pick can silently resolve to the dead
-// operation - whose registered storage ships are gone, so it always reads back
-// zero free space - instead of the live one, and the caller wrongly concludes the
-// warehouse is full.
+// Ties happen when a container stops without terminalizing its storage_operations row:
+// the stale "zombie" row keeps reading RUNNING forever alongside its live replacement at
+// the same waypoint. A naive first-match or lowest-ID pick can silently resolve to the
+// dead operation - whose registered storage ships are gone, so it always reads back zero
+// free space - instead of the live one, and the caller wrongly concludes the warehouse is
+// full.
 func SelectNewestRunningWarehouse(ops []*storage.StorageOperation) *storage.StorageOperation {
 	var best *storage.StorageOperation
 	for _, op := range ops {
@@ -30,17 +28,16 @@ func SelectNewestRunningWarehouse(ops []*storage.StorageOperation) *storage.Stor
 	return best
 }
 
-// Multi-warehouse aggregation (sp-5q2c). The Admiral runs MORE THAN ONE warehouse
-// container at a single waypoint for additive capacity (e.g. light-12's 80 slots +
-// heavy-4B's 225 = 305 at E42). The helpers below treat the RUNNING warehouse
-// operations parked at ONE waypoint as a single co-located group: capacity and
-// stock READ as the SUM across the group, deposits PICK the member with free
-// space, and "full" is true ONLY when every member is full. Because a stale
-// sp-3lj5 "zombie" row (a stopped container whose storage_operations row was never
-// terminalized) has an unregistered storage ship, it contributes 0 free space and
-// 0 stock to every sum and is never chosen as a deposit target — so aggregation
-// composes with, rather than reopens, the newest-wins zombie fix (aggregation is
-// across RUNNING ops only; the terminalization + RUNNING-filter guards still stand).
+// Multi-warehouse aggregation. The Admiral runs MORE THAN ONE warehouse container at a
+// single waypoint for additive capacity (e.g. light-12's 80 slots + heavy-4B's 225 = 305
+// at E42). The helpers below treat the RUNNING warehouse operations parked at ONE waypoint
+// as a single co-located group: capacity and stock READ as the SUM across the group,
+// deposits PICK the member with free space, and "full" is true ONLY when every member is
+// full. Because a stale "zombie" row (a stopped container whose storage_operations row was
+// never terminalized) has an unregistered storage ship, it contributes 0 free space and 0
+// stock to every sum and is never chosen as a deposit target — so aggregation composes
+// with, rather than reopens, the newest-wins zombie handling above (aggregation is across
+// RUNNING ops only; the terminalization + RUNNING-filter guards still stand).
 
 // The aggregation helpers read a warehouse operation's free space and per-good stocked
 // units through WarehouseSpaceReader (defined in tour_deposit_candidates.go, satisfied
@@ -92,7 +89,7 @@ func TotalFreeSpace(space WarehouseSpaceReader, group []*storage.StorageOperatio
 }
 
 // TotalCapacity sums the REAL cargo_capacity of every storage hull across every operation
-// in group — the auto-cap knapsack's capacity term C (sp-5n7v). It reads the live per-hull
+// in group — the auto-cap knapsack's capacity term C. It reads the live per-hull
 // capacity (a heavy frame or an installed cargo module reports its true capacity, never an
 // assumed 80), so a 2nd/3rd warehouse hull simply raises C and the optimizer buffers more.
 // Unlike TotalFreeSpace this is the TOTAL buffer size independent of current stock — the
@@ -135,8 +132,8 @@ func AnySupportsGood(group []*storage.StorageOperation, good string) bool {
 // SelectDepositWarehouse returns the member of a co-located group that can accept a
 // deposit of good RIGHT NOW — it both SUPPORTS good and has free space — breaking
 // ties toward the newest operation. Co-located members share a waypoint, so the
-// "nearest" tiebreak is degenerate and newest (the sp-3lj5 zombie-avoidance order)
-// decides. Returns nil ONLY when every member is full or unsupported, which is the
+// "nearest" tiebreak is degenerate and newest (the zombie-avoidance order) decides.
+// Returns nil ONLY when every member is full or unsupported, which is the
 // sole condition under which a caller may report the warehouse full: capacity is
 // horizontal, so a deposit fails only when the WHOLE group is saturated. A zombie
 // member reads 0 free space and is skipped.

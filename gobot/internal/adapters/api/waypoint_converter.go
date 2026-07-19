@@ -16,11 +16,6 @@ func NewWaypointConverter() *WaypointConverter {
 
 // ConvertGraphToWaypoints converts graph waypoints to Waypoint objects with optional trait enrichment
 //
-// This centralizes the conversion logic that was duplicated across multiple files:
-// - waypoint_enricher.go
-// - distribution_checker.go
-// - ship_selector.go
-//
 // Args:
 //
 //	graph: Graph structure with waypoints data (map[string]interface{})
@@ -36,7 +31,6 @@ func (c *WaypointConverter) ConvertGraphToWaypoints(
 ) map[string]*shared.Waypoint {
 	waypointObjects := make(map[string]*shared.Waypoint)
 
-	// Extract waypoints from graph structure
 	graphWaypoints, ok := graph["waypoints"].(map[string]interface{})
 	if !ok {
 		return waypointObjects
@@ -48,7 +42,6 @@ func (c *WaypointConverter) ConvertGraphToWaypoints(
 			continue
 		}
 
-		// Check if we have trait data from waypoints table
 		if traitWp, exists := waypointTraits[symbol]; exists {
 			// Use full Waypoint object from waypoints table (has correct has_fuel)
 			waypointObjects[symbol] = traitWp
@@ -69,18 +62,15 @@ func (c *WaypointConverter) convertWaypointFromMap(
 	symbol string,
 	wpMap map[string]interface{},
 ) *shared.Waypoint {
-	// Extract basic coordinates
 	x, _ := wpMap["x"].(float64)
 	y, _ := wpMap["y"].(float64)
 
-	// Create waypoint
 	wp, err := shared.NewWaypoint(symbol, x, y)
 	if err != nil {
 		log.Printf("Warning: failed to create waypoint %s: %v", symbol, err)
 		return nil
 	}
 
-	// Extract optional fields
 	if wpType, ok := wpMap["type"].(string); ok {
 		wp.Type = wpType
 	}
@@ -89,10 +79,8 @@ func (c *WaypointConverter) convertWaypointFromMap(
 		wp.SystemSymbol = systemSymbol
 	}
 
-	// Extract has_fuel with multiple fallback strategies
 	wp.HasFuel = c.extractHasFuel(wpMap)
 
-	// Extract orbitals if present
 	if orbitals, ok := wpMap["orbitals"].([]string); ok {
 		wp.Orbitals = orbitals
 	}

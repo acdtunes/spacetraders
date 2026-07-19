@@ -17,7 +17,6 @@ type ShipModule struct {
 	requirements ShipRequirements
 }
 
-// NewShipModule creates a new ShipModule value object
 func NewShipModule(symbol string, capacity, range_ int, requirements ShipRequirements) *ShipModule {
 	return &ShipModule{
 		symbol:       symbol,
@@ -27,7 +26,6 @@ func NewShipModule(symbol string, capacity, range_ int, requirements ShipRequire
 	}
 }
 
-// Symbol returns the module symbol identifier (e.g., "MODULE_JUMP_DRIVE_I")
 func (m *ShipModule) Symbol() string {
 	return m.symbol
 }
@@ -42,7 +40,6 @@ func (m *ShipModule) Range() int {
 	return m.range_
 }
 
-// Requirements returns the module's power/crew/slot cost.
 func (m *ShipModule) Requirements() ShipRequirements {
 	return m.requirements
 }
@@ -56,7 +53,7 @@ func (m *ShipModule) IsJumpDrive() bool {
 // IsWarpDrive checks if this module is a warp drive.
 // Warp drive modules have symbols starting with "MODULE_WARP_DRIVE" (e.g.
 // "MODULE_WARP_DRIVE_I"). A warp drive is the physical mechanism a SHIP_EXPLORER
-// uses to travel BETWEEN systems off the jump-gate network (sp-0xd0); it is
+// uses to travel BETWEEN systems off the jump-gate network; it is
 // distinct from a jump drive (MODULE_JUMP_DRIVE_*), which hops gate-to-gate.
 func (m *ShipModule) IsWarpDrive() bool {
 	return strings.HasPrefix(m.symbol, "MODULE_WARP_DRIVE")

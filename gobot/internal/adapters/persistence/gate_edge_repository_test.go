@@ -58,7 +58,7 @@ func TestGateEdgeRepository_ReplaceThenEdges_RoundTrip(t *testing.T) {
 	require.Equal(t, "X1-PA3-I51", gate)
 }
 
-// Era filtering (sp-vapw): a dead-era edge (fresh timestamp, but a CLOSED era's
+// Era filtering: a dead-era edge (fresh timestamp, but a CLOSED era's
 // id) must never leak into a live read — not from Edges, not from Adjacency. This
 // is the exact class of bug the PZ28 ghost-gate row caused.
 func TestGateEdgeRepository_DeadEraRow_IgnoredByLiveReads(t *testing.T) {
@@ -155,7 +155,7 @@ func TestGateEdgeRepository_Replace_PurgesOldAndDeadEraRows(t *testing.T) {
 	require.Equal(t, []string{"X1-PA3"}, connectedSystems(edges), "dropped and dead-era neighbors must be gone")
 }
 
-// sp-8qhu: an edge's UnderConstruction flag round-trips through Replace/Edges, so
+// An edge's UnderConstruction flag round-trips through Replace/Edges, so
 // the routing BFS can read a neighbor gate's real build state from the cache.
 func TestGateEdgeRepository_UnderConstruction_RoundTrip(t *testing.T) {
 	db, err := database.NewTestConnection()
@@ -193,7 +193,7 @@ func TestGateEdgeRepository_UnderConstruction_RoundTrip(t *testing.T) {
 	require.True(t, af2.UnderConstruction, "Adjacency must expose the under-construction flag")
 }
 
-// sp-8qhu TTL split: an under-construction edge uses the SHORTER (2h) freshness
+// TTL split: an under-construction edge uses the SHORTER (2h) freshness
 // window while a healthy edge keeps 24h. At the SAME 3h age, the under-construction
 // set reads as a MISS (re-probe, so a completed build is noticed same-era) but the
 // healthy set is still a HIT — proving the window is per-row, not global.
@@ -225,7 +225,7 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 	require.True(t, ok, "a healthy edge at the same 3h age must still be fresh (24h window)")
 }
 
-// sp-8qhu deploy-gap: an EMPTY synced_at — the exact state the migration leaves on
+// Deploy-gap: an EMPTY synced_at — the exact state the migration leaves on
 // a pre-tracking row — reads as a MISS (so routing re-fetches + re-probes before
 // trusting the row's OPEN default) AND is flagged Stale by Adjacency (so the verb
 // marks it unverified rather than authoritative). This is the invalidated live
@@ -255,7 +255,7 @@ func TestGateEdgeRepository_EmptySyncedAt_MissAndFlaggedStale(t *testing.T) {
 	require.True(t, adjacency["X1-KA42"][0].Stale, "Adjacency must flag the invalidated row Stale")
 }
 
-// --- sp-ikx1: persisted negative-result backoff for unreadable gates ---
+// --- Persisted negative-result backoff for unreadable gates ---
 
 // MarkUnreadable persists a backoff marker that UnreadableState reads back, and a repeat
 // failure increments the attempt count — the raw facts the service turns into a re-probe
@@ -335,7 +335,7 @@ func TestGateEdgeRepository_MarkerRow_ExcludedFromEdgesAndAdjacency(t *testing.T
 	require.NotContains(t, adjacency, "X1-XX56", "a backoff marker must not surface as an edge in the overview")
 }
 
-// sp-ywh1: UnreadableGates returns every era-scoped backoff MARKER (system -> the gate waypoint
+// UnreadableGates returns every era-scoped backoff MARKER (system -> the gate waypoint
 // the marker recorded) and NOTHING else — a real charted edge set is not a marker, so it is
 // excluded (the mirror of Adjacency's filter, verifying the empty-string connected_system bind
 // selects markers, not real edges). This is the traffic-touched frontier-gate set the widened
@@ -367,7 +367,7 @@ func TestGateEdgeRepository_UnreadableGates_ReturnsMarkersWithGateWaypoints(t *t
 	}, gates, "only the backoff markers, each mapped to the gate waypoint it recorded; the charted system is excluded")
 }
 
-// Era filtering (sp-vapw + sp-ywh1): a dead-era backoff marker must never leak a stale charting
+// Era filtering: a dead-era backoff marker must never leak a stale charting
 // target into the live sweep — UnreadableGates is era-scoped exactly like Edges/Adjacency, so a
 // CLOSED era's marker is out of scope even though its row still exists.
 func TestGateEdgeRepository_UnreadableGates_DeadEraMarkerExcluded(t *testing.T) {
@@ -448,7 +448,7 @@ func TestGateEdgeRepository_Backoff_ResetOnEraClose(t *testing.T) {
 	require.False(t, ok, "an era close must reset the backoff — the new era re-probes fresh")
 }
 
-// sp-jgcache: the healthy-edge freshness window is a configurable knob (WithFreshWindow), so
+// The healthy-edge freshness window is a configurable knob (WithFreshWindow), so
 // the topology-cache TTL is tunable from config without a rebuild. A 3h-old edge is FRESH
 // under the default 24h window (a hit) but STALE under a custom 2h window (a miss) — proving
 // the option actually drives the staleness decision rather than a hardcoded const. The default

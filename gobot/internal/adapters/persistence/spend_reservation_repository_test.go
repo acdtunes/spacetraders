@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-w3he: the per-buy floor (sp-9aoc) checks live treasury PER CONTAINER, so N factory
+// The per-buy floor checks live treasury PER CONTAINER, so N factory
 // containers can each clear it inside their own check->buy window and collectively dip below
 // the reserve. This suite drives the shared-DB reservation ledger that closes that race:
 // "record my spend intent, then verify live treasury minus the SUM of all active reservations

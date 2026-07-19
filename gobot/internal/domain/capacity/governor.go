@@ -8,49 +8,47 @@ import (
 // Calibration is the engine's resolved calibration parameter set (spec:
 // "Calibration params (config, not code)"). It flows from config.yaml's
 // [capacity_reconciler] section through the launch config into every phase
-// call each tick, so the planner (st-hlw), differ (st-zr0), and governor
-// (st-x00) all read the SAME live numbers and none hardcodes an operational
-// value. Zero-valued config fields resolve to these documented defaults in
-// the application-layer resolver; a resolved Calibration always passes
-// Validate.
+// call each tick, so the planner, differ, and governor all read the SAME live
+// numbers and none hardcodes an operational value. Zero-valued config fields
+// resolve to these documented defaults in the application-layer resolver; a
+// resolved Calibration always passes Validate.
 //
-// RE-SCOPE (st-x00 re-scoped by st-5le): the capital tier is now a THIN EMITTER
-// (capex_emitter.go, capacity.CapexEmitter) that only accumulates the tier-4 gap
-// and EMITS it as contract-delivery demand to the sp-1txd fleet autosizer — it
-// computes NO capex budget and mints NO proposals. sp-1txd owns the ONE guard
-// stack (reserve-floor-net, 25%-treasury, era payback, fleet ceilings, per-tick
-// cap) that actually spends. Consequently four budget-math fields below —
+// RE-SCOPE: the capital tier is now a THIN EMITTER (capex_emitter.go,
+// capacity.CapexEmitter) that only accumulates the tier-4 gap and EMITS it as
+// contract-delivery demand to the fleet autosizer — it computes NO capex
+// budget and mints NO proposals. The fleet autosizer owns the ONE guard stack
+// (reserve-floor-net, 25%-treasury, era payback, fleet ceilings, per-tick cap)
+// that actually spends. Consequently four budget-math fields below —
 // ReserveFloorCredits, SurplusFraction, PerDecisionCapPct, ROIPaybackHorizon — are
 // RESERVED / currently-unused by the emitter: still resolved and range-validated at
 // launch (harmless), but NO code reads them. DO NOT resurrect them as a second
-// money gate — sp-1txd's cfg.Reserve is the SINGLE reserve authority, and a second
-// reserve floor here would be a latent "two reserve floors" bug. The still-live
-// knobs are AddThresholdPerHullCrHr + StockerCapacityBudget (planner), TickInterval
-// (loop), and ApprovalThresholdCredits (the CONVERGE + approval-execution gate).
+// money gate — the fleet autosizer's cfg.Reserve is the SINGLE reserve authority,
+// and a second reserve floor here would be a latent "two reserve floors" bug. The
+// still-live knobs are AddThresholdPerHullCrHr + StockerCapacityBudget (planner),
+// TickInterval (loop), and ApprovalThresholdCredits (the CONVERGE + approval-execution
+// gate).
 type Calibration struct {
 	// ReserveFloorCredits — RESERVED / unused by the thin emitter (see type doc):
-	// the emitter computes no budget, so nothing reads this. Was the HARD treasury
-	// floor of the pre-re-scope governor. Default 50000, matching the codebase's
-	// immutable reserve floor (internal/application/common/reserve_floor.go). DO NOT
-	// wire a second reserve gate off this — sp-1txd's cfg.Reserve is the ONE reserve
-	// authority.
+	// the emitter computes no budget, so nothing reads this. Default 50000,
+	// matching the codebase's immutable reserve floor
+	// (internal/application/common/reserve_floor.go). DO NOT wire a second
+	// reserve gate off this — the fleet autosizer's cfg.Reserve is the ONE
+	// reserve authority.
 	ReserveFloorCredits int64
 
 	// SurplusFraction — RESERVED / unused by the thin emitter (see type doc): no
-	// deployable-budget drain runs here anymore. Was f in the surplus-fraction drain
-	// (deployable = f × (treasury − floor)). Default 0.25. sp-1txd owns the
-	// 25%-treasury drain now.
+	// deployable-budget drain runs here anymore. Default 0.25. The fleet
+	// autosizer owns the 25%-treasury drain now.
 	SurplusFraction float64
 
 	// PerDecisionCapPct — RESERVED / unused by the thin emitter (see type doc): the
-	// emitter caps nothing. Was the per-decision cap (% of deployable budget).
-	// Default 25. sp-1txd's per-tick cap is the live spend limiter now.
+	// emitter caps nothing. Default 25. The fleet autosizer's per-tick cap is the
+	// live spend limiter now.
 	PerDecisionCapPct int
 
 	// ROIPaybackHorizon — RESERVED / unused by the thin emitter (see type doc): no
-	// ROI/payback gate runs here. Was the window a capital item had to pay back
-	// within. Default 24h. sp-1txd's era-payback guard judges payback now, fed the
-	// emitter's MarginalProjectedCrHr evidence.
+	// ROI/payback gate runs here. Default 24h. The fleet autosizer's era-payback
+	// guard judges payback now, fed the emitter's MarginalProjectedCrHr evidence.
 	ROIPaybackHorizon time.Duration
 
 	// AddThresholdPerHullCrHr is the per-hull-credits/hr floor a capacity add
@@ -78,7 +76,7 @@ type Calibration struct {
 }
 
 // Calibration defaults. Exported so the config surface, the CLI, and the
-// harness (st-6wa) can assert against the same numbers the resolver uses.
+// harness can assert against the same numbers the resolver uses.
 const (
 	// DefaultReserveFloorCredits matches common.ImmutableReserveFloor (the
 	// domain layer cannot import application/common; keep in lockstep).
@@ -136,10 +134,10 @@ func (c Calibration) Validate() error {
 
 // CapexBudget was one tick's resolved capital budget (Deployable = SurplusFraction
 // × (Treasury − ReserveFloor) floored at 0; PerDecisionCap = Deployable ×
-// PerDecisionCapPct/100). RESERVED / currently-unused: after the st-x00 re-scope
-// the thin emitter (capex_emitter.go) computes NO budget and leaves this type
-// zero-valued — all money-gating lives in sp-1txd. Kept for the audit-trail shape
-// and a possible future in-engine governor; nothing populates it today.
+// PerDecisionCapPct/100). RESERVED / currently-unused: the thin emitter
+// (capex_emitter.go) computes NO budget and leaves this type zero-valued — all
+// money-gating lives in the fleet autosizer. Kept for the audit-trail shape and
+// a possible future in-engine governor; nothing populates it today.
 type CapexBudget struct {
 	TreasuryCredits       int64
 	ReserveFloorCredits   int64
@@ -147,18 +145,17 @@ type CapexBudget struct {
 	PerDecisionCapCredits int64
 }
 
-// CapexDecision is the emitter's audit note on one capital action. After the
-// re-scope the thin emitter (capex_emitter.go) produces one per tier-4 action with
-// Approved=false and Reason=capexEmitReason ("emitted as contract-delivery capital
-// demand to the sp-1txd fleet autosizer …") — the reconciler neither executes nor
-// proposes the action; sp-1txd's guard stack decides the buy.
+// CapexDecision is the emitter's audit note on one capital action. The thin
+// emitter (capex_emitter.go) produces one per tier-4 action with Approved=false
+// and Reason=capexEmitReason ("emitted as contract-delivery capital demand to
+// the fleet autosizer …") — the reconciler neither executes nor proposes the
+// action; the fleet autosizer's guard stack decides the buy.
 type CapexDecision struct {
 	Action Action
 	// Approved is always false from the thin emitter (capital is emitted to
-	// sp-1txd, never approved or proposed by the reconciler).
+	// the fleet autosizer, never approved or proposed by the reconciler).
 	Approved bool
-	// Reason is the emit audit note (capexEmitReason). Pre-re-scope it named the
-	// gate that blocked or the arithmetic that cleared.
+	// Reason is the emit audit note (capexEmitReason).
 	Reason string
 	// Budget is left zero-valued by the thin emitter (no capex budget is computed).
 	Budget CapexBudget
@@ -166,15 +163,17 @@ type CapexDecision struct {
 
 // GovernResult is the GOVERN phase's output. From the production thin emitter
 // (capex_emitter.go): Approved carries the cheap tiers (1-3) verbatim; Proposals
-// stays EMPTY (the emitter mints none — the tier-4 demand is emitted to sp-1txd
-// instead); Decisions carries the per-capital-action emit audit trail.
+// stays EMPTY (the emitter mints none — the tier-4 demand is emitted to the
+// fleet autosizer instead); Decisions carries the per-capital-action emit audit
+// trail.
 type GovernResult struct {
 	// Approved is executed this tick by the actuator (cheap tiers pass
 	// through; tier-4 appears here only under a future graduated autonomy).
 	Approved []Action
 	// Proposals is filed on the proposal channel for human approval. The thin
-	// emitter leaves this EMPTY — it emits capital demand to sp-1txd rather than
-	// minting proposals (a future in-engine governor could repopulate it).
+	// emitter leaves this EMPTY — it emits capital demand to the fleet autosizer
+	// rather than minting proposals (a future in-engine governor could
+	// repopulate it).
 	Proposals []Proposal
 	// Decisions is the per-capital-action audit trail (emit notes from the emitter).
 	Decisions []CapexDecision

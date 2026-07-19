@@ -16,8 +16,8 @@ func TestRequiredHulls(t *testing.T) {
 	}{
 		// 10 markets × 3min = 30min circuit, well under a 75min target → one probe.
 		{"single probe suffices", 10, 3 * min, 75 * min, 1},
-		// XT71/UQ87 class: 22 markets × 3min = 66min circuit against a 60min target →
-		// 1.1 ratio → 2 probes required. A single-probe post here is undersized.
+		// 22 markets × 3min = 66min circuit against a 60min target → 1.1 ratio → 2
+		// probes required. A single-probe post here is undersized.
 		{"market-rich needs two", 22, 3 * min, 60 * min, 2},
 		// Exact boundary: 20 × 3min = 60min == 60min target → ratio 1.0 → still one probe.
 		{"exact boundary rounds to one", 20, 3 * min, 60 * min, 1},
@@ -126,7 +126,7 @@ func TestFreshnessRequiredHulls(t *testing.T) {
 		// Closed-loop ground truth: a 26-market system the static model sizes at 1
 		// probe (26×120=3120 < 3600) but whose OLDEST market is 8h stale against a 1h
 		// SLA is breaching 8× — empirical age overrides the model and raises demand to
-		// ceil(1 × 28800/3600) = 8. This is the VB74 measured pathology.
+		// ceil(1 × 28800/3600) = 8.
 		{"breach raises beyond the static model", 26, 120 * sec, 3600 * sec, 28800 * sec, 8},
 		// Exactly at the SLA is not yet breaching — no raise.
 		{"exact SLA does not raise", 26, 120 * sec, 3600 * sec, 3600 * sec, 1},
@@ -145,7 +145,7 @@ func TestFreshnessRequiredHulls(t *testing.T) {
 	}
 }
 
-// ClampToMarketCount is the sp-iupr issue-3 noise ceiling: a small-market system that a
+// ClampToMarketCount is the noise ceiling: a small-market system that a
 // noisy-HIGH per-market cycle over-sized is bounded to what its market count could ever
 // justify at the worst plausible cycle. The clamp only CAPS (never raises), is monotone in
 // market count (small-market ceiling ≤ large-market ceiling), and a degenerate ceiling
@@ -160,7 +160,7 @@ func TestClampToMarketCount(t *testing.T) {
 		sla        time.Duration
 		want       int
 	}{
-		// The ZY16 pathology: a 3-market system a noisy cycle sized at 6 is clamped to what 3
+		// A 3-market system a noisy cycle sized at 6 is clamped to what 3
 		// markets need at the worst plausible 30min/market cycle: ceil(3×30/60) = 2.
 		{"noisy small-market target clamped to the market-count ceiling", 6, 3, 30 * min, 60 * min, 2},
 		// The clamp only caps — a target within the ceiling is untouched.
@@ -185,10 +185,10 @@ func TestClampToMarketCount(t *testing.T) {
 	}
 }
 
-// DampenedCycleSeconds is the sp-iupr issue-3 noise dampener: it shrinks a system's own noisy
+// DampenedCycleSeconds is the noise dampener: it shrinks a system's own noisy
 // per-market cycle toward the fleet-wide robust median so equal-market-count systems converge
 // on similar targets instead of diverging on measurement noise. A low reading is pulled up and
-// a high one pulled down; no fleet anchor or 0% is the pre-dampening pass-through.
+// a high one pulled down; no fleet anchor or 0% passes the own cycle through unchanged.
 func TestDampenedCycleSeconds(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -199,7 +199,7 @@ func TestDampenedCycleSeconds(t *testing.T) {
 	}{
 		// No fleet anchor (a single trusted system): own cycle used unchanged.
 		{"no fleet anchor returns own", 600, 0, 50, 600},
-		// 0% is the pre-dampening behavior: own unchanged.
+		// 0% passes through: own unchanged.
 		{"zero percent returns own", 600, 900, 0, 600},
 		// 50% shrinks halfway toward the fleet median: a low reading is pulled UP...
 		{"half dampening pulls a low reading toward the median", 600, 900, 50, 750},
@@ -219,7 +219,7 @@ func TestDampenedCycleSeconds(t *testing.T) {
 	}
 }
 
-// CircuitRequiredHulls (sp-tor9) sizes a post from its DIRECTLY OBSERVED circuit period: the
+// CircuitRequiredHulls sizes a post from its DIRECTLY OBSERVED circuit period: the
 // worst-case market age at the post's CURRENT hull count. The circuit period scales inversely
 // with probe count, so the product hulls×age ≈ markets×perMarketHop is CONSERVED — a
 // system-invariant measure of total circuit work. Sizing to ceil(hulls×age/sla) is therefore a
@@ -238,7 +238,7 @@ func TestCircuitRequiredHulls(t *testing.T) {
 		sla       time.Duration
 		want      int
 	}{
-		// The VB74 pathology: 4 probes producing a 94min worst-case age against a 60min SLA are
+		// 4 probes producing a 94min worst-case age against a 60min SLA are
 		// sized to the N that brings the circuit under-SLA in ONE step — ceil(4×94/60)=7 — not a
 		// slow +1 nudge. This is what the deflated measured-cycle model could not reach.
 		{"proportional raise sizes to bring the worst-case age under the SLA", 4, 94 * min, 60 * min, 7},
@@ -248,8 +248,7 @@ func TestCircuitRequiredHulls(t *testing.T) {
 		// target (25200 probe-seconds of work either way), so raising to it is a stable fixpoint.
 		{"conserved circuit work — 6 probes at a 70min age", 6, 4200 * sec, 3600 * sec, 7},
 		{"conserved circuit work — the same system at 7 probes holds the same target", 7, 3600 * sec, 3600 * sec, 7},
-		// A marginal breach nudges a single probe (ceil(4×61/60)=5) — the old sanity-floor behavior
-		// falls out of the proportional model at the boundary.
+		// A marginal breach nudges a single probe (ceil(4×61/60)=5).
 		{"a marginal breach nudges one probe", 4, 61 * min, 60 * min, 5},
 		// Comfortably under the SLA sizes BELOW the current hull count (ceil(8×30/60)=4), the signal
 		// the caller reads as "release the surplus toward the fixpoint".
@@ -268,11 +267,11 @@ func TestCircuitRequiredHulls(t *testing.T) {
 	}
 }
 
-// WeightedPercentileAgeSeconds (sp-r57g) is the freshness sizer's new closed-loop ground
+// WeightedPercentileAgeSeconds is the freshness sizer's closed-loop ground
 // truth: the age at a target percentile across a system's markets, VALUE-WEIGHTED by
-// per-market trade throughput. It supersedes the max-age premise (the old OldestAgeSeconds),
+// per-market trade throughput. It supersedes the max-age premise (OldestAgeSeconds),
 // which is tail-dominated and unachievable for big systems — the P90 EXPLICITLY TOLERATES the
-// stale tail (DA78: P90≈62 vs max≈167). Value-weighting is the key extension: a high-value
+// stale tail. Value-weighting is the key extension: a high-value
 // stale market pulls the percentile UP (buys it more probes), while an equal-count low-traffic
 // straggler stays in the tolerated tail — keeping the arb core tight while the periphery lags
 // cheaply. A percentile of 100 recovers the exact max (the mutation guard: reverting the metric

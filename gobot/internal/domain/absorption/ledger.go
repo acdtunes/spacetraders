@@ -1,5 +1,5 @@
 // Package absorption defines the cross-engine market-absorption ledger port and its
-// value types (sp-78ai). Five engines — tours, arb-run, idle-arb, trade-route
+// value types. Five engines — tours, arb-run, idle-arb, trade-route
 // circuits, pre-positioning — absorb the SAME market depth with no shared signal but
 // the market cache, which reflects only EXECUTED trades seconds late. The ledger is
 // the substrate that carries the two invisible windows: in-flight PLANNED intent and
@@ -79,7 +79,7 @@ type Ledger interface {
 	// Release consumes a PLANNED reservation on an exit without a sale (no-op if gone).
 	Release(ctx context.Context, reservationID string) error
 	// ReleaseByContainer drops ALL of a container's still-PLANNED reservations in one
-	// statement — the tour writer's re-plan/restart de-dup seam (sp-78ai L3): before a
+	// statement — the tour writer's re-plan/restart de-dup seam: before a
 	// (re)plan it clears this container's stale in-flight intent so the fresh plan nets
 	// against OTHERS' depth and Reserve cannot double-count the container's own prior
 	// rows. EXECUTED recovery shadows are LEFT untouched (real market damage still

@@ -1,6 +1,6 @@
 package capacity
 
-// The capacity tiered-autonomy PROPOSAL CHANNEL (bead st-0h8, epic st-7zk): the
+// The capacity tiered-autonomy PROPOSAL CHANNEL: the
 // REAL domainCapacity.ProposalChannel that replaces the fail-loud NoOp in the
 // daemon wiring. When the governor mints a tier-4 capital proposal (autobuy a
 // hull / stand up a cluster — a treasury-moving add that NEVER auto-executes
@@ -30,7 +30,7 @@ import (
 // the captain. The governor re-mints a proposal for an unclosed gap every
 // reconcile tick (~300s), but a capital add is a strategic, hours-scale
 // decision — so the same gap (keyed on the stable Proposal.ID) files ONE nudge
-// per cooldown, not one per tick (sp-6g96 event-spam doctrine).
+// per cooldown, not one per tick (event-spam doctrine).
 const defaultProposalNudgeCooldown = time.Hour
 
 // capexProposalEventStore is the captain-outbox seam the channel files on: the
@@ -41,7 +41,7 @@ type capexProposalEventStore interface {
 	Record(ctx context.Context, e *captain.Event) error
 }
 
-// ProposalChannel is the real domainCapacity.ProposalChannel (st-0h8).
+// ProposalChannel is the real domainCapacity.ProposalChannel.
 type ProposalChannel struct {
 	store    capexProposalEventStore
 	clock    shared.Clock

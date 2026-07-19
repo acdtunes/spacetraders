@@ -14,7 +14,7 @@ import (
 // flags) the coverage reader derives shipyard-scan-exhaustion from. It faithfully honors the
 // caller's maxHops the way the real ExpansionScanner's bfsHops does — a candidate deeper than
 // the bound is NOT returned — so a test can prove the reach the caller passes actually gates
-// enumeration (sp-b8lf). It also records the last maxHops it was asked for.
+// enumeration. It also records the last maxHops it was asked for.
 type fakeCandidateLister struct {
 	candidates []expansionCmd.ExpansionCandidate
 	err        error
@@ -35,7 +35,7 @@ func (f *fakeCandidateLister) ExpansionCandidates(_ context.Context, _ int, maxH
 	return within, nil
 }
 
-// TestGateShipyardCoverage_ExhaustedOnlyWhenEveryReachableSystemSwept pins the sp-k645
+// TestGateShipyardCoverage_ExhaustedOnlyWhenEveryReachableSystemSwept pins the
 // trigger-(b) guard: gate shipyard coverage is scan-exhausted (a missing heavy yard is
 // CONCLUSIVE) only when EVERY gate-reachable system has been swept — an unscanned reachable
 // system means coverage is still sparse (a heavy yard might yet be found on-gate), and an

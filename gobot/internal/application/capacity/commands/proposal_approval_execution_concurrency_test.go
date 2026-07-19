@@ -1,21 +1,19 @@
 package commands
 
-// Concurrency hardening for the tiered-autonomy APPROVAL-EXECUTION path (bead
-// st-cpc pre-arm cleanup, epic st-7zk). The executor is STILL UNTRIGGERED — this
-// only proves the sweep is safe for when a future arming lane drives it on a
-// cadence.
+// Concurrency hardening for the tiered-autonomy APPROVAL-EXECUTION path. The
+// executor is STILL UNTRIGGERED — this only proves the sweep is safe for when a
+// future arming lane drives it on a cadence.
 //
-// The hazard (st-cpc item 4): ExecuteApproved pulls the approved-and-awaiting set
-// from the source, then per proposal executes ExecuteCapital and marks it
-// Executed. Two OVERLAPPING sweeps could both read the SAME still-approved
-// proposal BEFORE either marks it Executed ⇒ ExecuteCapital fires twice ⇒ a
-// DOUBLE capital spend. This test drives the executor's driving port
-// (ExecuteApproved) from two overlapping goroutines and asserts at the driven-port
-// boundary that the sole approved proposal is spent EXACTLY once and marked
-// Executed EXACTLY once.
+// The hazard: ExecuteApproved pulls the approved-and-awaiting set from the
+// source, then per proposal executes ExecuteCapital and marks it Executed. Two
+// OVERLAPPING sweeps could both read the SAME still-approved proposal BEFORE
+// either marks it Executed ⇒ ExecuteCapital fires twice ⇒ a DOUBLE capital
+// spend. This test drives the executor's driving port (ExecuteApproved) from two
+// overlapping goroutines and asserts at the driven-port boundary that the sole
+// approved proposal is spent EXACTLY once and marked Executed EXACTLY once.
 //
 // Test budget: 1 new distinct behavior (concurrent sweeps ⇒ at-most-once
-// execution) × 2 = 2 max; 1 written. st-0h8's gate-bypass, verbatim-execute, and
+// execution) × 2 = 2 max; 1 written. The gate-bypass, verbatim-execute, and
 // fail-closed-retry behaviors stay covered by proposal_approval_execution_test.go.
 
 import (

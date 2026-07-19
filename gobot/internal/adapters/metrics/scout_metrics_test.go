@@ -7,11 +7,11 @@ import (
 )
 
 // gatherGauge is declared once for the whole metrics test package in
-// tour_metrics_test.go (sp-fbih) — this file's gauge assertions in
+// tour_metrics_test.go — this file's gauge assertions in
 // TestScoutMetrics_LabelsAndValues below reuse that shared definition rather
 // than redeclaring it, since Go test files in the same package share scope.
 
-// TestScoutMetrics_RegisterAndExport proves scout_freshness_actual_seconds (sp-dp92 P7)
+// TestScoutMetrics_RegisterAndExport proves scout_freshness_actual_seconds
 // REGISTERS on the daemon's registry AND actually appears by name once observed — the
 // bopj P10 trap where a family was "registered" yet never showed on /metrics.
 func TestScoutMetrics_RegisterAndExport(t *testing.T) {

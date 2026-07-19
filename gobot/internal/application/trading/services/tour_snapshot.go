@@ -1,7 +1,7 @@
 // Package services holds trading application services that are shared across the
 // trade coordinators. tour_snapshot assembles the request-carried inputs the
-// depth-aware tour planner needs (sp-1ek0): a per-(waypoint, good) market snapshot
-// plus waypoint coordinates for real travel-time pricing.
+// depth-aware tour planner needs: a per-(waypoint, good) market snapshot plus
+// waypoint coordinates for real travel-time pricing.
 package services
 
 import (
@@ -20,8 +20,8 @@ import (
 // listing path the lane scanner uses (FindAllMarketsInSystem + GetMarketData,
 // mirroring collectSystemListings) so tour prices come from the identical cache the
 // circuit trades on, and it reads coordinates from the era-scoped waypoints table
-// (WaypointRepository.ListBySystem is already era-filtered per sp-vapw, so dead-era
-// coords never leak into routing).
+// (WaypointRepository.ListBySystem is already era-filtered, so dead-era coords never
+// leak into routing).
 //
 // Staleness: a market row whose cached snapshot is older than maxAge (relative to
 // now) is excluded — the same age-cap discipline as lane ranking. The caller passes
@@ -64,21 +64,21 @@ func BuildTourSnapshot(
 			}
 			observed := mkt.LastUpdated()
 			if !observed.IsZero() && now.Sub(observed) > maxAge {
-				// sp-k7q5 layer 2: count this drop so a market-rich system silently
-				// aging past the cap is visible on tour_lanes_stale_excluded_total
-				// instead of just vanishing from the plan. Observation only (RULINGS
-				// #4): a no-op when metrics are disabled.
+				// Count this drop so a market-rich system silently aging past the cap
+				// is visible on tour_lanes_stale_excluded_total instead of just
+				// vanishing from the plan. Observation only (RULINGS #4): a no-op when
+				// metrics are disabled.
 				metrics.RecordTourLanesStaleExcluded(playerID, sys, 1)
 				continue // stale — same age-cap as lane ranking
 			}
 			for _, g := range mkt.TradeGoods() {
-				// sp-9mkf (Bug 3): an EXPORT market's bid is a low sellback price, never a
-				// real import sink — the tour solver admits ANY positive-bid market as a sell
-				// destination, so it dumped 80 LAB_INSTRUMENTS into the exporter C37 at
-				// 2,347/u. Zero the sink-side Bid for EXPORT goods so the solver cannot pick
-				// this (waypoint, good) as a sell destination, while keeping the Ask so the
-				// market stays a valid BUY source. IMPORT/EXCHANGE (and unknown trade type)
-				// keep their bid — the fail-open posture the manufacturing reference filter
+				// An EXPORT market's bid is a low sellback price, never a real import sink —
+				// the tour solver admits ANY positive-bid market as a sell destination, which
+				// would let it dump goods into an exporter at a giveaway price. Zero the
+				// sink-side Bid for EXPORT goods so the solver cannot pick this (waypoint,
+				// good) as a sell destination, while keeping the Ask so the market stays a
+				// valid BUY source. IMPORT/EXCHANGE (and unknown trade type) keep their bid —
+				// the fail-open posture the manufacturing reference filter
 				// (sell_market_distributor) uses. This applies the trade_type sink filter at
 				// the snapshot boundary, so no trade_type field need thread through the
 				// routing proto/solver.

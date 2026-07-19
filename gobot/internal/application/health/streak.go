@@ -1,8 +1,7 @@
-// Package health holds the coordinator self-observability primitives
-// (sp-e2l1, generalized by sp-i01z): consecutive-identical-error streak
-// tracking that turns a silently-stuck retry loop into an interrupt-class
-// captain event. Extracted from internal/application/contract/commands so
-// every coordinator can adopt it (rollout: sp-6wxq).
+// Package health holds the coordinator self-observability primitives:
+// consecutive-identical-error streak tracking that turns a silently-stuck
+// retry loop into an interrupt-class captain event, adoptable by any
+// coordinator.
 package health
 
 import (
@@ -15,18 +14,17 @@ import (
 // at one checkpoint trigger a captain event — and every further multiple of
 // this re-triggers one, so a loop that is still stuck resurfaces
 // periodically instead of alarming only once and going quiet again. At the
-// fleet coordinator's fastest retry interval (10s), 5 crosses in well under
-// a minute — far faster than the 18h the 2026-07-05 negotiate-nil incident
-// ran silently — while still tolerating a handful of transient blips
-// without alarming (sp-e2l1).
+// fleet coordinator's fastest retry interval (10s), 5 crosses in well under a
+// minute, while still tolerating a handful of transient blips without
+// alarming.
 const DefaultStreakThreshold = 5
 
 // StreakTracker counts consecutive identical-error occurrences at a
 // single retry checkpoint and reports when the streak crosses a new
-// multiple of the configured threshold. It is the primitive behind
-// sp-e2l1: a coordinator retry loop that silently repeats the same error
-// forever must become observable without emitting an event on every single
-// iteration (edge-triggered, not per-iteration).
+// multiple of the configured threshold: a coordinator retry loop that
+// silently repeats the same error forever must become observable without
+// emitting an event on every single iteration (edge-triggered, not
+// per-iteration).
 type StreakTracker struct {
 	threshold int
 	lastErr   string
@@ -95,11 +93,11 @@ func (m *Monitor) Note(site, errMsg string) (streak int, crossed bool) {
 }
 
 // NewErrorLoopEvent constructs the captain event to record when a
-// coordinator checkpoint's error streak crosses a threshold multiple
-// (sp-e2l1). Pure and deterministic, so it is fully unit-testable without a
-// real EventRecorder; the Ship field carries the coordinator's own
-// container id (this event is container-scoped, not ship-scoped — the
-// fleet coordinator has no single ship of its own).
+// coordinator checkpoint's error streak crosses a threshold multiple. Pure
+// and deterministic, so it is fully unit-testable without a real
+// EventRecorder; the Ship field carries the coordinator's own container id
+// (this event is container-scoped, not ship-scoped — the fleet coordinator
+// has no single ship of its own).
 func NewErrorLoopEvent(containerID string, playerID int, checkpoint string, cause error, streak int) *captain.Event {
 	payload, err := json.Marshal(map[string]any{
 		"container_id": containerID,

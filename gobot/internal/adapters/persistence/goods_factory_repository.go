@@ -108,13 +108,11 @@ func (r *GormGoodsFactoryRepository) Delete(ctx context.Context, id string, play
 
 // entityToModel converts domain entity to database model
 func (r *GormGoodsFactoryRepository) entityToModel(factory *goods.GoodsFactory) (*GoodsFactoryModel, error) {
-	// Serialize dependency tree to JSON
 	treeJSON, err := json.Marshal(factory.DependencyTree())
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal dependency tree: %w", err)
 	}
 
-	// Serialize metadata to JSON
 	metadataJSON, err := json.Marshal(factory.Metadata())
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
@@ -155,13 +153,11 @@ func (r *GormGoodsFactoryRepository) entityToModel(factory *goods.GoodsFactory) 
 
 // modelToEntity converts database model to domain entity
 func (r *GormGoodsFactoryRepository) modelToEntity(model *GoodsFactoryModel) (*goods.GoodsFactory, error) {
-	// Deserialize dependency tree
 	var dependencyTree *goods.SupplyChainNode
 	if err := json.Unmarshal([]byte(model.DependencyTree), &dependencyTree); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal dependency tree: %w", err)
 	}
 
-	// Deserialize metadata
 	var metadata map[string]interface{}
 	if model.Metadata != "" && model.Metadata != "null" {
 		if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {

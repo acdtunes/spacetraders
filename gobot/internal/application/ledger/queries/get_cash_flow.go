@@ -63,7 +63,6 @@ func (h *GetCashFlowHandler) Handle(ctx context.Context, request common.Request)
 		return nil, fmt.Errorf("invalid request type: expected *GetCashFlowQuery")
 	}
 
-	// Validate group by
 	if query.GroupBy == "" {
 		query.GroupBy = cashFlowGroupByCategory
 	}
@@ -71,13 +70,11 @@ func (h *GetCashFlowHandler) Handle(ctx context.Context, request common.Request)
 		return nil, fmt.Errorf("only 'category' grouping is currently supported")
 	}
 
-	// Resolve player ID
 	playerID, err := shared.NewPlayerID(query.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid player ID: %w", err)
 	}
 
-	// Query all transactions in date range
 	opts := ledger.QueryOptions{
 		StartDate: &query.StartDate,
 		EndDate:   &query.EndDate,
@@ -89,7 +86,6 @@ func (h *GetCashFlowHandler) Handle(ctx context.Context, request common.Request)
 		return nil, fmt.Errorf("failed to query transactions: %w", err)
 	}
 
-	// Calculate cash flow
 	return h.calculateCashFlow(query, transactions), nil
 }
 
@@ -97,7 +93,6 @@ func (h *GetCashFlowHandler) calculateCashFlow(
 	query *GetCashFlowQuery,
 	transactions []*ledger.Transaction,
 ) *GetCashFlowResponse {
-	// Group by category
 	categoryMap := make(map[string]*CategoryCashFlow)
 
 	// Initialize all categories to ensure they appear even with zero transactions
@@ -111,7 +106,6 @@ func (h *GetCashFlowHandler) calculateCashFlow(
 		}
 	}
 
-	// Aggregate transactions by category
 	for _, tx := range transactions {
 		category := tx.Category().String()
 		amount := tx.Amount()
@@ -128,7 +122,6 @@ func (h *GetCashFlowHandler) calculateCashFlow(
 		flow.NetFlow = flow.TotalInflow - flow.TotalOutflow
 	}
 
-	// Convert map to slice (only include categories with transactions)
 	categories := make([]*CategoryCashFlow, 0)
 	for _, flow := range categoryMap {
 		if flow.Transactions > 0 {

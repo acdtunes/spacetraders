@@ -38,7 +38,7 @@ type WarehouseSpaceReader interface {
 	GetTotalCargoAvailable(operationID, goodSymbol string) int
 }
 
-// DepositCandidateConfig is the resolved pre-positioning tuning (sp-dchv Lane C).
+// DepositCandidateConfig is the resolved pre-positioning tuning.
 // It mirrors config.PrePositioningSettings, decoupled from the config package so
 // this service stays testable. Enabled=false yields no candidates.
 type DepositCandidateConfig struct {
@@ -46,9 +46,9 @@ type DepositCandidateConfig struct {
 	TopN              int
 	MinRecurrence     int
 	MinSavingsPerUnit int
-	// BuyLegSavingsPerUnit credits the source→central buy-leg the contract worker skips
-	// (sp-layd), passed through to the miner so an in-system-sourceable good clears the
-	// savings guard. <=0 => the miner's DefaultBuyLegSavingsPerUnit.
+	// BuyLegSavingsPerUnit credits the source→central buy-leg the contract worker skips,
+	// passed through to the miner so an in-system-sourceable good clears the savings
+	// guard. <=0 => the miner's DefaultBuyLegSavingsPerUnit.
 	BuyLegSavingsPerUnit int
 	Allowlist            []string // nil => every stock-eligible good; else restrict to these
 	Blocklist            []string // never deposited; wins over the allowlist
@@ -56,12 +56,8 @@ type DepositCandidateConfig struct {
 
 // depositVerdict accumulates the per-re-plan deposit-candidate funnel so the
 // assembler emits exactly ONE structured verdict line per re-plan — success or a
-// DISTINCT zero-reason (sp-dchv observability; nw9v verdict-line pattern). The
-// counts live in the MESSAGE TEXT (not only structured metadata) because the
-// text log drops metadata fields, which is precisely how a 3h run of zero
-// deposits went undiagnosed: "assembled deposit candidates" logged the count in
-// metadata that never reached the log, and the dominant zero-reason
-// (no warehouse in the tour graph) logged NOTHING at all. Silent zeros become
+// DISTINCT zero-reason. The counts live in the MESSAGE TEXT, not only structured
+// metadata, because the text log drops metadata fields. Silent zeros become
 // impossible: every return path sets a reason and the deferred emit renders it.
 type depositVerdict struct {
 	level               string // "" => INFO
@@ -78,11 +74,11 @@ type depositVerdict struct {
 	afterWhitelist      int // of those, rows passing allow/block/SupportsGood
 	final               int // candidates actually offered to the planner
 	warehouseCandidates int // RUNNING ops matching the graph filter, pre tie-break; >1 means a
-	// stale zombie row (sp-3lj5) is sitting alongside the live one
+	// stale zombie row is sitting alongside the live one
 }
 
 // BuildDepositCandidates assembles the haul-to-storage deposit sinks the tour
-// planner may price against arb sells (sp-dchv Lane C). It finds a RUNNING
+// planner may price against arb sells (Lane C). It finds a RUNNING
 // warehouse whose system is inside the tour graph (allowedSystems), mines the
 // Lane A demand for that home system, keeps the STOCK-ELIGIBLE goods (both asks
 // known AND home_ask > foreign_ask — never speculative, RULINGS #6), applies the
@@ -98,11 +94,10 @@ type depositVerdict struct {
 // Any discovery/mining error degrades to no candidates (the tour falls back to
 // pure arb), never an error the caller must handle.
 //
-// Every non-disabled exit emits ONE verdict line (see depositVerdict): the
-// escalation on sp-dchv (0 deposit legs in 3h) was a diagnosis blind spot, not a
-// candidate bug — the dominant path (hull re-planning >1 gate hop from home, so
-// no warehouse in its tour graph) returned nil silently. The verdict makes that,
-// and every other zero-reason, LOUD and countable.
+// Every non-disabled exit emits ONE verdict line (see depositVerdict): the dominant
+// zero-reason (hull re-planning >1 gate hop from home, so no warehouse in its tour
+// graph) must never return nil silently. The verdict makes that, and every other
+// zero-reason, LOUD and countable.
 func BuildDepositCandidates(
 	ctx context.Context,
 	miner DepositDemandMiner,
@@ -161,7 +156,7 @@ func BuildDepositCandidates(
 	}()
 
 	// Fail CLOSED: an unreadable balance (or a non-positive ceiling) buys nothing
-	// (RULINGS #4). The 50k reserve + w3he cap are enforced separately at execution;
+	// (RULINGS #4). The reserve and spend cap are enforced separately at execution;
 	// this ceiling is the pre-positioning-specific budget on top.
 	if !ceilingKnown || ceilingCredits <= 0 {
 		v.level = "WARNING"
@@ -192,12 +187,12 @@ func BuildDepositCandidates(
 	v.storageWaypoint = warehouse.WaypointSymbol()
 	v.homeSystem = shared.ExtractSystemSymbol(v.storageWaypoint)
 
-	// Multi-warehouse (sp-5q2c): the deposit sink is the CO-LOCATED group at the
-	// anchor's waypoint (the anchor + any additive-capacity siblings, e.g. light-12
-	// beside heavy-4B). Free space and on-hand stock are the SUM across the group, so
-	// a second warehouse's slots are priced as real capacity rather than orphaned. A
-	// >1 count is now a normal topology (or a harmless zombie contributing 0), not an
-	// alarm — the count stays in the verdict for observability but no longer escalates.
+	// Multi-warehouse: the deposit sink is the CO-LOCATED group at the anchor's
+	// waypoint (the anchor + any additive-capacity siblings, e.g. light-12 beside
+	// heavy-4B). Free space and on-hand stock are the SUM across the group, so a
+	// second warehouse's slots are priced as real capacity rather than orphaned. A
+	// >1 count is a normal topology (or a harmless zombie contributing 0), not an
+	// alarm — the count stays in the verdict for observability only.
 	freeSpace := TotalFreeSpace(space, group)
 	v.freeSpace = freeSpace
 	if freeSpace <= 0 {
@@ -290,14 +285,14 @@ func BuildDepositCandidates(
 
 // findWarehouseInGraph resolves the deposit sink for a tour graph. anchor is the
 // RUNNING warehouse operation whose system is inside allowedSystems with the latest
-// CreatedAt (nil if none matches). group is the co-located additive-capacity set
-// (sp-5q2c): every RUNNING warehouse at the anchor's waypoint — the anchor plus any
-// siblings sharing that waypoint, whose capacity and stock the caller sums. A non-nil
-// error means the warehouse lookup itself failed (surfaced by the caller's verdict).
+// CreatedAt (nil if none matches). group is the co-located additive-capacity set:
+// every RUNNING warehouse at the anchor's waypoint — the anchor plus any siblings
+// sharing that waypoint, whose capacity and stock the caller sums. A non-nil error
+// means the warehouse lookup itself failed (surfaced by the caller's verdict).
 // matches is the number of RUNNING warehouse operations that matched the graph filter
 // (across all in-graph waypoints) before the newest-wins anchor pick. It is >1 both
-// for the legitimate multi-warehouse topology and for a stale sp-3lj5 "zombie" row
-// (a container stopped without its storage_operations row terminalized) sitting
+// for the legitimate multi-warehouse topology and for a stale "zombie" row (a
+// container stopped without its storage_operations row terminalized) sitting
 // alongside a live replacement; the zombie contributes 0 to every aggregate and is
 // never chosen as a deposit target, so aggregation stays correct either way.
 func findWarehouseInGraph(

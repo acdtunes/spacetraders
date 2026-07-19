@@ -1,18 +1,15 @@
 // Package dutycycle computes the fleet's duty-cycle KPI: ship-hours EARNING
-// vs idle per hull. Captain amendment (st-wisp-hvic) on sp-51ti: the analyst's
-// decomposition of the 20x gap found our per-ship burst economics already
-// competitive (within 1.3x of WHYANDO), so the real gap is duty cycle — 27.5k
-// baseline vs 90k burst credits/ship-hr — and this KPI is what makes that gap
-// (including qpmi's gap-compression) measurable going forward.
+// vs idle per hull. Per-ship burst economics are already competitive; the
+// real fleet gap is duty cycle, which this KPI makes measurable.
 //
 // This package is pure: ComputeReport takes a slice of point-in-time Samples
 // (one per hull per sampling tick, recording whether that hull was earning at
 // that instant) and derives earning/idle hours by multiplying sample counts by
 // the fixed sampling interval. It measures FORWARD from whenever sampling
 // began, not retroactively — no historical assignment audit trail exists to
-// reconstruct duty-cycle before this instrumentation existed (see sp-51ti
-// notes). Collecting samples off the live ship-assignment repository on a
-// ticker is an adapter concern (internal/adapters/metrics).
+// reconstruct duty-cycle before this instrumentation existed. Collecting
+// samples off the live ship-assignment repository on a ticker is an adapter
+// concern (internal/adapters/metrics).
 package dutycycle
 
 import (

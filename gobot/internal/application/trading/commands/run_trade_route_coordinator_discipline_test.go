@@ -14,11 +14,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// This file is the sp-sh6w regression: the scan ranks lanes by volume-capped
-// spread, but the executor refuses any lane whose per-unit spread is below the
-// bid-floor (trading.MinBidMargin). When the top capped-spread lane is sub-floor,
-// the old coordinator selected it and flew ZERO visits. The fix selects the deepest
-// lane that clears the floor instead — or, when none does, reports it cleanly.
+// The scan ranks lanes by volume-capped spread, but the executor refuses any lane
+// whose per-unit spread is below the bid-floor (trading.MinBidMargin). When the top
+// capped-spread lane is sub-floor, selection must skip it and choose the deepest
+// lane that clears the floor instead — or, when none does, report it cleanly.
 
 const (
 	discSystem = "X1-DISC"
@@ -201,8 +200,8 @@ func newDiscHarness(t *testing.T, ship *navigation.Ship, subFloorOnly bool) *dis
 // The executor must SKIP the top capped-spread lane (FOOD, sub-floor) and select the
 // deeper-disciplined ASSAULT_RIFLES lane that clears the bid-floor, then fly ≥1
 // profitable visit — even though the hull starts at a neutral dock, not the circuit
-// source (mirroring the live TORWIND-8-at-E41 case). This is the sp-sh6w bug: the old
-// selection picked FOOD and MarginAlive killed it on visit 0 → zero units, net zero.
+// source. Selecting the sub-floor lane instead lets MarginAlive kill it on visit 0:
+// zero units, net zero.
 func TestTradeRouteCoordinator_SelectsLaneThatClearsFloor_NotTopCappedSubFloor(t *testing.T) {
 	ship := newDiscHauler(t, "TORWIND-8", discDock)
 	h := newDiscHarness(t, ship, false)

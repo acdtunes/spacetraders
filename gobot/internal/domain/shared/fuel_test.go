@@ -39,7 +39,7 @@ func TestFuelConsumeAllowsConsumingExactlyAvailableAmount(t *testing.T) {
 	}
 }
 
-// sp-xxhn: an authoritative source (the SpaceTraders API, or a DB row mirroring
+// An authoritative source (the SpaceTraders API, or a DB row mirroring
 // it) can transiently report current fuel above capacity — e.g. right after a
 // frame swap that shrank the tank. Reconstruction must clamp to capacity rather
 // than reject, otherwise the whole ship is dropped and the hull is sidelined.

@@ -18,7 +18,7 @@ func stringToPtr(value string) *string {
 
 // derefTime maps a nullable timestamp column to a domain value, treating NULL as the
 // zero time — the shape a domain type uses when "unset" is the zero value rather than a
-// pointer (e.g. ScoutPost.RespawnParkedUntil, sp-py4n).
+// pointer (e.g. ScoutPost.RespawnParkedUntil).
 func derefTime(value *time.Time) time.Time {
 	if value == nil {
 		return time.Time{}

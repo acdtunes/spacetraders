@@ -5,11 +5,10 @@ import (
 	"fmt"
 )
 
-// The HEAVY (trade) demand model (sp-1txd M4). Heavies are the trade-tour pool (DedicatedFleet
+// The HEAVY (trade) demand model. Heavies are the trade-tour pool (DedicatedFleet
 // "trade"); the autosizer sizes it to UNSERVED trade demand — the count of profitable, feasible
 // solver lanes beyond the current heavy count. The trade solver already ranks more feasible plans
-// than there are hulls to fly them; that surplus IS the capacity-short signal (the 0gsw refute
-// logic mechanized):
+// than there are hulls to fly them; that surplus IS the capacity-short signal:
 //
 //	demand_heavies = current_heavies + unserved_profitable_lanes
 //
@@ -18,14 +17,14 @@ import (
 // is declining (absorption saturating). The realized-rate guard buys only while the marginal rate
 // holds near the fleet average, and stops on decay; the coordinator additionally requires the
 // unserved-lane shortfall to persist heavy_unserved_lanes_min consecutive ticks before buying
-// (that anti-thrash streak lives in the coordinator's ACT step, M5, where the tick state is).
+// (that anti-thrash streak lives in the coordinator's ACT step, where the tick state is).
 //
-// SEAM (banked, sp-1txd plan): the unserved-lane count and the realized tour-rate read paths are
+// SEAM (banked): the unserved-lane count and the realized tour-rate read paths are
 // the heavy-demand data risk. This provider is fail-CLOSED on an unreadable lane count — no lane
 // signal, no buy — so a concrete source that cannot yet surface the count leaves heavies un-bought
 // (never wrongly bought) until the seam is wired (the vdld TourAlignmentProvider precedent).
 
-// HeavyDemandSources are the reads the heavy-demand model consumes. Concrete impls (M6) wrap the
+// HeavyDemandSources are the reads the heavy-demand model consumes. Concrete impls wrap the
 // ship repo (DedicatedFleet=="trade" count), the trade solver's profitable-lane surface, and the
 // tour telemetry realized-rate reader; tests inject fakes.
 type HeavyDemandSources interface {

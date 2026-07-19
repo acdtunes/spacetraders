@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-// sp-yqx4 (P1 deadlock fix): the working-capital floor actually enforced at a buy is
+// TestEffectiveReserveFloor pins the working-capital floor actually enforced at a buy:
 // max(50k, min(absolute, pct% × liveTreasury)). At high treasury the configured absolute
-// binds exactly as before; below it the proportional floor keeps buying feasible so a
-// floor above the treasury can never deadlock the fleet. The 50k lower bound is immutable
-// (RULINGS #5). These table cases pin the bead's own test matrix onto the pure resolver
-// both engines import — the formula must not fork between tour and factory.
+// binds; below it the proportional floor keeps buying feasible so a floor above the
+// treasury can never deadlock the fleet. The 50k lower bound is immutable (RULINGS #5).
+// These table cases pin the formula onto the pure resolver both engines import — it must
+// not fork between tour and factory.
 func TestEffectiveReserveFloor(t *testing.T) {
 	const absolute = 1_000_000
 	cases := []struct {
@@ -20,7 +20,7 @@ func TestEffectiveReserveFloor(t *testing.T) {
 		treasury  int64
 		wantFloor int64
 	}{
-		// >2.5M: the 1M absolute binds (min picks it), exactly as pre-sp-yqx4.
+		// >2.5M: the 1M absolute binds (min picks it).
 		{"absolute binds above 2.5M", absolute, 40, 3_000_000, 1_000_000},
 		// Exactly 2.5M: proportional 40%×2.5M = 1M == absolute → absolute binds at the boundary.
 		{"absolute binds exactly at the 2.5M crossover", absolute, 40, 2_500_000, 1_000_000},
@@ -52,10 +52,10 @@ func TestEffectiveReserveFloor(t *testing.T) {
 	}
 }
 
-// The deadlock the bead fixes: with the OLD absolute-only floor, every treasury below the
-// 1M floor yields a negative allowance (balance − floor < 0) → no buy possible. The
-// proportional floor must yield a POSITIVE allowance at every treasury at or above the
-// immutable bound, so the fleet can always trade its way out.
+// Invariant: the proportional floor must yield a POSITIVE allowance at every treasury at
+// or above the immutable bound (an absolute-only floor can yield a negative allowance
+// below it — balance − floor < 0 → no buy possible), so the fleet can always trade its
+// way out.
 func TestEffectiveReserveFloor_NeverDeadlocksAtOrAboveImmutable(t *testing.T) {
 	const absolute = 1_000_000
 	for _, treasury := range []int64{50_000, 60_000, 125_000, 300_000, 800_000, 1_000_000, 2_400_000} {

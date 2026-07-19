@@ -23,14 +23,12 @@ func warehouseOpAt(t *testing.T, id, waypoint string, createdAt time.Time) *stor
 	return op
 }
 
-// TestSelectNewestRunningWarehouse_PicksNewestByCreatedAt pins the exact sp-3lj5
-// incident shape: warehouse-TORWIND-12-bad719ff was STOPPED at 15:24Z but its
-// storage_operations row was never terminalized (a container-stop gap, fixed
-// separately in daemon_server.go), so it still surfaced as "RUNNING" alongside its
-// live replacement warehouse-TORWIND-12-3477282e at the same waypoint. The selector
-// must resolve to the newer, live operation - not the older zombie - or a caller
-// reads the dead operation's now-unregistered storage ships as zero free space and
-// wrongly declares the warehouse full.
+// TestSelectNewestRunningWarehouse_PicksNewestByCreatedAt pins the zombie-vs-live
+// tie-break: a stopped warehouse whose storage_operations row was never terminalized
+// can still surface as "RUNNING" alongside its live replacement at the same waypoint.
+// The selector must resolve to the newer, live operation - not the older zombie - or
+// a caller reads the dead operation's now-unregistered storage ships as zero free
+// space and wrongly declares the warehouse full.
 func TestSelectNewestRunningWarehouse_PicksNewestByCreatedAt(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	zombie := warehouseOpAt(t, "warehouse-TORWIND-12-bad719ff", "X1-TORWIND-12", t0)

@@ -14,7 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// --- sp-1vhv cargo reservation persistence ----------------------------------
+// --- Cargo reservation persistence ----------------------------------
 //
 // RULINGS #2: every piece of operational state must survive a restart. A cargo
 // do-not-sell reservation is persisted as a per-hull JSONB column and reloaded on
@@ -119,7 +119,7 @@ func TestSetCargoReservation_MissingShipErrors(t *testing.T) {
 
 // TestSyncAllFromAPI_PreservesReservationOverrides: the restart-time bulk sync
 // (syncAllShipsOnStartup) must not wipe a hull's reservation — same clobber class
-// as sp-bi75 (DedicatedFleet), one column over.
+// as DedicatedFleet, one column over.
 func TestSyncAllFromAPI_PreservesReservationOverrides(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

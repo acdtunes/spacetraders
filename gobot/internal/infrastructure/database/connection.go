@@ -145,13 +145,11 @@ func NewTestConnection() (*gorm.DB, error) {
 	}
 
 	// sp-55aa: enforce foreign keys in the test harness by DEFAULT. SQLite leaves
-	// PRAGMA foreign_keys OFF unless asked, so every real-DB test silently tolerated
-	// FK violations that production Postgres rejects — that gap shipped sp-1hp9 DOA
-	// (idle-arb wrote a ships.container_id claim before the container row existed →
-	// FK 23503 in prod, green in every test). Enabled AFTER AutoMigrate: enforcement
-	// during a migration that rebuilds tables could trip on transient states. The
-	// sqlite pool is pinned to one physical connection (see NewConnection), so this
-	// one pragma sticks for the connection's lifetime.
+	// PRAGMA foreign_keys OFF unless asked, so a real-DB test could silently tolerate
+	// FK violations that production Postgres rejects. Enabled AFTER AutoMigrate:
+	// enforcement during a migration that rebuilds tables could trip on transient
+	// states. The sqlite pool is pinned to one physical connection (see
+	// NewConnection), so this one pragma sticks for the connection's lifetime.
 	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
 		return nil, fmt.Errorf("failed to enable foreign key enforcement for test database: %w", err)
 	}
@@ -167,11 +165,11 @@ func AutoMigrate(db *gorm.DB) error {
 	// introduced by THIS migration. Pre-sp-8qhu gate_edges rows predate
 	// construction tracking and default to under_construction=false (open) — but a
 	// gate that was actually still building at their sync time would be routed
-	// through until the 24h TTL expired (the exact incident: KA42→AF2 unbuilt).
-	// When the column is newly added, invalidate the gate_edges cache (clear
-	// synced_at → next read is a miss → the re-fetch re-probes every edge's real
-	// build state). Idempotent: fires only on the migration that adds the column,
-	// and the gate graph is a pure cache, so this is safe and self-healing.
+	// through until the 24h TTL expired. When the column is newly added, invalidate
+	// the gate_edges cache (clear synced_at → next read is a miss → the re-fetch
+	// re-probes every edge's real build state). Idempotent: fires only on the
+	// migration that adds the column, and the gate graph is a pure cache, so this
+	// is safe and self-healing.
 	gateConstructionColumnExisted := db.Migrator().HasColumn(&persistence.GateEdgeModel{}, "under_construction")
 
 	if err := db.AutoMigrate(persistence.AllModels()...); err != nil {

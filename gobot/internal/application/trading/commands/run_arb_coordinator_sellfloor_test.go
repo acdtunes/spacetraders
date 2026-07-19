@@ -10,7 +10,7 @@ import (
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 )
 
-// --- sp-lbbm: the arb executor arms the per-tranche sell floor and treats a
+// --- The arb executor arms the per-tranche sell floor and treats a
 // floored held-remainder as an HONEST failure completion (never a false success).
 
 // The arb coordinator must ARM the sell with the 80%-of-quote floor: DestBid is

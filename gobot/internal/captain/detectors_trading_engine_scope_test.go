@@ -15,26 +15,20 @@ import (
 //
 // trade_fleet_coordinator (sp-1278) continuously relaunches a fresh tour_run
 // container per idle 'trade'-dedicated hull after every honest tour exit, so
-// tour_run/TRADING containers churning through stop/start cycles is now the
-// fleet's PERMANENT steady state, not an occasional captain-driven burst.
-// Before this fix, the 'trading' incomeEngine's activity gate matched ANY
-// running container_type="TRADING" container - including tour_run containers,
-// which share that container_type with genuine trade_route containers - while
-// its ledger check only ever accepted operation_type='trade_route'. A fleet
-// earning steadily via tour sales, with no trade_route container running at
-// all, therefore read as "trading engine active, income stalled" and
-// false-fired income.stalled every IncomeStallHours window (real 2026-07-08
-// incident: false-fires landed almost exactly on multiples of the 2h
-// IncomeStallHours default). The fix adds commandType: "trade_route" to the
-// 'trading' entry, mirroring the 'tour' entry's own pre-existing
-// disambiguation.
+// tour_run/TRADING containers churning through stop/start cycles is the
+// fleet's PERMANENT steady state, not an occasional captain-driven burst. The
+// 'trading' incomeEngine's activity gate must therefore key on BOTH
+// container_type="TRADING" AND commandType="trade_route" — tour_run containers
+// share the same container_type as genuine trade_route containers but post
+// income under operation_type="tour", never "trade_route", so a
+// container_type-only gate reads a healthy tour-only fleet as a stalled trading
+// engine.
 
 // TestDetectEngineIncomeStallSilentForTradingDuringTourRelaunchChurn is the
 // sp-lyc3 RED case: reproduces the relaunch-churn shape (containers cycling
 // through stop/start, ledger flowing under operation_type="tour") with zero
-// trade_route containers ever having run. Pre-fix this fired income:trading
-// every window despite the fleet earning steadily; post-fix the 'trading'
-// line must never even activate.
+// trade_route containers ever having run. The 'trading' line must never even
+// activate.
 func TestDetectEngineIncomeStallSilentForTradingDuringTourRelaunchChurn(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()
@@ -59,8 +53,9 @@ func TestDetectEngineIncomeStallSilentForTradingDuringTourRelaunchChurn(t *testi
 		ContainerType: "TRADING", CommandType: "tour_run",
 		StartedAt: &midStart, StoppedAt: &stopped2,
 	}).Error)
-	// Still mid-tour, up well past the stall window - the container that
-	// (pre-fix) alone satisfied the 'trading' gate via container_type.
+	// Still mid-tour, up well past the stall window - shares container_type
+	// with a genuine trade_route container but must not satisfy the 'trading'
+	// gate.
 	require.NoError(t, db.Create(&persistence.ContainerModel{
 		ID: "tour-coord-3", PlayerID: playerID, Status: "RUNNING",
 		ContainerType: "TRADING", CommandType: "tour_run", StartedAt: &staleStart,

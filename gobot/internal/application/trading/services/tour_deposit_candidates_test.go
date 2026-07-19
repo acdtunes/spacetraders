@@ -251,7 +251,7 @@ func TestBuildDepositCandidates_RemainingDemandSubtractsStocked(t *testing.T) {
 	}
 }
 
-// --- sp-dchv observability: per-re-plan deposit verdict ----------------------
+// --- Observability: per-re-plan deposit verdict ----------------------
 
 // recordingLogger captures every Log call so a test can assert the verdict line.
 type recordingLogger struct {
@@ -271,11 +271,10 @@ func (l *recordingLogger) last() (string, string) {
 	return l.levels[len(l.levels)-1], l.lines[len(l.lines)-1]
 }
 
-// TestBuildDepositCandidates_VerdictRendersDistinctZeroReasons is the RED→GREEN
-// guard for the sp-dchv diagnosis blind spot: before this, the dominant zero
-// path (no warehouse in the tour graph) and the all-filtered path returned nil
-// SILENTLY, so a 3h run of zero deposits looked identical to a healthy one. Each
-// scenario must now emit exactly ONE verdict line naming its DISTINCT reason.
+// TestBuildDepositCandidates_VerdictRendersDistinctZeroReasons pins the diagnosis
+// guard: the dominant zero path (no warehouse in the tour graph) and the
+// all-filtered path must never return nil SILENTLY. Each scenario must emit exactly
+// ONE verdict line naming its DISTINCT reason.
 func TestBuildDepositCandidates_VerdictRendersDistinctZeroReasons(t *testing.T) {
 	rows := []persistence.DemandCandidate{demandRow("ELECTRONICS", 404, 3000, 744)}
 	cases := []struct {

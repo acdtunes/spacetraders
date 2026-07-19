@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// NoOpProposalChannel must FAIL LOUD if invoked. st-0h8 replaces it in the
-// daemon wiring with the real ProposalChannel, but it stays the safety default
+// NoOpProposalChannel must FAIL LOUD if invoked. It is replaced in the
+// daemon wiring by the real ProposalChannel, but stays the safety default
 // for any partially-assembled engine: an accidental Submit on an un-wired
 // channel must surface loudly, never silently "succeed" and drop a treasury
 // proposal on the floor. This pins that guarantee against a future refactor that

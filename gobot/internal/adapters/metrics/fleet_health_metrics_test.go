@@ -7,7 +7,7 @@ import (
 )
 
 // TestFleetHealthMetrics_RegisterAndExport proves the stranded-hull counter REGISTERS on
-// the daemon's registry AND actually appears by name once observed (sp-686e). A registered
+// the daemon's registry AND actually appears by name once observed. A registered
 // CounterVec exports nothing until a label combination is incremented — the bopj P10 trap
 // where a family was "registered" yet never showed on /metrics; the stranded detector emits
 // at most once per episode, so the export path must be proven with a real observation.

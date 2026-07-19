@@ -3,15 +3,15 @@ package navigation
 // InstallFeasibility reports whether a candidate module or mount can be
 // installed on a ship, and if not, which of the ship's fixed hull budgets
 // block it. Reactors, frames, and crew capacity have no swap/upgrade
-// endpoint in the SpaceTraders API (sp-el60) - a hull's power output, module
+// endpoint in the SpaceTraders API - a hull's power output, module
 // slots, mounting points, and crew capacity are permanent for the life of
 // the ship, so these are the only three ways a candidate install can be
 // blocked. More than one field can be short at once (e.g. both power and
 // slots).
 type InstallFeasibility struct {
 	// RequirementsKnown is true only when the candidate's power/slot/crew
-	// requirements were actually resolved from a real data source (sp-el60
-	// acceptance fix). It is false for the Go zero value of
+	// requirements were actually resolved from a real data source.
+	// It is false for the Go zero value of
 	// InstallFeasibility and for UnknownRequirementsFeasibility(), so an
 	// unconstructed or explicitly-unknown verdict can never be mistaken for
 	// a computed one. Callers must check this before trusting CanInstall.
@@ -38,7 +38,7 @@ type InstallFeasibility struct {
 
 // UnknownRequirementsFeasibility is the verdict callers must use when a
 // candidate's power/slot/crew requirements cannot be resolved from a real
-// data source (sp-el60 acceptance fix) — e.g. no ship in the fleet has ever
+// data source — e.g. no ship in the fleet has ever
 // carried the candidate's symbol, so there is nothing to look up. It always
 // reports RequirementsKnown false and CanInstall false; never construct a
 // "fits" verdict from zero-filled or guessed requirements.
@@ -97,7 +97,7 @@ func newInstallFeasibility(powerRemaining, powerNeed, slotsRemaining, slotsNeed,
 // PowerUsed reports how much of the ship's reactor power output is currently
 // drawn by installed modules and mounts combined. Exported for callers that
 // need the ship's power budget directly (e.g. the "ship info" / outfitting
-// listing power/slots summary, sp-el60) without checking a specific
+// listing power/slots summary) without checking a specific
 // candidate via CheckModuleInstallFeasibility/CheckMountInstallFeasibility.
 func PowerUsed(ship *Ship) int {
 	return installedPower(ship)
@@ -117,7 +117,7 @@ func MountingPointsUsed(ship *Ship) int {
 }
 
 // installedPower sums the power draw of every currently-installed module and
-// mount. Power is drawn from a single reactor shared by both (sp-el60).
+// mount. Power is drawn from a single reactor shared by both.
 func installedPower(ship *Ship) int {
 	total := 0
 	for _, m := range ship.Modules() {

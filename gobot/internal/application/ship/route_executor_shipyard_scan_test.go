@@ -1,22 +1,5 @@
 package ship_test
 
-// Emit-path regression test for sp-42ow (shipyard scan ships-but-never-emits,
-// lane 2). The prior two fixes made the trait gate era/TTL-agnostic and the
-// scanner a cheap no-op on non-shipyards, but shipyard_inventory stayed 0 rows
-// live because the ONLY market-scan path the standing multi-market scout tour
-// exercises is RouteExecutor.scanMarketIfPresent (executeMultiMarketTour
-// delegates its market scan there — scout_tour.go:485), and that route-arrival
-// hook never fired a shipyard scan. tour-run-TORWIND-5 market-scanned four
-// SHIPYARD-trait marketplaces through that hook and persisted zero shipyard rows.
-//
-// This test drives the REAL production driving port (RouteExecutor.ExecuteRoute)
-// to an arrival at a SHIPYARD-trait marketplace and asserts a shipyard_inventory
-// row is persisted. It wires the REAL GORM waypoint repo (the trait gate) and the
-// REAL shipyard inventory store (the observable outcome), with a double ONLY at
-// the external shipyard API boundary — the same real-repo harness the prior lane
-// used (shipyard_scan_stale_era_integration_test.go). Before the emit-path wiring
-// it FAILS (0 rows, GetShipyard never called); after it PASSES.
-
 import (
 	"context"
 	"fmt"
@@ -144,14 +127,13 @@ func newScoutShip(t *testing.T, location *shared.Waypoint, playerID shared.Playe
 
 // --- Test -----------------------------------------------------------------
 
-// TestExecuteRoute_ArrivalAtShipyardMarketplace_PersistsShipyardInventoryRow
-// pins the sp-42ow emit-path fix at the real production driving port. A scout
-// navigates a single leg to a waypoint that is BOTH a marketplace (so the
-// executor's market-scan hook fires) AND bears the immutable SHIPYARD trait, and
-// the executor must persist a shipyard_inventory row for it. Before the fix the
-// route-arrival hook scanned only the market and shipyard_inventory stayed empty
-// (the exact live 0-rows incident); after the fix the shipyard scan rides the
-// same hook and a row lands.
+// TestExecuteRoute_ArrivalAtShipyardMarketplace_PersistsShipyardInventoryRow drives
+// the real production driving port (RouteExecutor.ExecuteRoute) to an arrival at a
+// waypoint that is BOTH a marketplace (so the executor's market-scan hook fires) AND
+// bears the immutable SHIPYARD trait, and asserts a shipyard_inventory row is
+// persisted. It wires the REAL GORM waypoint repo (the trait gate) and the REAL
+// shipyard inventory store (the observable outcome), with a test double ONLY at the
+// external shipyard API boundary.
 func TestExecuteRoute_ArrivalAtShipyardMarketplace_PersistsShipyardInventoryRow(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

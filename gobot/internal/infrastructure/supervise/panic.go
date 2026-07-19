@@ -1,12 +1,10 @@
 // internal/infrastructure/supervise/panic.go
 // Package supervise provides panic isolation and restart supervision for the
-// daemon's long-running background components. It complements — not replaces —
-// the ContainerRunner restart machinery (containers) and the watchkeeper's
-// crash-loop detector (cross-container): supervise covers the pieces that had
-// NOTHING before it — boot-time goroutines and panic containment (sp-i01z).
-// Before this package, the only recover() in production code was route
-// execution (navigate_route.go); a panic in any coordinator iteration, timer
-// callback, or boot loop killed the entire daemon process.
+// daemon's long-running background components (sp-i01z). It complements — not
+// replaces — the ContainerRunner restart machinery (containers) and the
+// watchkeeper's crash-loop detector (cross-container): supervise covers
+// boot-time goroutines and other panic containment paths those two
+// mechanisms don't reach.
 package supervise
 
 import (

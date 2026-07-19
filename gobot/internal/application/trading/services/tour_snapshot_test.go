@@ -105,9 +105,9 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 		switch s.Good {
 		case "MEDICINE":
 			med = true
-			// sp-9mkf (Bug 3): D39 MEDICINE is an EXPORT good, so its sink-side Bid is
-			// zeroed (an exporter is never a sell destination). The Ask (a valid buy
-			// source) still maps through exactly — a swapped bid/ask still trips here.
+			// D39 MEDICINE is an EXPORT good, so its sink-side Bid is zeroed (an exporter
+			// is never a sell destination). The Ask (a valid buy source) still maps
+			// through exactly — a swapped bid/ask still trips here.
 			if s.Waypoint != "X1-NK36-D39" || s.System != "X1-NK36" || s.Supply != "LIMITED" ||
 				s.Activity != "WEAK" || s.Ask != 1900 || s.Bid != 0 || s.TradeVolume != 20 {
 				t.Fatalf("D39 MEDICINE mapping wrong: %+v", s)
@@ -145,8 +145,8 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 	}
 }
 
-// TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter proves the sp-k7q5 layer-2
-// counter increments once PER dropped stale lane, labeled by system — so a market-rich
+// TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter proves the counter
+// increments once PER dropped stale lane, labeled by system — so a market-rich
 // system silently aging out of the plan is visible on tour_lanes_stale_excluded_total,
 // not just absent.
 func TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter(t *testing.T) {

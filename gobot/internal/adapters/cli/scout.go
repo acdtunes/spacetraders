@@ -9,7 +9,7 @@ import (
 )
 
 // NewScoutCommand builds the `scout` verb family for the standing scout-post
-// system (sp-cxpq): `scout start` launches the coordinator; `scout posts
+// system: `scout start` launches the coordinator; `scout posts
 // add/list/remove` edit the desired-state posts table the coordinator keeps
 // manned. Post state lives in the daemon (RULINGS #3) — these verbs reach it
 // only through the RPC, never a config file.

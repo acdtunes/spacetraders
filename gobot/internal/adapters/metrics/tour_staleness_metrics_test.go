@@ -88,7 +88,7 @@ func TestTourStalenessMetrics_NilSafe(t *testing.T) {
 	empty.RecordCandidateDropped(1, "counterparty_system_unreachable", 1)
 }
 
-// TestTourCandidatesDropped_RegisterAndExport proves the sp-mtvg drop-reason counter
+// TestTourCandidatesDropped_RegisterAndExport proves the drop-reason counter
 // REGISTERS on the daemon's registry AND appears by name once observed (the same
 // registered-but-never-exported trap the staleness counter guards against).
 func TestTourCandidatesDropped_RegisterAndExport(t *testing.T) {

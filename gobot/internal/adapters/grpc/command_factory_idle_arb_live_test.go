@@ -50,12 +50,10 @@ func buildRecoveredCoordinator(t *testing.T, s *DaemonServer, persisted map[stri
 
 // TestContractCoordinatorResolvesLeashFromLiveConfig locks sp-ts82 with the
 // money-guard leash as the representative numeric sibling: the coordinator
-// resolves its idle-arb leash from the LIVE config.yaml every time the command is
-// built — crucially including the restart RECOVERY rebuild, which re-adopts a
-// stale persisted launch config. Before the fix, recovery read the persisted
-// idle_arb_leash_radius verbatim, so a config.yaml retune + daemon restart (the
-// documented path, sp-uohe) silently no-op'd on the already-running coordinator —
-// the sp-nw9v incident.
+// resolves its idle-arb leash from the LIVE config.yaml every time the command
+// is built — crucially including the restart RECOVERY rebuild, which must never
+// re-adopt a stale persisted idle_arb_leash_radius (a config.yaml retune +
+// daemon restart must reach the running coordinator, not silently no-op).
 func TestContractCoordinatorResolvesLeashFromLiveConfig(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -64,10 +62,9 @@ func TestContractCoordinatorResolvesLeashFromLiveConfig(t *testing.T) {
 		wantLeash float64
 	}{
 		{
-			// THE INCIDENT (sp-nw9v): the coordinator was persisted with NO leash
-			// key (it ran WithDefaults -> 80); the harbormaster retuned leash -> 150
-			// in config.yaml and restarted. Recovery MUST rebuild with the live 150,
-			// not re-adopt the key-less stale config (-> 0 -> default 80).
+			// A key-less persisted config (WithDefaults ran, no leash key) must
+			// rebuild with the live leash value, not re-adopt the key-less stale
+			// config (which would fall through to the 80 default).
 			name:      "incident: retune reaches a key-less recovered coordinator",
 			live:      config.IdleArbSettings{LeashRadius: 150},
 			persisted: idleArbLaunchConfig(nil),

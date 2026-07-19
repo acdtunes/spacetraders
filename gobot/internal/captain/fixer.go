@@ -130,13 +130,10 @@ func ProvisionWorktree(dir string) error {
 // counterpart.
 //
 // ProvisionWorktree's job is to supply gitignored build artifacts a worktree
-// LACKS — never to revert a tracked file the branch intentionally changed. A
-// worktree that regenerated proto in-branch (e.g. a new daemon RPC field) has
-// a dst that differs from repoRoot's stale copy; unconditionally overwriting
-// it reverted the branch's own regenerated proto back to main's stale
-// version, breaking the build for every proto-changing bead (sp-a3r9 — bit
-// q02m and sp-ezz9). A dst that is missing or byte-identical to src is safe
-// to (re)write, matching the original behavior.
+// LACKS — never to revert a tracked file the branch intentionally changed
+// (sp-a3r9). A worktree that regenerated proto in-branch (e.g. a new daemon
+// RPC field) has a dst that differs from repoRoot's stale copy; a dst that
+// is missing or byte-identical to src is safe to (re)write.
 func copyMissingOrIdentical(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

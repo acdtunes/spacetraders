@@ -1,6 +1,6 @@
 package capacity_test
 
-// Falsifiability proofs for the sp-lk9x buffer value-density score. These drive
+// Falsifiability proofs for the buffer value-density score. These drive
 // the frozen Planner port (ComputeDesired) and assert the DesiredTopology buffer
 // — the same observable the behavior tests use — but each isolates ONE property
 // the fix turns on:
@@ -12,11 +12,11 @@ package capacity_test
 //   - LOAD-BEARING: at the real far-sourced home hub's DILUTED frequencies the
 //     corrected score still selects the far goods (non-empty buffer), while the
 //     pre-fix divide-by-distance score drove every one below the 2e-5 floor
-//     (empty buffer, 0 warehouses — the arming hazard this bead removes).
+//     (empty buffer, 0 warehouses — the arming hazard this fix removes).
 //
-// These are the sign-flip + mutation guards the bead calls out; reverting the
-// production score to divide-by-distance makes both fail (the direction test
-// flips the winner, the mutation test empties the buffer).
+// These are the sign-flip + mutation guards: reverting the production score
+// to divide-by-distance makes both fail (the direction test flips the winner,
+// the mutation test empties the buffer).
 
 import (
 	"testing"

@@ -1,7 +1,6 @@
 package capacity_test
 
-// Unit tests for the capacity tiered-autonomy PROPOSAL CHANNEL (bead st-0h8,
-// epic st-7zk).
+// Unit tests for the capacity tiered-autonomy PROPOSAL CHANNEL.
 //
 // The ProposalChannel is the REAL domainCapacity.ProposalChannel: it files a
 // tier-4 capital proposal for human approval as a DEFERRED captain event

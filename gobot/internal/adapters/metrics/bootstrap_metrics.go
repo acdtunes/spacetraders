@@ -8,7 +8,7 @@ import (
 // others and leave exactly one series at 1 (the currently-derived phase).
 var bootstrapKnownPhases = []string{"DATA", "INCOME", "GATE", "COMPLETE"}
 
-// BootstrapMetricsCollector houses the captain bootstrap coordinator's observation series (sp-3nbe):
+// BootstrapMetricsCollector houses the captain bootstrap coordinator's observation series:
 //
 //   - bootstrap_phase{phase}: a GAUGE set to 1 for the currently-derived phase and 0 for the others,
 //     so a dashboard shows which cold-start phase the reconciler is in (derived, never stored).
@@ -26,7 +26,7 @@ type BootstrapMetricsCollector struct {
 	constructionPct prometheus.Gauge
 }
 
-// NewBootstrapMetricsCollector creates a new bootstrap metrics collector (sp-3nbe).
+// NewBootstrapMetricsCollector creates a new bootstrap metrics collector.
 func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 	return &BootstrapMetricsCollector{
 		phase: prometheus.NewGaugeVec(

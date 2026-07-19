@@ -1,11 +1,11 @@
 // Package capacity is the shared contract surface of the capacity reconciler
-// (epic st-7zk, design spec docs/superpowers/specs/2026-07-15-capacity-reconciler-design.md).
+// (design spec docs/superpowers/specs/2026-07-15-capacity-reconciler-design.md).
 //
 // It holds the pure types and port interfaces every lane of the epic builds
-// against: SENSE signal families (st-7ee), the desired-topology PLAN output
-// (st-hlw), DIFF gap/action/tier types (st-zr0), the actuator seam (st-5ig),
-// capex governor budget/decision types (st-x00), and the tiered-autonomy
-// proposal channel (st-0h8). The reconcile loop itself lives in
+// against: SENSE signal families, the desired-topology PLAN output, DIFF
+// gap/action/tier types, the actuator seam, capex governor budget/decision
+// types, and the tiered-autonomy proposal channel. The reconcile loop itself
+// lives in
 // internal/application/capacity/commands. See CONTRACTS.md in this directory
 // for the per-lane ownership map — sibling lanes fill these structs and
 // implement these interfaces; they do not rename or redefine them.
@@ -20,8 +20,8 @@ import "time"
 // the desired topology from a fresh Signals every tick, which is what makes
 // the loop stateless-per-tick, idempotent, and restart-safe.
 //
-// The SENSE lane (st-7ee) fills these families from DB reads; fields may gain
-// siblings but existing names are frozen — the planner (st-hlw) reads them.
+// The SENSE lane fills these families from DB reads; fields may gain
+// siblings but existing names are frozen — the planner reads them.
 type Signals struct {
 	PlayerID    int
 	CollectedAt time.Time
@@ -86,9 +86,9 @@ type TopologySignals struct {
 	Clusters []ClusterState
 
 	// IdleHulls is the poachable idle-hull set the DIFF lane's tier-1
-	// reuse-first rung may reassign (ADDITIVE, st-zr0 — Diff receives only
+	// reuse-first rung may reassign (ADDITIVE — the DIFF lane receives only
 	// TopologySignals, so the reuse-eligible subset of Utilization.Hulls
-	// travels here). The SENSE lane (st-7ee) fills it with the hulls whose
+	// travels here). The SENSE lane fills it with the hulls whose
 	// Idle is true, alongside Clusters. The ladder differ re-verifies
 	// eligibility per hull (Idle && DedicatedFleet == "" && not already
 	// serving a cluster role), so an over-filled slice fails SAFE: an
@@ -167,8 +167,8 @@ type EconomicsSignals struct {
 	// — the north-star metric every capacity add is ROI-gated on.
 	FleetPerHullCrHr float64
 	// FleetHullCount is the number of hulls in the player's fleet (keep
-	// consistent with len(Utilization.Hulls)). The SENSE lane (st-7ee) fills
-	// it; the governor (st-x00) needs it to derive a capital action's
+	// consistent with len(Utilization.Hulls)). The SENSE lane fills
+	// it; the governor needs it to derive a capital action's
 	// ProjectedGainPerHour without dividing by a cold-start zero
 	// (see proposal.go's ROIEvidence derivation).
 	FleetHullCount int
@@ -176,7 +176,7 @@ type EconomicsSignals struct {
 	// source market — the denominator of the buffer-selection score.
 	SourceDistances []GoodSourceDistance
 	// LocalProduction is the per-hub set of goods the hub's OWN market
-	// EXPORTS/EXCHANGES — the sp-rxrg gate-2 input the buffer selector excludes
+	// EXPORTS/EXCHANGES — the gate-2 input the buffer selector excludes
 	// (a locally-produced good is bought on-site, never warehoused). SENSE
 	// populates it from live market trade-type; while unsensed it is empty and
 	// gate 2 fails open on this (dormant) path — the LIVE depot path senses it
@@ -195,7 +195,7 @@ type GoodSourceDistance struct {
 }
 
 // GoodLocalProduction flags one good a hub produces locally (its own market
-// EXPORTS/EXCHANGES it) — the sp-rxrg gate-2 signal.
+// EXPORTS/EXCHANGES it) — the gate-2 signal.
 type GoodLocalProduction struct {
 	HubSymbol string
 	Good      string

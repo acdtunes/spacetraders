@@ -2,11 +2,9 @@ package trading
 
 import "testing"
 
-// sp-9mkf (Bug 3): a destination whose TradeType is EXPORT is an exporter — its Bid is
+// A destination whose TradeType is EXPORT is an exporter — its Bid is
 // a low sellback price, never a real import sink. The ranker must NOT select it as a
-// lane destination even when destBid − sourceAsk is positive. Reproduces the
-// LAB_INSTRUMENTS incident: the tour sold 80 units into GQ92-C37, an EXPORTER of labs,
-// at its 2,347/u sellback bid instead of a real import sink.
+// lane destination even when destBid − sourceAsk is positive.
 func TestRankSpreads_ExcludesExportMarketAsSink(t *testing.T) {
 	// Two EXPORT markets for LAB_INSTRUMENTS: a cheap exporter (source) and C37 (whose
 	// sellback bid gives a POSITIVE spread over the cheap ask). Without the sink filter

@@ -38,7 +38,6 @@ func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}
 
-	// Unmarshal JSON directly to NavigationGraph
 	var graph system.NavigationGraph
 	if err := json.Unmarshal([]byte(model.GraphData), &graph); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal graph data: %w", err)
@@ -49,7 +48,6 @@ func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string
 
 // Add persists a graph for a system (upsert)
 func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string, graph *system.NavigationGraph) error {
-	// Marshal NavigationGraph directly to JSON
 	graphJSON, err := json.Marshal(graph)
 	if err != nil {
 		return fmt.Errorf("failed to marshal graph: %w", err)
@@ -63,7 +61,6 @@ func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string
 		UpdatedAt:    now,
 	}
 
-	// Upsert: Insert or update if exists
 	err = r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "system_symbol"}},

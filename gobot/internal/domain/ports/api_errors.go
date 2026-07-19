@@ -11,8 +11,8 @@ import "fmt"
 // It preserves the exact legacy error string ("API error (status <code>): <body>") that the
 // adapter's request() used to build with fmt.Errorf, so every existing body/error-code string
 // parser (cooldown extraction, insufficient-credits, the dock/orbit classifiers) keeps matching
-// unchanged. The only added capability is the typed StatusCode for errors.As classification
-// (sp-4bm3 — negative-cache a 400'd jump gate WITHOUT caching a transient blip).
+// unchanged. The only added capability is the typed StatusCode for errors.As classification —
+// e.g. negative-caching a 400'd jump gate WITHOUT caching a transient blip.
 type APIError struct {
 	StatusCode int
 	Body       string

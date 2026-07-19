@@ -34,7 +34,7 @@ func (l *captureLogger) Log(level, _ string, _ map[string]interface{}) {
 
 // TestRecordErrorLoop_NilRecorder_NoOp pins that an unwired recorder (tests, or
 // a daemon boot before DI completes) silently disables emission rather than
-// panicking — the same nil-safety the contract coordinator's private helper had.
+// panicking.
 func TestRecordErrorLoop_NilRecorder_NoOp(t *testing.T) {
 	// A nil recorder and a nil logger must both be tolerated.
 	RecordErrorLoop(nil, nil, "container-1", 7, "negotiate_contract", errors.New("boom"), 5)

@@ -7,12 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the `workflow batch-contract` CLI verb after bead sp-6fsq
-// retired its dead `--iterations` flag. The flag silently ran exactly one
-// contract regardless of N, corrupting operator mental models. Continuous,
-// multi-contract operation is served by `contract start` (the contract fleet
-// coordinator), so batch-contract must keep validating its required --ship flag
-// and must NOT re-expose --iterations.
+// These tests pin the `workflow batch-contract` CLI verb: it must keep validating
+// its required --ship flag and must NOT re-expose --iterations (continuous,
+// multi-contract operation is served by `contract start`, the contract fleet
+// coordinator).
 
 func findWorkflowSubcommand(use string) *cobra.Command {
 	for _, c := range NewWorkflowCommand().Commands() {
@@ -58,7 +56,7 @@ func TestWorkflowBatchContractRequiresShipFlag(t *testing.T) {
 	require.Contains(t, err.Error(), "--ship flag is required")
 }
 
-// sp-s1ek: the shipyard-backfill launch verb (the start path for the sp-rhju engine) must be
+// The shipyard-backfill launch verb (the start path for the shipyard-backfill engine) must be
 // registered under `workflow` so an operator can start the sweep of the charted-but-unscanned
 // shipyard systems.
 func TestWorkflowShipyardBackfillCommandIsRegistered(t *testing.T) {
@@ -66,10 +64,9 @@ func TestWorkflowShipyardBackfillCommandIsRegistered(t *testing.T) {
 		"shipyard-backfill subcommand should be registered under `workflow`")
 }
 
-// sp-s1ek: the verb exposes exactly the two knobs the engine takes (--tick,
-// --max-dispatches) and must NOT expose --dry-run: the sp-rhju engine has no dry-run mode,
-// and an operator-facing flag that silently does nothing corrupts mental models (the sp-6fsq
-// --iterations lesson).
+// The verb exposes exactly the two knobs the engine takes (--tick,
+// --max-dispatches) and must NOT expose --dry-run: the engine has no dry-run mode,
+// and an operator-facing flag that silently does nothing corrupts mental models.
 func TestWorkflowShipyardBackfillFlags(t *testing.T) {
 	cmd := newWorkflowShipyardBackfillCommand()
 

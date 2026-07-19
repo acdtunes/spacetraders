@@ -2,10 +2,10 @@ package manufacturing
 
 import "testing"
 
-// sp-sdyo — per-good buy-gating overrides. This suite pins the pure resolution + guardrail
-// behaviour of the shared override type: an overridden good uses its override, a non-overridden
-// good is BYTE-IDENTICAL to the global default (the regression the bead requires), and the
-// per-good price-ceiling multiplier is HARD-CAPPED at the absolute maximum so a fat-finger can
+// Per-good buy-gating overrides. This suite pins the pure resolution + guardrail
+// behaviour of the shared override type: an overridden good uses its override, a
+// non-overridden good is BYTE-IDENTICAL to the global default, and the per-good
+// price-ceiling multiplier is HARD-CAPPED at the absolute maximum so a fat-finger can
 // never disable the ceiling (RULINGS #4).
 
 func TestStrategyFor_OverrideWinsElseGlobalDefault(t *testing.T) {

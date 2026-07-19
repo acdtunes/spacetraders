@@ -7,7 +7,7 @@ import (
 )
 
 // ShipMutation re-applies an intended change onto a freshly-loaded ship for the
-// CAS-retry save path (SaveWithRetry, sp-01wc). Because it runs again on the
+// CAS-retry save path (SaveWithRetry). Because it runs again on the
 // fresh row after every concurrent-writer conflict, it must fold in its own
 // applicability guard and be idempotent: it reports changed=false when the ship
 // is already in the desired state (e.g. another writer already transitioned it),
@@ -89,13 +89,14 @@ type ShipRepository interface {
 	SaveAll(ctx context.Context, ships []*Ship) error
 
 	// SaveWithRetry loads the ship fresh, applies mutate, and persists it under
-	// the ships.version CAS guard (sp-60ff). On a concurrent-writer conflict it
+	// the ships.version CAS guard. On a concurrent-writer conflict it
 	// RE-loads the fresh row, RE-applies mutate on top of that fresh state, and
 	// retries the CAS save — bounded by the repository's max-CAS-retries knob —
 	// so both the concurrent writer's mutation AND this one survive instead of
-	// the loser being last-write-wins clobbered (sp-01wc). On retry exhaustion,
+	// the loser being last-write-wins clobbered. On retry exhaustion,
 	// or when the knob disables retry, it falls back to the legacy
-	// last-write-wins upsert, so behavior never regresses below sp-60ff.
+	// last-write-wins upsert, so behavior never regresses below the
+	// pre-existing baseline.
 	//
 	// Returns the persisted ship (for post-save side effects such as event
 	// publication) and whether a write actually occurred — false when mutate
@@ -119,11 +120,11 @@ type ShipRepository interface {
 	// is non-empty and differs from operation is rejected with
 	// ShipDedicatedToOtherFleetError — checked inside the same row-locked
 	// transaction as the other assignment guards, so dedication can never be
-	// raced past by a claim that read stale discovery data (sp-l7h2).
+	// raced past by a claim that read stale discovery data.
 	ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID, operation string) error
 
 	// AssignFleet atomically sets the ship's DedicatedFleet tag — the single
-	// write path for fleet dedication (sp-l7h2). fleet == "" clears the
+	// write path for fleet dedication. fleet == "" clears the
 	// dedication, returning the ship to the general pool. Idempotent: writing
 	// the value already persisted performs zero DB writes, so reconciliation
 	// on every coordinator restart stays cheap. Dedication is ownership, not
@@ -133,7 +134,7 @@ type ShipRepository interface {
 	AssignFleet(ctx context.Context, shipSymbol string, fleet string, playerID shared.PlayerID) error
 
 	// SetCargoReservation atomically sets (reserved=true) or releases to sellable
-	// (reserved=false) a single cargo do-not-sell override on a hull (sp-1vhv),
+	// (reserved=false) a single cargo do-not-sell override on a hull,
 	// row-locked like AssignFleet. reserved=false is the deliberate-resale escape
 	// hatch that releases a default-reserved module (MODULE_*/MOUNT_*) for sale.
 	// The persisted override is reloaded on boot and honored at every coordinator
@@ -141,21 +142,21 @@ type ShipRepository interface {
 	SetCargoReservation(ctx context.Context, shipSymbol, good string, reserved bool, playerID shared.PlayerID) error
 
 	// ReserveForCaptain atomically reserves an idle ship for the captain's direct,
-	// manual use, hiding it from coordinator discovery (sp-i1ku). Uses the same
+	// manual use, hiding it from coordinator discovery. Uses the same
 	// row-level locking as ClaimShip so a concurrent coordinator claim can never
 	// be silently overwritten by a captain reservation, or vice versa. Returns
 	// ShipAlreadyAssignedError if a container already holds the claim.
 	ReserveForCaptain(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error
 
 	// ReleaseCaptainReservation atomically clears a captain reservation, returning
-	// the ship to idle so normal coordinator discovery can claim it again
-	// (sp-i1ku). Returns ShipNotReservedError if the ship is not currently
+	// the ship to idle so normal coordinator discovery can claim it again.
+	// Returns ShipNotReservedError if the ship is not currently
 	// reserved by the captain.
 	ReleaseCaptainReservation(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error
 
 	// PreemptForCaptain atomically REVOKES a coordinator's live container claim
 	// and transfers the hull to the captain — the operator-authority preempt
-	// behind `ship reserve --force` (sp-w3yd). Unlike ReserveForCaptain, a live
+	// behind `ship reserve --force`. Unlike ReserveForCaptain, a live
 	// container claim is transferred (not rejected) in a single row-locked swap
 	// (RULING #7), so a coordinator re-grab cannot race a lost update; the
 	// coordinator's per-tick FindByContainer then drops the hull and it re-plans.
@@ -165,8 +166,8 @@ type ShipRepository interface {
 
 	// ReleaseContainerClaim atomically breaks a hull's LIVE coordinator
 	// work-claim, returning it to idle so the coordinator stops routing it — the
-	// extra step `fleet unassign` performs beyond clearing the DedicatedFleet tag
-	// (sp-w3yd). Scoped to a container claim: a captain reservation is left
+	// extra step `fleet unassign` performs beyond clearing the DedicatedFleet tag.
+	// Scoped to a container claim: a captain reservation is left
 	// untouched (that is `ship release`'s job) and an idle hull is a no-op.
 	// Returns whether a live claim was actually broken.
 	ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error)
@@ -183,7 +184,7 @@ type ShipRepository interface {
 
 	// FindModuleRequirements resolves a not-yet-installed module's own
 	// power/crew/slot requirements by searching every ship's installed
-	// module list for symbol (sp-el60 acceptance fix). There is no catalog
+	// module list for symbol. There is no catalog
 	// of unowned module specs anywhere in this codebase or the SpaceTraders
 	// API, so a candidate's requirements can only come from having been
 	// observed installed somewhere - the same module symbol has identical
@@ -280,7 +281,7 @@ type ShipData struct {
 	NavStatus   string
 	FlightMode  string // CRUISE, DRIFT, BURN, or STEALTH
 	ArrivalTime string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
-	// Nav route origin + departure for the current transit (sp-vp9k). The API's
+	// Nav route origin + departure for the current transit. The API's
 	// nav.route carries where an IN_TRANSIT ship departed from (symbol +
 	// coordinates) and when; persisting them lets DB consumers compute exact
 	// transit progress instead of guessing from poll timing. Empty/zero and
@@ -303,7 +304,7 @@ type ShipData struct {
 	Mounts             []MountData  // Installed ship mounts (mining lasers, gas siphons, sensor arrays, etc.)
 	// Reactor* fields describe the hull's fixed power budget. Reactors have no
 	// swap/upgrade endpoint in the SpaceTraders API - ReactorPowerOutput is
-	// permanent for the life of the ship (sp-el60).
+	// permanent for the life of the ship.
 	ReactorSymbol       string
 	ReactorName         string
 	ReactorPowerOutput  int

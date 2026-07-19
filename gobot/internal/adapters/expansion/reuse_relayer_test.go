@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// ---- sp-6vep: pure selection cores (mutation-verified) --------------------------------------
+// ---- pure selection cores (mutation-verified) --------------------------------------
 
 // pickReusableProbe picks the FEWEST-hop probe that is within maxHops AND sits in a system whose
 // trade-value is strictly BELOW the ceiling — the depth-vs-freshness guard that NEVER strips a probe

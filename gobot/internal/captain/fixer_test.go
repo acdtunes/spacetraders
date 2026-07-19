@@ -64,8 +64,7 @@ func TestProvisionWorktreeSkipsBeadsWhenAbsent(t *testing.T) {
 // LACKS, never to revert a tracked file the branch intentionally changed. A
 // worktree that regenerated pkg/proto/daemon (e.g. a new daemon RPC field)
 // has a copy that differs from repoRoot's stale one; provision must leave it
-// alone instead of clobbering it with repoRoot's copy (bit q02m and sp-ezz9:
-// "GetInputsOnly undefined" / "unknown field MinSupply" after provision).
+// alone instead of clobbering it with repoRoot's copy.
 func TestProvisionWorktreePreservesRegeneratedProto(t *testing.T) {
 	t.Parallel()
 	repo := initScratchRepo(t)

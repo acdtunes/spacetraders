@@ -174,8 +174,8 @@ type apiBudgetReporter interface {
 // autosizerAPIUtilReader surfaces the fleet-wide API request-utilization percent to the autosizer's
 // api_util guard. It reads the rolling-5m window of the shared budget tracker — the SAME
 // throughput/ceiling basis as the Prometheus ApproachCeiling alert (sum(rate(api_requests_total[5m]))
-// / RateLimitPerSecond) — so the guard gates concurrency GROWTH against genuine API saturation
-// instead of the old fail-open stub. Fails CLOSED (readable=false) when no live surface exists (nil
+// / RateLimitPerSecond) — so the guard gates concurrency GROWTH against genuine API saturation.
+// Fails CLOSED (readable=false) when no live surface exists (nil
 // tracker, or an unconfigured/zero ceiling): a guard that cannot read its bound never permits growth
 // (RULINGS #4). In the daemon the tracker is wired unconditionally at startup, so the normal case is
 // readable; blocking only occurs on real saturation or a genuinely-absent metrics subsystem.

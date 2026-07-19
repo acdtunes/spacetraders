@@ -15,7 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests pin the shared-agent cache (sp-oszc): GetAgent serves a short-TTL
+// These tests pin the shared-agent cache: GetAgent serves a short-TTL
 // cached agent to cut the #2 API consumer, WITH a hard safety invariant — every
 // credit-DECREASING client call invalidates the cache so a money guard can never
 // read a pre-spend (stale-HIGH) balance after we have spent (the over-spend

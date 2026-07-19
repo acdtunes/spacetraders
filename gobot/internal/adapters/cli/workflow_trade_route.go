@@ -10,19 +10,18 @@ import (
 
 // newWorkflowTradeRouteCommand creates the workflow trade-route subcommand.
 //
-// Post sp-zewt this is a THIN CLIENT: it asks the daemon to start a trade-route
+// This is a THIN CLIENT: it asks the daemon to start a trade-route
 // CONTAINER, rather than running the circuit in-process. The container runs the same
 // disciplined pure-arbitrage circuit (buy at the exporter, sell at the importer, in
 // tranches of at most 18 units per visit, only while the destination bid clears
 // basis+1000), but under the daemon's proven container lifecycle:
 //
 //   - single-writer safety: the container claims its hull through the normal lifecycle,
-//     so it cannot dual-write ship state with the daemon (the TOCTOU the CLI runner had);
+//     so it cannot dual-write ship state with the daemon;
 //   - claim-release-on-death: the hull is force-released on completion, crash, or daemon
-//     shutdown — never stranded (retires the sp-vjwb orphaned claim);
+//     shutdown — never stranded;
 //   - RouteExecutor-backed navigation: each leg orbits → refuels → NavigateDirect →
-//     waits on arrival events, with no re-claiming child navigate container (subsumes the
-//     sp-2sam self-collision and sp-sj7p orbit-before-nav patches the in-process runner needed);
+//     waits on arrival events, with no re-claiming child navigate container;
 //   - restart recovery: the container is RUNNING and rebuildable from its launch config,
 //     so a daemon restart mid-circuit resumes it or cleanly releases the hull.
 //
@@ -82,16 +81,15 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			// Convert max-visits to *int32 for protobuf (nil = default 50 in the daemon).
+			// nil (unset) uses the daemon's default of 50 visits.
 			var maxVisitsArg *int32
 			if maxVisits != 0 {
 				mv := int32(maxVisits)
 				maxVisitsArg = &mv
 			}
 
-			// --dest (sp-xwa1): a destination waypoint or system symbol that pins the
-			// circuit to that lane instead of the ranker's auto-selected one. nil (flag
-			// unset) preserves the original undirected auto-scan behavior unchanged.
+			// --dest pins the circuit to a destination waypoint or system instead of the
+			// ranker's auto-selected lane; nil (flag unset) preserves auto-scan behavior.
 			var destWaypointArg *string
 			if destWaypoint != "" {
 				destWaypointArg = &destWaypoint

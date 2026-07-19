@@ -7,7 +7,7 @@ import (
 )
 
 // classifyPurpose buckets each HTTP attempt into poll/transact/retry so the
-// budget tracker (sp-51ti) can show how much of the request budget is spent
+// budget tracker can show how much of the request budget is spent
 // on status polling vs real transactions vs wasted retries.
 
 func TestClassifyPurpose_FirstAttemptGet_IsPoll(t *testing.T) {

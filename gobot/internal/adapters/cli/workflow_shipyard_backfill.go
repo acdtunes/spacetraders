@@ -8,10 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowShipyardBackfillCommand creates the workflow shipyard-backfill subcommand (sp-s1ek):
-// the LAUNCH VERB for the standing shipyard-backfill sweep engine (sp-rhju). Before this the
-// engine — enumerator, deeper-first ranking, rate/idle bound, tune knob, restart-recovery — was
-// fully built but INERT, with no start path. This verb closes that gap.
+// newWorkflowShipyardBackfillCommand creates the workflow shipyard-backfill subcommand: the
+// LAUNCH VERB for the standing shipyard-backfill sweep engine.
 //
 // Like the frontier / capacity coordinators it is a THIN CLIENT: it asks the daemon to start one
 // recovery-safe coordinator container and returns its id. The coordinator survives daemon restarts

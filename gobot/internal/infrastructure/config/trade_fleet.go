@@ -85,7 +85,7 @@ type TradeFleetConfig struct {
 
 	// StrandedConsecutiveThreshold is the sp-686e stranded-hull detector threshold: how many
 	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
-	// inaccessible — the TORWIND-2C shape, where both discovery paths return empty so the hull
+	// inaccessible, where both discovery paths return empty so the hull
 	// can never self-reposition) a hull must accrue before the tour coordinator pages the watch
 	// with a distinct WARN + the fleet_hull_stranded_total counter (the StrandedHull alert),
 	// instead of the hull silently relaunch-looping until a human notices. 0/absent → the tour
@@ -99,8 +99,7 @@ type TradeFleetConfig struct {
 	// frontier gate rather than fail-closing on it via the strict fetch-through Path. A tour
 	// reposition is a MOVEMENT of the hull to a fresh trading ground — not a commitment of money —
 	// so it shares the scout reposition's stored-adjacency relaxation (sp-8k9m): a heavy whose
-	// ORIGIN gate sits in the sp-ikx1 unreadable-backoff set (the C1-blocking TORWIND-37/2C ->
-	// GQ92 incident, unroutable within the strict MaxJumpPath=5 even for a 2-hop route) can still
+	// ORIGIN gate sits in the sp-ikx1 unreadable-backoff set can still
 	// reposition. 0/absent → the tour coordinator's own default (12, matching the scout frontier
 	// depth); the default lives in the consumer, not this config layer. Threaded through the tour
 	// container config so a captain retunes it by editing config.yaml + restarting the daemon
@@ -109,7 +108,7 @@ type TradeFleetConfig struct {
 	RepositionJumpBound int `mapstructure:"reposition_jump_bound"`
 
 	// MaxTourSystems is the sp-syaz per-tour DISTINCT-system cap (start system + gate
-	// neighbors) — the fleet-wide tour-length lever that reverses the 2026-07-09 clamp
+	// neighbors) — the fleet-wide tour-length lever that reverses the tour-length clamp
 	// SAFELY. Like RepositionJumpBound/StrandedConsecutiveThreshold it is a daemon-global
 	// tour tuning: StartTourRun stamps it from here into every tour container's launch
 	// config, buildTourCoordinatorCommand reads it back, and it rides TourConstraints to

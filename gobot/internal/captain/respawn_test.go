@@ -67,10 +67,9 @@ func TestEnsureCaptainAliveAlertsAdmiralAndNeverSpawnsWhenDead(t *testing.T) {
 		"a dead captain must emit a grep-able local log line that survives a mail/gc/bd outage")
 }
 
-// TestEnsureCaptainAliveLogsDownEvenWhenAdmiralMailFails covers the swallow bug
-// at the old respawn.go:50: the down signal must survive a broken mail channel.
-// The local log line fires regardless, and the mail error is itself logged
-// rather than `_ =`-swallowed.
+// TestEnsureCaptainAliveLogsDownEvenWhenAdmiralMailFails proves the down
+// signal survives a broken mail channel: the local log line fires regardless,
+// and the mail error is itself logged rather than `_ =`-swallowed.
 func TestEnsureCaptainAliveLogsDownEvenWhenAdmiralMailFails(t *testing.T) {
 	gw := &respawnGateway{alive: map[string]bool{"captain": false}, mailErr: errors.New("mail channel down")}
 	sup := &Supervisor{cfg: config.CaptainConfig{CaptainAgent: "captain", AdmiralAlias: "human"}, gw: gw}
@@ -119,10 +118,8 @@ func TestEnsureCaptainAliveReAlertsAfterThrottleWindow(t *testing.T) {
 		"a still-dead captain is re-alerted once the throttle window elapses")
 }
 
-// TestEnsureCaptainAliveLogsAndSkipsOnProbeError covers sp-sk68 D5: during the
-// gc/bd outage every SessionAlive probe errored, and the old
-// `if err != nil || alive { return }` treated that exactly like "alive". A
-// probe error is conservatively NOT treated as a death (a flaky probe must not
+// TestEnsureCaptainAliveLogsAndSkipsOnProbeError covers sp-sk68 D5: a probe
+// error is conservatively NOT treated as a death (a flaky probe must not
 // trigger a false down-alert), but it must be visible in the log — never
 // silent — and it must not mail the Admiral.
 func TestEnsureCaptainAliveLogsAndSkipsOnProbeError(t *testing.T) {

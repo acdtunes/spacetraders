@@ -11,10 +11,8 @@ package config
 type ScoutingConfig struct {
 	// TourStartJitterMaxSeconds bounds the per-ship deterministic phase jitter a scout
 	// tour waits before its first navigation/scan (sp-x8i5). ~45 scouts restarting
-	// their rotation in near-lockstep transiently saturated the rate limiter — the
-	// 2026-07-11 00:56-01:02Z burst showed p99 limiter wait plateaued ~4s and Purchase
-	// Cargo p99 at 9.5s, while 15m-average utilization read a calm 53%: a phase-locked
-	// wave, not a sustained-load problem. Each ship waits hash(ship_symbol) % ceiling
+	// their rotation in near-lockstep transiently saturates the rate limiter in a
+	// phase-locked wave, not a sustained-load problem. Each ship waits hash(ship_symbol) % ceiling
 	// before its tour starts — deterministic across restarts (no math/rand) — so the
 	// fleet decoheres into a spread instead of stacking on every rotation. The standing
 	// scout_post_coordinator waits hash(container_id) % ceiling the same way before its
@@ -27,8 +25,7 @@ type ScoutingConfig struct {
 	// nearest-satellite selection AND the dispatched relay both route PAST unreadable
 	// frontier gates up to this many jumps, reaching the posts that sit beyond the strict
 	// heavy-hull cap (gategraph.MaxJumpPath=5). Measured worst-case charted depth from the
-	// probe supply to the darkest posts was 6-12 jumps (KN67->SN21=6, ->C81=9, ->XN7=12),
-	// so 0/absent => 12. The strict cap is deliberately NOT raised — only the probe class,
+	// probe supply to the darkest posts was 6-12 jumps, so 0/absent => 12. The strict cap is deliberately NOT raised — only the probe class,
 	// whose arrival re-reads the gate it crossed, is allowed this reach.
 	MaxRepositionJumps int `mapstructure:"max_reposition_jumps"`
 
@@ -36,8 +33,7 @@ type ScoutingConfig struct {
 	// waits before the coordinator retries repositioning to it (sp-o34q). On a failure the
 	// coordinator frees the probe and tries the NEXT candidate post this tick instead of
 	// respawning the same corpse, so one genuinely-unroutable post can no longer crash-loop
-	// the relay dispatcher and flood the event queue (the 25-min post-deploy incident: ~20
-	// TORWIND-66 corpses / 15min). 0/absent => 1800s (30 min): long enough that a broken
+	// the relay dispatcher and flood the event queue. 0/absent => 1800s (30 min): long enough that a broken
 	// post is retried on the order of the frontier's own change cadence, not every 30s tick.
 	RepositionFailureCooldownSecs int `mapstructure:"reposition_failure_cooldown_secs"`
 
@@ -72,8 +68,7 @@ type ScoutingConfig struct {
 	// post's slots before the next post's). false/absent => LIVE: the reconciler interleaves
 	// unmanned slots by tier so a scarce idle-probe pool spreads one-per-uncovered-system
 	// before piling a multi-hull post's extra slots — the durable fix for the reconciler
-	// herding the whole probe group onto one target per cycle (7->BT82, 8->GS93) while
-	// HZ30/PD44/YP16/FQ55 stayed dark. RULINGS #5 disable escape: a captain can pin
+	// herding the whole probe group onto one target per cycle. RULINGS #5 disable escape: a captain can pin
 	// depth-first without a redeploy; not expected to be set in normal operation.
 	CoverageSpreadDisabled bool `mapstructure:"coverage_spread_disabled"`
 

@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// The headline reconciliation case (sp-rd21): the 12h retrospective's TRUE cash net of
-// ~66.4M over the window is ~5.53M/hr — the cash-true rate the telemetry-netting rate
-// (which read ~11.4M/hr) should have been.
+// A representative reconciliation case: a window's true cash net of ~66.4M over 12h
+// is ~5.53M/hr.
 func TestComputeCashRealizedRate_WindowedRate(t *testing.T) {
 	got := ComputeCashRealizedRate(66_400_000, 2061, 12*time.Hour)
 

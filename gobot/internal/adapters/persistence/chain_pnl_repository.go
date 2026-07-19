@@ -10,7 +10,7 @@ import (
 )
 
 // GormChainPnLRepository reads the per-good realized-P&L aggregates the factory chain
-// kill-switch judges (sp-rh2z). It satisfies the application-layer ChainPnLReader interface
+// kill-switch judges. It satisfies the application-layer ChainPnLReader interface
 // STRUCTURALLY against the domain types (manufacturing.ChainPnLRaw) — so persistence need not
 // import the application service, avoiding an import cycle, exactly as
 // GormMarketPriceHistoryRepository satisfies InputPriceHistoryReader via domain/market types.
@@ -39,8 +39,8 @@ func (r *GormChainPnLRepository) ReadRealizedPnL(ctx context.Context, playerID i
 	db := r.db.WithContext(ctx)
 
 	// Per-good factory flows: input buys (negative) and local sells (positive), attributed to
-	// the good literally transacted (sp-i0hl atomic attribution), scoped to the manufacturing
-	// and factory operation types the panel filters on.
+	// the good literally transacted (atomic attribution), scoped to the manufacturing and
+	// factory operation types the panel filters on.
 	var factoryRows []struct {
 		Good        string
 		FactoryCost int

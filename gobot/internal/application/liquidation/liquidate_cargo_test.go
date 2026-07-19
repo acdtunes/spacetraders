@@ -21,7 +21,7 @@ import (
 
 // fakeSyncShipRepo returns a canned ship from SyncShipFromAPI (the server-truth
 // reconcile the liquidation worker does before touching cargo, mirroring the
-// manufacturing orphaned-cargo handler's phantom-desync guard, cluster L47).
+// manufacturing orphaned-cargo handler's phantom-desync guard).
 type fakeSyncShipRepo struct {
 	navigation.ShipRepository
 	ship    *navigation.Ship
@@ -156,8 +156,7 @@ func item(t *testing.T, symbol string, units int) *shared.CargoItem {
 
 // The acceptance core at the worker level: a parked hull holding leftover cargo
 // sells it at the best in-system bid (navigating there first) and reports the
-// recovered revenue — the value-recovery path the captain wants for the 3 valuable
-// PLASTICS/SILICON/FABRICS holds (sp-39oi).
+// recovered revenue.
 func TestLiquidateCargo_SellsAtBestInSystemBid_NavigatingWhenElsewhere(t *testing.T) {
 	ship := shipWithCargo(t, "TORWIND-7", "X1-KA42-A1", []*shared.CargoItem{item(t, "SILICON_CRYSTALS", 66)})
 	repo := &fakeSyncShipRepo{ship: ship}
@@ -227,8 +226,8 @@ func TestLiquidateCargo_EmptyHold_IdempotentNoop(t *testing.T) {
 }
 
 // Default posture (min_jettison_value=0): a good with NO in-system bid is HELD, not
-// destroyed — nothing is jettisoned without an explicit threshold (sp-39oi RULINGS
-// #5: value is never dumped by default).
+// destroyed — nothing is jettisoned without an explicit threshold (RULINGS #5:
+// value is never dumped by default).
 func TestLiquidateCargo_NoInSystemBid_JettisonDisabled_HoldsAndProtectsValue(t *testing.T) {
 	ship := shipWithCargo(t, "TORWIND-5", "X1-KA42-A1", []*shared.CargoItem{item(t, "FABRICS", 54)})
 	repo := &fakeSyncShipRepo{ship: ship}
@@ -267,8 +266,7 @@ func TestLiquidateCargo_NoInSystemBid_JettisonEnabled_JettisonsAsLastResort(t *t
 }
 
 // A valuable lot is ALWAYS sold, never jettisoned, even with a threshold set: the
-// recoverable value (bid*units) clears the floor, so it takes the sell path. This is
-// the direct guard for the incident's 3 hulls (~150k PLASTICS/SILICON/FABRICS).
+// recoverable value (bid*units) clears the floor, so it takes the sell path.
 func TestLiquidateCargo_ValuableLot_SoldNotJettisoned_EvenWithThreshold(t *testing.T) {
 	ship := shipWithCargo(t, "TORWIND-11", "X1-KA42-A1", []*shared.CargoItem{item(t, "PLASTICS", 67)})
 	repo := &fakeSyncShipRepo{ship: ship}
@@ -331,7 +329,7 @@ func TestLiquidateCargo_MultipleGoods_LiquidatesEach(t *testing.T) {
 }
 
 // A server-reconcile failure fails the container honestly rather than acting on an
-// unverifiable cargo snapshot (sp-39oi: never sell/dump on a state we cannot confirm).
+// unverifiable cargo snapshot (never sell/dump on a state we cannot confirm).
 func TestLiquidateCargo_SyncFailure_FailsHonestly(t *testing.T) {
 	repo := &fakeSyncShipRepo{syncErr: fmt.Errorf("api 503")}
 	h := NewLiquidateCargoHandler(repo, &fakeMarketRepo{}, &recordingMediator{})

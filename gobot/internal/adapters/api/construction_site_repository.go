@@ -30,22 +30,18 @@ func NewConstructionSiteRepository(
 
 // FindByWaypoint retrieves construction site information from API.
 func (r *ConstructionSiteAPIRepository) FindByWaypoint(ctx context.Context, waypointSymbol string, playerID int) (*manufacturing.ConstructionSite, error) {
-	// Get player token
 	p, err := r.playerRepo.FindByID(ctx, shared.MustNewPlayerID(playerID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find player %d: %w", playerID, err)
 	}
 
-	// Extract system symbol from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5")
 	systemSymbol := extractSystemSymbol(waypointSymbol)
 
-	// Call API
 	data, err := r.apiClient.GetConstruction(ctx, systemSymbol, waypointSymbol, p.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get construction data for %s: %w", waypointSymbol, err)
 	}
 
-	// Convert to domain entity
 	materials := toConstructionMaterials(data.Materials)
 
 	return manufacturing.ReconstructConstructionSite(
@@ -58,19 +54,16 @@ func (r *ConstructionSiteAPIRepository) FindByWaypoint(ctx context.Context, wayp
 
 // SupplyMaterial delivers materials to construction site.
 func (r *ConstructionSiteAPIRepository) SupplyMaterial(ctx context.Context, shipSymbol, waypointSymbol, tradeSymbol string, units int, playerID int) (*manufacturing.ConstructionSupplyResult, error) {
-	// Get player token
 	p, err := r.playerRepo.FindByID(ctx, shared.MustNewPlayerID(playerID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find player %d: %w", playerID, err)
 	}
 
-	// Call API
 	resp, err := r.apiClient.SupplyConstruction(ctx, shipSymbol, waypointSymbol, tradeSymbol, units, p.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to supply construction at %s: %w", waypointSymbol, err)
 	}
 
-	// Convert construction data to domain entity
 	var construction *manufacturing.ConstructionSite
 	if resp.Construction != nil {
 		materials := toConstructionMaterials(resp.Construction.Materials)
@@ -82,7 +75,6 @@ func (r *ConstructionSiteAPIRepository) SupplyMaterial(ctx context.Context, ship
 		)
 	}
 
-	// Calculate cargo info
 	cargoCapacity := 0
 	cargoUnits := 0
 	if resp.Cargo != nil {

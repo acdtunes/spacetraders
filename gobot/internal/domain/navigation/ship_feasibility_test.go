@@ -123,7 +123,7 @@ func TestCheckModuleInstallFeasibility_CrewShort(t *testing.T) {
 // budget is a single pool drawn down by BOTH installed modules and installed
 // mounts, not a per-collection budget - a candidate module install can be
 // blocked purely by an installed mount's power draw, since both draw from
-// the same reactor (sp-el60).
+// the same reactor.
 func TestCheckModuleInstallFeasibility_PowerSharedWithMounts(t *testing.T) {
 	installedMount := navigation.NewShipMount("MOUNT_MINING_LASER_I", "Mining Laser I", 30, nil, navigation.NewShipRequirements(5, 0, 1))
 	ship := newFeasibilityTestShip(t, 5, 5, 5, 5, 0, nil, []*navigation.ShipMount{installedMount})
@@ -139,13 +139,9 @@ func TestCheckModuleInstallFeasibility_PowerSharedWithMounts(t *testing.T) {
 	}
 }
 
-// TestCheckModuleInstallFeasibility_FrigateEmpiricalCase encodes the
-// empirical ledger from the live frigate power gate that motivated sp-el60:
-// reactor powerOutput 31 vs 33 required (gap 2) blocked installing
-// MODULE_CARGO_HOLD_III; removing two 1-power processors
-// (MODULE_MINERAL_PROCESSOR_I, MODULE_GAS_PROCESSOR_I) closed the gap. This
-// scenario must be computable offline instead of by live trial-and-error
-// installs.
+// TestCheckModuleInstallFeasibility_FrigateEmpiricalCase proves a marginal
+// power shortfall closed by removing lower-power installs is computable
+// offline instead of by live trial-and-error installs.
 func TestCheckModuleInstallFeasibility_FrigateEmpiricalCase(t *testing.T) {
 	mineralProcessor := navigation.NewShipModule("MODULE_MINERAL_PROCESSOR_I", 0, 0, navigation.NewShipRequirements(1, 0, 1))
 	gasProcessor := navigation.NewShipModule("MODULE_GAS_PROCESSOR_I", 0, 0, navigation.NewShipRequirements(1, 0, 1))
@@ -188,13 +184,9 @@ func TestCheckMountInstallFeasibility_Fits(t *testing.T) {
 	}
 }
 
-// TestCheckMountInstallFeasibility_SlotShort proves mounting points are a
-// budget separate from module slots: a full module-slot budget must not
-// block a mount install, and mounting points are consumed only by installed
-// mounts, not installed modules.
 // TestPowerUsedModuleSlotsUsedMountingPointsUsed proves the exported budget
 // summary helpers (used by the "ship info" / outfitting-listing power/slots
-// section, sp-el60) agree with the totals CheckModuleInstallFeasibility
+// section) agree with the totals CheckModuleInstallFeasibility
 // derives internally.
 func TestPowerUsedModuleSlotsUsedMountingPointsUsed(t *testing.T) {
 	module := navigation.NewShipModule("MODULE_MINERAL_PROCESSOR_I", 0, 0, navigation.NewShipRequirements(1, 0, 1))
@@ -213,8 +205,8 @@ func TestPowerUsedModuleSlotsUsedMountingPointsUsed(t *testing.T) {
 }
 
 // TestUnknownRequirementsFeasibility proves the fail-closed "requirements
-// could not be resolved" verdict never claims CanInstall (sp-el60
-// acceptance fix). This is the verdict callers must build directly when a
+// could not be resolved" verdict never claims CanInstall. This is the
+// verdict callers must build directly when a
 // candidate's requirements cannot be resolved from a real data source -
 // never by calling CheckModuleInstallFeasibility/CheckMountInstallFeasibility
 // with a zero-filled candidate, which would trivially satisfy every budget

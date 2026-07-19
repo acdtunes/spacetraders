@@ -64,7 +64,7 @@ func (e *ErrWaitCancelled) Error() string {
 
 // ErrWaitTimeout indicates a cargo wait exhausted its retry budget without
 // being satisfied by either a FIFO-queue notification or a direct resync
-// against the operation's storage ships (sp-pafv). Returned instead of
+// against the operation's storage ships. Returned instead of
 // blocking forever when a NotifyCargoDeposited/ConfirmDeposit/
 // RegisterStorageShip wake-up is lost or races ahead of the waiter's
 // enqueue. Callers should park/defer the task rather than retry inline.

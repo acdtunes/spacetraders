@@ -1,12 +1,12 @@
 package capacity
 
 // Production adapters that wrap the Actuator's primitive ports around the
-// EXISTING primitives (bead st-5ig). Each is a thin translation — the actuation
+// EXISTING primitives. Each is a thin translation — the actuation
 // logic stays in the primitive it drives:
 //   - reassign   -> the fleet-assign mediator command (single dedication write path)
 //   - reposition -> the navigate-route mediator command
-//   - workers    -> ensure the standing sp-f5pr worker-rebalancer runs (it owns the moves)
-//   - buffer     -> the depot warehouse supported-goods whitelist writer (sp-94du)
+//   - workers    -> ensure the standing worker-rebalancer runs (it owns the moves)
+//   - buffer     -> the depot warehouse supported-goods whitelist writer
 //   - player     -> the reconciling player resolved from the ambient auth token
 //
 // These are ADAPTERS (hexagonal driven side): they are exercised by integration
@@ -34,7 +34,7 @@ import (
 )
 
 // capacityReconcilerAssigner is the assigner-audit tag every reconciler
-// dedication write carries (sp-r6f1) so a mispin names its culprit in one grep.
+// dedication write carries so a mispin names its culprit in one grep.
 const capacityReconcilerAssigner = "capacity-reconciler"
 
 // ---- tier 1: reassign via the single fleet-assign write path ----------------
@@ -83,7 +83,7 @@ func (r *mediatorRepositioner) RepositionHull(ctx context.Context, playerID shar
 //
 // The differ leaves rebalance_workers without a source hull on purpose — "the
 // worker-rebalancer primitive owns the actual moves" (ladder.go). So the
-// reconciler's action ENSURES the standing sp-f5pr worker-rebalancer is running
+// reconciler's action ENSURES the standing worker-rebalancer is running
 // for the player (the exact ensure-running the bootstrap gate uses); the
 // rebalancer then autonomously ferries workers toward its vacancies. Idempotent:
 // an already-running rebalancer is a no-op.
@@ -151,7 +151,7 @@ func (e *workerRebalanceEnsurer) rebalancerRunning(ctx context.Context, playerID
 
 // ---- tier 3: the depot warehouse buffer whitelist writer --------------------
 //
-// Drives the EXISTING supported-goods writer (sp-94du, StorageOperationRepository.
+// Drives the EXISTING supported-goods writer (StorageOperationRepository.
 // UpdateSupportedGoods — the same primitive refreshRunningDepotWarehouseCaps
 // uses): the differ already decided the good and whether it is buffered
 // (UnitsCap > 0) or shed (UnitsCap == 0). The per-good target_units MAGNITUDE has

@@ -11,14 +11,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 )
 
-// sp-78ai L2: the idle-arb dispatcher's cross-engine absorption consult + record.
-// These drive the two new behaviors — skip:reserved when the ledger shows a sink
-// occupied (in flight or recovering), and record each launched leg's sell side so
-// tours and OTHER dispatchers see it — plus the acceptance: a two-dispatcher
-// collision where the second skips:reserved because the first recorded first. The
-// lane mutex + flat hold STAY ARMED alongside (the existing lbbm suite is the
-// regression); this consult is the cross-engine / cross-restart generalization the
-// in-memory mutex cannot provide.
+// The absorption ledger consult skips a sink the ledger shows occupied (in flight
+// or recovering) and records each launched leg's sell side so other dispatchers
+// see it — layered alongside the in-memory lane mutex, not a replacement for it.
 
 // nearSink is the one profitable sink in idleArbHarness (hub→X1-HUB-D40, MACHINERY).
 var nearSink = absorption.LaneKey{Waypoint: "X1-HUB-D40", Good: "MACHINERY", Side: absorption.SideSell}
@@ -109,10 +104,8 @@ var _ absorption.Ledger = (*fakeAbsorptionLedger)(nil)
 
 // A sink the ledger shows reserved so heavily that the remaining depth can't fit
 // the leg's tranche is skipped with skip:reserved — the cross-engine collision the
-// in-memory mutex misses. (Depth-aware, sp-3meh: the nearSink good's trade volume is
-// 100 and a leg carries 40, so a 70-unit PLANNED reservation leaves only 30 — below
-// the 40-unit tranche — and the lane is excluded. A lighter reservation with room to
-// spare would now be launched into; see the depth-aware suite.)
+// in-memory mutex misses. nearSink's trade volume is 100 and a leg carries 40, so a
+// 70-unit PLANNED reservation leaves only 30 — below the 40-unit tranche.
 func TestIdleArb_Consult_ReservedSink_Skips(t *testing.T) {
 	dispatcher, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	ledger := newFakeAbsorptionLedger()
@@ -217,8 +210,7 @@ func TestIdleArb_Consult_KillSwitch_DisablesConsultButStillRecords(t *testing.T)
 	}
 }
 
-// A nil ledger leaves the integration fully inert — the pre-L2 behavior, byte for
-// byte (the belt-only regression the lbbm suite also covers).
+// A nil ledger leaves the integration fully inert, byte for byte.
 func TestIdleArb_NilLedger_Inert(t *testing.T) {
 	dispatcher, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	// No SetAbsorptionLedger call → ledger nil.
@@ -227,14 +219,13 @@ func TestIdleArb_NilLedger_Inert(t *testing.T) {
 	}
 }
 
-// ACCEPTANCE (sp-l2cq): two dispatchers sharing one ledger collide on a sink whose
-// depth is nearly full — the first tops it up over the fillable line, the second's
-// consult sees no remaining tranche and skips:reserved. Each dispatcher has its OWN
-// in-memory lane mutex (empty of the other's leg), so ONLY the shared ledger prevents
-// the co-dump — exactly the cross-container coordination the mutex cannot provide
-// (idle_arb_lane_mutex.go's own in-memory concession). Depth-aware (sp-3meh): the sink
-// already carries another engine's 40-unit in-flight leg (of 100 depth), so A's 40-unit
-// leg fits (60 remaining) but then leaves only 20 — below B's 40-unit tranche.
+// Two dispatchers sharing one ledger collide on a sink whose depth is nearly full —
+// the first tops it up over the fillable line, the second's consult sees no
+// remaining tranche and skips:reserved. Each dispatcher has its OWN in-memory lane
+// mutex (empty of the other's leg), so ONLY the shared ledger prevents the co-dump.
+// The sink already carries another engine's 40-unit in-flight leg (of 100 depth), so
+// A's 40-unit leg fits (60 remaining) but then leaves only 20 — below B's 40-unit
+// tranche.
 func TestIdleArb_TwoDispatcherCollision_SecondSkipsReserved(t *testing.T) {
 	ledger := newFakeAbsorptionLedger()
 	ledger.preset(nearSink, absorption.KeyOccupancy{PlannedUnits: 40}) // another engine's in-flight leg
@@ -268,10 +259,9 @@ func TestIdleArb_TwoDispatcherCollision_SecondSkipsReserved(t *testing.T) {
 	}
 }
 
-// Regression guard: the harvest summary now carries the reserved counter alongside
-// the existing skip reasons, so L5's burn-in telemetry can read it. (Depth-aware,
-// sp-3meh: a 70-unit reservation of the 100-deep sink leaves 30 — below the 40-unit
-// tranche — so both hulls skip:reserved.)
+// The harvest summary carries the reserved counter alongside the existing skip
+// reasons for burn-in telemetry. A 70-unit reservation of the 100-deep sink leaves
+// 30 — below the 40-unit tranche — so both hulls skip:reserved.
 func TestIdleArb_HarvestSummary_IncludesReservedCounter(t *testing.T) {
 	dispatcher, _, _ := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	ledger := newFakeAbsorptionLedger()

@@ -8,9 +8,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 )
 
-// TestTourStreak_BudgetUnreadableRepeatedly_EmitsErrorLoopEvent pins the sp-6wxq
-// wiring at the tour's dynamic-budget resolve checkpoint (the 7z7j fail-closed
-// pause+continue — the one unbounded silent retry in this worker-shaped coordinator):
+// TestTourStreak_BudgetUnreadableRepeatedly_EmitsErrorLoopEvent pins the wiring at
+// the tour's dynamic-budget resolve checkpoint (the fail-closed pause+continue — the
+// one unbounded silent retry in this worker-shaped coordinator):
 // an unreadable live treasury for DefaultStreakThreshold consecutive iterations
 // crosses exactly once and emits one interrupt-class coordinator error-loop event,
 // while a below-threshold run stays silent.

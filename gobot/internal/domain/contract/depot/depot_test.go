@@ -3,7 +3,7 @@ package depot
 import "testing"
 
 // A contract depot is a FULLY-PARAMETRIZED topology: EVERY waypoint and EVERY
-// count is a parameter (bead sp-u9xa). Instantiating a depot at a different
+// count is a parameter. Instantiating a depot at a different
 // waypoint, or with a different number of warehouses / stockers / delivery hulls /
 // source hubs, must require ZERO code change. So the SAME constructor, driven by two
 // totally different parameter sets, yields exactly the topology asked for — no "J58",

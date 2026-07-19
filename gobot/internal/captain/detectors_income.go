@@ -62,10 +62,7 @@ func detectIncomeStall(ctx context.Context, db *gorm.DB, store captain.EventStor
 // is only ever produced by contract fulfillment (see
 // ledger.TypeToCategoryMap). It does NOT distinguish trading from
 // manufacturing - both post SELL_CARGO transactions under the same
-// TRADING_REVENUE category, which is exactly how the real 2026-07-09
-// incident's healthy aggregate TRADING_REVENUE flow hid a fully dead
-// contract line: the missing signal was never visible in Category, so
-// operationTypes disambiguates within it.
+// TRADING_REVENUE category, so operationTypes disambiguates within it.
 //
 // operationTypes hold the REAL values that land in the operation_type column
 // today - cargo_transaction.go/refuel_ship.go persist
@@ -96,26 +93,18 @@ var incomeEngines = []incomeEngine{
 	{name: "contract", containerType: "CONTRACT_FLEET_COORDINATOR", category: "CONTRACT_REVENUE"},
 	// trade_route and tour_run containers both persist container_type="TRADING"
 	// (container.ContainerTypeTrading) - only command_type tells them apart.
-	// Before sp-lyc3 this line gated on container_type alone, so once
-	// trade_fleet_coordinator (sp-1278) made tour_run containers the fleet's
-	// permanent steady state, the activity gate below was perpetually satisfied
-	// by tour traffic while the ledger check only ever accepts
-	// operation_type='trade_route' - a healthy, churning tour fleet with zero
-	// real trade-route activity read as "trading engine active, income
-	// stalled" and false-fired every IncomeStallHours window even though the
-	// fleet was earning. commandType pins the gate to genuine trade_route
-	// containers, mirroring the 'tour' line's own disambiguation below.
+	// commandType pins the gate to genuine trade_route containers, mirroring
+	// the 'tour' line's own disambiguation below.
 	{name: "trading", containerType: "TRADING", commandType: "trade_route", category: "TRADING_REVENUE",
 		operationTypes: []string{"trade_route"}},
 	{name: "manufacturing", containerType: "MANUFACTURING_COORDINATOR", category: "TRADING_REVENUE",
 		operationTypes: []string{"factory_workflow", "manufacturing"}},
 	// Tour sales are TRADING_REVENUE with operation_type="tour" (tour_run's buy/
 	// sell legs, sp-lgnh) — a stream the 'trading' line above deliberately EXCLUDES
-	// (it filters operation_type='trade_route'), so a tour-fleet collapse was
-	// invisible to every income detector (sp-7vos / v63s cross-check). The gate
-	// needs commandType: tour_run and trade_route containers share
-	// container_type="TRADING" (both are container.ContainerTypeTrading), so
-	// container_type alone would fire this line whenever ANY trade route is up.
+	// (it filters operation_type='trade_route'). The gate needs commandType:
+	// tour_run and trade_route containers share container_type="TRADING" (both
+	// are container.ContainerTypeTrading), so container_type alone would fire
+	// this line whenever ANY trade route is up.
 	{name: "tour", containerType: "TRADING", commandType: "tour_run", category: "TRADING_REVENUE",
 		operationTypes: []string{"tour"}},
 }
@@ -124,10 +113,7 @@ var incomeEngines = []incomeEngine{
 // but nothing came in" test per earning line instead of in aggregate
 // (sp-2cdu): a single engine can flatline for hours while a DIFFERENT
 // engine's healthy income keeps detectIncomeStall's system-wide amount>0
-// check satisfied, exactly the failure mode that let a real 4h contract-
-// engine collapse ride through undetected while manufacturing/trading kept
-// the aggregate ledger flowing (contract: 42k/4h vs ~1.6M expected, while
-// TRADING_REVENUE posted +1.13M/4h).
+// check satisfied.
 //
 // Reuses cfg.IncomeStall (no new tunable) and the existing EventIncomeStalled
 // type (already interrupt-class - see events.go DefaultInterruptTypes) so
@@ -205,10 +191,8 @@ func detectEngineIncomeStall(ctx context.Context, db *gorm.DB, store captain.Eve
 // detectFactoryIncomeStall closes the aggregation gap the per-engine
 // 'manufacturing' line above cannot: that line gates on a single
 // MANUFACTURING_COORDINATOR and buckets ALL factory income together, so one dead
-// goods factory is masked by any sibling's sales (the real MEDICINE 100-min
-// outage rode through invisibly while other factories kept selling — sp-7vos /
-// sp-tit8). This detector treats EACH running goods_factory_coordinator as its
-// own earner and fires per factory.
+// goods factory is masked by any sibling's sales. This detector treats EACH
+// running goods_factory_coordinator as its own earner and fires per factory.
 //
 // Attribution is by container identity, NOT by good. Every sale a factory makes
 // routes through the single ledger writer

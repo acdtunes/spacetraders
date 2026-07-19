@@ -26,7 +26,7 @@ import (
 //   - targetWaypointSymbol: The destination waypoint symbol
 //   - requiredCargoSymbol: The cargo needed for delivery (optional, for prioritization)
 //   - unitsNeeded: Units still required for the delivery - used for hull
-//     right-sizing (sp-snmb), estimating round trips per candidate hull
+//     right-sizing, estimating round trips per candidate hull
 //   - playerID: Player ID for ship lookups
 //
 // Returns:
@@ -57,20 +57,18 @@ func SelectClosestShip(
 		"required_cargo":  requiredCargoSymbol,
 	})
 
-	// 1. OPTIMIZATION: Fetch all ships from cached list (1 API call instead of N)
-	// The ship list is cached for 15 seconds in ShipRepository.FindAllByPlayer
+	// Fetches all ships once (cached ~15s in ShipRepository.FindAllByPlayer)
+	// instead of one API call per candidate.
 	allShips, err := shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to load ships: %w", err)
 	}
 
-	// Build lookup set for efficient filtering
 	symbolSet := make(map[string]bool, len(shipSymbols))
 	for _, s := range shipSymbols {
 		symbolSet[s] = true
 	}
 
-	// Filter to only requested ships
 	var ships []*navigation.Ship
 	for _, ship := range allShips {
 		if symbolSet[ship.ShipSymbol()] {
@@ -82,29 +80,25 @@ func SelectClosestShip(
 		return "", 0, fmt.Errorf("none of the requested ships found in fleet")
 	}
 
-	// 2. Fetch target waypoint coordinates from graph
 	systemSymbol := shared.ExtractSystemSymbol(targetWaypointSymbol)
 	graphResult, err := graphProvider.GetGraph(ctx, systemSymbol, false, playerID)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to load system graph: %w", err)
 	}
 
-	// Get target waypoint from navigation graph
 	targetWaypoint, ok := graphResult.Graph.Waypoints[targetWaypointSymbol]
 	if !ok {
 		return "", 0, fmt.Errorf("target waypoint %s not found in graph", targetWaypointSymbol)
 	}
 
-	// 3. Delegate to domain service for selection logic
 	selector := domainContract.NewShipSelector()
 	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol, unitsNeeded)
 	if err != nil {
 		return "", 0, err
 	}
 
-	// 4. Log selection decision, enumerating every candidate with its distance
-	// to the target (command ships marked) so the pick is auditable - not just
-	// the winning symbol (sp-4a4e).
+	// Enumerates every candidate with its distance to the target (command ships
+	// marked) so the pick is auditable - not just the winning symbol.
 	logger.Log("INFO", "Ship selection completed", map[string]interface{}{
 		"action":          "ship_selected",
 		"selected_ship":   result.Ship.ShipSymbol(),
@@ -119,7 +113,7 @@ func SelectClosestShip(
 
 // summarizeCandidates renders every candidate ship with its distance to the
 // selection target, marking command ships, so the selection log shows the full
-// set behind a decision - not just the winner (sp-4a4e). Example:
+// set behind a decision - not just the winner. Example:
 // "TORWIND-3@0.00, TORWIND-1@52.10(command)".
 func summarizeCandidates(ships []*navigation.Ship, target *shared.Waypoint) string {
 	entries := make([]string, 0, len(ships))

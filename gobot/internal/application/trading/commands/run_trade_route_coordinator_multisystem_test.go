@@ -12,10 +12,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// sp-wlev — scanLanes now looks one jump-gate hop beyond the home system so the
-// ranker can surface gate-crossing lanes alongside home-system ones, RATE-ranked
-// via rankLanesByCircuitRate (sp-1wp8) so the jump+cooldown time cost RankSpreads'
-// pure per-unit-spread view can't see enters as circuit hours. These tests
+// scanLanes looks one jump-gate hop beyond the home system so the ranker can surface
+// gate-crossing lanes alongside home-system ones, RATE-ranked via rankLanesByCircuitRate
+// so the jump+cooldown time cost RankSpreads' pure per-unit-spread view can't see enters
+// as circuit hours. These tests
 // exercise that aggregation through scanLanes itself (not the already-covered
 // pure functions), because aggregation only pays off when BOTH the
 // neighbor-discovery wiring and the rate ranking are actually applied end to end.
@@ -64,7 +64,7 @@ type msMarketRepo struct {
 	waypointsBySystem map[string][]string
 	goods             map[string]msGood // waypoint -> its listing
 	// observedAt optionally overrides a waypoint's market LastUpdated timestamp so
-	// age-cap tests (sp-xwa1) can mark a market stale. Nil / missing key -> time.Now()
+	// age-cap tests can mark a market stale. Nil / missing key -> time.Now()
 	// (fresh), so every existing fixture that omits it ranks unchanged.
 	observedAt map[string]time.Time
 }

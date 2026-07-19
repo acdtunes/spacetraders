@@ -7,21 +7,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// sp-xwa1 established that cross-system lanes are charged the TIME a gate-crossing
-// circuit spends jumping and cooling down; sp-1wp8 re-expresses that charge honestly
-// as RATE ranking — per-circuit value over estimated circuit hours — retiring the
-// capacity-amortized per-unit haircut. The captain-ruled DP51 economics these tests
-// pin are MECHANISM-INDEPENDENT and must survive both forms: a genuinely-deep
-// frontier lane a heavy hull can fill WINS an undirected scan, a genuinely-better
-// home lane still wins outright, and the --dest waiver still exempts the operator's
-// directed lane from the gate charge.
+// Cross-system lanes are charged the TIME a gate-crossing circuit spends jumping and
+// cooling down, expressed as RATE ranking — per-circuit value over estimated circuit
+// hours. The captain-ruled DP51 economics these tests pin are MECHANISM-INDEPENDENT: a
+// genuinely-deep frontier lane a heavy hull can fill WINS an undirected scan, a
+// genuinely-better home lane still wins outright, and the --dest waiver still exempts
+// the operator's directed lane from the gate charge.
 //
-// (The retired subtractive model's capacity-flip property — the same cross lane
-// losing on a light hull and winning on a heavy one purely via per-unit charge
-// amortization — was an artifact of expressing time in spread space and does not
-// exist under rate ranking: circuit time is a fixed divisor, and hull capacity
-// enters ranking through hold-fit weighting alone, exactly as it does for
-// same-system lanes.)
+// Circuit time is a fixed divisor, and hull capacity enters ranking through hold-fit
+// weighting alone, exactly as it does for same-system lanes — so no per-unit charge
+// amortization can flip a cross lane's outcome between a light and a heavy hull.
 
 // heavyHullCapacity mirrors the DP51-class freighter the ruling was measured on.
 const heavyHullCapacity = 480
@@ -85,9 +80,9 @@ func TestCrossSystemRate_DP51ClassFrontierWinsAutonomousSelection(t *testing.T) 
 	}
 }
 
-// The selection log one-liner surfaces the exact RATE the ranker scored a lane
-// (sp-1wp8) so the captain can read WHY a lane won or lost: a cross-system token
-// carries its surcharged rate, a same-system token its baseline rate, and a
+// The selection log one-liner surfaces the exact RATE the ranker scored a lane so the
+// captain can read WHY a lane won or lost: a cross-system token carries its surcharged
+// rate, a same-system token its baseline rate, and a
 // directed --dest lane ranked at the in-system baseline reads (x-waived).
 func TestLaneSelectionOneLiner_CarriesCircuitRate(t *testing.T) {
 	cross := trading.ArbitrageLane{Good: "DEEP", SourceWaypoint: "X1-AAA-1", DestWaypoint: "X1-BBB-2", SpreadPerUnit: 1700, VolumeCap: 480}

@@ -9,14 +9,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// The WAREHOUSE (storage-follows-durable-chain) demand + DISPATCH model (sp-1j3f, the sp-1txd M7
-// scope split out as the storage-stranding root-cause fix). vdld (the siting coordinator, DEPLOYED)
-// moves and retires factory chains every tick; MANUAL warehouse placement strands the instant it
-// resites — live evidence (2026-07-11) had all three warehouses co-located with ZERO running chains
-// while ten producing chains had none, so the C1 basis-draw benefit was zero and every factory output
-// sold at the laddered export ask (the export-ask-subsidy leak, fully open).
-//
-// The fix makes warehouses FOLLOW the durable top-K chains automatically:
+// The WAREHOUSE (storage-follows-durable-chain) demand + DISPATCH model. vdld (the siting
+// coordinator, DEPLOYED) moves and retires factory chains every tick; MANUAL warehouse placement
+// strands the instant it resites, so warehouses FOLLOW the durable top-K chains automatically:
 //
 //   - TICK-PERSISTENCE HYSTERESIS (warehouse_min_chain_tick_persistence): a chain must sit in the
 //     running portfolio for min consecutive ticks before a warehouse chases it — so a warehouse never
@@ -35,14 +30,14 @@ import (
 // hull must be re-sited when a chain retires even on a tick that buys nothing. Both fail CLOSED on an
 // unreadable portfolio or hull read: a missing signal must never spend a credit OR move a hull.
 //
-// SCOPE (sp-1j3f): demand + dispatch. The warehouse capacity ladder (module hydration / slots·price
-// rungs) is the separate M8 and is deliberately OUT here.
+// SCOPE: demand + dispatch. The warehouse capacity ladder (module hydration / slots·price
+// rungs) is a separate concern and is deliberately OUT here.
 
 // --- read/act ports (wired by the daemon at boot; every one nil-safe, fail-closed on unread) ------
 
 // PortfolioChain is one running factory chain in the current durable-chain portfolio: the good it
 // produces, the waypoint it EXPORTS from (the warehouse co-locates here), and its realized $/hr
-// (rh2z chain_pnl NetPerHour) with a readability flag. The concrete source (M6) joins vdld's
+// (rh2z chain_pnl NetPerHour) with a readability flag. The concrete source joins vdld's
 // running-chains with the export-market lookup and the chain-P&L reader; tests inject fixtures.
 type PortfolioChain struct {
 	Good            string

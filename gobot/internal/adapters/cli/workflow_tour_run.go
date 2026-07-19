@@ -9,7 +9,7 @@ import (
 )
 
 // newWorkflowTourRunCommand creates the workflow tour-run subcommand: a ONE-SHOT,
-// captain-directed, guarded multi-hop trade tour (sp-1ek0) — arb-run's twin, but the
+// captain-directed, guarded multi-hop trade tour — arb-run's twin, but the
 // planner chooses the route instead of the captain naming a single lane.
 //
 // Like arb-run this is a THIN CLIENT: it asks the daemon to start a recovery-safe

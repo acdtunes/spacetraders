@@ -132,7 +132,7 @@ func (s *StorageShip) GetAvailableCargo(goodSymbol string) int {
 // HeldUnits returns the total units of a good physically held, INCLUDING any
 // reserved for pending transfers (unlike GetAvailableCargo, which subtracts
 // reservations). Used for cost-basis weighting, where reserved-but-not-yet-
-// transferred units still carry their basis (C1, sp-64je). Thread-safe.
+// transferred units still carry their basis. Thread-safe.
 func (s *StorageShip) HeldUnits(goodSymbol string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -347,7 +347,6 @@ func deleteIfZero(counts map[string]int, key string) {
 	}
 }
 
-// String provides human-readable representation
 func (s *StorageShip) String() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

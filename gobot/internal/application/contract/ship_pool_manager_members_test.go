@@ -8,9 +8,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// FindFleetMemberSymbols is the live-membership primitive behind the sp-cmwc homing
-// fix: membership is read from the persisted dedicated_fleet tag on every call, so a
-// hull `fleet add`ed after launch is a member immediately and a `fleet remove`d hull
+// FindFleetMemberSymbols is the live-membership primitive: membership is read
+// from the persisted dedicated_fleet tag on every call, so a hull `fleet
+// add`ed after launch is a member immediately and a `fleet remove`d hull
 // drops out — never dependent on the immutable --dedicated-ships launch snapshot.
 
 // A hull carrying the fleet tag is a member regardless of whether it was in any

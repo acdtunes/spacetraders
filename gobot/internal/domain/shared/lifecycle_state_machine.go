@@ -62,7 +62,6 @@ func NewLifecycleStateMachine(clock Clock) *LifecycleStateMachine {
 
 // Getters
 
-// Status returns the current lifecycle status
 func (sm *LifecycleStateMachine) Status() LifecycleStatus {
 	return sm.status
 }
@@ -81,12 +80,10 @@ func ProjectStatus[T any](sm *LifecycleStateMachine, table map[LifecycleStatus]T
 	return fallback
 }
 
-// CreatedAt returns when the entity was created
 func (sm *LifecycleStateMachine) CreatedAt() time.Time {
 	return sm.createdAt
 }
 
-// UpdatedAt returns when the entity was last updated
 func (sm *LifecycleStateMachine) UpdatedAt() time.Time {
 	return sm.updatedAt
 }
@@ -101,7 +98,6 @@ func (sm *LifecycleStateMachine) StoppedAt() *time.Time {
 	return sm.stoppedAt
 }
 
-// LastError returns the last error encountered (nil if no error)
 func (sm *LifecycleStateMachine) LastError() error {
 	return sm.lastError
 }
@@ -165,7 +161,6 @@ func (sm *LifecycleStateMachine) Stop() error {
 
 // State query methods
 
-// IsRunning returns true if the entity is currently executing
 func (sm *LifecycleStateMachine) IsRunning() bool {
 	return sm.status == LifecycleStatusRunning
 }
@@ -177,7 +172,6 @@ func (sm *LifecycleStateMachine) IsFinished() bool {
 		sm.status == LifecycleStatusStopped
 }
 
-// IsPending returns true if the entity hasn't started yet
 func (sm *LifecycleStateMachine) IsPending() bool {
 	return sm.status == LifecycleStatusPending
 }

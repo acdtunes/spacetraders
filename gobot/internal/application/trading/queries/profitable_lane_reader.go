@@ -1,4 +1,4 @@
-// Package queries holds read-only trading read-models. ProfitableLaneReader (sp-4ewi) counts the
+// Package queries holds read-only trading read-models. ProfitableLaneReader counts the
 // profitable, feasible arbitrage lanes visible in a player's trading grounds — the "unserved trade
 // demand" signal the fleet autosizer's heavy-demand provider sizes to.
 //

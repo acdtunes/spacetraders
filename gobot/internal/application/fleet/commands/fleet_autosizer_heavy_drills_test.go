@@ -5,11 +5,9 @@ import (
 	"testing"
 )
 
-// MONEY-PATH DRILLS (sp-4ewi). Heavies went from never-fires to can-fire, so every guard that never
-// mattered for heavies now does. These drive the REAL HeavyDemandProvider (over faked sources that
-// now return READABLE demand — the seam wired) through the UNCHANGED guard stack at heavy magnitude
-// (~1.4M), proving (1) a clean heavy buy fires + dedicates, and (2) each guard still BLOCKS a bad
-// heavy buy. The seam only made demand readable; it relaxed no guard.
+// MONEY-PATH DRILLS: these drive the REAL HeavyDemandProvider (over faked sources returning
+// READABLE demand) through the UNCHANGED guard stack at heavy magnitude (~1.4M), proving (1) a
+// clean heavy buy fires + dedicates, and (2) each guard still BLOCKS a bad heavy buy.
 
 // heavyProvider builds the real provider over readable heavy sources (the wired-seam happy state).
 func heavyProvider(heavies, unservedLanes int, fleetAvg, marginal float64, declining bool) *HeavyDemandProvider {

@@ -24,7 +24,6 @@ type FlightModeStrategy interface {
 // BURN mode is the fastest (2x fuel cost) and has highest priority when fuel permits.
 type BurnModeStrategy struct{}
 
-// NewBurnModeStrategy creates a new BURN mode strategy
 func NewBurnModeStrategy() *BurnModeStrategy {
 	return &BurnModeStrategy{}
 }
@@ -50,7 +49,6 @@ func (s *BurnModeStrategy) Mode() FlightMode {
 // CRUISE mode is the standard speed (1x fuel cost) and has medium priority.
 type CruiseModeStrategy struct{}
 
-// NewCruiseModeStrategy creates a new CRUISE mode strategy
 func NewCruiseModeStrategy() *CruiseModeStrategy {
 	return &CruiseModeStrategy{}
 }
@@ -78,7 +76,6 @@ func (s *CruiseModeStrategy) Mode() FlightMode {
 // fuel is too low for other modes.
 type DriftModeStrategy struct{}
 
-// NewDriftModeStrategy creates a new DRIFT mode strategy
 func NewDriftModeStrategy() *DriftModeStrategy {
 	return &DriftModeStrategy{}
 }
@@ -110,7 +107,6 @@ type FlightModeSelector struct {
 // If no strategies are provided, it uses the default strategies (BURN, CRUISE, DRIFT).
 func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector {
 	if len(strategies) == 0 {
-		// Default strategies in priority order
 		strategies = []FlightModeStrategy{
 			NewBurnModeStrategy(),
 			NewCruiseModeStrategy(),
@@ -118,7 +114,6 @@ func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector
 		}
 	}
 
-	// Sort strategies by priority (highest first)
 	sort.Slice(strategies, func(i, j int) bool {
 		return strategies[i].Priority() > strategies[j].Priority()
 	})
@@ -143,7 +138,6 @@ func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector
 // Returns:
 //   - Optimal flight mode (BURN, CRUISE, or DRIFT)
 func (s *FlightModeSelector) SelectOptimalMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
-	// Evaluate strategies in priority order
 	for _, strategy := range s.strategies {
 		if strategy.CanUse(currentFuel, fuelCost, safetyMargin) {
 			return strategy.Mode()

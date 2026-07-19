@@ -16,8 +16,8 @@ import (
 // row and come up on config-file DEFAULTS, silently wiping every operator `tune`. The
 // daemon-RESTART recovery path already re-adopts the persisted config column
 // (recoverContainer → buildCommandForType); only the coordinator-START verbs bypassed it.
-// This makes the START verbs re-adopt the same column, closing the bug class for every
-// tunable coordinator (frontier, freshness sizer, auto-outfit, scout-post) through ONE
+// This makes the START verbs re-adopt the same column as recovery does, for every
+// tunable coordinator (frontier, freshness sizer, auto-outfit, scout-post), through ONE
 // implementation.
 
 // coordinatorStartSpec declares how one coordinator's `start` verb re-adopts the last

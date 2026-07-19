@@ -3,7 +3,7 @@
 // SessionKey) and resolves each session's claude-code transcript on disk, so the
 // pure domain parser can aggregate token usage from it. This is additive
 // read-only telemetry: it never touches the watchkeeper wake path — it observes
-// the transcripts those externally-run sessions already wrote (sp-593x).
+// the transcripts those externally-run sessions already wrote.
 package telemetry
 
 import (

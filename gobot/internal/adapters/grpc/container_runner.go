@@ -422,12 +422,10 @@ func (r *ContainerRunner) execute() {
 		// re-adopted at the next boot — mirroring the ctx-cancellation exits below and
 		// the clean between-iteration exit at the bottom of this loop, which is how
 		// every other container type (trade-route/scout/arb) survived the same
-		// restart. A -1 (infinite) container NEVER exhausts its budget, so the OLD
-		// `!shouldContinue || isStopping` break routed it through finishCleanExit and
-		// terminalized it COMPLETED; a COMPLETED row is not in the INTERRUPTED+RUNNING
-		// recovery set, so the container is silently lost at restart (sp-ovkn — the
-		// JP61 worker-less goods_factory container-loss incident; RULING #2 / sp-7yej
-		// invariant 4). Returning here leaves the row RUNNING for recovery to re-adopt
+		// restart. A -1 (infinite) container NEVER exhausts its budget, and a COMPLETED
+		// row is not in the INTERRUPTED+RUNNING recovery set, so the container would be
+		// silently lost at restart (sp-ovkn; RULING #2 / sp-7yej invariant 4). Returning
+		// here leaves the row RUNNING for recovery to re-adopt
 		// (the force-interrupt path marks any still-RUNNING row INTERRUPTED; either
 		// status is recovered), and — unlike finishCleanExit — never writes COMPLETED.
 		if isStopping {
@@ -550,7 +548,7 @@ func (r *ContainerRunner) finishCleanExit() {
 		// deliberately NOT called (the run ended at a safe exit point; it just may
 		// not claim success). This IS a genuine terminal exit (a re-run cannot
 		// resume a dynamically-planned task), so persist the terminal FAILED row
-		// here — handleError no longer does (sp-v63s: it must not, or a restarting
+		// here, not in handleError (sp-v63s: it must not, or a restarting
 		// container would be dropped from recovery).
 		vetoErr := fmt.Errorf("completion refused (honest-completion contract): %s", incompleteReason)
 		r.handleError(vetoErr)
@@ -1031,9 +1029,9 @@ const captainManualAuthorityKey = "captain_manual_authority"
 // (pre-change persisted rows, and every kind whose coordinator claims the hull
 // BEFORE starting the runner) keep the legacy read-modify-write path, where the
 // already-assigned-to-this-container check makes a recovered container's re-claim
-// a no-op. That legacy path ALSO enforces the same fleet-dedication guard now
+// a no-op. That legacy path ALSO enforces the same fleet-dedication guard
 // (sp-sg35): a hull pinned to a foreign fleet is rejected there too, so the
-// absence of an "operation" key is no longer a side door around ownership. The
+// absence of an "operation" key is not a side door around ownership. The
 // exceptions are both captainAuthority claims (the captainManualAuthorityKey flag,
 // set only by the CLI manual-op path): a deliberate captain override may operate a
 // foreign-fleet-DEDICATED hull, and may operate its OWN captain-RESERVED hull

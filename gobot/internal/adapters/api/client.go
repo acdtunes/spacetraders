@@ -24,24 +24,22 @@ import (
 const (
 	baseURL            = "https://api.spacetraders.io/v2"
 	defaultTimeout     = 30 * time.Second
-	defaultMaxRetries  = 10               // Increased from 5 to handle persistent 429s
-	defaultBackoffBase = 2 * time.Second  // Increased from 1s for more aggressive backoff
+	defaultMaxRetries  = 10               // Handles persistent 429s
+	defaultBackoffBase = 2 * time.Second  // More aggressive backoff strategy
 	maxBackoffDuration = 30 * time.Second // Cap exponential backoff to prevent extreme waits
 
 	// RateLimitPerSecond is the sustained request-rate ceiling this client
-	// enforces against SpaceTraders. Exported so the budget
-	// tracker (sp-51ti, internal/adapters/grpc composition root) can compute
-	// utilization-vs-ceiling against the same number the limiter actually
-	// uses, instead of a second hardcoded copy that could drift.
+	// enforces against SpaceTraders. Exported so the budget tracker can
+	// compute utilization-vs-ceiling against the same number the limiter
+	// actually uses, instead of a second hardcoded copy that could drift.
 	RateLimitPerSecond = 2.0
 
 	// RateLimitBurst is the token-bucket burst the limiter actually uses
 	// (SpaceTraders allows ~30 req/60s burst). Exported as the SINGLE source of
-	// truth for the burst, the twin of RateLimitPerSecond: sp-a5dq found the
-	// config.yaml api.rate_limit.burst knob (default 10) was never plumbed to
-	// this client and only surfaced in `config show`, so the displayed 10
-	// drifted from the real 30. The config default now mirrors this constant;
-	// wiring the knob through to make burst live-tunable is a deferred decision.
+	// truth for the burst, the twin of RateLimitPerSecond: the config.yaml
+	// api.rate_limit.burst knob is NOT plumbed to this client (display-only in
+	// `config show`); wiring it through to make burst live-tunable is a
+	// deferred decision.
 	RateLimitBurst = 30
 
 	errCodeAgentHasContract = 4511
@@ -49,9 +47,8 @@ const (
 	errCodeShipNotDocked    = 4244
 
 	// defaultAgentCacheTTL is how long GetAgent may serve a cached agent before
-	// re-reading it live (sp-oszc). GetAgent was the #2 API consumer (343 calls /
-	// 1306s rate-limit wait); agent data (credits/HQ/ship-count) changes rarely,
-	// so a short TTL cuts the redundant reads. It is a floor on staleness, NOT a
+	// re-reading it live. Agent data (credits/HQ/ship-count) changes rarely, so a
+	// short TTL cuts redundant reads. It is a floor on staleness, NOT a
 	// safety mechanism: the SAFETY invariant is that every credit-DECREASING call
 	// invalidates the cache immediately (see invalidateAgentCache), so a money
 	// guard can never read a pre-spend (stale-HIGH) balance after we have spent.
@@ -78,8 +75,8 @@ type SpaceTradersClient struct {
 	metricsCollector APIMetricsRecorder
 	budgetTracker    *metrics.APIBudgetTracker
 
-	// Agent cache (sp-oszc). All GetAgent callers share this one client instance,
-	// so caching here transparently cuts the redundant live reads for every money
+	// Agent cache. All GetAgent callers share this one client instance, so
+	// caching here transparently cuts the redundant live reads for every money
 	// guard and monitor at once. agentCacheMu guards ALL four fields below AND is
 	// held across the live fetch, so a concurrent invalidation (from a spend) can
 	// never interleave between a fetch and its store — the invalidation is forced
@@ -129,17 +126,13 @@ func NewSpaceTradersClientWithConfig(
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter:      rate.NewLimiter(rate.Limit(RateLimitPerSecond), RateLimitBurst), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
+		rateLimiter:      rate.NewLimiter(rate.Limit(RateLimitPerSecond), RateLimitBurst),
 		baseURL:          baseURL,
 		maxRetries:       maxRetries,
 		backoffBase:      backoffBase,
 		clock:            clock,
 		metricsCollector: nil,
 	}
-
-	// Auto-wire global metrics collector if available
-	// This requires importing the metrics package, which we'll add
-	// For now, callers can use SetMetricsCollector() to enable metrics
 
 	return client
 }
@@ -165,15 +158,15 @@ func (c *SpaceTradersClient) getMetricsCollector() APIMetricsRecorder {
 	return nil
 }
 
-// SetBudgetTracker sets the API request-budget tracker for this client
-// (sp-51ti). This allows the tracker to be enabled after client construction,
-// mirroring SetMetricsCollector.
+// SetBudgetTracker sets the API request-budget tracker for this client. This
+// allows the tracker to be enabled after client construction, mirroring
+// SetMetricsCollector.
 func (c *SpaceTradersClient) SetBudgetTracker(tracker *metrics.APIBudgetTracker) {
 	c.budgetTracker = tracker
 }
 
 // SetAgentCacheTTL overrides how long GetAgent may serve a cached agent before
-// re-reading it live (sp-oszc). ttl<=0 selects defaultAgentCacheTTL. Wired at
+// re-reading it live. ttl<=0 selects defaultAgentCacheTTL. Wired at
 // daemon boot from DaemonConfig.AgentCacheTTLSeconds via setter injection, so the
 // many NewSpaceTradersClient call sites stay untouched. Thread-safe: the cache
 // mutex guards the knob because SetAgentCacheTTL can race concurrent GetAgent
@@ -186,9 +179,9 @@ func (c *SpaceTradersClient) SetAgentCacheTTL(ttl time.Duration) {
 }
 
 // getBudgetTracker returns the budget tracker for this client. If no local
-// tracker is set, it falls back to the global tracker (sp-51ti daemon
-// startup wiring). May return nil; APIBudgetTracker.Record tolerates a nil
-// receiver, so callers never need an extra nil-check.
+// tracker is set, it falls back to the global tracker. May return nil;
+// APIBudgetTracker.Record tolerates a nil receiver, so callers never need an
+// extra nil-check.
 func (c *SpaceTradersClient) getBudgetTracker() *metrics.APIBudgetTracker {
 	if c.budgetTracker != nil {
 		return c.budgetTracker
@@ -276,17 +269,14 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 			return nil, fmt.Errorf("failed to list ships (page %d): %w", page, err)
 		}
 
-		// If no data returned, we've hit the end
 		if len(response.Data) == 0 {
 			break
 		}
 
-		// Convert this page's ships
 		for i := range response.Data {
 			allShips = append(allShips, response.Data[i].toShipData())
 		}
 
-		// Move to next page
 		page++
 	}
 
@@ -324,7 +314,6 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 		return nil, fmt.Errorf("failed to navigate ship: %w", err)
 	}
 
-	// Extract arrival time string (ISO8601 timestamp from API)
 	arrivalTimeStr := response.Data.Nav.Route.Arrival
 
 	arrivalTime := travelSeconds(response.Data.Nav.Route.DepartureTime, arrivalTimeStr)
@@ -340,7 +329,7 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 }
 
 // WarpShip warps a ship to a destination waypoint in ANOTHER system, off the
-// jump-gate network (sp-0xd0). Requires a MODULE_WARP_DRIVE_I; fuel is consumed
+// jump-gate network. Requires a MODULE_WARP_DRIVE_I; fuel is consumed
 // by inter-system distance. The wire contract mirrors NavigateShip exactly - the
 // live API's POST /my/ships/{shipSymbol}/warp takes "waypointSymbol" in the body
 // and returns the same fuel + nav.route envelope - so the parsing/return shape is
@@ -446,7 +435,7 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
-	c.invalidateAgentCache() // refuel spends credits -> drop the stale-high cache (sp-oszc)
+	c.invalidateAgentCache() // refuel spends credits -> drop the stale-high cache
 
 	result := &navigation.RefuelResult{
 		FuelAdded:    response.Data.Transaction.Units,
@@ -469,7 +458,6 @@ func (c *SpaceTradersClient) SetFlightMode(ctx context.Context, symbol, flightMo
 		"flightMode": flightMode,
 	}
 
-	// Use the existing request method with PATCH verb
 	if err := c.request(ctx, "PATCH", path, token, body, nil); err != nil {
 		return fmt.Errorf("failed to set flight mode: %w", err)
 	}
@@ -481,7 +469,7 @@ func (c *SpaceTradersClient) SetFlightMode(ctx context.Context, symbol, flightMo
 // waypointSymbol must be the destination JUMP_GATE waypoint symbol (e.g.
 // "X1-GQ92-I51") - not a bare system symbol. The live SpaceTraders API
 // requires "waypointSymbol" in the request body and 422s with
-// "waypointSymbol Required, received undefined" otherwise (sp-n0x7 round 2).
+// "waypointSymbol Required, received undefined" otherwise.
 func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointSymbol, token string) (*domainPorts.JumpResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/jump", shipSymbol)
 
@@ -512,7 +500,7 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to jump ship: %w", err)
 	}
-	c.invalidateAgentCache() // jump charges a gate fee (transaction.totalPrice) -> drop the stale-high cache (sp-oszc)
+	c.invalidateAgentCache() // jump charges a gate fee (transaction.totalPrice) -> drop the stale-high cache
 
 	return &domainPorts.JumpResult{
 		DestinationSystem:   response.Data.Nav.SystemSymbol,
@@ -527,7 +515,7 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 // jump's destination WAYPOINT — succeeds WITHOUT a ship physically present. An UNcharted frontier
 // jump gate otherwise 400s that read unless a hull is sitting on it, so an our-ships-only gate
 // stays uncharted-public forever and every jump-OUT re-reads it live and 400s (the ~49% of
-// GetJumpGate calls that fail, sp-lv2n). Charting it once from a present hull collapses that
+// GetJumpGate calls that fail). Charting it once from a present hull collapses that
 // re-read storm and unblocks frontier jump-outs.
 //
 // The ship must be AT the waypoint (the API 400s otherwise); a waypoint that is already charted
@@ -571,8 +559,8 @@ func (c *SpaceTradersClient) GetJumpGate(ctx context.Context, systemSymbol, wayp
 // GetWaypoint reads a single waypoint's detail. Only the fields the gate graph
 // needs are decoded: the symbol and isUnderConstruction (whether a jump gate is
 // still being built). The jump-gate connections list carries symbols only, so the
-// build state of a connected gate is resolved with this per-waypoint read
-// (sp-8qhu) — an unbuilt gate is a dead edge the BFS must never route through.
+// build state of a connected gate is resolved with this per-waypoint read —
+// an unbuilt gate is a dead edge the BFS must never route through.
 func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.WaypointDetail, error) {
 	path := fmt.Sprintf("/systems/%s/waypoints/%s", systemSymbol, waypointSymbol)
 
@@ -593,8 +581,8 @@ func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, wayp
 	}, nil
 }
 
-// GetAgent retrieves agent information, served from a short-TTL cache to cut the
-// redundant live reads that made it the #2 API consumer (sp-oszc).
+// GetAgent retrieves agent information, served from a short-TTL cache to cut
+// redundant live reads.
 //
 // Safety (money-critical): the cache mutex is held ACROSS the live fetch. That
 // serializes GetAgent against invalidateAgentCache (a spend), so an invalidation
@@ -644,8 +632,8 @@ func (c *SpaceTradersClient) resolvedAgentCacheTTLLocked() time.Duration {
 // invalidateAgentCache clears the cached agent. It is called AFTER every
 // successful credit-DECREASING API call (purchase/refuel/ship-buy/jump/module
 // install) so a subsequent money-guard read re-fetches the true post-spend
-// balance instead of a stale-HIGH cached one — the over-spend safety invariant
-// (sp-oszc). Also invalidated on obvious income (sell) as a cheap bonus so an
+// balance instead of a stale-HIGH cached one — the over-spend safety invariant.
+// Also invalidated on obvious income (sell) as a cheap bonus so an
 // affordable buy becomes visible sooner. Cheap and idempotent: a redundant
 // invalidation only costs one extra live read.
 func (c *SpaceTradersClient) invalidateAgentCache() {
@@ -731,8 +719,8 @@ func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, to
 }
 
 // ListSystems retrieves one page of the universe system list (GET /systems) with
-// pagination — the galaxy-wide roster of systems and their SYSTEM-level coordinates
-// (sp-k645, slice B). It mirrors ListWaypoints exactly (same paginated GET shape), but
+// pagination — the galaxy-wide roster of systems and their SYSTEM-level coordinates.
+// It mirrors ListWaypoints exactly (same paginated GET shape), but
 // reads the universe map rather than a single system's waypoints. The off-gate explorer
 // enumerator crawls every page ONCE per era (the list is near-static) and caches it, so
 // this is not a per-tick call. Only the fields the enumerator needs are decoded — symbol,
@@ -818,7 +806,6 @@ func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, 
 		return nil, fmt.Errorf("failed to negotiate contract: %w", err)
 	}
 
-	// Parse contract from response
 	if response.Data == nil || response.Data.Contract == nil {
 		return nil, fmt.Errorf("invalid response: missing contract data")
 	}
@@ -962,7 +949,7 @@ func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, good
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
 	}
-	c.invalidateAgentCache() // buy cargo spends credits -> drop the stale-high cache (sp-oszc)
+	c.invalidateAgentCache() // buy cargo spends credits -> drop the stale-high cache
 
 	result := &domainPorts.PurchaseResult{
 		TotalCost:  response.Data.Transaction.TotalPrice,
@@ -1032,7 +1019,7 @@ func (c *SpaceTradersClient) modifyShipModule(ctx context.Context, action, shipS
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to %s ship module: %w", action, err)
 	}
-	c.invalidateAgentCache() // module install/remove charges a shipyard fee -> drop the stale-high cache (sp-oszc)
+	c.invalidateAgentCache() // module install/remove charges a shipyard fee -> drop the stale-high cache
 
 	result := &domainPorts.ModuleModificationResult{
 		Fee:           response.Data.Transaction.TotalPrice,
@@ -1121,7 +1108,7 @@ func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymb
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to sell cargo: %w", err)
 	}
-	c.invalidateAgentCache() // income bonus (sp-oszc): sell raises the balance; drop the stale-low cache so an affordable buy is visible sooner. Conservative either way — income never over-spends.
+	c.invalidateAgentCache() // income bonus: sell raises the balance; drop the stale-low cache so an affordable buy is visible sooner. Conservative either way — income never over-spends.
 
 	result := &domainPorts.SellResult{
 		TotalRevenue: response.Data.Transaction.TotalPrice,
@@ -1189,7 +1176,6 @@ func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol st
 		return nil, fmt.Errorf("failed to extract resources: %w", err)
 	}
 
-	// Convert cargo inventory
 	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
 		inventory[i] = shared.CargoItem{
@@ -1255,7 +1241,6 @@ func (c *SpaceTradersClient) SiphonResources(ctx context.Context, shipSymbol str
 		return nil, fmt.Errorf("failed to siphon resources: %w", err)
 	}
 
-	// Convert cargo inventory
 	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
 		inventory[i] = shared.CargoItem{
@@ -1443,7 +1428,6 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 		return nil, fmt.Errorf("failed to get shipyard: %w", err)
 	}
 
-	// Convert ship types
 	shipTypes := make([]domainPorts.ShipTypeInfo, len(response.Data.ShipTypes))
 	for i, st := range response.Data.ShipTypes {
 		shipTypes[i] = domainPorts.ShipTypeInfo{
@@ -1451,7 +1435,6 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 		}
 	}
 
-	// Convert ship listings
 	ships := make([]domainPorts.ShipListingData, len(response.Data.Ships))
 	for i, ship := range response.Data.Ships {
 		ships[i] = domainPorts.ShipListingData{
@@ -1510,9 +1493,8 @@ func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypoin
 	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
 		return nil, fmt.Errorf("failed to purchase ship: %w", err)
 	}
-	c.invalidateAgentCache() // buy ship spends credits (the biggest spend) -> drop the stale-high cache (sp-oszc)
+	c.invalidateAgentCache() // buy ship spends credits (the biggest spend) -> drop the stale-high cache
 
-	// Convert agent data
 	agentData := &player.AgentData{
 		AccountID:       response.Data.Agent.AccountID,
 		Symbol:          response.Data.Agent.Symbol,
@@ -1521,13 +1503,11 @@ func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypoin
 		StartingFaction: response.Data.Agent.StartingFaction,
 	}
 
-	// Convert ship data
 	shipData, err := c.convertShipData(response.Data.Ship)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert ship data: %w", err)
 	}
 
-	// Convert transaction data
 	transaction := &domainPorts.ShipPurchaseTransaction{
 		WaypointSymbol: response.Data.Transaction.WaypointSymbol,
 		ShipSymbol:     response.Data.Transaction.ShipSymbol,
@@ -1578,47 +1558,39 @@ func (c *SpaceTradersClient) convertShipData(data map[string]interface{}) (*navi
 
 // parseContractData parses contract data from API response
 func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*domainPorts.ContractData, error) {
-	// Extract contract ID
 	id, ok := data["id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid contract id")
 	}
 
-	// Extract faction symbol
 	factionSymbol, ok := data["factionSymbol"].(string)
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid factionSymbol")
 	}
 
-	// Extract type
 	contractType, ok := data["type"].(string)
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid contract type")
 	}
 
-	// Extract accepted status
 	accepted, ok := data["accepted"].(bool)
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid accepted status")
 	}
 
-	// Extract fulfilled status
 	fulfilled, ok := data["fulfilled"].(bool)
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid fulfilled status")
 	}
 
-	// Extract terms
 	termsData, ok := data["terms"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid terms")
 	}
 
-	// Parse terms
 	deadlineToAccept, _ := termsData["deadline"].(string)
 	deadline, _ := termsData["deadline"].(string)
 
-	// Parse payment
 	var payment domainPorts.PaymentData
 	if paymentData, ok := termsData["payment"].(map[string]interface{}); ok {
 		if onAccepted, ok := paymentData["onAccepted"].(float64); ok {
@@ -1629,7 +1601,6 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*do
 		}
 	}
 
-	// Parse deliveries
 	var deliveries []domainPorts.DeliveryData
 	if deliveriesData, ok := termsData["deliver"].([]interface{}); ok {
 		deliveries = make([]domainPorts.DeliveryData, len(deliveriesData))
@@ -1690,7 +1661,6 @@ func travelSeconds(departureTimeStr, arrivalTimeStr string) int {
 // addJitter adds random jitter to a duration to avoid thundering herd
 // Returns a duration between 50% and 150% of the original value
 func addJitter(d time.Duration) time.Duration {
-	// Cap the backoff at maxBackoffDuration before applying jitter
 	if d > maxBackoffDuration {
 		d = maxBackoffDuration
 	}
@@ -1703,7 +1673,7 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 	return c.doWithRetry(ctx, method, path, token, body, func(statusCode int, respBody []byte) error {
 		if statusCode < 200 || statusCode >= 300 {
 			// Typed so callers can classify a permanent 4xx apart from a transient failure via
-			// errors.As (sp-4bm3 — negative-cache a 400'd jump gate). APIError.Error() preserves
+			// errors.As (negative-cache a 400'd jump gate). APIError.Error() preserves
 			// the exact "API error (status %d): %s" string, so every existing message/JSON
 			// string-parser (cooldown, insufficient-credits, dock/orbit classifiers) is unaffected.
 			return &domainPorts.APIError{StatusCode: statusCode, Body: string(respBody)}
@@ -1754,7 +1724,6 @@ func (c *SpaceTradersClient) GetConstruction(ctx context.Context, systemSymbol, 
 		return nil, fmt.Errorf("failed to get construction: %w", err)
 	}
 
-	// Convert materials
 	materials := make([]domainPorts.ConstructionMaterialData, len(response.Data.Materials))
 	for i, mat := range response.Data.Materials {
 		materials[i] = domainPorts.ConstructionMaterialData{
@@ -1774,9 +1743,7 @@ func (c *SpaceTradersClient) GetConstruction(ctx context.Context, systemSymbol, 
 // SupplyConstruction delivers materials to a construction site
 func (c *SpaceTradersClient) SupplyConstruction(ctx context.Context, shipSymbol, waypointSymbol, tradeSymbol string, units int, token string) (*domainPorts.ConstructionSupplyResponse, error) {
 	// Construction supply is a waypoint-scoped endpoint; the ship is identified
-	// via the request body, not the path. The previous ship-scoped path
-	// (/my/ships/{shipSymbol}/construction/supply) does not exist and returned
-	// 404 "Route not found", killing every construction delivery (sp-fi7q).
+	// via the request body, not the path.
 	systemSymbol := extractSystemSymbol(waypointSymbol)
 	path := fmt.Sprintf("/systems/%s/waypoints/%s/construction/supply", systemSymbol, waypointSymbol)
 
@@ -1814,7 +1781,6 @@ func (c *SpaceTradersClient) SupplyConstruction(ctx context.Context, shipSymbol,
 		return nil, fmt.Errorf("failed to supply construction (system=%s): %w", systemSymbol, err)
 	}
 
-	// Convert materials
 	materials := make([]domainPorts.ConstructionMaterialData, len(response.Data.Construction.Materials))
 	for i, mat := range response.Data.Construction.Materials {
 		materials[i] = domainPorts.ConstructionMaterialData{
@@ -1824,7 +1790,6 @@ func (c *SpaceTradersClient) SupplyConstruction(ctx context.Context, shipSymbol,
 		}
 	}
 
-	// Convert cargo inventory
 	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
 		inventory[i] = shared.CargoItem{

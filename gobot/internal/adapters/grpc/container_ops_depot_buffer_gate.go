@@ -14,8 +14,7 @@ import (
 // This file is the LIVE-path half of the sp-rxrg buffer-candidate gating: the filter stage the
 // destination-depot warehouse-cap selector (depotWarehouseTargetUnits) runs IN FRONT of the reward
 // knapsack (PlanReceiptCaps), so a good that is not contracted TO the hub, that the hub produces
-// locally, or that is sourced too near is never even a candidate — the DRUGS@J58 incident (DRUGS is
-// exported at J58 and not a J58 contract good, yet was warehoused). It shares the ONE domain gate
+// locally, or that is sourced too near is never even a candidate. It shares the ONE domain gate
 // (domain/buffer) with the reconciler planner so the three gates can never drift between the paths;
 // only the DATA WIRING (contract history, market trade-type, coordinates) is per-path and lives here.
 

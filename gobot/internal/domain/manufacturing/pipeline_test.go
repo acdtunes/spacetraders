@@ -24,7 +24,7 @@ func driveTaskToCompleted(t *testing.T, task *ManufacturingTask) {
 	}
 }
 
-// sp-j2hq: a construction pipeline must remember the caller-set --min-supply
+// A construction pipeline must remember the caller-set --min-supply
 // EXPORT sourcing floor so it can be re-read later (by the deferred-material
 // recovery poll-loop and by a resumed StartOrResume call), not just consumed
 // once during the initial planning pass.
@@ -42,7 +42,7 @@ func TestConstructionPipelineMinSupplyDefaultsUnsetThenSettable(t *testing.T) {
 	}
 }
 
-// sp-sdyo: a construction pipeline persists the per-good gate-override map alongside the global
+// A construction pipeline persists the per-good gate-override map alongside the global
 // min-supply floor, so a per-good sourcing-floor override survives a daemon bounce (RULINGS #2)
 // and is re-read by the planner and the deferred-material recovery loop.
 func TestConstructionPipelineGoodOverridesDefaultsEmptyThenSettable(t *testing.T) {

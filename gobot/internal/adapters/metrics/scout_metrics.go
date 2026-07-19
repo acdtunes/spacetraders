@@ -6,13 +6,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// ScoutMetricsCollector handles the scout market-freshness gauge (sp-dp92 P7): how
+// ScoutMetricsCollector handles the scout market-freshness gauge: how
 // stale the cached market data is for each system the scout fleet has POSTED
 // coverage for, computed by the scout post coordinator's reconcile sweep as
 // MAX(now - market_data.last_updated) across that system's markets. Pure
 // OBSERVATION (RULINGS #4): a recording miss must never touch a decision path, so
 // Record is nil-safe and best-effort — mirroring AbsorptionMetricsCollector
-// (internal/adapters/metrics/absorption_metrics.go), the sp-8cz9 template this
+// (internal/adapters/metrics/absorption_metrics.go), the template this
 // family follows.
 type ScoutMetricsCollector struct {
 	// freshnessActualSeconds is a gauge (not a counter): each reconcile sweep

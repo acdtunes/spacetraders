@@ -11,7 +11,7 @@ const ImmutableReserveFloor = 50000
 
 // DefaultReserveTreasuryPct is the working-capital reserve's proportional floor as a
 // percent of LIVE treasury, applied when the per-engine
-// working_capital_reserve_treasury_pct config key is 0/absent (sp-yqx4). 40% is the
+// working_capital_reserve_treasury_pct config key is 0/absent. 40% is the
 // deadlock-proof default PENDING the trade-analyst's economics ruling; it is only a
 // fallback — the operating value is the config key, never a call-site constant (RULINGS
 // #5), so the ruled number lands at deploy with no rebuild.
@@ -22,13 +22,13 @@ const DefaultReserveTreasuryPct = 40
 //	max(ImmutableReserveFloor, min(absolute, round(pct% × liveTreasury)))
 //
 // The proportional term (pct% of LIVE treasury) is what makes a floor ABOVE the treasury
-// impossible — the sp-yqx4 deadlock, where a 1M absolute floor at sub-1M treasury made
-// every buy infeasible (allowance = balance − floor < 0 → skip) and idled 6/9 heavies
-// exactly when the fleet had to earn its way out. Semantics:
+// impossible: an absolute-only floor can leave every buy infeasible below it (allowance =
+// balance − floor < 0 → skip), stalling the fleet exactly when it needs to trade its way
+// out. Semantics:
 //   - absolute is the per-run configured working_capital_reserve (already ≥ 50k in both
-//     engines after their own resolution); at high treasury it binds exactly as before
-//     (min picks it), so nothing changes above ≈ absolute ÷ (pct/100) of treasury — e.g.
-//     with 1M/40% the absolute binds at ≥ 2.5M, unchanged from today.
+//     engines after their own resolution); at high treasury it binds (min picks it), so
+//     nothing changes above ≈ absolute ÷ (pct/100) of treasury — e.g. with 1M/40% the
+//     absolute binds at ≥ 2.5M.
 //   - below that the proportional floor binds and keeps a (1 − pct/100) slice of treasury
 //     spendable, so the fleet trades its way back up (counter-cyclical by design).
 //   - the outer max keeps the immutable 50k bound whatever pct and treasury are.
@@ -62,11 +62,11 @@ func EffectiveReserveFloor(absolute int64, pct int, liveTreasury int64) int64 {
 // coordinator down to the buy-time money guard. It is stamped only by the production
 // coordinators (tour, factory), never by the trade-route circuit or by tests that build
 // commands directly — so the proportional floor is ADDITIVE: a guard whose ctx carries no
-// pct enforces the absolute floor exactly as before (the sp-agzj/sp-ggk2 contract), and
-// only a stamped pct engages the counter-cyclical resolution.
+// pct enforces the absolute floor unchanged, and only a stamped pct engages the
+// counter-cyclical resolution.
 type reserveTreasuryPctCtxKey struct{}
 
-// WithReserveTreasuryPct stamps the per-run treasury-percent onto ctx (sp-yqx4). The
+// WithReserveTreasuryPct stamps the per-run treasury-percent onto ctx. The
 // production tour and factory coordinators call this from their command's resolved pct
 // (config default 40); the value rides ctx because the buy-time guards are reached through
 // singletons shared across concurrent hulls/factories, where a struct field would be a

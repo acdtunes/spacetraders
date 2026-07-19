@@ -10,31 +10,29 @@ import (
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 )
 
-// sp-rh2z (analyst redesign C2, from sp-hzz5). The realization side of the factory had NO
-// chain-level P&L accounting: hidden losers survived because value flows through tours
-// UNMEASURED. This is the kill-switch that makes the portfolio self-pruning — a pre-spend
-// gate (beside the sp-2dv4 chain-margin guard, run_factory_coordinator Step 2.6) that
-// auto-pauses a chain whose REALIZED P&L/hr over the rolling window has fallen below the kill
-// threshold, and resumes it automatically (via the -1 container's re-invocation loop) when the
-// window recovers. The P&L math is in services/chain_pnl.go; the DB reader is injected.
+// This is the chain-level P&L kill-switch that makes the portfolio self-pruning: value realizes
+// through tours, not just at the factory, so a pre-spend margin check alone cannot catch a chain
+// that is a hidden net loser once tour costs are counted. It is a pre-spend gate (beside the
+// chain-margin guard, run_factory_coordinator Step 2.6) that auto-pauses a chain whose REALIZED
+// P&L/hr over the rolling window has fallen below the kill threshold, and resumes it
+// automatically (via the -1 container's re-invocation loop) when the window recovers. The P&L
+// math is in services/chain_pnl.go; the DB reader is injected.
 //
-// FAIL OPEN — the RULINGS #4 distinction from the pre-spend guards. The chain-margin guard and
-// the input-price ceiling fail CLOSED (can't price it → don't spend). This guard fails OPEN:
-// an unwired reader, a disabled flag, an unreadable ledger, or a chain with no realized output
-// yet all PROCEED (no pause). Its power is only to STOP an already-running chain, and halting
-// production on an accounting outage is the worse error — an accounting outage must never halt
-// production. It can only stop spend, never cause it.
+// FAIL OPEN, unlike the pre-spend guards: the chain-margin guard and the input-price ceiling
+// fail CLOSED (can't price it → don't spend). This guard fails OPEN: an unwired reader, a
+// disabled flag, an unreadable ledger, or a chain with no realized output yet all PROCEED (no
+// pause). Its power is only to STOP an already-running chain, and halting production on an
+// accounting outage is the worse error. It can only stop spend, never cause it.
 
 const (
 	// defaultChainPnLKillThresholdPerHour is the realized-P&L/hr floor below which a chain
-	// auto-pauses. The analyst's number (sp-hzz5 C2): 30000/hr. A 0/absent config value
-	// resolves to this at the point of use — a protective default that turns the kill-switch
-	// ON (it can only stop spend, RULINGS #5), so a default is correct.
+	// auto-pauses (30000/hr). A 0/absent config value resolves to this at the point of use — a
+	// protective default that turns the kill-switch ON, since it can only stop spend.
 	defaultChainPnLKillThresholdPerHour = 30000
 
-	// defaultChainPnLWindowHours is the trailing window the realized P&L is measured over.
-	// 6h (sp-hzz5 C2): long enough to smooth a single slow rotation, short enough to prune a
-	// genuine loser within an era. 0/absent resolves to this at the point of use.
+	// defaultChainPnLWindowHours is the trailing window the realized P&L is measured over: long
+	// enough to smooth a single slow rotation, short enough to prune a genuine loser within an
+	// era. 0/absent resolves to this at the point of use.
 	defaultChainPnLWindowHours = 6
 )
 
@@ -51,7 +49,7 @@ const (
 )
 
 // chainPnLKillVerdict is the structured, loggable result of a kill evaluation. Every number
-// goes in the log message TEXT (the container-log renderer drops metadata, sp-iqyq); the same
+// goes in the log message TEXT, since the container-log renderer drops metadata; the same
 // fields are exposed for structured consumers.
 type chainPnLKillVerdict struct {
 	Killed    bool
@@ -62,11 +60,11 @@ type chainPnLKillVerdict struct {
 	Detail    string                     // extra context (e.g. the ledger-read error) for fail-open
 }
 
-// SetChainPnLReader wires the DB-backed realized-P&L ledger the chain kill-switch judges
-// (sp-rh2z). The daemon calls this after construction with the DB-backed reader; leaving it
-// unset keeps the kill-switch fail-open (disabled), which is exactly what every non-daemon
-// caller (the package's test fixtures) wants — the same setter-injection idiom as
-// SetPriceHistoryReader / SetSpendLedger.
+// SetChainPnLReader wires the DB-backed realized-P&L ledger the chain kill-switch judges. The
+// daemon calls this after construction with the DB-backed reader; leaving it unset keeps the
+// kill-switch fail-open (disabled), which is exactly what every non-daemon caller (the
+// package's test fixtures) wants — the same setter-injection idiom as SetPriceHistoryReader /
+// SetSpendLedger.
 func (h *RunFactoryCoordinatorHandler) SetChainPnLReader(reader mfgServices.ChainPnLReader) {
 	h.chainPnLReader = reader
 }
@@ -100,9 +98,9 @@ func (h *RunFactoryCoordinatorHandler) evaluateChainPnLKill(ctx context.Context,
 	since := h.clock.Now().Add(-time.Duration(windowHours) * time.Hour)
 	raw, err := h.chainPnLReader.ReadRealizedPnL(ctx, cmd.PlayerID, since)
 	if err != nil {
-		// FAIL OPEN (RULINGS #4): the kill-switch can only STOP spend, so an accounting outage
-		// must not halt production. WARNING because a blind guard is an operational fault, not a
-		// routine decline — greppable so a recurring read failure surfaces.
+		// FAIL OPEN: the kill-switch can only STOP spend, so an accounting outage must not halt
+		// production. WARNING because a blind guard is an operational fault, not a routine
+		// decline — greppable so a recurring read failure surfaces.
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 			"Could not read chain P&L for %s — NOT pausing the chain (fail-open): %v",
 			cmd.TargetGood, err,
@@ -185,8 +183,8 @@ func (h *RunFactoryCoordinatorHandler) clearChainPnLKill(ctx context.Context, cm
 	return true
 }
 
-// KillMessage renders the human/greppable pause reason with every number in the TEXT (the
-// container-log renderer drops metadata, sp-iqyq). It doubles as the response NoWorkReason.
+// KillMessage renders the human/greppable pause reason with every number in the TEXT, since the
+// container-log renderer drops metadata. It doubles as the response NoWorkReason.
 func (v chainPnLKillVerdict) KillMessage() string {
 	r := v.Result
 	return fmt.Sprintf(

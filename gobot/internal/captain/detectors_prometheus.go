@@ -33,12 +33,11 @@ type prometheusAlertsAPIResponse struct {
 // detectPrometheusAlerts polls Prometheus's own alert-evaluation state
 // (sp-y0f6) and records one interrupt-class prometheus.alert_firing event per
 // firing alertname: EarnerDark, BurstSaturation, ApproachCeiling,
-// StarvationWave (gobot/configs/prometheus/rules/fleet-health.yml). This is
-// the alert layer for the 2026-07-11 incident (sp-4hl5): the fleet earned
-// zero for 2h50m and nothing paged, a human caught the flatline on a chart
-// ~60min after onset. Empty PrometheusAlertsURL disables the detector
-// entirely — no HTTP call, matching the ExpectedStreams/RegimeTripwires
-// "empty means off" idiom used throughout this file.
+// StarvationWave (gobot/configs/prometheus/rules/fleet-health.yml). This closes
+// the gap where a real earnings flatline fires on a Grafana chart but nothing
+// pages the captain. Empty PrometheusAlertsURL disables the detector entirely
+// — no HTTP call, matching the ExpectedStreams/RegimeTripwires "empty means
+// off" idiom used throughout this file.
 //
 // Deliberately no DB parameter: unlike its siblings this detector's source of
 // truth is Prometheus's HTTP API, not the local database, so it mirrors

@@ -1,8 +1,8 @@
 package capacity
 
-// Behavioral tests for the contract-delivery demand bridge (st-x00, re-scoped
-// by st-5le): the adapter that turns the capacity reconciler's emitted capital
-// demand into a sp-1txd ClassDemandProvider read. Every test drives the two
+// Behavioral tests for the contract-delivery demand bridge: the adapter that
+// turns the capacity reconciler's emitted capital
+// demand into an autosizer ClassDemandProvider read. Every test drives the two
 // ports the bridge satisfies — CapitalDemandSink (write, reconciler side) and
 // ClassDemandProvider (read, autosizer side) — and asserts the observable
 // ClassDemand.
@@ -22,7 +22,7 @@ import (
 )
 
 // B1 + B5: the emitted capital gap surfaces straight through as unmet demand on
-// the DISTINCT contract-delivery class (never sp-1txd's production warehouse
+// the DISTINCT contract-delivery class (never the autosizer's production warehouse
 // class), carrying the reconciler's ROI projection as the guard evidence.
 func TestContractDeliveryBridge_SurfacesEmittedCapitalGapAsShortfall(t *testing.T) {
 	b := NewContractDeliveryDemandBridge()
@@ -34,7 +34,7 @@ func TestContractDeliveryBridge_SurfacesEmittedCapitalGapAsShortfall(t *testing.
 	d, err := b.Demand(context.Background(), 1, fleetCmd.DemandParams{})
 	require.NoError(t, err)
 
-	// The pool is the st-7zk contract-delivery class — NOT sp-1txd's production
+	// The pool is the contract-delivery class — NOT the autosizer's production
 	// warehouse class (the ownership split: demands ADD across providers, they
 	// do not collide on one shared class).
 	require.Equal(t, HullClassContractDelivery, d.Class)
@@ -43,14 +43,14 @@ func TestContractDeliveryBridge_SurfacesEmittedCapitalGapAsShortfall(t *testing.
 
 	require.True(t, d.Readable)
 	require.Equal(t, 4, d.Shortfall())
-	// ROI evidence for sp-1txd's era-payback + realized-rate guards.
+	// ROI evidence for the autosizer's era-payback + realized-rate guards.
 	require.Equal(t, 820000.0, d.MarginalRate)
 	require.Equal(t, 700000.0, d.FleetAvgRate)
 	require.True(t, d.RateReadable)
 }
 
 // B5 (fail-closed): before the reconciler has emitted anything (unarmed, or
-// pre-first-tick) the bridge reads UNREADABLE — sp-1txd never buys on a demand
+// pre-first-tick) the bridge reads UNREADABLE — the autosizer never buys on a demand
 // it has never been told (the autosizer's own fail-closed contract).
 func TestContractDeliveryBridge_NoDemandEmittedYet_FailsClosed(t *testing.T) {
 	b := NewContractDeliveryDemandBridge()

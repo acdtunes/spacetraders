@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A warehouse is the extractor-free sibling of a storage operation (sp-dchv
-// Lane B): construction with ZERO extractor ships must succeed, where the
+// A warehouse is the extractor-free sibling of a storage operation:
+// construction with ZERO extractor ships must succeed, where the
 // extractor-fed NewStorageOperation rejects it. This is the load-bearing seam —
 // everything downstream reuses StorageOperation unchanged.
 func TestNewWarehouseOperation_ZeroExtractorConstructionValid(t *testing.T) {

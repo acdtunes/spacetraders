@@ -1,10 +1,10 @@
 package commands
 
-// Acceptance test for the st-x00 capital-emit seam (re-scoped by st-5le): drives
-// the reconciler through its driving port (the command handler) and proves the
-// CAPITAL tier's tier-4 Actions are EMITTED to the sp-1txd autosizer's demand
-// path — while the reconciler's OWN converge neither executes nor proposes them
-// (safety invariant 4 preserved) and the cheap autonomous tiers still flow.
+// Acceptance test for the capital-emit seam: drives the reconciler through its
+// driving port (the command handler) and proves the CAPITAL tier's tier-4
+// Actions are EMITTED to the fleet autosizer's demand path — while the
+// reconciler's OWN converge neither executes nor proposes them (safety
+// invariant 4 preserved) and the cheap autonomous tiers still flow.
 
 import (
 	"sync"
@@ -57,7 +57,7 @@ func TestCapacityReconciler_CapitalTierEmitsContractDeliveryDemandToAutosizerSea
 
 	outcomes := runTicks(t, h, reconcilerCmd(), 1, nil)
 
-	// 1) The capital tier was EMITTED to sp-1txd's demand path (class + count + evidence).
+	// 1) The capital tier was EMITTED to the autosizer's demand path (class + count + evidence).
 	emitted := sink.snapshot()
 	require.Len(t, emitted, 1)
 	require.Equal(t, 1, emitted[0].Hulls)
@@ -66,7 +66,7 @@ func TestCapacityReconciler_CapitalTierEmitsContractDeliveryDemandToAutosizerSea
 	require.Equal(t, 700000.0, emitted[0].FleetPerHullCrHr)
 
 	// 2) The reconciler's OWN converge neither executed nor proposed the capital
-	//    action: the buy happens through sp-1txd's guarded path (invariant 4).
+	//    action: the buy happens through the autosizer's guarded path (invariant 4).
 	require.Empty(t, f.actuator.calls(capacity.VerbBuyHull), "capital must not reach the reconciler's ExecuteCapital")
 	require.Empty(t, f.proposals.all(), "the emitter files no proposal — that is st-0h8")
 	require.Empty(t, outcomes[0].ProposalsFiled)

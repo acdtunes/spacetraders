@@ -8,12 +8,12 @@ import (
 	domcap "github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 )
 
-// sp-7zoq (GRABBER 3 — the capacity reconciler's tier1_reuse_idle): the SENSE-side reuse-eligible
+// tier1_reuse_idle: the SENSE-side reuse-eligible
 // filter is the ONLY channel an idle hull reaches the DIFF ladder's reassign path through. It already
-// requires DedicatedFleet == "" (st-780), so a hull dedicated to the exclusive "contract" fleet — the
-// reserve floor's stamp (sp-7zoq) — is INVISIBLE to tier1: an armed reconciler can never reassign the
-// contract reserve, exactly as it can never poach it via the shared idle pool. No reconciler code
-// change was needed; this pins the guarantee directly on the pure filter so a future edit cannot
+// requires DedicatedFleet == "", so a hull dedicated to the exclusive "contract" fleet — the
+// reserve floor's stamp — is INVISIBLE to tier1: an armed reconciler can never reassign the
+// contract reserve, exactly as it can never poach it via the shared idle pool. This pins the
+// guarantee directly on the pure filter so a future edit cannot
 // silently drop the dedication check and re-open the poach vector.
 func TestReuseEligibleIdleHulls_ExcludesContractDedicatedHull(t *testing.T) {
 	hulls := []domcap.HullUtilization{
@@ -33,8 +33,8 @@ func TestReuseEligibleIdleHulls_ExcludesContractDedicatedHull(t *testing.T) {
 		"only the idle UNDEDICATED hull is reuse-eligible: a contract-dedicated reserve hull (and any other fleet's hull) is excluded, so tier1_reuse_idle cannot reassign it")
 }
 
-// sp-7zoq companion: a hull already holding a cluster role stays excluded even when idle+undedicated —
-// mirroring st-780 — so the contract-dedication check added value is isolated (the "contract" exclusion
+// A hull already holding a cluster role stays excluded even when idle+undedicated —
+// so the contract-dedication check added value is isolated (the "contract" exclusion
 // is not accidentally load-bearing for the cluster-role case).
 func TestReuseEligibleIdleHulls_ExcludesClusterRoleHull(t *testing.T) {
 	hulls := []domcap.HullUtilization{

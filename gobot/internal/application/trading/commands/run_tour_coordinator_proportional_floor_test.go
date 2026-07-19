@@ -11,13 +11,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-yqx4 (P1 deadlock fix): with a treasury-percent stamped (production tours resolve it
-// to 40% by default), the tour buy-time floor becomes max(50k, min(reserve, pct% × live
-// treasury)) instead of the flat absolute reserve. Below ~2.5M treasury a reserve above the
-// balance no longer strands the hull — the deadlock that idled 6/9 heavies. These tests
-// drive the REAL executeBuy seam through Handle with the pct set, exercising the shared
-// common.EffectiveReserveFloor resolver; the sp-agzj/sp-ggk2 suites (no pct set) prove the
-// absolute floor is untouched when the counter-cyclical mode is off.
+// With a treasury-percent stamped (production tours resolve it to 40% by default), the
+// tour buy-time floor becomes max(50k, min(reserve, pct% × live treasury)) instead of the
+// flat absolute reserve. Below ~2.5M treasury a reserve above the balance no longer
+// strands the hull. These tests drive the REAL executeBuy seam through Handle with the
+// pct set, exercising the shared common.EffectiveReserveFloor resolver; the absolute-floor
+// suites (no pct set) prove the absolute floor is untouched when the counter-cyclical mode
+// is off.
 
 // propFloorCapturingLogger records log lines so the counter-cyclical INFO can be asserted.
 type propFloorCapturingLogger struct {
@@ -135,10 +135,10 @@ func TestTour_ProportionalFloor_Immutable50kBindsAt100k(t *testing.T) {
 	}
 }
 
-// Above 2.5M the configured absolute binds EXACTLY as pre-sp-yqx4: at 3M with a 1M reserve
-// and 40%, the proportional term (1.2M) exceeds the absolute, so min picks 1M — the floor is
-// NOT lowered and the counter-cyclical INFO must NOT fire. Guards against the proportional
-// path silently altering high-treasury behavior.
+// Above 2.5M the configured absolute binds EXACTLY as the flat absolute reserve would: at
+// 3M with a 1M reserve and 40%, the proportional term (1.2M) exceeds the absolute, so min
+// picks 1M — the floor is NOT lowered and the counter-cyclical INFO must NOT fire. Guards
+// against the proportional path silently altering high-treasury behavior.
 func TestTour_ProportionalFloor_AbsoluteBindsAbove2p5M(t *testing.T) {
 	fx := floorRoundTripFixture()
 	api := &tourSeqAPIClient{balances: []int{3_000_000}}

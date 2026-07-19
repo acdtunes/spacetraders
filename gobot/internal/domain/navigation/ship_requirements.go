@@ -11,7 +11,7 @@ package navigation
 // SpaceTraders API - a hull's power budget (reactor.powerOutput) and slot
 // budgets (frame.moduleSlots / frame.mountingPoints) are fixed for the life
 // of the ship. Only modules and mounts can be installed/removed to fit
-// within those permanent budgets (sp-el60).
+// within those permanent budgets.
 type ShipRequirements struct {
 	power int
 	crew  int

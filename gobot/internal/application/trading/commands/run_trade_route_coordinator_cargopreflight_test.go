@@ -8,11 +8,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-xwa1 pre-flight cargo check: a hull with no free hold parks BEFORE flying,
-// with a structured reason (good/needed/free) carried in the log MESSAGE TEXT,
-// instead of burning starvation circuits on a non-empty hull or buying a useless
-// sliver mid-buy. This is the exact zero-tranche starvation the incident root cause
-// named ("do not burn a 3-circuit starvation cycle on a non-empty hull").
+// Pre-flight cargo check: a hull with no free hold parks BEFORE flying, with a
+// structured reason (good/needed/free) carried in the log MESSAGE TEXT, instead of
+// burning starvation circuits on a non-empty hull or buying a useless sliver
+// mid-buy — do not burn a multi-circuit starvation cycle on a non-empty hull.
 
 // fillHold fills the hull to capacity so AvailableCargoSpace()==0, modelling an
 // idle-but-not-empty hull (a benched factory hauler, a pool hull with residual cargo).

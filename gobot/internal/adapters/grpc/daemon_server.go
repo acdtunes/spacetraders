@@ -541,9 +541,8 @@ func NewDaemonServer(
 
 		// Create chain-P&L collector (sp-rh2z): the goods_factory coordinator's kill-switch
 		// emits the realized-P&L/hr gauge and the kill-episode counter through the global set
-		// here — the chain accounting the realization side previously lacked, and the
-		// ChainPnLKill alert's source. Event-driven (no polling goroutine), mirroring the
-		// fleet-health collector above.
+		// here — the realization-side chain accounting, and the ChainPnLKill alert's source.
+		// Event-driven (no polling goroutine), mirroring the fleet-health collector above.
 		chainPnLCollector := metrics.NewChainPnLMetricsCollector()
 		if err := chainPnLCollector.Register(); err != nil {
 			listener.Close()
@@ -982,7 +981,7 @@ func (s *DaemonServer) syncAllShips(parent context.Context) error {
 }
 
 // resetOrphanedManufacturingTasks resets ASSIGNED manufacturing tasks on daemon startup.
-// This fixes the bug where tasks get stuck in ASSIGNED status because:
+// A task can get stuck in ASSIGNED status because:
 // 1. AssignTaskAtomically succeeds (task.assigned_ship is set)
 // 2. But PersistManufacturingTaskWorkerContainer or shipRepo.Save fails
 // 3. Rollback errors are ignored, leaving task ASSIGNED with no worker container
@@ -1115,11 +1114,10 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 
 	// sp-tit8: track the outcome of every candidate so the pass can diff the
 	// expected-running set (the INTERRUPTED+RUNNING rows loaded above) against
-	// what actually ended running, and announce anything that silently fell out.
-	// A container terminalizing unseen is the incident this guards against (a
-	// +200k/hr MEDICINE factory dead ~100 min, caught only by eyeball): silence
-	// is the enemy, so any expected-but-missing hull that is NOT a by-design skip
-	// becomes a loud, interrupt-class captain event (see collectAndAnnounceLostContainers).
+	// what actually ended running, and announce anything that silently fell out —
+	// silence is the enemy, so any expected-but-missing hull that is NOT a
+	// by-design skip becomes a loud, interrupt-class captain event (see
+	// collectAndAnnounceLostContainers).
 	recovered := make(map[string]bool)          // ended the pass as a running container
 	exempt := make(map[string]bool)             // deliberately not running (respawn / dead-era) — no alarm
 	failReason := make(map[string]recoveryLoss) // explicitly failed, with a captured reason

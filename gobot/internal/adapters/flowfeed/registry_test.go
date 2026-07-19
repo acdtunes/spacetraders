@@ -1,4 +1,3 @@
-// gobot/internal/adapters/flowfeed/registry_test.go
 package flowfeed
 
 import "testing"

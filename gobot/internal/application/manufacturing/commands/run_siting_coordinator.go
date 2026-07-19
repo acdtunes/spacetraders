@@ -1,32 +1,33 @@
-// Package commands — the factory SITING coordinator (sp-vdld) lives here alongside
-// the factory chain coordinator it points. It is the standing "brain" that automates
-// factory discovery, placement, and capacity planning: a per-player container running
-// a slow (default 15min) 5-step reconcile tick —
+// Package commands — the factory SITING coordinator lives here alongside the factory chain
+// coordinator it points. It is the standing "brain" that automates factory discovery,
+// placement, and capacity planning: a per-player container running a slow (default 15min)
+// 5-step reconcile tick —
 //
 //	SCAN     enumerate candidate (good, system) factory sites that pass the export-site
-//	         hard gate + in-system input eligibility (a5j7 supply-first) + data freshness.
+//	         hard gate + in-system input eligibility (supply-first) + data freshness.
 //	SCORE    branchPL projection × tour-alignment − input-competition − staleness −
-//	         worker-unreachability (sp-3vg8: a chain that cannot be manned scores down).
-//	MAINTAIN pick the top-K portfolio (K = floor(workers / workers_per_chain), C3), subject
+//	         worker-unreachability (a chain that cannot be manned scores down).
+//	MAINTAIN pick the top-K portfolio (K = floor(workers / workers_per_chain)), subject
 //	         to per-system and per-input-market concentration caps.
 //	ACT      launch missing top-K chains THROUGH the existing guard stack (the launched
-//	         goods_factory coordinator runs 2dv4 + a5j7 + C2 + r5a6 on its own iterations —
+//	         goods_factory coordinator runs its own chain-margin, fail-closed sourcing,
+//	         chain-P&L kill, and input-poison anti-cycle guards on its own iterations —
 //	         guards veto at zero cost, never bypassed); retire chains that fall out of top-K
 //	         via a clean container stop (with hysteresis to prevent thrash).
 //	EMIT     for stale-but-promising candidates, post scout-demand so coverage refreshes
 //	         them (reuses the captain scout-post-proposal channel).
 //
-// It COMPOSES with, and does not duplicate, the per-chain machinery: the launch guard
-// (sp-2dv4) is a per-launch veto; C2 (sp-rh2z) is realized pruning; r5a6 is per-chain
-// input-rest INSIDE a running chain (container-internal, not a cross-chain API — this
-// coordinator drives PORTFOLIO membership, not per-chain pause). This is the brain that
-// points the loops; the loops keep their own safety.
+// It COMPOSES with, and does not duplicate, the per-chain machinery: the chain-margin guard
+// is a per-launch veto; the chain-P&L kill-switch is realized pruning; the input-poison
+// anti-cycle is per-chain input-rest INSIDE a running chain (container-internal, not a
+// cross-chain API — this coordinator drives PORTFOLIO membership, not per-chain pause). This
+// is the brain that points the loops; the loops keep their own safety.
 //
 // Shape mirrors run_frontier_expansion_coordinator.go verbatim: a registered singleton
-// handler with required repos + OPTIONAL setter-collaborators (nil disables that path),
-// one infinite reconcile loop inside Handle(), resolveSitingConfig() resolving every
-// <=0 knob to a documented protective default (RULINGS #5). Every decision is re-derived
-// from persisted state each tick, so a daemon restart is transparent (RULINGS #2).
+// handler with required repos + OPTIONAL setter-collaborators (nil disables that path), one
+// infinite reconcile loop inside Handle(), resolveSitingConfig() resolving every <=0 knob to
+// a documented protective default. Every decision is re-derived from persisted state each
+// tick, so a daemon restart is transparent.
 package commands
 
 import (
@@ -41,11 +42,11 @@ import (
 )
 
 const (
-	// Config defaults (RULINGS #5: every operational value is a config key, filled here only
-	// when the launch config leaves it unset — the Analyst owns the weights). Documented on
+	// Config defaults: every operational value is a config key, filled here only when the
+	// launch config leaves it unset — the Analyst owns the weights. Documented on
 	// config.SitingConfig.
 	defaultSitingTickSeconds        = 900 // 15min — siting is strategic, not per-second
-	defaultSitingWorkersPerChain    = 3.5 // C3 rotation math: K = floor(workers / this)
+	defaultSitingWorkersPerChain    = 3.5 // K = floor(workers / this)
 	defaultSitingFreshnessMaxSecs   = 7200
 	defaultSitingEmitStalenessSecs  = 1800
 	defaultSitingWeightAlignment    = 1.0
@@ -88,9 +89,9 @@ type ScoredCandidate struct {
 	TourAlignment  float64 // realized tour-throughput weight (1.0 neutral when unavailable)
 	Competition    float64 // input-competition penalty (subtracted)
 	Staleness      float64 // staleness discount (subtracted)
-	Unreachability float64 // worker-unreachability penalty (subtracted; sp-3vg8)
+	Unreachability float64 // worker-unreachability penalty (subtracted)
 	Score          float64 // final: PL × alignment − competition − staleness − unreachability
-	Proceed        bool    // launch-guard verdict; false = 2dv4 veto, excluded from top-K
+	Proceed        bool    // launch-guard verdict; false = chain-margin guard veto, excluded from top-K
 }
 
 // RunningChain is one factory chain currently live for the player (a goods_factory
@@ -107,7 +108,8 @@ func (r RunningChain) Key() string { return r.Good + "@" + r.System }
 
 // ChainProjection is the launch-guard verdict for a candidate chain (SCORE): the
 // projected per-pass P&L and whether the guard would let it proceed. Proceed=false is the
-// sp-2dv4 veto — the candidate is dropped from the portfolio at zero cost, not launched.
+// chain-margin guard's veto — the candidate is dropped from the portfolio at zero cost, not
+// launched.
 type ChainProjection struct {
 	ProjectedPL int
 	Proceed     bool
@@ -148,7 +150,7 @@ type ChainController interface {
 }
 
 // TourAlignmentProvider returns a tour-pull SIGNAL (>= 0) for a factory good in a system —
-// how strongly tours realize that good (the C1 stock-draw rate where available, else
+// how strongly tours realize that good (the stock-draw rate where available, else
 // tour_leg_telemetry pass-by throughput). 0 means tours do not pull the good here. SCORE
 // turns the signal into an alignment factor (1 + WeightTourAlignment × signal). Optional: a
 // nil provider yields signal 0, so scoring falls back to branchPL alone (factor 1.0).
@@ -156,7 +158,7 @@ type TourAlignmentProvider interface {
 	Alignment(ctx context.Context, playerID int, good, system string) (signal float64, err error)
 }
 
-// WorkerCounter returns the manufacturing worker-pool size for C3 K-sizing
+// WorkerCounter returns the manufacturing worker-pool size for K-sizing
 // (K = floor(workers / workers_per_chain)). Optional: a nil counter (or a configured TopK)
 // bypasses derivation.
 type WorkerCounter interface {
@@ -164,17 +166,17 @@ type WorkerCounter interface {
 }
 
 // WorkerReachabilityProvider returns a staffing-reachability SIGNAL ∈ [0,1] for placing a
-// factory chain in a system (sp-3vg8): how easily an idle manufacturing worker can man it.
-// 1 = an idle worker is already in-system (distance 0, fully staffable); a value in (0,1)
-// decays with the ferry hop-distance from the nearest idle-worker pool; 0 = NO idle worker
-// can reach the system at all (no in-system idle worker AND no ferry path in). SCORE turns
-// the signal into an unreachability penalty (weight × branchPL × (1 − signal)), so a chain
-// that cannot be manned is deprioritized even when the launch guard clears it on margin —
-// the era-1 capacity-without-workers lesson, mechanized into siting (C81/GS93). The concrete
-// impl reuses the stored-adjacency ferry reach (gategraph RepositionPath) + the idle-worker
-// locator (FindIdleLightHaulers) — it does NOT reinvent graph routing. Optional: a nil
-// provider (or a read error) yields signal 1.0, so the term is neutral (no penalty) and
-// scoring falls back to branchPL alone — a transient gate-graph read never nukes the portfolio.
+// factory chain in a system: how easily an idle manufacturing worker can man it. 1 = an idle
+// worker is already in-system (distance 0, fully staffable); a value in (0,1) decays with the
+// ferry hop-distance from the nearest idle-worker pool; 0 = NO idle worker can reach the
+// system at all (no in-system idle worker AND no ferry path in). SCORE turns the signal into
+// an unreachability penalty (weight × branchPL × (1 − signal)), so a chain that cannot be
+// manned is deprioritized even when the launch guard clears it on margin: capacity without
+// workers to run it is not enough. The concrete impl reuses the stored-adjacency ferry reach
+// (gategraph RepositionPath) + the idle-worker locator (FindIdleLightHaulers) — it does NOT
+// reinvent graph routing. Optional: a nil provider (or a read error) yields signal 1.0, so the
+// term is neutral (no penalty) and scoring falls back to branchPL alone — a transient
+// gate-graph read never nukes the portfolio.
 type WorkerReachabilityProvider interface {
 	Reachability(ctx context.Context, playerID int, system string) (signal float64, err error)
 }
@@ -188,20 +190,20 @@ type ScoutDemandEmitter interface {
 	EmitScoutDemand(ctx context.Context, playerID int, system string, cooldown time.Duration, payload string) (bool, error)
 }
 
-// RunSitingCoordinatorCommand launches the standing siting coordinator for a player
-// (sp-vdld). Like the frontier / trade-fleet / scout-post coordinators it runs an infinite
-// reconcile loop inside a single Handle() call; the container wraps it. All knobs are
-// launch-config keys (RULINGS #5); <= 0 (or the zero value) falls back to the documented
-// default, so the CLI passes only what it overrides.
+// RunSitingCoordinatorCommand launches the standing siting coordinator for a player. Like
+// the frontier / trade-fleet / scout-post coordinators it runs an infinite reconcile loop
+// inside a single Handle() call; the container wraps it. All knobs are launch-config keys;
+// <= 0 (or the zero value) falls back to the documented default, so the CLI passes only what
+// it overrides.
 type RunSitingCoordinatorCommand struct {
 	PlayerID    int
 	ContainerID string
 	AgentSymbol string
 
-	// Disabled is the RULINGS #5 escape hatch (from [manufacturing.siting] siting_disabled).
-	// Absent/false = ACTIVE (LIVE BY DEFAULT, Admiral no-dark-shipping). Reconstructed as the
-	// negation of siting_disabled so an absent key reads as enabled across a recovery from an
-	// old config that predates the key.
+	// Disabled is the escape hatch (from [manufacturing.siting] siting_disabled). Absent/false
+	// = ACTIVE: unlike most features, this coordinator ships live by default, not dark.
+	// Reconstructed as the negation of siting_disabled so an absent key reads as enabled
+	// across a recovery from an old config that predates the key.
 	Disabled bool
 	// DryRun evaluates + logs every decision but takes no ACT action (watch mode).
 	DryRun bool
@@ -255,7 +257,7 @@ type sitingCoordinatorState struct {
 	// outOfTopK counts consecutive ticks each running chain (by Key) has been outside the
 	// desired top-K, for the retire hysteresis.
 	outOfTopK map[string]int
-	// effect is the shared inert-loop detector (sp-57g9's health.EffectTracker) that runs the
+	// effect is the shared inert-loop detector (health.EffectTracker) that runs the
 	// candidates-but-zero-effect self-check: it holds the no-effect streak and the one-shot
 	// WARN dedup, re-arming on any productive/steady tick. Lazily built on first self-check
 	// (the threshold comes from the resolved tick config); one per container so the streak is
@@ -294,7 +296,7 @@ func (h *RunSitingCoordinatorHandler) SetTourAlignmentProvider(a TourAlignmentPr
 	h.alignment = a
 }
 
-// SetWorkerCounter wires the worker-pool size source for C3 K-derivation. Leaving it unset
+// SetWorkerCounter wires the worker-pool size source for K-derivation. Leaving it unset
 // (or setting TopK) bypasses derivation.
 func (h *RunSitingCoordinatorHandler) SetWorkerCounter(w WorkerCounter) { h.workers = w }
 
@@ -302,9 +304,9 @@ func (h *RunSitingCoordinatorHandler) SetWorkerCounter(w WorkerCounter) { h.work
 // EMIT (the coordinator still scans/scores/acts).
 func (h *RunSitingCoordinatorHandler) SetScoutDemandEmitter(e ScoutDemandEmitter) { h.emitter = e }
 
-// SetWorkerReachabilityProvider wires the staffing-reachability signal for SCORE (sp-3vg8).
-// Leaving it unset makes the reachability term neutral (no penalty) — scoring ranks on
-// branchPL × alignment − competition − staleness alone, exactly as before the term landed.
+// SetWorkerReachabilityProvider wires the staffing-reachability signal for SCORE. Leaving it
+// unset makes the reachability term neutral (no penalty) — scoring ranks on branchPL ×
+// alignment − competition − staleness alone, exactly as before the term landed.
 func (h *RunSitingCoordinatorHandler) SetWorkerReachabilityProvider(r WorkerReachabilityProvider) {
 	h.reachability = r
 }
@@ -350,7 +352,7 @@ func (h *RunSitingCoordinatorHandler) Handle(ctx context.Context, request common
 }
 
 // sitingRunConfig is the launch command with every default resolved, so the reconcile logic
-// never repeats the "<= 0 → default" fallback (RULINGS #5, the frontier resolveConfig idiom).
+// never repeats the "<= 0 → default" fallback (the frontier resolveConfig idiom).
 type sitingRunConfig struct {
 	Disabled bool
 	DryRun   bool
@@ -453,8 +455,8 @@ func (h *RunSitingCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *Ru
 	cfg := resolveSitingConfig(cmd)
 	logger := common.LoggerFromContext(ctx)
 
-	// Boot-gate (RULINGS #5): the container stays resident when disabled so a config flip +
-	// restart re-arms it with no manual relaunch, but it takes no action while stood down.
+	// Boot-gate: the container stays resident when disabled so a config flip + restart
+	// re-arms it with no manual relaunch, but it takes no action while stood down.
 	if cfg.Disabled {
 		return reconcileResult{}, nil
 	}

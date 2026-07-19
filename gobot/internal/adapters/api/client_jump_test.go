@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// sp-n0x7 round 2: the live SpaceTraders jump API requires the destination
+// The live SpaceTraders jump API requires the destination
 // as "waypointSymbol" in the POST body - not "systemSymbol" - and 422s with
 // "waypointSymbol Required, received undefined" otherwise. This asserts the
 // actual wire format JumpShip sends, independent of what the caller names

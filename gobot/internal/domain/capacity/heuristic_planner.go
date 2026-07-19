@@ -8,10 +8,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/buffer"
 )
 
-// HeuristicPlanner is the v1 deterministic PLAN implementation (epic st-7zk,
-// lane st-hlw; spec: PLAN — the heuristic planner). Pure logic: it consumes
-// one Signals snapshot plus the live Calibration and emits the DesiredTopology
-// — no I/O, no state, no clock. Interpretability is a feature: every choice
+// HeuristicPlanner is the v1 deterministic PLAN implementation (spec: PLAN —
+// the heuristic planner). Pure logic: it consumes one Signals snapshot plus
+// the live Calibration and emits the DesiredTopology — no I/O, no state, no
+// clock. Interpretability is a feature: every choice
 // traces to a documented ranking or threshold below.
 //
 // The policy (2026-07-15 design spec, PLAN section):
@@ -33,20 +33,20 @@ import (
 //     instead of covering every paying hub. The desired topology SELF-LIMITS
 //     unconditionally: it stops wanting new capacity the moment the marginal
 //     hull would lower the fleet-wide average.
-//   - Buffered goods per hub: select by VALUE DENSITY (bead sp-lk9x, the
-//     economy-analyst's era-3 model validated over 453 contracts). A buffer's
-//     worth is the source-and-haul time it AVOIDS per contract —
+//   - Buffered goods per hub: select by VALUE DENSITY (the economy-analyst's
+//     era-3 model validated over 453 contracts). A buffer's worth is the
+//     source-and-haul time it AVOIDS per contract —
 //     0.030×source_distance + 0.147×avg_units MINUTES, BOTH terms positive —
 //     times the contract frequency, per unit of warehouse budget:
 //     value_density = frequency × (0.030×dist + 0.147×avg_units) ÷ avg_units.
 //     Value RISES with source distance (a far source is exactly what makes a
-//     pre-staged buffer valuable — the avoided leg is long); the pre-sp-lk9x
-//     score DIVIDED by distance and so drove every far-sourced good below a
-//     floor, emptying the far-sourced home hub's buffer. Candidates rank by
-//     value density and fill the buffered-volume budget greedily; there is NO
-//     value floor. Goods with no known source distance cannot be costed and
-//     are skipped, and the shared sp-rxrg gate still excludes local-production
-//     and too-near sources up front.
+//     pre-staged buffer valuable — the avoided leg is long); the prior score
+//     DIVIDED by distance and so drove every far-sourced good below a floor,
+//     emptying the far-sourced home hub's buffer. Candidates rank by value
+//     density and fill the buffered-volume budget greedily; there is NO value
+//     floor. Goods with no known source distance cannot be costed and are
+//     skipped, and the shared gate still excludes local-production and
+//     too-near sources up front.
 //   - Caps: per-good cap ≈ avg_units + margin — an uncapped whitelist
 //     over-fills the first good and starves the rest.
 //   - Counts: workers by work conservation on the observed cycle; warehouses
@@ -77,21 +77,21 @@ const (
 	// bufferCapMarginFactor puts a 50% margin over avg_units on every cap.
 	bufferCapMarginFactor = 1.5
 	// sourceDistanceSavingWeightMinutes and averageUnitsSavingWeightMinutes are the
-	// economy-analyst's era-3-derived coefficients (bead sp-lk9x, validated over 453
+	// economy-analyst's era-3-derived coefficients (validated over 453
 	// contracts) of the source-and-haul time a warehouse buffer AVOIDS per contract:
 	//
 	//	saving_per_contract_minutes = 0.030 × source_distance + 0.147 × avg_units
 	//
 	// BOTH weights are POSITIVE. A farther source (a longer avoided source-and-haul
 	// leg) and a bulkier haul (more avoided load) each make the pre-staged buffer MORE
-	// valuable — the exact OPPOSITE of the pre-sp-lk9x score, which DIVIDED value by
+	// valuable — the exact OPPOSITE of the prior score, which DIVIDED value by
 	// distance and drove every far-sourced good below the never-buffer floor, emptying
 	// the far-sourced home hub. The FORM (value rises with distance) is universe-agnostic
 	// haul physics; the two magnitudes are re-derivable from contract history and belong
 	// in calibration once the reconciler is armed.
 	sourceDistanceSavingWeightMinutes = 0.030
 	averageUnitsSavingWeightMinutes   = 0.147
-	// reconcilerMinSourceDistance is the sp-rxrg gate-3 source-distance floor on
+	// reconcilerMinSourceDistance is the gate-3 source-distance floor on
 	// this (reconciler) path: a good whose nearest source sits at/below this many
 	// coordinate units is too near to warrant a warehouse slot. A documented
 	// constant here (the LIVE depot path carries the live-tunable knob); set well
@@ -363,12 +363,12 @@ type bufferCandidate struct {
 }
 
 // selectBufferGoods picks the hub's buffer whitelist by VALUE DENSITY, best
-// first, filling the buffered-volume budget greedily (bead sp-lk9x). The budget
+// first, filling the buffered-volume budget greedily. The budget
 // is spent in avg_units — the raw demand volume value_density is measured per —
 // so a good is added while the running Σ avg_units stays within budget; a good
 // too big for the remaining budget is skipped while smaller higher-density goods
 // behind it still make it in. There is NO value floor: the volume budget is the
-// only bound, so the far-sourced goods the pre-sp-lk9x floor deleted are recovered.
+// only bound, so the far-sourced goods the prior floor deleted are recovered.
 func selectBufferGoods(goodMix []GoodDemand, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate, budgetUnits int) []bufferSelection {
 	remaining := float64(budgetUnits)
 	var selected []bufferSelection
@@ -389,7 +389,7 @@ func rankBufferCandidates(goodMix []GoodDemand, sourceDistances map[string]float
 	candidates := make([]bufferCandidate, 0, len(goodMix))
 	for _, good := range goodMix {
 		if !admitsBufferGood(good, sourceDistances, localProduction, gate) {
-			continue // sp-rxrg: excluded by the shared candidate gate before it can be ranked
+			continue // excluded by the shared candidate gate before it can be ranked
 		}
 		candidate, eligible := scoreBufferGood(good, sourceDistances)
 		if !eligible {
@@ -401,7 +401,7 @@ func rankBufferCandidates(goodMix []GoodDemand, sourceDistances map[string]float
 	return dedupeBufferCandidates(candidates)
 }
 
-// admitsBufferGood applies the shared sp-rxrg candidate gate to one good on the
+// admitsBufferGood applies the shared candidate gate to one good on the
 // reconciler path — the SAME domain/buffer.Gate the LIVE depot selector uses, so
 // the three gates cannot drift. Gate 1 is the good's H-scoped contract frequency
 // (GoodMix is already the hub's own contract demand), gate 2 is the hub's
@@ -433,14 +433,14 @@ func localProductionByHub(entries []GoodLocalProduction) map[string]map[string]b
 	return byHub
 }
 
-// scoreBufferGood applies the era-3 value-density model (bead sp-lk9x):
+// scoreBufferGood applies the era-3 value-density model:
 //
 //	saving_per_contract = 0.030×source_distance + 0.147×avg_units   (avoided minutes)
 //	buffer_value        = frequency × saving_per_contract           (value/hour — REWARDS distance)
 //	value_density       = buffer_value ÷ avg_units                  (value per budget unit)
 //
 // The score MULTIPLIES by distance (a far source makes the buffer more valuable),
-// inverting the pre-sp-lk9x divide-by-distance that emptied far-sourced hubs. There
+// inverting the prior divide-by-distance that emptied far-sourced hubs. There
 // is NO value floor — selectBufferGoods bounds the whitelist by the volume budget
 // alone. Ineligible ONLY when the good cannot be costed (no known source distance) or
 // shows no demand (frequency/avg_units ≤ 0); the distance/frequency/local-production

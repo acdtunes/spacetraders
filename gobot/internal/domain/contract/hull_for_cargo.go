@@ -15,8 +15,7 @@ const roleCommandHull = "COMMAND"
 // IsCommandHull reports whether a ship is the command frigate, by registration
 // role or by the conventional "*-1" symbol (e.g. "TORWIND-1"). Candidate
 // discovery, cargo-fit selection and the selection log all share this one
-// predicate so they agree on exactly which hull is treated as the command ship
-// (sp-4a4e).
+// predicate so they agree on exactly which hull is treated as the command ship.
 func IsCommandHull(ship *navigation.Ship) bool {
 	return ship.Role() == roleCommandHull || strings.HasSuffix(ship.ShipSymbol(), "-1")
 }
@@ -32,22 +31,21 @@ type hullFit struct {
 }
 
 // SelectHullForCargo picks the hull whose hold matches the load - the shared
-// cargo-fit selection policy for coordinators assigning haul work (l7h2
-// Phase 3, ranking refined by sp-f66z). Pure proximity-first sent 225-hold
-// heavies on 40-unit legs while lights idled; pure smallest-fit then claimed a
-// far small hull while a nearer adequate one idled at a hub (5/8 stall-tails).
-// This ladder ranks the ADEQUATE hulls by proximity and uses hold size only to
+// cargo-fit selection policy for coordinators assigning haul work. A pure
+// proximity-first ladder over-uses heavies on short legs; a pure smallest-fit
+// ladder can strand a nearer adequate hull for a farther small one. This
+// ladder ranks the ADEQUATE hulls by proximity and uses hold size only to
 // break ties:
 //
 //	Tier 1: among regular hulls whose capacity fits the whole load, the
 //	        NEAREST by cruise travel time. Equal travel times tie-break on the
 //	        smallest fitting hold, so a nearer adequate hull beats a farther
-//	        smaller one (sp-f66z) while two equidistant hulls still right-size
-//	        (l7h2 P3). Travel time is speed-aware, so a fast hull that clears
-//	        the leg sooner outranks a slow one nominally as close (sp-snmb).
+//	        smaller one while two equidistant hulls still right-size. Travel
+//	        time is speed-aware, so a fast hull that clears the leg sooner
+//	        outranks a slow one nominally as close.
 //	Tier 2: the command frigate, only when NO regular hull fits. It stays an
-//	        eligible candidate (sp-4a4e) but is drafted strictly last-resort -
-//	        mirroring how IncludeCommandShip already gates its pool entry.
+//	        eligible candidate but is drafted strictly last-resort - mirroring
+//	        how IncludeCommandShip already gates its pool entry.
 //	Tier 3: nothing fits in one trip - the regular hull needing the FEWEST
 //	        round trips (largest effective hold), travel time as tie-break.
 //	        The heavy is picked exactly when the load needs it.
@@ -133,9 +131,8 @@ func filterFits(fits []hullFit, keep func(hullFit) bool) []hullFit {
 
 // byNearestThenSmallest orders adequate hulls (Tier 1): shortest cruise travel
 // time first, smallest fitting hold breaking a tie. Proximity is the primary
-// key so a nearer adequate hull beats a farther smaller one - the far-source
-// claim that ate 5/8 stall-tails (sp-f66z). Size-fit is subordinated to
-// distance, not the other way round.
+// key so a nearer adequate hull beats a farther smaller one; size-fit is
+// subordinated to distance, not the other way round.
 func byNearestThenSmallest(a, b hullFit) bool {
 	if a.travelTime != b.travelTime {
 		return a.travelTime < b.travelTime
@@ -144,9 +141,8 @@ func byNearestThenSmallest(a, b hullFit) bool {
 }
 
 // bySmallestCapacity orders fitting command hulls (Tier 2): smallest hold
-// first, faster of two equal holds first. Regular Tier-1 selection now leads
-// with proximity (byNearestThenSmallest); this stays size-first for the
-// last-resort frigate pool, which sp-f66z leaves unchanged.
+// first, faster of two equal holds first. Tier 1 ranks by proximity first
+// (byNearestThenSmallest); this last-resort frigate pool ranks by size first.
 func bySmallestCapacity(a, b hullFit) bool {
 	if a.capacity != b.capacity {
 		return a.capacity < b.capacity

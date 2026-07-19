@@ -18,7 +18,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-78ai L3 — the tour as an absorption-ledger writer (reserve at plan-accept, convert
+// The tour as an absorption-ledger writer (reserve at plan-accept, convert
 // at sale, release on re-plan/exit) and reader (net outstanding depth into each plan).
 // These drive the FULL coordinator against the REAL DB-backed ledger, so the reservation
 // lifecycle is proven end-to-end, not against a stubbed port. STRONG is the fixture

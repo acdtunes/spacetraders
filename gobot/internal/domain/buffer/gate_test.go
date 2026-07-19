@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/buffer"
 )
 
-// admittedGood is a good that clears ALL THREE sp-rxrg gates: it is contracted to the hub, the
+// admittedGood is a good that clears ALL THREE gates: it is contracted to the hub, the
 // hub does not produce it locally, and its nearest external source is comfortably beyond the
 // distance floor. Every mutation test starts from this admitted baseline and flips exactly one
 // input, so a re-admission proves the flipped gate was the sole reason for exclusion.

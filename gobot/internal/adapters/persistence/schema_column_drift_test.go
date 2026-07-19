@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 )
 
-// This file is the durable COLUMN-level schema-drift gate (sp-s0mw), the 42703
+// This file is the durable COLUMN-level schema-drift gate, the 42703
 // (undefined_column) sibling of the 23514 enum gate in schema_enum_drift_test.go.
 //
 // The defect class: a GORM model grows a persisted column, but no hand-written
@@ -44,15 +44,6 @@ import (
 // with no CREATE in the migrations are AutoMigrate-managed and are exempted
 // AUTOMATICALLY (the `created` set drives it — nothing is hand-listed), so a new
 // migration-created table becomes checkable the moment its CREATE TABLE lands.
-//
-// NOTE ON THE ORIGINAL BEAD FRAMING: sp-s0mw's headline said "every model column
-// must appear in migrations", exempting only tables "no migration file mentions".
-// That criterion assumed every mentioned table also had a full CREATE in the
-// migrations; it does not hold here (players/ships/... are ALTERed but never
-// CREATEd). Keying on "CREATE'd in migrations" instead of "mentioned" is the
-// correction — otherwise the gate reports false drift for every AutoMigrate-born
-// base column. This is documented so the narrower scope is a deliberate ruling,
-// not an oversight.
 //
 // Pure test-layer: parses the SQL migrations and reflects the GORM models via
 // gorm.io/gorm/schema. Needs no database. The SQLite test DB is built by

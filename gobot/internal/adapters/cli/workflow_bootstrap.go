@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowBootstrapCommand creates the workflow bootstrap subcommand (sp-3nbe): it launches the
+// newWorkflowBootstrapCommand creates the workflow bootstrap subcommand: it launches the
 // STANDING captain bootstrap coordinator — the reconciler that encodes the known-good cold-start
 // playbook and drives a fresh agent toward the jump gate, so the captain launches it once and
 // monitors rather than re-deriving the cold-start sequence every era.

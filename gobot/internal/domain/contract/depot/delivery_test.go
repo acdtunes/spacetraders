@@ -21,7 +21,7 @@ func fakeDistance(coords map[string][2]float64) DistanceBetween {
 	}
 }
 
-// The load-bearing element (bead sp-9j9c): a depot fulfils a routed contract with the delivery
+// The load-bearing element: a depot fulfils a routed contract with the delivery
 // hull whose parked hub is NEAREST to the contract's destination. This is what makes a MULTI-hub
 // delivery fleet deliver locally for ALL destinations — each contract routes to its cluster's
 // nearest hull — instead of shuttling a single [0] hull to every destination (which compressed
@@ -51,8 +51,8 @@ func TestContractDepot_SelectsNearestDeliveryHullToDestination(t *testing.T) {
 		wantShip      string
 	}{
 		{
-			// THE ENABLER (and the reversal of the old pure-config rule): a hull co-located at the
-			// destination is preferred even when config placed it SECOND — nearest wins.
+			// A hull co-located at the destination is preferred even when config placed it
+			// SECOND — nearest wins over config order.
 			name: "co-located hull placed second is now PREFERRED (nearest to destination)",
 			deliveryHulls: []Element{
 				{Waypoint: "X1-VB74-A1", ShipSymbol: "FAR-1"},
@@ -83,7 +83,7 @@ func TestContractDepot_SelectsNearestDeliveryHullToDestination(t *testing.T) {
 		},
 		{
 			// REGRESSION fail-open: multiple hulls but NO distance oracle (un-wired / degraded) ->
-			// config order [0], byte-identical to the pre-sp-9j9c behavior.
+			// config order [0].
 			name: "nil distance oracle falls open to config order (first configured)",
 			deliveryHulls: []Element{
 				{Waypoint: "X1-VB74-A1", ShipSymbol: "FIRST-1"},

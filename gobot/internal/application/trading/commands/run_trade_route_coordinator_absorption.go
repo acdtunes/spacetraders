@@ -1,5 +1,5 @@
-// run_trade_route_coordinator_absorption.go — sp-78ai L4: read-only cross-engine
-// absorption-ledger consult for scanLanes (design §2, trade-analyst Q1: circuits
+// run_trade_route_coordinator_absorption.go — read-only cross-engine absorption-ledger
+// consult for scanLanes (design §2, trade-analyst Q1: circuits
 // are READ-ONLY — they consult the ledger other engines write, and write nothing
 // back). Mirrors idle-arb's L2 consult shape (readAbsorption/reserved) but with
 // depth-aware exclusion instead of L2's binary block: a circuit only wants ONE
@@ -21,7 +21,7 @@ import (
 )
 
 // absorptionEngineTradeRoute identifies this engine's consult verdicts for the
-// absorption_consult_verdicts_total metric (sp-dp92 P6), mirroring the sibling
+// absorption_consult_verdicts_total metric, mirroring the sibling
 // absorptionEngineIdleArb/absorptionEngineTour ledger-engine tags even though this
 // file never itself writes to the ledger (READ-ONLY, see file doc comment above).
 const absorptionEngineTradeRoute = "trade-route"
@@ -126,7 +126,7 @@ func (h *RunTradeRouteCoordinatorHandler) filterShadowedLanes(
 			kept = append(kept, lane)
 			continue
 		}
-		// Metrics (sp-dp92 P6): every non-clear verdict (shadow, reserved-depth,
+		// Metrics: every non-clear verdict (shadow, reserved-depth,
 		// unreadable) rolls up to "skip_reserved" on the metric — same 2-value
 		// verdict shape as idle_arb's consult; the granular reason stays in the
 		// log line below via the full absorptionVerdict string.

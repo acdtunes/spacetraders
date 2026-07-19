@@ -51,7 +51,7 @@ func TestRefreshCreditsBoundsLiveProbeWithDeadline(t *testing.T) {
 
 // Finding 2 (should-fix): once a live value has been observed, a transient API
 // error must RETAIN it, not flip the gate back to the divergent ledger
-// reconstruction (the exact source whose mismatch with live motivated D3).
+// reconstruction.
 func TestRefreshCreditsRetainsLiveValueOnTransientErrorAfterFirstSuccess(t *testing.T) {
 	sup, s, _ := newBridgeSupervisor(t)
 	// A DIVERGENT reconstruction: if the fix regressed, the gate would flip to

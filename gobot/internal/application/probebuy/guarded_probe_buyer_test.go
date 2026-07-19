@@ -125,8 +125,8 @@ func TestBuys_WhenDemandExceedsSupplyAndGuardsPass(t *testing.T) {
 	pu := &fakePurchaser{quotePrice: 200, quoteYard: "X1-HQ-YARD", buySymbol: "PROBE-NEW"}
 	b := newBuyer(tr, pu, &fakeLedger{}, clock)
 
-	// The demand-proximal target rides the guard stack through to the purchaser unchanged
-	// (sp-hej4): the buyer guards, then hands the yard hint to the buy — SELECTION only.
+	// The demand-proximal target rides the guard stack through to the purchaser unchanged:
+	// the buyer guards, then hands the yard hint to the buy — SELECTION only.
 	target := ProbeTarget{System: "X1-FRONTIER", HopPenaltyCredits: 50_000}
 	out := b.MaybeBuy(context.Background(), shared.MustNewPlayerID(1), 5 /*demand*/, 3 /*supply*/, false, target)
 
@@ -138,7 +138,7 @@ func TestBuys_WhenDemandExceedsSupplyAndGuardsPass(t *testing.T) {
 }
 
 // Supply already covers demand: the reconciler will relay an existing probe, so buying
-// would over-provision (the sp-njwy over-buy the coordinator must never make).
+// would over-provision (an over-buy the coordinator must never make).
 func TestNoBuy_WhenSupplyCoversDemand(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	pu := &fakePurchaser{quotePrice: 200}
@@ -152,9 +152,9 @@ func TestNoBuy_WhenSupplyCoversDemand(t *testing.T) {
 
 // The money guards each fail the buy CLOSED. One parametrized table because every row is
 // the same behavior — "a failing guard blocks the buy" — with a different guard tripped.
-// sp-hej4 scenario 5: a demand-proximal target is set on every row, proving target-aware yard
-// SELECTION never weakens the guard stack — an over-25% buy (and every other tripped guard) is
-// still refused with a target present, exactly as on the home-yard path.
+// A demand-proximal target is set on every row, proving target-aware yard SELECTION never
+// weakens the guard stack — an over-25% buy (and every other tripped guard) is still
+// refused with a target present, exactly as on the home-yard path.
 func TestNoBuy_WhenAGuardFails(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
@@ -216,7 +216,7 @@ func TestDryRun_EvaluatesButDoesNotBuy(t *testing.T) {
 	require.Contains(t, out.Reason, "would buy")
 }
 
-// sp-3u5d per-unit price ceiling: the BACKSTOP for the deepest-frontier tail whose only reachable
+// Per-unit price ceiling: the BACKSTOP for the deepest-frontier tail whose only reachable
 // yard is a depleted deep one. QuoteProbe has ALREADY run the sibling-spread and returns the FINAL
 // chosen quote; the buyer gates THAT price against the ceiling. One parametrized table because every
 // row is the same behavior — "buy iff the ceiling is disabled OR the final quote is within it" — with

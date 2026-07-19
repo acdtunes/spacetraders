@@ -1,5 +1,5 @@
 // Package buffer holds the SINGLE SOURCE OF TRUTH for deciding WHICH goods a hub's
-// contract-goods warehouse buffer may stock (bead sp-rxrg). Both the LIVE destination-depot
+// contract-goods warehouse buffer may stock. Both the LIVE destination-depot
 // warehouse-cap selector (adapters/grpc depotWarehouseTargetUnits -> PlanReceiptCaps) and the
 // dormant reconciler planner (domain/capacity selectBufferGoods) route their candidates through
 // this ONE Gate before their own reward / stall-prevention ranking, so the three candidate gates

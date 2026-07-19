@@ -65,24 +65,19 @@ func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string
 	now := r.clock.Now()
 	cacheKey := containerID + "|" + message
 
-	// Thread-safe deduplication check
 	r.dedupMu.Lock()
 
-	// Check if this message was logged recently
 	if lastLogged, exists := r.dedupCache[cacheKey]; exists {
 		if now.Sub(lastLogged) < r.dedupWindow {
-			// Duplicate within window, skip logging
 			r.dedupMu.Unlock()
 			return nil
 		}
 	}
 
-	// Clean up cache if it's getting too large
 	if len(r.dedupCache) >= r.dedupMaxSize {
 		r.cleanupDedupCache()
 	}
 
-	// Update cache with current timestamp
 	r.dedupCache[cacheKey] = now
 	r.dedupMu.Unlock()
 
@@ -101,7 +96,6 @@ func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string
 	}
 	// If metadata is nil or empty, metadataJSON remains nil which GORM will store as NULL
 
-	// Persist to database
 	logEntry := &ContainerLogModel{
 		ContainerID: containerID,
 		PlayerID:    playerID,
@@ -120,7 +114,6 @@ func (r *GormContainerLogRepository) cleanupDedupCache() {
 	now := r.clock.Now()
 	cutoff := now.Add(-r.dedupWindow)
 
-	// Remove entries older than the deduplication window
 	for key, timestamp := range r.dedupCache {
 		if timestamp.Before(cutoff) {
 			delete(r.dedupCache, key)
@@ -155,7 +148,6 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 func containerLogModelsToEntries(models []ContainerLogModel) []ContainerLogEntry {
 	entries := make([]ContainerLogEntry, len(models))
 	for i, model := range models {
-		// Unmarshal metadata if present
 		var metadata map[string]interface{}
 		if model.Metadata != nil && *model.Metadata != "" {
 			if err := json.Unmarshal([]byte(*model.Metadata), &metadata); err != nil {

@@ -1,20 +1,11 @@
 package ship_test
 
-// sp-rhju Part 1: DECOUPLE the piggybacked shipyard scan from the marketplace
-// arrival. sp-42ow wired the scan to ride RouteExecutor arrivals, but gated it on
-// segment.ToWaypoint.IsMarketplace() — so a probe that CHARTS/visits a system and
-// arrives at a SHIPYARD waypoint that is NOT itself a marketplace never scans it.
-// That is the emit gap behind the 45-system blind spot: a charted shipyard the
-// depth frontier reached but no MARKET tour ever toured stays unscanned forever.
-//
-// This test drives the REAL production driving port (RouteExecutor.ExecuteRoute) to
-// an arrival at a SHIPYARD-trait waypoint that carries NO marketplace trait, and
-// asserts the shipyard scan still fires: a row is persisted AND the heavy-yard
-// discovery event path is reached. Doubles sit ONLY at the port boundaries (the
-// external shipyard API, the inventory store, the immutable-trait reader, the
-// captain event outbox). Before the gate is widened it FAILS (IsMarketplace() is
-// false ⇒ scanShipyardIfPresent returns early, GetShipyard never called, 0 rows,
-// no event); after, it PASSES.
+// TestExecuteRoute_ArrivalAtShipyardOnlyWaypoint_PersistsRow_AndReachesHeavyEvent drives
+// the real production driving port (RouteExecutor.ExecuteRoute) to an arrival at a
+// SHIPYARD-trait waypoint that carries NO marketplace trait, and asserts the shipyard
+// scan still fires: a row is persisted AND the heavy-yard discovery event path is
+// reached. Doubles sit ONLY at the port boundaries (the external shipyard API, the
+// inventory store, the immutable-trait reader, the captain event outbox).
 
 import (
 	"context"
@@ -107,7 +98,7 @@ func TestExecuteRoute_ArrivalAtShipyardOnlyWaypoint_PersistsRow_AndReachesHeavyE
 	scanner := ship.NewShipyardScanner(api, inventory, &shipyardTraitReader{yard: yard}, events, shipyard.NewHeavyShipTypeSet(nil))
 
 	// A single-leg route whose destination bears the SHIPYARD trait but NOT
-	// MARKETPLACE — the exact charted-but-un-toured shipyard the old gate skipped.
+	// MARKETPLACE — a charted-but-un-toured shipyard.
 	from := mustTestWaypoint(t, "X1-DEEP-A", 0, 0)
 	to := mustTestWaypoint(t, yard, 10, 0)
 	to.Traits = []string{"SHIPYARD"}

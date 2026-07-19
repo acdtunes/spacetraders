@@ -76,7 +76,7 @@ func main() {
 	fmt.Println("SpaceTraders Daemon v0.1.0")
 	fmt.Println("==========================")
 	// Build stamp: makes the live binary's commit greppable in daemon.log so a
-	// deploy can assert the fresh build is actually running (sp-898q, retires L42).
+	// deploy can assert the fresh build is actually running.
 	fmt.Println(buildinfo.Get().Banner("spacetraders-daemon"))
 
 	// Load configuration
@@ -133,11 +133,10 @@ func run(cfg *config.Config) error {
 
 	// Reconcile schema on startup: models are the source of truth, and
 	// AutoMigrate is additive (creates missing tables/columns/indexes, never
-	// destructive). This closes the gap where a merged model change passed
-	// tests (which AutoMigrate the in-memory SQLite) but broke production
-	// Postgres for lack of a hand-written migration (the 2026-07-03 reserved-
-	// column P0). Non-fatal: a healthy earner must not be blocked by a
-	// migration quirk — log loudly and continue.
+	// destructive) — closes the gap where a merged model change passes tests
+	// (which AutoMigrate the in-memory SQLite) but breaks production Postgres
+	// for lack of a hand-written migration. Non-fatal: a healthy earner must
+	// not be blocked by a migration quirk — log loudly and continue.
 	if err := database.AutoMigrate(db); err != nil {
 		fmt.Printf("WARNING: schema AutoMigrate failed (continuing on existing schema): %v\n", err)
 	} else {
@@ -333,8 +332,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register NavigateRoute handler: %w", err)
 	}
 
-	// Jump handler (sp-n0x7: was never registered, so dispatching
-	// JumpShipCommand always failed with "no handler registered")
 	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, api.NewConstructionSiteRepository(apiClient, playerRepo), nil) // constructionRepo enables the at-complete-gate driveless-jump check; nil clock = RealClock
 	if err := mediator.RegisterHandler[*shipNav.JumpShipCommand](med, jumpShipHandler); err != nil {
 		return fmt.Errorf("failed to register JumpShip handler: %w", err)
@@ -397,12 +394,8 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
 	}
 
-	// Jump-gate discovery query handlers. FindNearestJumpGate was already used
-	// internally by JumpShipHandler but, like JumpShipCommand itself before
-	// sp-n0x7, had never been registered with the mediator - dispatching it
-	// directly always failed with "no handler registered". GetJumpGateConnections
-	// is new (sp-wlev): it backs the multi-system trade-route's neighbor-system
-	// discovery.
+	// Jump-gate discovery query handlers. GetJumpGateConnections backs the
+	// multi-system trade-route's neighbor-system discovery.
 	findNearestJumpGateHandler := shipQuery.NewFindNearestJumpGateHandler(shipRepo, graphService, playerRepo)
 	if err := mediator.RegisterHandler[*shipQuery.FindNearestJumpGateQuery](med, findNearestJumpGateHandler); err != nil {
 		return fmt.Errorf("failed to register FindNearestJumpGate handler: %w", err)
@@ -717,7 +710,7 @@ func run(cfg *config.Config) error {
 	}
 
 	// Register the standing construction-supply drain (sp-382j): the coordinator that rebuilds
-	// gate-construction EXECUTION post-sp-jav2 — a THIN drain on the SHARED ProductionExecutor
+	// gate-construction EXECUTION — a THIN drain on the SHARED ProductionExecutor
 	// engine (NOT a second parallel task coordinator, NOT folded into the goods factory). Each
 	// tick it runs the surviving activator (PENDING->READY), polls READY DELIVER_TO_CONSTRUCTION
 	// tasks from EXECUTING pipelines, claims idle in-system haulers under the shared
@@ -737,7 +730,7 @@ func run(cfg *config.Config) error {
 	// (defense in depth), but the pacing needs a real, monotonic clock wired on the live gate path.
 	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, shared.NewRealClock(), apiClient)
 	constructionExecutor.SetConstructionRepo(api.NewConstructionSiteRepository(apiClient, playerRepo))
-	// The activator is the SURVIVING SupplyMonitor (sp-jav2 kept the subpackage): NO new
+	// The activator is the SURVIVING SupplyMonitor: NO new
 	// activation logic. Built per-player because it bakes in the playerID; the poll-loop-only
 	// collaborators (factory tracker/state, sell distributor, storage, container reader, event
 	// publisher) are left nil — construction activation uses only task/pipeline/queue/market.
@@ -809,13 +802,11 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ContractHubCoordinator handler: %w", err)
 	}
 
-	// sp-7gr2: the persisted, fetch-through gate-graph resolver. travel() BFS-walks
-	// it to cross a multi-hop gap (KA42→PA3→UQ16→JP61 — the single-edge assumption
-	// that crashed a laden frigate at the home gate), and the arb pre-buy guard
-	// route-checks a cross-system sell leg through it BEFORE spending. Shared by
-	// the trade-route circuit, the one-shot arb, and (sp-42ow) the autosizer's
-	// reachable-yard ranking so they all see one cache/graph. Constructed here,
-	// ahead of the autosizer wiring that consumes it.
+	// The persisted, fetch-through gate-graph resolver. travel() BFS-walks it to
+	// cross a multi-hop gap, and the arb pre-buy guard route-checks a cross-system
+	// sell leg through it BEFORE spending. Shared by the trade-route circuit, the
+	// one-shot arb, and the autosizer's reachable-yard ranking so they all see one
+	// cache/graph. Constructed here, ahead of the autosizer wiring that consumes it.
 	// Captured so the sp-ywh1 gate-reconcile widening can read backoff markers straight from
 	// the SAME store the gate graph routes over (one cache/graph, era-scoped) — see
 	// scoutPostCoordinatorHandler.SetUnreadableGateProvider below.
@@ -918,12 +909,12 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register BootstrapCoordinator handler: %w", err)
 	}
 
-	// Trade-route coordinator (sp-zewt): a single-hull pure-arbitrage circuit that runs
-	// as a recovery-safe daemon container. Registered in the daemon mediator so its
+	// Trade-route coordinator: a single-hull pure-arbitrage circuit that runs as a
+	// recovery-safe daemon container. Registered in the daemon mediator so its
 	// NavigateRouteCommand legs resolve to the RouteExecutor-backed handler (orbit →
-	// refuel → NavigateDirect → arrival events) instead of the CLI runner's hand-rolled
-	// in-process nav — subsuming the 2sam/sj7p patches. marketScanner drives the live
-	// stale-ask guard (2sam hazard b). DaemonServer.StartTradeRoute launches the container.
+	// refuel → NavigateDirect → arrival events) instead of hand-rolled in-process nav.
+	// marketScanner drives the live stale-ask guard. DaemonServer.StartTradeRoute
+	// launches the container.
 	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
@@ -970,16 +961,13 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
 
-	// sp-9l4p: teach the shared navigate handler to route a CROSS-SYSTEM destination
-	// through the trade coordinator's gate-crossing travel machinery (RepositionToWaypoint)
-	// instead of fail-closing ("waypoint <dest> not found in cache for system <current>").
-	// The intra-system route planner cannot cross systems, so a bare cross-system navigate
-	// used to loud-fail — the live -90k copper-contract stall and the ceiling on the
-	// frontier depth campaign's edge probe-buys (an idle hull navigated from home to a
-	// frontier shipyard). One shared-seam wire fixes BOTH victims; it mutates the already
+	// Teach the shared navigate handler to route a CROSS-SYSTEM destination through the
+	// trade coordinator's gate-crossing travel machinery (RepositionToWaypoint) instead
+	// of fail-closing ("waypoint <dest> not found in cache for system <current>"). The
+	// intra-system route planner cannot cross systems; this mutates the already
 	// registered handler in place so every NavigateRouteCommand dispatch sees it. Additive
 	// and inert until here — same-system navigation is untouched, and without this wire the
-	// handler keeps its exact pre-fix fail-closed behaviour.
+	// handler keeps its exact fail-closed behaviour.
 	navigateRouteHandler.WithCrossSystemRouter(tradeRouteCoordinatorHandler)
 
 	// sp-s232: wire the scout-post coordinator for cross-gate satellite repositioning.
@@ -1004,7 +992,7 @@ func run(cfg *config.Config) error {
 	// sp-k7q5 layer 1: wire the captain event outbox so the coordinator warns (deferred)
 	// on a standing post whose circuit math cannot meet its freshness contract — the
 	// SAME store the watchkeeper reads, so the warning rides the next wake. nil would
-	// leave the warning off (pre-k7q5 behavior).
+	// leave the warning off.
 	scoutPostCoordinatorHandler.SetEventStore(captainEventRepo)
 	// sp-dp92 P7: wire the scout_freshness_actual_seconds gauge's data source — the SAME
 	// GORM market repository the rest of the coordinator already reads through, so no
@@ -1021,8 +1009,8 @@ func run(cfg *config.Config) error {
 	// sp-5les manning watchdog: wire the SAME SystemsFreshness census the freshness sizer
 	// (sp-iupr) reconciles against, so the watchdog re-mans a fully-manned-but-silent standing
 	// post the sizer stopped hoarding probes for — detected via the census's worst-case market
-	// age breaching the post's freshness target without advancing. nil disables the watchdog
-	// (pre-5les behavior); it never affects manning when unwired.
+	// age breaching the post's freshness target without advancing. nil disables the
+	// watchdog; it never affects manning when unwired.
 	scoutPostCoordinatorHandler.SetSystemFreshnessReader(marketRepo)
 	// sp-u8jc cross-system reuse relay: wire the per-system freshsizer-demand source over the SAME
 	// SystemsFreshness census (cycle/sla default to the freshness sizer's own defaults so the two
@@ -1212,8 +1200,8 @@ func run(cfg *config.Config) error {
 	// the missing piece the sp-u8jc relay + probe-buyer need: the post must survive to be manned.
 	freshnessSizerHandler.SetChartedMarketplaceReader(marketRepo)
 	freshnessSizerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
-	// sp-vwek: per-tick live-config snapshots — the motivating retune surface (the
-	// cooldown/spend knobs hand-edited on 2026-07-15 are now `tune`-able live).
+	// Per-tick live-config snapshots: the cooldown/spend knobs are `tune`-able live,
+	// no restart needed.
 	freshnessSizerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand](med, freshnessSizerHandler); err != nil {
 		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
@@ -1317,15 +1305,12 @@ func run(cfg *config.Config) error {
 	arbCoordinatorHandler := tradeRouteCmd.NewRunArbCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
-	// sp-7gr2: same gate graph — enables multi-jump travel AND the routability-check-
-	// before-spend guard that would have refused the JP61 buy at the source instead of
-	// crashing laden at the home gate.
+	// Same gate graph: enables multi-jump travel AND the routability-check-before-spend
+	// guard.
 	arbCoordinatorHandler.SetGateGraph(gateGraphService)
 	arbCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-system arrivals
-	// sp-8l3o: wait out a mid-transit re-adoption before the resume path's jump — the
-	// exact incident (arb-run-TORWIND-21 re-adopted mid in-system hop, jumped, 4214'd,
-	// then rode out the 5s/30s/120s restart backoff to self-heal, consuming the whole
-	// MaxRestartAttempts budget on a routine arrival).
+	// Wait out a mid-transit re-adoption before the resume path's jump, instead of
+	// 4214'ing and burning the container restart budget on a routine arrival.
 	arbCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// sp-dkj7: durably record a fresh buy's cost into the container config so a
 	// restart-rebuilt resume reloads it and reports honest P&L (a resumed run skips the
@@ -1355,9 +1340,9 @@ func run(cfg *config.Config) error {
 	// on tour_candidates_dropped_total) the profitable exotic lanes whose sink is beyond the
 	// 1-gate-hop tour graph. The raw GORM repo carries BestSinksAcrossSystems; read-only.
 	tourCoordinatorHandler.SetOutOfHorizonSinkScanner(marketRepo)
-	// sp-wj0h: inject the config-resolved ABSOLUTE artifact path so the executor reads
-	// the market model regardless of the daemon's cwd (the launchd daemon's cwd is not
-	// the repo root, which DOA'd the first tour on the old cwd-relative constant).
+	// Inject the config-resolved ABSOLUTE artifact path so the executor reads the
+	// market model regardless of the daemon's cwd (the launchd daemon's cwd is not the
+	// repo root).
 	tourCoordinatorHandler.SetModelArtifactPath(cfg.Routing.ModelArtifactPath)
 	// sp-zhii: durably record an in-flight margins-death reposition (its target
 	// system+waypoint) into the container config so a restart-rebuilt resume completes the
@@ -1381,7 +1366,7 @@ func run(cfg *config.Config) error {
 	// API) instead of scanning every market around every trade. Resolved from [trade_impact]
 	// config (scan_max_age_seconds / impact_sample_rate; restart to apply — the same
 	// refit-per-era path the model's coefficients already use). scan_sampling_disabled
-	// reverts to pre-sp-v34b full-scan behavior.
+	// reverts to full-scan behavior.
 	if scanPolicy, on := cfg.TradeImpact.ResolvedScanPolicy(); on {
 		tourCoordinatorHandler.SetScanPolicy(scanPolicy)
 	}
@@ -1542,10 +1527,6 @@ func run(cfg *config.Config) error {
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunStockerCoordinatorCommand](med, stockerCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register StockerCoordinator handler: %w", err)
 	}
-
-	// sp-jav2 X2: the parallel task-style manufacturing coordinator and its task worker were
-	// retired. The survivor goods_factory_coordinator (registered above) is the sole factory
-	// coordinator design.
 
 	fmt.Println("\n✓ Daemon is ready to accept connections")
 	fmt.Println("Press Ctrl+C to stop")

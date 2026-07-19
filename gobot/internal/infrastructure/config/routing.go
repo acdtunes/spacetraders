@@ -16,7 +16,7 @@ type RoutingConfig struct {
 	// dir + services/routing-service/model_artifacts/market_model.json; a relative value
 	// → resolved against the config file's dir; absolute → as-is. This is what makes the
 	// tour engine work regardless of the daemon's cwd (the launchd daemon's cwd is not
-	// the repo root, which DOA'd the first tour on the old cwd-relative constant).
+	// the repo root).
 	ModelArtifactPath string `mapstructure:"model_artifact_path"`
 
 	// GateBackoff tunes the gate-graph negative-result backoff (sp-ikx1): how long an

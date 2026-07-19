@@ -7,15 +7,13 @@ import (
 )
 
 // PersistedVersion reports the row version this entity was reconstructed at
-// (0 = unknown/API-born). See sp-60ff conflict telemetry.
+// (0 = unknown/API-born).
 func (s *Ship) PersistedVersion() int { return s.persistedVersion }
 
 // SetPersistedVersion is called by the persistence layer at reconstruction
 // and after a committed save.
 func (s *Ship) SetPersistedVersion(v int) { s.persistedVersion = v }
 
-// ReconstructShip creates a Ship from persisted state (used by repository)
-// This is used when loading a ship from the database.
 func ReconstructShip(
 	shipSymbol string,
 	playerID shared.PlayerID,

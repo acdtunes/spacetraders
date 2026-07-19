@@ -8,20 +8,20 @@ import (
 )
 
 // absorptionRecoveryModel is the Go-side reader of the fitted market model's
-// recovery curve (sp-78ai L1). The daemon loads the SAME market_model.json the
-// routing service fits (RULINGS #5: path is a flag; the fit pipeline and artifact
-// are untouched), and this holds only the `recovery` section: a per-activity-tier
+// recovery curve. The daemon loads the SAME market_model.json the routing service
+// fits (RULINGS #5: path is a flag; the fit pipeline and artifact are untouched),
+// and this holds only the `recovery` section: a per-activity-tier
 // half-life in minutes. An EXECUTED absorption shadow of `units` decays as
 // units × 0.5^(elapsed / half_life(tier)) — the honest, fail-closed expression of
 // the recovery externality in QUANTITY space (design §3(b)): nobody, including the
 // absorber's own next plan, can step into the hole until the model says it has
 // regrown, and the absorber pays no synthetic tax.
 //
-// UNTAGGED sinks (empty activity) are deliberately excluded (trade-analyst Q2):
-// the artifact fits a ~1074min (18h) baseline half-life for them, but any shadow
-// there is either wrong or effectively eternal against a ~45h era, and we have no
-// business bulk-dumping into a market the depth model has not fit. IsTagged reports
-// false for them so the writer skips the shadow entirely.
+// UNTAGGED sinks (empty activity) are deliberately excluded: the artifact fits a
+// ~1074min (18h) baseline half-life for them, but any shadow there is either wrong
+// or effectively eternal against a ~45h era, and we have no business bulk-dumping
+// into a market the depth model has not fit. IsTagged reports false for them so the
+// writer skips the shadow entirely.
 type absorptionRecoveryModel struct {
 	// halfLives maps activity tier → fitted recovery half-life. The untagged ("")
 	// key from the artifact is intentionally NOT loaded — see IsTagged.
@@ -65,7 +65,7 @@ func loadAbsorptionRecoveryModel(path string) *absorptionRecoveryModel {
 	for tier, entry := range art.Recovery {
 		if tier == "" || entry.HalfLifeMinutes <= 0 {
 			// Untagged ("") and non-positive fits are excluded: untagged sinks get no
-			// shadow (Q2), and a non-positive half-life would make decay undefined.
+			// shadow, and a non-positive half-life would make decay undefined.
 			continue
 		}
 		m.halfLives[tier] = time.Duration(entry.HalfLifeMinutes * float64(time.Minute))

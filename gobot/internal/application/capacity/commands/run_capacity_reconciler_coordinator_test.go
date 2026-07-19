@@ -1,6 +1,6 @@
 package commands
 
-// Behavioral tests for the capacity-reconciler loop scaffold (st-fyr). Every
+// Behavioral tests for the capacity-reconciler loop scaffold. Every
 // test drives the coordinator through its driving port (the command handler)
 // and asserts observable outcomes: the TickOutcome stream, the state of the
 // driven-port spies (actuator, proposal channel), and the injected clock.

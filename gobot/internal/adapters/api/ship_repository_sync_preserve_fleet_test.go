@@ -17,7 +17,7 @@ import (
 )
 
 // syncPreserveFleetFakeAPIClient supplies both ListShips (for
-// SyncAllFromAPI) and GetShip (for SyncShipFromAPI) - the sp-w870
+// SyncAllFromAPI) and GetShip (for SyncShipFromAPI) - the
 // syncPreserveOwnerFakeAPIClient in the neighboring test file only
 // implements ListShips, since TestSyncAllFromAPI_PreservesCaptainReservation
 // never exercises the single-ship sync path.
@@ -34,11 +34,11 @@ func (f *syncPreserveFleetFakeAPIClient) GetShip(_ context.Context, _, _ string)
 	return f.shipData, nil
 }
 
-// TestSyncAllFromAPI_PreservesDedicatedFleet is a regression test for sp-bi75:
-// same bug class and same root cause as sp-w870
-// (TestSyncAllFromAPI_PreservesCaptainReservation), one field over.
+// TestSyncAllFromAPI_PreservesDedicatedFleet is a regression test:
+// same bug class and same root cause as
+// TestSyncAllFromAPI_PreservesCaptainReservation, one field over.
 // shipDataToModel builds the fresh model from raw API data, which has no
-// concept of the bot's DedicatedFleet tag (sp-l7h2), so that column is left
+// concept of the bot's DedicatedFleet tag, so that column is left
 // at its Go zero value ("") on every ship synced from the API. The "preserve
 // existing assignment data" block copies ContainerID/AssignmentStatus/
 // AssignedAt/ReleasedAt/ReleaseReason/AssignmentOwner/AssignmentReason from
@@ -83,7 +83,7 @@ func TestSyncAllFromAPI_PreservesDedicatedFleet(t *testing.T) {
 // TestSyncShipFromAPI_PreservesDedicatedFleet is the single-ship-sync sibling
 // of TestSyncAllFromAPI_PreservesDedicatedFleet - SyncShipFromAPI has its own
 // independent "preserve existing assignment data" block (mirrored from
-// SyncAllFromAPI, see the matching sp-w870 comment there) with the same gap.
+// SyncAllFromAPI, see the matching comment there) with the same gap.
 func TestSyncShipFromAPI_PreservesDedicatedFleet(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestSyncShipFromAPI_PreservesDedicatedFleet(t *testing.T) {
 }
 
 // TestSyncAllFromAPI_PinnedHullNotPoachedAfterReload is the end-to-end
-// acceptance scenario for sp-bi75: a pinned hull must not be poached after a
+// acceptance scenario: a pinned hull must not be poached after a
 // restart. It chains the exact sequence that broke in production - a
 // restart-time API sync (SyncAllFromAPI, standing in for
 // syncAllShipsOnStartup) immediately followed by a foreign coordinator's

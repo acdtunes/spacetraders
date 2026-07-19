@@ -1,7 +1,7 @@
 package persistence_test
 
 // Integration tests (real GORM/sqlite, no mocks) for the shipyard-inventory
-// store (sp-42ow): upsert semantics — a re-scan refreshes price/last_scanned
+// store: upsert semantics — a re-scan refreshes price/last_scanned
 // with NO duplicate rows and delisted types disappear — and era scoping — a
 // dead era's yards never leak into live reads.
 
@@ -64,7 +64,7 @@ func TestShipyardInventory_Rescan_UpsertsWithoutDuplicates(t *testing.T) {
 	require.True(t, has)
 }
 
-// Era scoping (the sp-vapw class of bug): a dead era's yard rows must never
+// Era scoping: a dead era's yard rows must never
 // leak into live reads — not into ListByTypes, not into the HasAnyOfTypes
 // milestone predicate (or the new era's first discovery would be suppressed by
 // a ghost). A re-scan of the same waypoint purges the dead-era rows.
@@ -110,8 +110,7 @@ func TestShipyardInventory_DeadEraRows_InvisibleToLiveReads(t *testing.T) {
 	require.Equal(t, int64(1), total, "the re-scan must have purged the dead-era row, not stacked on it")
 }
 
-// ScannedSystems returns the DISTINCT open-era systems the player has scanned (the
-// sp-rhju backfill's scanned-exclusion set): one entry per system regardless of how
+// ScannedSystems returns the DISTINCT open-era systems the player has scanned: one entry per system regardless of how
 // many yards/types it holds, and a dead-era scan does NOT count as scanned (so a
 // universe reset re-backfills every shipyard this era).
 func TestShipyardInventory_ScannedSystems_DistinctAndEraScoped(t *testing.T) {

@@ -8,13 +8,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 )
 
-// These tests cover the injection boundary of the FINAL sp-u9xa seam: ResolveDepotRegistry
-// is how the live contract coordinator obtains the depot routing registry each pass,
-// sourced from the boot-loaded durable store via the narrow DepotRegistryProvider port.
-// It is fail-safe by construction for the dominant-income contract engine: a provider that
-// is absent (feature unwired) or errors (durable-store hiccup) resolves to a nil registry,
-// which routeContractViaDepot degrades to the default long-haul path. Reading the store
-// each pass is what makes a `depot add|remove` on the running daemon live with no restart.
+// These tests cover ResolveDepotRegistry, how the live contract coordinator obtains
+// the depot routing registry each pass, sourced from the boot-loaded durable store via
+// the narrow DepotRegistryProvider port. It is fail-safe by construction for the
+// dominant-income contract engine: a provider that is absent (feature unwired) or
+// errors (durable-store hiccup) resolves to a nil registry, which routeContractViaDepot
+// degrades to the default long-haul path. Reading the store each pass is what makes a
+// `depot add|remove` on the running daemon live with no restart.
 
 type fakeDepotRegistryProvider struct {
 	reg *depot.Registry

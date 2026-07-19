@@ -52,7 +52,7 @@ func TestScoutPostRepo_UpsertThenListActive(t *testing.T) {
 }
 
 // The respawn-loop cap's per-post counter and park deadline round-trip through the DB
-// (sp-py4n RULINGS #2): the reconciler reloads the consecutive-respawn count and any park
+// (RULINGS #2): the reconciler reloads the consecutive-respawn count and any park
 // window on boot, so a persistently-crashing post stays capped across a daemon restart rather
 // than the crash-loop resuming at tick cadence. A fresh post reads zero/unset.
 func TestScoutPostRepo_RespawnCapFieldsRoundTrip(t *testing.T) {
@@ -127,7 +127,7 @@ func TestScoutPostRepo_Remove(t *testing.T) {
 }
 
 // A post stamped with a prior era is invisible to ListActive once that era closes
-// and a new one opens — the sp-njpu cross-era guard for operational state.
+// and a new one opens — the cross-era guard for operational state.
 func TestScoutPostRepo_ListActiveIsEraScoped(t *testing.T) {
 	repo, db, playerID := newScoutPostTestRepo(t)
 	ctx := context.Background()
@@ -176,7 +176,7 @@ func TestScoutPostRepo_ListActiveEmptyWhenNoOpenEra(t *testing.T) {
 }
 
 // A multi-hull post round-trips through the DB with its budget AND its frozen
-// partitions intact (sp-enry): the primary slot's partition, and every extra slot's
+// partitions intact: the primary slot's partition, and every extra slot's
 // hull/tour/relay/partition. This is the persistence half of restart survival —
 // a reloaded post carries the exact partitions so the reconciler re-adopts each
 // probe without re-touring.
@@ -221,7 +221,7 @@ func TestScoutPostRepo_MultiHullRoundTrip(t *testing.T) {
 	require.Equal(t, []string{"SAT-0", "SAT-1"}, got.MannedHulls())
 }
 
-// A single-hull post persists byte-identically to the pre-enry layout (sp-enry):
+// A single-hull post persists byte-identically to the pre-enry layout:
 // Hulls defaults to 1 and the partition/extra-slot columns stay NULL, so it reads
 // back with no partitions and no extra slots.
 func TestScoutPostRepo_SingleHullNoPartitionColumns(t *testing.T) {

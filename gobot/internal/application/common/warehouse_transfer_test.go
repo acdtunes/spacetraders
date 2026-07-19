@@ -75,7 +75,7 @@ func dockStateErr() error {
 // --- deposit direction (from = visitor, to = warehouse) ------------------
 
 func TestAlignAndTransfer_Deposit_VisitorDockedWarehouseOrbit_OrbitsVisitorThenTransfers(t *testing.T) {
-	// The exact sp-5qs1 incident: stocker arrived DOCKED, warehouse parks IN_ORBIT.
+	// Stocker arrives DOCKED while the warehouse parks IN_ORBIT.
 	api := newFakeTransferAPI(map[string]string{
 		"VISITOR":   string(navigation.NavStatusDocked),
 		"WAREHOUSE": string(navigation.NavStatusInOrbit),

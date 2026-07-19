@@ -9,7 +9,7 @@ import (
 
 // newSelectorTestShipWithHull builds a docked, idle ship at (x,y) with the given
 // symbol, role, engine speed and cargo capacity - used by the hull right-sizing
-// tests (sp-snmb) where speed and capacity must vary independently of position.
+// tests where speed and capacity must vary independently of position.
 func newSelectorTestShipWithHull(t *testing.T, symbol, role string, x, y float64, engineSpeed, cargoCapacity int) *navigation.Ship {
 	t.Helper()
 	cargo, err := shared.NewCargo(cargoCapacity, 0, nil)
@@ -44,12 +44,9 @@ func newSelectorTestShipWithHull(t *testing.T, symbol, role string, x, y float64
 	return ship
 }
 
-// Once the command ship is a candidate (sp-4a4e), the selection rule must be
-// able to pick it - but under the l7h2 Phase 3 cargo-fit ladder it is drafted
-// strictly last-resort: here its hold is the only one that fits the load, so
-// it wins even from farther away. (Pre-Phase-3 this fixture asserted the
-// closer command ship beat a far hauler on distance alone; the fit ladder
-// benches the frigate whenever any regular hull can carry the load.)
+// The command ship is a candidate for selection, but the cargo-fit ladder
+// drafts it strictly last-resort: here its hold is the only one that fits
+// the load, so it wins even from farther away.
 func TestSelectOptimalShip_CommandShip_WinsWhenOnlyHullThatFits(t *testing.T) {
 	target, err := shared.NewWaypoint("X1-TW-MKT", 0, 0)
 	if err != nil {
@@ -69,11 +66,10 @@ func TestSelectOptimalShip_CommandShip_WinsWhenOnlyHullThatFits(t *testing.T) {
 	}
 }
 
-// l7h2 Phase 3 doctrine: the command frigate is benched whenever a regular
-// hull fits the load - even a frigate that is faster AND a tighter fit loses
-// to a fitting hauler. Frigate-last-resort outranks smallest-fit; the frigate
-// is preserved for the legs only it can carry. (Pre-Phase-3, sp-snmb's
-// completion-time estimate sent the fast frigate on this 2-unit job.)
+// The command frigate is benched whenever a regular hull fits the load - even
+// a frigate that is faster AND a tighter fit loses to a fitting hauler.
+// Frigate-last-resort outranks smallest-fit; the frigate is preserved for the
+// legs only it can carry.
 func TestSelectOptimalShip_FittingHaulerBenchesCommandFrigate_ForSmallDelivery(t *testing.T) {
 	target, err := shared.NewWaypoint("X1-TW-MKT", 0, 0)
 	if err != nil {
@@ -97,9 +93,8 @@ func TestSelectOptimalShip_FittingHaulerBenchesCommandFrigate_ForSmallDelivery(t
 
 // Mirror of the above: the same fast small-cargo frigate must NOT win a
 // delivery that actually needs the hold - reserve big-cargo hulls for when
-// the hold is needed, per the Admiral ruling. A 40-unit job forces the
-// 4-cargo frigate into 10 trips, which no longer clears faster than the
-// hauler doing it in one.
+// the hold is needed. A 40-unit job forces the 4-cargo frigate into 10 trips,
+// which no longer clears faster than the hauler doing it in one.
 func TestSelectOptimalShip_BigCargoHaulerBeatsFastSmallFrigate_ForLargeDelivery(t *testing.T) {
 	target, err := shared.NewWaypoint("X1-TW-MKT", 0, 0)
 	if err != nil {

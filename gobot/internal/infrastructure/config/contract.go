@@ -25,7 +25,7 @@ type ContractConfig struct {
 // market that near-certainly sources the contract's next same-good delivery, so it is
 // closer when that delivery starts. The signal is restricted to same-contract /
 // same-good / multi-delivery-remaining; the source market is resolved from live scanned
-// availability (NOT the persisted purchase-history tracking removed in 71aceda).
+// availability (not persisted purchase-history tracking).
 //
 // Distinct from PrePositioningSettings above, which is the sp-dchv haul-to-storage
 // warehouse-deposit feature — different mechanism, different knobs.

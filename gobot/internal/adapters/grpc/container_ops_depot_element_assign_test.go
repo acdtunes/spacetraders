@@ -12,14 +12,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-udgc NEVER-POACH (RULINGS #7, generalized to depot-launch) — SUPERSEDES the earlier sp-3l64
-// behavior of adopting a foreign-fleet ("contract"/"manufacturing") hull into a depot role.
-// positionDepotElementHull no longer poaches a hull already dedicated to a DIFFERENT fleet: an
-// operator's/existing dedication (e.g. the Admiral moved a former depot-crew light to "trade") wins
-// over the depot topology's naming, so a daemon restart never overrides an existing assignment (the
-// Admiral's invariant). Only an UNDEDICATED hull (the cold-start bootstrap/reconciler provisioning
-// norm) is crewed. These tests assert both halves against the REAL ship repository (an ADAPTER,
-// integration-tested — no mocked persistence), reusing the delivery harness.
+// sp-udgc NEVER-POACH (RULINGS #7, generalized to depot-launch): positionDepotElementHull never
+// poaches a hull already dedicated to a DIFFERENT fleet — an operator's/existing dedication (e.g.
+// the Admiral moved a former depot-crew light to "trade") wins over the depot topology's naming,
+// so a daemon restart never overrides an existing assignment (the Admiral's invariant). Only an
+// UNDEDICATED hull (the cold-start bootstrap/reconciler provisioning norm) is crewed. These tests
+// assert both halves against the REAL ship repository (an ADAPTER, integration-tested — no mocked
+// persistence), reusing the delivery harness.
 
 // A warehouse/stocker hull already dedicated to a FOREIGN fleet — "trade" (the Admiral's explicit
 // dedication, the durability case), or a coordinator pool like "contract"/"manufacturing" — is LEFT
@@ -133,7 +132,7 @@ func TestPositionDepotElementHull_LeavesAlreadyRoleDedicatedBusyHullUndisturbed(
 // A SOURCE-HUB hull (no standing coordinator, like a delivery hull) crewed from an UNDEDICATED hull
 // is re-dedicated to the DISTINCT depot-source-hub fleet AND — because nothing else will park it —
 // navigated to its market waypoint on assign. This is the navigate-on-assign path for a non-delivery
-// role, and it proves a crewed source hub no longer drifts off its configured anchor. (A source-hub
+// role, and it proves a crewed source hub does not drift off its configured anchor. (A source-hub
 // hull already dedicated to a FOREIGN fleet is left alone — covered by the never-poach test.)
 func TestPositionDepotElementHull_NavigatesSourceHubHullToItsWaypoint(t *testing.T) {
 	s, db, playerID, navCalls := newDepotDeliveryTestServer(t)

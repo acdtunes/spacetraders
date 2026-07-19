@@ -1,4 +1,4 @@
-// Package placement is the pure, handler-free core of the sp-fguo Layer-B placement/relocation
+// Package placement is the pure, handler-free core of the Layer-B placement/relocation
 // loop (spec: docs/superpowers/specs/2026-07-16-longer-trade-tours-and-placement-engine-design.md,
 // score(x)=E_x-β·D_x). It mirrors the Capacity Reconciler's phase shape (domain/capacity/ports.go)
 // at maybeReposition scale: a SENSE→PLAN→DIFF decision record over candidate systems, argmax on the
@@ -60,7 +60,7 @@ type Decision struct {
 // deadhead hour spent NOT trading (the one-way jump + the post-jump re-plan allowance). D=0 ⇒
 // score == E_x (the current-system D_s=0 identity).
 //
-// Two dimensional caveats are carried here deliberately (sp-z7ng units finding), because the
+// Two dimensional caveats are carried here deliberately, because the
 // decision log emits the raw quantities separately so calibration can see both:
 //   - Tier-0 charges an implicit ~1h horizon: $/hr minus (β·hours)=$ is commensurable only under a
 //     ~1-hour residency assumption; Tier-2 (∫rate_x(t)dt with absorption-depth residency) removes it.

@@ -12,9 +12,9 @@ import (
 )
 
 // flakyGateway records every delivery attempt and, while fail is set, errors
-// on SendMail/Nudge exactly the way a broken gc/bd substrate did during the
-// sp-sk68 incident. SessionAlive is healthy so ensureCaptainAlive is a clean
-// no-op and never pollutes the wake-attempt counts.
+// on SendMail/Nudge the way a broken gc/bd substrate does. SessionAlive is
+// healthy so ensureCaptainAlive is a clean no-op and never pollutes the
+// wake-attempt counts.
 type flakyGateway struct {
 	fail       bool
 	mailCalls  int

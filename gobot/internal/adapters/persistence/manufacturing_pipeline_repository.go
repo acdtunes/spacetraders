@@ -282,7 +282,7 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 
 // modelToPipeline converts database model to domain entity
 func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPipelineModel) (*manufacturing.ManufacturingPipeline, error) {
-	// sp-sdyo: decode the persisted per-good override blob. A corrupt/absent blob degrades to no
+	// Decode the persisted per-good override blob. A corrupt/absent blob degrades to no
 	// overrides (the guard-tightening default: every good uses the global floor), never failing an
 	// otherwise-valid pipeline load.
 	goodOverrides, _ := manufacturing.DecodeGoodGatingOverrides(m.GoodOverrides)

@@ -10,9 +10,9 @@ import (
 // These tests pin the sp-rsgc generalization of the sp-ve3q frontier re-apply: relaunching
 // a previously-stopped TUNABLE coordinator via its `start` verb must RE-ADOPT the last
 // persisted live-tuned config (source=live-config) instead of silently reverting every knob
-// to config-file defaults — the same bug class the frontier P1 exposed (sp-ve3q), now closed
-// for the market-freshness sizer, the guarded auto-outfit coordinator, and the scout-post
-// coordinator. The seam under test is the SHARED coordinatorStartConfig: the exact build each
+// to config-file defaults — for the market-freshness sizer, the guarded auto-outfit
+// coordinator, and the scout-post coordinator. The seam under test is the SHARED
+// coordinatorStartConfig: the exact build each
 // start handler runs before it persists the new container, asserted through ShowTunableConfig
 // — the operator's `tune --operation <op>` view — plus the merge/warning helpers directly.
 //

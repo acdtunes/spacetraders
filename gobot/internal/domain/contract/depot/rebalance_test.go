@@ -16,7 +16,7 @@ func toHubsOf(migrations []Migration) []string {
 	return hubs
 }
 
-// The demand-driven rebalance MECHANISM (bead sp-9j9c #3): because contracts are serialized (one
+// The demand-driven rebalance MECHANISM: because contracts are serialized (one
 // active at a time), "rebalance" means keeping IDLE delivery hulls optimally PRE-POSITIONED across
 // hubs for the NEXT contract — idle hulls migrate toward hubs with rising observed contract
 // arrival and away from cold ones, so fewer hulls cover more hot clusters with less inter-contract

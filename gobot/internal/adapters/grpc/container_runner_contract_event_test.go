@@ -45,7 +45,7 @@ func findEvent(events []*captain.Event, target captain.EventType) *captain.Event
 // (a) A contract workflow reaching success must emit a first-class
 // contract.completed event carrying the ship, player, container id, and
 // coordinator id — the contract-grade signal the watchkeeper needs instead of
-// only a generic workflow.finished (sp-82qs; the enum was previously dead).
+// only a generic workflow.finished (sp-82qs).
 func TestSignalCompletion_ContractWorkflowSuccess_EmitsContractCompleted(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)

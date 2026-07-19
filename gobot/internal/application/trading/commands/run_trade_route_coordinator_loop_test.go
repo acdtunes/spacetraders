@@ -13,13 +13,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// This file is the sp-wlev scope amendment: gate-crossing circuits must LOOP
-// until a margin-exit or starvation-exit, never one-and-done. A hull that flies
-// one lane to its bid-floor and then idles wastes duty cycle — the 20x gap the
-// amendment targets is DUTY CYCLE, not per-trade economics. These tests pin that
-// the coordinator re-scans and commits to a SECOND still-viable lane the moment
-// the first dies, accumulates totals across both circuits, and reports why the
-// whole run eventually stopped.
+// Gate-crossing circuits must LOOP until a margin-exit or starvation-exit, never
+// one-and-done. A hull that flies one lane to its bid-floor and then idles wastes
+// duty cycle — the gap that matters here is DUTY CYCLE, not per-trade economics.
+// These tests pin that the coordinator re-scans and commits to a SECOND
+// still-viable lane the moment the first dies, accumulates totals across both
+// circuits, and reports why the whole run eventually stopped.
 
 const (
 	loopSystem = "X1-LOOP"
@@ -175,7 +174,7 @@ func newLoopHarness(t *testing.T, ship *navigation.Ship) (*RunTradeRouteCoordina
 	return handler, mediator
 }
 
-// sp-wlev: once WIDGET's margin dies, the coordinator must re-scan and commit
+// Once WIDGET's margin dies, the coordinator must re-scan and commit
 // to GADGET — a second still-viable lane — rather than idling the hull after
 // one circuit. Totals must accumulate across BOTH circuits, and the run must
 // report why it eventually stopped (both lanes now sub-floor).

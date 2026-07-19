@@ -11,7 +11,7 @@ import (
 // The SpaceTraders purchase/sell/refuel/accept/fulfill responses all return the
 // agent's post-transaction credit balance in-band (data.agent.credits). The
 // client used to discard it, forcing the ledger to reconstruct balance_after
-// and letting it drift +~470k from the live API (sp-sc6u). These tests pin that
+// and letting it drift +~470k from the live API. These tests pin that
 // the client now surfaces the authoritative value.
 
 func TestPurchaseCargoCapturesInBandAgentCredits(t *testing.T) {

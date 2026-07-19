@@ -27,7 +27,7 @@ func (stubWaypoints) GetWaypoint(_ context.Context, _ string, _ string, _ int) (
 // newShipWriteTestRepo mirrors newDedicationTestRepo
 // (ship_repository_claim_dedication_test.go:19) but with a waypoint-provider
 // stub because these tests exercise FindBySymbol → modelToDomain. Shared by
-// the mailbox-phase tests (Tasks 3-5 of the sp-eum3 plan).
+// the mailbox-phase tests.
 func newShipWriteTestRepo(t *testing.T) (*ShipRepository, *gorm.DB, shared.PlayerID) {
 	t.Helper()
 	db, err := database.NewTestConnection()
@@ -58,7 +58,7 @@ func seedShip(t *testing.T, db *gorm.DB, playerID int, symbol, navStatus string,
 // version; the second is a DETECTED conflict — counted, logged, and then
 // applied via the legacy last-write-wins fallback (behavior preserved,
 // visibility added). This is the probe: in production this counter measures
-// how often the sp-n7yp race class actually fires (sp-60ff).
+// how often the race class actually fires.
 func TestSave_DetectsVersionConflictAndFallsBack(t *testing.T) {
 	repo, db, pid := newShipWriteTestRepo(t)
 	seedShip(t, db, pid.Value(), "TORWIND-10", "IN_ORBIT", 100)

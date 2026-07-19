@@ -12,21 +12,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// sp-lxwn VERDICT (B) — the reposition pre-flight is WORKING AS DESIGNED: it correctly returns
-// the solver's "no_profitable_tour" for a tapped ground. Two defects made that verdict OPAQUE
-// and let the pre-rank nominate mirages:
-//   1. the ranking log discarded the solver's own reason, printing a bare "infeasible";
-//   2. the pre-rank never age-filtered, so a candidate's headline lane could price off a
-//      >75-min-stale market the solver's snapshot (BuildTourSnapshot, 75-min cap) drops —
-//      a healthy-looking score for a ground the solver finds no profitable tour on (field:
-//      X1-ZC66 pre-ranked 157500 off a 131-min-stale source, solver-infeasible).
-// These tests pin the fixes: the log now names the specific reason, and the pre-rank scores
-// only on fresh listings.
+// The reposition pre-flight correctly returns the solver's "no_profitable_tour" for a
+// tapped ground; two properties keep that verdict legible instead of opaque:
+//   1. the ranking log names the solver's own reason, never a bare "infeasible";
+//   2. the pre-rank age-filters listings, so a candidate's headline lane cannot price off
+//      a >75-min-stale market the solver's snapshot (BuildTourSnapshot, 75-min cap) drops
+//      — which would otherwise produce a healthy-looking score for a ground the solver
+//      finds no profitable tour on.
 
 // freshListings must drop rows past maxListingAge so the pre-rank scores only markets the
-// solver's snapshot would also admit — the exact staleness parity the field bug turned on:
-// before the fix a fat STALE lane out-ranked a modest FRESH one, so a hull was nominated to a
-// ground whose "spread" was a mirage the solver's snapshot had already dropped.
+// solver's snapshot would also admit — the exact staleness parity that matters: a fat STALE
+// lane must never out-rank a modest FRESH one, nominating a hull to a ground whose "spread"
+// is a mirage the solver's snapshot has already dropped.
 func TestReposition_FreshListings_ExcludesStaleBestLane(t *testing.T) {
 	now := time.Now()
 	stale := now.Add(-2 * maxListingAge) // well past the 75-min snapshot cap
@@ -101,9 +98,8 @@ func TestReposition_CandidateReason_DisambiguatesVerdictFromCallError(t *testing
 	}
 }
 
-// End-to-end: a "chosen none" reposition episode must LOG the solver's specific reason in the
-// message text (which `container logs` keeps — sp-149h), so the opaque bare "infeasible" that
-// cost diagnosis time on the field episodes is gone. This is the primary sp-lxwn diagnostic.
+// End-to-end: a "chosen none" reposition episode must LOG the solver's specific reason in
+// the message text (which `container logs` keeps), never the opaque bare "infeasible".
 func TestTour_Reposition_RankingLog_NamesSolverReasonNotOpaqueInfeasible(t *testing.T) {
 	fx := repositionFixture()
 	homeCalls := 0

@@ -46,8 +46,8 @@ func TestPlanSourcing_InventoryFirst_PreferredOverMarket(t *testing.T) {
 func TestPlanSourcing_InventoryFirst_PartialStock_StillInventoryPlan(t *testing.T) {
 	// Warehouse holds fewer units than the contract needs. The plan is STILL
 	// inventory (zero-ask for the covered part); the delivery executor withdraws
-	// what is there and sources the remainder two-phase (sp-2ei3), so the plan
-	// carries the full remaining count.
+	// what is there and sources the remainder two-phase, so the plan carries the
+	// full remaining count.
 	repo := &fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{"X1-HOME": homeAsk(2500)}}
 	finder := &fakeInventoryFinder{src: &InventorySource{OperationID: "wh-1", StorageWaypoint: "X1-HOME-WH9", UnitsAvailable: 40}}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)
@@ -59,8 +59,8 @@ func TestPlanSourcing_InventoryFirst_PartialStock_StillInventoryPlan(t *testing.
 }
 
 func TestPlanSourcing_NoInventory_FallsThroughToMarketByteIdentical(t *testing.T) {
-	// Finder returns nil (no stock) — the plan must be the exact market plan the
-	// pre-feature code produced, and the finder must have been consulted.
+	// Finder returns nil (no stock) — the plan must be the exact market-only
+	// plan, and the finder must have been consulted.
 	repo := &fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{"X1-HOME": homeAsk(2500)}}
 	finder := &fakeInventoryFinder{src: nil}
 	c := testContract(t, 100_000, "2026-07-16T00:00:00Z", 100)

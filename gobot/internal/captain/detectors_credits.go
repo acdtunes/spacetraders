@@ -17,9 +17,9 @@ func detectCreditsCrossing(ctx context.Context, store captain.EventStore, cfg De
 	if cfg.LastCredits == 0 || len(cfg.CreditsThresholds) == 0 {
 		return nil
 	}
-	// Use the supervisor-supplied current credits (sp-sk68 D4): the detector no
-	// longer re-derives its own value via CurrentCredits, so it evaluates the
-	// SAME number as the wake gate and cannot fail independently on a DB error.
+	// Use the supervisor-supplied current credits (sp-sk68 D4): this evaluates
+	// the SAME number as the wake gate and cannot fail independently on a DB
+	// error.
 	current := cfg.CurrentCreditsValue
 	for _, th := range cfg.CreditsThresholds {
 		crossedUp := cfg.LastCredits < th && current >= th

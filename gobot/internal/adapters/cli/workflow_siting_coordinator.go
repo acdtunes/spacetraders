@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowSitingCoordinatorCommand creates the workflow siting-coordinator subcommand
-// (sp-vdld): it launches the STANDING factory-siting coordinator — the "brain" that automates
+// newWorkflowSitingCoordinatorCommand creates the workflow siting-coordinator subcommand: it
+// launches the STANDING factory-siting coordinator — the "brain" that automates
 // factory discovery, placement, and capacity planning, the factory twin of the trade-fleet /
 // scout-post coordinators.
 //

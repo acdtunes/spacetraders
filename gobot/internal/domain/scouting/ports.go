@@ -2,10 +2,10 @@ package scouting
 
 import "context"
 
-// ScoutPostRepository is the persistence port for the desired-state posts table
-// (sp-cxpq). All reads are scoped to the open era so a universe reset never
-// leaves the coordinator manning dead-era posts (mirrors the era-scoping of
-// waypoints/gate-edges, and the sp-njpu recovery guard). The daemon is the only
+// ScoutPostRepository is the persistence port for the desired-state posts table.
+// All reads are scoped to the open era so a universe reset never leaves the
+// coordinator manning dead-era posts (mirrors the era-scoping of
+// waypoints/gate-edges). The daemon is the only
 // writer (RULINGS #3): the reconciler persists assignment changes and the
 // captain's CLI edits both funnel through this port, never a config file.
 type ScoutPostRepository interface {
@@ -24,8 +24,8 @@ type ScoutPostRepository interface {
 	Remove(ctx context.Context, playerID int, systemSymbol string) error
 }
 
-// SystemFreshnessSnapshot is one market-bearing system's live freshness census
-// (sp-orgp): the three inputs the auto-sizer needs to size a standing post to the SLA,
+// SystemFreshnessSnapshot is one market-bearing system's live freshness census:
+// the three inputs the auto-sizer needs to size a standing post to the SLA,
 // all derived from persisted scan telemetry so the coordinator holds none of it itself.
 type SystemFreshnessSnapshot struct {
 	SystemSymbol string
@@ -44,16 +44,16 @@ type SystemFreshnessSnapshot struct {
 	// the coordinator trusts the measurement only once it clears a minimum sample floor,
 	// otherwise it falls back to the fleet-wide median or the seed.
 	CycleSamples int
-	// Markets is the per-market age+value-weight breakdown backing the sp-r57g PERCENTILE
+	// Markets is the per-market age+value-weight breakdown backing the PERCENTILE
 	// target: the sizer computes the (value-weighted) P90 age from these rather than reacting
 	// to the tail-dominated OldestAgeSeconds (the max). EMPTY ⇒ the sizer falls back to
-	// OldestAgeSeconds — exact pre-sp-r57g (max-age) behavior — so a census that predates the
-	// breakdown, and aggregate-only test fixtures, keep working unchanged.
+	// OldestAgeSeconds (max-age), so a census that predates the breakdown, and aggregate-only
+	// test fixtures, keep working unchanged.
 	Markets []MarketFreshnessSample
 }
 
 // MarketFreshnessSample is one market's (waypoint's) contribution to a system's freshness
-// percentile (sp-r57g): its current staleness (AgeSeconds) and its VALUE WEIGHT — the
+// percentile: its current staleness (AgeSeconds) and its VALUE WEIGHT — the
 // census adapter sets the weight to Σ(trade_volume × mid-price) across the market's goods,
 // so a high-throughput arb market pulls the percentile up while a low-traffic peripheral
 // straggler stays in the tolerated tail. Weight is ignored when value-weighting is off (the
@@ -65,7 +65,7 @@ type MarketFreshnessSample struct {
 }
 
 // SystemFreshnessReader supplies the per-system freshness census the market-freshness
-// auto-sizer reconciles against (sp-orgp). One call per tick returns every market-bearing
+// auto-sizer reconciles against. One call per tick returns every market-bearing
 // system for the player. Satisfied by the GORM market repository, which derives all three
 // fields from the market_data scan timestamps in a single pass.
 type SystemFreshnessReader interface {

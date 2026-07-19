@@ -1,10 +1,10 @@
-// Package capacity holds the ADAPTER side of the capacity reconciler (epic
-// st-7zk): implementations of the ports declared in
+// Package capacity holds the ADAPTER side of the capacity reconciler:
+// implementations of the ports declared in
 // internal/domain/capacity, wired in cmd/spacetraders-daemon/main.go. This
-// file is the SENSE lane (bead st-7ee): a read-only signal collector over the
+// file is the SENSE lane: a read-only signal collector over the
 // daemon database plus the live-API treasury boundary.
 //
-// Sibling lanes (actuator st-5ig, proposal channel st-0h8) add their adapters
+// Sibling lanes (actuator, proposal channel) add their adapters
 // to this same package — keep exported names narrow and lane-scoped.
 package capacity
 
@@ -49,7 +49,7 @@ const (
 	DefaultCrossSystemSourceDistance = 2500.0
 
 	// DefaultDemandWindowContracts is the recent-N COUNT window the demand miner
-	// measures contract frequency over (bead sp-lk9x): the most recent N contracts
+	// measures contract frequency over: the most recent N contracts
 	// and the wall-clock span they occupy, never the ever-growing gap back to the
 	// player's first-ever contract. N≈120 tracks the era-3 analyst's 100–150
 	// recent-contract observation window; a count window is structurally immune to
@@ -108,8 +108,8 @@ func WithCrossSystemSourceDistance(distance float64) SensorOption {
 	}
 }
 
-// WithDemandWindowContractCount overrides the recent-N demand COUNT window
-// (bead sp-lk9x). A positive value caps the frequency lookback at that many most
+// WithDemandWindowContractCount overrides the recent-N demand COUNT window.
+// A positive value caps the frequency lookback at that many most
 // recent contracts; tests use a small N to exercise the cap without seeding 120
 // rows, and it doubles as the future calibration knob for the analyst's window.
 func WithDemandWindowContractCount(count int) SensorOption {
@@ -160,7 +160,7 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 	// from the SAME hull snapshot Utilization carries — same tick, no second DB
 	// read — so the two can never diverge (the sibling rule to FleetHullCount
 	// below). Left empty, an idle undedicated hull is invisible and every hull
-	// gap escalates straight to tier-4 capital (st-780).
+	// gap escalates straight to tier-4 capital.
 	topology.IdleHulls = reuseEligibleIdleHulls(utilization.Hulls, topology.Clusters)
 
 	return domainCapacity.Signals{

@@ -1,6 +1,6 @@
 // Package assignment holds captain-facing commands that directly control a
-// ship's assignment ownership (sp-i1ku), distinct from the coordinator-facing
-// claim path in the container packages.
+// ship's assignment ownership, distinct from the coordinator-facing claim
+// path in the container packages.
 package assignment
 
 import (
@@ -14,7 +14,7 @@ import (
 )
 
 // ReserveShipCommand reserves a ship for the captain's direct, manual use,
-// hiding it from every coordinator's assignment discovery (sp-i1ku). A
+// hiding it from every coordinator's assignment discovery. A
 // captain reservation is persisted as an active ShipAssignment row (owner=
 // captain), so it survives daemon restarts and is excluded from the
 // stale-claim reconciliation pass that runs on ship refresh (see
@@ -25,12 +25,11 @@ type ReserveShipCommand struct {
 	PlayerID    *int   // Resolve by numeric player ID (takes precedence)
 	AgentSymbol string // Resolve by agent symbol if PlayerID is nil
 
-	// Force PREEMPTS a coordinator's live claim (sp-w3yd): `ship reserve --force`.
+	// Force PREEMPTS a coordinator's live claim: `ship reserve --force`.
 	// When true, a hull actively claimed by a coordinator container is atomically
 	// revoked and transferred to the captain (operator authority wins) instead of
-	// being rejected. The zero value (false) is the byte-identical pre-sp-w3yd
-	// behavior: a claimed hull is rejected exactly as before. --force is the ONLY
-	// new ownership bypass — explicit and operator-initiated.
+	// being rejected. The zero value (false) rejects a claimed hull as normal.
+	// --force is the ONLY ownership bypass — explicit and operator-initiated.
 	Force bool
 }
 
@@ -41,14 +40,13 @@ type ReserveShipResponse struct {
 	Reason     string
 	// Warning is non-empty if reserving this ship left zero other idle ships
 	// sharing its role (e.g. "the last idle hauler"). Advisory only — the
-	// reservation has already succeeded by the time this is computed
-	// (sp-i1ku acceptance criterion: "a soft warning, still reserve").
+	// reservation has already succeeded by the time this is computed.
 	Warning string
 
 	// Preempted is true when --force revoked a coordinator's live claim (as
 	// opposed to reserving an already-idle hull). PreemptedFrom names the
 	// container the claim was revoked from, so the CLI can tell the operator
-	// exactly what was taken back (sp-w3yd). Both are zero for a non-force
+	// exactly what was taken back. Both are zero for a non-force
 	// reserve or a force reserve of an idle hull.
 	Preempted     bool
 	PreemptedFrom string
@@ -87,15 +85,14 @@ func (h *ReserveShipHandler) Handle(ctx context.Context, request common.Request)
 	var preemptedFrom string
 	if cmd.Force {
 		// --force: atomically revoke any coordinator claim and transfer the hull
-		// to the captain (sp-w3yd). preemptedFrom is the container the claim was
+		// to the captain. preemptedFrom is the container the claim was
 		// revoked from, or "" when the hull was already idle.
 		preemptedFrom, err = h.shipRepo.PreemptForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to preempt ship for captain: %w", err)
 		}
 	} else if err := h.shipRepo.ReserveForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID); err != nil {
-		// Non-force: unchanged — a live coordinator claim is rejected exactly as
-		// before (byte-identical to pre-sp-w3yd).
+		// Non-force: a live coordinator claim is rejected.
 		return nil, fmt.Errorf("failed to reserve ship: %w", err)
 	}
 

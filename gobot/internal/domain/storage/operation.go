@@ -28,14 +28,12 @@ const (
 	OperationTypeWarehouse OperationType = "WAREHOUSE"
 )
 
-// AllOperationTypes returns every OperationType constant. sp-cu42: the
+// AllOperationTypes returns every OperationType constant. The
 // schema_enum_drift_test.go gate derives its valid_operation_type
 // migration-coverage check from this list instead of a hand-copied constant
 // list, so a new operation type here is checked against the storage_operations
 // CHECK constraint automatically. Keep this in sync with the const block above
-// — it is the ONE place that must be updated when adding a type (versus the
-// two-hop miss that shipped WAREHOUSE without a migration: a new constant here
-// plus a separate, easy-to-forget copy in a distant test file).
+// — it is the ONE place that must be updated when adding a type.
 func AllOperationTypes() []OperationType {
 	return []OperationType{
 		OperationTypeGasSiphon,
@@ -80,7 +78,6 @@ type StorageOperation struct {
 	lifecycle      *shared.LifecycleStateMachine
 }
 
-// NewStorageOperation creates a new storage operation instance
 func NewStorageOperation(
 	id string,
 	playerID int,
@@ -142,7 +139,7 @@ func copyStrings(values []string) []string {
 // NewWarehouseOperation creates a passive warehouse storage operation: a
 // dedicated hull parked at a home waypoint that BUFFERS arbitrary contract
 // goods deposited by haulers. It is the extractor-free sibling of
-// NewStorageOperation (sp-dchv Lane B): a warehouse has ZERO extractor ships
+// NewStorageOperation: a warehouse has ZERO extractor ships
 // because cargo arrives from tour/trade deposit legs, not from extraction, so
 // the >=1-extractor invariant is inapplicable and replaced by >=1 storage ship
 // plus a non-empty supported-goods whitelist.
@@ -205,7 +202,7 @@ func (op *StorageOperation) StoppedAt() *time.Time { return op.lifecycle.Stopped
 
 // operationStatusByLifecycle projects each shared lifecycle state onto the
 // storage-operation status. A lifecycle state absent here falls back to
-// OperationStatusPending (the former switch's default).
+// OperationStatusPending.
 var operationStatusByLifecycle = map[shared.LifecycleStatus]OperationStatus{
 	shared.LifecycleStatusPending:   OperationStatusPending,
 	shared.LifecycleStatusRunning:   OperationStatusRunning,
@@ -214,7 +211,6 @@ var operationStatusByLifecycle = map[shared.LifecycleStatus]OperationStatus{
 	shared.LifecycleStatusFailed:    OperationStatusFailed,
 }
 
-// Status converts from LifecycleStatus to OperationStatus
 func (op *StorageOperation) Status() OperationStatus {
 	return shared.ProjectStatus(op.lifecycle, operationStatusByLifecycle, OperationStatusPending)
 }
@@ -230,7 +226,6 @@ func (op *StorageOperation) Start() error {
 	return op.lifecycle.Start()
 }
 
-// Stop transitions the operation to STOPPED state
 func (op *StorageOperation) Stop() error {
 	status := op.lifecycle.Status()
 	if status == shared.LifecycleStatusCompleted || status == shared.LifecycleStatusStopped {
@@ -239,7 +234,6 @@ func (op *StorageOperation) Stop() error {
 	return op.lifecycle.Stop()
 }
 
-// Complete transitions the operation to COMPLETED state
 func (op *StorageOperation) Complete() error {
 	status := op.lifecycle.Status()
 	if status != shared.LifecycleStatusRunning {
@@ -248,7 +242,6 @@ func (op *StorageOperation) Complete() error {
 	return op.lifecycle.Complete()
 }
 
-// Fail transitions the operation to FAILED state with error
 func (op *StorageOperation) Fail(err error) error {
 	status := op.lifecycle.Status()
 	if status == shared.LifecycleStatusCompleted || status == shared.LifecycleStatusStopped {
@@ -259,7 +252,6 @@ func (op *StorageOperation) Fail(err error) error {
 
 // Query methods
 
-// IsRunning returns true if the operation is currently executing
 func (op *StorageOperation) IsRunning() bool {
 	return op.lifecycle.IsRunning()
 }
@@ -269,12 +261,10 @@ func (op *StorageOperation) IsFinished() bool {
 	return op.lifecycle.IsFinished()
 }
 
-// IsPending returns true if the operation hasn't started yet
 func (op *StorageOperation) IsPending() bool {
 	return op.lifecycle.IsPending()
 }
 
-// SupportsGood checks if operation produces the specified good
 func (op *StorageOperation) SupportsGood(goodSymbol string) bool {
 	for _, g := range op.supportedGoods {
 		if g == goodSymbol {
@@ -284,12 +274,10 @@ func (op *StorageOperation) SupportsGood(goodSymbol string) bool {
 	return false
 }
 
-// RuntimeDuration calculates how long the operation has been running
 func (op *StorageOperation) RuntimeDuration() time.Duration {
 	return op.lifecycle.RuntimeDuration()
 }
 
-// String provides human-readable representation
 func (op *StorageOperation) String() string {
 	return fmt.Sprintf("StorageOperation[%s, type=%s, status=%s, waypoint=%s, extractors=%d, storage=%d, goods=%v]",
 		op.id, op.operationType, op.Status(), op.waypointSymbol,
@@ -313,7 +301,6 @@ type StorageOperationData struct {
 	StoppedAt      *time.Time
 }
 
-// ToData converts the entity to a DTO for persistence
 func (op *StorageOperation) ToData() *StorageOperationData {
 	var lastErr string
 	if op.lifecycle.LastError() != nil {
@@ -337,11 +324,9 @@ func (op *StorageOperation) ToData() *StorageOperationData {
 	}
 }
 
-// StorageOperationFromData creates a StorageOperation entity from a DTO
 func StorageOperationFromData(data *StorageOperationData, clock shared.Clock) *StorageOperation {
 	lifecycle := shared.NewLifecycleStateMachine(clock)
 
-	// Convert OperationStatus to LifecycleStatus
 	var lifecycleStatus shared.LifecycleStatus
 	switch OperationStatus(data.Status) {
 	case OperationStatusPending:
@@ -358,13 +343,11 @@ func StorageOperationFromData(data *StorageOperationData, clock shared.Clock) *S
 		lifecycleStatus = shared.LifecycleStatusPending
 	}
 
-	// Parse last error
 	var lastErr error
 	if data.LastError != "" {
 		lastErr = fmt.Errorf("%s", data.LastError)
 	}
 
-	// Recover lifecycle state from persistence
 	lifecycle.RecoverFromPersistence(
 		lifecycleStatus,
 		data.CreatedAt,

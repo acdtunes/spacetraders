@@ -45,13 +45,11 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request mediator.Request)
 		return nil, fmt.Errorf("invalid request type: expected *GetPlayerQuery")
 	}
 
-	// Resolve player ID using common utility
 	playerID, err := h.playerResolver.ResolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch player entity
 	player, err := h.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find player: %w", err)

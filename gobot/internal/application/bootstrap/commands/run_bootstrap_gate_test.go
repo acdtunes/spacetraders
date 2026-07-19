@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// --- derivePhase: GATE stickiness + COMPLETE (Slice 3) ---
+// --- derivePhase: GATE stickiness + COMPLETE ---
 
-// The INCOME→GATE entry is realized $/hr ≥ income_bar (unchanged from Slice 2's stub-era derivation).
+// The INCOME→GATE entry is realized $/hr ≥ income_bar.
 func TestBootstrap_DerivePhase_EntersGateAtIncomeBar(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar 10000
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 12000}
@@ -67,7 +67,7 @@ func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 	}
 }
 
-// --- planGateWorkers: deterministic repurpose-first → top-up sizing (Slice 3) ---
+// --- planGateWorkers: deterministic repurpose-first → top-up sizing ---
 
 // Repurpose-first: when GATE begins, all contract haulers beyond min_contract_earners are released to
 // the executor as the seed workforce — BEFORE the pipeline reveals its shape (chains still 0), so no buy.

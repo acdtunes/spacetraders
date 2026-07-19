@@ -9,10 +9,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 )
 
-// emit posts scout-demand for stale-but-promising sites (EMIT step, sp-vdld M6). A site the
+// emit posts scout-demand for stale-but-promising sites (the EMIT step). A site the
 // coordinator WANTS to run (in the desired top-K) whose market data has aged past EmitStaleness
 // is worth refreshing: siting decided on old data, so we ask the scout system to re-cover that
-// system, closing the discovery loop (the sp-k7q5 scout-post-proposal channel). Launching is
+// system via the scout-post-proposal channel, closing the discovery loop. Launching is
 // unaffected — the child goods_factory coordinator re-reads live markets through its guards
 // before it spends, so a launch on stale SCAN data is not a money risk; the scout-demand only
 // sharpens the NEXT decision. Emission is deduped per system over the cooldown (the emitter's
@@ -57,12 +57,12 @@ func (h *RunSitingCoordinatorHandler) emit(ctx context.Context, cmd *RunSitingCo
 	return emitted
 }
 
-// runSelfCheck is the effect self-check (sp-vdld M6), retrofitted onto the shared
-// health.EffectTracker (sp-57g9) so the inert-loop state machine — the no-effect streak
-// and the one-shot-per-episode WARN dedup — lives in one primitive with the worker
-// rebalancer, not duplicated inline. It watches for the coordinator scanning real
-// candidates yet producing NO effect, sustained over EffectSelfcheckTicks ticks, then emits
-// ONE WARN naming the cause. It fires on the two genuine no-effect pathologies — never on a
+// runSelfCheck is the effect self-check, built on the shared health.EffectTracker so the
+// inert-loop state machine — the no-effect streak and the one-shot-per-episode WARN dedup —
+// lives in one primitive shared with the worker rebalancer, not duplicated inline. It watches
+// for the coordinator scanning real candidates yet producing NO effect, sustained over
+// EffectSelfcheckTicks ticks, then emits ONE WARN naming the cause. It fires on the two
+// genuine no-effect pathologies — never on a
 // healthy satisfied portfolio (which has scored candidates and running chains it simply
 // doesn't need to change):
 //

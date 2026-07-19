@@ -11,7 +11,7 @@ import (
 )
 
 // The warehouse hull is a physically dedicated, pinned asset (RULINGS #7,
-// sp-dchv Lane B): a hull dedicated to the "warehouse" fleet must reject a claim
+// Lane B): a hull dedicated to the "warehouse" fleet must reject a claim
 // from any other operation, even while idle, so no gas/manufacturing/contract
 // coordinator can poach the buffer hull out from under a running warehouse. The
 // rejection leaves the row untouched — still idle, still claimable by warehouse.

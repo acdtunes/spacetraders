@@ -9,20 +9,20 @@ import (
 )
 
 // transaction_cash_rate_repository.go — the DEFINITIVE transactions-cash realized $/hr
-// reader (sp-rd21, epic sp-g9td). It is the cash-true counterpart of the telemetry read
+// reader. It is the cash-true counterpart of the telemetry read
 // the autosizer uses (fleet_autosizer_ports.FleetTourRate → trading.ComputeFleetTourRate):
 // a thin windowed SQL sum over the transactions ledger + a deferral to the pure
 // trading.ComputeCashRealizedRate for the arithmetic.
 //
 // It sums the signed amount over the three cash-flow transaction types a trade round-trip
 // produces — SELL_CARGO (income, +), PURCHASE_CARGO (cost, −) and REFUEL (cost, −) — so the
-// result reconciles to the treasury, unlike the telemetry-netting rate sp-rd21 proved ~2x
+// result reconciles to the treasury, unlike the telemetry-netting rate found ~2x
 // inflated (it dropped ~1/3 of buy legs). The window is [since, now); the rate divides by
 // the FULL wall-clock span so idle time between tours counts against the duty-cycle $/hr.
 //
 // It filters on created_at (the ledger ingestion time) — the same column the sibling
-// transactions-cash reader GormChainPnLRepository.ReadRealizedPnL scopes on, so sp-461l can
-// switch its consumers onto a consistent window basis.
+// transactions-cash reader GormChainPnLRepository.ReadRealizedPnL scopes on, so consumers can
+// switch onto a consistent window basis.
 
 // cashRateTransactionTypes are the ledger transaction types that constitute a trade
 // round-trip's realized cash flow. amount is stored signed (income +, expense −), so a

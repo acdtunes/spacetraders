@@ -1,6 +1,6 @@
 package depot
 
-// DeliveryHullFleet is the DedicatedFleet tag a depot delivery hull carries (bead sp-3l64).
+// DeliveryHullFleet is the DedicatedFleet tag a depot delivery hull carries.
 // Assigning a hull as a depot delivery hull re-dedicates it to this fleet, which makes hull
 // assignment ATOMIC: the tag is DISTINCT from the contract coordinator's own "contract" fleet
 // on purpose, so a delivery hull is invisible to BOTH pools the coordinator draws from — the
@@ -20,8 +20,8 @@ const DeliveryHullFleet = "depot-delivery"
 type DistanceBetween func(fromWaypoint, toWaypoint string) (distance float64, ok bool)
 
 // SelectDeliveryHull returns the pinned delivery hull the depot uses to fulfil a contract
-// delivering to destinationSymbol: the hull whose parked hub is NEAREST to destinationSymbol
-// (bead sp-9j9c). With a MULTI-hub delivery fleet this is what makes every cluster's contract
+// delivering to destinationSymbol: the hull whose parked hub is NEAREST to destinationSymbol.
+// With a MULTI-hub delivery fleet this is what makes every cluster's contract
 // deliver locally — each routes to its own nearest hull — instead of shuttling the single
 // config-first hull to every destination (which only compressed the haul for destinations
 // adjacent to where that one hull parked). distance is the SAME in-system coordinate separation
@@ -30,9 +30,9 @@ type DistanceBetween func(fromWaypoint, toWaypoint string) (distance float64, ok
 // It is fail-open and regression-safe on every degenerate shape:
 //   - no delivery hull    -> ok=false (no local delivery possible; caller keeps the long haul).
 //   - exactly one hull    -> that hull, byte-identical (nearest-of-one is that one; the distance
-//     oracle is never consulted, so a single-hull depot behaves exactly as it did pre-sp-9j9c).
-//   - nil distance oracle -> the first configured hull (an un-wired / degraded deployment keeps
-//     the old config-order rule).
+//     oracle is never consulted).
+//   - nil distance oracle -> the first configured hull (an un-wired / degraded deployment falls
+//     back to config order).
 //   - a hull at an uncharted hub (ok=false) never displaces a hull with a known, nearer position,
 //     and ties keep config order — so the pick is deterministic pass-to-pass.
 func (c *ContractDepot) SelectDeliveryHull(destinationSymbol string, distance DistanceBetween) (Element, bool) {

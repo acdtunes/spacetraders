@@ -14,12 +14,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// End-to-end proof of sp-pnx0: the full Handle() flow (not just scanLanes in
-// isolation) must select a hull-appropriate lane, not merely the deepest raw
-// CappedSpread. The fixture reproduces the incident shape: THINGOOD is a thin,
-// deep-spread lane (a light ship's ideal — but a 225-hold heavy would crush its
-// vol-20 market); DEEPGOOD is a modest-spread, deep lane a heavy hull can
-// actually absorb. Numbers mirror the domain-layer proof in arbitrage_lane_test.go.
+// End-to-end proof that the full Handle() flow (not just scanLanes in isolation)
+// must select a hull-appropriate lane, not merely the deepest raw CappedSpread. The
+// fixture: THINGOOD is a thin, deep-spread lane (a light ship's ideal — but a
+// 225-hold heavy would crush its vol-20 market); DEEPGOOD is a modest-spread, deep
+// lane a heavy hull can actually absorb. Numbers mirror the domain-layer proof in
+// arbitrage_lane_test.go.
 const (
 	hwSystem = "X1-HW"
 
@@ -178,10 +178,9 @@ func newHoldWeightShip(t *testing.T, symbol string, capacity int) *navigation.Sh
 	return ship
 }
 
-// TestTradeRouteCoordinator_HeavyHullPrefersDeepLaneOverThinOne is the sp-pnx0
-// regression proof: a 225-cargo heavy hull must select DEEPGOOD over THINGOOD,
-// even though THINGOOD has the deeper raw CappedSpread (160000 > 150000) — the
-// exact incident shape (TORWIND-19-style heavy sent onto a vol-20 lane).
+// TestTradeRouteCoordinator_HeavyHullPrefersDeepLaneOverThinOne proves a 225-cargo
+// heavy hull must select DEEPGOOD over THINGOOD, even though THINGOOD has the
+// deeper raw CappedSpread (160000 > 150000).
 func TestTradeRouteCoordinator_HeavyHullPrefersDeepLaneOverThinOne(t *testing.T) {
 	fixture := &hwFixture{}
 	mediator := &hwFakeMediator{fixture: fixture}

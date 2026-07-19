@@ -22,15 +22,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// This file is the sp-423c gate-hardening check (c): payload-vs-OpenAPI
+// This file is the gate-hardening check (c): payload-vs-OpenAPI
 // validation of the outbound SpaceTraders request bodies the client actually
 // emits. It closes the last of the three real-API-contract mismatch classes the
 // gate-hardening epic targeted - (a) unregistered handlers and (b) real
-// error-shape tests already shipped in sp-423c; nothing before this caught the
+// error-shape tests already shipped; nothing before this caught the
 // class where an outbound payload violates the API contract (a field rename or
 // type drift) until the captain's LIVE acceptance rejected it in production.
 //
-// sp-n0x7 shipped exactly this defect: JumpShip sent a "systemSymbol" key where
+// This exact defect shipped once: JumpShip sent a "systemSymbol" key where
 // the API required "waypointSymbol". Unit tests against fakes can never catch it
 // because the fake accepts whatever the client sends; only validating the real
 // serialized bytes against the published schema can.
@@ -205,9 +205,9 @@ func TestOpenAPIContract_ClientPayloadsMatchSpec(t *testing.T) {
 		strings.Join(violations, "\n\n"))
 }
 
-// TestOpenAPIContract_CatchesMisKeyedPayload is the sp-423c acceptance proof for
+// TestOpenAPIContract_CatchesMisKeyedPayload is the acceptance proof for
 // the "deliberately mis-keyed payload" requirement, exercising the SAME
-// validation path the primary test uses. It reproduces the exact sp-n0x7 defect
+// validation path the primary test uses. It reproduces the exact defect
 // (navigate sent "systemSymbol" instead of the required "waypointSymbol") and
 // asserts the check catches it and names the missing field - so a green primary
 // test provably means the client's payloads were really validated.

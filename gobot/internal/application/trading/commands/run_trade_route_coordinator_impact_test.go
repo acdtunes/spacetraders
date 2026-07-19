@@ -67,8 +67,8 @@ func TestEffectiveSpread_ZeroTradeVolumeFailsSafeToSnapshot(t *testing.T) {
 }
 
 // The inert (zero-value) model returns the snapshot spread exactly, even for a lane that
-// carries only SpreadPerUnit with Ask/Bid unpopulated — the invariant that keeps every
-// pre-sp-tl68 ranker test byte-identical.
+// carries only SpreadPerUnit with Ask/Bid unpopulated — the invariant that keeps the
+// original spread-based ranker tests byte-identical.
 func TestEffectiveSpread_InertModelIsSnapshot(t *testing.T) {
 	var inert laneImpactModel
 	lane := trading.ArbitrageLane{SpreadPerUnit: 854, VolumeCap: 480} // no Ask/Bid, as old tests build
@@ -145,7 +145,7 @@ func TestRanking_ImpactModelPreservesTargetDestWaiver(t *testing.T) {
 
 	// Directed at the cross lane's destination: the surcharge is waived, so its rate is the
 	// in-system baseline rate — strictly higher than the same lane's surcharged rate. This
-	// mirrors the sp-1wp8 waiver contract and proves the impact model did not disturb it.
+	// mirrors the waiver contract and proves the impact model did not disturb it.
 	waived := laneCircuitRatePerHour(cross, 480, "X1-BBB-2", model)
 	charged := laneCircuitRatePerHour(cross, 480, "", model)
 	if !(waived > charged) {

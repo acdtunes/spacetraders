@@ -40,14 +40,13 @@ func factorySale(t *testing.T, db *gorm.DB, playerID int, id, containerID string
 // --- Tour engine line (sp-7vos gap A) ---
 
 // TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy is the tour-fleet
-// masking case, RED against pre-sp-7vos code: a tour_run container is up but
-// selling nothing, while a stray trade_route-tagged transaction (no trade_route
-// container backing it — e.g. a route that has since stopped) keeps the
-// aggregate ledger looking healthy. The aggregate detector stays silent (income
-// exists) and the 'trading' line stays silent too, but for a different reason
-// than it looks: no trade_route container is running, so its gate never even
-// activates (sp-lyc3) — so before the tour line existed, a dead tour fleet
-// produced ZERO income events. It must now stall independently.
+// masking case: a tour_run container is up but selling nothing, while a stray
+// trade_route-tagged transaction (no trade_route container backing it — e.g. a
+// route that has since stopped) keeps the aggregate ledger looking healthy. The
+// aggregate detector stays silent (income exists) and the 'trading' line stays
+// silent too, but for a different reason than it looks: no trade_route
+// container is running, so its gate never even activates (sp-lyc3). The tour
+// line must stall independently regardless.
 func TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()
@@ -61,8 +60,8 @@ func TestDetectEngineIncomeStallFiresForTourWhileTradingHealthy(t *testing.T) {
 	}).Error)
 	// Keeps the aggregate looking healthy. The 'trading' line stays silent too,
 	// but because no trade_route container is running (not because this income
-	// makes it "healthy" — sp-lyc3: container_type alone used to satisfy the
-	// trading gate here, which was the bug).
+	// makes it "healthy" — the trading gate keys on command_type, not
+	// container_type alone, sp-lyc3).
 	require.NoError(t, db.Create(&persistence.TransactionModel{
 		ID: "t-trade", PlayerID: playerID, Timestamp: now.Add(-30 * time.Minute),
 		TransactionType: "SELL_CARGO", Category: "TRADING_REVENUE", OperationType: "trade_route",
@@ -122,7 +121,7 @@ func TestDetectEngineIncomeStallSilentForTourWhenSelling(t *testing.T) {
 // granularity acceptance criterion: three goods factories run, the MEDICINE one
 // is dead, the others sell. The aggregate income detector is HEALTHY (siblings
 // keep money flowing), yet the dead factory must be named and its siblings must
-// stay silent — the exact masking that hid the real 100-min MEDICINE outage.
+// stay silent.
 func TestDetectFactoryIncomeStallFiresForSilentFactoryWhileSiblingsSell(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()

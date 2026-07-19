@@ -53,7 +53,7 @@ func (r *GormWaypointRepository) FindBySymbol(ctx context.Context, symbol, syste
 // and never go stale — so, unlike FindBySymbol whose era-scope and 24h TTL are
 // correct only for VOLATILE price/nav data, the cached row for the symbol is
 // authoritative no matter which era stamped it or how long ago it was synced.
-// This is the dedicated immutable-trait path (sp-42ow): FindBySymbol's gates were
+// This is the dedicated immutable-trait path: FindBySymbol's gates were
 // silently filtering out ~97 of 108 real SHIPYARD waypoints (prior-era and/or
 // >24h stale), so the scout's shipyard scan no-op'd at virtually every yard.
 //
@@ -133,8 +133,8 @@ func eraScopePredicate(openEraID *int) (string, []any) {
 
 // ListWithTrait retrieves EVERY cached waypoint bearing the given trait across ALL
 // systems, read as the IMMUTABLE physical fact it is: era-AGNOSTIC and TTL-agnostic,
-// exactly like HasWaypointTrait. This is the sp-rhju backfill's charted-shipyard
-// enumerator: an era-SCOPED read here would repeat the precise sp-42ow bug that
+// exactly like HasWaypointTrait. This is the backfill's charted-shipyard
+// enumerator: an era-SCOPED read here would repeat the precise bug that
 // filtered out ~97 of 108 real SHIPYARD waypoints (prior-era and/or stale rows), so
 // the sweep would only ever see ~10% of the shipyards and the blind spot it exists to
 // close would stay open. A physical SHIPYARD trait never changes across eras, so a
@@ -181,7 +181,6 @@ func (r *GormWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypo
 
 	model.EraID = r.openEraID(ctx)
 
-	// Upsert: create or update
 	result := r.db.WithContext(ctx).Save(model)
 	if result.Error != nil {
 		return fmt.Errorf("failed to add waypoint: %w", result.Error)
@@ -214,7 +213,6 @@ func (r *GormWaypointRepository) modelToWaypoint(model *WaypointModel) (*shared.
 	waypoint.Type = model.Type
 	waypoint.HasFuel = model.HasFuel == 1
 
-	// Parse traits JSON array
 	if model.Traits != "" {
 		var traits []string
 		if err := json.Unmarshal([]byte(model.Traits), &traits); err != nil {
@@ -224,7 +222,6 @@ func (r *GormWaypointRepository) modelToWaypoint(model *WaypointModel) (*shared.
 		waypoint.Traits = traits
 	}
 
-	// Parse orbitals JSON array
 	if model.Orbitals != "" {
 		var orbitals []string
 		if err := json.Unmarshal([]byte(model.Orbitals), &orbitals); err != nil {

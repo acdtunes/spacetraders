@@ -21,7 +21,7 @@ func (f *fakeDemandSource) ContractGoodDemand(ctx context.Context, eraID *int, d
 }
 
 // CurrentEraID is era-agnostic here: nil keeps Mine's all-eras behavior for these fake-source unit
-// tests (the current-universe scoping is exercised end to end over a real DB elsewhere — sp-fo0d).
+// tests (the current-universe scoping is exercised end to end over a real DB elsewhere).
 func (f *fakeDemandSource) CurrentEraID(ctx context.Context, playerID int) (*int, error) {
 	return nil, nil
 }
@@ -47,7 +47,7 @@ func demand(good string, count, units int, first, last time.Time) ContractGoodDe
 }
 
 // TestDemandMiner_CarriesMaxContractUnits pins that the largest single-contract size (the
-// auto-cap knapsack's s_G, sp-5n7v) flows from the aggregated demand row through to the
+// auto-cap knapsack's s_G) flows from the aggregated demand row through to the
 // mined candidate. UnitsRequired is the SUMMED demand across contracts; MaxContractUnits is
 // the biggest single contract — the amount the warehouse buffers FULLY or not at all.
 func TestDemandMiner_CarriesMaxContractUnits(t *testing.T) {
@@ -67,7 +67,7 @@ func TestDemandMiner_CarriesMaxContractUnits(t *testing.T) {
 	require.Equal(t, 90, got[0].DemandUnits, "summed demand is unchanged")
 }
 
-// TestDemandMiner_CarriesContractRewardPerUnit (sp-64se): the per-good CONTRACT REWARD that
+// TestDemandMiner_CarriesContractRewardPerUnit: the per-good CONTRACT REWARD that
 // ContractGoodDemand derives from the contracts' payments (RewardPerUnit) must flow through the
 // miner onto the candidate (ContractRewardPerUnit), so a destination-side depot buffer can rank
 // by contract reward instead of the market ask the miner also carries. Without this the reward
@@ -89,7 +89,7 @@ func TestDemandMiner_CarriesContractRewardPerUnit(t *testing.T) {
 		"the per-good contract reward must reach the mined candidate for reward-ranked buffering")
 }
 
-// TestDemandMiner_SingleSystem_IncludesHomeExport is the sp-layd defect pin. Post-weekly-
+// TestDemandMiner_SingleSystem_IncludesHomeExport is the defect pin. Post-weekly-
 // reset the home system is the ONLY scanned system (0 foreign markets), so the old
 // foreign-only miner dropped EVERY good and returned zero rows — the stocker then refused
 // with "nothing to stock miner_rows=0". The reframed miner sources the cheapest market
@@ -112,7 +112,7 @@ func TestDemandMiner_SingleSystem_IncludesHomeExport(t *testing.T) {
 	got, err := miner.Mine(context.Background(), "X1-VB74", 7, nil, DemandMinerOptions{MinRecurrence: 2, BuyLegSavingsPerUnit: 5})
 	require.NoError(t, err)
 
-	// The home-sourceable good is NOT dropped — miner_rows > 0 (the whole point of sp-layd).
+	// The home-sourceable good is NOT dropped — miner_rows > 0 (the whole point).
 	require.Len(t, got, 1)
 	fuel := got[0]
 	require.Equal(t, "FUEL", fuel.Good)
@@ -188,7 +188,7 @@ func TestDemandMiner_ForeignStillPreferredWhenCheaper(t *testing.T) {
 
 // TestDemandMiner_BuyLegDefaultApplied: when the buy-leg is unset (<=0) the miner falls
 // back to DefaultBuyLegSavingsPerUnit so a home-sourceable good still clears the "savings
-// must be positive" guard by default — fail OPEN for the in-system case (sp-layd RULINGS).
+// must be positive" guard by default — fail OPEN for the in-system case (RULINGS).
 func TestDemandMiner_BuyLegDefaultApplied(t *testing.T) {
 	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 	src := &fakeDemandSource{rows: []ContractGoodDemand{demand("COPPER_ORE", 2, 40, now.Add(-6*time.Hour), now)}}
@@ -209,7 +209,7 @@ func TestDemandMiner_BuyLegDefaultApplied(t *testing.T) {
 	require.True(t, got[0].StockEligible)
 }
 
-// TestDemandMiner_HomeUnknownForeignKnownRetainedNotEligible preserves the sp-dchv Q5
+// TestDemandMiner_HomeUnknownForeignKnownRetainedNotEligible preserves the Q5
 // signal: a good the home market does not sell at all cannot be priced against a
 // contract-source alternative (no home ask), so it is RETAINED for captain visibility but
 // flagged not stock-eligible — it is informative, never speculatively stocked (RULINGS #6).
@@ -375,7 +375,7 @@ func TestDemandMiner_RequiresHomeSystem(t *testing.T) {
 	require.Error(t, err)
 }
 
-// rewardVsSavingsMiner builds the sp-wxf2 contrast fixture: two contracted goods whose SAVINGS
+// rewardVsSavingsMiner builds the contrast fixture: two contracted goods whose SAVINGS
 // order and REWARD order are OPPOSITE. POLYNUCLEOTIDES is low reward but high savings (known home
 // ask => stock-eligible, big buy-leg spread); MEDICINE is high reward but low savings (no home ask
 // => savings 0, stock-INELIGIBLE). Under a TopN=1 cull the savings ranking keeps POLYNUCLEOTIDES
@@ -399,7 +399,7 @@ func rewardVsSavingsMiner() *DemandMiner {
 	return &DemandMiner{demand: src, markets: markets}
 }
 
-// TestDemandMiner_RankByContractReward_KeepsHighRewardUnderTopNCull (sp-wxf2) pins the DEPOT
+// TestDemandMiner_RankByContractReward_KeepsHighRewardUnderTopNCull pins the DEPOT
 // receipt selection: RankByContractReward orders by total contract-reward value (ContractCount ×
 // ContractRewardPerUnit) so the TopN cut keeps the HIGH-reward/low-savings good (MEDICINE), not
 // the high-savings one. Without the reward ranking the savings cull would drop MEDICINE (savings
@@ -413,7 +413,7 @@ func TestDemandMiner_RankByContractReward_KeepsHighRewardUnderTopNCull(t *testin
 		"depot reward ranking keeps the HIGH contract-reward good under the TopN cull, not the high-savings one")
 }
 
-// TestDemandMiner_DefaultRankBySavings_Unchanged_KeepsHighSavingsUnderTopNCull (sp-wxf2) proves
+// TestDemandMiner_DefaultRankBySavings_Unchanged_KeepsHighSavingsUnderTopNCull proves
 // the STOCKER path is untouched: with no rank mode (RankBySavings, the zero value) the SAME
 // fixture keeps the HIGH-savings good (POLYNUCLEOTIDES) under the TopN cull — the source-side
 // buy-leg ordering, unchanged. This is the non-regression guard paired with the depot test above.

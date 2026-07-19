@@ -13,12 +13,12 @@ import (
 )
 
 // GormContractDepotRepository is the durable driven adapter behind
-// depotstore.Repository (bead sp-u9xa). Every row is scoped to the player baked in
-// at construction — the depotstore.Store port carries no player id, so the adapter
-// is a per-player view over the shared contract_depots table, mirroring the
-// gas/storage operation repositories. All depot state lives here, which is exactly
-// what makes the store restart-safe: a fresh process rebuilds the identical routing
-// registry from these rows.
+// depotstore.Repository. Every row is scoped to the player baked in at construction —
+// the depotstore.Store port carries no player id, so the adapter is a per-player view
+// over the shared contract_depots table, mirroring the gas/storage operation
+// repositories. All depot state lives here, which is exactly what makes the store
+// restart-safe: a fresh process rebuilds the identical routing registry from these
+// rows.
 type GormContractDepotRepository struct {
 	db       *gorm.DB
 	playerID int

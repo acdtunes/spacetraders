@@ -18,11 +18,11 @@ import (
 // is a comfortable freshness bound that keeps the graph self-healing across a
 // long-running daemon without hammering the API on every routing lookup. This is
 // the DEFAULT; the daemon overrides it from config ([routing] gate_cache_ttl, the
-// sp-jgcache topology-cache knob) via WithFreshWindow.
+// topology-cache knob) via WithFreshWindow.
 const gateEdgeFreshWindow = 24 * time.Hour
 
 // gateEdgeUnderConstructionFreshWindow is the SHORTER freshness bound for an edge
-// whose neighbor gate is still under construction (sp-8qhu). A healthy edge is
+// whose neighbor gate is still under construction. A healthy edge is
 // effectively static within an era (24h), but a build COMPLETES on its own clock:
 // pinning an under-construction edge to a 2h window means the daemon re-probes it
 // and notices the completion same-era, instead of holding a "still building"
@@ -30,20 +30,20 @@ const gateEdgeFreshWindow = 24 * time.Hour
 const gateEdgeUnderConstructionFreshWindow = 2 * time.Hour
 
 // unreadableMarker is the sentinel connected_system of a negative-result BACKOFF
-// marker row (sp-ikx1): a row that records an UNREADABLE system's backoff state
+// marker row: a row that records an UNREADABLE system's backoff state
 // (UnreadableSince/AttemptCount) rather than a real edge. A real edge's connected
 // system is always non-empty (ExtractSystemSymbol never yields ""), so "" cleanly
 // separates the two: edge reads exclude markers, backoff reads select only them.
 const unreadableMarker = ""
 
 // GormGateEdgeRepository implements system.GateEdgeRepository over GORM. It is
-// the persisted gate-graph adjacency store (sp-7gr2). Every read is era-scoped
+// the persisted gate-graph adjacency store. Every read is era-scoped
 // exactly like GormWaypointRepository (openEraID + eraScopePredicate) so
-// dead-era rows (sp-vapw) never leak into live routing; a system's edge set is
+// dead-era rows never leak into live routing; a system's edge set is
 // REPLACED atomically on each sync so a since-severed connection cannot linger.
 type GormGateEdgeRepository struct {
 	db *gorm.DB
-	// freshWindow is the healthy-edge freshness bound (sp-jgcache topology-cache TTL). It
+	// freshWindow is the healthy-edge freshness bound (topology-cache TTL). It
 	// defaults to gateEdgeFreshWindow (24h) and is overridden from config via WithFreshWindow.
 	// The SHORTER under-construction window is a separate correctness bound (a build completes
 	// on its own clock) and stays a const, not tuned here.
@@ -55,7 +55,7 @@ type GormGateEdgeRepository struct {
 // the configured freshness TTL).
 type GateEdgeOption func(*GormGateEdgeRepository)
 
-// WithFreshWindow sets the healthy-edge freshness window (the sp-jgcache topology-cache TTL),
+// WithFreshWindow sets the healthy-edge freshness window (the topology-cache TTL),
 // wired from [routing] gate_cache_ttl. A non-positive value is ignored (keeps the 24h default),
 // so a zero/unset config can never collapse the cache to "always stale".
 func WithFreshWindow(d time.Duration) GateEdgeOption {
@@ -87,7 +87,7 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	if err := r.db.WithContext(ctx).
 		Where("system_symbol = ?", systemSymbol).
-		// Exclude the negative-result backoff marker (sp-ikx1) — it is not an edge. A
+		// Exclude the negative-result backoff marker — it is not an edge. A
 		// system that has ONLY a marker row therefore reads as a genuine MISS, which is
 		// what routes the caller into the backoff check instead of trusting an empty
 		// "connects nowhere" set.
@@ -141,7 +141,7 @@ func (r *GormGateEdgeRepository) GateWaypointOf(ctx context.Context, systemSymbo
 // era and the current sync time. Delete-then-insert (not per-row upsert) gives
 // correct "the adjacency is now exactly this" semantics: a connection dropped
 // upstream disappears here too. The all-rows delete also clears any negative-result
-// backoff MARKER for the system (sp-ikx1): a gate that becomes readable again is
+// backoff MARKER for the system: a gate that becomes readable again is
 // self-healed off the backoff clock, no explicit reset needed.
 func (r *GormGateEdgeRepository) Replace(ctx context.Context, systemSymbol string, edges []system.GateEdge) error {
 	eraID := r.openEraID(ctx)
@@ -172,7 +172,7 @@ func (r *GormGateEdgeRepository) Replace(ctx context.Context, systemSymbol strin
 	})
 }
 
-// UnreadableState returns systemSymbol's persisted negative-result backoff (sp-ikx1),
+// UnreadableState returns systemSymbol's persisted negative-result backoff,
 // era-scoped: the consecutive-failed-probe count and the last-probe timestamp off the
 // marker row (connected_system = ""). ok=false when no marker exists for the open era
 // (never failed, cleared by a successful Replace, or left behind by a closed era — an
@@ -202,7 +202,7 @@ func (r *GormGateEdgeRepository) UnreadableState(ctx context.Context, systemSymb
 	return m.AttemptCount, lastProbe, true, nil
 }
 
-// MarkUnreadable records (or extends) systemSymbol's negative-result backoff (sp-ikx1):
+// MarkUnreadable records (or extends) systemSymbol's negative-result backoff:
 // it upserts the marker row (connected_system = "") with an incremented attempt count
 // and now as the last-probe time, returning the new count. The increment reads the
 // CURRENT open-era count first, so a fresh era (whose era-scoped read misses the old
@@ -254,7 +254,7 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 	var models []GateEdgeModel
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	if err := r.db.WithContext(ctx).
-		// Marker rows (sp-ikx1) are not edges — a "" connected_system must never surface
+		// Marker rows are not edges — a "" connected_system must never surface
 		// as a neighbor in the overview or the frontier scanner's BFS.
 		Where("connected_system <> ?", unreadableMarker).
 		Where(predicate, args...).
@@ -281,7 +281,7 @@ func (r *GormGateEdgeRepository) Adjacency(ctx context.Context) (map[string][]sy
 	return adjacency, nil
 }
 
-// UnreadableGates returns every era-scoped negative-result backoff marker (sp-ywh1): the
+// UnreadableGates returns every era-scoped negative-result backoff marker: the
 // UNCHARTED systems whose live GetJumpGate keeps 400ing, mapped to the gate waypoint the marker
 // recorded (may be "" when the gate was not yet known at mark time). These are exactly the
 // traffic-touched frontier gates the gate-reconcile sweep widens onto — a marker exists ONLY
@@ -322,7 +322,7 @@ func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
 
 // rowStale reports whether a single edge row's cache is stale: its synced_at is
 // missing/unparseable, or older than its freshness window. The window is per-row —
-// an under-construction edge uses the SHORTER window (sp-8qhu) so a build
+// an under-construction edge uses the SHORTER window so a build
 // completion is re-probed same-era, while a healthy edge keeps the 24h window. An
 // EMPTY synced_at is always stale: this is what the deploy-time cache invalidation
 // (AutoMigrate clearing synced_at on the column's introduction) relies on to force
@@ -340,7 +340,7 @@ func (r *GormGateEdgeRepository) rowStale(m GateEdgeModel) bool {
 
 // freshWindowFor is the freshness bound for one edge: the shorter
 // under-construction window when the neighbor gate is still building, the configured
-// healthy window (sp-jgcache [routing] gate_cache_ttl, 24h default) otherwise.
+// healthy window ([routing] gate_cache_ttl, 24h default) otherwise.
 func (r *GormGateEdgeRepository) freshWindowFor(m GateEdgeModel) time.Duration {
 	if m.UnderConstruction {
 		return gateEdgeUnderConstructionFreshWindow

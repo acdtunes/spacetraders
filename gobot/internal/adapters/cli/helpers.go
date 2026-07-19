@@ -44,7 +44,6 @@ func playerPointers(playerIdent *PlayerIdentifier) (*int32, *string) {
 // Priority: CLI flags (--player-id or --agent) > User config defaults
 // Returns error only if no player can be identified from any source
 func resolvePlayerIdentifier() (*PlayerIdentifier, error) {
-	// If explicit flags provided, use them
 	if playerID > 0 {
 		return &PlayerIdentifier{PlayerID: playerID}, nil
 	}
@@ -52,7 +51,6 @@ func resolvePlayerIdentifier() (*PlayerIdentifier, error) {
 		return &PlayerIdentifier{AgentSymbol: agentSymbol}, nil
 	}
 
-	// Try to load default player from user config
 	userConfigHandler, err := config.NewUserConfigHandler()
 	if err != nil {
 		return nil, fmt.Errorf("no player specified and failed to load user config: %w", err)
@@ -63,7 +61,6 @@ func resolvePlayerIdentifier() (*PlayerIdentifier, error) {
 		return nil, fmt.Errorf("no player specified and failed to load user config: %w", err)
 	}
 
-	// Use default player from config
 	if userCfg.DefaultPlayerID != nil {
 		return &PlayerIdentifier{PlayerID: *userCfg.DefaultPlayerID}, nil
 	}
@@ -79,10 +76,8 @@ func resolvePlayerIdentifier() (*PlayerIdentifier, error) {
 //
 // Resolution honors CLI flags first (--player-id / --agent) and then the default
 // persisted by `config set-player`, via resolvePlayerIdentifier. This is the single
-// resolution path shared by `player info`, `ledger list`, and `contract list`, which
-// previously diverged: `player info` resolved the player but never injected its token
-// into context, while `ledger list` and `contract list` ignored the persisted default
-// and hard-required a --player-id flag.
+// resolution path shared by `player info`, `ledger list`, and `contract list` — all
+// three must keep using it rather than resolving the player independently.
 func resolveDefaultPlayer(ctx context.Context, playerRepo player.PlayerRepository) (*player.Player, error) {
 	ident, err := resolvePlayerIdentifier()
 	if err != nil {

@@ -61,7 +61,7 @@ func (s *Sensor) loadContracts(ctx context.Context, playerID int) ([]playerContr
 }
 
 // senseDemand aggregates contract history into per-hub demand. Frequencies are
-// contracts/hour over the recent-N COUNT window (bead sp-lk9x): the most recent
+// contracts/hour over the recent-N COUNT window: the most recent
 // N contracts and the wall-clock span THEY occupy — now → the oldest of the N,
 // floored at 1h. The pre-fix window ran back to the FIRST contract the player
 // ever completed, an ever-growing denominator that aged an established hub's
@@ -129,9 +129,9 @@ func (s *Sensor) senseDemand(contracts []playerContract, now time.Time) domainCa
 
 // recentContractWindow selects the most recent N contracts (by LastUpdated) and
 // returns them alongside the window hours THEY span — now → the oldest of those
-// N, floored at 1h. This is the sp-lk9x COUNT window: capping the lookback at N
+// N, floored at 1h. This is the COUNT window: capping the lookback at N
 // contracts keeps the denominator bounded, so an established hub's frequency no
-// longer decays toward zero as its history grows past N (the pre-fix window ran
+// longer decays toward zero as its history grows past N (an earlier window ran
 // back to the FIRST contract ever, an ever-growing wall-clock span). Contracts
 // with an unparseable timestamp cannot be time-ordered, so they are always
 // retained — demand we cannot order must not silently vanish — but never widen

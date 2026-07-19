@@ -34,8 +34,8 @@ const spendAdvisoryNamespace = 0x53504e44 // "SPND"
 var errSpendReservationBreach = errors.New("spend reservation would breach working-capital reserve")
 
 // SpendReservationLedgerGORM is the DB-backed cross-container concurrent factory-input
-// spend cap (sp-w3he). All factory containers share one database, so a reservation ledger
-// there is the only place a HARD cap can live: the per-buy floor (sp-9aoc) checks live
+// spend cap. All factory containers share one database, so a reservation ledger
+// there is the only place a HARD cap can live: the per-buy floor checks live
 // treasury per container, but N containers can each pass that independent check inside the
 // check->buy window and collectively dip below the reserve. This ledger closes that race by
 // making "record my intent, then verify total in-flight exposure still clears the reserve"

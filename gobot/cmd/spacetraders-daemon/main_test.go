@@ -14,17 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// This file is the sp-423c gate-hardening check for the defect class that
-// shipped sp-n0x7: JumpShipCommand had a real handler, a real domain
-// implementation, and passing unit tests (the tests called the handler
-// directly) - but no mediator.RegisterHandler call in main.go, so every real
-// dispatch through the mediator failed with "no handler registered for type
-// ...github.com/andrescamacho/spacetraders-go/.../JumpShipCommand". Unit tests
-// exercising a handler in isolation can never catch this class; only a check
-// of the composition root itself can. Every daemon regression this era passed
-// the gate (compile + unit tests vs fakes) and only broke in live acceptance
-// against the real API - this is the systemic fix for the "unregistered
-// handler" half of that pattern.
+// This file is the gate-hardening check for a defect class where a Command/Query
+// type has a real handler, a real domain implementation, and passing unit tests
+// (which call the handler directly) but no mediator.RegisterHandler call in
+// main.go, so every real dispatch through the mediator fails with "no handler
+// registered for type ...". Unit tests exercising a handler in isolation can
+// never catch this class; only a check of the composition root itself can.
 //
 // The check parses cmd/spacetraders-daemon/main.go - the sole production
 // composition root (internal/application/setup/handler_registry.go is a
@@ -56,7 +51,7 @@ var knownUnregisteredExceptions = map[string]string{
 // declared Command/Query type that is neither registered in main.go nor
 // listed in knownUnregisteredExceptions means dispatching it through the
 // mediator would fail with "no handler registered for type ..." in
-// production - exactly the sp-n0x7 failure mode.
+// production.
 func TestEveryDeclaredCommandAndQueryIsRegisteredOrExempt(t *testing.T) {
 	mainGoPath, appDir := gatePaths(t)
 
@@ -107,16 +102,13 @@ func TestKnownUnregisteredExceptionsAreStillAccurate(t *testing.T) {
 
 // TestRegistrationGapDetectionHasTeeth proves the diff logic itself actually
 // flags a missing registration, so a green primary test means "everything is
-// wired," not "the parser silently matched nothing." This is the sp-423c
-// acceptance proof for the "deliberately-unregistered handler" half of the
-// gate's requirement: it seeds a declared-but-unregistered, non-exempt type
-// (mirroring exactly how JumpShipCommand shipped pre-sp-n0x7) and asserts the
-// gap is caught.
+// wired," not "the parser silently matched nothing." It seeds a
+// declared-but-unregistered, non-exempt type and asserts the gap is caught.
 func TestRegistrationGapDetectionHasTeeth(t *testing.T) {
 	registered := map[string]struct{}{"RegisteredCommand": {}}
 	declared := map[string][]string{
 		"RegisteredCommand":   {"pkg/a/registered.go"},
-		"UnregisteredCommand": {"pkg/b/unregistered.go"}, // deliberately missing, like JumpShipCommand pre-sp-n0x7
+		"UnregisteredCommand": {"pkg/b/unregistered.go"}, // deliberately missing
 	}
 
 	gaps := unregisteredGaps(registered, declared, knownUnregisteredExceptions)

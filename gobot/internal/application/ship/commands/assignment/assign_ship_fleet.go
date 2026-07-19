@@ -10,7 +10,7 @@ import (
 )
 
 // AssignShipFleetCommand dedicates a ship to a named fleet — the SINGLE write
-// path for the DedicatedFleet tag (sp-l7h2). Fleet == "" clears the
+// path for the DedicatedFleet tag. Fleet == "" clears the
 // dedication, returning the ship to the general pool (the CLI's `fleet
 // unassign` sends exactly that). Dedication is permanent ownership, distinct
 // from a container claim ("who holds it right now"): assigning a busy ship
@@ -25,24 +25,23 @@ type AssignShipFleetCommand struct {
 	AgentSymbol string // Resolve by agent symbol if PlayerID is nil
 
 	// Assigner names the code path performing this dedication write, for the
-	// assigner-named audit line every write now emits (sp-r6f1 finding #3):
-	// e.g. "contract-coordinator-reconcile:<containerID>", "cli". Empty logs as
+	// assigner-named audit line every write emits: e.g.
+	// "contract-coordinator-reconcile:<containerID>", "cli". Empty logs as
 	// "unknown". So the next mispin names its culprit in one grep.
 	Assigner string
 
 	// Manual distinguishes a human/operator-initiated write (true, the CLI's
 	// `fleet assign`) from an automated coordinator write (false, the default —
 	// the contract coordinator's --dedicated-ships reconcile). It selects the
-	// eligibility-failure behavior for a cargo-required fleet (sp-r6f1): an
-	// AUTOMATED attempt to pin a 0-cargo hull into a hauling fleet is BLOCKED
-	// (this is the reconcile mispinner that re-pinned TORWIND-24/25), while a
-	// MANUAL one is WARNED-and-allowed — the captain may deliberately pin
-	// anything. The zero value (false) fails closed: an assigner that forgets
-	// to set it gets the strict auto behavior.
+	// eligibility-failure behavior for a cargo-required fleet: an AUTOMATED
+	// attempt to pin a 0-cargo hull into a hauling fleet is BLOCKED (the
+	// reconcile-mispin class of bug), while a MANUAL one is WARNED-and-allowed —
+	// the captain may deliberately pin anything. The zero value (false) fails
+	// closed: an assigner that forgets to set it gets the strict auto behavior.
 	Manual bool
 
 	// BreakWorkClaim additionally severs the hull's LIVE coordinator work-claim
-	// after clearing the dedication (sp-w3yd) — the operator's `fleet unassign`
+	// after clearing the dedication — the operator's `fleet unassign`
 	// sets this so the coordinator actually STOPS routing the hull, closing the
 	// "unassign says success but the coordinator keeps routing it" gap. Scoped to
 	// the operator path on purpose: the zero value (false) fails safe so the
@@ -59,7 +58,7 @@ type AssignShipFleetResponse struct {
 }
 
 // FleetCargoRequirement maps a fleet name to the minimum cargo capacity a hull
-// must have to be eligible for it (sp-r6f1). A hauling fleet requires > 0 so a
+// must have to be eligible for it. A hauling fleet requires > 0 so a
 // 0-cargo satellite/probe can never be auto-pinned into it; a fleet absent from
 // the map imposes no requirement — scout/tour fleets legitimately fly 0-cargo
 // hulls, so their assignments are never gated. Cargo capacity (not a hardcoded
@@ -81,7 +80,7 @@ func (r FleetCargoRequirement) MinCargoCapacity(fleet string) int {
 // captain.defaultStandingCoordinatorFleets. Its members must be able to haul.
 const dedicatedFleetContract = "contract"
 
-// dedicatedFleetStocker is the durable continuous-stocking hauler fleet (sp-m92a),
+// dedicatedFleetStocker is the durable continuous-stocking hauler fleet,
 // matching operationStocker in container_ops_stocker.go — the fleet name the
 // captain pins with `fleet assign --fleet stocker` AND the operation the stocker
 // container claims under. A stocker hull IS a cargo hauler, so it joins the
@@ -89,10 +88,10 @@ const dedicatedFleetContract = "contract"
 const dedicatedFleetStocker = "stocker"
 
 // DefaultFleetCargoRequirement is the standing eligibility rule wired in
-// production (sp-r6f1): a hauling fleet's members must carry cargo (floor 1).
+// production: a hauling fleet's members must carry cargo (floor 1).
 // Parametrized here rather than hardcoded in the handler so the rule has one
 // obvious home and can grow other hauling fleets without touching the gate. Both
-// the contract pool and the sp-m92a stocker dedication are cargo-required.
+// the contract pool and the stocker dedication are cargo-required.
 var DefaultFleetCargoRequirement = FleetCargoRequirement{
 	dedicatedFleetContract: 1,
 	dedicatedFleetStocker:  1,
@@ -117,8 +116,8 @@ func NewAssignShipFleetHandler(shipRepo navigation.ShipRepository, playerRepo pl
 
 // Handle executes the AssignShipFleet command.
 //
-// Every dedication write now flows through one eligibility gate + one
-// assigner-named audit line (sp-r6f1):
+// Every dedication write flows through one eligibility gate + one
+// assigner-named audit line:
 //
 //   - The hull is loaded so the gate and the audit line can see its frame and
 //     cargo capacity.
@@ -130,7 +129,7 @@ func NewAssignShipFleetHandler(shipRepo navigation.ShipRepository, playerRepo pl
 //     gated nor audit-logged: the reconcile re-applies its whole config list
 //     every restart, and re-touching an already-correct pin changes nothing.
 //   - Every ACTUAL write emits one INFO audit line naming ship, fleet, assigner,
-//     frame and cargo — the line the daemon.log lacked at incident time.
+//     frame and cargo.
 func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*AssignShipFleetCommand)
 	if !ok {
@@ -153,8 +152,7 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 	}
 
 	// Load the hull to read its frame + cargo for the gate and the audit line.
-	// Fail closed: if the hull cannot be read, no dedication is written (the old
-	// path would also have failed inside AssignFleet).
+	// Fail closed: if the hull cannot be read, no dedication is written.
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to assign ship fleet: %w", err)
@@ -166,9 +164,9 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 	cargoCapacity := ship.CargoCapacity()
 	changed := ship.DedicatedFleet() != cmd.Fleet
 
-	// Eligibility gate (sp-r6f1) — only a REAL change into a cargo-required
-	// fleet by an under-capacity hull. A no-op re-touch of an already-mispinned
-	// hull is intentionally skipped so the reconcile does not error-spam every
+	// Eligibility gate — only a REAL change into a cargo-required fleet by
+	// an under-capacity hull. A no-op re-touch of an already-mispinned hull
+	// is intentionally skipped so the reconcile does not error-spam every
 	// restart while a legacy mispin persists.
 	if changed {
 		if minCargo := h.fleetCargoReq.MinCargoCapacity(cmd.Fleet); minCargo > 0 && cargoCapacity < minCargo {
@@ -194,7 +192,7 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 			}
 			// MANUAL path — WARN, do not block. The captain may deliberately pin
 			// anything; the selection side already refuses to dispatch a 0-cargo
-			// hull (sp-lybx), so this is dead weight, not a crash — say so loudly.
+			// hull, so this is dead weight, not a crash — say so loudly.
 			logger.Log("WARNING", fmt.Sprintf(
 				"Manual assign of %s to %q fleet: 0-cargo hull (frame %s, cargo %d) cannot haul — the fleet coordinator will exclude it from selection (sp-lybx). Proceeding on operator authority [assigner=%s]",
 				cmd.ShipSymbol, cmd.Fleet, frame, cargoCapacity, assigner),
@@ -214,7 +212,7 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("failed to assign ship fleet: %w", err)
 	}
 
-	// sp-w3yd: `fleet unassign` (BreakWorkClaim) additionally severs the live
+	// `fleet unassign` (BreakWorkClaim) additionally severs the live
 	// coordinator work-claim so the coordinator stops routing the hull — clearing
 	// the dedication alone only governs the NEXT acquisition, not the current
 	// claim. Scoped to the operator path (the reconcile leaves BreakWorkClaim
@@ -237,10 +235,9 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 		}
 	}
 
-	// Assigner-named audit line (sp-r6f1 finding #3): EVERY actual dedication
-	// write logs exactly one line naming ship, fleet, assigner, frame and cargo,
-	// closing the "no fleet-assign log line found" gap the incident hit. A no-op
-	// re-touch writes nothing, so it emits no line (keeps the reconcile quiet).
+	// Assigner-named audit line: EVERY actual dedication write logs exactly one
+	// line naming ship, fleet, assigner, frame and cargo. A no-op re-touch
+	// writes nothing, so it emits no line (keeps the reconcile quiet).
 	if changed {
 		logger.Log("INFO", fmt.Sprintf(
 			"Fleet dedication written: %s -> %q (frame %s, cargo %d) [assigner=%s]",

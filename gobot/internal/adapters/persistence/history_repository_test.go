@@ -14,7 +14,7 @@ import (
 
 // seedPlayer inserts a players row with an explicit id so FK-bearing child rows
 // (market_price_history, contracts, transactions, captain_events) can reference
-// it — required now that the sp-55aa harness enforces foreign keys.
+// it — required now that the harness enforces foreign keys.
 func seedPlayer(t *testing.T, db *gorm.DB, id int, symbol string) {
 	t.Helper()
 	require.NoError(t, db.Create(&persistence.PlayerModel{
@@ -31,7 +31,7 @@ func seedTwoEraHistoryFixture(t *testing.T, db *gorm.DB) {
 	final1 := int64(1_000_000)
 
 	// eras carry a player_id but no FK; the era-scoped child rows below do, so the
-	// referenced players must exist under the FK-enforcing harness (sp-55aa).
+	// referenced players must exist under the FK-enforcing harness.
 	seedPlayer(t, db, 1, "TORWIND")
 	seedPlayer(t, db, 2, "ORION")
 
@@ -244,7 +244,7 @@ func TestContractGoodDemandHomeScopesUnitsCountsAndWindow(t *testing.T) {
 	require.Equal(t, 15, byGood["GOLD"].UnitsRequired)
 }
 
-// TestContractGoodDemandDerivesPerUnitContractReward (sp-64se) pins the destination-side value
+// TestContractGoodDemandDerivesPerUnitContractReward pins the destination-side value
 // signal: each good's RewardPerUnit is the CONTRACT REWARD per delivered unit — the contracts'
 // payment (on-accepted + on-fulfilled) attributed to the good proportional to its units and
 // scoped to the delivery system — NOT a market ask. A good delivered by several contracts is a

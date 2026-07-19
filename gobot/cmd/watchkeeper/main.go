@@ -26,7 +26,7 @@ func main() {
 
 	// Build stamp first, before any config/DB work: captain-supervisor.log then
 	// always names the live binary's commit even if startup later fails, and a
-	// deploy can grep it to assert the fresh build is running (sp-898q, retires L42).
+	// deploy can grep it to assert the fresh build is running.
 	fmt.Println(buildinfo.Get().Banner("watchkeeper"))
 
 	cfg := config.MustLoadConfig("")
@@ -57,11 +57,11 @@ func main() {
 	apiClient := api.NewSpaceTradersClient()
 	sup.SetUniverseWatch(apiClient, persistence.NewEraRepository(db))
 
-	// Plumb live agent credits into the wake gate (sp-sk68 D3): the captain
+	// Plumb live agent credits into the wake gate: the captain
 	// sizes its credit thresholds from what `player info` shows (the live agent
 	// API), so the supervisor must evaluate that same number, not a divergent
 	// ledger reconstruction. Best-effort: if the token lookup fails the
-	// supervisor falls back to the reconstruction exactly as before.
+	// supervisor falls back to the reconstruction.
 	//
 	// The token is resolved ONCE here. Players/tokens rotate across eras, so a
 	// supervisor left running across an era reset will fail every live fetch and
@@ -91,7 +91,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// One cheap probe of the wake-delivery channel at startup (sp-sk68 D6): an
+	// One cheap probe of the wake-delivery channel at startup: an
 	// env-broken gc/bd (e.g. a launch environment missing BD_REAL) is otherwise
 	// only discoverable by reading generic per-tick errors. Never blocks
 	// startup — the channel may recover.

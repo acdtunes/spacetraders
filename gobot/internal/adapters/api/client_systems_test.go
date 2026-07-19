@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestListSystems_DecodesSymbolCoordsAndType pins the sp-k645 universe reader: GET /systems
+// TestListSystems_DecodesSymbolCoordsAndType pins the universe reader: GET /systems
 // is paginated exactly like GET /systems/{s}/waypoints, and the client surfaces each
 // system's symbol, galaxy coordinates, and type — the inputs the off-gate explorer ranks
 // warp targets on. This is an adapter integration test against a real HTTP round-trip.

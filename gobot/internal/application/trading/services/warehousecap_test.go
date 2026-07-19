@@ -9,17 +9,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 )
 
-// The warehouse auto-cap optimizer (sp-5n7v) computes per-good target_units as a 0/1
-// knapsack over LIVE demand × residual-buy-leg subject to Σ real hull capacity. These
-// tests pin the acceptance criteria from the bead against the PURE optimizer core, whose
-// inputs (capacity, per-good recurrence/payment/residual-buy-leg/size) are supplied by the
-// caller — so every criterion is exercised deterministically without live infrastructure.
+// The warehouse auto-cap optimizer computes per-good target_units as a 0/1 knapsack over
+// LIVE demand × residual-buy-leg subject to Σ real hull capacity. These tests pin the
+// acceptance criteria against the PURE optimizer core, whose inputs (capacity, per-good
+// recurrence/payment/residual-buy-leg/size) are supplied by the caller — so every
+// criterion is exercised deterministically without live infrastructure.
 
-// incidentGoods reproduces the 2026-07-13 live incident on player-3: hubs central-cover
-// EQUIPMENT and MEDICINE (residual buy-leg ~0 — a homed hauler grabs them fast), while
-// DRUGS (far, J58) and ANTIMATTER (far, I56) have a large residual buy-leg (no hauler can
-// source them quickly). SHIP_PARTS is mid-distance. The buggy stocker filled 80/80 with
-// EQUIPMENT+MEDICINE; the optimizer must do the inverse.
+// incidentGoods is a fixture where EQUIPMENT and MEDICINE are hub-covered (residual buy-leg
+// ~0 — a homed hauler grabs them fast) while DRUGS (far, J58) and ANTIMATTER (far, I56) have
+// a large residual buy-leg (no hauler can source them quickly); SHIP_PARTS is mid-distance.
+// The optimizer must prefer the far goods over the hub-covered ones.
 func incidentGoods() []GoodDemand {
 	return []GoodDemand{
 		{Good: "EQUIPMENT", Recurrence: 8, Payment: 1200, ResidualBuyLeg: 0, Size: 20},
@@ -139,9 +138,8 @@ func TestComputeWarehouseCaps_GoodLargerThanCapacityExcluded(t *testing.T) {
 	assert.Equal(t, 12, res.Targets["DRUGS"])
 }
 
-// REGRESSION (bead acceptance): seed the incident and assert the optimizer buffers the
-// FAR goods (DRUGS, ANTIMATTER) and refuses the hub-covered ones (EQUIPMENT, MEDICINE) —
-// the exact inverse of the shipped bug.
+// Seeds incidentGoods and asserts the optimizer buffers the FAR goods (DRUGS, ANTIMATTER)
+// and refuses the hub-covered ones (EQUIPMENT, MEDICINE).
 func TestComputeWarehouseCaps_IncidentRegression(t *testing.T) {
 	in := WarehouseCapInput{Capacity: 80, Goods: incidentGoods()}
 
@@ -294,11 +292,10 @@ func candidate(good, foreignSystem string, contractCount, maxContractUnits, home
 }
 
 // PlanWarehouseCaps buffers the FAR (cross-system) contract goods the single-system worker
-// cannot source (RULING #14), each at its single-contract size s_G, within Σ hull capacity —
-// the concrete fix for the incident's starvation of DRUGS/ANTIMATTER. (The composer's coarse
-// location residual keeps in-system goods buffered too — sp-layd — but the per-good caps stop
-// any one good from monopolising the hull; a later sp-q2zq coverage upgrade drops genuinely
-// hub-covered goods to ~0 residual.)
+// cannot source (RULING #14), each at its single-contract size s_G, within Σ hull capacity.
+// (The composer's coarse location residual keeps in-system goods buffered too, but the
+// per-good caps stop any one good from monopolising the hull; the coverage scorer drops
+// genuinely hub-covered goods to ~0 residual.)
 func TestPlanWarehouseCaps_BuffersFarGoodsAtSingleContractSize(t *testing.T) {
 	home := "X1-VB74"
 	candidates := []persistence.DemandCandidate{
@@ -354,7 +351,7 @@ func TestPlanWarehouseCaps_NoCandidatesColdStart(t *testing.T) {
 	assert.LessOrEqual(t, sumTargets(res), 78)
 }
 
-// ---- sp-9274: distance-aware residual buy-leg (dist(warehouse, source) replaces the binary) ----
+// ---- Distance-aware residual buy-leg (dist(warehouse, source) replaces the binary) ----
 
 // coordsFrom builds a WaypointCoordsLookup from a static position map; an absent waypoint
 // resolves ok=false, exercising the fail-open path (RULINGS #1). A cache-only stand-in for the
@@ -368,10 +365,9 @@ func coordsFrom(positions map[string][2]float64) WaypointCoordsLookup {
 	}
 }
 
-// The whole point of sp-9274: at IDENTICAL demand/size, a FAR in-system good out-ranks a CLOSE
-// in-system one for a contested buffer slot — because dist(warehouse, source) now drives the
-// residual buy-leg. The pre-fix binary proxy scored both in-system goods identically and could
-// not tell them apart; this is the discriminating signal the incident lacked.
+// At IDENTICAL demand/size, a FAR in-system good out-ranks a CLOSE in-system one for a
+// contested buffer slot, because dist(warehouse, source) drives the residual buy-leg — the
+// binary proxy alone cannot tell the two apart.
 func TestPlanWarehouseCaps_FarInSystemGoodOutranksCloseInSystemGood(t *testing.T) {
 	home := "X1-VB74"
 	wh := "X1-VB74-A1"
@@ -392,10 +388,9 @@ func TestPlanWarehouseCaps_FarInSystemGoodOutranksCloseInSystemGood(t *testing.T
 	assert.Zero(t, res.Targets["CLOSE"], "the CLOSE in-system good yields — a homed hauler reaches its source cheaply")
 }
 
-// The DRUGS@J58 incident, reproduced: a LOW-recurrence FAR good must beat a HIGHER-recurrence
-// CLOSE good once the far haul dominates. With the binary proxy DRUGS (recurrence 3) always lost
-// its slot to a central good (recurrence 8) and was market-bought at J58 every time; the distance
-// premium now flips it, so the buffer holds DRUGS and contracts WITHDRAW it.
+// A LOW-recurrence FAR good must beat a HIGHER-recurrence CLOSE good once the far haul
+// dominates: the distance premium flips the selection, so the buffer holds DRUGS and
+// contracts WITHDRAW it instead of market-buying it at J58 every time.
 func TestPlanWarehouseCaps_LowRecurrenceFarGoodBeatsHighRecurrenceCloseGood(t *testing.T) {
 	home := "X1-VB74"
 	wh := "X1-VB74-A1"
@@ -415,10 +410,10 @@ func TestPlanWarehouseCaps_LowRecurrenceFarGoodBeatsHighRecurrenceCloseGood(t *t
 	assert.Zero(t, res.Targets["CLOTHING"], "the close, high-recurrence good yields the scarce slot")
 }
 
-// REGRESSION GUARD (pairs with the test above): a nil coords lookup FAILS OPEN to the coarse
-// binary proxy — byte-identical to the pre-sp-9274 behavior. With no distance signal the far
-// DRUGS reverts to losing its slot to the higher-recurrence central good (the exact live bug),
-// proving the ONLY thing that flipped the selection above is the distance residual.
+// Pairs with the test above: a nil coords lookup FAILS OPEN to the coarse binary proxy. With
+// no distance signal the far DRUGS reverts to losing its slot to the higher-recurrence
+// central good, proving the ONLY thing that flipped the selection above is the distance
+// residual.
 func TestPlanWarehouseCaps_NilCoordsFailsOpenToBinaryProxy(t *testing.T) {
 	home := "X1-VB74"
 

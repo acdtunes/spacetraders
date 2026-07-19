@@ -9,9 +9,9 @@ import (
 )
 
 // ShipEarningStatus is one hull's earning/idle status at the moment it was
-// sampled (sp-51ti duty-cycle KPI). Earning means the hull was actively
+// sampled (duty-cycle KPI). Earning means the hull was actively
 // assigned to a working container at the moment of the sample; idle covers
-// both genuinely unassigned hulls and captain reservations (sp-i1ku) — a
+// both genuinely unassigned hulls and captain reservations — a
 // captain-reserved hull isn't earning either.
 type ShipEarningStatus struct {
 	Hull    string
@@ -20,7 +20,7 @@ type ShipEarningStatus struct {
 
 // DutyCycleSampler periodically samples every hull's earning/idle status on
 // a ticker and accumulates dutycycle.Samples, computing the ship-hours
-// earning/day KPI (sp-51ti captain amendment) on demand via Report(). The
+// earning/day KPI on demand via Report(). The
 // lifecycle mirrors ShipStateScheduler's StartBackgroundSweeper/Stop
 // ticker-goroutine pattern (internal/adapters/grpc/ship_state_scheduler.go).
 //

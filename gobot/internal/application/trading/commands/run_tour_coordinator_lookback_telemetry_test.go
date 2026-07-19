@@ -7,16 +7,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// sp-rd21 (epic sp-g9td, cash-true $/hr): the look-back manifest buy path
-// (buyLookbackItem) purchased goods — writing PURCHASE_CARGO ledger transactions and
-// booking netBought/response.TotalSpent — but NEVER recorded a tour_leg_telemetry row,
-// while the goods it bought were SOLD at the destination as normal telemetry sell legs.
-// That asymmetry (every sell logged, ~1/3 of buys silently dropped) is the ~2.1x
-// telemetry-netting inflation the 12h reconciliation found: telemetry net = sells −
-// (leg buys only), missing the look-back buy cost entirely. These tests pin the
-// invariant the fix restores — a look-back buy records its FULL bought units and the
-// volume-weighted realized price, exactly like executeBuy's leg buys, so telemetry buy
-// legs reconcile 1:1 (rows AND units) with PURCHASE_CARGO transactions.
+// A look-back manifest buy (buyLookbackItem) must record a tour_leg_telemetry row for
+// its FULL bought units and the volume-weighted realized price, exactly like
+// executeBuy's leg buys — so telemetry buy legs reconcile 1:1 (rows AND units) with
+// PURCHASE_CARGO transactions. A buy that writes the ledger transaction but skips the
+// telemetry row silently drops cost from any downstream $/hr netting that computes
+// sells-minus-buys off telemetry alone.
 
 // buyTelemetryLegs returns just the recorded BUY legs (a small helper so the assertions
 // read cleanly). Safe to read tel.rows directly: buyLookbackItem is synchronous and no
@@ -81,7 +77,7 @@ func TestTour_Lookback_RecordsTelemetryForBuy(t *testing.T) {
 
 // Reconciliation at the manifest level: loading a look-back manifest before a jump must
 // leave telemetry buy legs that reconcile with what was actually bought (units and
-// cost), so the windowed telemetry-netting rate no longer over-counts profit by omitting
+// cost), so the windowed telemetry-netting rate does not over-count profit by omitting
 // the look-back buy leg. Drives loadLookbackManifest end-to-end (build → buy → record).
 func TestTour_Lookback_ManifestBuysReconcileWithTelemetry(t *testing.T) {
 	fx := lookbackFixture() // HU21 EXPORTS PARTS (ask 100, vol 40); UQ16 IMPORTS PARTS (bid 300, vol 40)

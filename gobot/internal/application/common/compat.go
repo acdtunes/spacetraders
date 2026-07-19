@@ -16,7 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/dtos"
 )
 
-// Mediator types - re-exported for backward compatibility
+// Mediator types
 type (
 	Request        = mediator.Request
 	Response       = mediator.Response
@@ -26,16 +26,16 @@ type (
 	Mediator       = mediator.Mediator
 )
 
-// Logging types - re-exported for backward compatibility
+// Logging types
 type ContainerLogger = logging.ContainerLogger
 
-// Ship DTO types - re-exported for backward compatibility
+// Ship DTO types
 type (
 	RouteSegmentDTO = dtos.RouteSegmentDTO
 	ShipRouteDTO    = dtos.ShipRouteDTO
 )
 
-// Mediator functions - re-exported for backward compatibility
+// Mediator functions
 var (
 	NewMediator = mediator.NewMediator
 )
@@ -44,27 +44,27 @@ var (
 // Example: mediator.RegisterHandler[MyCommand](m, handler)
 // For backward compatibility in non-generic contexts, use Mediator.Register directly
 
-// Auth functions - re-exported for backward compatibility
+// Auth functions
 var (
 	WithPlayerToken        = auth.WithPlayerToken
 	PlayerTokenFromContext = auth.PlayerTokenFromContext
 	PlayerTokenMiddleware  = auth.PlayerTokenMiddleware
 )
 
-// Logging functions - re-exported for backward compatibility
+// Logging functions
 var (
 	WithLogger        = logging.WithLogger
 	LoggerFromContext = logging.LoggerFromContext
 )
 
-// Ship DTO functions - re-exported for backward compatibility
+// Ship DTO functions
 var (
 	RouteSegmentToDTO = dtos.RouteSegmentToDTO
 )
 
-// Player resolution types - re-exported for backward compatibility
+// Player resolution types
 // DEPRECATED: Import directly from github.com/andrescamacho/spacetraders-go/internal/application/player
 type PlayerResolver = player.PlayerResolver
 
-// Player resolution functions - re-exported for backward compatibility
+// Player resolution functions
 var NewPlayerResolver = player.NewPlayerResolver

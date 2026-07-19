@@ -16,8 +16,7 @@ import (
 // trade-route by sp-1hj5): a coordinator that ends its run deliberately (nil Go
 // error, so the restart loop can't crashloop it) but reports its task
 // incomplete — cargo bought this run still aboard — must NOT reach the
-// clean-exit success=true. The live incident: trade-route-TORWIND-19 completed
-// success=true and released its hull DOCKED holding 18 LAB_INSTRUMENTS.
+// clean-exit success=true.
 
 // reporterResponse is a coordinator response implementing
 // common.CompletionReporter with a fixed outcome.
@@ -69,9 +68,9 @@ func runIterationsAndFinish(t *testing.T, r *ContainerRunner) {
 }
 
 // (a) A clean-exit iteration whose response vetoes success must terminalize the
-// container FAILED and signal success=false carrying the veto reason — never
-// the laden success=true of the incident. And it is NOT a crash: the run ended
-// at a safe exit point; it just may not claim success.
+// container FAILED and signal success=false carrying the veto reason — never a
+// laden success=true (cargo still aboard reported as success). And it is NOT a
+// crash: the run ended at a safe exit point; it just may not claim success.
 func TestCleanExit_CompletionVetoed_TerminalizesFailed(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)

@@ -21,13 +21,13 @@ import (
 // BUFFERED goods (co-located stock delivers locally). But an UNBUFFERED-good contract still needs
 // a general SOURCING worker to fly out and buy it — and if the topology declares delivery hulls
 // for EVERY home hauler, pinning them all leaves ZERO general workers, so an unbuffered contract
-// starves while idle hulls sit hub-locked (the live incident: COPPER_ORE -> H51, 0/60 for 80min).
+// starves while idle hulls sit hub-locked.
 //
 // The floor RESERVES min_home_contract_workers home general haulers that are NEVER converted to a
 // depot-delivery pin, and — the sp-7zoq fix — DEDICATES each of them to the exclusive "contract"
 // fleet. Merely leaving the reserve undedicated (the sp-mzdk behavior) left it in the shared idle pool
-// where ANY coordinator could poach it: the live incident was the goods_factory eating 4 of 6 reserve
-// workers as opportunistic idle hulls. An exclusive "contract" dedication removes a hull from that pool
+// where ANY coordinator (e.g. the goods_factory) could poach it as an opportunistic idle hull. An
+// exclusive "contract" dedication removes a hull from that pool
 // (FindIdleLightHaulers, the reconciler SENSE filter, and ClaimShip's atomic guard all skip any hull
 // dedicated to another fleet), so the reserve is poach-proof while STILL serving contracts through the
 // coordinator's own FindIdleShipsByFleet("contract") lookup. Delivery hulls ABOVE the floor still pin,
@@ -50,7 +50,7 @@ const minHomeContractWorkersConfigKey = "min_home_contract_workers"
 // floor: a destination-depot warehouse never buffers a good whose nearest EXTERNAL source sits at or
 // below this many coordinate units. A homed hauler buys such a near/local-sourced good on-site about
 // as cheaply as the buffer would pre-stage it, so the warehouse slot and the stocker haul are wasted
-// (the DRUGS@J58 incident: DRUGS is exported at J58, so its source is co-located — distance ~0). It
+// (the DRUGS@J58 case: DRUGS is exported at J58, so its source is co-located — distance ~0). It
 // applies when the live contract-coordinator config carries no positive override. Live-tunable
 // without restart via `tune --operation contract --key depot_buffer_min_source_distance`.
 const DepotBufferMinSourceDistanceDefault = 25

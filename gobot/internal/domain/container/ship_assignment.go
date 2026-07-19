@@ -89,7 +89,6 @@ func (sa *ShipAssignment) markReleased(reason string) {
 	sa.releaseReason = &reason
 }
 
-// IsStale checks if the assignment is older than the given timeout duration
 func (sa *ShipAssignment) IsStale(timeout time.Duration) bool {
 	if sa.status == AssignmentStatusIdle {
 		return false
@@ -99,12 +98,10 @@ func (sa *ShipAssignment) IsStale(timeout time.Duration) bool {
 	return age > timeout
 }
 
-// IsActive returns true if the assignment is currently active
 func (sa *ShipAssignment) IsActive() bool {
 	return sa.status == AssignmentStatusActive
 }
 
-// String provides human-readable representation
 func (sa *ShipAssignment) String() string {
 	return fmt.Sprintf("ShipAssignment[ship=%s, container=%s, status=%s]",
 		sa.shipSymbol, sa.containerID, sa.status)
@@ -116,7 +113,6 @@ type ShipAssignmentManager struct {
 	clock       shared.Clock
 }
 
-// NewShipAssignmentManager creates a new ship assignment manager
 func NewShipAssignmentManager(clock shared.Clock) *ShipAssignmentManager {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -148,13 +144,11 @@ func (sam *ShipAssignmentManager) AssignShip(
 	return assignment, nil
 }
 
-// GetAssignment retrieves the current assignment for a ship
 func (sam *ShipAssignmentManager) GetAssignment(shipSymbol string) (*ShipAssignment, bool) {
 	assignment, exists := sam.assignments[shipSymbol]
 	return assignment, exists
 }
 
-// ReleaseAssignment releases a ship from its current assignment
 func (sam *ShipAssignmentManager) ReleaseAssignment(shipSymbol string, reason string) error {
 	assignment, exists := sam.assignments[shipSymbol]
 	if !exists {
@@ -187,7 +181,6 @@ func (sam *ShipAssignmentManager) CleanOrphanedAssignments(
 			continue
 		}
 
-		// Check if container exists
 		if !existingContainerIDs[assignment.ContainerID()] {
 			if err := assignment.Release("orphaned_cleanup"); err != nil {
 				return cleaned, err
@@ -199,7 +192,6 @@ func (sam *ShipAssignmentManager) CleanOrphanedAssignments(
 	return cleaned, nil
 }
 
-// CleanStaleAssignments releases assignments older than the timeout
 func (sam *ShipAssignmentManager) CleanStaleAssignments(timeout time.Duration) (int, error) {
 	cleaned := 0
 

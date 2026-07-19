@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Regression for sp-fi7q: SupplyConstruction must POST to the waypoint-scoped
+// Regression: SupplyConstruction must POST to the waypoint-scoped
 // construction/supply endpoint. The previous path
 // (/my/ships/{shipSymbol}/construction/supply) does not exist in the SpaceTraders
 // API and returned 404 "Route not found", killing every construction delivery at

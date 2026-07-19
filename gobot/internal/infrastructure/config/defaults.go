@@ -63,7 +63,7 @@ func setAPIDefaults(cfg *Config) {
 	if cfg.API.RateLimit.Burst == 0 {
 		// Mirror the limiter's real burst (api.RateLimitBurst = 30). This value
 		// is display-only today (surfaced in `config show`, not plumbed to the
-		// client); the prior default of 10 lied about the live burst (sp-a5dq).
+		// client).
 		cfg.API.RateLimit.Burst = 30
 	}
 	if cfg.API.Retry.MaxAttempts == 0 {
@@ -230,7 +230,7 @@ func setCaptainDefaults(cfg *Config) {
 		cfg.Captain.StreamDownMinutes = 30
 	}
 	if cfg.Captain.PinnedHullContainerlessMinutes == 0 {
-		cfg.Captain.PinnedHullContainerlessMinutes = 5 // sp-h88r: preserve the historical sp-v63s watchdog default
+		cfg.Captain.PinnedHullContainerlessMinutes = 5
 	}
 	if cfg.Captain.ClaudeBin == "" {
 		cfg.Captain.ClaudeBin = "claude"

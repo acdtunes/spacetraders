@@ -12,7 +12,6 @@ type Player struct {
 	Metadata        map[string]interface{}
 }
 
-// NewPlayer creates a new player
 func NewPlayer(id shared.PlayerID, agentSymbol, token string) *Player {
 	return &Player{
 		ID:          id,

@@ -87,11 +87,9 @@ func regimeDedupKey(good, waypoint, direction string) string {
 }
 
 // detectRegimeShift scans MarketData for prices crossing a captain-declared
-// tripwire (sp-zlfv): mechanizes the per-wake price sweep the captain used to
-// hand-roll ("any ore bid >=200 or gas bid >=150 (~3x baseline) triggers an
-// immediate extraction re-consult"). Tripwires are ONE-SHOT (sp-a6e0): the
-// supervisor CONSUMES a fired tripwire from the persisted RegimePolicy on the
-// delivered wake, so a crossing cannot recur without the captain re-declaring —
+// tripwire (sp-zlfv). Tripwires are ONE-SHOT (sp-a6e0): the supervisor
+// CONSUMES a fired tripwire from the persisted RegimePolicy on the delivered
+// wake, so a crossing cannot recur without the captain re-declaring —
 // there is no Window-based re-fire cooldown here. This scan only avoids piling
 // a DUPLICATE while an identical crossing is still awaiting delivery, via the
 // HasUnprocessed idiom detectCreditsCrossing uses. Window's sole surviving role

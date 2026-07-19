@@ -7,8 +7,8 @@ import (
 
 // tradeTypeExport is the GoodListing.TradeType value for a market that PRODUCES and
 // sells a good (an exporter). Its Bid is a low sellback price, so it can never be a
-// sell destination (sp-9mkf Bug 3). Matches domain/market.TradeTypeExport without
-// importing that package into this pure-domain ranking code.
+// sell destination. Matches domain/market.TradeTypeExport without importing that
+// package into this pure-domain ranking code.
 const tradeTypeExport = "EXPORT"
 
 // GoodListing is one cached market's trade data for a single good, expressed in
@@ -36,7 +36,7 @@ type GoodListing struct {
 	// last refreshed into the cache (market.Market.LastUpdated). The ranker uses
 	// it to reject lanes priced from observations older than maxListingAge, so a
 	// lane whose cached spread has since moved cannot win selection and execute at
-	// stale prices (sp-xwa1). Zero value means "unknown age" — treated as fresh so
+	// stale prices. Zero value means "unknown age" — treated as fresh so
 	// callers that don't populate it (older tests) rank unchanged.
 	ObservedAt time.Time
 }
@@ -72,7 +72,7 @@ func (l ArbitrageLane) ClearsFloor() bool {
 // must be RankSpreads-ordered, so the walk yields the DEEPEST volume-capped lane the
 // executor will actually fly — MarginAlive holds on its first observation.
 //
-// This reconciles scan ranking with execution discipline (sp-sh6w): the scan ranks
+// This reconciles scan ranking with execution discipline: the scan ranks
 // by volume-capped spread and deliberately keeps sub-floor lanes visible (it is an
 // observation tool), but the top capped-spread lane can have a per-unit spread below
 // the floor. Selecting that lane makes the executor refuse it on the first visit and
@@ -128,9 +128,7 @@ func RankSpreads(listings []GoodListing) []ArbitrageLane {
 
 // RankSpreadsForHold ranks lanes exactly as RankSpreads does, then re-orders them
 // by a hold-fit-weighted score so a big hull is not sent to crush a lane far
-// shallower than its hold (sp-pnx0 — a 225-cargo heavy on a vol-20 lane bought
-// loads that drove the source price up and crushed the destination sink, earning
-// like a light ship while risking the treasury like a heavy one).
+// shallower than its hold.
 //
 // RankSpreads alone ranks by raw CappedSpread (SpreadPerUnit × VolumeCap), which
 // rewards a thin, deep-spread lane exactly as if any hull could fill it — but a
@@ -235,9 +233,8 @@ func bestLaneForGood(good string, markets []GoodListing) (ArbitrageLane, bool) {
 				continue
 			}
 
-			// sp-9mkf (Bug 3): never sell into an EXPORT market's bid. An exporter's Bid
-			// is a low sellback price, not a real import sink (LAB_INSTRUMENTS dumped into
-			// the exporter C37 at 2,347/u). A valid sink is IMPORT or EXCHANGE. An
+			// Never sell into an EXPORT market's bid: an exporter's Bid is a low sellback
+			// price, not a real import sink. A valid sink is IMPORT or EXCHANGE. An
 			// unknown/empty trade type is left eligible (fail-open on missing data,
 			// matching the manufacturing sell_market_distributor reference filter).
 			if dest.TradeType == tradeTypeExport {

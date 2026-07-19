@@ -1,6 +1,6 @@
 package expansion
 
-// Unit tests for the sp-rhju backfill charted-shipyard enumerator: it INTERSECTS the
+// Unit tests for the backfill charted-shipyard enumerator: it INTERSECTS the
 // era-agnostic SHIPYARD-trait set with the current gate-reachable frontier, so it
 // surfaces exactly the known-shipyard systems a probe could be relayed to, each tagged
 // with its hop depth (the deeper-first key). Doubles at both driven ports (the frontier
@@ -89,7 +89,7 @@ func TestChartedShipyardEnumerator_OneRepresentativeYardPerSystem(t *testing.T) 
 	require.Equal(t, "X1-MULTI-Y1", got[0].ShipyardWaypoint, "the deterministic representative is the smallest waypoint symbol")
 }
 
-// sp-b8lf: the enumerator honors the caller-supplied REACH — it does not bake in a shallow
+// The enumerator honors the caller-supplied REACH — it does not bake in a shallow
 // bound. A CHARTED shipyard sitting DEEP in the gate graph (hop depth 5-20, past the old ~3
 // reposition bound) is in-graph + relay-reachable, so a WIDE reach must enumerate it; a shallow
 // reach drops it. This is the exact blind spot: the deep in-graph charted yards were invisible
@@ -118,7 +118,7 @@ func TestChartedShipyardEnumerator_HonorsCallerReach_DeepInGraphYardsAtWideReach
 		[]string{"X1-SHALLOW", "X1-DEEP5", "X1-DEEP8", "X1-DEEP20"}, enumeratedSystems(wide),
 		"a wide reach enumerates every in-graph charted shipyard, including the deep ones")
 
-	// SHALLOW reach (the old ~3 bound): the deep in-graph yards are dropped — the sp-b8lf blind spot.
+	// SHALLOW reach (the old ~3 bound): the deep in-graph yards are dropped.
 	shallow, err := enum.ChartedShipyardSystems(context.Background(), 1, 3)
 	require.NoError(t, err)
 	require.Equal(t, []string{"X1-SHALLOW"}, enumeratedSystems(shallow),

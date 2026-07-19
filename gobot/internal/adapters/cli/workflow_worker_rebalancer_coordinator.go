@@ -9,7 +9,7 @@ import (
 )
 
 // newWorkflowWorkerRebalancerCoordinatorCommand creates the workflow
-// worker-rebalancer-coordinator subcommand (sp-f5pr): it launches the STANDING
+// worker-rebalancer-coordinator subcommand: it launches the STANDING
 // worker-rebalancer coordinator, which ferries idle undedicated light-haulers cross-system
 // to worker-starved factory systems so a factory posting "No in-system worker" self-heals
 // without captain hand-holding.

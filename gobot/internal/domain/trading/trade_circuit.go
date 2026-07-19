@@ -1,6 +1,6 @@
 package trading
 
-// Trade-analyst arbitrage discipline (cited on sp-s7c2). Two caps keep a
+// Trade-analyst arbitrage discipline. Two caps keep a
 // hand-flown circuit from walking its own edge to zero:
 //
 //   - TrancheCap bounds how many units to move per market visit. Small tranches
@@ -17,10 +17,10 @@ const (
 	// percentage of the basis the lane was RANKED on, before the circuit refuses to
 	// buy. Lanes are ranked from a market cache that can be many minutes stale; if a
 	// live re-read shows the ask has run away from that basis, the ranked spread is
-	// fiction and buying on it can realise a large loss (a -196k manual precedent).
-	// 30% tolerates ordinary tick drift while catching a basis that has moved (e.g. a
-	// 3.6x ask jump). The move is measured in EITHER direction: a large swing either
-	// way means the ranking premise is stale and the run should re-scan, not execute.
+	// fiction and buying on it can realise a large loss. 30% tolerates ordinary tick
+	// drift while catching a basis that has moved (e.g. a 3.6x ask jump). The move is
+	// measured in EITHER direction: a large swing either way means the ranking premise
+	// is stale and the run should re-scan, not execute.
 	StaleAskMovePercent = 30
 )
 

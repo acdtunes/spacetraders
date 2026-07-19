@@ -52,9 +52,9 @@ func stalenessConfig(playerID int) DetectorConfig {
 
 // TestStalenessHidingRevenue_FiresOnMarketRichStaleSystem is the load-bearing case: a
 // market-rich system whose markets have aged past the tour cap fires exactly one
-// scout.staleness_hiding_revenue naming the priced/stale counts — the XT71/UQ87 signal
-// that previously alarmed nothing. A fresh rich system and a stale-but-poor system stay
-// silent, and a second run does not duplicate (HasSince dedup).
+// scout.staleness_hiding_revenue naming the priced/stale counts. A fresh rich system
+// and a stale-but-poor system stay silent, and a second run does not duplicate
+// (HasSince dedup).
 func TestStalenessHidingRevenue_FiresOnMarketRichStaleSystem(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()

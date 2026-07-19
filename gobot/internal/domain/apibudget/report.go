@@ -1,9 +1,8 @@
 // Package apibudget computes the fleet's API request-budget utilization: how
 // much of the shared SpaceTraders rate-limiter ceiling is being consumed, by
-// which purpose (poll/transact/retry), and by which hull. The architect's 20x
-// scaling directive (sp-pwwe) identified the shared API req/s budget — mostly
-// consumed by per-ship status-poll cadence — as the binding fleet-scale wall,
-// and it was unmeasured (sp-51ti). This package makes it measurable.
+// which purpose (poll/transact/retry), and by which hull. The shared API req/s
+// budget — mostly consumed by per-ship status-poll cadence — is the binding
+// fleet-scale wall this package makes measurable.
 //
 // Everything here is pure: ComputeReport takes an event slice and a point in
 // time and derives the report. Collecting events off the live request path and
@@ -19,8 +18,8 @@ import (
 // Purpose classifies why an API request was made. Every attempt against the
 // SpaceTraders API funnels through exactly one of these three buckets: a retry
 // (any attempt after the first, regardless of HTTP method) takes priority over
-// the method-based split, since the bead calls for retry share as its own
-// consumer of budget distinct from the poll/transact mix.
+// the method-based split, so retry share is tracked as its own consumer of
+// budget distinct from the poll/transact mix.
 type Purpose string
 
 const (
@@ -59,16 +58,16 @@ type Report struct {
 	RateLimited429PerMin float64             `json:"rate_limited_429_per_min"`
 	PurposeCounts        map[Purpose]int     `json:"purpose_counts"`
 	PurposeSharePct      map[Purpose]float64 `json:"purpose_share_pct"`
-	// HullsToCeiling is the architect's derived scaling number: how many hulls
-	// like the currently-observed average could run before saturating the
-	// ceiling. 0 when no hull-scoped traffic was observed (avoids reporting a
+	// HullsToCeiling is the derived scaling number: how many hulls like the
+	// currently-observed average could run before saturating the ceiling. 0
+	// when no hull-scoped traffic was observed (avoids reporting a
 	// meaningless +Inf).
 	HullsToCeiling float64     `json:"hulls_to_ceiling"`
 	PerHull        []HullStats `json:"per_hull"` // sorted desc by RequestsInWindow
 }
 
-// DualReport pairs a narrow "current" window with the bead-mandated rolling
-// 5-minute window so callers get both an instantaneous and a smoothed rate.
+// DualReport pairs a narrow "current" window with a rolling 5-minute window
+// so callers get both an instantaneous and a smoothed rate.
 type DualReport struct {
 	Current   Report `json:"current"`
 	Rolling5m Report `json:"rolling_5m"`
@@ -79,8 +78,6 @@ type DualReport struct {
 // noise.
 const currentWindow = 10 * time.Second
 
-// rolling5mWindow is the window the bead names explicitly for the rolling
-// req/s figure.
 const rolling5mWindow = 5 * time.Minute
 
 // ComputeDualReport computes both the current and rolling-5m windows from the

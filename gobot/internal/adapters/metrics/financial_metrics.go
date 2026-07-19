@@ -28,7 +28,7 @@ type FinancialMetricsCollector struct {
 	transactionsTotal *prometheus.CounterVec
 	transactionAmount *prometheus.HistogramVec
 
-	// Ledger-flow counters (sp-miqt): monotonic signed-amount sums split by
+	// Ledger-flow counters: monotonic signed-amount sums split by
 	// sign so PromQL rate() can drive the cr/hr financial panels. Labeled by
 	// operation_type (contract/tour/arbitrage/...) + category + player_id.
 	ledgerRevenueTotal *prometheus.CounterVec // += amount when amount > 0
@@ -70,7 +70,7 @@ func NewFinancialMetricsCollector(
 			[]string{"player_id", "agent"},
 		),
 
-		// Transaction count by type. category is dropped (sp-xdr6): it is a
+		// Transaction count by type. category is dropped: it is a
 		// deterministic f(type) relabel, so it duplicated `type` here for no
 		// added signal. The Operating-vs-Net split lives on ledger_*_total below.
 		transactionsTotal: prometheus.NewCounterVec(
@@ -92,11 +92,11 @@ func NewFinancialMetricsCollector(
 				Help:      "Transaction amount distribution",
 				Buckets:   []float64{100, 500, 1000, 5000, 10000, 50000, 100000, 500000},
 			},
-			// category dropped (sp-xdr6): redundant f(type) relabel.
+			// category dropped: redundant f(type) relabel.
 			[]string{"player_id", "type"},
 		),
 
-		// Ledger revenue (positive inflow) running total by operation/category (sp-miqt)
+		// Ledger revenue (positive inflow) running total by operation/category
 		ledgerRevenueTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: namespace,
@@ -107,7 +107,7 @@ func NewFinancialMetricsCollector(
 			[]string{"operation_type", "category", "player_id"},
 		),
 
-		// Ledger cost (negative outflow magnitude) running total by operation/category (sp-miqt)
+		// Ledger cost (negative outflow magnitude) running total by operation/category
 		ledgerCostTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: namespace,
@@ -264,18 +264,11 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 
 		agentSymbol := playerEntity.AgentSymbol
 
-		// player_credits_balance is intentionally NOT written here (sp-m1n2).
-		// playerRepo.FindByID never populates Credits from the DB - the
-		// credits column isn't persisted there; GormPlayerRepository.modelToPlayer
-		// always returns Credits: 0 and expects callers who need a real balance
-		// to fetch it live from the API and assign it themselves (see
-		// purchase_ship.go, register_player.go, get_player.go). This poller
-		// makes no such API call, so every 60s tick used to Set the gauge to a
-		// hardcoded 0, stomping the accurate value RecordTransaction had just
-		// written from the ledger's authoritative running balance - producing
-		// the observed 0<->balance oscillation. RecordTransaction (below) is
-		// this gauge's single writer; it fires on every ledger entry, far more
-		// often than this poll ever could, and never sees a phantom zero.
+		// player_credits_balance is intentionally NOT written here: playerRepo.FindByID
+		// never populates Credits from the DB (see GormPlayerRepository.modelToPlayer),
+		// so this poller has no accurate balance to set. RecordTransaction (below) is
+		// this gauge's sole writer, sourced from the ledger's authoritative running
+		// balance.
 
 		// Update revenue metrics by category
 		for category, amount := range plResponse.RevenueBreakdown {
@@ -307,8 +300,8 @@ func (c *FinancialMetricsCollector) RecordTransaction(
 	// Update credits balance
 	c.creditsBalance.WithLabelValues(playerIDStr, agentSymbol).Set(float64(creditsBalance))
 
-	// Increment transaction counter. category is intentionally NOT a label here
-	// (sp-xdr6): it is a deterministic f(type), so `type` already carries it.
+	// Increment transaction counter. category is intentionally NOT a label here:
+	// it is a deterministic f(type), so `type` already carries it.
 	c.transactionsTotal.WithLabelValues(playerIDStr, transactionType).Inc()
 
 	// Record transaction amount (use absolute value for histogram)
@@ -318,13 +311,13 @@ func (c *FinancialMetricsCollector) RecordTransaction(
 	}
 	c.transactionAmount.WithLabelValues(playerIDStr, transactionType).Observe(float64(absAmount))
 
-	// Fan the signed amount into the sign-split ledger-flow counters (sp-miqt),
+	// Fan the signed amount into the sign-split ledger-flow counters,
 	// which DO keep category for the Operating-vs-Net capex/opex split.
 	c.recordLedgerFlow(operationType, category, playerIDStr, amount)
 }
 
 // recordLedgerFlow increments exactly one of the monotonic ledger-flow counters
-// by the magnitude of a signed amount (sp-miqt): positive amounts are revenue,
+// by the magnitude of a signed amount: positive amounts are revenue,
 // negative amounts are cost, zero is neither. Split by sign because Prometheus
 // counters must be non-negative; PromQL nets the two sides back together.
 func (c *FinancialMetricsCollector) recordLedgerFlow(operationType, category, playerIDStr string, amount int) {

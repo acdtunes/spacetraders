@@ -34,7 +34,7 @@ type ContainerMetricsCollector struct {
 	containerIterations   *prometheus.CounterVec
 	containerExitTotal    *prometheus.CounterVec
 
-	// Supervised daemon background component restarts (sp-i01z)
+	// Supervised daemon background component restarts
 	daemonComponentRestarts *prometheus.CounterVec
 
 	// Ship metrics
@@ -42,7 +42,7 @@ type ContainerMetricsCollector struct {
 	shipStatusTotal *prometheus.GaugeVec
 
 	// shipVersionConflicts counts Save calls whose row version moved past the
-	// entity's loaded version (sp-60ff tripwire). Unlabeled — the paired
+	// entity's loaded version. Unlabeled — the paired
 	// ERROR log (ship_repository.go Save) carries the ship symbol.
 	shipVersionConflicts prometheus.Counter
 
@@ -127,7 +127,7 @@ func NewContainerMetricsCollector(
 			[]string{"player_id", "container_type"},
 		),
 
-		// Container exit counter (sp-dp92 P9): one increment per terminal
+		// Container exit counter: one increment per terminal
 		// container exit. Fired from the same 3 call sites as
 		// RecordContainerCompletion above (terminalizeClaimFailure,
 		// finishCleanExit's completion branch, handleError) so this stays a
@@ -143,7 +143,7 @@ func NewContainerMetricsCollector(
 			[]string{"player_id", "command_type", "status"},
 		),
 
-		// Supervised daemon background component restarts (sp-i01z). Labeled
+		// Supervised daemon background component restarts. Labeled
 		// by component only — a small fixed set (ship-state-sweeper,
 		// container-recovery, ...), deliberately NOT per-ship.
 		daemonComponentRestarts: prometheus.NewCounterVec(
@@ -178,7 +178,7 @@ func NewContainerMetricsCollector(
 			[]string{"player_id", "status"},
 		),
 
-		// sp-60ff tripwire: ship saves that raced past their loaded version.
+		// Version-conflict tripwire: ship saves that raced past their loaded version.
 		// Unlabeled — the paired ERROR log carries the ship symbol.
 		shipVersionConflicts: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -356,7 +356,7 @@ func (c *ContainerMetricsCollector) RecordContainerIteration(containerInfo Conta
 	c.containerIterations.WithLabelValues(playerID, containerType).Inc()
 }
 
-// RecordContainerExit records a container terminal exit event (sp-dp92 P9).
+// RecordContainerExit records a container terminal exit event.
 // Called from the same 3 sites RecordContainerCompletion already covers
 // (terminalizeClaimFailure, finishCleanExit, handleError) so container_exit_total
 // tracks exactly what container_total treats as terminal for this container.
@@ -373,12 +373,12 @@ func (c *ContainerMetricsCollector) RecordContainerExit(containerInfo ContainerI
 	c.containerExitTotal.WithLabelValues(playerID, commandType, status).Inc()
 }
 
-// RecordShipVersionConflict implements ShipWriteConflictRecorder (sp-60ff).
+// RecordShipVersionConflict implements ShipWriteConflictRecorder.
 func (c *ContainerMetricsCollector) RecordShipVersionConflict() {
 	c.shipVersionConflicts.Inc()
 }
 
-// RecordDaemonComponentRestart implements DaemonComponentRecorder (sp-i01z).
+// RecordDaemonComponentRestart implements DaemonComponentRecorder.
 // Nil-safe like the other recorders: a metrics miss must never take down the
 // supervise restart path that calls it.
 func (c *ContainerMetricsCollector) RecordDaemonComponentRestart(component string) {

@@ -193,13 +193,10 @@ func TestBridgeWakeRespectsKillSwitch(t *testing.T) {
 
 // --- Durable scheduling state across process restarts ---
 //
-// Bug: a fresh Supervisor left lastSession/lastSurveyorNudge at time.Time's
-// zero value, so now.Sub(zeroValue) is enormous and every "due" check
-// evaluated true immediately after construction. Every process start (three
-// manual `captain --once` runs plus one launchd service start) fired an
-// immediate heartbeat wake and survey nudge. The fix persists scheduling
-// state to <workspace_dir>/state/supervisor-state.json and arms fresh
-// cadences one full interval out from now instead of due-at-zero.
+// Scheduling state persists to <workspace_dir>/state/supervisor-state.json;
+// a fresh process arms cadences one full interval out from now, not due at
+// construction (an unset lastSession/lastSurveyorNudge must never read as
+// "always overdue").
 
 func TestFreshSupervisorSchedulesHeartbeatOneIntervalOutNotImmediately(t *testing.T) {
 	sup, _, gw := newBridgeSupervisor(t)
@@ -358,14 +355,11 @@ func TestLastCreditsSurvivesRestart(t *testing.T) {
 
 // --- sp-o8wi: nudge coalescing (cooldown) + interrupt bypass + persisted clock ---
 //
-// Bug: firstWake fired a mail+nudge on EVERY poll tick that saw any newly
-// arrived event, so deploy churn (20-24 events queued across consecutive
-// ticks) nudged the captain seconds apart and stalled the session. The fix
-// enforces nudgeCooldown between successive non-interrupt firstWake nudges:
-// events arriving inside the window stay unmailed and ride the next allowed
-// firstWake as one accumulated batch. A never-mailed interrupt bypasses the
-// cooldown, and the clock is persisted so a restart mid-window does not reset
-// it and re-storm on boot.
+// nudgeCooldown enforces a minimum gap between successive non-interrupt
+// firstWake nudges: events arriving inside the window stay unmailed and ride
+// the next allowed firstWake as one accumulated batch. A never-mailed
+// interrupt bypasses the cooldown, and the clock is persisted so a restart
+// mid-window does not reset it and re-storm on boot.
 
 func deployEvent(id int64, at time.Time) *captain.Event {
 	return &captain.Event{ID: id, Type: captain.EventDeployCompleted, Ship: "S", CreatedAt: at}
@@ -492,15 +486,11 @@ func TestSupervisorStateWithoutLastNudgeFieldLoadsCleanly(t *testing.T) {
 
 // --- sp-l6pz → sp-wfut: credits wake bounds fire once, then are CONSUMED ---
 //
-// History: the original PRIMARY wake gate woke on a standing credits LEVEL with
-// no guard, spamming an event-less wake on EVERY 30s tick while credits sat past
-// a declared bound (live incident: credits_below=600000, credits ~170k). sp-l6pz
-// first tamed that with an edge gate + hysteresis re-arm — fire once on crossing
-// in, re-arm on exit, fire AGAIN on re-cross. sp-wfut supersedes that: a
-// captain-set bound is a true ONE-SHOT (see the sp-wfut section below), consumed
-// from the persisted policy on its first delivered wake, so it neither storms nor
-// re-fires on a re-cross. These retained Tick-level tests pin the surviving
-// property — a standing sub-bound fires EXACTLY ONCE across ticks and restarts.
+// A captain-set credits bound is a true ONE-SHOT (see the sp-wfut section
+// below): consumed from the persisted policy on its first delivered wake, so
+// it neither storms nor re-fires on a re-cross. These retained Tick-level
+// tests pin the surviving property — a standing sub-bound fires EXACTLY ONCE
+// across ticks and restarts.
 
 // wireCredits attaches a mutable live-credits source so a test can move the
 // player's credits across a declared bound between ticks: refreshCredits reads
@@ -623,12 +613,9 @@ func TestCreditsBelowFloorAcrossTicksAndReloadsFiresExactlyOnce(t *testing.T) {
 // mirroring the sp-oyer one-shot watches: the FIRST delivered wake that services
 // a satisfied bound CONSUMES that specific bound — sets it to nil in the
 // WakePolicy and persists it — so it never fires again until the captain
-// re-declares it. The reverted sp-l6pz behaviour was a standing edge gate with
-// hysteresis re-arm: after firing once it re-armed when credits exited the bound
-// and fired AGAIN on the next re-cross. These tests pin the one-shot contract:
-// consume-on-fire, no re-fire while satisfied, no re-fire on re-cross, the
-// consumption survives a restart (RULINGS #2), and the two bounds are consumed
-// independently.
+// re-declares it. These tests pin the one-shot contract: consume-on-fire, no
+// re-fire while satisfied, no re-fire on re-cross, the consumption survives a
+// restart (RULINGS #2), and the two bounds are consumed independently.
 
 // TestCreditsBelow_OneShot_ConsumedOnFire: a CreditsBelow floor crossed for the
 // first time fires exactly one wake AND is consumed (nil) in the persisted policy.
@@ -686,11 +673,10 @@ func TestCreditsBelow_NoRefireWhileSatisfied(t *testing.T) {
 	require.Len(t, gw.nudges, 1, "exactly one credits wake for the life of the one-shot bound")
 }
 
-// TestCreditsBelow_NoRefireOnRecross is the case that FAILS under the reverted
-// sp-l6pz re-arm: credits fire below, recover above (exit), then drop below
-// AGAIN. The reverted edge gate re-armed on exit and fired a SECOND wake on the
-// re-cross; a one-shot bound was consumed on its first fire, so a re-cross must
-// NOT wake — the captain must re-declare to be notified again.
+// TestCreditsBelow_NoRefireOnRecross: credits fire below, recover above
+// (exit), then drop below AGAIN. A one-shot bound was consumed on its first
+// fire, so a re-cross must NOT wake — the captain must re-declare to be
+// notified again.
 func TestCreditsBelow_NoRefireOnRecross(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
 	t0 := time.Now()
@@ -782,11 +768,11 @@ func TestCreditsBounds_Independent(t *testing.T) {
 	require.Equal(t, above, *pol.CreditsAbove, "the surviving above bound keeps its value")
 }
 
-// TestTickCoalescesDeployStormBehindStandingInterrupt is the faithful incident
-// repro at the Tick level: a mailed interrupt keeps the wake GATE open every
-// tick (evaluateWakeGate wakes on any interrupt in the batch, mailed or not),
-// while deploy-churn events accumulate. Before the fix firstWake fired every
-// tick; after it, the non-interrupt accumulation rides one coalesced wake.
+// TestTickCoalescesDeployStormBehindStandingInterrupt: a mailed interrupt
+// keeps the wake GATE open every tick (evaluateWakeGate wakes on any
+// interrupt in the batch, mailed or not), while deploy-churn events
+// accumulate; the non-interrupt accumulation must ride one coalesced wake,
+// not fire firstWake on every tick.
 func TestTickCoalescesDeployStormBehindStandingInterrupt(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
 	ctx := context.Background()

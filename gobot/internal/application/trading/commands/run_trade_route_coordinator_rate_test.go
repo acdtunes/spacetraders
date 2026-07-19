@@ -1,6 +1,6 @@
 package commands
 
-// sp-1wp8: circuit lanes are RATE-ranked — hold-fit-weighted per-circuit value over
+// Circuit lanes are RATE-ranked — hold-fit-weighted per-circuit value over
 // estimated circuit hours — replacing the subtractive per-unit gate penalty. The time
 // model: an in-system circuit at the fleet's observed home-lane class
 // (homeLaneClassCircuitValue / hullOpportunityCreditsPerSecond = 4000s), a
@@ -77,7 +77,7 @@ func TestLaneRateRanking_DirectedLaneRanksAtInSystemBaseline(t *testing.T) {
 
 // The time model itself, pinned:
 //   - both estimates are positive (a rate can never divide by zero — the structural
-//     form of the sp-1wp8 zero-time regression pin at this surface);
+//     form of the zero-time regression pin at this surface);
 //   - the cross-system surcharge stays a BOUNDED time premium below the DP51 value
 //     ratio (409,920/335,033 ≈ 1.2235): the captain-ruled economics (a deep frontier
 //     lane a heavy hull fills out-ranks a saturated home lane) hold under rate

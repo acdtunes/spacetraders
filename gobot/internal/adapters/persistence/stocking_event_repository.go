@@ -11,7 +11,7 @@ import (
 )
 
 // StockingEventRepositoryGORM is the GORM-backed implementation of the domain
-// storage.StockingRecorder port (sp-j6uz) — the stock-IN mirror of
+// storage.StockingRecorder port — the stock-IN mirror of
 // WithdrawalEventRepositoryGORM. It maps the domain event DTO to the WarehouseStockingModel
 // row and back, so the stocker coordinator and any stock-IN report never touch GORM types
 // directly.

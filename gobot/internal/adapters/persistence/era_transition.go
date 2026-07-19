@@ -27,11 +27,11 @@ type TransitionReport struct {
 // system_graphs caches: migration 032 keys history by player_id and the agent
 // symbol is intentionally non-unique across eras, so prior-era history coexists
 // with the new era via a distinct player_id. Truncating it would destroy the
-// prior era's charts (Admiral correction, 2026-07-12). It also leaves the prior
-// player's token intact — the container drain, not a token blank, retires the old
-// era — so this repository call is a pure era/player row flip.
+// prior era's charts. It also leaves the prior player's token intact — the
+// container drain, not a token blank, retires the old era — so this repository
+// call is a pure era/player row flip.
 //
-// This is the era-flip half of `universe transition` (sp-nax3).
+// This is the era-flip half of `universe transition`.
 func (r *EraRepository) TransitionEra(ctx context.Context, newPlayer *PlayerModel, newEra *EraModel) (*TransitionReport, error) {
 	open, err := r.FindOpenEra(ctx)
 	if err != nil {

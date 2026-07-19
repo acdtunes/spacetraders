@@ -16,7 +16,6 @@ func (r *RealClock) Now() time.Time {
 	return time.Now().UTC()
 }
 
-// Sleep blocks for the given duration
 func (r *RealClock) Sleep(d time.Duration) {
 	time.Sleep(d)
 }
@@ -26,7 +25,6 @@ type MockClock struct {
 	CurrentTime time.Time
 }
 
-// Now returns the mock's current time
 func (m *MockClock) Now() time.Time {
 	return m.CurrentTime
 }
@@ -36,12 +34,10 @@ func (m *MockClock) Sleep(d time.Duration) {
 	m.CurrentTime = m.CurrentTime.Add(d)
 }
 
-// Advance moves the mock clock forward by the given duration
 func (m *MockClock) Advance(d time.Duration) {
 	m.CurrentTime = m.CurrentTime.Add(d)
 }
 
-// NewRealClock creates a RealClock instance
 func NewRealClock() Clock {
 	return &RealClock{}
 }

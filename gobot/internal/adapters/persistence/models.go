@@ -92,7 +92,7 @@ type ShipModel struct {
 	FlightMode  string     `gorm:"column:flight_mode;default:'CRUISE'"`
 	ArrivalTime *time.Time `gorm:"column:arrival_time"`
 
-	// Nav route origin + departure (sp-vp9k): where an IN_TRANSIT ship departed
+	// Nav route origin + departure: where an IN_TRANSIT ship departed
 	// from and when, carried from the API nav.route so DB consumers can compute
 	// exact transit progress instead of approximating from poll timing. Empty/zero
 	// and NULL respectively when the ship is not in transit. Additive columns with
@@ -135,18 +135,18 @@ type ShipModel struct {
 	ReleasedAt       *time.Time      `gorm:"column:released_at"`
 	ReleaseReason    string          `gorm:"column:release_reason"`
 
-	// Assignment owner (sp-i1ku): distinguishes a coordinator container claim
+	// Assignment owner distinguishes a coordinator container claim
 	// from a captain reservation. "container" (default) or "captain".
 	AssignmentOwner  string `gorm:"column:assignment_owner;default:'container'"`
 	AssignmentReason string `gorm:"column:assignment_reason"`
 
-	// DedicatedFleet (sp-snmb): permanent, operator-configured reservation for
+	// DedicatedFleet is a permanent, operator-configured reservation for
 	// a specific coordinator (e.g. "contract"). Empty means unreserved. Unlike
 	// AssignmentOwner/ContainerID above, this is independent of any transient
 	// container claim - it is a standing claim-filter, not a work assignment.
 	DedicatedFleet string `gorm:"column:dedicated_fleet;default:''"`
 
-	// ReservationOverrides (sp-1vhv): per-hull cargo do-not-sell override set,
+	// ReservationOverrides is a per-hull cargo do-not-sell override set,
 	// stored as a JSON object of good->bool. true force-reserves a good the default
 	// would sell; false force-allows a default-reserved module's sale (deliberate
 	// resale). A good absent from the object follows the code-level MODULE_*/MOUNT_*
@@ -156,7 +156,7 @@ type ShipModel struct {
 	// silently wiped and a staged module is re-exposed to coordinator liquidation.
 	ReservationOverrides string `gorm:"column:reservation_overrides;type:jsonb;default:'{}'"`
 
-	// Power/slot/crew data (sp-el60). Reactor and frame-slot fields are fixed
+	// Power/slot/crew data. Reactor and frame-slot fields are fixed
 	// for the life of the hull - reactors/frames have no swap endpoint in the
 	// SpaceTraders API. Flattened into columns (not JSON) to mirror the
 	// existing single-value fields above (FuelCurrent/EngineSpeed/FrameSymbol
@@ -202,7 +202,7 @@ type ModuleJSON struct {
 }
 
 // MountJSON is a JSON helper type for installed ship mounts (mining lasers,
-// gas siphons, sensor arrays, weapons, etc.) - sp-el60.
+// gas siphons, sensor arrays, weapons, etc.).
 type MountJSON struct {
 	Symbol       string           `json:"symbol"`
 	Name         string           `json:"name"`
@@ -212,8 +212,7 @@ type MountJSON struct {
 }
 
 // RequirementsJSON is a JSON helper type for the power/crew/slot cost
-// declared by a module or mount (SpaceTraders API schema: ShipRequirements) -
-// sp-el60.
+// declared by a module or mount (SpaceTraders API schema: ShipRequirements).
 type RequirementsJSON struct {
 	Power int `json:"power"`
 	Crew  int `json:"crew"`
@@ -313,7 +312,7 @@ type StorageOperationModel struct {
 	StartedAt      *time.Time   `gorm:"column:started_at"`
 	StoppedAt      *time.Time   `gorm:"column:stopped_at"`
 	// CostBasis is a JSON map[good]int of the per-good weighted-average unit cost
-	// basis of deposited stock (C1, sp-64je). It is managed OUT-OF-BAND from the
+	// basis of deposited stock. It is managed OUT-OF-BAND from the
 	// operation's domain fields by the CostBasisStore (a targeted column update),
 	// so the full-row operation Update omits it — see StorageOperationRepository.
 	CostBasis string `gorm:"column:cost_basis;type:text"`
@@ -415,7 +414,7 @@ type ManufacturingPipelineModel struct {
 	SupplyChainDepth int     `gorm:"column:supply_chain_depth;default:0"`
 	MaxWorkers       int     `gorm:"column:max_workers;default:5"`
 	MinSupply        string  `gorm:"column:min_supply;size:20;default:''"`
-	GoodOverrides    string  `gorm:"column:good_overrides;type:text;default:''"` // sp-sdyo: per-good buy-gating overrides (JSON), persisted for restart-resilience (RULINGS #2)
+	GoodOverrides    string  `gorm:"column:good_overrides;type:text;default:''"` // Per-good buy-gating overrides (JSON), persisted for restart-resilience (RULINGS #2)
 }
 
 func (ManufacturingPipelineModel) TableName() string {
@@ -449,7 +448,7 @@ type ManufacturingTaskModel struct {
 	ReadyAt            *time.Time `gorm:"column:ready_at"`
 	StartedAt          *time.Time `gorm:"column:started_at"`
 	CompletedAt        *time.Time `gorm:"column:completed_at"`
-	// BUG FIX #3: Phase tracking fields for daemon restart resilience
+	// Phase tracking fields for daemon restart resilience
 	CollectPhaseCompleted bool       `gorm:"column:collect_phase_completed;default:false"`
 	AcquirePhaseCompleted bool       `gorm:"column:acquire_phase_completed;default:false"`
 	PhaseCompletedAt      *time.Time `gorm:"column:phase_completed_at"`
@@ -533,10 +532,10 @@ func (EraModel) TableName() string {
 }
 
 // SpendReservationModel is one in-flight factory-input spend intent, the shared-state
-// substrate of the cross-container concurrent spend cap (sp-w3he). Each factory
+// substrate of the cross-container concurrent spend cap. Each factory
 // container INSERTs a row before an input buy and the ledger checks that live treasury
 // minus the SUM of all active rows stays at/above the working-capital reserve — closing
-// the check->buy race the per-buy floor (sp-9aoc) leaves open when N factories buy at once.
+// the check->buy race the per-buy floor leaves open when N factories buy at once.
 // Rows are deleted after each buy (success or failure) and swept on staleness.
 //
 // Deliberately NO players foreign key / association: these are ephemeral operational rows
@@ -557,7 +556,7 @@ func (SpendReservationModel) TableName() string {
 }
 
 // GateEdgeModel is one directed cross-system jump-gate connection — the persisted
-// substrate of the gate-graph adjacency store (sp-7gr2). travel()'s multi-jump BFS
+// substrate of the gate-graph adjacency store. travel()'s multi-jump BFS
 // and the routability-check-before-spend guard both read this table instead of the
 // broken single-edge assumption that crashed a laden frigate at the home gate
 // (KA42→JP61 is 3 jumps: PA3→UQ16→JP61, not one). GateWaypoint carries the
@@ -565,13 +564,13 @@ func (SpendReservationModel) TableName() string {
 // uncharted neighbor can be expanded without first charting its system graph.
 //
 // EraID + SyncedAt mirror WaypointModel exactly: reads are era-scoped
-// (eraScopePredicate) so dead-era rows (sp-vapw) never leak into live routing, and
+// (eraScopePredicate) so dead-era rows never leak into live routing, and
 // SyncedAt (RFC3339) drives the lazy 24h refresh. The (system_symbol,
 // connected_system) pair is the primary key — a system's whole edge set is
 // REPLACED on each sync (delete-then-insert), so a since-severed connection cannot
 // linger and a re-sync also purges any dead-era row for that system.
 //
-// MARKER ROWS (sp-ikx1): a row whose ConnectedSystem is "" is NOT an edge — it is the
+// MARKER ROWS: a row whose ConnectedSystem is "" is NOT an edge — it is the
 // persisted negative-result backoff marker for an UNREADABLE system (a frontier gate
 // whose live fetch 400s, "no ship present"). At most one per (system, era). Its
 // UnreadableSince/AttemptCount carry the backoff state; its "" connected_system is the
@@ -585,13 +584,13 @@ type GateEdgeModel struct {
 	EraID           *int   `gorm:"column:era_id;index:idx_gate_edges_era"`
 	SyncedAt        string `gorm:"column:synced_at"` // ISO timestamp string
 	// UnderConstruction records whether the CONNECTED system's own jump gate was
-	// still being built at sync time (sp-8qhu). The routing BFS never traverses an
+	// still being built at sync time. The routing BFS never traverses an
 	// under-construction edge, and such an edge refreshes on a SHORTER TTL than a
 	// healthy one so a completed build is noticed within the same era.
 	UnderConstruction bool `gorm:"column:under_construction;not null;default:false"`
 	// UnreadableSince is the RFC3339 timestamp of the LAST failed live gate probe, set
 	// only on a marker row (connected_system = ""). Empty on every real edge row. With
-	// AttemptCount it is the persisted negative-result cache (sp-ikx1): an unreadable
+	// AttemptCount it is the persisted negative-result cache: an unreadable
 	// gate is not re-probed every 30s tick — the service backs it off 5m→30m→2h.
 	// Persisted, not in-memory, so a restart resumes the backoff (RULINGS #2).
 	UnreadableSince string `gorm:"column:unreadable_since"`
@@ -624,7 +623,7 @@ func (SystemCoordModel) TableName() string {
 }
 
 // TourLegTelemetryModel is one planned-vs-realized record for a single trade at a
-// single leg of a multi-hop trade tour (sp-1ek0 P1b). The tour_run executor writes
+// single leg of a multi-hop trade tour. The tour_run executor writes
 // one row per executed (or explicitly skipped) trade: the planner's projection
 // (PlannedUnits/PlannedUnitPrice, PlannedAt) alongside what the market actually gave
 // (RealizedUnits/RealizedUnitPrice, RealizedAt). These rows feed the graduation-gate
@@ -657,7 +656,7 @@ func (TourLegTelemetryModel) TableName() string {
 	return "tour_leg_telemetry"
 }
 
-// ScoutPostModel is one desired-state scout post (sp-cxpq): a per-system
+// ScoutPostModel is one desired-state scout post: a per-system
 // market-freshness assignment the scout_post_coordinator keeps manned, the way
 // the contract fleet coordinator keeps its dedicated fleet working. AssignedHull
 // (nullable) is the satellite currently manning the post and TourContainerID the
@@ -666,7 +665,7 @@ func (TourLegTelemetryModel) TableName() string {
 // or "sweep_once" (single tour, then auto-removed).
 //
 // EraID mirrors WaypointModel/GateEdgeModel exactly: reads are era-scoped so a
-// universe reset never resurrects dead-era posts (sp-njpu). The unique index on
+// universe reset never resurrects dead-era posts. The unique index on
 // (player_id, system_symbol) enforces one post per system per player; a re-add in
 // a new era reuses the row (Upsert restamps era_id). No players foreign key —
 // like the other operational-state rows (spend reservations, tour telemetry),
@@ -680,20 +679,20 @@ type ScoutPostModel struct {
 	Kind                   string  `gorm:"column:kind;not null"`
 	AssignedHull           *string `gorm:"column:assigned_hull"`
 	TourContainerID        *string `gorm:"column:tour_container_id"`
-	// RepositionContainerID (sp-s232) is the in-flight cross-gate relay jump-routing
+	// RepositionContainerID is the in-flight cross-gate relay jump-routing
 	// a satellite toward this post. Nullable — set only while a relay is airborne,
 	// cleared when it lands (the next tick mans the post in-system) or dies. GORM
 	// AutoMigrate adds the column in place; existing rows read it as NULL → "".
 	RepositionContainerID *string `gorm:"column:reposition_container_id"`
 
-	// Hulls is the probe budget N for a multi-probe post (sp-enry): the system is
+	// Hulls is the probe budget N for a multi-probe post: the system is
 	// toured by N probes over N disjoint market partitions. Defaults to 1 (single
 	// hull, the pre-enry behavior). AutoMigrate adds the column with default 1, so
 	// every existing post reads as single-hull. RULINGS #5: a DB value, not a const.
 	Hulls int `gorm:"column:hulls;not null;default:1"`
 
 	// PrimaryPartition is the JSON-encoded frozen market tour of the PRIMARY slot
-	// when Hulls>1 (sp-enry). NULL/empty ⇒ the primary tours ALL markets (single-hull
+	// when Hulls>1. NULL/empty ⇒ the primary tours ALL markets (single-hull
 	// behavior), so a single-hull row never carries one and stays byte-identical.
 	// ExtraSlots is the JSON-encoded slots 1..N-1 (hull, tour/relay container, and
 	// each slot's frozen partition). Persisting the partitions is what makes a daemon
@@ -702,8 +701,8 @@ type ScoutPostModel struct {
 	PrimaryPartition *string `gorm:"column:primary_partition"`
 	ExtraSlots       *string `gorm:"column:extra_slots"`
 
-	// RespawnAttempts and RespawnParkedUntil back the general per-post respawn-loop cap
-	// (sp-py4n): the consecutive dead-tour respawn count and the backoff-window deadline
+	// RespawnAttempts and RespawnParkedUntil back the general per-post respawn-loop cap:
+	// the consecutive dead-tour respawn count and the backoff-window deadline
 	// the reconciler parks a persistently-crashing post under. AutoMigrate adds both in
 	// place — respawn_attempts defaults 0 and reposition_parked_until is nullable, so
 	// every existing row reads as "never capped, not parked". Persisting them is what
@@ -721,7 +720,7 @@ func (ScoutPostModel) TableName() string {
 }
 
 // MarketAbsorptionLedgerModel is one outstanding claim on a market's depth — the
-// shared-state substrate of the cross-engine absorption ledger (sp-78ai). Five
+// shared-state substrate of the cross-engine absorption ledger. Five
 // engines (tours, arb-run, idle-arb, trade-route circuits, pre-positioning) all
 // absorb the SAME (waypoint, good, side) depth with no cross-container signal but
 // the market cache, which only reflects EXECUTED trades seconds later. This table
@@ -730,13 +729,12 @@ func (ScoutPostModel) TableName() string {
 // and EXECUTED rows (the recovery shadow — depth a completed dump still occupies
 // while it regrows on the model's fitted per-tier half-life). A reader nets the
 // decayed outstanding against a market's depth so nobody, including the absorber's
-// own next plan, steps into a hole the model says has not regrown (sp-lbbm was two
-// hulls co-dumping the same bid, −80k; the lane mutex + flat hold are the tactical
-// patch this ledger generalizes cross-engine).
+// own next plan, steps into a hole the model says has not regrown (the lane mutex
+// + flat hold are the tactical patch this ledger generalizes cross-engine).
 //
 // Deliberately NO players foreign key and NO era_id (the SpendReservationModel
-// idiom, sp-w3he): these are ephemeral operational rows living minutes (a PLANNED
-// leg) to hours (an EXECUTED shadow, hard-capped at 12h — trade-analyst Q2), so
+// idiom): these are ephemeral operational rows living minutes (a PLANNED
+// leg) to hours (an EXECUTED shadow, hard-capped at 12h), so
 // referential integrity buys nothing and an era reset kills the owning containers
 // (PLANNED rows swept by dead-container reclaim) while EXECUTED rows age out on
 // their hard cap and key on (waypoint, good) quotes that reset anyway. player_id +
@@ -747,7 +745,7 @@ func (ScoutPostModel) TableName() string {
 // TierAtWrite is the sink good's activity (WEAK/GROWING/STRONG/RESTRICTED) stamped
 // at the EXECUTED write; readers resolve the recovery half-life from the fitted
 // artifact. UNTAGGED sinks (empty activity) get NO EXECUTED shadow at all
-// (trade-analyst Q2: the depth model cannot price what it has not fit — a shadow
+// (the depth model cannot price what it has not fit — a shadow
 // there is either wrong or effectively eternal). TrancheSize is the sink good's
 // trade_volume at write, so a reader can size the 50%-of-a-tranche recovery floor
 // without a live market lookup. QuotedPrice is telemetry only.
@@ -777,7 +775,7 @@ func (MarketAbsorptionLedgerModel) TableName() string {
 	return "market_absorption_ledger"
 }
 
-// ContractDepotModel represents the contract_depots table (bead sp-u9xa): one
+// ContractDepotModel represents the contract_depots table: one
 // row per contract depot, scoped to a player by the composite (id, player_id)
 // primary key exactly like gas_operations / storage_operations. The four element
 // classes (destination warehouses, background stockers, pinned delivery hulls, source
@@ -801,7 +799,7 @@ func (ContractDepotModel) TableName() string {
 	return "contract_depots"
 }
 
-// WarehouseWithdrawalModel represents the warehouse_withdrawals table (sp-kqxe):
+// WarehouseWithdrawalModel represents the warehouse_withdrawals table:
 // one row per warehouse→hauler buffer draw. A withdrawal is a NON-monetary cargo
 // transfer (zero credits — the goods' basis is sunk at deposit), so it is its own
 // economic event rather than a financial-ledger Transaction (a zero-amount
@@ -824,7 +822,7 @@ func (WarehouseWithdrawalModel) TableName() string {
 	return "warehouse_withdrawals"
 }
 
-// WarehouseStockingModel represents the warehouse_stockings table (sp-j6uz): one row per
+// WarehouseStockingModel represents the warehouse_stockings table: one row per
 // stocker→warehouse buffer DEPOSIT — the stock-IN mirror of WarehouseWithdrawalModel. A
 // deposit is a NON-monetary cargo transfer (credits are booked at the buy, in the ledger's
 // PURCHASE_CARGO row; the deposit moves credits nowhere), so — exactly like the withdrawal —
@@ -849,7 +847,7 @@ func (WarehouseStockingModel) TableName() string {
 	return "warehouse_stockings"
 }
 
-// ShipyardInventoryModel is one scanned shipyard listing fact (sp-42ow): at
+// ShipyardInventoryModel is one scanned shipyard listing fact: at
 // last_scanned, the (player, waypoint) shipyard offered ship_type at
 // purchase_price with the listing's supply tier. Written by the scout tour's
 // piggybacked shipyard scan (ReplaceScan swaps a waypoint's whole row set —

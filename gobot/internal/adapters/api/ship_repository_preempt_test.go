@@ -12,7 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// The core preempt (sp-w3yd): `ship reserve --force` must atomically REVOKE a
+// The core preempt: `ship reserve --force` must atomically REVOKE a
 // coordinator's live container claim and transfer ownership to the captain — in
 // a single row-locked swap (RULING #7), so the coordinator's next per-tick
 // FindByContainer derivation sees the hull gone and re-plans. The previous
@@ -48,7 +48,7 @@ func TestPreemptForCaptain_TransfersContainerClaimToCaptain(t *testing.T) {
 	// (no crash, task deferred).
 }
 
-// Byte-identical regression (sp-w3yd): WITHOUT --force, a reserve against a
+// Byte-identical regression: WITHOUT --force, a reserve against a
 // coordinator-claimed hull must still reject exactly as before — same typed
 // ShipAlreadyAssignedError, and the row is left completely untouched. --force is
 // the ONLY new bypass; the normal ownership guard is never weakened.
@@ -122,7 +122,7 @@ func TestPreemptForCaptain_AlreadyCaptainReservedRejects(t *testing.T) {
 // preempt and is mid-operation loses its next SaveWithRetry CAS race and is
 // forced to reload the fresh (captain-owned) row — it can never resurrect its
 // stale container claim and clobber the reservation. This is the exact
-// mechanism (sp-01wc/sp-wa7c) that keeps the factory's in-flight "drag the hull
+// mechanism that keeps the factory's in-flight "drag the hull
 // around" save from undoing the preempt.
 func TestPreemptForCaptain_AdvancesVersionSoConcurrentSaveCannotClobber(t *testing.T) {
 	repo, db, playerID := newDedicationTestRepo(t)
@@ -262,7 +262,7 @@ func TestPreemptForCaptain_ConcurrentReclaimHasSingleOwner(t *testing.T) {
 	require.Nil(t, model.ContainerID, "no lost update: the container claim is cleared, not left dangling")
 }
 
-// `fleet unassign` work-claim break (sp-w3yd): breaking the live claim must
+// `fleet unassign` work-claim break: breaking the live claim must
 // return a coordinator-claimed hull to idle so the coordinator stops routing it
 // (its per-tick FindByContainer no longer returns it) — closing the "unassign
 // says success but the coordinator keeps routing it" gap.

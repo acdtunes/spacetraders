@@ -13,13 +13,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-pf60: GormMarketPriceHistoryRepository has round-tripped supply/activity
-// since market_price_history's creation (migration 016), but had no
-// dedicated repository test - RecordPriceChange/GetPriceHistory's tier
-// handling was only ever exercised incidentally through HistoryRepository's
-// era-stats tests (history_repository_test.go), which read the model
-// directly and never went through modelToHistory. This locks in both
-// directions of the actual repository under test.
 func TestRecordPriceChangeAndGetPriceHistory_RoundTripsTier(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

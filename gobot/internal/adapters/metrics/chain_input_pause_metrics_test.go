@@ -7,7 +7,7 @@ import (
 )
 
 // TestChainInputPauseMetrics_RegisterAndExport proves the input-pause family REGISTERS on the
-// daemon's registry AND actually appears by name once observed (sp-r5a6). A registered vec
+// daemon's registry AND actually appears by name once observed. A registered vec
 // exports nothing until a label combination is incremented — the trap where a family is
 // "registered" yet never shows on /metrics — so the export path is proven with a real
 // observation.

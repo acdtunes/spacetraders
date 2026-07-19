@@ -1,12 +1,12 @@
 package capacity
 
-// Behavioral tests for the GOVERN-phase capex EMITTER (st-x00, re-scoped by
-// st-5le). The lane does NOT build a standalone capex governor/guard stack;
-// instead the capital tier translates its tier-4 Actions into contract-delivery
-// capacity demand and EMITS it to the already-built sp-1txd fleet autosizer
-// (which owns the single guard stack that executes the buy). Every test drives
-// the Governor port (Govern) and asserts observable outcomes: the GovernResult
-// and the demand published at the driven-port boundary (CapitalDemandSink spy).
+// Behavioral tests for the GOVERN-phase capex EMITTER. The lane does NOT build
+// a standalone capex governor/guard stack; instead the capital tier translates
+// its tier-4 Actions into contract-delivery capacity demand and EMITS it to the
+// already-built fleet autosizer (which owns the single guard stack that
+// executes the buy). Every test drives the Governor port (Govern) and asserts
+// observable outcomes: the GovernResult and the demand published at the
+// driven-port boundary (CapitalDemandSink spy).
 //
 // Test budget (this file): 3 behaviors — (1) tier-4 → demand translation +
 // cheap-tier passthrough + ROI evidence, (2) no-capital → fresh zero, (3) thin
@@ -20,7 +20,7 @@ import (
 )
 
 // recordingSink is the driven-port boundary the emitter writes to — the seam
-// the sp-1txd autosizer consumes through its registered provider.
+// the fleet autosizer consumes through its registered provider.
 type recordingSink struct {
 	emitted []CapitalDemand
 }
@@ -28,8 +28,9 @@ type recordingSink struct {
 func (s *recordingSink) EmitCapitalDemand(d CapitalDemand) { s.emitted = append(s.emitted, d) }
 
 // B1 + B3 + B4(passthrough): the emitter sums the tier-4 Actions' HullDelta per
-// role into one demand snapshot, hands sp-1txd the marginal ROI projection as
-// evidence, and passes cheap (autonomous) tiers straight through to Approved.
+// role into one demand snapshot, hands the fleet autosizer the marginal ROI
+// projection as evidence, and passes cheap (autonomous) tiers straight through
+// to Approved.
 func TestCapexEmitter_TranslatesCapitalActionsToDemandAndPassesCheapTiersThrough(t *testing.T) {
 	sink := &recordingSink{}
 	emitter := NewCapexEmitter(sink)
@@ -51,7 +52,7 @@ func TestCapexEmitter_TranslatesCapitalActionsToDemandAndPassesCheapTiersThrough
 	require.NoError(t, err)
 
 	// Cheap tier passes through to Approved verbatim; capital tiers do NOT (the
-	// reconciler's converge must never execute them — sp-1txd's path does).
+	// reconciler's converge must never execute them — the fleet autosizer's path does).
 	require.Equal(t, []Action{reassign}, result.Approved)
 	require.Empty(t, result.Proposals, "the emitter mints no proposals — the capital path is sp-1txd, not the reconciler")
 
@@ -63,15 +64,16 @@ func TestCapexEmitter_TranslatesCapitalActionsToDemandAndPassesCheapTiersThrough
 	require.Equal(t, 2, d.WarehouseHulls) // 1 + 1
 	require.Equal(t, 1, d.StockerHulls)
 	require.Equal(t, 1, d.DeliveryHulls)
-	// ROI evidence handed to sp-1txd's era-payback + realized-rate guards: the
-	// MARGINAL (lowest) projection across the capital actions + the fleet reference.
+	// ROI evidence handed to the fleet autosizer's era-payback + realized-rate
+	// guards: the MARGINAL (lowest) projection across the capital actions + the
+	// fleet reference.
 	require.Equal(t, 820000.0, d.MarginalProjectedCrHr)
 	require.Equal(t, 700000.0, d.FleetPerHullCrHr)
 	require.True(t, d.RateReadable)
 }
 
 // B2: a tick with no capital action still publishes a FRESH zero-gap demand —
-// an omitted emit would leave a stale non-zero gap standing at sp-1txd.
+// an omitted emit would leave a stale non-zero gap standing at the fleet autosizer.
 func TestCapexEmitter_NoCapitalActions_PublishesFreshZeroDemand(t *testing.T) {
 	sink := &recordingSink{}
 	emitter := NewCapexEmitter(sink)

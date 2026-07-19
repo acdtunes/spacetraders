@@ -11,7 +11,7 @@ import (
 )
 
 // TourTelemetryRepositoryGORM is the GORM-backed implementation of
-// trading.TourTelemetryRepository (sp-1ek0 P1b). It maps the domain DTO to the
+// trading.TourTelemetryRepository. It maps the domain DTO to the
 // TourLegTelemetryModel row and back, so the tour_run executor and the graduation
 // report never touch GORM types directly.
 type TourTelemetryRepositoryGORM struct {

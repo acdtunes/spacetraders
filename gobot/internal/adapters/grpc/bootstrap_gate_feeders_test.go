@@ -30,9 +30,8 @@ func TestPlanGateSourceFeeders_LaunchesConfiguredMaterialsAsInputsOnlyInfinite(t
 }
 
 // sp-vh1s: under the unified gate-fill toggle the standing InputsOnly feeders are DELETED — feeding is
-// now INHERENT in the gate run's recursive tree, so the separate sidecar feeder (the buggy collision
-// this bead removes) must never launch. The plan returns NOTHING regardless of the configured set or
-// which feeders are already running.
+// now INHERENT in the gate run's recursive tree, so a separate sidecar feeder must never launch. The
+// plan returns NOTHING regardless of the configured set or which feeders are already running.
 func TestPlanGateSourceFeeders_UnifiedGateFill_LaunchesNothing(t *testing.T) {
 	configured := []config.GateSourceFeeder{{Good: "FAB_MATS"}, {Good: "ADVANCED_CIRCUITRY"}}
 	require.Empty(t, planGateSourceFeeders(configured, "X1-HOME", map[string]bool{}, true),

@@ -13,12 +13,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 )
 
-// sp-7pri: on first boot against a fresh DB, the watchkeeper deploy.completed
-// check inserted a captain_events row before any player row existed. Because
-// captain_events.player_id is an FK onto players.id, the insert violated
-// fk_captain_events_player (SQLSTATE 23503) — logged "continuing", non-fatal,
-// but it polluted the first-boot log. recordDeployIfPlayerExists must resolve
-// the target player first and skip the emit entirely when it is absent.
+// recordDeployIfPlayerExists must resolve the target player first and skip the
+// deploy.completed emit entirely when it is absent: captain_events.player_id is
+// an FK onto players.id, so emitting before a player row exists (fresh-DB first
+// boot) would violate fk_captain_events_player.
 
 type fakePlayerLookup struct {
 	player *player.Player

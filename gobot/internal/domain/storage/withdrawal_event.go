@@ -6,7 +6,7 @@ import (
 )
 
 // WithdrawalEvent is a structured, queryable record of a single warehouse→hauler
-// buffer draw (sp-kqxe). A warehouse withdrawal is a NON-monetary cargo transfer
+// buffer draw. A warehouse withdrawal is a NON-monetary cargo transfer
 // (the goods' cost basis is sunk at deposit; the draw itself costs zero), so it
 // does not belong in the financial ledger — a zero-amount Transaction violates the
 // ledger's balance invariant. Instead it is its own economic event, emitted once

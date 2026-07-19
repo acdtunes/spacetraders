@@ -15,17 +15,16 @@ import (
 	domainSystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// RouteExecutor executes routes by orchestrating atomic ship commands via mediator
+// RouteExecutor executes routes by orchestrating atomic ship commands via mediator.
 //
-// This is the CRITICAL orchestration service that replaces the executeRoute() method
-// in NavigateRouteHandler. It uses the mediator pattern to send atomic commands:
+// It uses the mediator pattern to send atomic commands:
 // - OrbitShipCommand
 // - DockShipCommand
 // - RefuelShipCommand
 // - NavigateDirectCommand
 // - SetFlightModeCommand
 //
-// It follows the exact same logic as the Python implementation with all safety features:
+// Every step is defensive:
 // 1. Handle IN_TRANSIT from previous command (idempotency)
 // 2. Refuel before departure if needed
 // 3. Execute each segment step-by-step
@@ -34,7 +33,7 @@ import (
 // 6. Planned refueling (required by routing engine)
 // 7. Automatic market scanning at marketplace waypoints
 //
-// The refueling behavior is now extensible via the Strategy pattern:
+// Refueling behavior is extensible via the Strategy pattern:
 //   - ConservativeRefuelStrategy: Maintains high fuel levels (default)
 //   - MinimalRefuelStrategy: Only refuels when necessary
 //   - AlwaysTopOffStrategy: Refuels at every opportunity
@@ -52,10 +51,10 @@ type RouteExecutor struct {
 	waypointRepo        domainSystem.WaypointRepository
 	shipEventSubscriber domainNavigation.ShipEventSubscriber
 
-	// Off-gate warp support (sp-0xd0), attached post-construction via
-	// WithWarpSupport so every existing NewRouteExecutor call site is unchanged.
-	// Both nil until wired: ExecuteWarpRoute fails closed when warpNavigator is
-	// absent, and chart-on-arrival is skipped when systemCharter is absent.
+	// Off-gate warp support, attached post-construction via WithWarpSupport so every
+	// existing NewRouteExecutor call site is unchanged. Both nil until wired:
+	// ExecuteWarpRoute fails closed when warpNavigator is absent, and chart-on-arrival
+	// is skipped when systemCharter is absent.
 	warpNavigator WarpNavigator
 	systemCharter SystemCharter
 }
@@ -64,10 +63,10 @@ type RouteExecutor struct {
 // If clock is nil, uses RealClock (production behavior)
 // If marketScanner is nil, disables automatic market scanning
 // If shipyardScanner is nil, disables the piggybacked shipyard-inventory scan
-// that fires alongside the market scan at marketplace arrivals (sp-42ow)
+// that fires alongside the market scan at marketplace arrivals
 // If refuelStrategy is nil, uses default ConservativeRefuelStrategy (90% threshold)
 // If waypointRepo is nil, refuelShipWithRetry's alternate-fuel-stop reroute
-// (sp-vsfn) is disabled and a retry-exhausted refuel fails outright instead
+// is disabled and a retry-exhausted refuel fails outright instead
 // of rerouting - retry-with-backoff at the original waypoint still applies.
 // shipEventSubscriber is required for event-based arrival waiting
 func NewRouteExecutor(
@@ -101,7 +100,7 @@ func NewRouteExecutor(
 	}
 }
 
-// WithWarpSupport attaches the off-gate warp capability (sp-0xd0) to an already
+// WithWarpSupport attaches the off-gate warp capability to an already
 // constructed executor and returns it for chaining. It is deliberately separate
 // from the constructor so the eight-arg NewRouteExecutor signature - and every
 // existing call site - stays untouched; warp is an additive capability, inert
@@ -228,23 +227,21 @@ func (e *RouteExecutor) ExecuteRoute(
 	return nil
 }
 
-// reactToSegmentFailure decides how ExecuteRoute responds to a failed segment
-// (sp-arrwait, Fix C: recover-not-crash on the route/tour path).
+// reactToSegmentFailure decides how ExecuteRoute responds to a failed segment.
 //
 // A genuine *ErrArrivalWaitExhausted is a RECOVERABLE PARK, not a route failure:
 // the hull is still IN_TRANSIT and the ARRIVED event was lost/raced, which a later
-// run re-syncs and resolves (Fix A's live re-confirm succeeds once the async
-// transition lands). Failing the route here propagates a hard error that burns the
-// container's restart budget to an "unrecoverable crash" for what is a transient,
-// self-healing condition. So this DEFERS instead: it logs a park (WARNING, mirroring
-// run_factory_coordinator.go's per-node park of this same error type), does NOT mark
-// the route FAILED, and does NOT emit the route-completion FAILURE metric — while
-// still returning the error with its TYPE PRESERVED so the caller keeps its
+// run re-syncs and resolves. Failing the route here propagates a hard error that
+// burns the container's restart budget on an "unrecoverable crash" for what is a
+// transient, self-healing condition. So this DEFERS instead: it logs a park (WARNING,
+// mirroring run_factory_coordinator.go's per-node park of this same error type), does
+// NOT mark the route FAILED, and does NOT emit the route-completion FAILURE metric —
+// while still returning the error with its TYPE PRESERVED so the caller keeps its
 // recoverable classification. It deliberately does not fabricate arrival (the ship
 // really is still in transit); the caller/container simply retries.
 //
-// Any other error is a genuine route failure, handled exactly as before: mark the
-// route FAILED and record the route-completion (failure) metric.
+// Any other error is a genuine route failure: mark the route FAILED and record the
+// route-completion (failure) metric.
 func (e *RouteExecutor) reactToSegmentFailure(
 	ctx context.Context,
 	route *domainNavigation.Route,
@@ -409,7 +406,7 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 		flightMode = optimalMode
 	}
 
-	// Affordability clamp (sp-c2bc): never issue a Navigate whose fuel cost
+	// Affordability clamp: never issue a Navigate whose fuel cost
 	// exceeds the ship's ACTUAL fuel. The planner budgets each leg against the
 	// ship's projected fuel, but an earlier BURN upgrade (or a stale plan) can
 	// leave the ship unable to afford the planned mode by the time this leg runs
@@ -437,14 +434,14 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 	return flightMode
 }
 
-// ensureAffordableFlightMode is the last-resort affordability backstop for sp-c2bc.
+// ensureAffordableFlightMode is the last-resort affordability backstop: it guarantees
+// a Navigate is never emitted with fuelAvailable < fuelRequired.
 //
 // selectOptimalFlightMode downgrades to the fuel-optimal mode, which is affordable
 // by construction EXCEPT for its DRIFT fallback: DriftModeStrategy.CanUse always
 // returns true and FlightMode.FuelCost floors DRIFT at 1, so a ship that has
 // drained to (effectively) zero fuel is still handed a DRIFT leg it cannot pay
-// for. Emitting that Navigate makes the API reject it with 4203 — the exact crash
-// this bead targets ("never emit a leg with fuelAvailable < fuelRequired").
+// for. Emitting that Navigate makes the API reject it with error 4203.
 //
 // When even the selected mode is unaffordable, refuel at the departure waypoint
 // (refuelShip no-ops when there is no fuel station) and re-pick the mode against
@@ -559,8 +556,6 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 		})
 	}
 
-	// Record fuel consumption metrics
-	// The segment's fuel required is consumed during this navigation
 	metrics.RecordFuelConsumption(
 		playerID.Value(),
 		flightMode,
@@ -589,7 +584,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"waypoint":        segment.ToWaypoint.Symbol,
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		// CUT 2 (sp-yd84): stay docked after a post-arrival refuel. The next
+		// CUT 2: stay docked after a post-arrival refuel. The next
 		// action at this waypoint is a trade that docks; staying docked makes
 		// that dock a CUT-1 no-op skip. A following segment re-orbits via
 		// ensureShipInOrbit, so this is never a wrong state for a later navigate.
@@ -605,7 +600,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"action":      "planned_refuel",
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
-		// CUT 2 (sp-yd84): stay docked after a post-arrival refuel (see above).
+		// CUT 2: stay docked after a post-arrival refuel (see above).
 		if err := e.refuelShipWithRetry(ctx, ship, playerID, false); err != nil {
 			return err
 		}
@@ -623,11 +618,11 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
 
-		// sp-v34b recent-scan freshness gate: a trade coordinator stamps a ScanPolicy
-		// with MaxScanAge>0, so an arrival at a market scanned within that window reuses
-		// the cache instead of re-calling GetMarket (the redundant re-scan killer). The
-		// freshness-scout recovery path stamps NO policy (maxAge 0), so ScanAndSaveMarketFresh
-		// always scans and its recovery/decay dataset is untouched.
+		// Recent-scan freshness gate: a trade coordinator stamps a ScanPolicy with
+		// MaxScanAge>0, so an arrival at a market scanned within that window reuses
+		// the cache instead of re-calling GetMarket. The freshness-scout recovery path
+		// stamps NO policy (maxAge 0), so ScanAndSaveMarketFresh always scans and its
+		// recovery/decay dataset is untouched.
 		var maxScanAge time.Duration
 		if policy, ok := shared.ScanPolicyFromContext(ctx); ok {
 			maxScanAge = policy.MaxScanAge
@@ -643,22 +638,18 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 	}
 }
 
-// scanShipyardIfPresent piggybacks a shipyard-inventory scan on a route arrival
-// (sp-42ow emit-path fix; sp-rhju decoupling). The route executor is the ONLY
-// market-scan path a standing multi-market scout tour exercises —
-// executeMultiMarketTour delegates its market scan here rather than re-scanning in
-// the handler (scout_tour.go:485) — so the shipyard scan MUST ride this same
+// scanShipyardIfPresent piggybacks a shipyard-inventory scan on a route arrival. The
+// route executor is the ONLY market-scan path a standing multi-market scout tour
+// exercises — executeMultiMarketTour delegates its market scan here rather than
+// re-scanning in the handler — so the shipyard scan MUST ride this same
 // route-arrival hook, or a scout that visits a SHIPYARD-trait waypoint never
-// persists a shipyard_inventory row (the live 0-rows incident the prior two fixes
-// did not close).
+// persists a shipyard_inventory row.
 //
-// sp-rhju: the trigger is NO LONGER marketplace-arrival-only. It also fires when
-// the arrived waypoint bears the SHIPYARD trait but carries NO marketplace — the
-// charted-but-un-toured shipyard the depth frontier reaches but no MARKET tour
-// ever tours (the 45-system blind spot). A probe that CHARTS/visits such a system
-// and arrives at its shipyard now scans it on the way through, decoupling shipyard
-// discovery from the lagging market tour. Firing on the marketplace trait too
-// keeps the sp-42ow co-located-yard path byte-identical.
+// The trigger is not marketplace-arrival-only: it also fires when the arrived
+// waypoint bears the SHIPYARD trait but carries NO marketplace — a charted-but-
+// un-toured shipyard the depth frontier reaches but no MARKET tour ever visits. A
+// probe that charts/visits such a system and arrives at its shipyard scans it on
+// the way through, decoupling shipyard discovery from the lagging market tour.
 //
 // No double-scan per visit: the ScoutTourHandler's stationary
 // performInitialScan/continuousMarketScanning paths scan a waypoint the executor
@@ -714,14 +705,14 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	}
 
 	// Event-based waiting, with a timeout->resync->park backstop if the
-	// ARRIVED event is lost or raced against subscription (sp-pafv).
+	// ARRIVED event is lost or raced against subscription.
 	if err := WaitForShipArrival(ctx, e.shipRepo, e.shipEventSubscriber, ship, playerID, waitTimeSeconds, logger); err != nil {
 		return err
 	}
 
 	// Persist ship state to DB after arrival to prevent stale state loops.
 	// Clear the local pointer's arrival clock first so the caller keeps using a
-	// consistent ship, then persist the arrival under CAS-retry (sp-wa7c): the
+	// consistent ship, then persist the arrival under CAS-retry: the
 	// closure re-applies the IN_TRANSIT->arrived transition on the FRESH row so a
 	// concurrent writer's cargo/fuel update on the same hull survives instead of
 	// being last-write-wins clobbered by this executor's older in-memory snapshot.
@@ -767,20 +758,19 @@ func (e *RouteExecutor) waitForCurrentTransit(
 
 // refuelBeforeDeparture refuels ship before starting the journey, retrying a
 // transient failure with backoff and rerouting to an alternate fuel-capable
-// waypoint if needed (sp-vsfn). Previously duplicated refuelShip's
-// dock+refuel+orbit sequence inline; now delegates so both entry points share
-// the same retry/reroute behavior instead of drifting apart.
+// waypoint if needed. Delegates to refuelShipWithRetry so both entry points share
+// the same retry/reroute behavior.
 func (e *RouteExecutor) refuelBeforeDeparture(
 	ctx context.Context,
 	route *domainNavigation.Route,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	// CUT 3 (sp-yd84): skip the whole dock/refuel/orbit trio when the ship
-	// already holds enough fuel for the first leg plus the safety margin. This
-	// reuses the exact proven fuel-cost primitive from ensureAffordableFlightMode
-	// (route_executor.go:422) rather than inventing a new threshold, so a ship
-	// that can already make the next leg does not pay three redundant API verbs.
+	// CUT 3: skip the whole dock/refuel/orbit trio when the ship
+	// already holds enough fuel for the first leg plus the safety margin. Reuses
+	// the same fuel-cost primitive as ensureAffordableFlightMode rather than
+	// inventing a new threshold, so a ship that can already make the next leg does
+	// not pay three redundant API verbs.
 	if e.hasSufficientFuelForFirstLeg(route, ship) {
 		common.LoggerFromContext(ctx).Log("INFO", "Skipping pre-departure refuel - sufficient fuel for first leg", map[string]interface{}{
 			"ship_symbol":  ship.ShipSymbol(),
@@ -817,7 +807,7 @@ func (e *RouteExecutor) hasSufficientFuelForFirstLeg(route *domainNavigation.Rou
 
 // refuelShip refuels ship at current location.
 //
-// returnToOrbit controls the final transition (sp-yd84 CUT 2). When true the
+// returnToOrbit controls the final transition (CUT 2). When true the
 // ship is returned to orbit after refuelling — the correct choice when a
 // navigate immediately follows (pre-departure / affordability backstop /
 // alternate-stop reroute), since a navigate requires orbit. When false the ship
@@ -847,8 +837,6 @@ func (e *RouteExecutor) refuelShip(
 		return nil // Skip refuel gracefully
 	}
 
-	// Dock for refuel (via DockShipCommand)
-	// Command handler updates ship state in memory
 	dockCmd := &types.DockShipCommand{
 		Ship:     ship,
 		PlayerID: playerID,
@@ -857,8 +845,6 @@ func (e *RouteExecutor) refuelShip(
 		return fmt.Errorf("failed to dock for refuel: %w", err)
 	}
 
-	// Refuel (via RefuelShipCommand)
-	// Command handler updates ship state in memory
 	refuelCmd := &types.RefuelShipCommand{
 		Ship:     ship,
 		PlayerID: playerID,
@@ -874,8 +860,6 @@ func (e *RouteExecutor) refuelShip(
 		return nil
 	}
 
-	// Return to orbit (via OrbitShipCommand)
-	// Command handler updates ship state in memory
 	orbitCmd := &types.OrbitShipCommand{
 		Ship:     ship,
 		PlayerID: playerID,
@@ -909,6 +893,6 @@ func (e *RouteExecutor) waitForArrival(
 	}
 
 	// Event-based waiting, with a timeout->resync->park backstop if the
-	// ARRIVED event is lost or raced against subscription (sp-pafv).
+	// ARRIVED event is lost or raced against subscription.
 	return WaitForShipArrival(ctx, e.shipRepo, e.shipEventSubscriber, ship, playerID, waitTime, logger)
 }

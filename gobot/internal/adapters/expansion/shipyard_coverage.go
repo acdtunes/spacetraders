@@ -14,7 +14,7 @@ type candidateLister interface {
 }
 
 // GateShipyardCoverageReader reports whether the gate-reachable shipyards have been swept
-// thoroughly enough that a missing heavy yard is CONCLUSIVE (sp-k645, trigger b). It reuses
+// thoroughly enough that a missing heavy yard is CONCLUSIVE (trigger b). It reuses
 // the ExpansionScanner: coverage is EXHAUSTED iff every gate-reachable system within the scan
 // horizon has been SWEPT (a swept system reveals all its shipyards, so if none carries a heavy
 // yard, none exists on-gate within reach). While ANY reachable system is still unscanned — or

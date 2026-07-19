@@ -3,10 +3,10 @@ package health
 // EffectTracker detects a coordinator that keeps DETECTING actionable
 // candidates (there is work to do) yet takes ZERO effect-actions, sustained
 // over a threshold of consecutive ticks — the "dry-run survived a day"
-// pathology (sp-57g9): the loop is RUNNING and error-free, so the sp-e2l1
-// error-streak monitor stays quiet, but it never reaches its EFFECT. It is the
-// inert-loop sibling of StreakTracker's stuck-erroring loop; the two together
-// cover both ways a coordinator can look alive while doing nothing.
+// pathology: the loop is RUNNING and error-free, so the error-streak monitor
+// stays quiet, but it never reaches its EFFECT. It is the inert-loop sibling of
+// StreakTracker's stuck-erroring loop; the two together cover both ways a
+// coordinator can look alive while doing nothing.
 //
 // It differs from StreakTracker in two deliberate ways:
 //

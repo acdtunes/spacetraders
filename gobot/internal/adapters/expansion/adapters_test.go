@@ -20,15 +20,14 @@ func wp(t *testing.T, symbol, waypointType string) *shared.Waypoint {
 	return w
 }
 
-// hasNonGateWaypoint is the sp-gb7h Scanned discriminator: it decides, from a system's
+// hasNonGateWaypoint is the Scanned discriminator: it decides, from a system's
 // PERSISTED waypoint rows, whether the system's FULL waypoint set was actually SWEPT — as
 // opposed to merely gate-charted. The ONLY writer of waypoint rows is BuildSystemGraph
 // (graph_builder.go), which persists a system's ENTIRE paginated waypoint list (planets,
 // moons, asteroids, the gate) when a probe sweeps it; gate-charting instead persists jump-gate
 // EDGES to a separate gate_edges table, never a waypoints row. So a persisted NON-gate waypoint
-// proves a real sweep, whereas a never-swept system has none — and even a lone JUMP_GATE row (the
-// bead's explicit warning: Scanned must NOT mean "≥1 waypoint row exists") must read as NOT
-// scanned so a gate-only-charted system stays a scout target. These are input variations of that
+// proves a real sweep, whereas a never-swept system has none — and even a lone JUMP_GATE row must
+// read as NOT scanned so a gate-only-charted system stays a scout target. These are input variations of that
 // single decision (Mandate 5 parametrized).
 func TestHasNonGateWaypoint_SeparatesSweptFromGateOnlyCharted(t *testing.T) {
 	cases := []struct {
@@ -115,13 +114,13 @@ func TestBfsHops_IncludesVirginEdgeTargets(t *testing.T) {
 	require.Equal(t, 1, hops["V"], "a virgin edge-target is reachable and hop-counted")
 }
 
-// growFrontierGraph grows the walkable gate graph one ring per pass (sp-dc50); these cases
+// growFrontierGraph grows the walkable gate graph one ring per pass; these cases
 // pin its ring-growth contract (chart the covered ring, frugal fetch bound) with in-memory
 // adjacency and closure collaborators, mirroring the pure bfsHops cases above.
 
 // The frozen-frontier bug and its fix, at the algorithmic seam: a scouted ring's MARKETS are
 // charted by the sweep but its JUMP GATE is not, so its onward edges never enter the persisted
-// adjacency and the multi-source BFS dead-ends at hop-1 — the expansion queue empties (sp-dc50).
+// adjacency and the multi-source BFS dead-ends at hop-1 — the expansion queue empties.
 // growFrontierGraph must fetch+persist the charted ring's gate so the next BFS reaches the
 // hop-2 virgin the coordinator can then rank.
 func TestGrowFrontierGraph_ChartsCoveredRingToReachNextHop(t *testing.T) {
@@ -164,7 +163,7 @@ func TestGrowFrontierGraph_ChartsCoveredRingToReachNextHop(t *testing.T) {
 // API-frugality: growFrontierGraph fetches ONLY a charted, not-yet-persisted frontier
 // system's gate. It never re-fetches a gate already in the graph (served from the map,
 // zero API), and never probes an UNCHARTED virgin system (its live gate would 400 "no ship
-// present" and trip the sp-ikx1 negative-result backoff for nothing).
+// present" and trip the negative-result backoff for nothing).
 func TestGrowFrontierGraph_SkipsPersistedAndUnchartedGates(t *testing.T) {
 	// A(anchor) → B(charted, ALREADY has persisted edges) and V(virgin hop-1, UNcharted).
 	// B's stored edge reaches C (charted hop-2, NO edges — the sole legitimate fetch target).

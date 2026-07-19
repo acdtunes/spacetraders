@@ -41,8 +41,8 @@ func newFuelTestShip(t *testing.T, current, capacity int) *navigation.Ship {
 	return ship
 }
 
-// Reproduces #12: invalid API fuel data must surface a failure instead of
-// silently leaving stale fuel that feeds routing/flight-mode decisions.
+// Invalid API fuel data must surface a failure instead of silently leaving
+// stale fuel that feeds routing/flight-mode decisions.
 func TestUpdateFuelFromAPI_SurfacesErrorOnInvalidData(t *testing.T) {
 	ship := newFuelTestShip(t, 80, 100)
 
@@ -56,7 +56,6 @@ func TestUpdateFuelFromAPI_SurfacesErrorOnInvalidData(t *testing.T) {
 	}
 }
 
-// Valid API fuel data updates the ship's fuel state and returns no error.
 func TestUpdateFuelFromAPI_UpdatesOnValidData(t *testing.T) {
 	ship := newFuelTestShip(t, 80, 100)
 
@@ -73,10 +72,11 @@ func TestUpdateFuelFromAPI_UpdatesOnValidData(t *testing.T) {
 	}
 }
 
-// sp-xxhn: the API is authoritative and can over-report current fuel against a
+// The API is authoritative and can over-report current fuel against a
 // shrunk capacity (e.g. post frame-swap). Ingesting that snapshot must clamp to
 // capacity, not fail — a spurious error here would leave stale fuel driving
-// routing decisions. Negative/invalid data still errors (see #12 above).
+// routing decisions. Negative/invalid data still errors (see the invalid-data
+// case above).
 func TestUpdateFuelFromAPI_ClampsCurrentExceedingCapacity(t *testing.T) {
 	ship := newFuelTestShip(t, 80, 100)
 

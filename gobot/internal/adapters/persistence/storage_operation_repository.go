@@ -41,7 +41,7 @@ func (r *StorageOperationRepository) Create(ctx context.Context, operation *stor
 // Update saves changes to an existing storage operation.
 //
 // It OMITS the cost_basis column: basis is managed out-of-band by
-// SaveOperationBasis (C1, sp-64je) and the domain operation does not carry it, so
+// SaveOperationBasis and the domain operation does not carry it, so
 // a full-row Save would otherwise clobber it to "". Status/error updates and
 // basis updates are therefore independent and neither wipes the other.
 func (r *StorageOperationRepository) Update(ctx context.Context, operation *storage.StorageOperation) error {
@@ -58,7 +58,7 @@ func (r *StorageOperationRepository) Update(ctx context.Context, operation *stor
 }
 
 // SaveOperationBasis persists the per-good weighted-average cost basis for a
-// storage operation (C1, sp-64je) via a targeted column update, so it does not
+// storage operation via a targeted column update, so it does not
 // interact with the domain operation's own fields (see Update). Best-effort at
 // the call site: a failure is non-fatal — basis re-derives on the next deposit,
 // else fails closed on restart (the good is simply not offered as a stock source).
@@ -79,7 +79,7 @@ func (r *StorageOperationRepository) SaveOperationBasis(ctx context.Context, ope
 }
 
 // UpdateSupportedGoods overwrites ONLY the supported_goods whitelist of a storage
-// operation via a targeted column update (sp-94du), mirroring SaveOperationBasis. It is how a
+// operation via a targeted column update, mirroring SaveOperationBasis. It is how a
 // redeployed cap selector re-applies a freshly-recomputed receipt whitelist to an
 // ALREADY-RUNNING warehouse whose hull is non-idle: a full-row Save (Update) would rebuild the
 // row from a domain entity and clobber the live status / storage-ship registration, whereas
@@ -257,7 +257,6 @@ func (r *StorageOperationRepository) Delete(ctx context.Context, id string) erro
 func (r *StorageOperationRepository) toModel(op *storage.StorageOperation) (*StorageOperationModel, error) {
 	data := op.ToData()
 
-	// Serialize ship arrays to JSON
 	extractorShipsJSON, err := json.Marshal(data.ExtractorShips)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal extractor ships: %w", err)
@@ -292,7 +291,6 @@ func (r *StorageOperationRepository) toModel(op *storage.StorageOperation) (*Sto
 
 // toEntity converts a database model to a domain entity
 func (r *StorageOperationRepository) toEntity(model *StorageOperationModel) (*storage.StorageOperation, error) {
-	// Deserialize ship arrays from JSON
 	var extractorShips []string
 	if model.ExtractorShips != "" {
 		if err := json.Unmarshal([]byte(model.ExtractorShips), &extractorShips); err != nil {

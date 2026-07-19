@@ -40,10 +40,10 @@ func seedBalance(t *testing.T, sup *Supervisor, playerID, balanceAfter int) {
 }
 
 // D3 (1): the gate must evaluate the LIVE agent-API credits (what the captain
-// sees via `player info`), not the contract-anchored ledger reconstruction.
-// The incident's threshold was uncrossable because the two disagreed. Here the
-// API says 1,150,000 (>= the declared 1,100,000 bound) while the reconstruction
-// says only 700,000 (< bound): a wake proves the API value drove the decision.
+// sees via `player info`), not the contract-anchored ledger reconstruction —
+// the two can disagree. Here the API says 1,150,000 (>= the declared 1,100,000
+// bound) while the reconstruction says only 700,000 (< bound): a wake proves
+// the API value drove the decision.
 func TestTickWakesOnLiveAgentCreditsNotLedgerReconstruction(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
 	sup.lastSession = time.Now() // heartbeat cadence nowhere near due

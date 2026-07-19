@@ -25,7 +25,6 @@ var purchaseMultipliers = map[SupplyLevel]float64{
 // DefaultPurchaseMultiplier is used when supply level is unknown
 const DefaultPurchaseMultiplier = 0.40
 
-// PurchaseMultiplier returns the safe purchase fraction based on supply level.
 func (s SupplyLevel) PurchaseMultiplier() float64 {
 	if mult, ok := purchaseMultipliers[s]; ok {
 		return mult
@@ -70,7 +69,6 @@ func (s SupplyLevel) Order() int {
 	}
 }
 
-// ParseSupplyLevel converts string to SupplyLevel with validation.
 func ParseSupplyLevel(s string) SupplyLevel {
 	switch s {
 	case "ABUNDANT":
@@ -88,7 +86,6 @@ func ParseSupplyLevel(s string) SupplyLevel {
 	}
 }
 
-// String returns the string representation of the supply level.
 func (s SupplyLevel) String() string {
 	return string(s)
 }
@@ -107,7 +104,7 @@ func (s SupplyLevel) CalculateSupplyAwareLimit(tradeVolume int) int {
 // unknown input to MODERATE and so can never signal "invalid"). Colocating this set
 // with the SupplyLevel VO makes it the single source of truth for supply-string
 // validation, so the accepted vocabulary cannot drift from a second copy in another
-// package (sp-9mkf supply-semantics bug class).
+// package (supply-semantics bug class).
 var validSupplyValues = map[string]bool{
 	"SCARCE":   true,
 	"LIMITED":  true,
@@ -116,7 +113,6 @@ var validSupplyValues = map[string]bool{
 	"ABUNDANT": true,
 }
 
-// IsValidSupply reports whether s is a recognised supply level.
 func IsValidSupply(s string) bool {
 	return validSupplyValues[s]
 }

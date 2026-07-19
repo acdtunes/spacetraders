@@ -295,14 +295,11 @@ var idleArbConfigKeys = []string{
 // re-injects the daemon's boot-loaded values, so the rebuilt command reflects the
 // CURRENT config.yaml on every build — creation and restart recovery alike.
 //
-// This is what finally makes the documented retune path (edit config.yaml +
-// restart daemon) take effect on a RECOVERED coordinator. Before it, recovery
-// re-adopted the stale persisted knobs untouched and the retune silently no-op'd
-// (the sp-nw9v incident: a leash-150 retune ran leash-80 for hours). No coordinator
-// recreate is ever needed for these knobs now. The clear is essential to honesty:
-// dropping a knob from config.yaml must fall back to the WithDefaults default, and
-// that can only happen if the stale persisted key is removed rather than left to
-// shadow the now-absent live value.
+// This makes the documented retune path (edit config.yaml + restart daemon) take
+// effect on a RECOVERED coordinator without ever needing a coordinator recreate.
+// The clear is essential to honesty: dropping a knob from config.yaml must fall
+// back to the WithDefaults default, and that can only happen if the stale
+// persisted key is removed rather than left to shadow the now-absent live value.
 func (s *DaemonServer) resolveIdleArbConfig(config map[string]interface{}) {
 	for _, key := range idleArbConfigKeys {
 		delete(config, key)

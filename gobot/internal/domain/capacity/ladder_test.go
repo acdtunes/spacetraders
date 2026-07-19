@@ -1,6 +1,6 @@
 package capacity
 
-// Behavioral tests for the DIFF escalation ladder (st-zr0). Every test drives
+// Behavioral tests for the DIFF escalation ladder. Every test drives
 // the frozen Differ port (LadderDiffer.Diff) and asserts one observable
 // outcome: the ordered action list. Nothing reaches into ladder internals.
 //

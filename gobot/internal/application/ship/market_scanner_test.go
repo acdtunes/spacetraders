@@ -38,13 +38,12 @@ func (f *fakePriceHistoryRepo) GetMarketStability(context.Context, string, strin
 	return nil, nil
 }
 
-// sp-pf60: recordPriceChanges is the sole write path that turns a freshly
+// recordPriceChanges is the sole write path that turns a freshly
 // scanned TradeGood's Supply()/Activity() into a persisted
 // MarketPriceHistory row - it's exactly the code path tier-at-capture-time
-// depends on, and it had zero dedicated test coverage. This proves the
-// observed tier lands in the row unchanged (not just that the plumbing
-// compiles), for both the "good is new" and "good's price changed" trigger
-// conditions in pricesChanged.
+// depends on. This proves the observed tier lands in the row unchanged (not
+// just that the plumbing compiles), for both the "good is new" and "good's
+// price changed" trigger conditions in pricesChanged.
 func TestRecordPriceChanges_ThreadsObservedTierIntoHistoryRow(t *testing.T) {
 	supply := "LIMITED"
 	activity := "WEAK"

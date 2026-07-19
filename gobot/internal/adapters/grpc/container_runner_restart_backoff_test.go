@@ -15,14 +15,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// sp-h0kr: the container iteration-error restart loop used to burn every
-// automatic restart in milliseconds — ResetForRestart -> Start -> continue with
-// no wait between attempts — so a dependency that fails instantly (routing down
-// => immediate connection-refused on localhost) exhausted MaxRestartAttempts
-// before it could self-heal, and the container terminalized (and, under
-// supervisor doctrine, stayed dead). These tests pin the escalating,
-// clock-injected, ctx-interruptible backoff that fixes it, using a MockClock-style
-// clock so no test wall-waits.
+// sp-h0kr: the container iteration-error restart loop must SPACE restarts with an
+// escalating, clock-injected, ctx-interruptible backoff — never burn through
+// MaxRestartAttempts with no wait between attempts — so a dependency that fails
+// instantly (e.g. routing down => immediate connection-refused on localhost) gets
+// a chance to self-heal before the restart budget is exhausted. These tests pin
+// that backoff, using a MockClock-style clock so no test wall-waits.
 
 // alwaysFailMediator fails every Send with a transient-looking dependency error,
 // driving the runner's restart loop to exhaustion. callCount records how many

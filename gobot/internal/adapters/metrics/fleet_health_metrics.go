@@ -6,7 +6,7 @@ import (
 
 // FleetHealthMetricsCollector houses the fleet-health event counters that back the
 // gobot/configs/prometheus/rules/fleet-health.yml alert rules. Today that is the
-// stranded-hull counter (sp-686e): a hull whose reposition/tour exit path finds its origin
+// stranded-hull counter: a hull whose reposition/tour exit path finds its origin
 // has no durable gate adjacency AND a gate-inaccessible live probe — the TORWIND-2C shape,
 // where both discovery paths correctly return empty so the hull can never self-reposition
 // and silently relaunch-loops until a human notices. It is emitted ONCE per stranded
@@ -24,7 +24,7 @@ type FleetHealthMetricsCollector struct {
 	hullStrandedTotal *prometheus.CounterVec
 }
 
-// NewFleetHealthMetricsCollector creates a new fleet-health metrics collector (sp-686e).
+// NewFleetHealthMetricsCollector creates a new fleet-health metrics collector.
 func NewFleetHealthMetricsCollector() *FleetHealthMetricsCollector {
 	return &FleetHealthMetricsCollector{
 		hullStrandedTotal: prometheus.NewCounterVec(

@@ -87,10 +87,10 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 	return dc.AssignShipsToMarketsWithHint(ctx, ships, targetMarkets, systemSymbol, playerID, domainContract.PrePositionHint{})
 }
 
-// AssignShipsToMarketsWithHint is AssignShipsToMarkets plus the sp-1ef0 contract
-// pre-position hint. When the hint clears its confidence guard, one idle hull is biased
-// toward the predicted next-source market; otherwise the result is identical to the
-// legacy distance-based assignment.
+// AssignShipsToMarketsWithHint is AssignShipsToMarkets plus a contract pre-position
+// hint. When the hint clears its confidence guard, one idle hull is biased toward the
+// predicted next-source market; otherwise the result is identical to the legacy
+// distance-based assignment.
 func (dc *DistributionChecker) AssignShipsToMarketsWithHint(
 	ctx context.Context,
 	ships []*navigation.Ship,

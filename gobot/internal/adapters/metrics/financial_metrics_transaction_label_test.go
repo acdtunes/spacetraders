@@ -7,17 +7,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// TestTransactionMetrics_LabeledByTypeNotCategory pins sp-xdr6.
+// TestTransactionMetrics_LabeledByTypeNotCategory pins the type-only label set.
 //
-// category is a 100pct deterministic relabel of transaction type (category
-// audit 2026-07-14: 0/33833 live divergence), so carrying it as a separate
-// label on transactions_total / transaction_amount is pure redundancy — the
-// same information as `type`, doubling the series cardinality for nothing.
+// category is a deterministic relabel of transaction type, so carrying it as
+// a separate label on transactions_total / transaction_amount is pure
+// redundancy — the same information as `type`, doubling the series
+// cardinality for nothing.
 // This test asserts, at the emitted-series boundary (what Prometheus actually
 // scrapes), that those two metrics are labeled by player_id+type ONLY.
 //
 // GUARDRAIL: the sibling ledger_revenue_total / ledger_cost_total counters
-// (sp-miqt) MUST keep the category label — a live financial dashboard panel
+// MUST keep the category label — a live financial dashboard panel
 // splits Operating vs Net capex on category!='SHIP_INVESTMENTS'. This test
 // fails loudly if a future cleanup over-reaches and strips category there too.
 func TestTransactionMetrics_LabeledByTypeNotCategory(t *testing.T) {

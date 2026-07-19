@@ -9,14 +9,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// --- sp-1vhv reserved-cargo guard, tour coordinator -------------------------
+// --- Reserved-cargo guard, tour coordinator -------------------------
 //
-// The loss: MODULE_CARGO_HOLD_III bought for 196,751cr at X1-ZC66-BA9D and staged
-// on TORWIND-1E, then auto-sold by tour-run-TORWIND-1E for 97,033cr because the
-// tour treated hold contents as sellable manifest. Two guards: the planner is
-// never offered reserved cargo (so it cannot PLAN the liquidation), and the
-// executor refuses a reserved sell independently (so a planning leak cannot
-// realize the loss).
+// A staged module (e.g. MODULE_CARGO_HOLD_III) held in cargo must never be treated
+// as sellable manifest and auto-sold at a loss. Two guards: the planner is never
+// offered reserved cargo (so it cannot PLAN the liquidation), and the executor
+// refuses a reserved sell independently (so a planning leak cannot realize the
+// loss).
 
 // Liquidation-path exclusion: a staged module in the hold must NOT count as
 // liquidatable inventory offered to the planner — tourShipState drops it while

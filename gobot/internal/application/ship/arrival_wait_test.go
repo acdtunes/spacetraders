@@ -16,7 +16,7 @@ import (
 // fakeArrivalSubscriber is a controllable ShipEventSubscriber: SubscribeArrived
 // returns a caller-supplied channel so a test can simulate an ARRIVED event
 // being delivered promptly, or never delivered at all (the lost/raced event
-// that sp-pafv guards against).
+// the wait must tolerate).
 type fakeArrivalSubscriber struct {
 	ch chan domainNavigation.ShipArrivedEvent
 }
@@ -89,14 +89,14 @@ func newArrivalWaitTestShip(t *testing.T, navStatus domainNavigation.NavStatus) 
 	// currentLocation to the destination while IN_TRANSIT, so a wait's ship is
 	// always sitting at (heading to) this waypoint. A resync fixture placed at a
 	// DIFFERENT waypoint via newArrivalWaitTestShipAt therefore models the stale
-	// pre-departure snapshot still at the ORIGIN (sp-d6gl).
+	// pre-departure snapshot still at the ORIGIN.
 	return newArrivalWaitTestShipAt(t, navStatus, "X1-TEST-A")
 }
 
 // newArrivalWaitTestShipAt is newArrivalWaitTestShip with an explicit current
 // location so a resync fixture can be placed at the ORIGIN (a waypoint distinct
 // from the in-transit ship's "X1-TEST-A" destination) to model the stale
-// pre-departure snapshot the sp-d6gl safety-resync must reject as arrival.
+// pre-departure snapshot the safety-resync must reject as arrival.
 func newArrivalWaitTestShipAt(t *testing.T, navStatus domainNavigation.NavStatus, locationSymbol string) *domainNavigation.Ship {
 	t.Helper()
 	loc := mustWaypoint(t, locationSymbol, 0, 0)
@@ -130,7 +130,7 @@ func newArrivalWaitTestShipAt(t *testing.T, navStatus domainNavigation.NavStatus
 
 // newArrivalWaitTestShipWithArrival is newArrivalWaitTestShip plus the
 // resync snapshot's own ArrivalTime set, so tests can drive the
-// future-vs-past-ETA distinction (sp-ht1f) on the ship a resync returns.
+// future-vs-past-ETA distinction on the ship a resync returns.
 func newArrivalWaitTestShipWithArrival(t *testing.T, navStatus domainNavigation.NavStatus, arrival time.Time) *domainNavigation.Ship {
 	t.Helper()
 	ship := newArrivalWaitTestShip(t, navStatus)
@@ -142,7 +142,7 @@ func newArrivalWaitTestShipWithArrival(t *testing.T, navStatus domainNavigation.
 
 // TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged pins the existing
 // behavior: when the ARRIVED event shows up, the wait returns success
-// immediately and never touches the resync path (sp-pafv must not change this).
+// immediately and never touches the resync path.
 func TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)}
@@ -165,11 +165,12 @@ func TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged(t *testing.T) {
 	}
 }
 
-// TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival is sp-pafv's core
-// case: the ARRIVED event never shows up (lost/raced against subscription,
-// ShipEventBus's non-blocking, non-replaying send), but the repository -
-// already updated by ShipStateScheduler before it published - confirms the
-// ship has left transit. The wait must resync and succeed instead of hanging.
+// TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival is the core
+// lost-event case: the ARRIVED event never shows up (lost/raced against
+// subscription, ShipEventBus's non-blocking, non-replaying send), but the
+// repository - already updated by ShipStateScheduler before it published -
+// confirms the ship has left transit. The wait must resync and succeed
+// instead of hanging.
 func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed: simulates a lost event
@@ -190,20 +191,18 @@ func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 }
 
 // TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilArrival
-// is sp-ht1f's headline regression case: a resync keeps showing IN_TRANSIT
-// with an ArrivalTime still in the future (a legitimately long transit, e.g.
-// the real-world navigate-TORWIND-F-a36d793d 23-minute DF9E->B10D leg that
-// sp-pafv's fixed 3*30s=~90s budget aborted at ~2 minutes). The wait must
-// keep polling until the ship actually leaves transit - it must NOT park just
-// because attempts accumulated while the ship was still healthy. Under the
-// ETA-aligned schedule (sp-7yej invariant 5) each still-future resync sleeps
-// to the snapshot's own ArrivalTime plus one grace of slack, so the fixture
-// keeps that ETA a short, freshly-computed step ahead on every call.
+// pins the headline case: a resync keeps showing IN_TRANSIT with an
+// ArrivalTime still in the future (a legitimately long transit). The wait
+// must keep polling until the ship actually leaves transit - it must NOT
+// park just because attempts accumulated while the ship was still healthy.
+// Under the ETA-aligned schedule each still-future resync sleeps to the
+// snapshot's own ArrivalTime plus one grace of slack, so the fixture keeps
+// that ETA a short, freshly-computed step ahead on every call.
 func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilArrival(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed: event lost for the whole wait
 
-	const callsUntilArrival = 6 // more than sp-pafv's old fixed DefaultArrivalMaxAttempts=3
+	const callsUntilArrival = 6
 	repo := &fakeShipQueryRepo{}
 	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
 		if repo.calls < callsUntilArrival {
@@ -233,13 +232,11 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilA
 	}
 }
 
-// TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned pins sp-7yej
-// invariant 5's schedule contract: during a healthy transit the wait must NOT
-// wake every grace period (the old behavior — ~46 resyncs and ~46 WARNING
-// lines for a 23-minute leg); after the one fast first poll it sleeps to the
-// ship's own expected arrival in a single tick. A ~200ms transit with a 5ms
-// grace would have cost ~40 polls under the old fixed cadence; ETA-aligned it
-// costs exactly 2 (the fast first check + the one aimed at the ETA).
+// TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned pins the
+// schedule contract: during a healthy transit the wait must NOT wake every
+// grace period; after the one fast first poll it sleeps to the ship's own
+// expected arrival in a single tick, costing exactly 2 resyncs regardless of
+// transit length (the fast first check + the one aimed at the ETA).
 func TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost; resync must still be cheap
@@ -261,20 +258,18 @@ func TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned(t *testing.T) 
 		t.Fatalf("expected ship to have Arrive()'d, got status %s", ship.NavStatus())
 	}
 	// The schedule contract: one fast first poll + one ETA-aligned poll. A few
-	// extra ticks of scheduler slop are tolerated; the old fixed cadence would
-	// have burned ~40.
+	// extra ticks of scheduler slop are tolerated.
 	if repo.calls > 4 {
 		t.Fatalf("expected ETA-aligned polling (~2 resyncs for this transit), got %d — the wait is ticking at the grace period during a healthy transit again", repo.calls)
 	}
 }
 
 // TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinOneResync
-// is the genuine lost-event case sp-pafv originally targeted, now
-// distinguished explicitly (sp-ht1f) from a healthy future-ETA transit: a
-// resync shows IN_TRANSIT but the ship's own ArrivalTime has already passed.
-// Waiting out the rest of a large budget cannot help - the event is gone -
-// so the wait must park immediately on this first resync rather than
-// burning through the whole remaining budget first.
+// is the genuine lost-event case, distinguished from a healthy future-ETA
+// transit: a resync shows IN_TRANSIT but the ship's own ArrivalTime has
+// already passed. Waiting out the rest of a large budget cannot help - the
+// event is gone - so the wait must park immediately on this first resync
+// rather than burning through the whole remaining budget first.
 func TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinOneResync(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed
@@ -306,12 +301,11 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinOneResync
 }
 
 // TestWaitForShipArrivalCore_BudgetExhausted_NoResolvingSignal_ParksWithTypedError
-// proves the wait still does NOT hang forever (sp-pafv's original guarantee):
-// if the event never arrives AND every resync shows IN_TRANSIT with no ETA
-// that can be proven past (unknown/nil ArrivalTime on the resync snapshot),
-// the only backstop left is the overall wait budget itself. This is the
-// genuine-exhaustion path, now driven by a deadline instead of a fixed
-// attempt count (sp-ht1f).
+// proves the wait does NOT hang forever: if the event never arrives AND
+// every resync shows IN_TRANSIT with no ETA that can be proven past
+// (unknown/nil ArrivalTime on the resync snapshot), the only backstop left
+// is the overall wait budget itself — the genuine-exhaustion path, driven by
+// a deadline rather than a fixed attempt count.
 func TestWaitForShipArrivalCore_BudgetExhausted_NoResolvingSignal_ParksWithTypedError(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed
@@ -357,30 +351,22 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 	}
 }
 
-// --- sp-d6gl: stale pre-departure snapshot must not confirm arrival ----------
+// --- Stale pre-departure snapshot must not confirm arrival ------------------
 
 // TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfirmUntilAtDestination
-// is the sp-d6gl headline regression. A safety resync fired BEFORE the
-// scheduled arrival reads a STALE PRE-DEPARTURE snapshot: the nav-cache has not
-// yet caught up to this leg's departure, so FindBySymbol returns the hull NOT
-// in transit and still sitting at the ORIGIN (a waypoint distinct from the
-// destination it is really heading to) — the sp-n7yp/sp-ynuf nav-cache race, in
-// the "hasn't caught up to the departure" direction.
+// covers the stale pre-departure snapshot case. A safety resync fired BEFORE
+// the scheduled arrival can read a STALE PRE-DEPARTURE snapshot: the nav-cache
+// has not yet caught up to this leg's departure, so FindBySymbol returns the
+// hull NOT in transit and still sitting at the ORIGIN (a waypoint distinct
+// from the destination it is really heading to). Confirming arrival off that
+// snapshot would report the hull at its destination while it is still at the
+// start of the leg, so the wait must reject the stale snapshot and confirm
+// ONLY once the resync shows the hull genuinely arrived AT THE DESTINATION.
 //
-// Before the fix, arrival_wait.go accepted any not-in-transit resync as arrival
-// and returned success off that first stale poll, reporting the hull at its
-// destination while it was still at the start of the leg (TORWIND-37: a 2m33s
-// gate hop "confirmed" ~30s in, the tour completed with the hull at origin, the
-// downstream jump hard-crashed). The wait must instead reject the stale
-// snapshot and confirm ONLY once the resync shows the hull genuinely arrived AT
-// THE DESTINATION.
-//
-// Harness-honesty (the sp-trnp miss this bead exists to correct): the fixture
-// MODELS THE STALL — the first resync returns the pre-departure origin snapshot,
-// a later one the true destination arrival — instead of arriving synchronously
-// and hiding the race. On unfixed code this test fails (success after 1 resync,
-// repo.calls==1); on fixed code the stale poll is ignored and confirmation lands
-// on the destination poll (repo.calls==2).
+// The fixture MODELS THE STALL — the first resync returns the pre-departure
+// origin snapshot, a later one the true destination arrival — instead of
+// arriving synchronously and hiding the race: confirmation must land on the
+// destination poll (repo.calls==2), not the first stale one.
 func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfirmUntilAtDestination(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)             // heading to X1-TEST-A
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost / not yet published
@@ -411,11 +397,11 @@ func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfir
 }
 
 // TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPosition
-// is the sp-d6gl over-correction guard: a genuine EARLY arrival — the resync
-// shows the hull not in transit and AT THE DESTINATION well before the
-// scheduled ETA — must still confirm. The position, not the clock, is the proof
-// the hull actually landed, so the fix must not reject real early arrivals just
-// because the ETA has not elapsed.
+// is the over-correction guard: a genuine EARLY arrival — the resync shows
+// the hull not in transit and AT THE DESTINATION well before the scheduled
+// ETA — must still confirm. The position, not the clock, is the proof the
+// hull actually landed, so the guard must not reject real early arrivals
+// just because the ETA has not elapsed.
 func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPosition(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)             // heading to X1-TEST-A
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
@@ -438,13 +424,12 @@ func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPositio
 }
 
 // TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged pins
-// that the fix leaves the normal on-time path untouched: once the scheduled
-// arrival is due (dueIn<=0), a not-in-transit resync confirms on the status
-// change alone, exactly as before sp-d6gl — the position guard applies only
-// BEFORE the ETA. Modeled with a resync reporting a location that is NOT the
-// destination to prove the past-ETA branch is deliberately position-independent
-// (it must not start rejecting an on-time arrival whose reported waypoint
-// differs).
+// that the normal on-time path stays untouched: once the scheduled arrival is
+// due (dueIn<=0), a not-in-transit resync confirms on the status change alone —
+// the position guard applies only BEFORE the ETA. Modeled with a resync
+// reporting a location that is NOT the destination to prove the past-ETA
+// branch is deliberately position-independent (it must not start rejecting an
+// on-time arrival whose reported waypoint differs).
 func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
@@ -466,17 +451,17 @@ func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t
 	}
 }
 
-// --- sp-arrwait: live-API re-confirm before parking (Fix A) + short-leg --------
-// --- debounce (Fix B) + kill-switch -------------------------------------------
+// --- Live-API re-confirm before parking (Fix A) + short-leg debounce -------
+// --- (Fix B) + kill-switch --------------------------------------------------
 
 // TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIConfirmsArrived_ReturnsSuccess
-// is the sp-arrwait headline: the LOCAL DB row is stale (still IN_TRANSIT with its
-// own ETA already past) because the async IN_TRANSIT->IN_ORBIT transition has not
-// committed yet, but the AUTHORITATIVE live API says the hull has arrived. The wait
-// must re-confirm against the API and RETURN SUCCESS instead of the false
-// ErrArrivalWaitExhausted that crash-loops the container. This is the MUTATION
-// sentinel for Fix A: reverting the live-API re-confirm makes this test see the
-// crash-error again.
+// is the headline live-API re-confirm case: the LOCAL DB row is stale (still
+// IN_TRANSIT with its own ETA already past) because the async
+// IN_TRANSIT->IN_ORBIT transition has not committed yet, but the AUTHORITATIVE
+// live API says the hull has arrived. The wait must re-confirm against the API
+// and RETURN SUCCESS instead of the false ErrArrivalWaitExhausted that
+// crash-loops the container. This is the MUTATION sentinel for Fix A:
+// reverting the live-API re-confirm makes this test see the crash-error again.
 func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIConfirmsArrived_ReturnsSuccess(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
@@ -510,7 +495,7 @@ func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIConfirmsArrived_ReturnsSuc
 
 // TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIError_FallsBackToPark is Fix A's
 // fail-safe: if the live-API re-confirm itself errors, the wait falls back to
-// today's DB-only park (never worse than status quo) rather than panicking or
+// the DB-only park (never worse than status quo) rather than panicking or
 // succeeding blind.
 func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIError_FallsBackToPark(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
@@ -599,11 +584,11 @@ func TestWaitForShipArrivalCore_ShortLeg_DoesNotParkOnFirstPastETAObservation(t 
 }
 
 // TestWaitForShipArrivalCore_LiveReconfirmDisabled_ParksDBOnly is the kill-switch
-// OFF proof: with liveReconfirm=false the wait is byte-identical to the pre-fix
-// behavior — it parks on the FIRST past-ETA observation off the DB read alone, in
-// exactly one resync, and NEVER touches the live API — even though the (scripted)
-// API would have reported the hull arrived. Flipping the flag off instantly reverts
-// to today's DB-only park with no code rollback.
+// OFF proof: with liveReconfirm=false the wait parks on the FIRST past-ETA
+// observation off the DB read alone, in exactly one resync, and NEVER touches
+// the live API — even though the (scripted) API would have reported the hull
+// arrived. Flipping the flag off instantly reverts to the DB-only park with
+// no code rollback.
 func TestWaitForShipArrivalCore_LiveReconfirmDisabled_ParksDBOnly(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost
@@ -652,12 +637,9 @@ func TestSetArrivalWaitLiveReconfirm_TogglesPackageDefault(t *testing.T) {
 
 // --- calculateArrivalWaitBudget ----------------------------------------------
 
-// TestCalculateArrivalWaitBudget_ScalesWithETA pins the sp-ht1f budget
-// formula: budget = max(eta*marginFactor, eta+minMargin). This is what
-// replaces sp-pafv's fixed grace*maxAttempts (~90s) budget that aborted
-// every transit longer than ~90s regardless of its real ETA - the direct
-// root cause of sp-ht1f (waitTimeSeconds was computed correctly by every
-// call site but only ever used in a log line, never in the wait budget).
+// TestCalculateArrivalWaitBudget_ScalesWithETA pins the budget formula:
+// budget = max(eta*marginFactor, eta+minMargin) — so the wait budget scales
+// with the route's real ETA rather than a fixed attempt count.
 func TestCalculateArrivalWaitBudget_ScalesWithETA(t *testing.T) {
 	const marginFactor = 1.25
 	const minMargin = 2 * time.Minute

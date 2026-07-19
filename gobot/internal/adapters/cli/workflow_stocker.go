@@ -8,10 +8,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newWorkflowStockerCommand creates the workflow stocker subcommand: the STOCKER LOOP
-// (sp-zdwg) — a dedicated hull that fills a home warehouse the tours rationally won't
-// (sp-dchv proved deposit legs lose to direct sells at every re-plan; the stocker
-// dedicates capacity instead of distorting tour objectives).
+// newWorkflowStockerCommand creates the workflow stocker subcommand: the STOCKER LOOP —
+// a dedicated hull that fills a home warehouse the tours rationally won't (deposit legs
+// lose to direct sells at every re-plan, so the stocker dedicates capacity instead of
+// distorting tour objectives).
 //
 // Like tour-run this is a THIN CLIENT: it asks the daemon to start a recovery-safe
 // stocker CONTAINER rather than flying in-process. Each round-trip the container
@@ -96,10 +96,10 @@ Examples:
 			// max_market_age_minutes → 75, target_per_good → the miner's measured demand,
 			// iterations → one round-trip). --iterations -1 (continuous) is non-zero, so it
 			// maps through to &(-1) and is honored.
-			// --standing (sp-k1ka): a standing refill that never completes at target — it
-			// parks and auto-re-stages when contracts drain the warehouse below target, and
-			// survives daemon restart (re-adopted standing). Launch it ONCE; no manual
-			// relaunch. &standing is passed always (false = the historical finite behavior).
+			// --standing: a standing refill that never completes at target — it parks and
+			// auto-re-stages when contracts drain the warehouse below target, and survives
+			// daemon restart (re-adopted standing). Launch it ONCE; no manual relaunch.
+			// &standing is passed always (false = the default finite behavior).
 			result, err := client.StartStocker(ctx, shipSymbol, warehouseWaypoint, playerIdent.PlayerID, &playerIdent.AgentSymbol,
 				optionalInt32(budgetPerLeg), optionalInt64(reserve), optionalInt32(iterations), optionalInt32(maxMarketAge), optionalInt32(targetPerGood),
 				&standing, optionalInt32(tickSeconds), optionalInt32(refillHysteresis))

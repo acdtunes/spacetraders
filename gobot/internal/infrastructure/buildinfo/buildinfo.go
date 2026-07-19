@@ -1,8 +1,7 @@
 // Package buildinfo exposes the git commit and build time stamped into a binary
 // at link time, so a running process can answer "which build am I?" from its own
-// startup banner. This retires the stale-binary hazard class (L42): a merged fix
-// is invisible if the live binary predates it, and without a stamp the only way
-// to tell was to diff mtimes by hand.
+// startup banner — without a stamp, a merged fix is invisible if the live binary
+// predates it.
 //
 // The values are injected via -ldflags "-X" from the Makefile (see build-cli /
 // build-daemon / build-watchkeeper). BuildTime is a value passed at build time,

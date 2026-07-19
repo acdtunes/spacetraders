@@ -61,7 +61,7 @@ type ContractsEraStat struct {
 
 // ContractGoodDemand is the units-aware, recurrence-windowed demand for a single
 // good aggregated across an era's contracts, optionally scoped to deliveries bound
-// for one system (home pre-positioning, sp-dchv). Unlike ContractsEraStat.ByGood —
+// for one system (home pre-positioning). Unlike ContractsEraStat.ByGood —
 // a per-era frequency count — this carries the total UNITS the contracts required
 // (the quantity signal the economics guard needs) plus the observation window that
 // makes "recurrence" measurable rather than a raw count.
@@ -69,10 +69,10 @@ type ContractGoodDemand struct {
 	Good             string `json:"good"`
 	ContractCount    int    `json:"contract_count"`     // distinct contracts requiring the good
 	UnitsRequired    int    `json:"units_required"`     // summed UnitsRequired across matching deliveries
-	MaxContractUnits int    `json:"max_contract_units"` // largest SINGLE-contract units (the s_G the warehouse buffers fully, sp-5n7v)
+	MaxContractUnits int    `json:"max_contract_units"` // largest SINGLE-contract units (the s_G the warehouse buffers fully)
 	// RewardPerUnit is the per-unit CONTRACT REWARD for the good, scoped to the delivery
 	// system: Σ (contract payment attributed to this good, proportional to its units) ÷ Σ
-	// units, across the matching contracts (sp-64se). It is the TRUE value the destination's
+	// units, across the matching contracts. It is the TRUE value the destination's
 	// contracts PAY for the good — the ranking signal a destination-side depot buffer needs,
 	// distinct from a market ask (what the good RESELLS for). 0 when no payment is known.
 	RewardPerUnit float64   `json:"reward_per_unit"`
@@ -161,7 +161,7 @@ func (r *HistoryRepository) eraPlayerIDs(ctx context.Context, eraID *int) ([]int
 
 // CurrentEraID resolves the era a player belongs to — the CURRENT universe when playerID is the
 // running agent. It is how a RUNTIME demand mine confines a delivery-system scope to the current
-// universe (sp-fo0d): SpaceTraders regenerates the universe on each weekly reset and REUSES
+// universe: SpaceTraders regenerates the universe on each weekly reset and REUSES
 // system symbols, so a system symbol alone does NOT identify a universe — a nil (all-eras) scope
 // joined to a system filter aggregates every past universe that reused that symbol. Returns nil
 // when the player has no era row (fail-open: the caller then scopes to all eras, the prior
@@ -402,7 +402,7 @@ func (r *HistoryRepository) ContractsStats(ctx context.Context, eraID *int, good
 // ContractGoodDemand aggregates per-good contract demand across the eras selected
 // by eraID (nil = all eras), optionally scoped to deliveries whose destination is in
 // deliverySystem (nil = all systems). It is the units-aware companion to
-// ContractsStats: the demand miner (sp-dchv Lane A) home-scopes it and joins the
+// ContractsStats: the demand miner home-scopes it and joins the
 // result against market asks to rank pre-positioning candidates.
 //
 // UNITS AGGREGATION PATH: load-and-aggregate in Go, not SQL JSON extraction. Units
@@ -433,7 +433,7 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 	type demandAgg struct {
 		unitsByContract map[string]int // per-contract summed units (len => ContractCount; max => MaxContractUnits)
 		unitsRequired   int
-		rewardSum       float64 // Σ contract payment attributed to the good (sp-64se); ÷ unitsRequired => RewardPerUnit
+		rewardSum       float64 // Σ contract payment attributed to the good; ÷ unitsRequired => RewardPerUnit
 		firstSeen       time.Time
 		lastSeen        time.Time
 	}
@@ -450,7 +450,7 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 		}
 
 		// The contract's whole reward is spread across the units it delivers into scope, so a
-		// good's per-unit reward is the payment-per-delivered-unit (sp-64se). Sum the in-scope
+		// good's per-unit reward is the payment-per-delivered-unit. Sum the in-scope
 		// units first (the attribution denominator), then credit each good its unit-proportional
 		// share — full payment for a single-good contract, split by units for a multi-good one.
 		payment := float64(row.PaymentOnAccepted + row.PaymentOnFulfilled)
@@ -521,10 +521,10 @@ func (r *HistoryRepository) ContractGoodDemand(ctx context.Context, eraID *int, 
 
 // ContractGoodCountsForDeliveryWaypoint returns, per good, how many DISTINCT contracts delivered
 // that good specifically to deliveryWaypoint — an EXACT DestinationSymbol match, NOT the whole
-// system. It is the sp-rxrg gate-1 hub-contract-membership signal: the demand miner scopes demand to
+// system. It is the hub-contract-membership signal: the demand miner scopes demand to
 // the destination SYSTEM (a good contracted to ANY waypoint in the system becomes a candidate), so
 // the buffer selector needs this finer per-HUB membership to exclude a good that is contracted
-// elsewhere in the system but never to this hub (the DRUGS@J58 incident). A good absent from the
+// elsewhere in the system but never to this hub. A good absent from the
 // result is not contracted TO this hub. It reuses ContractGoodDemand's proven load-and-unmarshal
 // path; eraID scopes the same way (nil = all eras), so the caller passes the current era to confine
 // membership to the current universe (a system/waypoint symbol is reused across weekly resets).

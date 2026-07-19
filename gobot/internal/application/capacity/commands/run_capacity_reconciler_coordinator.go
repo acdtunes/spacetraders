@@ -1,6 +1,5 @@
 // Package commands: the capacity reconciler's reconcile-loop coordinator
-// (epic st-7zk foundation, st-fyr; design spec
-// docs/superpowers/specs/2026-07-15-capacity-reconciler-design.md).
+// (design spec docs/superpowers/specs/2026-07-15-capacity-reconciler-design.md).
 //
 // A standing daemon coordinator that continuously drives the contract-delivery
 // machine's ACTUAL capacity topology toward a computed DESIRED topology,
@@ -63,11 +62,11 @@ type RunCapacityReconcilerCoordinatorCommand struct {
 	//
 	// CAVEAT for a future arming lane: GOVERN still runs under DryRun, and with the
 	// thin capex emitter that means EmitCapitalDemand STILL publishes
-	// contract-delivery demand to the sp-1txd bridge every tick (DryRun gates only
-	// CONVERGE, not the emit — see capex_emitter.go Govern). DryRun is therefore NOT
-	// the thing keeping capital from being bought; the DORMANT contract_delivery
-	// class is (it stays inert until an arming lane wires it into sp-1txd's
-	// classDisabled / guards).
+	// contract-delivery demand to the autosizer's bridge every tick (DryRun gates
+	// only CONVERGE, not the emit — see capex_emitter.go Govern). DryRun is
+	// therefore NOT the thing keeping capital from being bought; the DORMANT
+	// contract_delivery class is (it stays inert until an arming lane wires it
+	// into the autosizer's classDisabled / guards).
 	DryRun bool
 
 	// Calibration params (spec: Calibration section). 0 → documented default.
@@ -99,8 +98,8 @@ type RunCapacityReconcilerCoordinatorHandler struct {
 	killSwitch capacity.KillSwitch
 	clock      shared.Clock
 
-	// observer receives every tick's outcome — the harness/scenario seam
-	// (st-6wa). Optional; production runs without one.
+	// observer receives every tick's outcome — the harness/scenario seam.
+	// Optional; production runs without one.
 	observer capacity.TickObserver
 
 	// captainEvents emits the coordinator error-loop event when a reconcile
@@ -144,7 +143,7 @@ func NewRunCapacityReconcilerCoordinatorHandler(
 	}
 }
 
-// SetTickObserver wires the per-tick outcome observer (harness seam, st-6wa).
+// SetTickObserver wires the per-tick outcome observer (the harness seam).
 // Call before Handle; the loop reads it without further synchronization.
 func (h *RunCapacityReconcilerCoordinatorHandler) SetTickObserver(o capacity.TickObserver) {
 	h.observer = o

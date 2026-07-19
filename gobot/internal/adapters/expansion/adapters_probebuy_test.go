@@ -18,11 +18,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
 
-// ---- port-boundary doubles (sp-hej4 demand-proximal probe buying) ----------
+// ---- port-boundary doubles (demand-proximal probe buying) ----------
 //
 // The ProbePurchaser adapter is exercised through its PORT (QuoteProbe/BuyProbe) with doubles
 // at its three collaborator boundaries: the mediator (shipyard listings + the purchase command),
-// the ship repository (idle undedicated buyers), and the sp-42ow yard finder (scanned probe-yards
+// the ship repository (idle undedicated buyers), and the yard finder (scanned probe-yards
 // near a target). Observable outcomes only — the yard a quote returns and the yard a buy executes
 // at — never the adapter's internals.
 
@@ -35,7 +35,7 @@ type probeFakeMediator struct {
 
 	listings     map[string]int // waypoint -> live SHIP_PROBE price (the dock re-check + in-place surface)
 	purchases    []*shipyardCmd.PurchaseShipCommand
-	navigations  []*shipNav.NavigateRouteCommand // sp-iqv2: buyer relays to the winning yard (spy)
+	navigations  []*shipNav.NavigateRouteCommand // buyer relays to the winning yard (spy)
 	navErr       error                           // set to model an unroutable relay (fail-closed)
 	boughtSymbol string
 	boughtPrice  int
@@ -52,7 +52,7 @@ func (m *probeFakeMediator) Send(_ context.Context, request common.Request) (com
 		sy := shipyard.NewShipyard(cmd.WaypointSymbol, []string{probeShipType}, listings, 0)
 		return &shipyardQueries.GetShipyardListingsResponse{Shipyard: sy}, nil
 	case *shipNav.NavigateRouteCommand:
-		// sp-iqv2: the buyer relay. Record it for assertion and, unless a relay error is
+		// The buyer relay. Record it for assertion and, unless a relay error is
 		// modelled, report arrival at the destination so the dock price re-check runs.
 		if m.navErr != nil {
 			return nil, m.navErr
@@ -87,7 +87,7 @@ func (r *probeFakeShipRepo) FindIdleByPlayer(_ context.Context, _ shared.PlayerI
 	return r.idle, r.err
 }
 
-// probeFakeYardFinder is the sp-42ow ReachableYardFinder double: it returns the scanned
+// probeFakeYardFinder is the ReachableYardFinder double: it returns the scanned
 // probe-yards near the target and records the query so a test can assert the reuse contract
 // (the probe ship type + the target system as fromSystems).
 type probeFakeYardFinder struct {
@@ -144,9 +144,9 @@ func yard(waypoint, system string, hops, price int) shipyardQueries.YardCandidat
 // ---- tests -----------------------------------------------------------------
 
 // Scenario 1: with a target that has a nearer scanned probe-yard, the buy RELAYS the idle hull to
-// that yard (sp-iqv2) and spawns the probe THERE — not movement-free at the home yard the hull sits
-// at — and the finder is queried with the probe ship type and the target system, the sp-42ow reuse
-// contract. Updated for sp-iqv2: resolveProximalBuy now drives the relay + dock re-check.
+// that yard and spawns the probe THERE — not movement-free at the home yard the hull sits
+// at — and the finder is queried with the probe ship type and the target system, the reuse
+// contract. resolveProximalBuy now drives the relay + dock re-check.
 func TestBuyProbe_BuysAtProximalYard_NotHome_WhenTargetHasNearerYard(t *testing.T) {
 	med := &probeFakeMediator{
 		listings: map[string]int{
@@ -168,7 +168,7 @@ func TestBuyProbe_BuysAtProximalYard_NotHome_WhenTargetHasNearerYard(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, 30_000, price)
 	require.Equal(t, "PROBE-NEW", symbol)
-	// The idle home hull is relayed to the proximal yard before the buy (sp-iqv2 — not movement-free).
+	// The idle home hull is relayed to the proximal yard before the buy (not movement-free).
 	require.Len(t, med.navigations, 1)
 	require.Equal(t, "X1-NEAR-YD", med.navigations[0].Destination)
 	require.Equal(t, "BUYER-1", med.navigations[0].ShipSymbol)
@@ -176,7 +176,7 @@ func TestBuyProbe_BuysAtProximalYard_NotHome_WhenTargetHasNearerYard(t *testing.
 	require.Equal(t, "X1-NEAR-YD", med.purchases[0].ShipyardWaypoint,
 		"the probe is bought at the yard NEAREST the target, not at the home yard the hull sits at")
 	require.Equal(t, "BUYER-1", med.purchases[0].PurchasingShipSymbol, "an idle undedicated hull executes the buy")
-	// sp-42ow reuse contract: finder queried with the probe ship type + the target system.
+	// Reuse contract: finder queried with the probe ship type + the target system.
 	require.Equal(t, []string{probeShipType}, finder.lastShipTypes)
 	require.Equal(t, []string{"X1-NEAR"}, finder.lastFromSystems)
 }
@@ -258,13 +258,13 @@ func TestBuyProbe_FailsOpenToHomeYard_WhenNoProximalYardKnown(t *testing.T) {
 	}
 }
 
-// ---- sp-iqv2: NAVIGATING probe buyer (movement-free spiral fix) -------------
+// ---- NAVIGATING probe buyer (movement-free spiral fix) -------------
 //
-// The live 4.2x overpayment: the buyer bought where an idle hull already SAT (all clustered at
-// the home hub X1-VB74-A2, spiking it 20k→86k) instead of NAVIGATING a hull to the genuinely
-// cheapest/nearest-target yard sp-hej4 had already selected. These tests drive the fix through
-// the ProbePurchaser port with a spy on the buyer relay (NavigateRouteCommand) and the dock
-// price re-check (GetShipyardListingsQuery).
+// The buyer must NAVIGATE a hull to the genuinely cheapest/nearest-target yard already
+// selected, rather than buying wherever an idle hull happens to sit (clustering buys at one
+// yard spikes its price). These tests drive the fix through the ProbePurchaser port with a spy
+// on the buyer relay (NavigateRouteCommand) and the dock price re-check
+// (GetShipyardListingsQuery).
 
 // Test 1 (THE LIVE BUG, RED-first): a target frontier yard (X1-QA71-A1 @ 20k, scanned) with NO
 // idle hull parked there and an idle hull sitting at the home hub yard (X1-VB74-A2 @ 86k) → the
@@ -273,7 +273,7 @@ func TestBuyProbe_FailsOpenToHomeYard_WhenNoProximalYardKnown(t *testing.T) {
 func TestBuyProbe_NavigatesHullToFrontierYard_NotMovementFreeAtSpikedHome(t *testing.T) {
 	const (
 		homeYard    = "X1-VB74-A2" // the spiked home hub the idle hull sits at (live 86k)
-		frontierYd  = "X1-QA71-A1" // the scanned frontier yard sp-hej4 selects (live 20k)
+		frontierYd  = "X1-QA71-A1" // the scanned frontier yard already selected (live 20k)
 		frontierSys = "X1-QA71"
 	)
 	med := &probeFakeMediator{
@@ -307,7 +307,7 @@ func TestBuyProbe_NavigatesHullToFrontierYard_NotMovementFreeAtSpikedHome(t *tes
 }
 
 // Test 2: among several reachable scanned yards the buy picks the lowest price+relay score and
-// RELAYS the hull there (sp-iqv2). Candidates span systems; the cheapest reachable wins and the
+// RELAYS the hull there. Candidates span systems; the cheapest reachable wins and the
 // idle home hull is navigated to it.
 func TestBuyProbe_SelectsCheapestReachableYard_AndRelaysThere(t *testing.T) {
 	const homeYard = "X1-HOME-YD"

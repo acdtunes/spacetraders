@@ -22,7 +22,6 @@ func (s *Ship) IsIdle() bool {
 	return s.assignment == nil || s.assignment.IsIdle()
 }
 
-// IsAssigned returns true if the ship is currently assigned to a container
 func (s *Ship) IsAssigned() bool {
 	return s.assignment != nil && s.assignment.IsActive()
 }
@@ -39,10 +38,10 @@ func (s *Ship) ContainerID() string {
 // AssignToContainer assigns the ship to a container operation.
 // Returns a *shared.ShipAlreadyAssignedError if the ship is already assigned to
 // another container, or a *shared.ShipReservedByCaptainError if the captain has
-// reserved the ship for direct manual use (sp-i1ku) — coordinators must not
+// reserved the ship for direct manual use — coordinators must not
 // silently steal a captain reservation. The two are distinct types on purpose:
 // the already-assigned case can be a transient claim-handoff race that clears
-// on a brief retry (sp-ku8e), whereas a captain reservation is a standing
+// on a brief retry, whereas a captain reservation is a standing
 // rejection the caller must honour immediately.
 func (s *Ship) AssignToContainer(containerID string, clock shared.Clock) error {
 	if s.IsAssigned() {
@@ -62,7 +61,7 @@ func (s *Ship) AssignToContainer(containerID string, clock shared.Clock) error {
 // of a container — it is therefore already invisible to every coordinator
 // claim path through the exact same IsAssigned() check they use today
 // (AssignToContainer, and any coordinator that mirrors it), so no coordinator
-// needs to change (sp-i1ku).
+// needs to change.
 func (s *Ship) ReserveByCaptain(reason string, clock shared.Clock) error {
 	if s.IsAssigned() {
 		if s.assignment.IsCaptainReservation() {
@@ -79,7 +78,7 @@ func (s *Ship) ReserveByCaptain(reason string, clock shared.Clock) error {
 // ReleaseCaptainReservation clears a captain reservation, returning the ship
 // to idle so normal coordinator discovery can claim it again. Returns a
 // ShipNotReservedError if the ship is not currently reserved by the captain
-// (sp-i1ku) — release is specifically for captain reservations, not a generic
+// — release is specifically for captain reservations, not a generic
 // "clear any assignment" escape hatch.
 func (s *Ship) ReleaseCaptainReservation(reason string, clock shared.Clock) error {
 	if !s.IsReservedByCaptain() {
@@ -91,14 +90,13 @@ func (s *Ship) ReleaseCaptainReservation(reason string, clock shared.Clock) erro
 }
 
 // IsReservedByCaptain returns true if the ship's active assignment is a
-// captain reservation rather than a container claim (sp-i1ku).
+// captain reservation rather than a container claim.
 func (s *Ship) IsReservedByCaptain() bool {
 	return s.assignment != nil && s.assignment.IsCaptainReservation()
 }
 
 // CaptainReservationReason returns the free-text reason given at reserve
-// time, or "" if the ship is not captain-reserved or no reason was given
-// (sp-i1ku).
+// time, or "" if the ship is not captain-reserved or no reason was given.
 func (s *Ship) CaptainReservationReason() string {
 	if !s.IsReservedByCaptain() {
 		return ""

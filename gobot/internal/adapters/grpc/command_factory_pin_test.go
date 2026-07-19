@@ -649,18 +649,12 @@ func TestRecoveryFactoryRejectsMissingOrWrongTypedFields(t *testing.T) {
 	}
 }
 
-// TestFreshStartTourReserveSurvivesNativeInt64Config replays the sp-ggk2 field incident
-// (container tour-run-TORWIND-19-43dd9e2e): a coordinator-launched tour whose PERSISTED
-// config confirmed working_capital_reserve=1000000 nonetheless bought 6 LAB_INSTRUMENTS at
-// a 658k balance — i.e. under the 50k default floor, not the 1M reserve. The pinned
-// mechanism: StartTourRun (container_ops_tour.go) builds the launch config with NATIVE
-// int64 values for max_spend and working_capital_reserve and calls buildCommandForType
-// DIRECTLY — no JSON round-trip — on both the fresh-start and the coordinator-launch paths.
-// intValue only type-switched on int/float64, so a native int64 fell through to (0,false),
-// OptionalInt returned its fallback 0, and the coordinator applied the 50k default. The
-// recovery path (config persisted → JSON → read back as float64) parsed it correctly, which
-// is why the persisted config looked right AND why the sibling pin test never caught it: that
-// test jsonRoundTrips every case (see line ~585), exercising ONLY the recovery/float64 path.
+// TestFreshStartTourReserveSurvivesNativeInt64Config pins sp-ggk2: StartTourRun
+// (container_ops_tour.go) builds the launch config with NATIVE int64 values for
+// max_spend and working_capital_reserve and calls buildCommandForType DIRECTLY —
+// no JSON round-trip — on both the fresh-start and coordinator-launch paths. The
+// sibling pin test only round-trips through JSON (float64, see line ~585), so it
+// cannot catch a native-int64 regression; this case must.
 //
 // This case deliberately does NOT round-trip — it is the in-memory int64 map the live launch
 // hands the builder. It reproduces both the fresh-start captain path and the coordinator relaunch.
@@ -695,11 +689,10 @@ func TestFreshStartTourReserveSurvivesNativeInt64Config(t *testing.T) {
 // TestTourReserveFailsClosedWhenPresentButUnparseable pins the sp-ggk2 RULINGS #4 hardening:
 // a working_capital_reserve that is PRESENT in the launch config but cannot be parsed as a
 // number FAILS the build (fail closed — no tour, no buy, the hull released cleanly), rather
-// than silently falling back to 0 → the 50k floor. This is the anti-silence gate: the exact
-// failure mode that hid tonight's regression (a present, non-zero reserve resolving to a
-// default indistinguishable from absent) is now a loud build error. An ABSENT reserve is NOT
-// a failure — it legitimately defers to the coordinator's own default (a captain CLI tour
-// with no --reserve), so the two cases must diverge.
+// than silently falling back to 0 → the 50k floor (a present, non-zero reserve resolving to
+// a default indistinguishable from absent must be a loud build error, not silent). An ABSENT
+// reserve is NOT a failure — it legitimately defers to the coordinator's own default (a
+// captain CLI tour with no --reserve), so the two cases must diverge.
 func TestTourReserveFailsClosedWhenPresentButUnparseable(t *testing.T) {
 	s := newFactoryTestServer()
 

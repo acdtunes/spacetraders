@@ -1,6 +1,6 @@
 package capacity_test
 
-// Behavioral tests for the heuristic planner (st-hlw). Every test drives the
+// Behavioral tests for the heuristic planner. Every test drives the
 // frozen Planner port (ComputeDesired) and asserts the DesiredTopology — the
 // planner's one observable outcome. Pure function ⇒ table-driven fixtures.
 //
@@ -40,7 +40,7 @@ func plannerCalibration(addThresholdPerHullCrHr float64, stockerBudgetUnits int)
 //
 //	X1-J58-A1 — high-frequency (2.0/hr), high-payment (15000), SLOW cycle
 //	  (5400s): rank score 2.0 × (1+5400/3600) × 15000 = 75000. Good-mix,
-//	  value_density = freq × (0.030·dist + 0.147·avg) ÷ avg (sp-lk9x):
+//	  value_density = freq × (0.030·dist + 0.147·avg) ÷ avg:
 //	  IRON  (1.2/hr × 30u, source 60)  → 1.2×(1.8+4.41)/30    ≈ 0.248
 //	  FUEL  (0.8/hr × 20u, source 40)  → 0.8×(1.2+2.94)/20    ≈ 0.166
 //	  AMMONIA_ICE (0.3/hr × 59u, source 751) → 0.3×(22.53+8.673)/59 ≈ 0.159 —
@@ -138,7 +138,7 @@ func hubSymbols(desired capacity.DesiredTopology) []string {
 // paying hub — an explicit calibrated value overrides the cold-start floor.
 //
 // Marginal arithmetic (fixture): J58 plans 3 workers + 1 stocker + 2 warehouses
-// (164 buffered cap-units over two 120-holds, sp-lk9x buffer) for 2.0/hr ×
+// (164 buffered cap-units over two 120-holds) for 2.0/hr ×
 // 15000 = 30000 cr/hr ⇒ 5000 cr/hr per hull. QQ7 plans 3 hulls for 500 cr/hr ⇒
 // ≈167 cr/hr per hull. Every case threshold below still sits clear of 5000/167.
 func TestHeuristicPlanner_CoversRankedHubsUntilMarginalHullFallsBelowRequirement(t *testing.T) {
@@ -357,7 +357,7 @@ func TestHeuristicPlanner_ClampsCountsUnderPathologicalTelemetry(t *testing.T) {
 
 // Behavior 2: buffer goods are selected per hub by VALUE DENSITY = frequency ×
 // (0.030·source_distance + 0.147·avg_units) ÷ avg_units, highest first, filling
-// the buffered-volume budget in avg_units (bead sp-lk9x). There is NO value
+// the buffered-volume budget in avg_units. There is NO value
 // floor: the FAR-sourced good the pre-fix divide-by-distance score wrongly
 // deleted (AMMONIA_ICE: 59u × 751 distance) now RANKS IN. Goods with no known
 // source distance still cannot be costed and are dropped; a good too big for the
@@ -436,7 +436,7 @@ func TestHeuristicPlanner_SelectsBufferGoodsByValueDensity(t *testing.T) {
 }
 
 // TestHeuristicPlanner_BufferSelectionRoutesThroughTheSharedGate proves the reconciler planner
-// applies the SAME sp-rxrg candidate gate (domain/buffer.Gate) the LIVE depot selector uses: a good
+// applies the SAME candidate gate (domain/buffer.Gate) the LIVE depot selector uses: a good
 // the hub produces LOCALLY (gate 2) and a good sourced too NEAR (gate 3) are excluded from the
 // buffer whitelist BEFORE ranking, while a remote non-local hub contract good still buffers.
 func TestHeuristicPlanner_BufferSelectionRoutesThroughTheSharedGate(t *testing.T) {

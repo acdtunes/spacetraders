@@ -6,14 +6,14 @@ import (
 )
 
 // Sensor collects one read-only Signals snapshot (spec: SENSE — daemon DB +
-// live API, never a write). The SENSE lane (st-7ee) implements it.
+// live API, never a write). The SENSE lane implements it.
 type Sensor interface {
 	Sense(ctx context.Context, playerID int) (Signals, error)
 }
 
 // Planner computes the desired topology from live signals (spec:
-// Planner.ComputeDesired(signals) → DesiredTopology). Heuristic now (st-hlw);
-// a solver slots in behind the same interface later. cal carries the live
+// Planner.ComputeDesired(signals) → DesiredTopology). Heuristic now; a
+// solver slots in behind the same interface later. cal carries the live
 // calibration (add-threshold, stocker budget) so policy numbers are config,
 // not code.
 type Planner interface {
@@ -22,17 +22,17 @@ type Planner interface {
 
 // Differ turns desired-vs-actual divergence into an ordered action list,
 // cheapest-lever-first (spec: DIFF + escalation ladder; the ordering is what
-// preserves per-hull-$/hr). The DIFF lane (st-zr0) implements it. An empty
+// preserves per-hull-$/hr). The DIFF lane implements it. An empty
 // desired topology MUST yield zero actions.
 type Differ interface {
 	Diff(ctx context.Context, desired DesiredTopology, actual TopologySignals, cal Calibration) ([]Action, error)
 }
 
 // Governor turns the DIFF action list into a GovernResult (spec: GOVERN). The
-// PRODUCTION impl is the THIN EMITTER capacity.CapexEmitter (capex_emitter.go,
-// st-x00 re-scoped by st-5le): cheap tiers (1-3) pass through to Approved verbatim,
-// and the CAPITAL tier (4) is summed into one contract-delivery CapitalDemand and
-// EMITTED to the sp-1txd fleet autosizer — which owns the SINGLE guard stack
+// PRODUCTION impl is the THIN EMITTER capacity.CapexEmitter (capex_emitter.go):
+// cheap tiers (1-3) pass through to Approved verbatim, and the CAPITAL tier (4)
+// is summed into one contract-delivery CapitalDemand and EMITTED to the fleet
+// autosizer — which owns the SINGLE guard stack
 // (reserve floor, 25%-treasury, era payback, fleet ceilings, per-tick cap) that
 // actually spends. The emitter computes NO capex budget and mints NO proposals
 // (GovernResult.Proposals stays empty); safety invariant 4 holds structurally
@@ -46,8 +46,7 @@ type Governor interface {
 // Actuator is the thin wrapper over the EXISTING actuator primitives (fleet
 // autosizer, launch siting, worker-rebalancer, depot-rebalance) — the
 // reconciler never reinvents buy/move (spec: Interfaces / seams). One method
-// per tier; each takes the full Action. The actuator lane (st-5ig) implements
-// it.
+// per tier; each takes the full Action. The actuator lane implements it.
 type Actuator interface {
 	// ReuseIdleHull executes a tier-1 reassignment of an idle hull.
 	ReuseIdleHull(ctx context.Context, action Action) error
@@ -62,8 +61,8 @@ type Actuator interface {
 }
 
 // ProposalChannel files capital proposals for human approval (spec: bead +
-// captain nudge carrying the ROI evidence). The proposal lane (st-0h8)
-// implements it; its approval path executes an approved proposal's Action via
+// captain nudge carrying the ROI evidence). The proposal lane implements it;
+// its approval path executes an approved proposal's Action via
 // Actuator.ExecuteCapital.
 type ProposalChannel interface {
 	Submit(ctx context.Context, proposal Proposal) error
@@ -132,7 +131,7 @@ const (
 )
 
 // TickOutcome is the observable result of one reconcile pass — the loop's
-// action log. The harness lane (st-6wa) asserts scenario convergence and the
+// action log. The harness lane asserts scenario convergence and the
 // safety invariants (kill switch honored, zero unapproved capital execution)
 // against the stream of these.
 type TickOutcome struct {
@@ -170,7 +169,7 @@ type TickOutcome struct {
 }
 
 // TickObserver receives every tick's outcome. Optional seam for the
-// autoscaler harness and the twin scenarios (st-6wa); production runs without
+// autoscaler harness and the twin scenarios; production runs without
 // one (outcomes are logged).
 type TickObserver interface {
 	ObserveTick(outcome TickOutcome)

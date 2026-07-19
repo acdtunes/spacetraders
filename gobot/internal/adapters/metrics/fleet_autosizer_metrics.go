@@ -4,8 +4,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// FleetAutosizerMetricsCollector houses the fleet capacity autosizer's observation series
-// (sp-1txd). The autosizer sizes the hull pool to demand and auto-buys hulls behind the guard
+// FleetAutosizerMetricsCollector houses the fleet capacity autosizer's observation series.
+// The autosizer sizes the hull pool to demand and auto-buys hulls behind the guard
 // stack; these series make its buy decisions observable on /metrics:
 //
 //   - autosizer_purchases_total{class}: a COUNTER incremented once per hull the autosizer actually
@@ -28,7 +28,7 @@ type FleetAutosizerMetricsCollector struct {
 	zeroEffectTotal prometheus.Counter
 }
 
-// NewFleetAutosizerMetricsCollector creates a new autosizer metrics collector (sp-1txd).
+// NewFleetAutosizerMetricsCollector creates a new autosizer metrics collector.
 func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 	return &FleetAutosizerMetricsCollector{
 		purchasesTotal: prometheus.NewCounterVec(

@@ -25,7 +25,7 @@ func setupShipAssignmentRepo(t *testing.T) (*persistence.ShipAssignmentRepositor
 // seedContainerParent inserts the parent containers row a real coordinator creates
 // before a hull is claimed into it. A ship carrying a container_id references it
 // through the composite FK (container_id, player_id) -> containers(id, player_id);
-// with the sp-55aa harness enforcing foreign keys that parent must exist.
+// with the harness enforcing foreign keys that parent must exist.
 func seedContainerParent(t *testing.T, db *gorm.DB, id string, playerID int) {
 	t.Helper()
 	require.NoError(t, db.Create(&persistence.ContainerModel{
@@ -69,8 +69,8 @@ func TestListActiveReturnsRoleAssignmentAndSyncedAtForEveryShip(t *testing.T) {
 	require.WithinDuration(t, idleSyncedAt, byShip["SHIP-2"].SyncedAt, time.Second)
 }
 
-// TestListActiveReturnsDedicatedFleet is a regression test for sp-ioqt: the
-// `ship list` FLEET column (the sp-lybx-prevention payload) reads
+// TestListActiveReturnsDedicatedFleet is a regression test: the
+// `ship list` FLEET column reads
 // DedicatedFleet off ShipAssignmentInfo, so ListActive must actually
 // populate it from the ships row rather than leaving it zero-valued.
 func TestListActiveReturnsDedicatedFleet(t *testing.T) {
@@ -119,7 +119,7 @@ func TestListActiveScopesToPlayer(t *testing.T) {
 	require.Equal(t, "SHIP-1", infos[0].ShipSymbol)
 }
 
-// TestReleaseAllActiveScopesToPlayer is a regression test for sp-s7b7: ReleaseAllActive
+// TestReleaseAllActiveScopesToPlayer is a regression test: ReleaseAllActive
 // previously ran an unscoped UPDATE (no player_id predicate) that released every
 // player's active ship assignments. This proves it only releases the given player's
 // active assignments, leaving other players' assignments untouched.
@@ -152,8 +152,8 @@ func TestReleaseAllActiveScopesToPlayer(t *testing.T) {
 	require.Equal(t, "active", other.AssignmentStatus, "other player's assignment must NOT be touched")
 }
 
-// TestReleaseAllActiveExcludesCaptainReservations is a regression test for
-// sp-i1ku: a captain reservation is persisted as an assignment row with
+// TestReleaseAllActiveExcludesCaptainReservations is a regression test:
+// a captain reservation is persisted as an assignment row with
 // assignment_status="active" (the same status a live coordinator claim uses),
 // so an owner-blind bulk release would silently flip a captain-reserved hull
 // back to idle. This proves ReleaseAllActive releases a zombie container claim

@@ -22,11 +22,8 @@ import (
 // so the runner loop sees it BETWEEN iterations — not as the ctx-cancellation it
 // handles mid-iteration. A container that has NOT exhausted its iteration budget
 // (a -1 goods_factory NEVER does) must exit RESUMABLE so recovery re-adopts it,
-// exactly like every other container type in the same restart. The incident: the
-// JP61 worker-less goods_factory-LAB_INSTRUMENTS-c96ce648 was routed through the
-// clean-exit choke point on that stop, logged "Container completed successfully",
-// persisted COMPLETED, and — COMPLETED being outside the INTERRUPTED+RUNNING
-// recovery set — was dropped from "Recovering 8 container(s)" and lost.
+// exactly like every other container type in the same restart — never COMPLETED,
+// which sits outside the INTERRUPTED+RUNNING recovery set and would be dropped.
 
 // stopWindowMediator returns a clean nil-error response for the first iteration
 // (one full cycle that increments the iteration counter while RUNNING), then
@@ -89,10 +86,10 @@ func persistedStatus(t *testing.T, s *DaemonServer, id string) string {
 	return model.Status
 }
 
-// The incident, test-locked: a -1 (infinite) goods_factory stopped between
+// Regression pin (sp-ovkn): a -1 (infinite) goods_factory stopped between
 // iterations by a graceful shutdown (STOPPING flag set, ctx still live) must exit
 // RESUMABLE — its PERSISTED status must be one the recovery path re-adopts
-// (RUNNING/INTERRUPTED), never the terminal COMPLETED that lost the JP61 factory.
+// (RUNNING/INTERRUPTED), never the terminal COMPLETED.
 func TestExecute_StopRequestedMidRun_InfiniteContainerExitsResumableNotCompleted(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)

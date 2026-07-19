@@ -11,7 +11,7 @@ import (
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 )
 
-// gagPolicyStore is the subset of gag persistence the CLI needs (sp-q9s7). It
+// gagPolicyStore is the subset of gag persistence the CLI needs. It
 // exists so runGagSet/runGagShow can be tested with a fake, without touching the
 // filesystem — mirroring wakePolicyStore.
 type gagPolicyStore interface {

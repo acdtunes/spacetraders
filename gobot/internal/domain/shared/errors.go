@@ -98,7 +98,7 @@ func NewShipAlreadyAssignedError(shipSymbol, currentContainerID string) *ShipAlr
 
 // ShipReservedByCaptainError indicates an attempt to assign a ship to a
 // container was rejected because the captain has reserved it for direct,
-// manual use (sp-i1ku). Reason is the free-text reason given at reserve time
+// manual use. Reason is the free-text reason given at reserve time
 // (may be empty).
 type ShipReservedByCaptainError struct {
 	*ShipAssignmentError
@@ -117,7 +117,7 @@ func NewShipReservedByCaptainError(shipSymbol, reason string) *ShipReservedByCap
 }
 
 // ShipNotReservedError indicates `ship release` was called on a hull that is
-// not currently reserved by the captain (sp-i1ku).
+// not currently reserved by the captain.
 type ShipNotReservedError struct {
 	*ShipAssignmentError
 }
@@ -133,7 +133,7 @@ func NewShipNotReservedError(shipSymbol string) *ShipNotReservedError {
 }
 
 // ShipDedicatedToOtherFleetError indicates a claim was rejected because the
-// ship is dedicated to a different operation's exclusive fleet (sp-l7h2).
+// ship is dedicated to a different operation's exclusive fleet.
 // Fleet is the ship's persisted DedicatedFleet tag; Operation is the fleet
 // name the claiming coordinator identified itself as. This is the atomic
 // layer-2 enforcement inside ClaimShip's row-locked transaction — the

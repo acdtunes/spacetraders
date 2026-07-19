@@ -28,9 +28,9 @@ func newDedicationTestRepo(t *testing.T) (*ShipRepository, *gorm.DB, shared.Play
 }
 
 // seedContainerParent inserts the parent containers row that a real coordinator
-// creates (via ContainerRepository) BEFORE it claims a hull into it — the sp-1hp9
+// creates (via ContainerRepository) BEFORE it claims a hull into it — the
 // ordering. ClaimShip writes ships.container_id, checked by the composite FK
-// (container_id, player_id) -> containers(id, player_id); with the sp-55aa harness
+// (container_id, player_id) -> containers(id, player_id); with the harness
 // enforcing foreign keys that parent must exist. Keyed by (id, player_id) to match
 // the FK — the coordinator-shape columns a real producer also sets are irrelevant
 // to the claim behavior under test.
@@ -41,7 +41,7 @@ func seedContainerParent(t *testing.T, db *gorm.DB, id string, playerID int) {
 	}).Error)
 }
 
-// The atomic layer-2 guard (sp-l7h2): a FREE hull dedicated to another fleet
+// The atomic layer-2 guard: a FREE hull dedicated to another fleet
 // must be rejected inside the claim transaction itself — the discovery-time
 // exclude filter is only a pre-check and can race a concurrent `fleet assign`.
 // The rejection must also leave the row untouched: still idle, still

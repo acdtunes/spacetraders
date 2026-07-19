@@ -21,10 +21,10 @@ import (
 // any failure, which renders as "n/a". A nil field is the ONLY failure path,
 // and it is total: no panic, no partial-line abort.
 
-// briefingRenderCap bounds the rendered block (~900 chars per the captain cut
-// once the financial-analysis section landed). The 13 compact lines sit well
-// under it in practice; the cap is a backstop against a pathological read
-// (e.g. a hundred stranded hulls) blowing up the wake mail.
+// briefingRenderCap bounds the rendered block to ~900 chars (captain-set).
+// The 13 compact lines sit well under it in practice; the cap is a backstop
+// against a pathological read (e.g. a hundred stranded hulls) blowing up the
+// wake mail.
 const briefingRenderCap = 900
 
 // briefingEraPromotionWindow is the T-6h era-end threshold (operator

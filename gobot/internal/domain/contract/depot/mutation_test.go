@@ -2,8 +2,8 @@ package depot
 
 import "testing"
 
-// Granular live add / remove / place are the CLI's per-element operations (bead
-// sp-u9xa). They are PARAMETRIZED BY ROLE — the caller names which element class
+// Granular live add / remove / place are the CLI's per-element operations. They
+// are PARAMETRIZED BY ROLE — the caller names which element class
 // (warehouse / stocker / delivery hull / source hub) to touch, and no role, waypoint,
 // or count is hardcoded. Every operation is an IMMUTABLE functional update: it returns
 // a NEW depot and leaves the receiver untouched, so a durable store can apply an op,

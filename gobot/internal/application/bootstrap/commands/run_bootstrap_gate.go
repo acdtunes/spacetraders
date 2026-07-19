@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// This file holds the GATE phase (Slice 3, sp-ysgb.2): the jump-gate construction drive and its
+// This file holds the GATE phase: the jump-gate construction drive and its
 // deterministic worker sizing, plus the COMPLETE hand-off. It mirrors run_bootstrap_income.go's shape —
 // independently-guarded, idempotent actions on the observed delta, each failing CLOSED — so a restart
 // mid-GATE re-observes construction %, the executor's adoption, and the worker pool, and never
@@ -106,7 +106,7 @@ func gateSiteOrNone(site string) string {
 	return site
 }
 
-// actGate runs the GATE phase (Slice 3): drive the jump gate to construction. Its steps are ordered and
+// actGate runs the GATE phase: drive the jump gate to construction. Its steps are ordered and
 // each independently guarded against the FRESH observation, so re-evaluation — including the first tick
 // after a restart — never double-starts the pipeline, double-bounces the executor, or double-buys a worker:
 //
@@ -414,7 +414,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	})
 }
 
-// actComplete runs the terminal COMPLETE phase (Slice 3): the gate is built, so bootstrap hands the fleet
+// actComplete runs the terminal COMPLETE phase: the gate is built, so bootstrap hands the fleet
 // off to the mature demand-driven economy and exits. The hand-off launches the fleet-autosizer (OFF the
 // whole bootstrap run so the two never bid against one treasury) and the other standing coordinators,
 // exactly ONCE — guarded on obs.AutosizerRunning, so a restart post-COMPLETE re-observes the autosizer

@@ -40,14 +40,13 @@ const (
 	// --replan-limit at 0.
 	tourMaxReplansDefault = 2
 	// maxTourHops bounds the planner's search (spec: ≤6 hops); the executor caps hops in
-	// the constraint it sends. The per-tour distinct-system cap is now REQUEST-DRIVEN
-	// (sp-syaz): it rides cmd.MaxTourSystems → TourConstraints.MaxTourSystems to the Python
-	// solver, which clamps it to [2, MAX_HOPS_DEFAULT] and falls back to its own
-	// MAX_TOUR_SYSTEMS default (2) when unset. maxTourSystems here is therefore only the
-	// documented default, not a code-enforced bound.
+	// the constraint it sends. The per-tour distinct-system cap rides cmd.MaxTourSystems ->
+	// TourConstraints.MaxTourSystems to the Python solver, which clamps it to [2,
+	// MAX_HOPS_DEFAULT] and falls back to its own MAX_TOUR_SYSTEMS default (2) when unset.
+	// maxTourSystems here is therefore only the documented default, not a code-enforced bound.
 	maxTourHops    = 6
 	maxTourSystems = 2
-	// unreachableLaneReason labels the sp-mtvg drop counter: a good with a cheap source
+	// unreachableLaneReason labels the drop counter: a good with a cheap source
 	// IN the tour graph but its best sink in a system OUTSIDE it (>1 gate hop away), so
 	// source and sink never co-occur in one snapshot and the solver can never plan the
 	// lane. This is the "exotic good-level blind spot" the diagnostic makes loud.
@@ -83,23 +82,20 @@ const (
 	// "tour unavailable" instead, so the single-lane fallback stands.
 	tourStarvationLimit = 3
 	// defaultDepositCeilingPct is the DEDICATED STOCKER hull's capital-ceiling fallback
-	// when its launch config leaves capital_ceiling_pct at 0 (sp-dchv Lane C) — a stocker
-	// is a hull the captain EXPLICITLY launches to fill the warehouse, so a default is its
-	// intended behavior. The OPPORTUNISTIC tour path does NOT apply this default: a
-	// 0/absent tour ceiling PARKS pre-positioning (sp-13tl) rather than turning money
-	// movement on with no analyst-ruled number (RULINGS #5). Junior to the working-capital
-	// reserve; an unreadable balance yields ZERO candidates (fail closed, RULINGS #4).
+	// when its launch config leaves capital_ceiling_pct at 0 — a stocker is a hull the
+	// captain EXPLICITLY launches to fill the warehouse, so a default is its intended
+	// behavior. The OPPORTUNISTIC tour path does NOT apply this default: a 0/absent tour
+	// ceiling PARKS pre-positioning rather than turning money movement on with no
+	// analyst-ruled number (RULINGS #5). Junior to the working-capital reserve; an
+	// unreadable balance yields ZERO candidates (fail closed, RULINGS #4).
 	defaultDepositCeilingPct = 10
-	// tourTreasuryRetryBackoff is the interruptible pause a CONTINUOUS (--iterations
-	// -1) dynamic-cap (--max-spend 0) tour waits before RE-TRYING when the live
-	// treasury read fails at re-resolution time (sp-7z7j). RULINGS #4: an unreadable
-	// balance fails CLOSED (never spend, never fall back to unlimited/stale) — but
-	// failing closed must PAUSE and RETRY, not silently end the -1 loop. A transient
-	// GetAgent blip (a global rate-limit burst fails every hull's shared-agent read at
-	// once) was resolving to a 0 budget the planner refused (spend_cap 0 → infeasible),
-	// which the loop misread as "tour unavailable" and COMPLETED the container after one
-	// iteration. Mirrors liquidationRetryBackoff's cadence; clock-injected so tests are
-	// instant and a Stop/shutdown never waits it out.
+	// tourTreasuryRetryBackoff is the interruptible pause a CONTINUOUS (--iterations -1)
+	// dynamic-cap (--max-spend 0) tour waits before RE-TRYING when the live treasury read
+	// fails at re-resolution time. RULINGS #4: an unreadable balance fails CLOSED (never
+	// spend, never fall back to unlimited/stale) — but failing closed must PAUSE and
+	// RETRY, not silently end the -1 loop, or a transient shared-agent read blip
+	// completes the container after a single iteration. Mirrors liquidationRetryBackoff's
+	// cadence; clock-injected so tests are instant and a Stop/shutdown never waits it out.
 	tourTreasuryRetryBackoff = 20 * time.Second
 )
 
@@ -114,7 +110,7 @@ const (
 	// tourExitUnavailable: the very first tour found no plan and nothing was earned —
 	// the fail-open no-op (single-lane fallback stands).
 	tourExitUnavailable = "tour_unavailable"
-	// tourExitPlannerInternalError (sp-qzej): the routing-service returned a structured
+	// tourExitPlannerInternalError: the routing-service returned a structured
 	// internal_error (an exception it caught, not a transport failure). A real planner
 	// OUTAGE — vetoes the container FAILED, never a clean fail-open.
 	tourExitPlannerInternalError = "planner_internal_error"
@@ -130,53 +126,52 @@ const (
 const plannerInternalErrorMarker = "internal_error:"
 
 // isPlannerInternalError reports whether an infeasible/unavailable reason carries the
-// routing-service's structured internal_error marker (sp-qzej). Such a reason is a
-// planner outage, not a legitimate no-tour verdict, and must surface as a FAILURE.
+// routing-service's structured internal_error marker. Such a reason is a planner
+// outage, not a legitimate no-tour verdict, and must surface as a FAILURE.
 func isPlannerInternalError(reason string) bool {
 	return strings.Contains(reason, plannerInternalErrorMarker)
 }
 
-// RunTourCoordinatorCommand is a captain-directed, guarded multi-hop trade-tour run
-// (sp-1ek0): plan a depth-aware tour for THIS hull, fly it leg by leg with prices
-// re-verified live at every dock, re-plan at most ReplanLimit times when reality
-// drifts past tolerance. The route is dynamically planned, so honest completion is a
-// response VETO (not a Go error) — a re-run cannot resume a planner-chosen route.
+// RunTourCoordinatorCommand is a captain-directed, guarded multi-hop trade-tour run:
+// plan a depth-aware tour for THIS hull, fly it leg by leg with prices re-verified
+// live at every dock, re-plan at most ReplanLimit times when reality drifts past
+// tolerance. The route is dynamically planned, so honest completion is a response
+// VETO (not a Go error) — a re-run cannot resume a planner-chosen route.
 //
-// Iterations makes it a CONTINUOUS engine (sp-m5kv): on manifest completion it
-// re-plans from the hull's CURRENT position + live market and flies the next tour
-// with no captain in the loop, turning capital velocity from captain-cadence into
-// engine-cadence. See Iterations for the loop semantics.
+// Iterations makes it a CONTINUOUS engine: on manifest completion it re-plans from
+// the hull's CURRENT position + live market and flies the next tour with no captain
+// in the loop, turning capital velocity from captain-cadence into engine-cadence. See
+// Iterations for the loop semantics.
 type RunTourCoordinatorCommand struct {
 	ShipSymbol string
 	PlayerID   int
 	MaxHops    int // 0 → maxTourHops
 	// MaxTourSystems caps the DISTINCT systems one tour may touch (start + gate
 	// neighbors). 0 → the solver's MAX_TOUR_SYSTEMS default (2), byte-identical to
-	// today; a positive value sweeps tour length without a redeploy (sp-syaz).
+	// today; a positive value sweeps tour length without a redeploy.
 	MaxTourSystems int
-	// ClosedTours + AnchorSystem opt this run into closed-tour mode (sp-im74): every
-	// planned tour ENDS at the anchor via an appended, honestly-priced no-trade
-	// return leg. AnchorSystem "" floats the anchor to the ship's waypoint at plan
-	// time; an explicit system symbol pins the return to that system's first fresh
-	// market. Zero-values = open tours, byte-identical to today. Deliberately no CLI
-	// flag yet — arming is governance-owned (epic sp-fguo, later wave).
+	// ClosedTours + AnchorSystem opt this run into closed-tour mode: every planned
+	// tour ENDS at the anchor via an appended, honestly-priced no-trade return leg.
+	// AnchorSystem "" floats the anchor to the ship's waypoint at plan time; an
+	// explicit system symbol pins the return to that system's first fresh market.
+	// Zero-values = open tours, byte-identical to today. Deliberately no CLI flag
+	// yet — arming is governance-owned.
 	ClosedTours  bool
 	AnchorSystem string
 	MaxSpend     int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
 	MinMargin    int
 	ReplanLimit  int // 0 → tourMaxReplansDefault (PER TOUR)
-	// Iterations is the tour count (sp-m5kv), unifying the container iteration
-	// semantics (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new
-	// position, tour again — until margins die/starvation/stop), N>0 = exactly N
-	// tours, 0 = the one-tour default (the original one-shot behavior, so every
-	// pre-sp-m5kv caller and test is byte-for-byte unchanged). The coordinator owns
-	// this loop internally (CoordinatorOwnsIterations); the container runs Handle()
-	// once.
+	// Iterations is the tour count, unifying the container iteration semantics
+	// (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new position,
+	// tour again — until margins die/starvation/stop), N>0 = exactly N tours, 0 =
+	// the one-tour default (byte-for-byte unchanged from the original one-shot
+	// behavior). The coordinator owns this loop internally
+	// (CoordinatorOwnsIterations); the container runs Handle() once.
 	Iterations            int
 	AgentSymbol           string
 	ContainerID           string // the tour id; groups this run's telemetry legs
 	WorkingCapitalReserve int64  // 0 → defaultWorkingCapitalReserve
-	// WorkingCapitalReserveTreasuryPct engages the sp-yqx4 counter-cyclical floor: at buy
+	// WorkingCapitalReserveTreasuryPct engages the counter-cyclical floor: at buy
 	// time the enforced floor becomes max(50k, min(WorkingCapitalReserve, pct% × live
 	// treasury)) so a reserve above the treasury can no longer deadlock the hull. 0 leaves
 	// the absolute floor in force (unchanged) — the daemon/CLI build paths resolve 0/absent
@@ -187,7 +182,7 @@ type RunTourCoordinatorCommand struct {
 	// artifact); empty → the default repo-relative path.
 	ModelArtifactPath string
 
-	// --- Reposition-on-margins-death (sp-zhii) ---
+	// --- Reposition-on-margins-death ---
 	// When a CONTINUOUS (--iterations -1) tour's margins die (tourStarvationLimit
 	// consecutive no-plans after >=1 productive tour), the coordinator RANKS
 	// jump-reachable systems by expected tour margin and JUMPS to the best one before
@@ -195,10 +190,9 @@ type RunTourCoordinatorCommand struct {
 	// renewable one instead of dying on it and burning a captain relaunch. Bounded to
 	// ONE reposition per margins-death episode (no infinite hop-scotching).
 
-	// RepositionDisabled is the kill-switch. false (the zero value / absent config) →
-	// reposition is ON for continuous runs (the captain filed sp-zhii to END the
-	// whack-a-mole, so ON is the default); true disables it and a margins-died tour
-	// exits exactly as pre-sp-zhii.
+	// RepositionDisabled is the kill-switch. false (the zero value / absent config,
+	// and the default) → reposition is ON for continuous runs; true disables it and
+	// a margins-died tour exits without rotating.
 	RepositionDisabled bool
 	// RepositionMinMargin is the fresh-profit floor (RULINGS #5) a candidate's planned
 	// tour must clear to justify the jump: a jump costs antimatter + fuel + a one-way
@@ -210,33 +204,31 @@ type RunTourCoordinatorCommand struct {
 	// repositionMaxCandidatesDefault.
 	RepositionMaxCandidates int
 	// RepositionJumpBound is the jump bound the reposition flight resolves its cross-system
-	// leg over the PERSISTED stored adjacency (RepositionPath) with (sp-kl16), routing PAST an
+	// leg over the PERSISTED stored adjacency (RepositionPath) with, routing PAST an
 	// unreadable frontier gate rather than fail-closing on it via the strict Path — a tour
 	// reposition is a MOVEMENT of the hull, not a money commitment, so it shares the scout
-	// reposition's relaxation (sp-8k9m). 0/absent → repositionJumpBoundDefault (12, the scout
+	// reposition's relaxation. 0/absent → repositionJumpBoundDefault (12, the scout
 	// frontier depth); a positive value is the captain's [trade_fleet].reposition_jump_bound
-	// override. Always resolves > 0, so the reposition never degrades to the strict resolver
-	// that could not route a heavy off an unreadable-gate origin (the TORWIND-37/2C -> GQ92
-	// incident). The buy-side (arb pre-buy, trade-route lane commits, cargo delivery) keeps
-	// strict Path — money-commitment vs hull-movement is the guard line.
+	// override. Always resolves > 0, so the reposition never degrades to the strict resolver,
+	// which cannot route a heavy off an unreadable-gate origin. The buy-side (arb pre-buy,
+	// trade-route lane commits, cargo delivery) keeps strict Path — money-commitment vs
+	// hull-movement is the guard line.
 	RepositionJumpBound int
 	// RepositionInProgress / RepositionTargetSystem / RepositionTargetWaypoint are the
 	// restart-resume state (RULINGS #2): persisted into the container config the instant
 	// a reposition jump is committed and cleared once it lands, so a daemon restart
 	// mid-jump resumes toward the SAME ground through the shared cooldown-riding travel
-	// machinery (sp-wc5h) rather than re-planning at whatever intermediate hop it was
-	// re-adopted on. Set by the recovery rebuild from the persisted config; a fresh
-	// launch leaves them zero.
+	// machinery rather than re-planning at whatever intermediate hop it was re-adopted
+	// on. Set by the recovery rebuild from the persisted config; a fresh launch leaves
+	// them zero.
 	RepositionInProgress     bool
 	RepositionTargetSystem   string
 	RepositionTargetWaypoint string
 
-	// --- Reposition reach (sp-uf64 — always-broaden discovery + deadhead-decay + anti-herd) ---
+	// --- Reposition reach (always-broaden discovery + deadhead-decay + anti-herd) ---
 	// A hull whose origin has ANY fresh-market 1-hop neighbour (even a money-losing one) never
 	// sees richer systems 2-4 gate hops away, because buildRepositionCandidates broadens to the
-	// multi-hop scan ONLY when the 1-hop set is EMPTY (the sp-jeou off-circuit gate). The live
-	// symptom: three heavy freighters bought at the X1-UF64 yard tour UF64-local arb at -49k
-	// cr/hull/hr while frontier systems (X1-YU58 +482k, X1-DG23 +414k) sit 2+ hops away, unreached.
+	// multi-hop scan ONLY when the 1-hop set is EMPTY (the off-circuit gate).
 
 	// RepositionReachEnabled arms the reach improvement. false (the zero value / absent config) →
 	// the legacy 1-hop-first + broaden-on-empty path runs byte-for-byte unchanged (the governance
@@ -256,7 +248,7 @@ type RunTourCoordinatorCommand struct {
 	// repositionReachMaxHullsPerSystemDefault (5). Only read when RepositionReachEnabled is true.
 	RepositionReachMaxHullsPerSystem int
 
-	// --- Rate-floor early-reposition (epic sp-fguo, Part 2 — always-relocate chronic under-earners) ---
+	// --- Rate-floor early-reposition (always-relocate chronic under-earners) ---
 	// The margins-death reposition only fires when a continuous tour's margins DIE. A hull earning
 	// mediocre-but-profitable local arb (say 80k/hr while frontier pays 360-480k/hr) never
 	// margin-dies, so it never relocates. This trigger, evaluated AFTER a PRODUCTIVE continuous tour,
@@ -286,12 +278,12 @@ type RunTourCoordinatorCommand struct {
 	// (15). Only read when RepositionRateFloorEnabled is true.
 	RepositionRateFloorDwellMinutes int
 
-	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
+	// --- Placement/relocation scoring loop ---
 	// The margins-death rescue evolves into the spec's score(x)=E_x−β·D_x placement loop:
 	// argmax over reachable systems (INCLUDING staying put) on the deadhead-charged score,
-	// with a φ·β park floor. DEFAULT-OFF and byte-identical to the legacy sp-zhii reposition
-	// when unarmed; the shared RepositionDisabled kill-switch and one-per-episode budget still
-	// win (they sit ABOVE the placement dispatch). Governance-owned arming (config + replay gate).
+	// with a φ·β park floor. DEFAULT-OFF and byte-identical to the legacy static-floor
+	// reposition when unarmed; the shared RepositionDisabled kill-switch and one-per-episode
+	// budget still win (they sit ABOVE the placement dispatch). Governance-owned arming.
 
 	// PlacementScoreEnabled arms the placement loop. false (the zero value / absent config) →
 	// the legacy static-floor reposition runs unchanged (byte-identical at the epic defaults);
@@ -309,21 +301,21 @@ type RunTourCoordinatorCommand struct {
 	// 0 → the resolved RepositionMaxCandidates (default 3), so arming never grows the solver herd.
 	PlacementShortlistTopN int
 
-	// StrandedConsecutiveThreshold is the sp-686e stranded-hull detector threshold: how many
+	// StrandedConsecutiveThreshold is the stranded-hull detector threshold: how many
 	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
-	// inaccessible — the TORWIND-2C shape) a hull must accrue before the coordinator pages
-	// the watch with a WARN + the fleet_hull_stranded_total counter. 0/absent →
+	// inaccessible) a hull must accrue before the coordinator pages the watch with a
+	// WARN + the fleet_hull_stranded_total counter. 0/absent →
 	// strandedConsecutiveThresholdDefault (3). Config-driven from [trade_fleet]
 	// (RULINGS #5), threaded through the container config so a captain retunes it by
 	// editing config.yaml + restarting the daemon.
 	StrandedConsecutiveThreshold int
 
-	// CandidateHopDepth is the sp-jsng gate-hop radius for the tour candidate set
-	// (build-decomp #5). 0/absent → candidateHopDepthDefault (1 = today's exact
-	// behavior: home + live 1-gate-hop neighbors). Clamped to [1, maxCandidateHopDepth=3]
-	// (spec "2-3 gate hops"). EFFECT is arming-gated: a value > 1 is a NO-OP unless the
-	// solver clamp is lifted (cmd.MaxTourSystems > 2), so a lone live-config edit can
-	// never feed a non-gate-adjacent set to the flat-pricing solver.
+	// CandidateHopDepth is the gate-hop radius for the tour candidate set. 0/absent →
+	// candidateHopDepthDefault (1 = today's exact behavior: home + live 1-gate-hop
+	// neighbors). Clamped to [1, maxCandidateHopDepth=3] (spec "2-3 gate hops"). EFFECT
+	// is arming-gated: a value > 1 is a NO-OP unless the solver clamp is lifted
+	// (cmd.MaxTourSystems > 2), so a lone live-config edit can never feed a
+	// non-gate-adjacent set to the flat-pricing solver.
 	CandidateHopDepth int
 	// CandidateShortlistTopN bounds how many ≥2-hop systems the profitable-edge shortlist
 	// ADDS on top of the always-present 1-hop floor. 0/absent → candidateShortlistTopNDefault (6).
@@ -348,7 +340,7 @@ type RunTourCoordinatorResponse struct {
 	ModelVersion string
 	Completed    bool
 
-	// ToursCompleted counts how many tours flew >=1 trade this run (sp-m5kv). 1 for
+	// ToursCompleted counts how many tours flew >=1 trade this run. 1 for
 	// the one-shot default; >1 for a continuous (--iterations) run. TradesExecuted is
 	// the run's total executed buy+sell tranches (the per-tour progress signal the
 	// starvation guard reads). ExitReason (a tourExit* constant) explains why a
@@ -358,7 +350,7 @@ type RunTourCoordinatorResponse struct {
 	ExitReason     string
 
 	// Repositions counts how many times this run rotated the hull to a fresh ground on
-	// margins-death (sp-zhii). ExitDetail is the human-readable exit explanation the
+	// margins-death. ExitDetail is the human-readable exit explanation the
 	// ExitReason constant abbreviates — on a reposition-then-death it NAMES BOTH the
 	// origin and the destination system ("repositioned X -> Y ... margins died there
 	// too"), so a captain reading a completed continuous tour sees the full rotation
@@ -371,20 +363,21 @@ type RunTourCoordinatorResponse struct {
 	TourUnavailable       bool
 	TourUnavailableReason string
 
-	// CargoStranded is the honest-completion veto (sp-7yej invariant 2): the tour
-	// ended holding cargo it bought this run. Threaded through CompletionOutcome
-	// (nil Go error), NOT arb's non-nil-error shape — a dynamically-planned tour
-	// cannot be resumed by a re-run, which would trade AROUND the strand.
+	// CargoStranded is the honest-completion veto (invariant: a tour ending with
+	// unsold bought cargo is never a clean completion). Threaded through
+	// CompletionOutcome (nil Go error), NOT arb's non-nil-error shape — a
+	// dynamically-planned tour cannot be resumed by a re-run, which would trade
+	// AROUND the strand.
 	CargoStranded       bool
 	CargoStrandedReason string
 
-	// PlannerInternalError is the honest-completion veto for a planner OUTAGE (sp-qzej):
-	// the routing-service caught an exception and returned a STRUCTURED feasible=false
+	// PlannerInternalError is the honest-completion veto for a planner OUTAGE: the
+	// routing-service caught an exception and returned a STRUCTURED feasible=false
 	// with an "internal_error:" reason (not a gRPC transport error). That is a real
 	// planner failure, NOT a legitimate "no profitable tour" — routing it to the clean
-	// TourUnavailable fail-open masked a live outage as container success=true (the C1
-	// stock-source resolution stall). Surfaced through CompletionOutcome (nil Go error,
-	// like CargoStranded) so the container terminalizes FAILED and the outage is loud.
+	// TourUnavailable fail-open would mask a live outage as container success=true.
+	// Surfaced through CompletionOutcome (nil Go error, like CargoStranded) so the
+	// container terminalizes FAILED and the outage is loud.
 	PlannerInternalError       bool
 	PlannerInternalErrorReason string
 
@@ -393,9 +386,9 @@ type RunTourCoordinatorResponse struct {
 
 // CompletionOutcome implements common.CompletionReporter: a stranded tour vetoes
 // the runner's success=true (terminalized FAILED with the strand as its signature).
-// A planner internal_error (sp-qzej) vetoes the same way — a real routing-service
-// outage is a FAILURE, never masked as a clean completion. A fail-open "tour
-// unavailable" is an honest clean completion (nothing half-done).
+// A planner internal_error vetoes the same way — a real routing-service outage is a
+// FAILURE, never masked as a clean completion. A fail-open "tour unavailable" is an
+// honest clean completion (nothing half-done).
 func (r *RunTourCoordinatorResponse) CompletionOutcome() (bool, string) {
 	if r.CargoStranded {
 		return false, r.CargoStrandedReason
@@ -425,36 +418,36 @@ type RunTourCoordinatorHandler struct {
 	// cap (the per-buy working-capital floor still guards).
 	apiClient domainPorts.APIClient
 	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
-	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath
-	// (sp-wj0h). Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
+	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath.
+	// Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
 	// cmd.ModelArtifactPath (tests) still wins over this.
 	modelArtifactPath string
 
-	// scanPolicy is the sp-v34b tour-scan load policy stamped onto ctx at run start so the
+	// scanPolicy is the tour-scan load policy stamped onto ctx at run start so the
 	// shared scan path (arrival scan + post-trade impact scan) SAMPLES the deliberate
-	// price-impact instrumentation that had become the top API consumer, instead of
-	// scanning every market around every trade. scanPolicySet gates the stamp: unset (the
-	// default for every test and any daemon that does not wire it) stamps NOTHING and every
-	// scan runs its pre-sp-v34b path. Injected via SetScanPolicy from cfg.TradeImpact at boot.
+	// price-impact instrumentation instead of scanning every market around every trade.
+	// scanPolicySet gates the stamp: unset (the default for every test and any daemon
+	// that does not wire it) stamps NOTHING and every scan runs unsampled. Injected via
+	// SetScanPolicy from cfg.TradeImpact at boot.
 	scanPolicy    shared.ScanPolicy
 	scanPolicySet bool
 
 	// repositionPersister durably records an in-flight margins-death reposition (its
 	// target system+waypoint) into the container config so a daemon restart mid-jump
-	// resumes toward the SAME ground (sp-zhii, RULINGS #2). Optional; nil disables
-	// persistence (a restart mid-jump then re-plans at the hull's current position
-	// rather than resuming the reposition — fail-open, matching the sibling optional-port
+	// resumes toward the SAME ground (RULINGS #2). Optional; nil disables persistence
+	// (a restart mid-jump then re-plans at the hull's current position rather than
+	// resuming the reposition — fail-open, matching the sibling optional-port
 	// contract). The daemon injects a container-config-backed persister via
 	// SetRepositionPersister.
 	repositionPersister RepositionStatePersister
 
 	// mediator dispatches the cargo TransferCargoCommand for haul-to-storage deposit
-	// legs (sp-dchv Lane C). Same mediator the delegated legs use.
+	// legs. Same mediator the delegated legs use.
 	mediator common.Mediator
-	// Pre-positioning deposit dependencies (sp-dchv Lane C), all optional and
-	// injected via SetPrePositioning AFTER the storage subsystem is wired (main.go).
-	// When any is nil or prePositioning.Enabled is false, no deposit legs are
-	// offered or executed and the tour behaves exactly as pre-sp-dchv.
+	// Pre-positioning deposit dependencies, all optional and injected via
+	// SetPrePositioning AFTER the storage subsystem is wired (main.go). When any is
+	// nil or prePositioning.Enabled is false, no deposit legs are offered or
+	// executed and the tour behaves as pure arb.
 	storageCoordinator storage.StorageCoordinator
 	warehouseFinder    tradingsvc.WarehouseOperationFinder
 	demandMiner        tradingsvc.DepositDemandMiner
@@ -474,62 +467,57 @@ type RunTourCoordinatorHandler struct {
 	// depositParked de-dups the pre-positioning parked/dormant verdict so a hull whose
 	// deposits are parked — no ceiling configured, treasury at/below the reserve, or an
 	// unreadable balance — logs ONCE per container per distinct state, not once per
-	// re-plan (sp-13tl: the deploy-time WARN spam). Keyed by container id (ship-symbol
-	// fallback); the value is the last emitted "<level>|<reason>" signature. Guarded by
-	// depositParkedMu because the handler is a SHARED singleton dispatched concurrently
-	// for every touring hull. Mirrors the per-hull backoff map that silenced the
-	// trade-fleet relaunch spam (ae64f03) and the per-tick→state-change discipline of
-	// the unreadable-gate backoff (sp-ikx1).
+	// re-plan. Keyed by container id (ship-symbol fallback); the value is the last
+	// emitted "<level>|<reason>" signature. Guarded by depositParkedMu because the
+	// handler is a SHARED singleton dispatched concurrently for every touring hull.
 	depositParkedMu sync.Mutex
 	depositParked   map[string]string
 
-	// strandedStreak counts CONSECUTIVE origin-level empty reposition discoveries per hull
-	// for the sp-686e stranded detector: a TORWIND-2C hull whose origin has no durable gate
-	// adjacency AND a gate-inaccessible live probe finds BOTH discovery paths empty and can
-	// never self-reposition, so it silently relaunch-loops until a human notices. When the
-	// streak crosses the configured threshold (default 3) the coordinator emits ONE WARN +
-	// the fleet_hull_stranded_total counter so the watch is paged. Any successful discovery
-	// resets the hull's streak. Keyed by ship symbol (globally unique, agent-scoped); the
-	// value tracks the accruing system + count + whether this episode already paged, so the
-	// page fires once per episode, not per launch. Guarded by strandedMu because the handler
-	// is a SHARED singleton dispatched concurrently for every touring hull — the same
-	// per-hull state-change de-dup discipline as depositParked (sp-13tl) and the ikx1 backoff.
-	// In-memory only: a daemon restart resets every hull's streak (acceptable — a genuinely
-	// stranded hull re-accrues its streak within N relaunches).
+	// strandedStreak counts CONSECUTIVE origin-level empty reposition discoveries per hull:
+	// a hull whose origin has no durable gate adjacency AND a gate-inaccessible live probe
+	// finds BOTH discovery paths empty and can never self-reposition, so it silently
+	// relaunch-loops until a human notices. When the streak crosses the configured threshold
+	// (default 3) the coordinator emits ONE WARN + the fleet_hull_stranded_total counter so
+	// the watch is paged. Any successful discovery resets the hull's streak. Keyed by ship
+	// symbol (globally unique, agent-scoped); the value tracks the accruing system + count +
+	// whether this episode already paged, so the page fires once per episode, not per launch.
+	// Guarded by strandedMu because the handler is a SHARED singleton dispatched concurrently
+	// for every touring hull — the same per-hull state-change de-dup discipline as
+	// depositParked. In-memory only: a daemon restart resets every hull's streak (acceptable —
+	// a genuinely stranded hull re-accrues its streak within N relaunches).
 	strandedMu     sync.Mutex
 	strandedStreak map[string]*strandedHullState
 
-	// rateFloorLastRelocation records the last rate-floor relocation time per hull for the dwell
-	// window (epic sp-fguo Part 2): a hull that relocated within reposition_rate_floor_dwell_minutes
-	// is not a rate-floor candidate again, so it cannot hop-scotch across successive productive
-	// tours. Keyed by ship symbol; guarded by rateFloorMu because the handler is a SHARED singleton
-	// dispatched concurrently for every touring hull (the same per-hull discipline as strandedStreak
-	// / depositParked). In-memory only: a daemon restart resets the timer (acceptable — dwell is a
-	// soft anti-thrash cadence cap, not a correctness invariant).
+	// rateFloorLastRelocation records the last rate-floor relocation time per hull for the
+	// dwell window: a hull that relocated within reposition_rate_floor_dwell_minutes is not
+	// a rate-floor candidate again, so it cannot hop-scotch across successive productive
+	// tours. Keyed by ship symbol; guarded by rateFloorMu because the handler is a SHARED
+	// singleton dispatched concurrently for every touring hull (the same per-hull discipline
+	// as strandedStreak / depositParked). In-memory only: a daemon restart resets the timer
+	// (acceptable — dwell is a soft anti-thrash cadence cap, not a correctness invariant).
 	rateFloorMu             sync.Mutex
 	rateFloorLastRelocation map[string]time.Time
 
 	// pendingRelocationsBySystem counts rate-floor relocations currently IN FLIGHT toward each
-	// destination system (epic sp-fguo Part 2, atomic anti-herd). A relocation increments its
-	// target at the commit-decision (just BEFORE the jump) and decrements it on landing (defer,
-	// after the synchronous RepositionToWaypointWithinJumps returns). excludeHerdedSystems ADDS
-	// this pending count to the LANDED count, so a concurrent evaluator sees in-flight movers and
-	// respects the per-system cap — closing the restart-cohort overshoot where every under-earner
-	// reads the richest frontier system as under-cap while the early movers are still mid-jump (the
-	// landed count lags a full multi-hop flight), all pile in, dilute, fall under-floor, and migrate
-	// as a bunch. Guarded by pendingMu; empty when the rate-floor trigger never commits (so the herd
-	// check is byte-identical when the trigger is off). In-memory only (a restart resets it —
-	// acceptable; it only bounds a live concurrent cohort within one daemon lifetime).
+	// destination system (atomic anti-herd). A relocation increments its target at the
+	// commit-decision (just BEFORE the jump) and decrements it on landing (defer, after the
+	// synchronous RepositionToWaypointWithinJumps returns). excludeHerdedSystems ADDS this
+	// pending count to the LANDED count, so a concurrent evaluator sees in-flight movers and
+	// respects the per-system cap — the landed count alone lags a full multi-hop flight, which
+	// would let every under-earner read the richest frontier system as under-cap, pile in,
+	// dilute, fall under-floor, and migrate as a bunch. Guarded by pendingMu; empty when the
+	// rate-floor trigger never commits (so the herd check is byte-identical when the trigger is
+	// off). In-memory only (a restart resets it — acceptable; it only bounds a live concurrent
+	// cohort within one daemon lifetime).
 	pendingMu                  sync.Mutex
 	pendingRelocationsBySystem map[string]int
 
-	// --- Cross-engine absorption coordination (sp-78ai L3) ---
+	// --- Cross-engine absorption coordination ---
 	// absorptionLedger, when wired via SetAbsorptionLedger, makes the tour a ledger
 	// WRITER (reserve planned tranches at plan-accept, convert to recovery shadows at
 	// sale, release on re-plan/exit) AND a READER (net outstanding depth into each plan
-	// so the solver plans AROUND sinks other containers occupy). Nil (the pre-sp-78ai
-	// shape / tests that don't wire it) → no netting, no reservations: the tour plans
-	// and flies exactly as before.
+	// so the solver plans AROUND sinks other containers occupy). Nil (tests that don't
+	// wire it) → no netting, no reservations: the tour plans and flies exactly as before.
 	absorptionLedger absorption.Ledger
 	// tourConsultDisabled is the operator escape hatch (RULINGS #5). true → the tour
 	// STOPS netting and STOPS conditionally gating (never rejects/re-plans on a
@@ -547,29 +535,29 @@ type RunTourCoordinatorHandler struct {
 	recoveryHalfLives map[string]float64
 	recoveryOnce      sync.Once
 
-	// sinkScanner backs the out-of-horizon lane diagnostic (sp-mtvg): after building the
-	// in-scope snapshot, the coordinator asks it for each in-scope-sourced good's best sink
-	// ACROSS ALL SYSTEMS, and counts+logs the lanes whose best sink lies beyond the
-	// 1-gate-hop tour graph — the "exotic good-level blind spot" made loud. Optional and
-	// nil-safe: unset (tests, or metrics-disabled builds) → the diagnostic no-ops and the
-	// tour plans exactly as before (RULINGS #4 — observation never gates the trade path).
+	// sinkScanner backs the out-of-horizon lane diagnostic: after building the in-scope
+	// snapshot, the coordinator asks it for each in-scope-sourced good's best sink ACROSS
+	// ALL SYSTEMS, and counts+logs the lanes whose best sink lies beyond the 1-gate-hop
+	// tour graph — the "exotic good-level blind spot" made loud. Optional and nil-safe:
+	// unset (tests, or metrics-disabled builds) → the diagnostic no-ops and the tour plans
+	// exactly as before (RULINGS #4 — observation never gates the trade path).
 	sinkScanner outOfHorizonSinkScanner
 
-	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
-	// when the continuous loop's dynamic-budget resolve fails with the same cause
-	// (live treasury unreadable) for DefaultStreakThreshold consecutive iterations —
-	// the one unbounded in-loop silent-retry in this otherwise worker-shaped
-	// coordinator (the 7z7j fail-closed pause+continue). Optional-injection via
-	// SetEventRecorder, nil-safe like the contract coordinator's captainEvents.
+	// captainEvents emits the coordinator error-loop event when the continuous loop's
+	// dynamic-budget resolve fails with the same cause (live treasury unreadable) for
+	// DefaultStreakThreshold consecutive iterations — the one unbounded in-loop
+	// silent-retry in this otherwise worker-shaped coordinator (fail-closed pause+
+	// continue). Optional-injection via SetEventRecorder, nil-safe like the contract
+	// coordinator's captainEvents.
 	captainEvents captain.EventRecorder
 }
 
 // outOfHorizonSinkScanner reads the global best sell destination per good (across ALL
 // systems), the seam the tour coordinator uses to SEE sinks its 1-gate-hop snapshot
-// cannot (sp-mtvg). The concrete *persistence.MarketRepositoryGORM satisfies it; the
-// daemon injects it via SetOutOfHorizonSinkScanner. Kept as a narrow local port (not a
-// method on the wide market.MarketRepository interface) so no mock/test double outside
-// this diagnostic is disturbed.
+// cannot. The concrete *persistence.MarketRepositoryGORM satisfies it; the daemon
+// injects it via SetOutOfHorizonSinkScanner. Kept as a narrow local port (not a method
+// on the wide market.MarketRepository interface) so no mock/test double outside this
+// diagnostic is disturbed.
 type outOfHorizonSinkScanner interface {
 	BestSinksAcrossSystems(ctx context.Context, goods []string, playerID int, maxAge time.Duration, now time.Time) (map[string]market.GlobalSinkResult, error)
 }
@@ -608,12 +596,12 @@ func NewRunTourCoordinatorHandler(
 	}
 }
 
-// SetPrePositioning wires the optional haul-to-storage deposit subsystem (sp-dchv
-// Lane C): the shared storage coordinator (deposit protocol + warehouse space
-// reads), the warehouse-op finder, the Lane A demand miner, the resolved config,
-// and the capital-ceiling percent. Called from main.go AFTER the storage subsystem
-// is constructed (the tour coordinator is wired earlier). Left unset, no deposit
-// legs are ever offered or executed — the tour plans and flies pure arb.
+// SetPrePositioning wires the optional haul-to-storage deposit subsystem: the shared
+// storage coordinator (deposit protocol + warehouse space reads), the warehouse-op
+// finder, the demand miner, the resolved config, and the capital-ceiling percent.
+// Called from main.go AFTER the storage subsystem is constructed (the tour
+// coordinator is wired earlier). Left unset, no deposit legs are ever offered or
+// executed — the tour plans and flies pure arb.
 func (h *RunTourCoordinatorHandler) SetPrePositioning(
 	coordinator storage.StorageCoordinator,
 	warehouses tradingsvc.WarehouseOperationFinder,
@@ -629,8 +617,8 @@ func (h *RunTourCoordinatorHandler) SetPrePositioning(
 }
 
 // SetOutOfHorizonSinkScanner wires the global best-sink reader that backs the
-// out-of-horizon lane diagnostic (sp-mtvg). The daemon injects the concrete market repo;
-// left unset the diagnostic no-ops (RULINGS #4). Optional-port pattern, like the setters
+// out-of-horizon lane diagnostic. The daemon injects the concrete market repo; left
+// unset the diagnostic no-ops (RULINGS #4). Optional-port pattern, like the setters
 // below.
 func (h *RunTourCoordinatorHandler) SetOutOfHorizonSinkScanner(s outOfHorizonSinkScanner) {
 	h.sinkScanner = s
@@ -643,18 +631,18 @@ func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
-// SetChartGateOnArrival propagates the sp-bcsu chart-on-gate-arrival knob to the movement
+// SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
 // legs, so this coordinator's cross-gate tour arrivals chart the gate they land on too.
 // Mirrors the SetGateGraph delegation.
 func (h *RunTourCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 	h.legs.SetChartGateOnArrival(enabled)
 }
 
-// SetScanPolicy wires the sp-v34b tour-scan load policy (recent-scan freshness gate +
+// SetScanPolicy wires the tour-scan load policy (recent-scan freshness gate +
 // impact-sample rate, resolved from cfg.TradeImpact on restart). Stamped onto ctx at run
 // start so the shared arrival + post-trade scans throttle the deliberate price-impact
-// instrumentation. Left unset, the coordinator stamps no policy and every scan runs its
-// pre-sp-v34b path (deploy-safe). Mirrors the SetGateGraph optional-injection idiom.
+// instrumentation. Left unset, the coordinator stamps no policy and every scan runs
+// unsampled (deploy-safe). Mirrors the SetGateGraph optional-injection idiom.
 func (h *RunTourCoordinatorHandler) SetScanPolicy(policy shared.ScanPolicy) {
 	h.scanPolicy = policy
 	h.scanPolicySet = true
@@ -671,19 +659,19 @@ func (h *RunTourCoordinatorHandler) SetCargoBlocklist(goods []string) {
 }
 
 // SetModelArtifactPath injects the daemon-configured (absolute) market-model artifact
-// path this coordinator reads at launch (sp-wj0h: resolved from cfg.Routing.ModelArtifactPath
-// so it is cwd-independent). Left unset, the coordinator falls back to the repo-relative
+// path this coordinator reads at launch (resolved from cfg.Routing.ModelArtifactPath so
+// it is cwd-independent). Left unset, the coordinator falls back to the repo-relative
 // defaultModelArtifactPath. Mirrors the SetGateGraph optional-injection idiom.
 func (h *RunTourCoordinatorHandler) SetModelArtifactPath(path string) {
 	h.modelArtifactPath = path
 }
 
-// RepositionEpisode is the durable slice of a margins-death reposition (sp-zhii): the
-// destination the hull is jumping to. It is persisted into the container config the
-// instant the jump is committed and cleared (InProgress=false) once it lands, so a daemon
-// restart mid-jump (RULINGS #2) resumes toward the SAME ground through the shared
-// cooldown-riding travel machinery (sp-wc5h) rather than re-planning at whatever
-// intermediate hop it was re-adopted on.
+// RepositionEpisode is the durable slice of a margins-death reposition: the destination
+// the hull is jumping to. It is persisted into the container config the instant the
+// jump is committed and cleared (InProgress=false) once it lands, so a daemon restart
+// mid-jump (RULINGS #2) resumes toward the SAME ground through the shared
+// cooldown-riding travel machinery rather than re-planning at whatever intermediate hop
+// it was re-adopted on.
 type RepositionEpisode struct {
 	InProgress     bool
 	TargetSystem   string
@@ -692,17 +680,17 @@ type RepositionEpisode struct {
 
 // RepositionStatePersister durably records an in-flight reposition's destination (keyed
 // by container) so a restart-rebuilt run resumes the jump instead of re-planning at an
-// intermediate position (sp-zhii, RULINGS #2). The daemon backs this with the container
-// config — the same map the recovery rebuild reads (buildTourCoordinatorCommand's
-// reposition_* keys). Mirrors the arb ArbCostPersister contract: a returned error is
-// advisory (persistence durability, never a spend/movement guard), so the caller logs and
+// intermediate position (RULINGS #2). The daemon backs this with the container config —
+// the same map the recovery rebuild reads (buildTourCoordinatorCommand's reposition_*
+// keys). Mirrors the arb ArbCostPersister contract: a returned error is advisory
+// (persistence durability, never a spend/movement guard), so the caller logs and
 // continues.
 type RepositionStatePersister interface {
 	PersistRepositionState(ctx context.Context, containerID string, playerID int, episode RepositionEpisode) error
 }
 
-// SetRepositionPersister wires the durable reposition-state store (sp-zhii) so a margins-
-// death reposition survives a daemon restart mid-jump (RULINGS #2). Left unset (nil), a
+// SetRepositionPersister wires the durable reposition-state store so a margins-death
+// reposition survives a daemon restart mid-jump (RULINGS #2). Left unset (nil), a
 // restart mid-jump re-plans at the hull's current position rather than resuming the
 // reposition, exactly as if the feature carried no persistence (fail-open). Mirrors the
 // arb SetCostPersister optional-injection idiom.
@@ -710,27 +698,27 @@ func (h *RunTourCoordinatorHandler) SetRepositionPersister(p RepositionStatePers
 	h.repositionPersister = p
 }
 
-// SetEventRecorder wires the captain outbox the coordinator emits its error-loop
-// event through (sp-6wxq). Optional-injection like the other setters: without it
-// the streak monitor still tracks and logs, it just cannot escalate to a captain
-// event (nil-safe, see health.RecordErrorLoop).
+// SetEventRecorder wires the captain outbox the coordinator emits its error-loop event
+// through. Optional-injection like the other setters: without it the streak monitor
+// still tracks and logs, it just cannot escalate to a captain event (nil-safe, see
+// health.RecordErrorLoop).
 func (h *RunTourCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
 	h.captainEvents = rec
 }
 
 // errTourBudgetUnreadable is the constant streak key for the dynamic-budget resolve
-// checkpoint (sp-6wxq). Constant so consecutive unreadable-treasury iterations count
-// as the SAME error and accumulate toward the threshold (a varying message would
-// reset the streak every pass).
+// checkpoint. Constant so consecutive unreadable-treasury iterations count as the SAME
+// error and accumulate toward the threshold (a varying message would reset the streak
+// every pass).
 var errTourBudgetUnreadable = errors.New("dynamic tour budget unresolved: live treasury unreadable")
 
-// noteTourBudget records one iteration of the continuous loop's dynamic-budget
-// resolve at the "resolve_tour_budget" streak checkpoint (sp-6wxq). unreadable=true
-// is a failure (the 7z7j fail-closed pause) that, repeated for DefaultStreakThreshold
-// consecutive iterations, crosses and emits the coordinator error-loop captain event;
-// a readable resolve resets the streak. Edge-triggered and nil-safe on the recorder
-// (health.RecordErrorLoop). Only reached on the dynamic-budget path (an explicit
-// --max-spend never resolves, so this checkpoint stays inert for it).
+// noteTourBudget records one iteration of the continuous loop's dynamic-budget resolve
+// at the "resolve_tour_budget" streak checkpoint. unreadable=true is a failure
+// (fail-closed pause) that, repeated for DefaultStreakThreshold consecutive iterations,
+// crosses and emits the coordinator error-loop captain event; a readable resolve resets
+// the streak. Edge-triggered and nil-safe on the recorder (health.RecordErrorLoop). Only
+// reached on the dynamic-budget path (an explicit --max-spend never resolves, so this
+// checkpoint stays inert for it).
 func (h *RunTourCoordinatorHandler) noteTourBudget(ctx context.Context, cmd *RunTourCoordinatorCommand, budgetMon *health.Monitor, unreadable bool) {
 	msg := ""
 	if unreadable {
@@ -764,10 +752,10 @@ func (h *RunTourCoordinatorHandler) Handle(ctx context.Context, request common.R
 func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse) (err error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// sp-fbih P11/P12: observe the tour_run's terminal outcome exactly once, and ONLY on an
-	// HONEST completion (err == nil). A resumable exit — ctx-cancel on shutdown, the 7z7j
-	// fail-closed treasury pause, a travel error mid-reposition — returns non-nil and sets
-	// no ExitReason; the container is re-adopted and runs again, so counting an exit or
+	// Observe the tour_run's terminal outcome exactly once, and ONLY on an HONEST
+	// completion (err == nil). A resumable exit — ctx-cancel on shutdown, a fail-closed
+	// treasury pause, a travel error mid-reposition — returns non-nil and sets no
+	// ExitReason; the container is re-adopted and runs again, so counting an exit or
 	// observing a truncated duration there would double-count one logical run. Every
 	// err==nil return sets ExitReason first (unavailable/starvation/iterations), so the
 	// counter and the histogram move together. Pure observation after the loop has already
@@ -782,35 +770,36 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	}()
 
 	// Stamp every ledger row this run's buy/sell legs write with operation_type=
-	// "tour" (sp-lgnh). The delegated cargo-tx path reads this operation context
-	// off ctx and persists opCtx.NormalizedOperationType() ("tour_run" → "tour");
-	// without it, tour trades land under the default and contaminate the very
-	// single-lane baseline the graduation gate measures the tour against (the
-	// baseline filters operation_type <> 'tour'). Mirrors how every coordinator
-	// tags its writes at the boundary (run_trade_route_coordinator.go's "trade_route").
+	// "tour". The delegated cargo-tx path reads this operation context off ctx and
+	// persists opCtx.NormalizedOperationType() ("tour_run" → "tour"); without it,
+	// tour trades land under the default and contaminate the single-lane baseline
+	// the graduation gate measures the tour against (the baseline filters
+	// operation_type <> 'tour'). Mirrors how every coordinator tags its writes at
+	// the boundary (run_trade_route_coordinator.go's "trade_route").
 	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "tour_run"))
 
-	// sp-v34b: stamp the tour-scan load policy so the shared arrival + post-trade scans
-	// SAMPLE the deliberate price-impact instrumentation (the top API consumer) rather than
-	// scanning every market around every trade. It rides the SAME ctx the operation context
-	// above already threads to the delegated travel + cargo legs (proven by sp-lgnh), so the
-	// arrival scan (RouteExecutor) and the post-trade scan (cargo transactions) both see it.
-	// Unset (tests / scan_sampling_disabled) → no stamp → pre-sp-v34b full-scan behavior.
+	// Stamp the tour-scan load policy so the shared arrival + post-trade scans SAMPLE
+	// the deliberate price-impact instrumentation (the top API consumer) rather than
+	// scanning every market around every trade. It rides the SAME ctx the operation
+	// context above already threads to the delegated travel + cargo legs, so the
+	// arrival scan (RouteExecutor) and the post-trade scan (cargo transactions) both
+	// see it. Unset (tests / scan_sampling_disabled) → no stamp → full-scan behavior.
 	if h.scanPolicySet {
 		ctx = shared.WithScanPolicy(ctx, h.scanPolicy)
 	}
 
-	// sp-78ai L3: release this container's PLANNED reservations on EVERY exit path
-	// (clean completion, error, ctx-cancel) so a finished tour stops occupying sink/ask
-	// depth other engines net against. Converted EXECUTED shadows are LEFT (real recovery
-	// still decaying); a ctx-cancelled exit that cannot run the delete leaves the rows to
-	// the ledger's TTL sweep + dead-container reclaim (the belt-and-suspenders cleanup).
+	// Release this container's PLANNED reservations on EVERY exit path (clean
+	// completion, error, ctx-cancel) so a finished tour stops occupying sink/ask depth
+	// other engines net against. Converted EXECUTED shadows are LEFT (real recovery
+	// still decaying); a ctx-cancelled exit that cannot run the delete leaves the rows
+	// to the ledger's TTL sweep + dead-container reclaim (the belt-and-suspenders
+	// cleanup).
 	defer h.releaseTourReservations(ctx, cmd)
 
 	// Bind the model version from the checked-in artifact (RULINGS #4: unreadable →
-	// fail OPEN to single-lane, never guess a version). Path precedence (sp-wj0h): an
-	// explicit per-run cmd.ModelArtifactPath (tests) → the daemon-configured absolute
-	// path (production, cwd-independent) → the repo-relative constant (pure-env fallback).
+	// fail OPEN to single-lane, never guess a version). Path precedence: an explicit
+	// per-run cmd.ModelArtifactPath (tests) → the daemon-configured absolute path
+	// (production, cwd-independent) → the repo-relative constant (pure-env fallback).
 	artifactPath := cmd.ModelArtifactPath
 	if artifactPath == "" {
 		artifactPath = h.modelArtifactPath
@@ -833,15 +822,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	reserve := cmd.WorkingCapitalReserve
 	if reserve == 0 {
 		reserve = int64(defaultWorkingCapitalReserve)
-		// sp-ggk2 RULINGS #4: never resolve the reserve to a default SILENTLY. Tonight's
-		// regression — a coordinator-launched tour buying under the 50k floor while its
-		// launch config carried a 1M reserve — was invisible precisely because this
-		// fallback logged nothing. A built command reaching here with reserve==0 means the
-		// launch config carried no reserve (a captain CLI tour with no --reserve, or a
-		// fleet whose [trade_fleet] reserve is unset); surfacing it makes a fleet
-		// accidentally running on the floor visible in the log, not only in the P&L. The
-		// present-but-unparseable case can no longer reach here — it fails the build closed
-		// (PresentOrFailInt in buildTourCoordinatorCommand).
+		// RULINGS #4: never resolve the reserve to a default SILENTLY. A built command
+		// reaching here with reserve==0 means the launch config carried no reserve (a
+		// captain CLI tour with no --reserve, or a fleet whose [trade_fleet] reserve is
+		// unset); surfacing it makes a fleet accidentally running on the floor visible in
+		// the log, not only in the P&L. The present-but-unparseable case can no longer
+		// reach here — it fails the build closed (PresentOrFailInt in
+		// buildTourCoordinatorCommand).
 		logger.Log("WARNING", fmt.Sprintf(
 			"Tour %s: working-capital reserve resolved to the %d default (launch config carried no reserve) - every buy is floored at %d, not a fleet reserve",
 			cmd.ShipSymbol, defaultWorkingCapitalReserve, defaultWorkingCapitalReserve), map[string]interface{}{
@@ -849,11 +836,11 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		})
 	}
 
-	// sp-yqx4: stamp the treasury-percent so the buy-time floor (reserveHeadroom) resolves
-	// the counter-cyclical max(50k, min(reserve, pct% × live treasury)) instead of the flat
+	// Stamp the treasury-percent so the buy-time floor (reserveHeadroom) resolves the
+	// counter-cyclical max(50k, min(reserve, pct% × live treasury)) instead of the flat
 	// absolute reserve. Only when a pct is actually set (production build paths resolve
-	// 0/absent → 40); a directly-built command leaves it 0, keeping the absolute floor the
-	// sp-agzj/sp-ggk2 suites assert. Every downstream tour/leg/buy derives from this ctx.
+	// 0/absent → 40); a directly-built command leaves it 0, keeping the absolute floor.
+	// Every downstream tour/leg/buy derives from this ctx.
 	if cmd.WorkingCapitalReserveTreasuryPct > 0 {
 		ctx = common.WithReserveTreasuryPct(ctx, cmd.WorkingCapitalReserveTreasuryPct)
 	}
@@ -866,9 +853,8 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		replanLimit = tourMaxReplansDefault
 	}
 
-	// Iteration budget (sp-m5kv): 0 → the one-tour default (the original one-shot,
-	// so every pre-sp-m5kv caller/test is unchanged); -1 → continuous until margins
-	// die; N>0 → exactly N tours.
+	// Iteration budget: 0 → the one-tour default (the original one-shot); -1 →
+	// continuous until margins die; N>0 → exactly N tours.
 	iterations := cmd.Iterations
 	if iterations == 0 {
 		iterations = 1
@@ -876,12 +862,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	continuous := iterations < 0
 
 	// netBought is CUMULATIVE across every tour this run: the honest-completion
-	// stranded veto (sp-7yej invariant 2) is checked ONCE, at the final exit. A tour
-	// ending with held cargo is NOT stranded mid-run — the next tour re-plans from the
-	// hull's current cargo and (sp-m5kv part 2) the solver sells it as launch
-	// inventory. Only cargo BOUGHT this run and never sold survives to veto the final
-	// completion; pre-held cargo (never in netBought) drives it negative, so
-	// liquidating the captain's pre-existing load is a bonus, never a false veto.
+	// stranded veto (invariant: unsold bought cargo is never a clean completion) is
+	// checked ONCE, at the final exit. A tour ending with held cargo is NOT stranded
+	// mid-run — the next tour re-plans from the hull's current cargo and the solver
+	// sells it as launch inventory. Only cargo BOUGHT this run and never sold survives
+	// to veto the final completion; pre-held cargo (never in netBought) drives it
+	// negative, so liquidating the captain's pre-existing load is a bonus, never a
+	// false veto.
 	netBought := map[string]int{}
 
 	// The budget counts PRODUCTIVE tours (ToursCompleted), not attempts: "N tours"
@@ -889,26 +876,26 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// by the starvation streak) rather than silently burning a tour slot.
 	noProgressStreak := 0
 
-	// episode tracks the current margins-death reposition (sp-zhii): whether this run has
-	// already spent its ONE reposition since the last productive tour, and the systems
-	// involved (for the honest "margins died at X, repositioned to Y, died there too"
-	// exit). A productive tour clears it — a fresh ground earned means a LATER death may
-	// rotate again (grounds are renewable flows), which is the whole point; the
-	// one-per-episode bound only stops hop-scotching WITHOUT trading in between.
+	// episode tracks the current margins-death reposition: whether this run has already
+	// spent its ONE reposition since the last productive tour, and the systems involved
+	// (for the honest "margins died at X, repositioned to Y, died there too" exit). A
+	// productive tour clears it — a fresh ground earned means a LATER death may rotate
+	// again (grounds are renewable flows), which is the whole point; the one-per-episode
+	// bound only stops hop-scotching WITHOUT trading in between.
 	var episode repositionEpisode
 
 	// RULINGS #2 restart-resume: a continuous run re-adopted mid-jump (the reposition was
 	// in flight when the daemon restarted) resumes toward the SAME destination through the
-	// shared cooldown-riding travel machinery (sp-wc5h rides any leftover jump cooldown),
-	// then clears the persisted flag — so the hull lands on the ground it was rotating to
-	// rather than re-planning at whatever intermediate hop it was re-adopted on. It counts
-	// as the episode's spent reposition so a fresh 3-strike at the destination exits
-	// honestly instead of hop-scotching across the restart boundary.
+	// shared cooldown-riding travel machinery, then clears the persisted flag — so the
+	// hull lands on the ground it was rotating to rather than re-planning at whatever
+	// intermediate hop it was re-adopted on. It counts as the episode's spent reposition
+	// so a fresh 3-strike at the destination exits honestly instead of hop-scotching
+	// across the restart boundary.
 	if continuous && cmd.RepositionInProgress && cmd.RepositionTargetWaypoint != "" {
 		logger.Log("INFO", fmt.Sprintf("Reposition resume: re-adopted mid-jump toward %s (%s) after a restart - completing the jump before re-planning (RULINGS #2)", cmd.RepositionTargetSystem, cmd.RepositionTargetWaypoint), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "target_system": cmd.RepositionTargetSystem, "target_waypoint": cmd.RepositionTargetWaypoint,
 		})
-		// sp-kl16: the resume rides the SAME stored-adjacency bounded resolver as the fresh jump
+		// The resume rides the SAME stored-adjacency bounded resolver as the fresh jump
 		// (resolveRepositionJumpBound), so a restart mid-jump toward an unreadable-gate ground
 		// completes over the persisted topology instead of re-hitting the strict Path fail-close.
 		if rerr := h.legs.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.RepositionTargetWaypoint, cmd.PlayerID, resolveRepositionJumpBound(cmd.RepositionJumpBound)); rerr != nil {
@@ -919,12 +906,12 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	}
 
 	// budgetMon makes a continuous run that can never re-resolve its dynamic budget
-	// observable (sp-e2l1/sp-6wxq): the 7z7j fail-closed pause+continue below is the
-	// one UNBOUNDED silent retry in this otherwise worker-shaped coordinator — a
-	// treasury source wired but unreadable every iteration loops WARNING+backoff
-	// forever. Once the streak crosses, it emits a captain event; a readable resolve
-	// resets it. Created once per execute (one continuous run) so the streak persists
-	// across the loop's iterations.
+	// observable: the fail-closed pause+continue below is the one UNBOUNDED silent
+	// retry in this otherwise worker-shaped coordinator — a treasury source wired but
+	// unreadable every iteration loops WARNING+backoff forever. Once the streak
+	// crosses, it emits a captain event; a readable resolve resets it. Created once
+	// per execute (one continuous run) so the streak persists across the loop's
+	// iterations.
 	budgetMon := health.NewMonitor(health.DefaultStreakThreshold)
 
 	for continuous || response.ToursCompleted < iterations {
@@ -932,8 +919,8 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// flag to a ctx cancel). Exit RESUMABLE at the tour boundary by returning the
 		// ctx error, which the runner routes through its ctx.Err() path (re-adopted at
 		// next boot) — never let a cancel be misread as a swallowed planner no-plan and,
-		// via the starvation streak, COMPLETE a -1 container (the sp-ovkn trap: a
-		// COMPLETED row is dropped from the recovery set and the hull is lost).
+		// via the starvation streak, COMPLETE a -1 container (a COMPLETED row is dropped
+		// from the recovery set and the hull is lost).
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -946,19 +933,19 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		if tourMaxSpend == 0 {
 			resolved, unreadable := h.defaultMaxSpend(ctx)
 			if unreadable {
-				// sp-7z7j: the dynamic budget could NOT be re-resolved — a treasury
-				// SOURCE is wired but the live read failed (transient GetAgent blip /
-				// token gone). RULINGS #4 fail-CLOSED: do NOT spend this iteration and
-				// NEVER fall back to unlimited or a stale budget. But failing closed
-				// must PAUSE and RETRY, not end the loop: proceeding here with a 0
-				// budget is exactly what the planner refused (spend_cap 0 → infeasible),
-				// which — nothing earned yet on a relaunch — the loop below misread as
-				// "tour unavailable" and COMPLETED a -1 container after one iteration
-				// (the 5/5 field repro). Skip the tour, wait an interruptible backoff,
-				// and re-resolve next pass; a Stop/shutdown during the wait exits
-				// RESUMABLE (ctx error), the same as the boundary check above. The
-				// no-progress starvation streak is left UNTOUCHED — an unreadable
-				// treasury is a transient guard trip, not margin-death.
+				// The dynamic budget could NOT be re-resolved — a treasury SOURCE is
+				// wired but the live read failed (transient GetAgent blip / token gone).
+				// RULINGS #4 fail-CLOSED: do NOT spend this iteration and NEVER fall back
+				// to unlimited or a stale budget. But failing closed must PAUSE and
+				// RETRY, not end the loop: proceeding here with a 0 budget is exactly
+				// what the planner refused (spend_cap 0 → infeasible), which — nothing
+				// earned yet on a relaunch — the loop below would misread as "tour
+				// unavailable" and COMPLETE a -1 container after one iteration. Skip the
+				// tour, wait an interruptible backoff, and re-resolve next pass; a
+				// Stop/shutdown during the wait exits RESUMABLE (ctx error), the same as
+				// the boundary check above. The no-progress starvation streak is left
+				// UNTOUCHED — an unreadable treasury is a transient guard trip, not
+				// margin-death.
 				logger.Log("WARNING", "Dynamic tour budget unresolved (live treasury unreadable) - failing closed: not spending, pausing before retry (loop stays alive)", map[string]interface{}{
 					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
 					"backoff_seconds": int(tourTreasuryRetryBackoff.Seconds()),
@@ -971,9 +958,9 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			}
 			h.noteTourBudget(ctx, cmd, budgetMon, false) // readable resolve resets the streak
 			tourMaxSpend = resolved
-			// sp-fbih P13: record the RESOLVED dynamic cap (25% of live treasury) the exact
-			// value nj2b's Guards panel proxies with a treasury x 0.25 line. Only on the dynamic
-			// path — an explicit --max-spend constant has nothing dynamic to track.
+			// Record the RESOLVED dynamic cap (25% of live treasury) — the same value the
+			// Guards dashboard panel proxies with a treasury x 0.25 line. Only on the
+			// dynamic path — an explicit --max-spend constant has nothing dynamic to track.
 			metrics.SetTourResolvedMaxSpend(cmd.PlayerID, resolved)
 		}
 
@@ -983,15 +970,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			return terr
 		}
 
-		// sp-qzej: a planner-returned internal_error is a routing-service OUTAGE (an
-		// exception it caught and returned as a structured feasible=false — e.g. the C1
-		// stock-source resolution AttributeError on a stale generated proto), NOT a
-		// legitimate "no profitable tour". Terminalize the container FAILED via the
-		// honest-completion veto so a live outage is surfaced LOUDLY instead of masked as
-		// a clean "tour unavailable" success — the masking that hid the 2026-07-11 trade
-		// stall for hours. Checked BEFORE the fail-open/starvation classification below so
-		// it wins in BOTH the one-shot and continuous paths, and regardless of how many
-		// tours already flew. Transport errors ("planner error:") and genuine
+		// A planner-returned internal_error is a routing-service OUTAGE (an exception it
+		// caught and returned as a structured feasible=false), NOT a legitimate "no
+		// profitable tour". Terminalize the container FAILED via the honest-completion
+		// veto so a live outage is surfaced LOUDLY instead of masked as a clean "tour
+		// unavailable" success. Checked BEFORE the fail-open/starvation classification
+		// below so it wins in BOTH the one-shot and continuous paths, and regardless of
+		// how many tours already flew. Transport errors ("planner error:") and genuine
 		// infeasibility still fail open below (single-lane fallback stands).
 		if !feasible && isPlannerInternalError(reason) {
 			response.PlannerInternalError = true
@@ -1005,13 +990,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 
 		// A PRODUCTIVE tour (feasible AND flew >=1 trade) resets the starvation streak and
 		// ENDS any reposition episode: a fresh ground earned, so a later death may rotate
-		// again (sp-zhii — the one-per-episode bound only prevents hop-scotching WITHOUT
-		// trading in between).
+		// again (the one-per-episode bound only prevents hop-scotching WITHOUT trading in
+		// between).
 		if feasible && response.TradesExecuted > tradesBefore {
 			noProgressStreak = 0
 			response.ToursCompleted++
 			episode = repositionEpisode{}
-			// Rate-floor early-reposition (epic sp-fguo Part 2, DEFAULT-OFF): a hull that just flew a
+			// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
 			// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
 			// margin-dies, so the margins-death reposition never rescues it. When armed, evaluate a
 			// relocation to a meaningfully better reachable ground before touring here again. The
@@ -1032,14 +1017,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// fallback stands, the original one-shot behavior preserved exactly. A CONTINUOUS
 		// (-1) run does NOT: a recovered engine re-enters at ToursCompleted==0 having LOST
 		// its pre-restart productive standing across the daemon boundary, and dying on ONE
-		// drained-ground plan (bypassing sp-zhii's rank-and-reposition) is the sp-m9co
-		// restart-boundary death — hulls productive before the restart lost to a single bad
-		// post-restart plan on ground the pre-restart cohort had drained. So a continuous run
-		// falls THROUGH to the streak, letting iteration-1 infeasibility accumulate toward the
-		// SAME reposition rescue as margins-death rather than completing the container; a
-		// genuinely dead neighbourhood still exits honestly below (no candidate clears the
-		// floor). The 7z7j unreadable-treasury PAUSE never reaches here (it `continue`s above,
-		// before runOneTour), so it is untouched.
+		// drained-ground plan (bypassing the rank-and-reposition rescue) would strand hulls
+		// that were productive before the restart on ground the pre-restart cohort had
+		// drained. So a continuous run falls THROUGH to the streak, letting iteration-1
+		// infeasibility accumulate toward the SAME reposition rescue as margins-death rather
+		// than completing the container; a genuinely dead neighbourhood still exits honestly
+		// below (no candidate clears the floor). The unreadable-treasury PAUSE never reaches
+		// here (it `continue`s above, before runOneTour), so it is untouched.
 		if !feasible && response.ToursCompleted == 0 && !continuous {
 			response.TourUnavailable = true
 			response.TourUnavailableReason = reason
@@ -1061,7 +1045,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			continue
 		}
 
-		// sp-fbih P4: the ground just tapped out (3-strike confirmed). Counted HERE, before the
+		// The ground just tapped out (3-strike confirmed). Counted HERE, before the
 		// reposition attempt, so it measures the ground rich->tapped cadence whether or not a
 		// reposition then rescues the run — distinct from tour_exit_total{reason=starvation},
 		// which fires only when a tap-out becomes the final honest exit. A productive tour
@@ -1069,14 +1053,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		metrics.RecordTourMarginsDeath(cmd.PlayerID)
 
 		// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
-		// renewable ground (sp-zhii): rank jump-reachable systems by expected tour margin,
-		// jump to the best one that clears the reposition floor, and let the loop re-plan
-		// there. Scoped to CONTINUOUS (-1) runs — a finite/one-shot run already fail-opened
-		// above on iteration-1 infeasibility and never reaches here with no plan. sp-m9co:
-		// this now fires at ToursCompleted==0 too, so a recovered continuous engine that
-		// re-entered with a lost productive count and 3-struck on iteration-1 infeasibility
-		// rotates off the drained ground instead of dying on it (the fail-open above no
-		// longer intercepts continuous runs).
+		// renewable ground: rank jump-reachable systems by expected tour margin, jump to
+		// the best one that clears the reposition floor, and let the loop re-plan there.
+		// Scoped to CONTINUOUS (-1) runs — a finite/one-shot run already fail-opened above
+		// on iteration-1 infeasibility and never reaches here with no plan. This also fires
+		// at ToursCompleted==0, so a recovered continuous engine that re-entered with a
+		// lost productive count and 3-struck on iteration-1 infeasibility rotates off the
+		// drained ground instead of dying on it.
 		if continuous {
 			repositioned, rerr := h.maybeReposition(ctx, cmd, response, &episode, netBought, maxHops, tourMaxSpend, reserve, modelVersion)
 			if rerr != nil {
@@ -1093,13 +1076,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// reposition was already spent this episode (RULINGS: name origin and destination).
 		response.ExitReason = tourExitStarvation
 		response.ExitDetail = starvationExitDetail(episode, starvationDetail)
-		// sp-avt4: append the LAST tour's concrete reason (e.g. a solver
-		// "reserve_exceeds_budget" verdict) to the MESSAGE TEXT, not just metadata —
-		// ContainerRunner.Log only prints "message" to stdout, so a reason left solely in
-		// the metadata map is invisible to `container logs` (sp-149h/sp-iqyq renderer
-		// defect). Without this, a starved budget and genuine market death both read as
-		// the same generic "margins died" line. Empty when the last tour was feasible but
-		// flew zero trades (a different, already-named failure class above).
+		// Append the LAST tour's concrete reason (e.g. a solver "reserve_exceeds_budget"
+		// verdict) to the MESSAGE TEXT, not just metadata — ContainerRunner.Log only
+		// prints "message" to stdout, so a reason left solely in the metadata map is
+		// invisible to `container logs`. Without this, a starved budget and genuine
+		// market death both read as the same generic "margins died" line. Empty when the
+		// last tour was feasible but flew zero trades (a different, already-named
+		// failure class above).
 		stopMsg := "Continuous tour stopping - " + response.ExitDetail
 		if reason != "" {
 			stopMsg += " (last: " + reason + ")"
@@ -1114,10 +1097,10 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		response.ExitReason = tourExitIterations
 	}
 
-	// Honest-completion check (FINAL exit only, sp-m5kv boundary): any cargo bought
-	// this run and still aboard after the whole loop is a stranded veto — the
-	// container is terminalized FAILED (sp-7yej invariant 2). A mid-run held load is
-	// deliberately NOT checked here; it was carried forward to the next tour's plan.
+	// Honest-completion check (FINAL exit only): any cargo bought this run and still
+	// aboard after the whole loop is a stranded veto — the container is terminalized
+	// FAILED. A mid-run held load is deliberately NOT checked here; it was carried
+	// forward to the next tour's plan.
 	if reason, stranded := h.strandedReason(ctx, cmd, netBought); stranded {
 		response.CargoStranded = true
 		response.CargoStrandedReason = reason
@@ -1159,10 +1142,10 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		return false, "", err
 	}
 
-	// sp-78ai L3: plan a depth-netted tour AND conditionally reserve its tranches
-	// all-or-nothing. A reservation breach (another container claimed a sink between the
-	// netting snapshot and the reserve) is a normal re-plan, NOT a failure — planAndReserve
-	// retries against fresh ledger state, and only a persistent contention exits infeasible.
+	// Plan a depth-netted tour AND conditionally reserve its tranches all-or-nothing. A
+	// reservation breach (another container claimed a sink between the netting snapshot
+	// and the reserve) is a normal re-plan, NOT a failure — planAndReserve retries
+	// against fresh ledger state, and only a persistent contention exits infeasible.
 	plan, shadowSinks, reason, feasible, err := h.planAndReserve(ctx, cmd, ship, maxHops, maxSpend, reserve, modelVersion)
 	if err != nil {
 		return false, "", err
@@ -1174,13 +1157,12 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	// missed publish never touches the trade path — RULINGS #4).
 	flowfeed.Publish(buildTourFlow(cmd, plan, -1, time.Time{}, time.Time{}, shipCargoItems(ship), time.Now().UTC()))
 	response.LegsPlanned += len(plan.Legs)
-	// Honest projection split (sp-bc27 + sp-dchv Lane C): projected profit is the
-	// TOTAL that ranked this tour; fresh cash profit, held-cargo liquidation revenue,
-	// and synthetic haul-to-storage DEPOSIT value are reported apart so a laden-hull
-	// or pre-positioning plan's margin is not read as pure fresh-trade profit.
-	// Fresh cash = total - liquidation - deposit_value (liquidation has no
-	// acquisition cost; a deposit books no cash — its value is future contract
-	// savings, not revenue).
+	// Honest projection split: projected profit is the TOTAL that ranked this tour;
+	// fresh cash profit, held-cargo liquidation revenue, and synthetic haul-to-storage
+	// DEPOSIT value are reported apart so a laden-hull or pre-positioning plan's margin
+	// is not read as pure fresh-trade profit. Fresh cash = total - liquidation -
+	// deposit_value (liquidation has no acquisition cost; a deposit books no cash — its
+	// value is future contract savings, not revenue).
 	freshProfit := plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
 	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (fresh %d, liquidation %d, deposit %d) (model %s)", len(plan.Legs), plan.ProjectedProfit, freshProfit, plan.HeldLiquidation, plan.DepositValue, modelVersion), map[string]interface{}{
 		"legs": len(plan.Legs), "projected_profit": plan.ProjectedProfit,
@@ -1188,8 +1170,8 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		"projected_deposit_value": plan.DepositValue,
 		"cph":                     plan.ProjectedCreditsPerHour, "model": modelVersion,
 	})
-	// sp-1wp8: pair every accepted plan's PROJECTED rate with a REALIZED rate at the
-	// tour's honest completion, so ranking quality is measurable (a systematic
+	// Pair every accepted plan's PROJECTED rate with a REALIZED rate at the tour's
+	// honest completion, so ranking quality is measurable (a systematic
 	// projected≫realized gap means the estimator flatters plans). Projected = the
 	// solver's own cph, observed ONCE per tour for the plan that won selection
 	// (intra-tour replans are recovery, not selection — they emit nothing, keeping
@@ -1229,7 +1211,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		budget := remainingSpend(maxSpend, cumulativeSpend)
 		// Re-plan releases this container's prior PLANNED rows and reserves the new plan
 		// fresh (planAndReserve), so the replacement plan never double-counts the old
-		// one's holds and converted recovery shadows persist (sp-78ai L3).
+		// one's holds and converted recovery shadows persist.
 		var replanFeasible bool
 		var replanReason string
 		plan, shadowSinks, replanReason, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
@@ -1237,10 +1219,9 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 			return false, "", err
 		}
 		if !replanFeasible {
-			// sp-avt4: NAME the cause in the message text, not just metadata — ContainerRunner.Log
+			// NAME the cause in the message text, not just metadata — ContainerRunner.Log
 			// (container_runner.go) only prints "message" to stdout, so a reason left in the
-			// metadata map alone is invisible to `container logs` (the sp-149h/sp-iqyq renderer
-			// defect the reposition ranking log already works around).
+			// metadata map alone is invisible to `container logs`.
 			logger.Log("INFO", "Re-plan produced no feasible tour - stopping: "+replanReason, map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol, "reason": replanReason,
 			})
@@ -1261,10 +1242,10 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 }
 
 // realizedRatePerHour converts a tour's booked cash profit and elapsed wall-clock into
-// credits/hour for the sp-1wp8 realized-rate observation. ok=false on a non-positive
-// elapsed (a frozen test clock, or clock skew) — no honest rate exists there, and a
-// divide-by-zero must never reach the histogram. Profit may be negative (a losing tour
-// is a real observation; it lands in the histogram's le=0 bucket).
+// credits/hour for the realized-rate observation. ok=false on a non-positive elapsed (a
+// frozen test clock, or clock skew) — no honest rate exists there, and a divide-by-zero
+// must never reach the histogram. Profit may be negative (a losing tour is a real
+// observation; it lands in the histogram's le=0 bucket).
 func realizedRatePerHour(profit int64, elapsedSeconds float64) (float64, bool) {
 	if elapsedSeconds <= 0 {
 		return 0, false
@@ -1323,8 +1304,8 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		}
 
 		legDegraded := false
-		// sp-78ai L3: accumulate realized units sold per good at THIS leg, so the sink's
-		// recovery shadow is converted ONCE with the full crush (across its price-tiered
+		// Accumulate realized units sold per good at THIS leg, so the sink's recovery
+		// shadow is converted ONCE with the full crush (across its price-tiered
 		// tranches), not once per tranche. Nil when no ledger is wired.
 		legSells := h.newLegSells()
 		// Sells before buys (errata): a leg that fills the hold both ways must free
@@ -1367,10 +1348,10 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// sp-dchv Lane C: a DEPOSIT tranche is a haul-to-storage transfer, not a market
-	// trade — there is no live market bid to re-verify (its value is the synthetic
-	// bid). Route it straight to the warehouse deposit path, BYPASSING the
-	// live-price observe + tolerance gate the market trades below run.
+	// A DEPOSIT tranche is a haul-to-storage transfer, not a market trade — there is
+	// no live market bid to re-verify (its value is the synthetic bid). Route it
+	// straight to the warehouse deposit path, BYPASSING the live-price observe +
+	// tolerance gate the market trades below run.
 	if trade.IsDeposit {
 		return h.executeDeposit(ctx, cmd, leg, legIdx, trade, response, netBought)
 	}
@@ -1451,17 +1432,17 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 		return false, nil
 	}
 
-	// Working-capital spend floor at BUY time (sp-agzj / RULINGS #4). Re-read the
-	// LIVE balance immediately before the purchase and SHRINK this tranche to the
-	// units the reserve can still afford, rather than the old all-or-nothing skip —
-	// a floor that binds should still buy what fits beneath it. Skip only if even
-	// one unit pierces the floor; fail CLOSED (no spend, re-plan) if the balance
-	// can't be read; proceed unconstrained when no live client is wired (the guard's
+	// Working-capital spend floor at BUY time (RULINGS #4). Re-read the LIVE balance
+	// immediately before the purchase and SHRINK this tranche to the units the
+	// reserve can still afford, rather than an all-or-nothing skip — a floor that
+	// binds should still buy what fits beneath it. Skip only if even one unit
+	// pierces the floor; fail CLOSED (no spend, re-plan) if the balance can't be
+	// read; proceed unconstrained when no live client is wired (the guard's
 	// optional-port contract, which every nil-apiClient test relies on). This shares
 	// the circuit's live-treasury seam (reserveHeadroom) rather than forking a
 	// parallel read. NOTE: the read is live but not atomic with the purchase, so
 	// concurrent hulls draining the shared treasury in the read→buy window remain a
-	// residual (sp-78ai); this binds the floor at execution, it does not lock it.
+	// residual; this binds the floor at execution, it does not lock it.
 	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, int(reserve))
 	if guardOn && !readable {
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: live balance unreadable at buy time for %d %s @ %d (reserve %d) - not spending, will re-plan (fail-closed)",
@@ -1473,7 +1454,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	if guardOn {
 		floorMaxUnits := headroom / liveAsk // floor-respecting max; headroom may be <= 0 (skip)
 		if floorMaxUnits <= 0 {
-			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "skip") // sp-fbih P5: floor bound the whole tranche
+			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "skip") // floor bound the whole tranche
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy of %d %s @ %d would breach working-capital floor - live balance %d, reserve %d, even 1 unit pierces - skipping, will re-plan",
 				legIdx, units, trade.Good, liveAsk, liveBalance, reserve), map[string]interface{}{
 				"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
@@ -1481,7 +1462,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 			return false, nil
 		}
 		if floorMaxUnits < units {
-			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "shrink") // sp-fbih P5: floor cut the tranche to fit
+			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "shrink") // floor cut the tranche to fit
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units @ %d to respect working-capital floor (live balance %d, reserve %d)",
 				legIdx, trade.Good, units, floorMaxUnits, liveAsk, liveBalance, reserve), map[string]interface{}{
 				"leg": legIdx, "good": trade.Good, "planned_units": units, "floor_max_units": floorMaxUnits, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
@@ -1491,11 +1472,11 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	}
 
 	plannedAt := h.clock.Now()
-	// sp-9mkf: arm the per-tranche buy ceiling at the plan's tolerated ask — the planned
-	// basis plus the same tourPriceTolerancePct the leg-level gate above applied. That
-	// gate checked only the first live read; this bounds the intra-buy ladder a
-	// multi-tranche purchase walks up itself (the D39 stale-ask class), aborting the
-	// remainder once a sub-tranche prices past the plan's tolerance.
+	// Arm the per-tranche buy ceiling at the plan's tolerated ask — the planned basis
+	// plus the same tourPriceTolerancePct the leg-level gate above applied. That gate
+	// checked only the first live read; this bounds the intra-buy ladder a
+	// multi-tranche purchase walks up itself, aborting the remainder once a
+	// sub-tranche prices past the plan's tolerance.
 	planned := trade.ExpectedUnitPrice
 	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
 	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit)
@@ -1515,8 +1496,8 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	netBought[trade.Good] += buyResp.UnitsAdded
 	h.recordLeg(ctx, cmd, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: bought %d %s at %s (cost %d)", legIdx, buyResp.UnitsAdded, trade.Good, leg.Waypoint, buyResp.TotalCost), nil)
-	// sp-8cz9 P2: a buy that LANDED on ground carrying an outstanding EXECUTED recovery
-	// shadow is a cross-plan ladder incident — the fleet re-buying into a market still
+	// A buy that LANDED on ground carrying an outstanding EXECUTED recovery shadow is
+	// a cross-plan ladder incident — the fleet re-buying into a market still
 	// recovering from its own dump. Pure observation off the plan-time probe set; a
 	// nil-map read is false, so this is inert when no shadows were netted.
 	if buyResp.UnitsAdded > 0 && shadowSinks[shadowSinkKey{leg.Waypoint, trade.Good}] {
@@ -1543,9 +1524,9 @@ func (h *RunTourCoordinatorHandler) executeSell(
 		return false, err
 	}
 
-	// sp-1vhv fail-closed: never sell cargo the hull has reserved as do-not-sell
-	// (a staged outfitting module, or an operator-protected good). Skip the leg with
-	// a reason=reserved line rather than liquidate a module a coordinator wrongly
+	// Fail-closed: never sell cargo the hull has reserved as do-not-sell (a staged
+	// outfitting module, or an operator-protected good). Skip the leg with a
+	// reason=reserved line rather than liquidate a module a coordinator wrongly
 	// treated as manifest. tourShipState already keeps reserved cargo out of the
 	// planner, so this only fires on a planning leak — the executor refuses
 	// independently so a leak can never realize the loss. Returning a skip degrades
@@ -1580,11 +1561,11 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	netBought[trade.Good] -= sellResp.UnitsSold
-	// sp-78ai L3: accumulate the realized units sold into this sink for the per-sink
-	// conversion at leg completion. The solver splits a sink's A-cap depth into SEPARATE
+	// Accumulate the realized units sold into this sink for the per-sink conversion
+	// at leg completion. The solver splits a sink's A-cap depth into SEPARATE
 	// price-tiered tranches (distinct trades), so a single sink can sell across several
 	// executeSell calls in one leg; converting per tranche would record only the first,
-	// under-stating the very multi-tranche co-dump crush this ledger exists to shadow. The
+	// under-stating the multi-tranche co-dump crush this ledger exists to shadow. The
 	// live re-verify tier + trade_volume (stable across a sink's tranches) size the shadow.
 	h.noteSinkSale(legSells, trade.Good, sellResp.UnitsSold, live)
 	h.recordLeg(ctx, cmd, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
@@ -1592,22 +1573,22 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	return true, nil
 }
 
-// executeDeposit deposits a haul-to-storage tranche into the home warehouse
-// (sp-dchv Lane C) using the gas-proven protocol: ReserveSpaceForDeposit →
-// TransferCargo (API) → ConfirmDeposit, releasing the reservation on transfer
-// failure. It runs NO live-price re-verify (the value is the synthetic bid, not a
-// market price) and books ZERO revenue — a deposit is an inventory transfer, not a
-// sale, so no ledger transaction row is written (recordLeg is deliberately NOT
-// called) and realized P&L is not inflated; the synthetic savings value is logged
-// for observability only.
+// executeDeposit deposits a haul-to-storage tranche into the home warehouse using
+// the gas-proven protocol: ReserveSpaceForDeposit → TransferCargo (API) →
+// ConfirmDeposit, releasing the reservation on transfer failure. It runs NO
+// live-price re-verify (the value is the synthetic bid, not a market price) and
+// books ZERO revenue — a deposit is an inventory transfer, not a sale, so no
+// ledger transaction row is written (recordLeg is deliberately NOT called) and
+// realized P&L is not inflated; the synthetic savings value is logged for
+// observability only.
 //
-// Honest-completion composure (RULINGS #1 / sp-7yej): a successful deposit
-// decrements netBought (the good LEFT the hull into inventory — not stranded). A
-// deposit that cannot complete (no warehouse, warehouse full/gone) returns a SKIP
+// Honest-completion composure (RULINGS #1): a successful deposit decrements
+// netBought (the good LEFT the hull into inventory — not stranded). A deposit
+// that cannot complete (no warehouse, warehouse full/gone) returns a SKIP
 // (executed=false) so the leg degrades and the tour re-plans; the un-deposited
 // cargo is then carried as held cargo and the next plan liquidates it at market
-// (m5kv) rather than stranding it. An API transfer failure returns an error the
-// runner retries (it re-plans cargo-aware from the current hold).
+// rather than stranding it. An API transfer failure returns an error the runner
+// retries (it re-plans cargo-aware from the current hold).
 func (h *RunTourCoordinatorHandler) executeDeposit(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
@@ -1626,8 +1607,8 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 		return false, nil
 	}
 
-	// The deposit sink is the CO-LOCATED warehouse group at the leg's waypoint (sp-5q2c:
-	// the anchor plus any additive-capacity siblings). None running → degrade.
+	// The deposit sink is the CO-LOCATED warehouse group at the leg's waypoint (the
+	// anchor plus any additive-capacity siblings). None running → degrade.
 	group := h.warehousesAt(ctx, cmd.PlayerID, leg.Waypoint)
 	if len(group) == 0 {
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no running warehouse at %s for %s deposit - degrading to re-plan (held cargo will liquidate)", legIdx, leg.Waypoint, trade.Good), map[string]interface{}{
@@ -1694,7 +1675,7 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: warehouse group at %s has no space for %d %s (all %d co-located op(s) full) - degrading to re-plan (held cargo will liquidate at market)", legIdx, leg.Waypoint, units, trade.Good, len(group)), map[string]interface{}{
 			"leg": legIdx, "good": trade.Good, "units": units, "waypoint": leg.Waypoint, "group_size": len(group),
 		})
-		return false, nil // full → degrade → next plan liquidates the held cargo (m5kv)
+		return false, nil // full → degrade → next plan liquidates the held cargo
 	}
 
 	response.TradesExecuted++
@@ -1703,11 +1684,11 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 }
 
 // warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the
-// co-located additive-capacity group (sp-5q2c: e.g. light-12 + heavy-4B at E42, whose
-// slots sum). Empty when none is running there or the finder is unwired (fail closed —
-// the caller degrades to pure arb for that leg). A stale sp-3lj5 zombie row is included
-// but contributes 0 free space and is never chosen as a deposit target, so aggregation
-// composes with the newest-wins zombie fix.
+// co-located additive-capacity group (e.g. light + heavy warehouses at the same
+// waypoint, whose slots sum). Empty when none is running there or the finder is
+// unwired (fail closed — the caller degrades to pure arb for that leg). A stale
+// zombie row is included but contributes 0 free space and is never chosen as a
+// deposit target, so aggregation composes with the newest-wins zombie fix.
 func (h *RunTourCoordinatorHandler) warehousesAt(ctx context.Context, playerID int, waypoint string) []*storage.StorageOperation {
 	if h.warehouseFinder == nil {
 		return nil
@@ -1721,9 +1702,9 @@ func (h *RunTourCoordinatorHandler) warehousesAt(ctx context.Context, playerID i
 
 // warehouseAt returns the newest RUNNING warehouse operation at waypoint (the group's
 // deposit anchor), or nil if none is running there. The deposit path aggregates the
-// whole co-located group (warehousesAt); this anchor pick is retained for the sp-3lj5
-// regression, where a stale zombie row sits alongside its live replacement at the same
-// waypoint — newest-wins ensures the anchor is the live op, and the group aggregation
+// whole co-located group (warehousesAt); this anchor pick guards against a stale
+// zombie row sitting alongside its live replacement at the same waypoint —
+// newest-wins ensures the anchor is the live op, and the group aggregation
 // independently ensures the zombie's 0-capacity never makes the warehouse look full.
 func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
 	return tradingsvc.SelectNewestRunningWarehouse(h.warehousesAt(ctx, playerID, waypoint))
@@ -1748,9 +1729,9 @@ func (h *RunTourCoordinatorHandler) plan(
 // planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
 // and calls the depth-aware planner for the given ship state. It is the plan core shared
 // by the live tour (plan, above — ship state + tour graph derived from the hull's real
-// position) and the sp-zhii reposition pre-flight (planAtCandidate — a SYNTHETIC ship
-// state positioned at a candidate system, over that candidate's tour graph, to price the
-// tour the hull WOULD fly there without moving it first).
+// position) and the reposition pre-flight (planAtCandidate — a SYNTHETIC ship state
+// positioned at a candidate system, over that candidate's tour graph, to price the tour
+// the hull WOULD fly there without moving it first).
 func (h *RunTourCoordinatorHandler) planForState(
 	ctx context.Context,
 	shipState routing.TourShipState,
@@ -1774,29 +1755,26 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// sp-mtvg: make the 1-gate-hop horizon's dropped exotic lanes LOUD. Best-effort and
 	// read-only — it never touches snapshot/plan and any error is swallowed (RULINGS #4).
 	h.recordUnreachableLanes(ctx, allowedSystems, snapshot, cmd.PlayerID)
-	// sp-dchv Lane C: assemble haul-to-storage deposit candidates for the planner to
-	// price against arb sells. Empty when pre-positioning is off, no warehouse is in
-	// the tour graph, or the capital ceiling is unreadable (fail closed) — the tour
-	// then plans pure arb, unchanged.
+	// Assemble haul-to-storage deposit candidates for the planner to price against arb
+	// sells. Empty when pre-positioning is off, no warehouse is in the tour graph, or
+	// the capital ceiling is unreadable (fail closed) — the tour then plans pure arb,
+	// unchanged.
 	deposits := h.depositCandidates(ctx, cmd, allowedSystems, reserve)
-	// sp-78ai L3: assemble the outstanding cross-container absorption the solver nets
-	// out of available depth so it plans AROUND sinks other containers occupy. Empty
-	// when the ledger is unwired / the consult is killed / the read fails (fail-OPEN —
-	// the conditional Reserve is the hard backstop), leaving the plan against full depth.
+	// Assemble the outstanding cross-container absorption the solver nets out of
+	// available depth so it plans AROUND sinks other containers occupy. Empty when
+	// the ledger is unwired / the consult is killed / the read fails (fail-OPEN — the
+	// conditional Reserve is the hard backstop), leaving the plan against full depth.
 	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID)
-	// sp-4hl5: the solver's money guard is spend_cap = max(0, max_spend −
-	// working_capital_reserve) (tour_solver.py, score_sequence) — a CASH contract:
-	// max_spend is the cash the caller lets the tour touch, the reserve a keep-back.
-	// That pairing only holds on the EXPLICIT --max-spend path. Under the DYNAMIC
-	// budget (cmd.MaxSpend == 0 → 25% of live treasury, re-resolved per tour),
-	// maxSpend is already a spend BUDGET — the capital guard is the 25% sizing plus
-	// the per-buy live-balance floor (reserveHeadroom, yqx4-proportional) — so
-	// forwarding the ABSOLUTE fleet reserve subtracted the guard a second time and
-	// zeroed the planner for any treasury below 4×reserve (25%×T ≤ reserve): every
-	// candidate scored "no profitable allocation under tranche decay/guards" and the
-	// heavy fleet relaunch-looped earning zero (2026-07-11, unmasked by sp-ggk2
-	// finally delivering the 1M [trade_fleet] reserve to live launches). The dynamic
-	// path hands the planner a reserve of 0; execution-time floors are untouched.
+	// The solver's money guard is spend_cap = max(0, max_spend − working_capital_reserve)
+	// (tour_solver.py, score_sequence) — a CASH contract: max_spend is the cash the
+	// caller lets the tour touch, the reserve a keep-back. That pairing only holds on
+	// the EXPLICIT --max-spend path. Under the DYNAMIC budget (cmd.MaxSpend == 0 → 25%
+	// of live treasury, re-resolved per tour), maxSpend is already a spend BUDGET — the
+	// capital guard is the 25% sizing plus the per-buy live-balance floor
+	// (reserveHeadroom, proportional to live treasury) — so forwarding the ABSOLUTE
+	// fleet reserve would subtract the guard a second time and zero the planner for any
+	// treasury below 4×reserve (25%×T ≤ reserve). The dynamic path hands the planner a
+	// reserve of 0; execution-time floors are untouched.
 	plannerReserve := reserve
 	if cmd.MaxSpend == 0 {
 		plannerReserve = 0
@@ -1809,13 +1787,13 @@ func (h *RunTourCoordinatorHandler) planForState(
 		WorkingCapitalReserve: plannerReserve,
 		AllowedSystems:        allowedSystems,
 		ExpectedModelVersion:  modelVersion,
-		// sp-syaz: 0 (the daemon/CLI default) => the solver's MAX_TOUR_SYSTEMS
-		// default (2), so the wire and plan are byte-identical to today; a positive
-		// knob raises the per-tour distinct-system cap.
+		// 0 (the daemon/CLI default) => the solver's MAX_TOUR_SYSTEMS default (2), so
+		// the wire and plan are byte-identical to today; a positive knob raises the
+		// per-tour distinct-system cap.
 		MaxTourSystems: cmd.MaxTourSystems,
-		// sp-im74: closed-tour mode. false/"" (every current caller) => the solver
-		// plans an OPEN tour byte-identical to today; true makes each planned tour
-		// end at the anchor via an appended, honestly-priced no-trade return leg.
+		// Closed-tour mode. false/"" (every current caller) => the solver plans an
+		// OPEN tour byte-identical to today; true makes each planned tour end at the
+		// anchor via an appended, honestly-priced no-trade return leg.
 		Closed:       cmd.ClosedTours,
 		AnchorSystem: cmd.AnchorSystem,
 	}
@@ -1824,9 +1802,9 @@ func (h *RunTourCoordinatorHandler) planForState(
 		return nil, nil, nil, err
 	}
 	// absorptionView is returned so the accept path can score cap-binding + ladder
-	// incidents (sp-8cz9) off the SAME netted depth the solver planned against — no
-	// re-read of the ledger. Nil when the ledger is unwired / consult killed, which
-	// simply yields no burn-in samples.
+	// incidents off the SAME netted depth the solver planned against — no re-read of
+	// the ledger. Nil when the ledger is unwired / consult killed, which simply
+	// yields no burn-in samples.
 	return plan, snapshot, absorptionView, nil
 }
 
@@ -1907,7 +1885,7 @@ func (h *RunTourCoordinatorHandler) recordUnreachableLanes(
 }
 
 // unreachableLane is one profitable lane the tour horizon hides: a good sourceable in the
-// tour graph whose best sink sits in an out-of-graph system (sp-mtvg).
+// tour graph whose best sink sits in an out-of-graph system.
 type unreachableLane struct {
 	Good           string
 	SourceWaypoint string
@@ -1933,8 +1911,8 @@ func inScopeSourcedGoods(snapshot []routing.TourGoodSnapshot) []string {
 	return goods
 }
 
-// computeUnreachableLanes is the pure detection core of the sp-mtvg diagnostic. For each
-// good with a cheap in-scope source (min Ask>0 in the snapshot), it flags the good when
+// computeUnreachableLanes is the pure detection core of the out-of-horizon diagnostic.
+// For each good with a cheap in-scope source (min Ask>0 in the snapshot), it flags the good when
 // its best sink (from `sinks`, the global cross-system scan) lies OUTSIDE allowedSystems
 // and clears the materiality floor. Returned richest-spread-first. Pure — no clock, no
 // metrics, no IO — so the flagging rules are unit-tested directly.
@@ -1977,22 +1955,22 @@ func computeUnreachableLanes(
 	return dropped
 }
 
-// depositCandidates assembles the haul-to-storage deposit sinks for the planner
-// (sp-dchv Lane C). It gates on the CAPITAL stage first (RULINGS #4/#5) and only
-// enters the funnel (BuildDepositCandidates) when there is real capital to spend:
+// depositCandidates assembles the haul-to-storage deposit sinks for the planner. It
+// gates on the CAPITAL stage first (RULINGS #4/#5) and only enters the funnel
+// (BuildDepositCandidates) when there is real capital to spend:
 //   - pre-positioning off (Enabled=false) → silent off-switch;
 //   - subsystem unwired → WARNING (a wiring bug);
 //   - no capital ceiling configured (depositCeilingPct<=0) → DORMANT, fail closed —
-//     opportunistic tour money movement is a captain/analyst decision (sp-13tl), NOT
-//     an auto-10%-of-treasury default that turns spending ON with no ruled number;
+//     opportunistic tour money movement is a captain/analyst decision, NOT an
+//     auto-10%-of-treasury default that turns spending ON with no ruled number;
 //   - live balance unreadable → WARNING, fail closed (RULINGS #4);
 //   - ceiling resolves to 0 (treasury at/below the reserve) → nothing to stock now.
 //
 // Each parked outcome logs at most ONCE per container per distinct state via
-// recordDepositParked — the deploy-time spam (14+ WARNs/5min/hull) was this method
-// re-emitting the same fail-closed verdict every re-plan. The capital-available path
-// clears the remembered state (a later park re-logs as a state change) and delegates
-// to BuildDepositCandidates, whose own funnel verdict then fires only when there is
+// recordDepositParked, so a hull whose deposits stay parked does not re-emit the
+// same fail-closed verdict every re-plan. The capital-available path clears the
+// remembered state (a later park re-logs as a state change) and delegates to
+// BuildDepositCandidates, whose own funnel verdict then fires only when there is
 // capital to spend, never as per-tick parked noise.
 func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, cmd *RunTourCoordinatorCommand, allowedSystems []string, reserve int64) []routing.TourDepositCandidate {
 	if !h.prePositioning.Enabled {
@@ -2004,7 +1982,7 @@ func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, cmd *
 	}
 	if h.storageCoordinator == nil || h.warehouseFinder == nil || h.demandMiner == nil {
 		// Enabled but a dependency is unwired: a WIRING BUG, not an off-switch — make it
-		// LOUD (sp-dchv observability), but once per container (sp-13tl), not per re-plan.
+		// LOUD, but once per container, not per re-plan.
 		h.recordDepositParked(ctx, key, "WARNING",
 			"pre-positioning enabled but subsystem unwired (storageCoordinator/warehouseFinder/demandMiner nil)",
 			map[string]interface{}{
@@ -2057,8 +2035,8 @@ func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, cmd *
 
 // recordDepositParked emits a pre-positioning parked/dormant verdict for a container at
 // most ONCE per distinct (level, reason): a hull whose deposits stay parked across
-// hundreds of re-plans logs one line, not one per tick (sp-13tl). A genuine state change
-// — a different reason, or a transition through the capital-available path, which clears
+// hundreds of re-plans logs one line, not one per tick. A genuine state change — a
+// different reason, or a transition through the capital-available path, which clears
 // the remembered signature — re-emits. Concurrency-safe: the tour handler is a shared
 // singleton dispatched for every touring hull at once.
 func (h *RunTourCoordinatorHandler) recordDepositParked(ctx context.Context, key, level, reason string, fields map[string]interface{}) {
@@ -2086,11 +2064,11 @@ func (h *RunTourCoordinatorHandler) clearDepositParked(key string) {
 // percent of LIVE treasury, held JUNIOR to the working-capital reserve (never tie up
 // capital that would breach it). The caller (depositCandidates) gates on
 // depositCeilingPct>0 before calling this; a non-positive pct here returns a KNOWN zero
-// (fail closed, parked) rather than substituting a default — sp-13tl removed the auto-10%
-// so an unset ceiling can never silently turn money movement ON. Returns known=false when
-// the live balance is UNREADABLE — the caller then offers no candidates (fail closed,
-// RULINGS #4). The foreign buys the deposits fund still pass the per-buy working-capital
-// floor and the cumulative max-spend cap at execution; this ceiling is layered on top.
+// (fail closed, parked) rather than substituting a default — an unset ceiling can never
+// silently turn money movement ON. Returns known=false when the live balance is
+// UNREADABLE — the caller then offers no candidates (fail closed, RULINGS #4). The
+// foreign buys the deposits fund still pass the per-buy working-capital floor and the
+// cumulative max-spend cap at execution; this ceiling is layered on top.
 func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, reserve int64) (int64, bool) {
 	if h.apiClient == nil {
 		return 0, false
@@ -2120,20 +2098,20 @@ func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, r
 // tourSystems is the default tour graph: the hull's current system plus every system
 // one gate hop away with fresh market data (the planner scopes each tour to
 // maxTourSystems within this allowed set). Neighbor discovery fails open to home-only.
-// sp-jsng threads cmd so the candidate set can be widened past 1 gate hop once the solver
-// clamp is lifted (arming-gated in tourSystemsFrom); byte-identical at the epic defaults.
+// Threads cmd so the candidate set can be widened past 1 gate hop once the solver
+// clamp is lifted (arming-gated in tourSystemsFrom); byte-identical at the defaults.
 func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navigation.Ship, cmd *RunTourCoordinatorCommand) []string {
 	return h.tourSystemsFrom(ctx, ship.CurrentLocation().SystemSymbol, cmd)
 }
 
 // tourSystemsFrom is tourSystems generalized to an arbitrary home system. The live tour
-// centers it on the hull's current system; the sp-zhii reposition pre-flight centers it
-// on a candidate system to build that candidate's tour graph.
+// centers it on the hull's current system; the reposition pre-flight centers it on a
+// candidate system to build that candidate's tour graph.
 //
-// sp-jsng: at the epic default (effectiveCandidateHopDepth <= 1) it returns the VERBATIM
-// pre-jsng 1-hop set (oneHopTourSystems) with ZERO durable-graph access — byte-identical.
-// Only when the arming gate opens (a configured depth > 1 AND the solver clamp lifted) does
-// it widen, and the widened set is floored to the 1-hop set so it can never go narrower.
+// At the default (effectiveCandidateHopDepth <= 1) it returns the VERBATIM 1-hop set
+// (oneHopTourSystems) with ZERO durable-graph access — byte-identical. Only when the
+// arming gate opens (a configured depth > 1 AND the solver clamp lifted) does it widen,
+// and the widened set is floored to the 1-hop set so it can never go narrower.
 func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
 	oneHop := h.oneHopTourSystems(ctx, home, cmd.PlayerID)
 	if h.effectiveCandidateHopDepth(cmd) <= 1 {
@@ -2142,9 +2120,9 @@ func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home st
 	return h.widenedTourSystems(ctx, home, cmd, oneHop)
 }
 
-// oneHopTourSystems is the VERBATIM pre-jsng tourSystemsFrom body: home + every live
+// oneHopTourSystems is the VERBATIM tourSystemsFrom body: home + every live
 // 1-gate-hop neighbor with fresh data, deduped, fail-open to home-only. It is the default
-// result AND the floor the widened branch (sp-jsng) can never go below.
+// result AND the floor the widened branch can never go below.
 func (h *RunTourCoordinatorHandler) oneHopTourSystems(ctx context.Context, home string, playerID int) []string {
 	systems := []string{home}
 	seen := map[string]bool{home: true}
@@ -2162,12 +2140,12 @@ func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing
 	cargo := map[string]int{}
 	if c := ship.Cargo(); c != nil {
 		for _, item := range c.Inventory {
-			// sp-1vhv: never offer reserved cargo (staged outfitting modules, or an
+			// Never offer reserved cargo (staged outfitting modules, or an
 			// operator-protected good) to the planner as sellable/liquidatable
 			// inventory — the tour must not PLAN to sell what the executor will
 			// refuse to sell, and its projected profit must not book phantom
 			// module-liquidation revenue. Non-reserved held cargo is still carried
-			// forward and liquidated as launch inventory (sp-m5kv).
+			// forward and liquidated as launch inventory.
 			if ship.IsCargoReserved(item.Symbol) {
 				continue
 			}
@@ -2192,9 +2170,9 @@ func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing
 
 // defaultMaxSpend resolves the 25%-of-treasury cap (RULINGS #6) when --max-spend is 0.
 // It returns (cap, unreadable) so the caller can tell "no treasury source, plan
-// uncapped" apart from "have a source but the read FAILED, fail closed" (sp-7z7j) —
-// the pre-fix single int64(0) conflated the two, letting a transient read failure
-// masquerade as a 0 budget:
+// uncapped" apart from "have a source but the read FAILED, fail closed" — a single
+// int64(0) would conflate the two, letting a transient read failure masquerade as a
+// 0 budget:
 //
 //   - unreadable=false, cap>0  → live treasury read; size the tour to 25% of it.
 //   - unreadable=false, cap=0  → NO apiClient wired at all (structural; the daemon
@@ -2203,8 +2181,8 @@ func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing
 //   - unreadable=true,  cap=0  → a treasury SOURCE is wired but the live read FAILED
 //     (no player token, or GetAgent errored). The caller MUST fail closed: never spend
 //     on this, never fall back to unlimited or a stale budget — pause and retry so a
-//     continuous (--iterations -1) loop survives the transient (the exact 5/5 field
-//     repro where a shared-agent GetAgent blip completed every hull after one iteration).
+//     continuous (--iterations -1) loop survives the transient (a shared-agent GetAgent
+//     blip must not complete every hull after one iteration).
 func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context) (int64, bool) {
 	logger := common.LoggerFromContext(ctx)
 	if h.apiClient == nil {
@@ -2262,9 +2240,9 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 	realizedUnits, realizedUnitPrice int,
 	plannedAt time.Time,
 ) {
-	// sp-umyb: emit the realized-vs-planned unit-price drift (feeds the Plan vs Realized
-	// Drift % panel) keyed by side. Independent of the telemetry repo — a nil telemetry
-	// sink must not suppress it — and nil-safe, so a metrics miss never touches the trade
+	// Emit the realized-vs-planned unit-price drift (feeds the Plan vs Realized Drift %
+	// panel) keyed by side. Independent of the telemetry repo — a nil telemetry sink
+	// must not suppress it — and nil-safe, so a metrics miss never touches the trade
 	// path (RULINGS #4). ExpectedUnitPrice is the plan basis; a non-positive basis is
 	// skipped downstream.
 	metrics.ObserveTourLegPriceDrift(tradeSide(trade), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))

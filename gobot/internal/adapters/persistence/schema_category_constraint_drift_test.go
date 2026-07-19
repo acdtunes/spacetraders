@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 )
 
-// This file is the durable schema-drift gate for the sp-ofjx category_is_f_type
+// This file is the durable schema-drift gate for the category_is_f_type
 // CHECK constraint (migration 039), the functional-dependency sibling of the enum
 // IN(...) gate in schema_enum_drift_test.go.
 //

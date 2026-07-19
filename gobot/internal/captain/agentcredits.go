@@ -30,7 +30,7 @@ const creditsProbeTimeout = 5 * time.Second
 // SetAgentAPI wires the live agent-credit source and the player token used to
 // authenticate it, without changing the constructor signature legacy tests
 // depend on. When left unwired the supervisor falls back to the
-// contract-anchored ledger reconstruction exactly as before.
+// contract-anchored ledger reconstruction.
 //
 // The token is captured ONCE here. This codebase rotates players/tokens across
 // eras, so after an era reset a still-running supervisor's token goes stale:
@@ -49,16 +49,14 @@ func (s *Supervisor) SetAgentAPI(client agentCreditsAPI, token string) {
 // preferring the live agent API (ground truth — the value the captain sizes its
 // thresholds from) and falling back to the contract-anchored ledger
 // reconstruction only when the API is unavailable AND no live value has ever
-// been observed. Every failure is logged: the old silent
-// `if credits, err := CurrentCredits(...); err == nil` swallow let a DB error
-// evaluate the wake gate indefinitely against a stale value with zero signal
-// (sp-sk68 D3).
+// been observed. Every failure is logged, so a stale value is never evaluated
+// against the wake gate silently.
 //
 // Once a live value has been observed, a transient GetAgent error RETAINS that
 // last live value rather than flipping the gate back to the ledger
-// reconstruction: the reconstruction is the exact divergent source whose
-// mismatch with live motivated D3, so a single API blip must not resurface an
-// untruthful CreditsAbove/Below evaluation — and flip-flopping the source
+// reconstruction: the reconstruction can diverge from live, so a single API
+// blip must not resurface an untruthful CreditsAbove/Below evaluation — and
+// flip-flopping the source
 // between ticks would also emit spurious credits-threshold crossings. When both
 // sources are unavailable the last known value is retained, never reset to zero.
 func (s *Supervisor) refreshCredits(ctx context.Context) {

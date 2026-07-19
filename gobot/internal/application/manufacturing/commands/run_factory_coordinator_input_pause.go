@@ -12,39 +12,35 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 )
 
-// sp-r5a6 (Admiral order: automate the input-poison anti-cycle). The a5j7 supply-first selector
-// already REFUSES a depleted input source at buy time (SCARCE/LIMITED are structurally
-// unselectable), so an input-poisoned chain parks — but it parks and RE-POLLS on the short
-// no-work backoff, holding its slot and re-reading the market every ~45s. The captain ran the
-// recovery by hand (sp-a5j7 notes ~14:33Z): STOP the poisoned home chains outright so they
-// stop polling and stop pressing the market, and re-attempt them only after the supply had
-// hours to regenerate. This automates that: a pre-spend guard that PAUSES a chain whose input
-// layer has gone ineligible, then holds it OFF the market for a recovery half-life before the
-// one-iteration re-attempt.
+// The supply-first selector already REFUSES a depleted input source at buy time (SCARCE/LIMITED
+// are structurally unselectable), so an input-poisoned chain parks — but it parks and RE-POLLS
+// on the short no-work backoff, holding its slot and re-reading the market every ~45s. This is
+// the input-poison anti-cycle guard: a pre-spend guard that PAUSES a chain whose input layer has
+// gone ineligible, then holds it OFF the market for a recovery half-life before the one-iteration
+// re-attempt.
 //
 // THREE differences from the sibling guards make this the INPUT-side automation completing the
-// self-pruning set (the C2 kill-switch is the OUTPUT side, on realized P&L):
+// self-pruning set (the chain-P&L kill-switch is the OUTPUT side, on realized P&L):
 //
-//  1. DETECT on SUPPLY, not price/P&L. The a5j7 doctrine is that supply is the LEADING
-//     indicator (a source ladders the moment it's over-drawn; the ask is the lagging symptom).
-//     Detection asks the same MODERATE+ eligibility the selector picks from
-//     (EligibleSourceMedianAsk count==0) — so a chain pauses the instant its input layer has no
-//     healthy in-system source, before any spend, before the P&L symptom the margin guard reads.
+//  1. DETECT on SUPPLY, not price/P&L. Supply is the LEADING indicator (a source ladders the
+//     moment it's over-drawn; the ask is the lagging symptom). Detection asks the same
+//     MODERATE+ eligibility the selector picks from (EligibleSourceMedianAsk count==0) — so a
+//     chain pauses the instant its input layer has no healthy in-system source, before any
+//     spend, before the P&L symptom the margin guard reads.
 //
 //  2. PAUSE on the RECOVERY CLOCK, not the 45s backoff. Once paused, the container sleeps until
 //     a config recovery half-life (~194min, analyst-owned) before it re-reads the market at all:
 //     ZERO polling and ZERO buying pressure during early recovery, because early-recovery buys
-//     re-poison the just-regenerating well (the T1 finding). The re-attempt is one iteration
-//     through the full launch-guard stack (this guard → the sp-2dv4 margin guard → the a5j7
-//     supply-first selector at spend): a still-poisoned layer re-pauses at zero cost, a
-//     recovered layer proceeds.
+//     re-poison the just-regenerating well. The re-attempt is one iteration through the full
+//     launch-guard stack (this guard → the chain-margin guard → the supply-first selector at
+//     spend): a still-poisoned layer re-pauses at zero cost, a recovered layer proceeds.
 //
-//  3. PRECEDENCE over C2. This runs BEFORE the margin guard and the C2 kill-switch, so an
-//     input-poisoned chain gets the long recovery pause rather than the short margin park or a
-//     realized-P&L kill. If both this and C2 would fire on one tick, this wins — it is cheaper
-//     (an in-system supply read vs a realized-P&L ledger read) and it is the upstream cause (no
-//     healthy inputs) of the downstream symptom (poor realized P&L). The two never fight: each
-//     is a returns-early pre-spend gate keyed to its own state map.
+//  3. PRECEDENCE over the chain-P&L kill-switch. This runs BEFORE the margin guard and the
+//     kill-switch, so an input-poisoned chain gets the long recovery pause rather than the short
+//     margin park or a realized-P&L kill. If both would fire on one tick, this wins — it is
+//     cheaper (an in-system supply read vs a realized-P&L ledger read) and it is the upstream
+//     cause (no healthy inputs) of the downstream symptom (poor realized P&L). The two never
+//     fight: each is a returns-early pre-spend gate keyed to its own state map.
 //
 // Pause ONLY on POSITIVE evidence of depletion (the deliberate distinction from the sibling
 // pre-spend guards, which fail CLOSED to a short park). This guard's pause is LONG (a recovery
@@ -55,16 +51,16 @@ import (
 // per-waypoint read misses, or when the good has no in-system source at all: none of those is a
 // depleted-market-that-recovers (a transient miss would idle a healthy chain for hours; a
 // sourceless input needs a re-site, not a wait). All of those fall through to the selector's
-// ordinary production-time park — cheaply. RULINGS #4 (pause = the fail-safe direction on spend)
-// is honored: this can only STOP a chain, never start one.
+// ordinary production-time park — cheaply. This can only STOP a chain, never start one (the
+// fail-safe direction on spend).
 
 const (
 	// defaultInputRecoveryReattemptMinutes is how long a chain stays paused before the
-	// one-iteration re-attempt (sp-r5a6). Keyed to the analyst's measured input recovery
-	// half-life (~194min median for a SCARCE market to regenerate to MODERATE+). A 0/absent
-	// config value resolves to this at the point of use — a protective default that turns the
-	// anti-cycle ON (it can only STOP spend, RULINGS #5), so a default is correct. Config, not a
-	// constant, so the analyst retunes the number live.
+	// one-iteration re-attempt. Keyed to the analyst's measured input recovery half-life
+	// (~194min median for a SCARCE market to regenerate to MODERATE+). A 0/absent config value
+	// resolves to this at the point of use — a protective default that turns the anti-cycle ON,
+	// since it can only STOP spend. Config, not a constant, so the analyst retunes the number
+	// live.
 	defaultInputRecoveryReattemptMinutes = 194
 )
 
@@ -73,13 +69,13 @@ type inputPauseReason string
 
 const (
 	inputPauseProceed    inputPauseReason = "proceed"                // input layer eligible, produce
-	inputPauseDisabled   inputPauseReason = "anti_cycle_disabled"    // off-switch (RULINGS #5)
+	inputPauseDisabled   inputPauseReason = "anti_cycle_disabled"    // off-switch
 	inputPauseNoInputs   inputPauseReason = "no_buy_inputs"          // nothing market-sourced to gate
 	inputLayerIneligible inputPauseReason = "input_layer_ineligible" // the PAUSE verdict
 )
 
 // inputPauseVerdict is the structured, loggable result of an input-layer evaluation. Every
-// number/name goes in the log message TEXT (the container-log renderer drops metadata, sp-iqyq);
+// number/name goes in the log message TEXT, since the container-log renderer drops metadata;
 // the same fields are exposed for structured consumers.
 type inputPauseVerdict struct {
 	Paused           bool
@@ -100,8 +96,8 @@ type inputPauseEntry struct {
 }
 
 // evaluateInputLayerPause decides whether this chain's market-sourced input layer has gone
-// ineligible (sp-r5a6). It NEVER returns an error and pauses ONLY on positive evidence of
-// depletion — a required input with a readable in-system EXPORT source that is SCARCE/LIMITED
+// ineligible. It NEVER returns an error and pauses ONLY on positive evidence of depletion — a
+// required input with a readable in-system EXPORT source that is SCARCE/LIMITED
 // (see file header on why an unreadable/absent source fails toward production, not the pause).
 // The verdict is pure; arming the recovery clock + the metric/log is recordInputLayerPause's job.
 func (h *RunFactoryCoordinatorHandler) evaluateInputLayerPause(ctx context.Context, cmd *RunFactoryCoordinatorCommand, nodes []*goods.SupplyChainNode) inputPauseVerdict {
@@ -156,7 +152,7 @@ func (h *RunFactoryCoordinatorHandler) evaluateInputLayerPause(ctx context.Conte
 }
 
 // resolveReattemptMinutes resolves the recovery half-life for a pause: the command's configured
-// value, or the 194min default at the point of use for a 0/absent value (RULINGS #5).
+// value, or the 194min default at the point of use for a 0/absent value.
 func resolveReattemptMinutes(cmd *RunFactoryCoordinatorCommand) int {
 	if cmd.InputRecoveryReattemptMinutes > 0 {
 		return cmd.InputRecoveryReattemptMinutes
@@ -224,7 +220,7 @@ func (h *RunFactoryCoordinatorHandler) inputPauseReattemptDelay(containerID stri
 // pause signal with once-per-EPISODE dedup: on the running→paused transition it increments the
 // pause counter and logs one WARNING with the numbers in the text; a re-attempt that finds the
 // layer still ineligible re-arms the clock but is SILENT (same episode — the chain never
-// resumed), mirroring the C2 kill-switch's episode dedup. Returns whether this call was the
+// resumed), mirroring the chain-P&L kill-switch's episode dedup. Returns whether this call was the
 // running→paused transition (emitted). Keyed by ContainerID.
 func (h *RunFactoryCoordinatorHandler) recordInputLayerPause(ctx context.Context, cmd *RunFactoryCoordinatorCommand, v inputPauseVerdict) bool {
 	reattemptAt := h.clock.Now().Add(time.Duration(v.ReattemptMinutes) * time.Minute)
@@ -274,8 +270,8 @@ func (h *RunFactoryCoordinatorHandler) clearInputLayerPause(ctx context.Context,
 	return true
 }
 
-// PauseMessage renders the human/greppable pause reason with every name/number in the TEXT (the
-// container-log renderer drops metadata, sp-iqyq). It doubles as the response NoWorkReason.
+// PauseMessage renders the human/greppable pause reason with every name/number in the TEXT, since
+// the container-log renderer drops metadata. It doubles as the response NoWorkReason.
 func (v inputPauseVerdict) PauseMessage() string {
 	return fmt.Sprintf(
 		"PAUSED chain %s: input layer ineligible — no MODERATE+ supply source in-system for [%s]. Anti-cycle holds the chain OFF the market for %dmin (recovery half-life) so early-recovery buys can't re-poison the well; worker released, one-iteration re-attempt through the launch guards after the clock (sp-r5a6).",

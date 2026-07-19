@@ -46,11 +46,8 @@ func insertIdleContractHull(t *testing.T, db *gorm.DB, symbol string, playerID i
 
 // The regression proof for sp-1hp9: an idle-arb dispatch must persist the container
 // row BEFORE it claims the hull, so the ships.container_id FK (fk_ships_container)
-// has a parent to reference. Before the fix, LaunchIdleArb claimed first and every
-// dispatch died with "insert or update on table ships violates foreign key
-// constraint fk_ships_container (SQLSTATE 23503)" — zero idle-arb harvests since
-// deploy. With FK enforcement ON against the real repos, the old claim-first order
-// fails right here; the fixed Add->ClaimShip order lets the claim land.
+// has a parent to reference — a claim-first order violates the FK. With FK enforcement
+// ON against the real repos, the Add->ClaimShip order is what lets the claim land.
 func TestLaunchIdleArb_PersistsContainerRowBeforeClaim_NoFKViolation(t *testing.T) {
 	s, db, playerID := idleArbFKServer(t)
 	insertIdleContractHull(t, db, "TORWIND-8", playerID)

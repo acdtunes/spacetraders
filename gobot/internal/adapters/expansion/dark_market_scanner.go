@@ -17,14 +17,14 @@ type marketBacklogSource interface {
 }
 
 // DarkMarketScanner backs the frontier coordinator's scan-only backlog port
-// (commands.DarkMarketScanner, sp-jide). It answers "which charted MARKET systems has the player
+// (commands.DarkMarketScanner). It answers "which charted MARKET systems has the player
 // never scanned" by SUBTRACTING the scanned set from the charted-market set — the FULL discovered
 // "dark" backlog. It is deliberately UNBOUNDED by gate hops: unlike the expansion-frontier BFS
 // (which surfaces only the ~frontier subset a probe can reach in a few jumps), this is every
 // charted market system with zero player market_data, the complete set the operator drains when
 // expansion is paused. Era scoping lives in ChartedMarketSystemCounts (current-era waypoints only),
 // so a dead-universe system can never enter the backlog.
-// DefaultStaleMarketSeconds is the sp-pvw3 coverage-gap staleness threshold: a charted market whose
+// DefaultStaleMarketSeconds is the coverage-gap staleness threshold: a charted market whose
 // oldest player market_data is older than this is treated as effectively dark and re-enters the
 // backlog. Set well ABOVE the freshness sizer's ~1h SLA (4h) so it catches only markets the sizer has
 // ABANDONED — not its normal refresh cadence — while still surfacing genuinely stale price data the
@@ -39,13 +39,13 @@ type DarkMarketScanner struct {
 
 // NewDarkMarketScanner wires the dark-market backlog over the market persistence reads. staleAfterSeconds
 // is the "or stale" threshold (see DefaultStaleMarketSeconds); a non-positive value disables staleness so
-// only NEVER-scanned charted markets are dark (the pre-sp-pvw3 behavior).
+// only NEVER-scanned charted markets are dark.
 func NewDarkMarketScanner(source marketBacklogSource, staleAfterSeconds float64) *DarkMarketScanner {
 	return &DarkMarketScanner{source: source, staleAfterSeconds: staleAfterSeconds}
 }
 
 // ChartedUnscannedMarketSystems returns every charted market system with NO or STALE player
-// market_data (sp-pvw3 coverage-gap broadening), each annotated with its marketplace-waypoint count
+// market_data (coverage-gap broadening), each annotated with its marketplace-waypoint count
 // (the scan ranking key). This is the WHOLE charted frontier's dark/stale set — the honest "dark-market
 // backlog", broader than the old never-scanned-only queue: a system whose markets were charted but
 // whose prices were never scanned (the live charting→price-scan handoff gap) is dark, and a system

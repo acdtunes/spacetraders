@@ -14,7 +14,7 @@ func feasible(system string, ex float64, hops int, deadheadHours, beta float64) 
 	}
 }
 
-// RED#3 (sp-z7ng): score(x) = E_x − β·D_x is a linear deadhead charge. A candidate 0.25h of deadhead
+// score(x) = E_x − β·D_x is a linear deadhead charge. A candidate 0.25h of deadhead
 // away at β=800/hr is charged 200; a D=0 candidate (the current system) is charged nothing, so its
 // score is exactly E_x (the D_s=0 identity the stay option rides).
 func TestScore_LinearDeadheadCharge(t *testing.T) {
@@ -26,7 +26,7 @@ func TestScore_LinearDeadheadCharge(t *testing.T) {
 	}
 }
 
-// RED#4 (sp-z7ng): STAY wins net of the move. A current-system E_s=900 (D=0) beats a richer foreign
+// STAY wins net of the move. A current-system E_s=900 (D=0) beats a richer foreign
 // E_x=1000 that is 0.5h of deadhead away at β=800 (charged score 1000−400=600), so Decide holds the
 // hull on its ground — Winner is the current system and Stay is set. A jump that earns less per hour
 // once the crossing is paid is not worth the antimatter.
@@ -48,7 +48,7 @@ func TestDecide_StayWinsNetOfMove(t *testing.T) {
 	}
 }
 
-// RED#5 (sp-z7ng): the park floor HOLDS a hull when no ground — including staying — clears φ·β. With
+// The park floor HOLDS a hull when no ground — including staying — clears φ·β. With
 // β=1000 and φ=0.3 the floor is 300; every candidate score sits below it, so Decide parks (Hold=true,
 // no Winner) and the HoldReason names the floor so an operator reading the log sees WHY nothing fired.
 func TestDecide_ParkFloorHoldsBelowPhi(t *testing.T) {
@@ -69,7 +69,7 @@ func TestDecide_ParkFloorHoldsBelowPhi(t *testing.T) {
 	}
 }
 
-// RED#6 (sp-z7ng): the epic's unit/brute-force parity lane. Over 500 randomized evaluation sets,
+// Unit/brute-force parity lane. Over 500 randomized evaluation sets,
 // Decide's winner and its stay/hold flags must match an independent straight-line reimplementation of
 // argmax-over-feasible + park floor — the algebra of the DIFF phase has no hidden state.
 func TestDecide_BruteForceArgmaxParity(t *testing.T) {
@@ -128,7 +128,7 @@ func refDecide(evals []Evaluation, beta, phi float64) (winner string, stay, hold
 
 func systemName(i int) string { return "X1-" + string(rune('A'+i)) }
 
-// RED#7 (sp-z7ng): infeasible candidates NEVER win (even with an enormous score), and an unreadable
+// Infeasible candidates NEVER win (even with an enormous score), and an unreadable
 // β (≤0) is reported as BetaReadable=false with no verdict — Decide refuses to invent a β, so the
 // caller can fall back to the legacy engine instead of jumping off a fabricated rate.
 func TestDecide_InfeasibleAndUnreadableInputs(t *testing.T) {

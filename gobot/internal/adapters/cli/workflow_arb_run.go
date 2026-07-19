@@ -9,10 +9,10 @@ import (
 )
 
 // newWorkflowArbRunCommand creates the workflow arb-run subcommand: a ONE-SHOT,
-// captain-directed, guarded arbitrage run (sp-p4ua) — the deliberate middle between
+// captain-directed, guarded arbitrage run — the deliberate middle between
 // hand-flying an arb leg and the autonomous trade-route circuit.
 //
-// Like trade-route (post sp-zewt) this is a THIN CLIENT: it asks the daemon to start a
+// Like trade-route this is a THIN CLIENT: it asks the daemon to start a
 // recovery-safe arb-run CONTAINER rather than flying the trade in-process. The container
 // buys the named good ONCE at the source, routes (cross-gate: jump + cooldown + refuel,
 // same RouteExecutor-backed travel trade-route uses) to the destination, sells, and

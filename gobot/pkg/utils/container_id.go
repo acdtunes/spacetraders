@@ -14,7 +14,6 @@ import (
 //   - Output: "navigate-SCOUT-1-a3f8e2b1"
 //
 // The generated IDs are:
-//   - Shorter than previous formats (18-37% reduction)
 //   - Human-readable with clear operation type
 //   - Globally unique via UUID suffix
 //   - Consistent across all container types

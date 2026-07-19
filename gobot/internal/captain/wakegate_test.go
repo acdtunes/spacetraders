@@ -221,9 +221,8 @@ func TestEvaluateWakeGate(t *testing.T) {
 // supervisor CONSUMES a fired bound from the persisted policy (sets it to nil),
 // the gate itself carries no fired-flag/edge-state: a bound PRESENT in the policy
 // has never fired and wakes on the plain level check; a consumed bound is simply
-// ABSENT (nil) and cannot wake. This is what ended the event-less storm the
-// original level gate produced — a consumed bound can never re-cross. The
-// interrupt path is checked first and is unaffected by credits.
+// ABSENT (nil) and cannot wake, so it can never re-cross. The interrupt path is
+// checked first and is unaffected by credits.
 func TestEvaluateWakeGateCreditsOneShot(t *testing.T) {
 	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	// Cadence far from due for every case, so credits are the only wake driver.
@@ -291,9 +290,9 @@ func TestEvaluateWakeGateCreditsOneShot(t *testing.T) {
 // session runs at or after the alarm instant (LastSession >= *NextWakeAt) the
 // alarm is spent and the heartbeat cadence resumes — otherwise a past alarm
 // left un-re-declared makes now >= *NextWakeAt true on every 30s tick and wakes
-// the captain each tick until the hourly cap trips (the live regression from
-// the sk68 merge). D2's guarantees are preserved: with no alarm an overdue
-// heartbeat still wakes, and a future alarm still defers per the D2 rules.
+// the captain every tick until the hourly cap trips. D2's guarantees are
+// preserved: with no alarm an overdue heartbeat still wakes, and a future
+// alarm still defers per the D2 rules.
 func TestWakeGateNextWakeAtIsOneShot(t *testing.T) {
 	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 
@@ -315,12 +314,9 @@ func TestWakeGateNextWakeAtIsOneShot(t *testing.T) {
 			want: true,
 		},
 		{
-			// THE REGRESSION (RED against the pre-fix code): the same alarm one
-			// tick after a session serviced it (LastSession == alarm). The alarm
-			// is spent; the resumed heartbeat is nowhere near due, so this tick —
-			// and every subsequent tick — must NOT wake. The pre-fix code pins
-			// next=*NextWakeAt unconditionally, so now(base+1m) >= alarm(base)
-			// wakes on every tick.
+			// The same alarm one tick after a session serviced it (LastSession
+			// == alarm). The alarm is spent; the resumed heartbeat is nowhere
+			// near due, so this tick — and every subsequent tick — must NOT wake.
 			name: "spent alarm (LastSession == alarm) does not re-fire",
 			in: wakeGateInput{
 				Now:              base.Add(time.Minute),
@@ -332,8 +328,7 @@ func TestWakeGateNextWakeAtIsOneShot(t *testing.T) {
 		},
 		{
 			// A spent alarm falls back to the heartbeat cadence: no wake before
-			// LastSession+Heartbeat. Also RED against the pre-fix code (which
-			// still treats the past alarm as due).
+			// LastSession+Heartbeat.
 			name: "spent alarm resumes heartbeat cadence — not due before the interval",
 			in: wakeGateInput{
 				Now:              base.Add(44 * time.Minute),
@@ -391,9 +386,9 @@ func TestWakeGateAnchorsCadenceAndCeilingToDeclaredAt(t *testing.T) {
 		want bool
 	}{
 		{
-			// DECISIVE: with the old LastSession-only anchor the heartbeat was
-			// overdue (base-66m+45m = base-21m) and would wake; anchoring to the
-			// just-declared DeclaredAt=base proves liveness and defers to base+45m.
+			// Anchoring to the just-declared DeclaredAt=base proves liveness and
+			// defers an otherwise-overdue heartbeat (base-66m+45m = base-21m) to
+			// base+45m.
 			name: "declaration now re-anchors an overdue heartbeat and suppresses it",
 			in: wakeGateInput{
 				Now:              base,
@@ -436,10 +431,9 @@ func TestWakeGateAnchorsCadenceAndCeilingToDeclaredAt(t *testing.T) {
 			want: true,
 		},
 		{
-			// DECISIVE: a recent declaration lifts the never-wake ceiling to
-			// DeclaredAt+Max (base+180m). Under the old LastSession-anchored ceiling
-			// (base-66m+180m = base+114m) this Now would already be past the cap and
-			// wake; the fixed ceiling still defers.
+			// A recent declaration lifts the never-wake ceiling to
+			// DeclaredAt+Max (base+180m), not LastSession+Max (base+114m) — the
+			// fixed ceiling still defers.
 			name: "far-future NextWakeAt capped at DeclaredAt+Max, not LastSession+Max",
 			in: wakeGateInput{
 				Now:                    base.Add(150 * time.Minute),

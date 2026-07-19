@@ -12,8 +12,8 @@ import (
 )
 
 // gatedNeighborMediator records every LIVE GetJumpGateConnectionsQuery dispatch (the
-// uncached per-tick GetJumpGate the sp-jgcache prong-2 rewire is meant to STOP issuing when
-// a durable gate graph is wired). liveResp is what the live query would return, so a test can
+// uncached per-tick GetJumpGate call that must STOP issuing when a durable gate graph is
+// wired). liveResp is what the live query would return, so a test can
 // prove the wired path serves the DURABLE neighbors instead of this live set.
 type gatedNeighborMediator struct {
 	liveCalls int
@@ -73,8 +73,8 @@ func TestGatedNeighborSystems_NoGraph_FallsBackToLiveQuery(t *testing.T) {
 	}
 }
 
-// The fail-open-WITHOUT-reissue guard: a durable read error (an uncharted origin skipped by the
-// sp-jgcache precondition, or a gate in sp-ikx1 backoff) must degrade the scan to no neighbors
+// The fail-open-WITHOUT-reissue guard: a durable read error (an uncharted origin skipped by
+// the durable-read precondition, or a gate in backoff) must degrade the scan to no neighbors
 // (home-only lanes) — and must NOT fall back to re-issuing the doomed live query, which would
 // defeat both the precondition and the backoff. This is what keeps the reclaim real.
 func TestGatedNeighborSystems_DurableError_FailsOpenNoLiveReissue(t *testing.T) {

@@ -22,7 +22,7 @@ const (
 	// specify its own limit.
 	DefaultTopN = 20
 	// DefaultBuyLegSavingsPerUnit is the per-unit value credited to the source→central
-	// buy-leg the contract worker skips when a good is pre-positioned (sp-layd reframe).
+	// buy-leg the contract worker skips when a good is pre-positioned.
 	// It is what makes IN-SYSTEM pre-positioning worthwhile even when the cheapest source
 	// IS the home system (price differential 0): the warehouse compresses the export→A1
 	// haul the worker would otherwise fly. A small positive default keeps the in-system
@@ -41,14 +41,14 @@ const (
 type contractDemandSource interface {
 	ContractGoodDemand(ctx context.Context, eraID *int, deliverySystem *string) ([]ContractGoodDemand, error)
 	// CurrentEraID resolves the era (universe) a player belongs to, so a runtime mine can confine
-	// its delivery-system scope to the CURRENT universe (sp-fo0d): system symbols are reused across
+	// its delivery-system scope to the CURRENT universe: system symbols are reused across
 	// weekly resets, so a nil era would otherwise aggregate homonymous systems from every past
 	// universe. Returns nil when unknown (fail-open to all-eras).
 	CurrentEraID(ctx context.Context, playerID int) (*int, error)
 }
 
 // marketAskFinder is the pair of cheapest-ask lookups the miner joins against: the
-// all-systems scan for the cheapest SOURCE ask anywhere (home OR foreign — sp-layd) and
+// all-systems scan for the cheapest SOURCE ask anywhere (home OR foreign) and
 // the in-system scan for the HOME ask (the contract-source alternative the worker would
 // otherwise buy at). Satisfied by *MarketRepositoryGORM. Kept as a local narrow interface
 // (not the application/contract CrossSystemMarketFinder port) so the miner couples only to
@@ -69,7 +69,7 @@ const (
 	// the source warehouse, the stocker coordinator, the tour deposit sink, the CLI — is
 	// unaffected: they pass no rank mode and keep the exact savings ordering.
 	RankBySavings CandidateRankMode = iota
-	// RankByContractReward is the DESTINATION-side depot receipt ordering (sp-wxf2): by total
+	// RankByContractReward is the DESTINATION-side depot receipt ordering: by total
 	// CONTRACT-REWARD value (ContractCount × ContractRewardPerUnit). The depot buffer's receipt
 	// knapsack (PlanReceiptCaps) values received goods by contract reward, so its candidate feed
 	// must be culled by reward too — otherwise the savings cull drops high-reward/low-savings goods
@@ -83,7 +83,7 @@ type DemandMinerOptions struct {
 	MinRecurrence int // drop goods demanded by fewer than this many contracts (<1 => DefaultMinRecurrence)
 	TopN          int // cap on ranked rows returned (<=0 => DefaultTopN)
 	// BuyLegSavingsPerUnit is the per-unit value of the source→central buy-leg the
-	// contract worker skips when a good is pre-positioned (sp-layd). Added to the
+	// contract worker skips when a good is pre-positioned. Added to the
 	// price differential so an IN-SYSTEM-sourceable good (cheapest source == home,
 	// differential 0) still clears the "savings > 0" guard. <=0 =>
 	// DefaultBuyLegSavingsPerUnit (fail OPEN for the in-system case).
@@ -91,33 +91,32 @@ type DemandMinerOptions struct {
 	// RankBy selects the ranking the TopN cull truncates against. The zero value (RankBySavings)
 	// preserves the source-side stocker ordering byte-identically; the DEPOT receipt path sets
 	// RankByContractReward so a high-reward/low-savings good is not culled before the reward
-	// knapsack (sp-wxf2).
+	// knapsack.
 	RankBy CandidateRankMode
 }
 
 // DemandCandidate is one ranked pre-positioning row: a recurrently-contracted good
-// joined to the cheapest SOURCE market anywhere that sells it (home OR foreign — sp-layd)
+// joined to the cheapest SOURCE market anywhere that sells it (home OR foreign)
 // and, when the home system sells it, the home ask plus the per-unit savings.
 //
-// The Foreign* field names are HISTORICAL (sp-dchv shipped cross-system-only): they now
-// carry the cheapest source ANYWHERE, which may be a market in the HOME system itself.
-// The consumers (stocker buy leg, tour deposit sink) buy at ForeignMarket regardless of
-// its system — an in-system source is trivially reachable (0 jumps) and hauled to the
-// central warehouse.
+// The Foreign* field names are a naming artifact of an earlier cross-system-only
+// version: they now carry the cheapest source ANYWHERE, which may be a market in the
+// HOME system itself. The consumers (stocker buy leg, tour deposit sink) buy at
+// ForeignMarket regardless of its system — an in-system source is trivially reachable
+// (0 jumps) and hauled to the central warehouse.
 //
 // A row with NO market anywhere (not even home) is DROPPED — nothing to source, nowhere
-// to buy, so it cannot be pre-positioned (fail closed, RULINGS #4; this is NOT the
-// in-system case the reframe protects). A row with a source but no known HOME ask is
-// RETAINED but flagged StockEligible=false: it is informative for the captain (the
-// sp-dchv "home never sells the good" signal, design §5 Q5) while remaining unstockable
-// for the deposit guard, which needs a known home ask to price the contract-source
-// alternative.
+// to buy, so it cannot be pre-positioned (fail closed, RULINGS #4; this is not the
+// in-system-sourcing case above). A row with a source but no known HOME ask is RETAINED
+// but flagged StockEligible=false: it is informative for the captain (a "home never
+// sells the good" signal, design §5 Q5) while remaining unstockable for the deposit
+// guard, which needs a known home ask to price the contract-source alternative.
 type DemandCandidate struct {
 	Good          string `json:"good"`
 	ContractCount int    `json:"contract_count"`
 	DemandUnits   int    `json:"demand_units"`
 	// MaxContractUnits is the largest SINGLE contract's size for the good — the s_G the
-	// warehouse auto-cap knapsack buffers FULLY or not at all (sp-5n7v). 0 when unknown.
+	// warehouse auto-cap knapsack buffers FULLY or not at all. 0 when unknown.
 	MaxContractUnits     int     `json:"max_contract_units"`
 	RecurrenceWindowDays float64 `json:"recurrence_window_days"`
 
@@ -130,7 +129,7 @@ type DemandCandidate struct {
 
 	// ContractRewardPerUnit is the per-unit CONTRACT REWARD for the good in the mined
 	// (delivery) system — what the destination's contracts actually PAY for a delivered unit,
-	// carried through from ContractGoodDemand.RewardPerUnit (sp-64se). It is the TRUE value
+	// carried through from ContractGoodDemand.RewardPerUnit. It is the TRUE value
 	// signal a destination-side depot buffer ranks by; a market ask (HomeAsk/ForeignAsk) is a
 	// RESALE proxy that mis-ranks import-only goods. 0 when no contract payment is known.
 	ContractRewardPerUnit float64 `json:"contract_reward_per_unit"`
@@ -143,7 +142,7 @@ type DemandCandidate struct {
 	StockEligible           bool `json:"stock_eligible"` // home ask known AND savings > 0
 }
 
-// DemandMiner produces the sp-dchv Lane A demand signal: the goods contract history
+// DemandMiner produces the demand signal: the goods contract history
 // keeps needing, home-scoped, joined to where they are cheap. It is READ-ONLY — no
 // spending, no dispatch — feeding the deposit economics guard and giving the captain
 // visibility now.
@@ -175,11 +174,11 @@ func NewDemandMinerWithSources(demand contractDemandSource, markets marketAskFin
 // home-system filter already confines demand to the current universe's waypoints).
 //
 // Pipeline: home-scoped demand -> minRecurrence filter -> per good, cheapest SOURCE ask
-// ANYWHERE (home OR foreign — sp-layd) [required, else drop: no source = nothing to
+// ANYWHERE (home OR foreign) [required, else drop: no source = nothing to
 // pre-position] + home ask [optional, prices the contract-source alternative] -> per-unit
 // savings = (home ask + buy-leg) − source ask -> rank (opts.RankBy: RankBySavings, the default —
 // stock-eligible first, then total projected savings; or RankByContractReward for the depot
-// receipt path — total contract-reward value, sp-wxf2) -> TopN.
+// receipt path — total contract-reward value) -> TopN.
 func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int, eraID *int, opts DemandMinerOptions) ([]DemandCandidate, error) {
 	if homeSystem == "" {
 		return nil, fmt.Errorf("home system is required (no default anchor — design §5 Q1)")
@@ -199,7 +198,7 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 
 	// A nil era at a RUNTIME call site means "the current universe", NOT "all universes": resolve
 	// the current player's era so the delivery-system scope below cannot aggregate a past
-	// universe's contracts reached via a REUSED system symbol (sp-fo0d). SpaceTraders regenerates
+	// universe's contracts reached via a REUSED system symbol. SpaceTraders regenerates
 	// the universe each weekly reset and reuses system symbols, so homeSystem alone does not pin a
 	// universe. An explicit era (the CLI history-analysis path) is honored as-is; an unresolved era
 	// fails open to all-eras (the prior behavior).
@@ -236,7 +235,7 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			DemandUnits:           d.UnitsRequired,
 			MaxContractUnits:      d.MaxContractUnits,
 			RecurrenceWindowDays:  windowDays(d.FirstSeen, d.LastSeen),
-			ContractRewardPerUnit: d.RewardPerUnit, // true contract-reward signal (sp-64se), carried for the depot buffer
+			ContractRewardPerUnit: d.RewardPerUnit, // true contract-reward signal, carried for the depot buffer
 			ForeignMarket:         source.WaypointSymbol,
 			ForeignSystem:         shared.ExtractSystemSymbol(source.WaypointSymbol),
 			ForeignAsk:            source.SellPrice,
@@ -251,7 +250,7 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			// at the home ask AND fly the export→delivery buy-leg; the warehouse buys at the
 			// cheapest source anywhere and pre-positions centrally. When the cheapest source
 			// IS the home system, the differential is 0 and the buy-leg alone carries the
-			// value (sp-layd: in-system pre-positioning is worthwhile, fail OPEN).
+			// value (in-system pre-positioning is worthwhile, fail OPEN).
 			c.HomeAsk = home.SellPrice
 			c.HomeAskKnown = true
 			c.ProjectedSavingsPerUnit = home.SellPrice + buyLeg - source.SellPrice
@@ -271,8 +270,8 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 
 // candidateRankLess picks the ordering the TopN cull truncates against. RankBySavings (the zero
 // value) is the SOURCE-side stocker ordering, left byte-identical so every source / stocker / tour
-// / CLI caller is unaffected. RankByContractReward is the DESTINATION-side depot receipt ordering
-// (sp-wxf2). The comparator is chosen ONCE here, never per-comparison, so the sort stays stable.
+// / CLI caller is unaffected. RankByContractReward is the DESTINATION-side depot receipt ordering.
+// The comparator is chosen ONCE here, never per-comparison, so the sort stays stable.
 func candidateRankLess(candidates []DemandCandidate, mode CandidateRankMode) func(i, j int) bool {
 	if mode == RankByContractReward {
 		return func(i, j int) bool {
@@ -302,7 +301,7 @@ func lessBySavings(a, b DemandCandidate) bool {
 	return a.Good < b.Good // stable tiebreak
 }
 
-// lessByContractReward is the DESTINATION-side depot receipt ranking (sp-wxf2): by total
+// lessByContractReward is the DESTINATION-side depot receipt ranking: by total
 // CONTRACT-REWARD value (ContractCount × ContractRewardPerUnit) desc — the same value axis the
 // receipt knapsack (PlanReceiptCaps) itself optimizes — so a high-reward/low-savings good is NOT
 // culled by the savings sort + TopN before the knapsack weighs it. It deliberately does NOT gate
@@ -322,7 +321,7 @@ func lessByContractReward(a, b DemandCandidate) bool {
 }
 
 // cheapestSourceMarket returns the cheapest market selling good ANYWHERE — home system OR
-// foreign (sp-layd). It no longer excludes the home system: when home is the only scanned
+// foreign. It no longer excludes the home system: when home is the only scanned
 // system (post-weekly-reset), the home export IS the cheapest source and the good must be
 // pre-positionable from it, not dropped. Returns nil only when NO market anywhere sells the
 // good. Market data exists only for scouted systems, so "has scanned data" doubles as the

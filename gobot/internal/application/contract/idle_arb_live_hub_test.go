@@ -7,12 +7,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// PART 2 of the live hub model applied to the idle-arb re-home path (sp-jcke):
-// the dispatcher's post-leg re-homing must use the LIVE standby set resolved each
-// pass, not the frozen launch snapshot it was constructed with. So after a `fleet
-// hub add|remove` changes the set, the at-home filter and the homer both track the
-// CURRENT hubs with no restart — the same rebalance the coordinator's between-legs
-// homing gets.
+// The dispatcher's post-leg re-homing must use the LIVE standby set resolved each
+// pass, not the frozen launch snapshot it was constructed with. After a `fleet
+// hub add|remove` changes the set, the at-home filter and the homer both track
+// the CURRENT hubs with no restart.
 
 // TestIdleArb_ReHome_UsesLiveStandbySet: the dispatcher is CONSTRUCTED with the
 // launch hub set {E42} but handed a LIVE resolver that returns {D40} (as a `fleet

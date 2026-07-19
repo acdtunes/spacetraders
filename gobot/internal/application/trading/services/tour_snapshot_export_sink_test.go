@@ -10,12 +10,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-9mkf (Bug 3): the tour snapshot must zero the sink-side Bid for an EXPORT good so
-// the solver — which admits any positive-bid market as a sell destination — cannot
-// select an exporter as a sink. Reproduces the incident: the tour sold 80
-// LAB_INSTRUMENTS into GQ92-C37, an EXPORTER of labs, at its 2,347/u sellback bid. The
-// Ask is preserved so the export market stays a valid BUY source; IMPORT/EXCHANGE bids
-// are untouched.
+// The tour snapshot must zero the sink-side Bid for an EXPORT good so the solver —
+// which admits any positive-bid market as a sell destination — cannot select an
+// exporter as a sink. The Ask is preserved so the export market stays a valid BUY
+// source; IMPORT/EXCHANGE bids are untouched.
 func TestBuildTourSnapshot_ZeroesExportBid_PreservesImportAndExchangeBid(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	fresh := now.Add(-5 * time.Minute)

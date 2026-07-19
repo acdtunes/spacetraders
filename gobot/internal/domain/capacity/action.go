@@ -54,8 +54,8 @@ func (t Tier) String() string {
 }
 
 // ActionVerb names the concrete operation an Action performs. Each verb maps
-// to exactly one Actuator method (by its tier); the DIFF lane (st-zr0) emits
-// them and the actuator lane (st-5ig) implements them over the existing
+// to exactly one Actuator method (by its tier); the DIFF lane emits
+// them and the actuator lane implements them over the existing
 // primitives (fleet autosizer, launch siting, worker-rebalancer,
 // depot-rebalance) — the reconciler never reinvents buy/move.
 type ActionVerb string
@@ -79,8 +79,8 @@ const (
 	VerbBuyHull ActionVerb = "buy_hull"
 )
 
-// Gap is one desired-vs-actual divergence DIFF found. The DIFF lane (st-zr0)
-// turns gaps into ordered Actions (cheapest tier that closes the gap first).
+// Gap is one desired-vs-actual divergence DIFF found. The DIFF lane turns
+// gaps into ordered Actions (cheapest tier that closes the gap first).
 type Gap struct {
 	Kind      GapKind
 	HubSymbol string
@@ -128,15 +128,15 @@ type Action struct {
 	EstimatedCostCredits int64
 	// HullDelta is the net hull count the action adds to the fleet (buy_hull:
 	// 1; add_cluster: its warehouse+stocker+worker counts; 0 for the free
-	// tiers). Pure topology arithmetic — the DIFF lane (st-zr0) fills it; the
+	// tiers). Pure topology arithmetic — the DIFF lane fills it; the
 	// governor's ROI evidence derives the gain rate from it (see proposal.go).
 	HullDelta int
 	// ProjectedPerHullCrHr is the projected fleet-wide per-hull sustained
 	// credits/hr AFTER the action — the ROI-gate input (an add must raise it).
 	ProjectedPerHullCrHr float64
 
-	// Machine-readable routing (ADDITIVE, st-zr0 fills) — the actuator
-	// (st-5ig) reads these instead of parsing Reason prose.
+	// Machine-readable routing (ADDITIVE, filled by the DIFF lane) — the
+	// actuator reads these instead of parsing Reason prose.
 	//
 	// GapKind classifies the gap this action closes. Role-bearing for hull
 	// actions: a reassign_hull/buy_hull with GapWarehouseShort /

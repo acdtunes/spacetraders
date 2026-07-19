@@ -100,8 +100,7 @@ func TestContainerlessPinnedHullEpisodeDedup(t *testing.T) {
 	require.Len(t, containerlessEvents(t, store, playerID), 1)
 
 	// Stay: the hull never recovered, so it must NOT re-emit even hours later
-	// with no state change — the old cooldown WOULD have re-fired here purely
-	// because a time window lapsed; that is exactly the behavior sp-6g96 removes.
+	// with no state change — the dedup is keyed on state, not the clock.
 	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now.Add(4*time.Hour)))
 	require.Len(t, containerlessEvents(t, store, playerID), 1,
 		"containerless event re-emitted while hull never recovered: not an episode boundary")

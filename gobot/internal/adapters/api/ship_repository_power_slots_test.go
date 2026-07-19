@@ -26,7 +26,7 @@ func (powerSlotsFakeWaypointProvider) GetWaypoint(_ context.Context, _, _ string
 }
 
 // TestSaveThenFindBySymbol_RoundTripsReactorPowerSlotsCrew proves the
-// reactor/power/slot/crew/mounts columns added in sp-el60 survive a full
+// reactor/power/slot/crew/mounts columns survive a full
 // Save -> FindBySymbol round trip through the real conversion functions
 // (shipToModel / modelToDomain) - not just raw column presence on the GORM
 // model. Uses the same real-sqlite test-DB harness as the dedication tests,
@@ -109,7 +109,7 @@ func TestSaveThenFindBySymbol_RoundTripsReactorPowerSlotsCrew(t *testing.T) {
 	require.Equal(t, "MODULE_CARGO_HOLD_I", got.Modules()[0].Symbol())
 
 	// Integration sanity: the round-tripped ship is directly usable by the
-	// feasibility function (the whole point of sp-el60) with no extra wiring.
+	// feasibility function (the whole point) with no extra wiring.
 	// Free power = 31 reactor - 1 (installed module) - 1 (installed mount) = 29;
 	// candidate needs 31, so it is short by 2.
 	candidate := navigation.NewShipModule("MODULE_CARGO_HOLD_III", 100, 0, navigation.NewShipRequirements(31, 0, 1))
@@ -120,7 +120,7 @@ func TestSaveThenFindBySymbol_RoundTripsReactorPowerSlotsCrew(t *testing.T) {
 
 // TestFindModuleRequirements_FoundOnAnotherShip proves a candidate's
 // requirements can be resolved from anywhere in the fleet, not just the ship
-// being queried (sp-el60 acceptance fix) - there is no catalog of unowned
+// being queried (acceptance fix) - there is no catalog of unowned
 // module specs, so a symbol observed installed on any ship is the only real
 // data source for a candidate lookup on a different ship.
 func TestFindModuleRequirements_FoundOnAnotherShip(t *testing.T) {
@@ -159,8 +159,8 @@ func TestFindModuleRequirements_FoundOnAnotherShip(t *testing.T) {
 
 // TestFindModuleRequirements_NotFoundAnywhere proves the lookup reports
 // false (never a zero-valued ShipRequirements masquerading as a real one)
-// when no ship in the fleet has ever carried the candidate symbol (sp-el60
-// acceptance fix) - this is the fail-closed signal callers must turn into
+// when no ship in the fleet has ever carried the candidate symbol (this is
+// an acceptance fix) - this is the fail-closed signal callers must turn into
 // UnknownRequirementsFeasibility rather than a trivially-satisfied
 // zero-filled feasibility check.
 func TestFindModuleRequirements_NotFoundAnywhere(t *testing.T) {

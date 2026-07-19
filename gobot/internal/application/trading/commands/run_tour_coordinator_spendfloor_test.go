@@ -12,10 +12,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-agzj (P1 money-guard): a tour tranche buy re-reads the LIVE balance immediately
-// before purchasing and SHRINKS the tranche to the units the working-capital reserve
-// can still afford, rather than the old all-or-nothing skip. This suite drives
-// executeBuy through the real fixture with a live (fake) apiClient and asserts the four
+// A tour tranche buy re-reads the LIVE balance immediately before purchasing and
+// SHRINKS the tranche to the units the working-capital reserve can still afford. This
+// suite drives executeBuy through the real fixture with a live (fake) apiClient and
+// asserts the four
 // outcomes: shrink-to-floor, skip-when-even-one-unit-pierces, fail-closed-on-unreadable,
 // and the concurrency shape (a plan sized against high plan-time treasury still binds the
 // floor at execution against the live — dropped — balance).
@@ -133,13 +133,10 @@ func TestTour_BuyFloor_SkipsWhenEvenOneUnitPierces(t *testing.T) {
 	}
 }
 
-// Negative allowance (the sp-ggk2 field condition): live balance 658,834 sits BELOW the
-// 1,000,000 reserve, so headroom is NEGATIVE (-341,166). The shrink math is
-// floorMaxUnits = headroom / ask; with a negative numerator and Go's truncate-toward-zero
-// integer division this is <= 0, so the tranche is SKIPPED — it must never round a negative
-// allowance up to a minimum buy. This is exactly what the field incident proved was NOT
-// happening (the tour bought 6 units at 658k because its reserve had silently collapsed to
-// 50k); with the reserve honored at 1M, a sub-reserve balance buys nothing.
+// Negative allowance: live balance 658,834 sits BELOW the 1,000,000 reserve, so headroom
+// is NEGATIVE (-341,166). The shrink math is floorMaxUnits = headroom / ask; with a
+// negative numerator and Go's truncate-toward-zero integer division this is <= 0, so the
+// tranche is SKIPPED — it must never round a negative allowance up to a minimum buy.
 func TestTour_BuyFloor_SkipsWhenBalanceBelowReserve_NegativeAllowance(t *testing.T) {
 	fx := floorRoundTripFixture()
 	api := &tourSeqAPIClient{balances: []int{658_834}} // below the 1M reserve → negative headroom
@@ -198,7 +195,7 @@ func TestTour_BuyFloor_UnreadableBalanceFailsClosedNoSpendNoDeath(t *testing.T) 
 	}
 }
 
-// Concurrency shape (the sp-agzj incident class): the tour is PLANNED against a high
+// Concurrency shape: the tour is PLANNED against a high
 // plan-time treasury (8,000,000 → a 2,000,000 dynamic cap that comfortably admits the
 // 100-unit buy), but by execution the live balance has DROPPED to 1,090,000 (a sibling
 // hull drained the shared treasury). The floor binds at EXECUTION against the live

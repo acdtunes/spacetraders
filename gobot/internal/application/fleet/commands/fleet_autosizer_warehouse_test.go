@@ -288,9 +288,9 @@ func TestWarehouse_UnreadablePortfolio_NoDispatch(t *testing.T) {
 	}
 }
 
-// ACCEPTANCE (the bead's root-cause fix): after vdld resites a chain, the warehouse hull stranded on
-// the RETIRED chain is moved to the newly-uncovered durable chain — never left on the dead chain, and
-// the hull still serving a live chain is left in place. This is the anti-stranding invariant.
+// ACCEPTANCE: after vdld resites a chain, the warehouse hull stranded on the RETIRED chain is moved
+// to the newly-uncovered durable chain — never left on the dead chain, and the hull still serving a
+// live chain is left in place. This is the anti-stranding invariant.
 func TestWarehouse_ResiteMovesStrandedHullToNewDurableChain(t *testing.T) {
 	ctx := context.Background()
 	params := whParams(1, 100000, 8) // min-persistence 1 to isolate the stranding logic

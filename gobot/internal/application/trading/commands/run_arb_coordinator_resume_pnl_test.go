@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// --- sp-dkj7: a resumed arb run must report honest P&L. The resume skips the completed
+// --- A resumed arb run must report honest P&L. The resume skips the completed
 // buy, so without carrying the prior attempt's cost the completion line reports NetProfit
 // as the full sale revenue (TotalCost=0), silently omitting the basis already paid. ---
 
