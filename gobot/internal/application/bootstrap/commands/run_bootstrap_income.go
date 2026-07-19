@@ -251,21 +251,30 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
-	// Capital gate: spend ≤ reserve_margin × treasury (the money-guard + pacer). Emit the full
-	// arithmetic so the captain retunes from evidence. A ~300k hauler simply waits until contracts have
-	// grown treasury past ~2× its price — the staging that falls out of the ≤50% cap.
-	capBudget := int64(float64(obs.Treasury) * cfg.ReserveMargin)
-	affordable := price <= capBudget
-	logger.Log("INFO", fmt.Sprintf("Bootstrap hauler buy decision: price=%d treasury=%d cap=(reserve_margin %.2f × treasury)=%d affordable=(price≤cap)=%v hub=%s yard=%s — %s", price, obs.Treasury, cfg.ReserveMargin, capBudget, affordable, hub, yard, buyBlockNote(affordable)), map[string]interface{}{
-		"action":         "bootstrap_hauler_buy_decision",
-		"container_id":   cmd.ContainerID,
-		"price":          price,
-		"treasury":       obs.Treasury,
-		"cap":            capBudget,
-		"reserve_margin": cfg.ReserveMargin,
-		"affordable":     affordable,
-		"hub":            hub,
-		"yard":           yard,
+	// Capital gate (sp-acv5): buy as soon as the treasury AFTER the buy still clears the ABSOLUTE
+	// contract working-capital floor — affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor.
+	// This replaces the old PROPORTIONAL reserve_margin×treasury cap, which made a ~300k hauler wait until
+	// treasury grew past ~2× its price; the hauler exists to SCALE cash flow, so it is bought as soon as
+	// the buy leaves a safe goods+fuel operating cushion (PLAYBOOK §3) — an absolute floor, not a fraction
+	// of a growing balance. reserve_margin is deliberately untouched (it still paces the DATA probe buy).
+	// RULINGS #4 fail-closed: an unreadable price already returned above, and a cushion below the floor
+	// does NOT buy — so after a permitted buy treasury ≥ floor by construction (the working-capital safety).
+	cushion := obs.Treasury - price
+	affordable := cushion >= cfg.ContractWorkingCapitalFloor
+	floorNote := "clears the working-capital floor"
+	if !affordable {
+		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
+	}
+	logger.Log("INFO", fmt.Sprintf("Bootstrap hauler buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v hub=%s yard=%s — %s", price, obs.Treasury, cfg.ContractWorkingCapitalFloor, cushion, affordable, hub, yard, floorNote), map[string]interface{}{
+		"action":       "bootstrap_hauler_buy_decision",
+		"container_id": cmd.ContainerID,
+		"price":        price,
+		"treasury":     obs.Treasury,
+		"floor":        cfg.ContractWorkingCapitalFloor,
+		"cushion":      cushion,
+		"affordable":   affordable,
+		"hub":          hub,
+		"yard":         yard,
 	})
 	if !affordable {
 		res.Blocker = "capital_gate"

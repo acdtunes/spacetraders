@@ -49,6 +49,19 @@ const (
 	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
 	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
 
+	// defaultContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must
+	// still clear AFTER a staged INCOME hauler buy: the buy is affordable when treasury−price ≥ this
+	// floor (sp-acv5, PLAYBOOK §3). It replaces the old PROPORTIONAL reserve_margin×treasury hauler gate,
+	// which only bought once treasury grew past ~2× the hauler price and so delayed the cash-flow scaling
+	// the hauler exists to provide. 50k ≈ one light-hauler contract cycle's goods+fuel working capital (a
+	// ~full cargo of contract goods at typical commodity prices — tens of k — plus fuel and a safety
+	// buffer), so a permitted buy always leaves the contract operation funded. It is the Admiral's
+	// IMMUTABLE working-capital floor (RULINGS #5 + 2026-07-18 Amendment: "the immutable 50k
+	// working-capital floor … deliberately non-tunable per-run"): a documented hard constant, NOT a
+	// live-tunable / config.yaml knob, and NOT the shared reserve_margin (which still paces the DATA probe
+	// buy). Its own dedicated parameter so the broader treasury-floor work (sp-ktio) builds on it.
+	defaultContractWorkingCapitalFloor int64 = 50_000
+
 	// GATE-phase defaults.
 	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
 	// chain + a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of

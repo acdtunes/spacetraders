@@ -328,7 +328,7 @@ func TestBootstrap_Income_BuysHaulerOnTopHub(t *testing.T) {
 
 func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	obs := incomeObs()
-	obs.Treasury = 150000 // cap 75k
+	obs.Treasury = 150000 // cushion = 150000−300000 = −150000, below the 50k working-capital floor → blocked (sp-acv5)
 	obs.BatchContractRunning = true
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
@@ -344,10 +344,51 @@ func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a hauler buy-decision line with the guardrail arithmetic")
 	}
-	for _, want := range []string{"price=300000", "treasury=150000", "cap=", "hub=X1-HUBA"} {
+	for _, want := range []string{"price=300000", "treasury=150000", "floor=", "cushion=", "hub=X1-HUBA"} {
 		if !strings.Contains(dl.msg, want) {
 			t.Fatalf("hauler decision line missing %q: %s", want, dl.msg)
 		}
+	}
+}
+
+// --- sp-acv5: the hauler affordability gate is an ABSOLUTE contract working-capital floor
+// (treasury−price ≥ floor), NOT a proportional reserve_margin×treasury cap. The first light hauler is
+// bought as soon as the buy still leaves the goods+fuel operating cushion — it no longer waits for
+// treasury to grow past ~2× the hauler price (PLAYBOOK §3). ---
+
+func TestBootstrap_Income_WorkingCapitalFloor_BuysAsSoonAsCushionClears(t *testing.T) {
+	const price = int64(300000)
+	obs := incomeObs()
+	obs.BatchContractRunning = true // isolate the buy
+	// treasury = price + floor + 1 → the cushion clears the floor by 1 credit, so the buy IS made. This
+	// treasury is far below 2×price (600000), so the OLD proportional gate (cap = reserve_margin×treasury
+	// = 0.5×350001 = 175000 < price) would have BLOCKED it — the exact ~2×price delay sp-acv5 removes.
+	obs.Treasury = price + defaultContractWorkingCapitalFloor + 1
+	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 1 || res.HaulersBought != 1 {
+		t.Fatalf("cushion clears the working-capital floor (treasury=%d price=%d floor=%d): must buy 1, got buys=%d bought=%d blocker=%q",
+			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys, res.HaulersBought, res.Blocker)
+	}
+}
+
+func TestBootstrap_Income_WorkingCapitalFloor_BlocksWhenCushionShort(t *testing.T) {
+	const price = int64(300000)
+	obs := incomeObs()
+	obs.BatchContractRunning = true
+	// treasury = price + floor − 1 → the buy would leave 1 credit LESS than the floor. RULINGS #4
+	// fail-closed: do NOT buy (the contract operation must retain its working-capital cushion).
+	obs.Treasury = price + defaultContractWorkingCapitalFloor - 1
+	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 0 {
+		t.Fatalf("cushion is 1 below the working-capital floor (treasury=%d price=%d floor=%d): must NOT buy, got %d",
+			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys)
+	}
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker on a short cushion, got %q", res.Blocker)
 	}
 }
 

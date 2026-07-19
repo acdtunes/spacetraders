@@ -56,6 +56,15 @@ type bootstrapRunConfig struct {
 	MinContractEarners int
 	HaulerShipType     string
 
+	// ContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
+	// clear AFTER a staged INCOME hauler buy — the money-safety that keeps the contract operation's
+	// goods+fuel working capital intact (sp-acv5). Its OWN dedicated parameter, distinct from the shared
+	// reserve_margin, so the hauler affordability gate is an absolute floor (treasury−price ≥ floor) not a
+	// proportion of a growing treasury. Resolved ONLY from the immutable defaultContractWorkingCapitalFloor
+	// constant — never the launch command, config.yaml, or a live tune — per the Admiral's hard 50k
+	// working-capital floor (RULINGS #5 + 2026-07-18 Amendment, "deliberately non-tunable per-run").
+	ContractWorkingCapitalFloor int64
+
 	// GATE-phase knob, resolved to its documented default when unset.
 	GateWorkerTarget int
 
@@ -153,6 +162,10 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	if c.GateWorkerTarget <= 0 {
 		c.GateWorkerTarget = defaultGateWorkerTarget
 	}
+	// The contract working-capital floor is the Admiral's IMMUTABLE hard floor (RULINGS #5): sourced ONLY
+	// from the constant, never the launch command / config.yaml / a live tune. There is deliberately no
+	// override seam above — a hard floor is not a per-run knob (sp-acv5).
+	c.ContractWorkingCapitalFloor = defaultContractWorkingCapitalFloor
 	return c
 }
 
