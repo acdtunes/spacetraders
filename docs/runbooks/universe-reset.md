@@ -238,9 +238,18 @@ and a "priors to test early" section distilled from `history summary` /
 
 **ADMIRAL ONLY** (final step)
 
-Dashboards repointed, smoke checks run, then:
+Dashboards repointed, smoke checks run. Restart BOTH live services before
+clearing the kill switch — each is a separate launchd unit and neither is
+bounced as a side effect of the Phase 6 repoint: the daemon still needs a
+restart to drop its stale in-memory container gauge (Phase 6 note above), and
+the watchkeeper (`com.spacetraders.captain`) otherwise keeps authenticating as
+the dead prior-era player, 401ing on every credit fetch (sp-8hs4). Then:
 
 ```bash
+make restart-daemon
+make restart-watchkeeper
+# verify: captain-supervisor.log shows "Watchkeeper starting (player=<new-id>)"
+# and no 401s on the next credit fetch
 rm captain/DISABLED
 ```
 

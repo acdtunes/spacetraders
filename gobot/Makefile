@@ -1,4 +1,4 @@
-.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
+.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon restart-watchkeeper install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
 
 # ---- Build stamp (sp-898q) --------------------------------------------------
 # Injected into internal/infrastructure/buildinfo at LINK time so every binary's
@@ -111,6 +111,29 @@ restart-daemon: assert-prod-env build-daemon
 		fi; \
 		nohup ./bin/spacetraders-daemon >> daemon.log 2>&1 & \
 		echo "daemon restarted (log: daemon.log)"; \
+	fi
+
+# Restart the watchkeeper (com.spacetraders.captain) — a SEPARATE launchd
+# service from the daemon, so restart-daemon never touches it. Era bring-up
+# must call this explicitly after 'universe transition' repoints
+# captain.player_id, or the already-running watchkeeper keeps authenticating
+# as the dead prior-era player (sp-8hs4). Deliberately its own target, not
+# folded into restart-daemon: the watchkeeper is bounced only by an explicit
+# call (see the deploy-captain comment below), never as a side effect.
+#
+# Kill-switch aware like restart-daemon's guard: captain/DISABLED only gates
+# the running process's tick loop (a plain sentinel file, checked every tick —
+# see internal/captain/workspace.go), it does not unload the launchd job, so a
+# kickstart is harmless while disabled. But if the unit was manually removed
+# from launchd altogether, do NOT force-start it standalone (unlike
+# restart-daemon's nohup fallback) — that would resurrect a deliberately
+# unloaded supervisor. Just report it and leave it alone.
+restart-watchkeeper: assert-prod-env build-watchkeeper
+	@if launchctl list com.spacetraders.captain >/dev/null 2>&1; then \
+		launchctl kickstart -k gui/$$(id -u)/com.spacetraders.captain; \
+		echo "watchkeeper restarted via launchd"; \
+	else \
+		echo "watchkeeper not loaded via launchd — leaving it alone (disabled or manually unloaded)"; \
 	fi
 
 # ---- launchd deploy (sp-898q) -----------------------------------------------
