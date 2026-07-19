@@ -57,6 +57,17 @@ const (
 	defaultExplorerTreasuryPctPerPurchase = 25
 	defaultMaxPriceExplorer               = 900000
 	defaultShipTypeExplorer               = "SHIP_EXPLORER"
+
+	// Contract-delivery class (sp-nkqn). Opt-IN (default OFF, arming knob). Its hulls are routine
+	// light haulers/warehouses/stockers sized to MEASURED contract demand, so: the ship type is a
+	// light frame; the class ceiling is DELIBERATELY CONSERVATIVE (the total ceiling is the hard
+	// backstop, the captain raises this from evidence); and the 25%-treasury affordability rule
+	// APPLIES (unlike the light/worker pool, the routine capital buy carries RULINGS #6's <=25%
+	// rule). The absolute price cap defaults to 0 (no cap; the premium-over-cheapest ceiling +
+	// reserve floor + 25% rule are the price protections, as for the light frame class it matches).
+	defaultFleetCeilingContractDelivery           = 10
+	defaultContractDeliveryTreasuryPctPerPurchase = 25
+	defaultShipTypeContractDelivery               = "SHIP_LIGHT_HAULER"
 )
 
 // DemandParams carries the live-resolved config the demand providers need each tick (rotation
@@ -166,6 +177,17 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	ExplorerTreasuryPctPerPurchase int
 	MaxPriceExplorer               int64
 	ShipTypeExplorer               string
+
+	// Contract-delivery class (sp-nkqn). ContractDeliveryHullsEnabled is the opt-IN arming knob
+	// (default OFF — nothing boot-arms routine scaling). FleetCeilingContractDelivery is the
+	// conservative per-class ceiling; ContractDeliveryTreasuryPctPerPurchase is the <=25% rule;
+	// MaxPriceContractDelivery is the absolute price cap (default 0 = no cap; premium ceiling
+	// applies); ShipTypeContractDelivery is the purchased light frame.
+	ContractDeliveryHullsEnabled           bool
+	FleetCeilingContractDelivery           int
+	ContractDeliveryTreasuryPctPerPurchase int
+	MaxPriceContractDelivery               int64
+	ShipTypeContractDelivery               string
 }
 
 // RunFleetAutosizerCoordinatorResponse reports reconcile progress. Because the loop is infinite
@@ -345,6 +367,12 @@ func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 		// Opt-IN arming (sp-a3yn): the explorer class runs ONLY when explicitly armed, so a bare
 		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
 		return !c.ExplorerHullsEnabled
+	case HullClassContractDelivery:
+		// Opt-IN arming (sp-nkqn): routine contract-hauler scaling runs ONLY when explicitly armed,
+		// so a bare deploy keeps the capacity reconciler's emitted demand dormant (byte-identical).
+		// Armed, the buy flows through this coordinator's SINGLE money-guard stack — guard-gated
+		// AUTO, not captain-approval-gated (RULINGS #6).
+		return !c.ContractDeliveryHullsEnabled
 	default:
 		return true // unknown class: never act
 	}

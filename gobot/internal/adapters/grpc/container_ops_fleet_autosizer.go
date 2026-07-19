@@ -254,6 +254,23 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.ShipTypeExplorer != "" {
 		config["autosizer_ship_type_explorer"] = fa.ShipTypeExplorer
 	}
+	// Contract-delivery class (sp-nkqn). The opt-in arming bool is written ONLY when true (an absent
+	// key reads as DISARMED, so nothing boot-arms routine scaling — mirrors warehouse/explorer).
+	if fa.ContractDeliveryHullsEnabled {
+		config["autosizer_contract_delivery_hulls_enabled"] = true
+	}
+	if fa.FleetCeilingContractDelivery != 0 {
+		config["autosizer_fleet_ceiling_contract_delivery"] = fa.FleetCeilingContractDelivery
+	}
+	if fa.ContractDeliveryTreasuryPctPerPurchase != 0 {
+		config["autosizer_contract_delivery_treasury_pct_per_purchase"] = fa.ContractDeliveryTreasuryPctPerPurchase
+	}
+	if fa.MaxPriceContractDelivery != 0 {
+		config["autosizer_max_price_contract_delivery"] = int(fa.MaxPriceContractDelivery)
+	}
+	if fa.ShipTypeContractDelivery != "" {
+		config["autosizer_ship_type_contract_delivery"] = fa.ShipTypeContractDelivery
+	}
 }
 
 // buildFleetAutosizerCommand rebuilds the standing autosizer command (sp-1txd) from a persisted
@@ -320,6 +337,12 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		ExplorerTreasuryPctPerPurchase: cfg.OptionalInt("autosizer_explorer_treasury_pct_per_purchase", 0),
 		MaxPriceExplorer:               int64(cfg.OptionalInt("autosizer_max_price_explorer", 0)),
 		ShipTypeExplorer:               cfg.OptionalString("autosizer_ship_type_explorer"),
+
+		ContractDeliveryHullsEnabled:           cfg.OptionalBool("autosizer_contract_delivery_hulls_enabled"),
+		FleetCeilingContractDelivery:           cfg.OptionalInt("autosizer_fleet_ceiling_contract_delivery", 0),
+		ContractDeliveryTreasuryPctPerPurchase: cfg.OptionalInt("autosizer_contract_delivery_treasury_pct_per_purchase", 0),
+		MaxPriceContractDelivery:               int64(cfg.OptionalInt("autosizer_max_price_contract_delivery", 0)),
+		ShipTypeContractDelivery:               cfg.OptionalString("autosizer_ship_type_contract_delivery"),
 	}
 	// Default-TRUE bool: present-vs-absent is what carries the default, so read it as a *bool.
 	if v, ok := cfg.PresentBool("autosizer_prefer_demand_proximal_yard"); ok {

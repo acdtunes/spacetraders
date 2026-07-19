@@ -36,8 +36,11 @@ import (
 // contract-delivery capital pool (delivery hulls + contract-depot warehouses +
 // contract-depot stockers) — DISTINCT from HullClassWarehouse (sp-1txd's
 // production-chain warehouse pool), so the two providers' demands ADD rather
-// than collide on one shared class (the ownership split).
-const HullClassContractDelivery = fleetCmd.HullClass("contract_delivery")
+// than collide on one shared class (the ownership split). It ALIASES the
+// canonical constant in the fleetCmd package (sp-nkqn wired the class into the
+// autosizer's classDisabled/classGuardConfig there); aliasing keeps the two
+// sides on one string so the label can never drift.
+const HullClassContractDelivery = fleetCmd.HullClassContractDelivery
 
 // ContractDeliveryDemandBridge holds the latest emitted capital demand.
 type ContractDeliveryDemandBridge struct {

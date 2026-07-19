@@ -67,6 +67,13 @@ type autosizerRunConfig struct {
 	ExplorerTreasuryPctPerPurchase int
 	MaxPriceExplorer               int64
 	ShipTypeExplorer               string
+
+	// Contract-delivery class (sp-nkqn).
+	ContractDeliveryHullsEnabled           bool
+	FleetCeilingContractDelivery           int
+	ContractDeliveryTreasuryPctPerPurchase int
+	MaxPriceContractDelivery               int64
+	ShipTypeContractDelivery               string
 }
 
 func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autosizerRunConfig {
@@ -112,6 +119,12 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 		ExplorerTreasuryPctPerPurchase: cmd.ExplorerTreasuryPctPerPurchase,
 		MaxPriceExplorer:               cmd.MaxPriceExplorer,
 		ShipTypeExplorer:               cmd.ShipTypeExplorer,
+
+		ContractDeliveryHullsEnabled:           cmd.ContractDeliveryHullsEnabled,
+		FleetCeilingContractDelivery:           cmd.FleetCeilingContractDelivery,
+		ContractDeliveryTreasuryPctPerPurchase: cmd.ContractDeliveryTreasuryPctPerPurchase,
+		MaxPriceContractDelivery:               cmd.MaxPriceContractDelivery,
+		ShipTypeContractDelivery:               cmd.ShipTypeContractDelivery,
 	}
 
 	if c.Tick <= 0 {
@@ -197,6 +210,20 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.ShipTypeExplorer == "" {
 		c.ShipTypeExplorer = defaultShipTypeExplorer
+	}
+	// Contract-delivery defaults (sp-nkqn). ContractDeliveryHullsEnabled has NO fallback — its false
+	// zero value IS the default (disarmed), so nothing boot-arms routine scaling. Ceiling, treasury
+	// pct, and ship type resolve to their protective defaults; MaxPriceContractDelivery stays 0=off
+	// (no absolute cap, like MaxPrice{Lights,Heavies}) since the premium ceiling + reserve + 25% rule
+	// already bound the routine light-frame buy.
+	if c.FleetCeilingContractDelivery <= 0 {
+		c.FleetCeilingContractDelivery = defaultFleetCeilingContractDelivery
+	}
+	if c.ContractDeliveryTreasuryPctPerPurchase <= 0 {
+		c.ContractDeliveryTreasuryPctPerPurchase = defaultContractDeliveryTreasuryPctPerPurchase
+	}
+	if c.ShipTypeContractDelivery == "" {
+		c.ShipTypeContractDelivery = defaultShipTypeContractDelivery
 	}
 	// PreferDemandProximalYard defaults TRUE: nil (unset) → true; the *bool distinguishes an
 	// explicit false from "not configured".

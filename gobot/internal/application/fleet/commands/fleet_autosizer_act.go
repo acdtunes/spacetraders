@@ -149,6 +149,12 @@ func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string,
 		// The realized-$/hr payback exemption is applied class-gated INSIDE EvaluateGuards, not here —
 		// every knob returned here is a REAL guard bound the explorer must still clear.
 		return cfg.ShipTypeExplorer, cfg.FleetCeilingExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
+	case HullClassContractDelivery:
+		// sp-nkqn: the routine contract-hauler class. A light frame, a conservative per-class ceiling,
+		// no absolute price cap by default (the premium ceiling applies), and the 25% affordability
+		// rule (RULINGS #6). NOT explorer-exempt — EvaluateGuards runs the full realized-$/hr income
+		// guards on it, so a routine buy is a MEASURED-demand buy.
+		return cfg.ShipTypeContractDelivery, cfg.FleetCeilingContractDelivery, cfg.MaxPriceContractDelivery, cfg.ContractDeliveryTreasuryPctPerPurchase
 	default:
 		return "", 0, 0, 0
 	}

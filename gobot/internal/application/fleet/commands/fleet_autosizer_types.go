@@ -31,6 +31,17 @@ const (
 	// a HARD CAP of 1 (the class fleet ceiling), and a price ceiling (~819k SHIP_EXPLORER + premium).
 	// Opt-IN (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
 	HullClassExplorer HullClass = "explorer"
+	// HullClassContractDelivery is the capacity reconciler's contract-delivery capital pool
+	// (delivery hulls + contract-depot warehouses + contract-depot stockers, sp-nkqn / st-7zk). The
+	// reconciler EMITS its tier-4 gap into this class via the ContractDeliveryDemandBridge, so
+	// arming it routes ROUTINE early-game hauler scaling through this coordinator's SINGLE
+	// money-guard stack — guard-gated AUTO, not captain-approval-gated (RULINGS #6: the guards are
+	// the gate). Opt-IN (contract_delivery_hulls_enabled, default OFF) exactly like the
+	// warehouse/explorer classes, so a bare deploy keeps it dormant (byte-identical). It runs the
+	// FULL realized-$/hr income guards (NOT explorer-exempt): a routine buy is a measured-demand
+	// buy. The canonical constant lives here (the fleetCmd package the guard switches read); the
+	// adapter-layer bridge aliases it to avoid a second string literal drifting.
+	HullClassContractDelivery HullClass = "contract_delivery"
 )
 
 // ClassDemand is one class's demand read for a tick: how many hulls the demand model wants

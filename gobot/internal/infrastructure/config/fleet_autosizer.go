@@ -179,4 +179,31 @@ type FleetAutosizerConfig struct {
 	// ShipTypeExplorer is the shipyard ship-type bought for the explorer class. 0/absent →
 	// "SHIP_EXPLORER" (the only warp-drive-carrying hull).
 	ShipTypeExplorer string `mapstructure:"ship_type_explorer"`
+
+	// --- contract-delivery hull class (sp-nkqn: routine contract-hauler scaling) ---
+	//
+	// The capacity reconciler emits its tier-4 contract-delivery hull gap into this class via the
+	// ContractDeliveryDemandBridge. Arming it routes ROUTINE early-game scaling through the
+	// autosizer's SINGLE money-guard stack — guard-gated AUTO, not captain-approval-gated (RULINGS
+	// #6: the guards are the gate). Like WarehouseHullsEnabled/ExplorerHullsEnabled it is opt-IN
+	// (default OFF), so a bare deploy keeps the reconciler's demand dormant (byte-identical) and
+	// arming is a deliberate config+restart act (a runtime `tune` cannot flip it). It is NOT
+	// exempt from the realized-$/hr income guards — a routine buy is a MEASURED-demand buy.
+
+	// ContractDeliveryHullsEnabled ARMS the contract-delivery class. Absent/false = DISARMED (the
+	// reconciler's emitted demand is skipped and buys nothing).
+	ContractDeliveryHullsEnabled bool `mapstructure:"contract_delivery_hulls_enabled"`
+	// FleetCeilingContractDelivery caps the contract-delivery class (deliberately conservative; the
+	// absolute fleet ceiling is the hard backstop). 0/absent → defaultFleetCeilingContractDelivery.
+	FleetCeilingContractDelivery int `mapstructure:"fleet_ceiling_contract_delivery"`
+	// ContractDeliveryTreasuryPctPerPurchase is the 25%-treasury affordability rule for a routine
+	// hauler buy (a single hull must cost ≤ this percent of live treasury). 0/absent → 25.
+	ContractDeliveryTreasuryPctPerPurchase int `mapstructure:"contract_delivery_treasury_pct_per_purchase"`
+	// MaxPriceContractDelivery caps the absolute price paid for a contract-delivery hull. 0/absent →
+	// no absolute cap (the premium-over-cheapest ceiling + reserve floor + 25% rule still apply), as
+	// for MaxPriceLights — the class buys a light frame.
+	MaxPriceContractDelivery int64 `mapstructure:"max_price_contract_delivery"`
+	// ShipTypeContractDelivery is the shipyard ship-type bought for the class. 0/absent →
+	// "SHIP_LIGHT_HAULER".
+	ShipTypeContractDelivery string `mapstructure:"ship_type_contract_delivery"`
 }
