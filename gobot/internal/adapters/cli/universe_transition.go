@@ -226,8 +226,8 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 		if err != nil {
 			return fmt.Errorf("drain failed: %w", err)
 		}
-		fmt.Fprintf(out, "✓ Drained prior player %d: %d stopped, %d orphan row(s) reconciled to STOPPED\n",
-			openEra.PlayerID, dr.Stopped, dr.OrphansReconciled)
+		fmt.Fprintf(out, "✓ Drained prior player %d: %d stopped, %d orphan row(s) reconciled to STOPPED, %d already terminal\n",
+			openEra.PlayerID, dr.Stopped, dr.OrphansReconciled, dr.AlreadyTerminal)
 	}
 
 	fmt.Fprintln(out, "\nNOTE: the daemon's in-memory 'Active Containers' gauge may stay high until an")
@@ -304,6 +304,7 @@ func factionMetadata(faction string) string {
 type drainReport struct {
 	Stopped           int
 	OrphansReconciled int
+	AlreadyTerminal   int
 	StopOrder         []string
 	Passes            int
 }
@@ -313,6 +314,9 @@ type drainReport struct {
 // workers, so stopping a worker before its coordinator just thrashes;
 // restart_policy=on-failure makes an explicit stop terminal). A daemon-unknown
 // orphan (StopContainer → "not found") is reconciled straight to STOPPED in the DB.
+// A container that raced to STOPPED/COMPLETED between the list and the stop call
+// (or a re-run over an already-drained era) is a no-op, not an abort — this is
+// what makes the whole drain idempotent.
 //
 // It re-lists across passes (skipping already-handled IDs) so any worker a
 // coordinator spawned in the enumerate→stop window is still caught, converging
@@ -351,6 +355,11 @@ func drainPriorEra(ctx context.Context, lister containerLister, stopper containe
 					}
 					report.OrphansReconciled++
 					fmt.Fprintf(out, "  · reconciled orphan %s → STOPPED (daemon had no handle)\n", c.ID)
+					continue
+				}
+				if isAlreadyTerminalErr(err) {
+					report.AlreadyTerminal++
+					fmt.Fprintf(out, "  · already terminal %s (no-op)\n", c.ID)
 					continue
 				}
 				return nil, fmt.Errorf("failed to stop container %s: %w", c.ID, err)
@@ -405,6 +414,13 @@ func orderCoordinatorsFirst(cs []activeContainer) []activeContainer {
 
 func isNotFoundErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "not found")
+}
+
+// isAlreadyTerminalErr matches the domain guard's rejection of a stop on a
+// container already STOPPED/COMPLETED (container.go Stop). That guard emits
+// this exact prefix only for terminal states, so it's a safe, stable match.
+func isAlreadyTerminalErr(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "cannot stop container in")
 }
 
 // ---- production adapters ---------------------------------------------------

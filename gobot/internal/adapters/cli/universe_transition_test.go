@@ -107,10 +107,12 @@ func (f *fakeCaptainCfg) SetCaptainPlayerID(playerID int) (bool, string, error) 
 // fakeFleet backs the lister, stopper, and reconciler off one in-memory container
 // set so re-list passes converge as the drain stops/reconciles rows.
 type fakeFleet struct {
-	containers []activeContainer
-	notFound   map[string]bool // IDs the daemon has no runtime handle for (orphans)
-	stopOrder  []string
-	reconciled []string
+	containers      []activeContainer
+	notFound        map[string]bool  // IDs the daemon has no runtime handle for (orphans)
+	alreadyTerminal map[string]bool  // IDs that raced to STOPPED/COMPLETED before the stop call landed
+	genuineErr      map[string]error // IDs whose stop must fail with a real, non-orphan, non-terminal error
+	stopOrder       []string
+	reconciled      []string
 }
 
 func (f *fakeFleet) ListActiveContainers(ctx context.Context, playerID int) ([]activeContainer, error) {
@@ -125,6 +127,12 @@ func (f *fakeFleet) StopContainer(ctx context.Context, containerID string) error
 	f.stopOrder = append(f.stopOrder, containerID)
 	if f.notFound[containerID] {
 		return errors.New("rpc error: container not found")
+	}
+	if f.alreadyTerminal[containerID] {
+		return errors.New("cannot stop container in STOPPED state")
+	}
+	if err, ok := f.genuineErr[containerID]; ok {
+		return err
 	}
 	f.remove(containerID)
 	return nil
@@ -433,4 +441,51 @@ func TestTransition_MintedSymbolMismatchRefused(t *testing.T) {
 	require.Zero(t, store.transitionCalls, "no era flip when the minted symbol mismatches")
 	require.False(t, def.called)
 	require.False(t, cap.called)
+}
+
+func TestTransition_DrainAlreadyTerminalMidList_ContinuesPastIt(t *testing.T) {
+	deps, _, _, _, _, fleet := happyDeps()
+	fleet.containers = []activeContainer{
+		{ID: "contract-fleet-coordinator-1", ContainerType: "CONTRACT_FLEET_COORDINATOR", CommandType: "coordinator", Status: "RUNNING"},
+		{ID: "scout-tour-8b", ContainerType: "SCOUT_TOUR", CommandType: "scout_tour", Status: "RUNNING"},
+		{ID: "trade-worker-1", ContainerType: "TRADE_WORKER", CommandType: "trade_route", Status: "RUNNING"},
+	}
+	fleet.alreadyTerminal = map[string]bool{"scout-tour-8b": true}
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", token: "valid-jwt", confirm: true}, &out)
+
+	require.NoError(t, err, "an already-terminal container mid-list must not abort the drain")
+	require.Contains(t, fleet.stopOrder, "trade-worker-1", "drain must continue past the already-terminal container to reach the rest")
+	require.Contains(t, out.String(), "2 stopped, 0 orphan row(s) reconciled to STOPPED, 1 already terminal")
+}
+
+func TestTransition_DrainAllAlreadyTerminal_ConvergesIdempotently(t *testing.T) {
+	deps, _, _, _, _, fleet := happyDeps()
+	fleet.containers = []activeContainer{
+		{ID: "contract-fleet-coordinator-1", ContainerType: "CONTRACT_FLEET_COORDINATOR", CommandType: "coordinator", Status: "RUNNING"},
+		{ID: "trade-worker-1", ContainerType: "TRADE_WORKER", CommandType: "trade_route", Status: "PENDING"},
+	}
+	fleet.alreadyTerminal = map[string]bool{"contract-fleet-coordinator-1": true, "trade-worker-1": true}
+	var out bytes.Buffer
+
+	// Simulates re-running the drain over a prior era that is already fully terminal.
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", token: "valid-jwt", confirm: true}, &out)
+
+	require.NoError(t, err, "re-draining an all-terminal prior era must succeed, not abort")
+	require.Contains(t, out.String(), "0 stopped, 0 orphan row(s) reconciled to STOPPED, 2 already terminal")
+}
+
+func TestTransition_DrainGenuineStopError_StillAborts(t *testing.T) {
+	deps, _, _, _, _, fleet := happyDeps()
+	fleet.containers = []activeContainer{
+		{ID: "trade-worker-1", ContainerType: "TRADE_WORKER", CommandType: "trade_route", Status: "RUNNING"},
+	}
+	fleet.genuineErr = map[string]error{"trade-worker-1": errors.New("rpc error: connection refused")}
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", token: "valid-jwt", confirm: true}, &out)
+
+	require.Error(t, err, "a genuine unexpected stop error must still abort the drain")
+	require.Contains(t, err.Error(), "connection refused")
 }
