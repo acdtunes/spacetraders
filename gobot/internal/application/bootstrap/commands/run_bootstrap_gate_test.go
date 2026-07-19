@@ -3,7 +3,10 @@ package commands
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
 // --- derivePhase: GATE stickiness + COMPLETE ---
@@ -431,13 +434,15 @@ func TestBootstrap_Gate_BuysTopUpWorkerWhenShort(t *testing.T) {
 	}
 }
 
-// The capital gate blocks a needed worker buy that would exceed reserve_margin × treasury.
+// The capital gate blocks a clearly-unaffordable worker buy (sp-bpdf: the ABSOLUTE working-capital
+// floor, not the old reserve_margin×treasury cap — here the price exceeds the whole treasury so the
+// cushion is negative, well below the floor).
 func TestBootstrap_Gate_CapitalGateBlocksWorkerBuy(t *testing.T) {
 	obs := gateObs()
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}}
 	obs.GateWorkers = 0
 	obs.GateMaterialChains = 3
-	obs.Treasury = 100000 // cap = 50k; price 200k unaffordable
+	obs.Treasury = 100000 // cushion = 100k−200k = −100k, far below the 50k floor
 	acq := &fakeGateAcquirer{price: 200000, yard: "Y1", readable: true}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -446,6 +451,88 @@ func TestBootstrap_Gate_CapitalGateBlocksWorkerBuy(t *testing.T) {
 	}
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("expected blocker capital_gate, got %q", res.Blocker)
+	}
+}
+
+// --- sp-bpdf: the gate-worker buy (bootstrap's sole GATE-phase construction spend) now gates on the
+// SAME absolute contract working-capital floor as the hauler buy (treasury−price ≥ floor), NOT the old
+// proportional reserve_margin×treasury cap. Gate construction can no longer drive the treasury below the
+// working-capital line, and a worker is bought as soon as the buy still clears the floor. ---
+
+// gateFloorObs is a GATE observation shaped so planGateWorkers calls for exactly ONE staged worker buy
+// (3 material chains ⇒ desired 4, no existing workers, only the kept earner so nothing to repurpose):
+// the capital gate is the only thing between it and the buy, so treasury/price isolate the floor.
+func gateFloorObs(treasury int64) Observation {
+	obs := gateObs()
+	obs.Treasury = treasury
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // exactly min_contract_earners → no surplus to repurpose
+	obs.GateWorkers = 0
+	obs.GateMaterialChains = 3 // desired = min(3+1, 6) = 4 > pool(0) ⇒ plan.Buy = 1
+	return obs
+}
+
+// BUYS where the OLD proportional cap would have BLOCKED: the win of the floor. price=300000 with
+// treasury = price+floor+1 leaves a cushion of exactly floor+1 (clears), yet the old cap
+// (0.5×350001 = 175000 < price) would have refused the worker — the same premature-hold the floor removes.
+func TestBootstrap_Gate_WorkingCapitalFloor_BuysWhereProportionalCapWouldBlock(t *testing.T) {
+	const price = int64(300000)
+	obs := gateFloorObs(price + defaultContractWorkingCapitalFloor + 1)
+	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 1 || res.GateWorkersBought != 1 {
+		t.Fatalf("cushion clears the floor (treasury=%d price=%d floor=%d): must buy 1 worker, got buys=%d bought=%d blocker=%q",
+			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys, res.GateWorkersBought, res.Blocker)
+	}
+}
+
+// BLOCKS where the OLD proportional cap would have ALLOWED: the two-buyer safety of the floor.
+// treasury=90000, price=44000 → cushion 46000 is below the 50k floor (blocked), but the old cap
+// (0.5×90000 = 45000 ≥ price) would have permitted the buy and drained working capital below the line.
+func TestBootstrap_Gate_WorkingCapitalFloor_BlocksWhereProportionalCapWouldAllow(t *testing.T) {
+	obs := gateFloorObs(90000)
+	acq := &fakeGateAcquirer{price: 44000, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 0 {
+		t.Fatalf("cushion (90000−44000=46000) is below the 50k floor: must NOT buy, got %d buys", acq.buys)
+	}
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker on a short cushion, got %q", res.Blocker)
+	}
+}
+
+// The floor is a strict lower bound: a cushion one credit short blocks, RULINGS #4 fail-closed, and the
+// decision line emits the floor guardrail arithmetic (floor/cushion, not reserve_margin/cap).
+func TestBootstrap_Gate_WorkingCapitalFloor_BlocksAtBoundaryAndLogsFloor(t *testing.T) {
+	const price = int64(300000)
+	obs := gateFloorObs(price + defaultContractWorkingCapitalFloor - 1) // cushion = floor − 1
+	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
+	log := &capturingLogger{}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
+	if acq.buys != 0 || res.Blocker != "capital_gate" {
+		t.Fatalf("cushion 1 below the floor (treasury=%d price=%d floor=%d): must block, got buys=%d blocker=%q",
+			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys, res.Blocker)
+	}
+	dl, ok := log.find("bootstrap_gate_worker_buy_decision")
+	if !ok {
+		t.Fatalf("expected a gate-worker buy-decision line with the floor guardrail arithmetic")
+	}
+	for _, want := range []string{"price=300000", "floor=", "cushion="} {
+		if !strings.Contains(dl.msg, want) {
+			t.Fatalf("gate-worker decision line missing %q: %s", want, dl.msg)
+		}
+	}
+}
+
+// The gate-worker buy uses the SAME floor as the hauler buy, and that floor is the codebase-wide
+// single source of truth (common.ImmutableReserveFloor) the fleet autosizer also honors — so bootstrap
+// spend can never drain below the line the autosizer reserves (the foundational two-buyer safety, ktio-B).
+func TestBootstrap_WorkingCapitalFloor_IsTheSharedImmutableReserveFloor(t *testing.T) {
+	if defaultContractWorkingCapitalFloor != common.ImmutableReserveFloor {
+		t.Fatalf("bootstrap floor (%d) must be the shared immutable reserve floor (%d) — one source of truth",
+			defaultContractWorkingCapitalFloor, common.ImmutableReserveFloor)
 	}
 }
 

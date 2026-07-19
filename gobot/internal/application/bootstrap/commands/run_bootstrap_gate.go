@@ -362,22 +362,32 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 		return
 	}
 
-	// Capital gate: spend ≤ reserve_margin × treasury (the money-guard + pacer). min_contract_earners
-	// keeps earning through GATE to grow the treasury, so a needed worker that fails the gate this tick
-	// simply waits and re-checks — the same staging that paces the DATA/INCOME buys.
-	capBudget := int64(float64(obs.Treasury) * cfg.ReserveMargin)
-	affordable := price <= capBudget
-	logger.Log("INFO", fmt.Sprintf("Bootstrap gate worker buy decision: price=%d treasury=%d cap=(reserve_margin %.2f × treasury)=%d affordable=(price≤cap)=%v desired=%d have=%d yard=%s — %s", price, obs.Treasury, cfg.ReserveMargin, capBudget, affordable, plan.DesiredWorkers, obs.GateWorkers, yard, buyBlockNote(affordable)), map[string]interface{}{
-		"action":         "bootstrap_gate_worker_buy_decision",
-		"container_id":   cmd.ContainerID,
-		"price":          price,
-		"treasury":       obs.Treasury,
-		"cap":            capBudget,
-		"reserve_margin": cfg.ReserveMargin,
-		"affordable":     affordable,
-		"desired":        plan.DesiredWorkers,
-		"have":           obs.GateWorkers,
-		"yard":           yard,
+	// Capital gate (sp-bpdf): the gate-worker buy is bootstrap's GATE-phase construction spend, so it now
+	// reserves the SAME absolute contract working-capital floor as the hauler buy (sp-acv5) — affordable ⇔
+	// cushion=(treasury−price) ≥ contract_working_capital_floor — NOT the old proportional reserve_margin×
+	// treasury cap. Gate construction therefore can never drive the treasury below the working-capital line
+	// the fleet autosizer also honors (common.ImmutableReserveFloor; the two-buyer safety, ktio-B). A worker
+	// that fails the gate this tick simply waits and re-checks (min_contract_earners keeps earning through
+	// GATE to grow the treasury). RULINGS #4 fail-closed: an unreadable price already returned above, and a
+	// cushion below the floor does NOT buy — so after a permitted buy treasury ≥ floor by construction.
+	// reserve_margin is deliberately untouched (it still paces the DATA probe buy).
+	cushion := obs.Treasury - price
+	affordable := cushion >= cfg.ContractWorkingCapitalFloor
+	floorNote := "clears the working-capital floor"
+	if !affordable {
+		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
+	}
+	logger.Log("INFO", fmt.Sprintf("Bootstrap gate worker buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v desired=%d have=%d yard=%s — %s", price, obs.Treasury, cfg.ContractWorkingCapitalFloor, cushion, affordable, plan.DesiredWorkers, obs.GateWorkers, yard, floorNote), map[string]interface{}{
+		"action":       "bootstrap_gate_worker_buy_decision",
+		"container_id": cmd.ContainerID,
+		"price":        price,
+		"treasury":     obs.Treasury,
+		"floor":        cfg.ContractWorkingCapitalFloor,
+		"cushion":      cushion,
+		"affordable":   affordable,
+		"desired":      plan.DesiredWorkers,
+		"have":         obs.GateWorkers,
+		"yard":         yard,
 	})
 	if !affordable {
 		res.Blocker = "capital_gate"

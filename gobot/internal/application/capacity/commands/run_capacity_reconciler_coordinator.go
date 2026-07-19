@@ -40,6 +40,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// sp-bpdf: compile-time lockstep enforcing the codebase's ONE working-capital floor (RULINGS #5). The
+// autosizer's default reserve floor, capacity.DefaultReserveFloorCredits, lives in the domain layer which
+// cannot import application/common — so its "keep in lockstep with common.ImmutableReserveFloor" contract
+// was only a comment. These two unsigned conversions make it a HARD BUILD GATE: if the two 50k floors ever
+// drift, one difference goes negative and `uint(<negative const>)` fails to compile LOUD. This is the same
+// immutable line bootstrap spend reserves (defaultContractWorkingCapitalFloor = common.ImmutableReserveFloor)
+// and the fleet autosizer clamps to (common.EffectiveReserveFloor) — one source of truth, three consumers.
+const (
+	_ = uint(common.ImmutableReserveFloor - capacity.DefaultReserveFloorCredits)
+	_ = uint(capacity.DefaultReserveFloorCredits - common.ImmutableReserveFloor)
+)
+
 // RunCapacityReconcilerCoordinatorCommand launches the standing capacity
 // reconciler for a player. Like the other standing coordinators it runs an
 // infinite reconcile loop inside a single Handle() call. Every calibration

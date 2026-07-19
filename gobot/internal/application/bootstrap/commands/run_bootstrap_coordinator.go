@@ -59,8 +59,11 @@ const (
 	// IMMUTABLE working-capital floor (RULINGS #5 + 2026-07-18 Amendment: "the immutable 50k
 	// working-capital floor … deliberately non-tunable per-run"): a documented hard constant, NOT a
 	// live-tunable / config.yaml knob, and NOT the shared reserve_margin (which still paces the DATA probe
-	// buy). Its own dedicated parameter so the broader treasury-floor work (sp-ktio) builds on it.
-	defaultContractWorkingCapitalFloor int64 = 50_000
+	// buy). sp-bpdf: it is now the codebase-wide SINGLE SOURCE OF TRUTH — common.ImmutableReserveFloor,
+	// the same non-tunable floor the fleet autosizer clamps to (common.EffectiveReserveFloor) and that the
+	// capacity reconciler's DefaultReserveFloorCredits equals — so ALL bootstrap spend (hauler + gate
+	// worker/construction) reserves the identical line the autosizer honors (the two-buyer safety, ktio-B).
+	defaultContractWorkingCapitalFloor int64 = common.ImmutableReserveFloor
 
 	// GATE-phase defaults.
 	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
