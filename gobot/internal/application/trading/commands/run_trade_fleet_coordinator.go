@@ -84,6 +84,19 @@ const (
 	// below the ~10-heavy fleet a blip parks at once. Both are config knobs (RULINGS #5).
 	defaultMassParkWindowSeconds = 120
 	defaultMassParkMinHulls      = 4
+
+	// defaultReapIdleThresholdSeconds is how long a captain reservation must have sat
+	// parked and untouched by any live/recent container before the sp-6asm reaper releases
+	// it as an orphan. owner=captain reservations left by manual captain bridge-authority
+	// ops (dock/orbit/navigate) are never dropped on completion (upstream tech debt
+	// sp-lxwn/zhii/sfoe), so they accumulate — partitionTradeFleet drops the hull from BOTH
+	// the idle-relaunch bucket and the running-count, orphaning it indefinitely (the
+	// TORWIND-7D case: idle ~26h). 30 min sits safely ABOVE any plausible gap between a
+	// captain's manual ops in an active session — each such op is a live container the reaper
+	// treats as legitimately-held (the KEY safety check) — yet far BELOW the multi-hour
+	// orphans observed. A config knob (ReapIdleThresholdSecs /
+	// trade_fleet.reap_idle_threshold_seconds, RULINGS #5) — retune without a rebuild.
+	defaultReapIdleThresholdSeconds = 1800
 )
 
 // RunTradeFleetCoordinatorCommand launches the standing trade-fleet coordinator for
@@ -149,6 +162,22 @@ type RunTradeFleetCoordinatorCommand struct {
 	// MassParkMinHulls is how many idle hulls must have released within the window to call
 	// it a mass-park; <=0 uses defaultMassParkMinHulls.
 	MassParkMinHulls int
+
+	// sp-6asm stale-captain-reservation reaper (downstream safety net, epic sp-g9td). A
+	// trade hull left owner=captain/active/released_at=NULL by a manual captain op that
+	// never dropped the reservation is dropped by partitionTradeFleet from BOTH buckets and
+	// orphaned forever; the reaper RELEASES it (through the daemon's normal
+	// ReleaseCaptainReservation path) so it rejoins the idle bucket and re-dispatches.
+	//
+	// ReapStaleCaptainReservationsEnabled is the governance gate — default FALSE, so the
+	// deploy is byte-identical (the reaper is inert) until the captain arms it via
+	// trade_fleet.reap_stale_captain_reservations_enabled + restart (PLAYBOOK §10). See
+	// reapStaleCaptainReservations for the guarded release.
+	ReapStaleCaptainReservationsEnabled bool
+	// ReapIdleThresholdSecs is how long a captain reservation must have sat parked and
+	// untouched (reserved-since anchor, no live/recent container) before the reaper releases
+	// it; <=0 uses defaultReapIdleThresholdSeconds (30 min).
+	ReapIdleThresholdSecs int
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -197,6 +226,18 @@ type TourLauncher interface {
 	LaunchTour(ctx context.Context, spec TourLaunchSpec) (containerID string, err error)
 }
 
+// ActiveContainerShips reports which hulls a container has touched within the reaper's
+// idle window (sp-6asm): the ship symbols named (config "ship_symbol") by a container that
+// is still non-terminal (a live claim/op) OR that terminated at/after activeSince (a recent
+// op). It is the stale-captain-reservation reaper's KEY safety signal — a hull in this set
+// is legitimately in use (or just used) and is NEVER reaped, even though its ships-row
+// reservation looks orphaned, so a live captain op is never yanked. The daemon server
+// implements it over the containers table it single-writes; a nil port makes the ARMED
+// reaper fail closed (reap nothing) rather than reap without the safety data.
+type ActiveContainerShipsPort interface {
+	ActiveContainerShips(ctx context.Context, playerID shared.PlayerID, activeSince time.Time) (map[string]bool, error)
+}
+
 // RunTradeFleetCoordinatorHandler keeps continuous tours alive across the 'trade'
 // fleet (sp-1278). Every reconcile pass snapshots the fleet, and for each trade hull
 // parked by an honest tour exit (idle, past its cooldown) it relaunches a fresh
@@ -233,6 +274,13 @@ type RunTradeFleetCoordinatorHandler struct {
 	// of ERROR lines nothing outside the container reads. Optional-injection via
 	// SetEventRecorder, nil-safe like the contract coordinator's captainEvents.
 	captainEvents captain.EventRecorder
+
+	// activeShips is the sp-6asm reaper's safety signal — which hulls a live/recent
+	// container has touched (see ActiveContainerShipsPort). Optional-injection via
+	// SetActiveContainerShips (the daemon server implements it): without it the ARMED reaper
+	// fails closed (reaps nothing), never panics, so a wiring gap can never yank a hull it
+	// could not confirm idle.
+	activeShips ActiveContainerShipsPort
 }
 
 // NewRunTradeFleetCoordinatorHandler wires the coordinator. clock defaults to the real
@@ -260,6 +308,15 @@ func (h *RunTradeFleetCoordinatorHandler) SetTourLauncher(launcher TourLauncher)
 // to a captain event (nil-safe, see health.RecordErrorLoop).
 func (h *RunTradeFleetCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
 	h.captainEvents = rec
+}
+
+// SetActiveContainerShips wires the sp-6asm reaper's safety signal — the port that reports
+// which hulls a live/recent container has touched (the daemon server implements it over the
+// containers table). Optional-injection like SetTourLauncher: without it an ARMED reaper is
+// fail-closed (reaps nothing), never a panic, so the reaper can never release a reservation
+// whose in-use state it could not confirm.
+func (h *RunTradeFleetCoordinatorHandler) SetActiveContainerShips(port ActiveContainerShipsPort) {
+	h.activeShips = port
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -354,6 +411,16 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		return 0, fmt.Errorf("failed to list ships for trade fleet reconcile: %w", err)
 	}
 
+	now := h.clock.Now()
+
+	// sp-6asm: reap orphaned captain reservations BEFORE partitioning, and BEFORE the
+	// empty-idle early return below — a fleet whose only stuck hull is captain-reserved has
+	// an empty idle bucket, yet that hull is exactly what must be un-parked. A reaped hull is
+	// released this tick and rejoins the idle bucket on a later tick (the bucket is
+	// re-derived from the DB each pass); the point is un-parking, not sub-tick latency.
+	// Default-OFF (byte-identical) until armed — see reapStaleCaptainReservations.
+	h.reapStaleCaptainReservations(ctx, cmd, ships, now, logger)
+
 	idle, runningTours := partitionTradeFleet(ships)
 	if len(idle) == 0 {
 		return 0, nil
@@ -366,7 +433,6 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	baseCooldown := cmd.cooldownDuration()
 	backoffMax := cmd.relaunchBackoffMaxDuration()
 	maxConcurrent := cmd.MaxConcurrentTours
-	now := h.clock.Now()
 	launched := 0
 
 	// sp-nkci: a daemon blip parks the whole fleet in one window; those synchronized parks
@@ -506,6 +572,121 @@ func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, run
 		idle = append(idle, ship) // parked by an honest tour exit: relaunch candidate
 	}
 	return idle, runningTours
+}
+
+// reapStaleCaptainReservations releases the captain reservation on any 'trade' hull that is
+// ORPHANED (sp-6asm, epic sp-g9td): owner=captain + active + released_at=NULL, parked
+// (IN_ORBIT/DOCKED), reserved longer than the idle threshold, AND touched by no live/recent
+// container. Such a hull was left reserved by a manual captain bridge-authority op
+// (dock/orbit/navigate) that never dropped the reservation on completion (upstream tech debt
+// sp-lxwn/zhii/sfoe) — partitionTradeFleet then drops it from BOTH the idle-relaunch bucket
+// and the running-count, so nothing re-dispatches it and nothing else reaps it (TORWIND-7D
+// idle ~26h). Releasing it (through the daemon's normal ReleaseCaptainReservation path)
+// returns it to idle so a later reconcile pass relaunches a tour.
+//
+// The release is guarded by two independent safety checks so a hull the captain is
+// legitimately using is NEVER yanked:
+//   - isStaleCaptainReservation: reserved past the idle threshold AND parked (a hull the
+//     captain reserved seconds ago, or one mid-flight under a reposition, is left alone).
+//   - activeShips membership: the KEY check — a hull named by a live (non-terminal) OR
+//     recently-terminated container is in active use and is skipped, even though its
+//     ships-row reservation looks orphaned.
+//
+// Fail-closed and inert by default: a nil command flag (default), a nil port, or a port
+// error all reap NOTHING — the reaper never releases a reservation whose in-use state it
+// could not confirm. Scoped to trade-dedicated hulls (this coordinator's domain); a
+// captain reservation on any other fleet is not its business. Returns the count reaped.
+func (h *RunTradeFleetCoordinatorHandler) reapStaleCaptainReservations(
+	ctx context.Context,
+	cmd *RunTradeFleetCoordinatorCommand,
+	ships []*navigation.Ship,
+	now time.Time,
+	logger common.ContainerLogger,
+) int {
+	// Governance gate (PLAYBOOK §10): inert until the captain arms it, so the deploy is
+	// byte-identical and arming is a deliberate config + restart step.
+	if !cmd.ReapStaleCaptainReservationsEnabled {
+		return 0
+	}
+	// Fail closed: without the safety signal we cannot confirm a hull is untouched, so reap
+	// NOTHING. A nil port here is a boot/wiring gap, not "nothing in use".
+	if h.activeShips == nil {
+		logger.Log("ERROR", "Trade fleet reaper armed but no active-container-ships port wired (call SetActiveContainerShips at startup) — reaping nothing", map[string]interface{}{
+			"action": "trade_fleet_reap_unwired",
+		})
+		return 0
+	}
+
+	threshold := cmd.reapIdleThreshold()
+	// A container that is live now, OR terminated within the idle window, marks a hull as
+	// legitimately in use; activeSince is the trailing edge of that window.
+	activeRefs, err := h.activeShips.ActiveContainerShips(ctx, cmd.PlayerID, now.Add(-threshold))
+	if err != nil {
+		// Fail closed for THIS tick: without the safety set we cannot prove any hull idle.
+		logger.Log("WARNING", fmt.Sprintf("Trade fleet reaper: could not read active container ships — reaping nothing this tick: %v", err), map[string]interface{}{
+			"action": "trade_fleet_reap_safety_read_failed",
+		})
+		return 0
+	}
+
+	reaped := 0
+	for _, ship := range ships {
+		if ship.DedicatedFleet() != tradeFleet {
+			continue // not a trade hull — not this coordinator's reservation to reap
+		}
+		if !isStaleCaptainReservation(ship, now, threshold) {
+			continue
+		}
+		if activeRefs[ship.ShipSymbol()] {
+			continue // a live/recent container is using this hull — legitimately held, never reap
+		}
+
+		reservedFor := now.Sub(ship.Assignment().AssignedAt()).Truncate(time.Second)
+		reason := fmt.Sprintf("sp-6asm reaper: stale captain reservation (reserved %s ago, parked, no live/recent container)", reservedFor)
+		// Release through the daemon's normal ship-assignment path — row-locked, atomic, and
+		// cache-invalidating (RULINGS #3: the coordinator writes no ship state directly). A
+		// concurrent claim/release makes this fail (ShipNotReserved); log and move on.
+		if rerr := h.shipRepo.ReleaseCaptainReservation(ctx, ship.ShipSymbol(), reason, cmd.PlayerID); rerr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Trade fleet reaper: failed to release stale captain reservation on %s: %v", ship.ShipSymbol(), rerr), map[string]interface{}{
+				"action":      "trade_fleet_reap_release_failed",
+				"ship_symbol": ship.ShipSymbol(),
+			})
+			continue
+		}
+		reaped++
+		logger.Log("INFO", fmt.Sprintf(
+			"Reaped stale captain reservation on trade hull %s (reserved %s ago, parked, no live/recent container) — rejoins the idle bucket for relaunch",
+			ship.ShipSymbol(), reservedFor), map[string]interface{}{
+			"action":            "trade_fleet_reap_stale_reservation",
+			"ship_symbol":       ship.ShipSymbol(),
+			"reserved_for_secs": int(now.Sub(ship.Assignment().AssignedAt()).Seconds()),
+		})
+	}
+	return reaped
+}
+
+// isStaleCaptainReservation is the per-hull predicate for the sp-6asm reaper: true when the
+// hull's assignment is a captain reservation (owner=captain, status=active) with released_at
+// NULL, the hull is parked (IN_ORBIT/DOCKED, not mid-flight), and it has been reserved at
+// least idleThreshold ago. The reserved-since anchor is the assignment's assignedAt, which
+// is persisted on the ships row (assigned_at), so the idle clock survives coordinator
+// restarts with zero new state (RULINGS #2). It deliberately does NOT consult container
+// state — the caller layers the live/recent-container safety check on top (activeShips), so
+// this stays a pure read of the ship aggregate, unit-testable like partitionTradeFleet.
+func isStaleCaptainReservation(ship *navigation.Ship, now time.Time, idleThreshold time.Duration) bool {
+	if !ship.IsReservedByCaptain() {
+		return false // owner=captain && status=active — the orphan candidate class
+	}
+	assignment := ship.Assignment()
+	if assignment == nil || assignment.ReleasedAt() != nil {
+		return false // released_at IS NULL (defensive; an active assignment already implies nil)
+	}
+	if ship.IsInTransit() {
+		return false // mid-flight — being actively repositioned, not idle; leave it alone
+	}
+	// Reserved at least idleThreshold ago (assignedAt is the reserve-time anchor; manual ops
+	// do not re-reserve, so it faithfully marks when the reservation began).
+	return now.Sub(assignment.AssignedAt()) >= idleThreshold
 }
 
 // cooldownRemaining returns how much of the per-hull cooldown is still pending for an
@@ -791,6 +972,17 @@ func (c *RunTradeFleetCoordinatorCommand) massParkMinHulls() int {
 		return defaultMassParkMinHulls
 	}
 	return c.MassParkMinHulls
+}
+
+// reapIdleThreshold resolves the sp-6asm reaper's idle threshold — how long a captain
+// reservation must have sat parked and untouched before it is reaped — applying the default
+// (30 min) when unset.
+func (c *RunTradeFleetCoordinatorCommand) reapIdleThreshold() time.Duration {
+	secs := c.ReapIdleThresholdSecs
+	if secs <= 0 {
+		secs = defaultReapIdleThresholdSeconds
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // maxConcurrentLabel renders the concurrency cap for the start log — "unlimited" for

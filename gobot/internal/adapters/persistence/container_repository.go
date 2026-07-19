@@ -206,6 +206,56 @@ func (r *ContainerRepositoryGORM) ListByStatus(
 	return models, nil
 }
 
+// FindShipSymbolsWithActiveOrRecentContainers returns the set of ship symbols referenced
+// (via the config JSON "ship_symbol") by a container for the player that is either
+// NON-TERMINAL (PENDING/RUNNING/STOPPING/INTERRUPTED — a live claim or op) OR terminated
+// at/after activeSince (a recently-finished op). It is the sp-6asm stale-captain-reservation
+// reaper's safety signal: a captain-reserved hull is reaped only when it is in NEITHER set —
+// i.e. nothing has touched it within the idle window — so a hull a live captain op is using,
+// or just finished using, is never reaped even though its ships-row reservation looks
+// orphaned. config is the container's metadata JSON; a row whose config is empty or not a
+// JSON object (a coordinator with no ship, say) contributes no symbol. Read-only.
+//
+// The OR group is parenthesized so the player_id scope (a chained AND) binds to the WHOLE
+// disjunction — without the parens SQL precedence would let the stopped_at branch match
+// every player's recent containers.
+func (r *ContainerRepositoryGORM) FindShipSymbolsWithActiveOrRecentContainers(
+	ctx context.Context,
+	playerID int,
+	activeSince time.Time,
+) (map[string]bool, error) {
+	liveStatuses := []string{
+		containerStatusPending,
+		containerStatusRunning,
+		string(container.ContainerStatusStopping),
+		string(container.ContainerStatusInterrupted),
+	}
+
+	var models []*ContainerModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Where("(status IN ? OR (stopped_at IS NOT NULL AND stopped_at >= ?))", liveStatuses, activeSince).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list active/recent containers for player %d: %w", playerID, err)
+	}
+
+	symbols := make(map[string]bool, len(models))
+	for _, m := range models {
+		if m.Config == "" {
+			continue
+		}
+		var cfg map[string]interface{}
+		if err := json.Unmarshal([]byte(m.Config), &cfg); err != nil {
+			continue // a non-object / unparseable config carries no ship reference
+		}
+		if sym, ok := cfg["ship_symbol"].(string); ok && sym != "" {
+			symbols[sym] = true
+		}
+	}
+
+	return symbols, nil
+}
+
 // ListByCommandTypeSince lists containers of a command type for a player that started
 // at/after `since`. The worker-rebalancer coordinator uses it to read recent
 // worker_ferry rows for the per-vacancy cooldown — a focused query that avoids scanning

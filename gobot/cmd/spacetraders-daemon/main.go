@@ -671,7 +671,8 @@ func run(cfg *config.Config) error {
 	// path `workflow tour-run` uses. Tuning is resolved live from config.yaml [trade_fleet].
 	tradeFleetCoordinatorHandler := tradeRouteCmd.NewRunTradeFleetCoordinatorHandler(shipRepo, nil) // nil = use RealClock
 	tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)
-	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
+	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo)    // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
+	tradeFleetCoordinatorHandler.SetActiveContainerShips(daemonServer) // sp-6asm: reaper safety signal — hulls a live/recent container touched (never reap those)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeFleetCoordinatorCommand](med, tradeFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}

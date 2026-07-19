@@ -632,6 +632,11 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		MassParkExemptDisabled: cfg.OptionalBool("trade_fleet_masspark_exempt_disabled"),
 		MassParkWindowSecs:     cfg.OptionalInt("trade_fleet_masspark_window_seconds", 0),
 		MassParkMinHulls:       cfg.OptionalInt("trade_fleet_masspark_min_hulls", 0),
+		// sp-6asm: the stale-captain-reservation reaper is default-OFF (an absent enable key
+		// reads false ⇒ inert ⇒ byte-identical). Threshold 0/absent ⇒ the coordinator's own
+		// 30-min default.
+		ReapStaleCaptainReservationsEnabled: cfg.OptionalBool("trade_fleet_reap_stale_captain_reservations_enabled"),
+		ReapIdleThresholdSecs:               cfg.OptionalInt("trade_fleet_reap_idle_threshold_secs", 0),
 	}
 }
 

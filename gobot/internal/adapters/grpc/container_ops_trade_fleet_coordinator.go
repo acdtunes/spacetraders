@@ -3,9 +3,11 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -92,6 +94,17 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 	return result.ContainerID, nil
 }
 
+// ActiveContainerShips implements tradingCmd.ActiveContainerShipsPort (sp-6asm): it reports
+// the hulls a container has touched within the reaper's idle window — any hull named (config
+// "ship_symbol") by a container that is still non-terminal (a live claim/op) OR that
+// terminated at/after activeSince (a recent op). The stale-captain-reservation reaper treats
+// membership as "legitimately in use" and never reaps such a hull, so a hull a captain op is
+// using — or just finished using — is protected even though its ships-row reservation looks
+// orphaned. It READS the containers table the daemon single-writes; it mutates nothing.
+func (s *DaemonServer) ActiveContainerShips(ctx context.Context, playerID shared.PlayerID, activeSince time.Time) (map[string]bool, error) {
+	return s.containerRepo.FindShipSymbolsWithActiveOrRecentContainers(ctx, playerID.Value(), activeSince)
+}
+
 // tradeFleetConfigKeys enumerates every launch-config key the [trade_fleet] knobs
 // occupy. resolveTradeFleetConfig clears these before re-injecting the live values, so
 // a stale persisted copy from a prior boot can never shadow the current config.yaml
@@ -114,6 +127,8 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_masspark_exempt_disabled",
 	"trade_fleet_masspark_window_seconds",
 	"trade_fleet_masspark_min_hulls",
+	"trade_fleet_reap_stale_captain_reservations_enabled",
+	"trade_fleet_reap_idle_threshold_secs",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -191,5 +206,14 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	}
 	if tf.MassParkMinHulls != 0 {
 		config["trade_fleet_masspark_min_hulls"] = tf.MassParkMinHulls
+	}
+	// sp-6asm: the reaper is default-OFF — only write the enable flag when the captain set
+	// it, so an absent key reads as inert (byte-identical). Threshold defers to the
+	// coordinator's own 30-min default when unset.
+	if tf.ReapStaleCaptainReservationsEnabled {
+		config["trade_fleet_reap_stale_captain_reservations_enabled"] = true
+	}
+	if tf.ReapIdleThresholdSeconds != 0 {
+		config["trade_fleet_reap_idle_threshold_secs"] = tf.ReapIdleThresholdSeconds
 	}
 }

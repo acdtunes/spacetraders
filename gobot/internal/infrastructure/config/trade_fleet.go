@@ -199,6 +199,18 @@ type TradeFleetConfig struct {
 	// (RULINGS #5, no code redeploy).
 	CandidateHopDepth      int `mapstructure:"candidate_hop_depth"`
 	CandidateShortlistTopN int `mapstructure:"candidate_shortlist_top_n"`
+
+	// --- Stale-captain-reservation reaper (sp-6asm, epic sp-g9td) ---
+	// The downstream safety net for orphaned owner=captain reservations left by manual
+	// captain bridge-authority ops that never dropped the reservation (upstream tech debt
+	// sp-lxwn/zhii/sfoe). ReapStaleCaptainReservationsEnabled defaults FALSE — the
+	// governance gate: the reaper is inert (byte-identical deploy) until the captain arms it
+	// by editing config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
+	// ReapIdleThresholdSeconds is how long a captain reservation must have sat parked and
+	// untouched by any live/recent container before it is reaped; 0/absent → the
+	// coordinator's own default (1800s / 30 min), which lives in the consumer, not here.
+	ReapStaleCaptainReservationsEnabled bool `mapstructure:"reap_stale_captain_reservations_enabled"`
+	ReapIdleThresholdSeconds            int  `mapstructure:"reap_idle_threshold_seconds"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)
