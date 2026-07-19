@@ -1118,7 +1118,12 @@ func run(cfg *config.Config) error {
 	// backlog (sp-pvw3: charted markets with NO or STALE price data — the honest dark set, not just
 	// never-scanned). The scan side of the discovery_share split drains it; discovery_share=100 never
 	// consults it. Reads the raw market repo (charted-market counts + the player's scan ages).
-	frontierExpansionHandler.SetDarkMarketScanner(expansionAdapters.NewDarkMarketScanner(marketRepo, expansionAdapters.DefaultStaleMarketSeconds))
+	// sp-gucu: give the scanner the live standing-post SLA reader so a manned standing post scanned
+	// WITHIN its own 4–10h freshness SLA is not mislabeled dark against the fixed 4h bar (the false
+	// "nothing is draining" census). Systems with no manned standing post keep the fixed bar.
+	darkMarketScanner := expansionAdapters.NewDarkMarketScanner(marketRepo, expansionAdapters.DefaultStaleMarketSeconds)
+	darkMarketScanner.SetScoutCoverageSource(scoutPostRepo)
+	frontierExpansionHandler.SetDarkMarketScanner(darkMarketScanner)
 	// sp-rjgr §4: the deep-resource (heavy-yard) objective the DEPTH slice biases on — heavy
 	// capacity shortfall (sp-4ewi profitable-lane surface, read-only off the market cache) AND
 	// whether a heavy-freighter yard is known yet (sp-42ow shipyard inventory). While unmet the

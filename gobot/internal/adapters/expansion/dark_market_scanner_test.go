@@ -3,7 +3,9 @@ package expansion
 import (
 	"context"
 	"testing"
+	"time"
 
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/stretchr/testify/require"
 )
 
@@ -94,4 +96,75 @@ func TestDarkMarketScanner_IncludesStaleMarkets_NotJustNeverScanned(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, got, 1, "with staleness disabled only the never-scanned system is dark — the OLD internal queue")
 	require.Equal(t, "X1-NEVER", got[0].SystemSymbol)
+}
+
+// fakeScoutCoverageSource doubles the standing-post SLA reader the sp-gucu dark classification joins
+// against (satisfied live by *persistence.GormScoutPostRepository.ListActive). No DB.
+type fakeScoutCoverageSource struct {
+	posts []*domainScouting.ScoutPost
+	err   error
+}
+
+func (f *fakeScoutCoverageSource) ListActive(_ context.Context, _ int) ([]*domainScouting.ScoutPost, error) {
+	return f.posts, f.err
+}
+
+// sp-gucu: the frontier dark-market census must reconcile market staleness with each system's OWN
+// freshness SLA, not a fixed 4h bar. A MANNED STANDING post scanned WITHIN its SLA (e.g. 5h old under
+// a 6.6h target) is being scanned exactly as designed — healthy, NOT dark. That fixed-4h bar is what
+// mislabeled 316 actively-scanned standing posts "dark" and produced false "nothing is draining"
+// alarms. Three pinned cases: (1) manned + within SLA → NOT dark; (2) unmanned/uncovered → dark;
+// (3) manned but stale beyond SLA×grace → dark. never-scanned stays dark (unchanged).
+func TestDarkMarketScanner_ReconcilesStalenessWithPerSystemSLA(t *testing.T) {
+	const hour = 3600.0
+	src := &fakeMarketBacklogSource{
+		counts: map[string]int{
+			"X1-WITHIN":   6, // manned standing post, 5h old under a 6.6h SLA → within SLA → NOT dark
+			"X1-UNMANNED": 4, // charted market with an UNMANNED post, 5h old → uncovered → DARK
+			"X1-BREACH":   8, // manned standing post, 9h old under a 6.6h SLA → beyond SLA×grace → DARK
+			"X1-NEVER":    3, // charted market, prices never scanned → DARK (unchanged)
+		},
+		scanned: map[string]float64{
+			"X1-WITHIN":   5 * hour,
+			"X1-UNMANNED": 5 * hour,
+			"X1-BREACH":   9 * hour,
+		},
+	}
+	sla := time.Duration(6.6 * float64(time.Hour)) // the 6.6h avg standing-post SLA (well past the 4h bar)
+	coverage := &fakeScoutCoverageSource{posts: []*domainScouting.ScoutPost{
+		{SystemSymbol: "X1-WITHIN", Kind: domainScouting.PostKindStanding, FreshnessTarget: sla, AssignedHull: "SAT-1"},
+		{SystemSymbol: "X1-UNMANNED", Kind: domainScouting.PostKindStanding, FreshnessTarget: sla}, // no AssignedHull → unmanned
+		{SystemSymbol: "X1-BREACH", Kind: domainScouting.PostKindStanding, FreshnessTarget: sla, AssignedHull: "SAT-2"},
+	}}
+
+	scanner := NewDarkMarketScanner(src, DefaultStaleMarketSeconds) // the fixed 4h bar that mislabels
+	scanner.SetScoutCoverageSource(coverage)
+
+	got, err := scanner.ChartedUnscannedMarketSystems(context.Background(), 3)
+	require.NoError(t, err)
+
+	dark := map[string]bool{}
+	for _, c := range got {
+		dark[c.SystemSymbol] = true
+	}
+	require.False(t, dark["X1-WITHIN"], "a manned standing post 5h old under a 6.6h SLA is scanned as designed — NOT dark (the sp-gucu mislabel)")
+	require.True(t, dark["X1-UNMANNED"], "an unmanned/uncovered system is genuinely dark — nothing is draining it")
+	require.True(t, dark["X1-BREACH"], "a manned standing post stale beyond its SLA×grace is dark")
+	require.True(t, dark["X1-NEVER"], "a never-scanned charted market is dark (behavior unchanged)")
+}
+
+// sp-gucu default-safety: with NO coverage source wired the scanner is byte-identical to the fixed-bar
+// behavior — a manned standing post 5h old is STILL flagged (this is the pre-fix mislabel, retained as
+// the fail-safe when scout-post state is unavailable: a coverage read gap never HIDES a dark system).
+func TestDarkMarketScanner_NoCoverageSource_FixedBarUnchanged(t *testing.T) {
+	src := &fakeMarketBacklogSource{
+		counts:  map[string]int{"X1-WITHIN": 6},
+		scanned: map[string]float64{"X1-WITHIN": 5 * 3600.0}, // 5h — past the 4h fixed bar
+	}
+	scanner := NewDarkMarketScanner(src, DefaultStaleMarketSeconds) // no SetScoutCoverageSource
+
+	got, err := scanner.ChartedUnscannedMarketSystems(context.Background(), 3)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "without coverage state the fixed 4h bar still governs (fail-safe, unchanged)")
+	require.Equal(t, "X1-WITHIN", got[0].SystemSymbol)
 }
