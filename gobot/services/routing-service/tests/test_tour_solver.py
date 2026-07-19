@@ -120,6 +120,70 @@ def test_effective_tour_systems_clamps_to_sane_range():
     assert _effective_tour_systems({"max_tour_systems": 3}) == 3       # in-range -> passthrough
     assert _effective_tour_systems({"max_tour_systems": 10_000}) == MAX_HOPS_DEFAULT  # huge -> ceiling
 
+
+# ── sp-kab1 part (c): env-tunable inter-system crossing charge ────────────────
+# Evidence (sp-acb8 duration audit, n=163): the flat inter-system crossing cost is
+# MODELED at 1,800s but the EMPIRICAL per-crossing cost is ~1,148s (solver 1.6x
+# pessimistic, t=+4.1), which SUPPRESSES profitable crossing tours. The charge is
+# now env-tunable (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS) so arming to ~1200 is an
+# EXPLICIT, byte-identical-by-default deploy knob mirroring the other TOUR_SOLVER_*.
+# Before sp-kab1 the named INTER_SYSTEM_TRAVEL_SECONDS constant was dead (documented
+# but never read); the crossing branch recomputed 2*GATE_HOP + JUMP_COOLDOWN inline.
+
+def _crossing_hop():
+    """A default (coords-less) travel fn over two markets in DIFFERENT systems, so
+    _make_travel_fn's hop() takes the inter-system branch (the flat crossing charge)."""
+    from utils.tour_solver import _make_travel_fn, _build_markets
+    markets = _build_markets([snap("A", "S1", "G", ask=100, bid=90),
+                              snap("B", "S2", "G", ask=999, bid=300)])
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    return _make_travel_fn(dict(allowed_systems=["S1", "S2"]), markets, ship)
+
+
+def test_inter_system_crossing_default_is_1800_byte_identical(monkeypatch):
+    # Absent env => unchanged from the historical 2*GATE_HOP + JUMP_COOLDOWN = 1800.
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, raising=False)
+    assert _crossing_hop()("A", "B") == 1800
+
+
+def test_inter_system_crossing_env_override_lowers_cost(monkeypatch):
+    # sp-kab1 part (c) RED: the env knob must LOWER the flat crossing charge to the
+    # ~empirical 1200 so crossing tours stop being over-penalized. Pre-fix code
+    # ignores the env and returns 1800.
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, "1200")
+    assert _crossing_hop()("A", "B") == 1200
+
+
+def test_inter_system_crossing_invalid_env_falls_back_to_1800(monkeypatch):
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, "not-an-int")
+    assert _crossing_hop()("A", "B") == 1800
+
+
+def test_resolve_inter_system_travel_seconds_clamps_to_sane_range(monkeypatch):
+    # Mirrors _sequencer_env_scalar discipline: absent -> default (1800), in-range
+    # passthrough, out-of-range clamped to [MIN, MAX]. Floor guards against a near-free
+    # crossing that would re-introduce the ping-ponging the charge exists to price.
+    from utils.tour_solver import (_resolve_inter_system_travel_seconds,
+                                   INTER_SYSTEM_TRAVEL_SECONDS,
+                                   INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR,
+                                   INTER_SYSTEM_TRAVEL_SECONDS_MIN,
+                                   INTER_SYSTEM_TRAVEL_SECONDS_MAX)
+    env = INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    assert INTER_SYSTEM_TRAVEL_SECONDS == 1800                                        # 2*GATE_HOP + JUMP_COOLDOWN
+    monkeypatch.delenv(env, raising=False)
+    assert _resolve_inter_system_travel_seconds() == INTER_SYSTEM_TRAVEL_SECONDS      # absent -> 1800
+    monkeypatch.setenv(env, "1200")
+    assert _resolve_inter_system_travel_seconds() == 1200                             # armed target passthrough
+    monkeypatch.setenv(env, "1")
+    assert _resolve_inter_system_travel_seconds() == INTER_SYSTEM_TRAVEL_SECONDS_MIN  # floored
+    monkeypatch.setenv(env, "999999")
+    assert _resolve_inter_system_travel_seconds() == INTER_SYSTEM_TRAVEL_SECONDS_MAX  # ceilinged
+
 def test_out_of_horizon_lane_invisible_until_sink_system_allowed():
     # sp-mtvg mechanism lock (the live-replay result, distilled): a good sourced cheap
     # in S1 with its ONLY rich sink in S2. This is NOT dropped by any good/price/volume

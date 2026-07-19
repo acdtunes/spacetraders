@@ -13,7 +13,8 @@ Two-stage solve per the approved design (spec decision #4):
    computes gate neighbors; the solver never sees the jump-gate graph.
    Crossing COUNT is not hard-capped: each crossing costs
    INTER_SYSTEM_TRAVEL_SECONDS in the $/hr objective, which prices
-   ping-ponging out naturally.
+   ping-ponging out naturally (env-tunable via
+   TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS; sp-kab1 part c).
 
 2. `score_sequence` — greedy tranche allocation over the fitted impact
    curves. Greedy over sorted marginal-profit (buy-tranche, sell-tranche)
@@ -143,7 +144,19 @@ CRUISE_TIME_MULTIPLIER = 31   # mirrors utils/routing_engine.FlightMode.CRUISE
 GATE_HOP_ALLOWANCE_SECONDS = 450   # to-gate / from-gate hop (gate coords not carried)
 JUMP_COOLDOWN_SECONDS = 900        # gate jump + cooldown
 INTRA_SYSTEM_TRAVEL_SECONDS = 300   # flat fallback when no coords in the request
-INTER_SYSTEM_TRAVEL_SECONDS = 1800  # flat fallback; = 2*GATE_HOP + JUMP_COOLDOWN scale
+# Flat inter-system crossing charge: named allowances around the fitted-scale jump
+# cooldown. = 2*GATE_HOP + JUMP_COOLDOWN = 1800 (byte-identical to the pre-sp-kab1
+# inline recompute the crossing branch used). sp-kab1 part (c) makes this the SINGLE
+# wired source of truth (it was previously a dead documentation-only constant) AND
+# env-tunable via TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS: the sp-acb8 duration audit
+# (n=163) found the EMPIRICAL per-crossing cost ~1,148s vs 1,800s modeled (solver 1.6x
+# pessimistic, t=+4.1), so the default over-penalizes and SUPPRESSES profitable
+# crossing tours; arming to ~1200 admits them. Absent env == 1800 == today; arming is
+# an explicit run.sh export, like the other TOUR_SOLVER_* knobs.
+INTER_SYSTEM_TRAVEL_SECONDS = 2 * GATE_HOP_ALLOWANCE_SECONDS + JUMP_COOLDOWN_SECONDS  # 1800
+INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS"
+INTER_SYSTEM_TRAVEL_SECONDS_MIN = 600    # floor: below this a crossing is near-free -> ping-ponging returns
+INTER_SYSTEM_TRAVEL_SECONDS_MAX = 3600   # ceiling: 2x the historical charge bounds the tunable
 DWELL_SECONDS_PER_LEG = 60          # dock + transact allowance per market stop
 
 # Stage-1 sequencer selection (sp-y05b): "beam" = the proven beam search
@@ -503,6 +516,10 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
     coords = {w["symbol"]: (w["x"], w["y"]) for w in (waypoints or [])}
     engine_speed = max(1, ship.get("engine_speed") or 1)
+    # sp-kab1 part (c): resolve the flat inter-system crossing charge ONCE per build
+    # (default 1800 == 2*GATE_HOP + JUMP_COOLDOWN, byte-identical) so every crossing in
+    # this solve is priced consistently; TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS arms it.
+    inter_system_seconds = _resolve_inter_system_travel_seconds()
 
     def system_of(wp):
         if wp in markets:
@@ -516,9 +533,9 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
             return 0
         sys_a, sys_b = system_of(a), system_of(b)
         if sys_a and sys_b and sys_a != sys_b:
-            # Gate positions are not request-carried: price the crossing as
-            # named allowances around the fitted-scale jump cooldown.
-            return 2 * GATE_HOP_ALLOWANCE_SECONDS + JUMP_COOLDOWN_SECONDS
+            # Gate positions are not request-carried: price the crossing as the flat
+            # inter-system charge (INTER_SYSTEM_TRAVEL_SECONDS, env-tunable per sp-kab1).
+            return inter_system_seconds
         if a in coords and b in coords:
             distance = math.hypot(coords[b][0] - coords[a][0],
                                   coords[b][1] - coords[a][1])
@@ -1159,6 +1176,24 @@ def _resolve_ortools_max_nodes():
                                  ORTOOLS_MAX_NODES,
                                  ORTOOLS_MAX_NODES_MIN,
                                  ORTOOLS_MAX_NODES_MAX, int)
+
+
+def _resolve_inter_system_travel_seconds():
+    """Per-solve env override for the flat inter-system crossing charge
+    (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS, sp-kab1 part c). Delegates to
+    _sequencer_env_scalar, so it clamps to [INTER_SYSTEM_TRAVEL_SECONDS_MIN,
+    INTER_SYSTEM_TRAVEL_SECONDS_MAX] and falls back to INTER_SYSTEM_TRAVEL_SECONDS
+    (1800 = 2*GATE_HOP + JUMP_COOLDOWN) on absent/unset/non-int — byte-identical to the
+    pre-sp-kab1 inline crossing charge when the env is not set. Evidence (sp-acb8
+    duration audit, n=163): empirical per-crossing cost ~1,148s vs 1,800s modeled
+    (solver 1.6x pessimistic, t=+4.1) suppresses profitable crossing tours; arming to
+    ~1200 admits them. Resolved ONCE per _make_travel_fn build so every crossing charge
+    in a single solve is internally consistent — the same discipline as
+    _resolve_max_planned_tranches."""
+    return _sequencer_env_scalar(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR,
+                                 INTER_SYSTEM_TRAVEL_SECONDS,
+                                 INTER_SYSTEM_TRAVEL_SECONDS_MIN,
+                                 INTER_SYSTEM_TRAVEL_SECONDS_MAX, int)
 
 
 def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
