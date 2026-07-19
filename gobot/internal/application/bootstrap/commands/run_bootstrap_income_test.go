@@ -125,6 +125,7 @@ func (w *incomeWorld) snapshot() Observation {
 		MarketsTotal:               w.marketsTotal,
 		MarketsCovered:             w.marketsCovered,
 		ProbeCount:                 w.probeCount,
+		ProbesScouting:             w.probeCount, // provisioned probes are scouting in the INCOME world
 		CommandFrigateID:           w.frigateID,
 		CommandFrigateOnContract:   w.frigateOnContract,
 		BatchContractRunning:       w.batchRunning,
@@ -195,10 +196,12 @@ func newIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerAcquirer
 	return h
 }
 
-// incomeObs is a coverage-met observation in the INCOME band (income below the default 10k bar).
+// incomeObs is a provisioned observation in the INCOME band (income below the default 10k bar).
+// Provisioning — probes at target + scouting — is what derives the INCOME label, not coverage.
 func incomeObs() Observation {
 	return Observation{
-		HomeSystem: "X1", MarketsTotal: 10, MarketsCovered: 10, // coverage met → past DATA
+		HomeSystem: "X1", MarketsTotal: 10, MarketsCovered: 10,
+		ProbeCount: 3, ProbesScouting: 3, // provisioned (probe_target 3) + scouting → INCOME-labeled
 		Treasury: 2000000, HasIdlePurchaser: true, IncomePerHour: 0,
 		Markets: incomeHubs(), ContractGoods: []string{"IRON", "ALUMINUM"},
 		Readable: true,
@@ -209,9 +212,9 @@ func incomeObs() Observation {
 
 func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar default 10000
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 5000}
+	obs := Observation{ProbeCount: 3, ProbesScouting: 3, IncomePerHour: 5000}
 	if p := derivePhase(obs, cfg); p != PhaseIncome {
-		t.Fatalf("coverage met + income below bar should derive INCOME, got %s", p)
+		t.Fatalf("provisioned + income below bar should derive INCOME, got %s", p)
 	}
 }
 
@@ -621,28 +624,28 @@ func TestBootstrap_Income_FrigateLoopNilSafe(t *testing.T) {
 	}
 }
 
-// the sp-rype stall reproduction, in the DATA parallel window: cold start still below the coverage bar,
-// but the frigate has finished its hour-0 shipyard run + probe buy (probes at target, scouting). Under
-// the parallel model (sp-t39j) actIncome runs in DATA, so the frigate must start EARNING rather than
-// park idle at the yard — the fix for "sole earner dead, income never flows".
-func TestBootstrap_Data_StartsFrigateLoopInParallelAfterProvisioning(t *testing.T) {
+// the sp-rype stall reproduction: the frigate has finished its hour-0 shipyard run + probe buy (probes at
+// target, scouting), so the arc is INCOME-labeled even though the home system is barely scanned (20%
+// coverage — coverage no longer gates the label). The frigate must start EARNING rather than park idle at
+// the yard — the fix for "sole earner dead, income never flows".
+func TestBootstrap_Income_StartsFrigateLoopAtLowCoverage(t *testing.T) {
 	obs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
-		Treasury: 120000, MarketsTotal: 10, MarketsCovered: 2, // 20% < 90% bar → DATA
+		Treasury: 120000, MarketsTotal: 10, MarketsCovered: 2, // 20% coverage — provisioned probes → INCOME
 		CommandFrigateID: "FRIGATE-1", FrigateContractLoopRunning: false, Readable: true,
 	}
 	loop := &fakeFrigateLoop{}
 	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	h.SetFrigateContractLoopStarter(loop)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if res.Phase != PhaseData {
-		t.Fatalf("coverage below bar must derive DATA, got %s", res.Phase)
+	if res.Phase != PhaseIncome {
+		t.Fatalf("provisioned probes must derive INCOME regardless of coverage (20%%), got %s", res.Phase)
 	}
 	if loop.calls != 1 || loop.ships[0] != "FRIGATE-1" {
-		t.Fatalf("in the DATA parallel window a provisioned frigate must start earning (contract loop), got calls=%d ships=%v", loop.calls, loop.ships)
+		t.Fatalf("a provisioned frigate must start earning (contract loop), got calls=%d ships=%v", loop.calls, loop.ships)
 	}
 	if !res.FrigateLoopStarted {
-		t.Fatalf("res.FrigateLoopStarted should be true in the DATA parallel window")
+		t.Fatalf("res.FrigateLoopStarted should be true for a provisioned frigate")
 	}
 }
 
@@ -693,14 +696,15 @@ func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
 	}
 }
 
-// --- INCOME acceptance (Slice 2): from a coverage-met fixture, the arc retires the frigate, launches
+// --- INCOME acceptance (Slice 2): from a provisioned fixture, the arc retires the frigate, launches
 // batch-contract, and stages one hauler per viable hub (capped), one per tick, on distinct hubs. ---
 
 func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 	world := &incomeWorld{
 		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", frigateOnContract: true, batchRunning: false,
-		markets: incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
+		probeCount: 3, // provisioned (probe_target 3) → INCOME-labeled
+		markets:    incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
 		incomePerHour: 0, hasPurchaser: true,
 	}
 	ret := &fakeRetirer{world: world}

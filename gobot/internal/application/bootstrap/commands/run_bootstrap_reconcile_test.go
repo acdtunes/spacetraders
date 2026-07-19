@@ -317,17 +317,27 @@ func TestBootstrap_DerivePhase_DataWhenUncovered(t *testing.T) {
 	}
 }
 
-func TestBootstrap_DerivePhase_BeyondDataAtCoverageBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // bar 0.9
-	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 9}, cfg); p != PhaseIncome {
-		t.Fatalf("coverage 90%% should derive past DATA (INCOME), got %s", p)
+// The DATA↔INCOME label follows probe PROVISIONING, not coverage: probes at target and scouting derive
+// INCOME even at low coverage; probes still ramping derive DATA even at full coverage. Coverage is
+// continuous background (the freshness sizer), never a phase gate.
+func TestBootstrap_DerivePhase_LabelFollowsProvisioningNotCoverage(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // probe_target 3
+	// Provisioned (3/3 probes scouting) but barely scanned → INCOME.
+	provisioned := Observation{MarketsTotal: 10, MarketsCovered: 1, ProbeCount: 3, ProbesScouting: 3}
+	if p := derivePhase(provisioned, cfg); p != PhaseIncome {
+		t.Fatalf("provisioned probes (low coverage) should derive INCOME, got %s", p)
+	}
+	// Fully covered but probes still ramping → DATA (the scanning workstream is not idle yet).
+	ramping := Observation{MarketsTotal: 10, MarketsCovered: 10, ProbeCount: 1, ProbesScouting: 1}
+	if p := derivePhase(ramping, cfg); p != PhaseData {
+		t.Fatalf("ramping probes (full coverage) should derive DATA, got %s", p)
 	}
 }
 
-// At/over the coverage bar the arc enters INCOME: the DATA act (probe buy, home-post declaration)
-// must NOT run — only INCOME acts from here.
-func TestBootstrap_CoverageMet_EntersIncome_NoDataAct(t *testing.T) {
-	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 10, Readable: true}
+// Provisioned probes (at target + scouting) enter INCOME even at low coverage: the DATA act (probe buy,
+// home-post declaration) must NOT run — only INCOME acts from here.
+func TestBootstrap_ProvisionedProbes_EntersIncome_NoDataAct(t *testing.T) {
+	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 2, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	declarer := &fakeDeclarer{}
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -345,7 +355,7 @@ func TestBootstrap_CoverageMet_EntersIncome_NoDataAct(t *testing.T) {
 		t.Fatalf("expected derived phase INCOME, got %s", res.Phase)
 	}
 	if acq.buys != 0 || declarer.calls != 0 {
-		t.Fatalf("coverage met: DATA act must not run; buys=%d declares=%d", acq.buys, declarer.calls)
+		t.Fatalf("provisioned: DATA act must not run; buys=%d declares=%d", acq.buys, declarer.calls)
 	}
 	// No "phase not yet implemented" hold at INCOME — that line is reserved for GATE, past the income bar.
 	if log.has("bootstrap_phase_not_implemented") {

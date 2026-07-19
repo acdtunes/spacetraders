@@ -11,8 +11,9 @@ import (
 // GATE the instant instantaneous income cleared the 10000 income_bar — trivially crossed by ONE contract
 // payout (staging: rolling income −55k→+105k in 53s) — so bootstrap drove GATE with ZERO haulers and
 // latched sticky on ConstructionStarted, permanently. THE FIX (armed via scaled_gate_entry, DEFAULT OFF)
-// requires a genuinely SCALED contract op to enter GATE: coverage ≥ coverage_bar AND haulers ≥
-// gate_min_haulers AND a SUSTAINED (rolling-window mean, NOT instantaneous) $/hr ≥ gate_income_bar. It
+// requires a genuinely SCALED contract op to enter GATE: haulers ≥ gate_min_haulers AND a SUSTAINED
+// (rolling-window mean, NOT instantaneous) $/hr ≥ gate_income_bar (coverage is NOT a gate — it is
+// continuous background). It
 // ARMS TOGETHER WITH ktio-B (autosizer-early): armed alone the op never scales haulers and the arc would
 // wedge in INCOME, which is why it ships OFF (this suite proves both the OFF byte-identical path and the
 // armed behavior).
@@ -47,48 +48,49 @@ func TestBootstrap_ScaledGate_FlagOff_ByteIdentical_InstantSpikeStillGates(t *te
 	}
 }
 
-// --- armed: GATE requires coverage AND haulers AND a sustained $/hr (all three, together) ---
+// --- armed: GATE requires haulers AND a sustained $/hr (coverage is NOT a gate) ---
 
-// All three conditions met (coverage ≥ bar, haulers ≥ floor, a sustained $/hr ≥ gate_income_bar) → GATE:
-// a genuinely scaled, funded contract op is the legitimate entry.
-func TestBootstrap_ScaledGate_Armed_AllThreeConditions_EntersGate(t *testing.T) {
+// Both conditions met (haulers ≥ floor, a sustained $/hr ≥ gate_income_bar) → GATE: a genuinely scaled,
+// funded contract op is the legitimate entry.
+func TestBootstrap_ScaledGate_Armed_HaulersAndSustainedIncome_EntersGate(t *testing.T) {
 	cfg := armedCfg(t)
 	obs := Observation{
-		MarketsTotal: 10, MarketsCovered: 10, // coverage 100% ≥ 0.90 bar
 		Haulers:       []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // 2 ≥ floor
 		IncomePerHour: 60000,                                            // (as substituted: the sustained mean) ≥ 50000
 	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("armed: coverage+haulers+sustained income all met → GATE, got %s", p)
+		t.Fatalf("armed: haulers + sustained income met → GATE, got %s", p)
 	}
 }
 
 // THE ktio case under the armed gate: income spiked far over the bar but with ZERO haulers (a frigate-only
-// contract payout, not a scaled op). Coverage is met. Must NOT enter GATE — the hauler floor is the primary
-// defense against the 0-hauler deadlock, regardless of how high income spikes.
+// contract payout, not a scaled op). Must NOT enter GATE — the hauler floor is the primary defense against
+// the 0-hauler deadlock, regardless of how high income spikes.
 func TestBootstrap_ScaledGate_Armed_SpikeWithZeroHaulers_DoesNotGate(t *testing.T) {
 	cfg := armedCfg(t)
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, Haulers: nil, IncomePerHour: 300000}
+	obs := Observation{Haulers: nil, IncomePerHour: 300000}
 	if p := derivePhase(obs, cfg); p == PhaseGate {
 		t.Fatalf("armed: a 0-hauler income spike must NOT enter GATE (unscaled op — the ktio deadlock), got %s", p)
 	}
 }
 
-// Coverage + haulers met, but the sustained $/hr is under gate_income_bar → not yet funded, hold in INCOME.
-func TestBootstrap_ScaledGate_Armed_SustainedBelowBar_HoldsIncome(t *testing.T) {
+// Haulers met, but the sustained $/hr is under gate_income_bar → not yet funded, must NOT enter GATE.
+func TestBootstrap_ScaledGate_Armed_SustainedBelowBar_DoesNotGate(t *testing.T) {
 	cfg := armedCfg(t)
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 40000}
-	if p := derivePhase(obs, cfg); p != PhaseIncome {
-		t.Fatalf("armed: coverage+haulers met but sustained income under the bar → INCOME (not GATE), got %s", p)
+	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 40000}
+	if p := derivePhase(obs, cfg); p == PhaseGate {
+		t.Fatalf("armed: haulers met but sustained income under the bar must NOT enter GATE, got %s", p)
 	}
 }
 
-// Haulers + sustained income met, but coverage under the bar (still scanning) → not a real op yet, stay DATA.
-func TestBootstrap_ScaledGate_Armed_CoverageUnderBar_DoesNotGate(t *testing.T) {
+// Coverage is NOT a GATE-entry condition: haulers + a sustained $/hr enter GATE even while the home
+// system is barely scanned (30% coverage). Scan-completeness runs as continuous background (the
+// freshness sizer), never a phase gate — a scaled, earning contract op is the legitimate entry.
+func TestBootstrap_ScaledGate_Armed_LowCoverage_StillEntersGate(t *testing.T) {
 	cfg := armedCfg(t)
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 3, Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 60000}
-	if p := derivePhase(obs, cfg); p == PhaseGate {
-		t.Fatalf("armed: coverage under the bar must NOT gate (op not yet real), got %s", p)
+	if p := derivePhase(obs, cfg); p != PhaseGate {
+		t.Fatalf("armed: haulers + sustained income must enter GATE regardless of coverage (30%%), got %s", p)
 	}
 }
 

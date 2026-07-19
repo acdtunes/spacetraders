@@ -197,23 +197,20 @@ func TestBootstrap_LiveRetune_ProbeTarget_LandsNextTick_NoRestart(t *testing.T) 
 	}
 }
 
-// The fraction knob converts live: coverage_bar_percent tunes the DATA→INCOME exit through the
-// integer-percent representation. At the default bar (0.90) a 90%-covered world has passed DATA
-// (INCOME); a live retune to 95% pushes the same world back under the bar (DATA) — the phase
-// derivation reads the live-overlaid fraction next tick.
-func TestBootstrap_LiveRetune_CoverageBarPercent_ConvertsToFractionAndFlipsPhase(t *testing.T) {
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 9} // 0.90 coverage
+// coverage_bar_percent still converts + resolves live (the knob remains tunable), but it is now INERT for
+// phase progression: retuning it does NOT flip derivePhase. Coverage runs as continuous background (the
+// freshness sizer), never a phase gate.
+func TestBootstrap_LiveRetune_CoverageBarPercent_ConvertsToFraction_InertForPhase(t *testing.T) {
+	obs := Observation{MarketsTotal: 10, MarketsCovered: 9, ProbeCount: 3, ProbesScouting: 3} // provisioned, 90% coverage
 
-	if p := derivePhase(obs, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseIncome {
-		t.Fatalf("at default bar 0.90 with 0.90 coverage, expected INCOME, got %s", p)
-	}
+	base := derivePhase(obs, resolveBootstrapConfig(baseCmd(), nil))
 
 	cfg := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"coverage_bar_percent": 95})
 	if cfg.CoverageBar != 0.95 {
-		t.Fatalf("coverage_bar_percent 95 must resolve to 0.95, got %v", cfg.CoverageBar)
+		t.Fatalf("coverage_bar_percent 95 must still resolve to 0.95 (tunable config intact), got %v", cfg.CoverageBar)
 	}
-	if p := derivePhase(obs, cfg); p != PhaseData {
-		t.Fatalf("at live bar 0.95 with 0.90 coverage, expected DATA, got %s", p)
+	if p := derivePhase(obs, cfg); p != base {
+		t.Fatalf("retuning coverage_bar_percent must NOT flip the phase (coverage is not a gate): base=%s got=%s", base, p)
 	}
 }
 

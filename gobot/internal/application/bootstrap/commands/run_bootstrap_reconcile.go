@@ -85,9 +85,9 @@ type bootstrapRunConfig struct {
 
 	// GATE-entry gate (sp-fp3y), consulted ONLY when ScaledGateEntry is armed; GateIncomeBar and
 	// GateMinHaulers still resolve to their documented defaults when off so the struct is deterministic.
-	// ScaledGateEntry true ⇒ derivePhase enters GATE on a SCALED contract op (coverage ≥ coverage_bar AND
-	// haulers ≥ GateMinHaulers AND a SUSTAINED $/hr ≥ GateIncomeBar) instead of the bare instantaneous
-	// income_bar. Default false (byte-identical). A tunable flag (scaled_gate_entry) — armed live, no launch key.
+	// ScaledGateEntry true ⇒ derivePhase enters GATE on a SCALED contract op (haulers ≥ GateMinHaulers AND
+	// a SUSTAINED $/hr ≥ GateIncomeBar) instead of the bare instantaneous income_bar. Default false
+	// (byte-identical). A tunable flag (scaled_gate_entry) — armed live, no launch key.
 	ScaledGateEntry bool
 	GateIncomeBar   float64 // SUSTAINED (rolling-window mean) net $/hr the fleet must clear for armed GATE entry.
 	GateMinHaulers  int     // hauler floor for armed GATE entry — proves a multi-hull op, not a lone spike.
@@ -524,23 +524,21 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // floor and must run from hour 0, not wait for scanning to ~complete. So the economic signals
 // (construction, income_bar) are evaluated FIRST, regardless of coverage: a built gate is COMPLETE, a
 // building/funded gate is GATE, no matter how much of the home system has been scanned. The DATA vs
-// INCOME label below only chooses whether the SCANNING workstream is still active (coverage under the
-// bar ⇒ DATA-labeled, still buying/assigning probes); the contract workstream runs in BOTH (the tick
-// dispatch runs actIncome in the DATA phase too). The MarketsTotal>0 guard keeps a cold agent from
-// reading an empty world as "100% covered".
+// INCOME label below only chooses whether the SCANNING workstream is still ramping (probes under target,
+// or bought but not yet scouting ⇒ DATA-labeled, still buying/assigning probes); the contract workstream
+// runs in BOTH (the tick dispatch runs actIncome in the DATA phase too). Coverage is continuous
+// background — the freshness sizer keeps the map fresh — and never gates the label.
 //
 // The arc must be MONOTONE, but realized income is NOT monotone across the INCOME→GATE boundary: GATE
 // repurposes contract haulers to construction, which DROPS realized $/hr back under income_bar. So GATE
 // is made STICKY on obs.ConstructionStarted — once a construction pipeline exists the arc stays in GATE
 // regardless of income, never regressing (which would re-buy the just-repurposed haulers and thrash).
-// The GATE-ENTRY decision itself is factored into gateFunded (sp-fp3y): default-off it is the historical
-// instantaneous income_bar check; armed it demands a scaled contract op (coverage + haulers + a SUSTAINED
-// $/hr), which is what makes the sticky latch above safe — construction can only start after a legitimate
+// The GATE-ENTRY decision itself is factored into gateFunded: default-off it is the historical
+// instantaneous income_bar check; armed it demands a scaled contract op (haulers + a SUSTAINED $/hr),
+// which is what makes the sticky latch above safe — construction can only start after a legitimate
 // scaled entry, so a spurious income spike can never latch GATE permanently (the ktio deadlock).
 // COMPLETE is terminal and monotone (a built gate stays built). A restart at any point re-derives the
-// true phase from these live signals — no persisted cursor, no double-advance. A fleet PAST cold-start
-// has coverage ≥ bar, so evaluating the economic signals first is byte-identical for it (the coverage
-// check it used to pass first is satisfied anyway); only the cold-start window changes.
+// true phase from these live signals — no persisted cursor, no double-advance.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 	if obs.ConstructionComplete {
 		return PhaseComplete
@@ -551,9 +549,11 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 	if gateFunded(obs, cfg) {
 		return PhaseGate
 	}
-	// Not yet funded/building. Label DATA while the home system is still being scanned (below the bar),
-	// else INCOME — but the contract workstream runs regardless of this label (see the tick dispatch).
-	if obs.MarketsTotal > 0 && obs.CoverageFraction() >= cfg.CoverageBar {
+	// Not yet funded/building. Label DATA while the scanning workstream is still ramping probes (under
+	// target, or bought-but-not-yet-scouting), else INCOME — but the contract workstream runs regardless
+	// of this label (see the tick dispatch). Coverage does NOT gate the label: once probes are at target
+	// and scouting, actData is a no-op, so this flip only ever skips a no-op, never the probe ramp.
+	if obs.ProbeCount >= cfg.ProbeTarget && obs.ProbesScouting >= obs.ProbeCount {
 		return PhaseIncome
 	}
 	return PhaseData
@@ -561,16 +561,16 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 
 // gateFunded reports whether the economic signals warrant entering GATE (jump-gate construction).
 //
-// DEFAULT (scaled_gate_entry OFF): today's behavior — instantaneous realized $/hr ≥ income_bar. Exactly
-// the pre-sp-fp3y check, so the phase derivation is byte-identical while the flag is off.
+// DEFAULT (scaled_gate_entry OFF): instantaneous realized $/hr ≥ income_bar — the historical check, so
+// the phase derivation is byte-identical while the flag is off.
 //
-// ARMED (scaled_gate_entry ON, sp-fp3y): GATE requires a genuinely SCALED contract operation, not a lone
-// income spike. All three must hold together:
-//   - coverage ≥ coverage_bar — the home system is scanned enough to run a real contract op;
+// ARMED (scaled_gate_entry ON): GATE requires a genuinely SCALED contract operation, not a lone income
+// spike. Both must hold together — coverage is NOT a gate here (scan-completeness is continuous
+// background, never a phase gate; sourcing gate materials is construction's job):
 //   - haulers ≥ gate_min_haulers — the INCOME ramp actually bought a multi-hull fleet (the ktio deadlock
 //     entered GATE with ZERO haulers off a single contract payout); and
 //   - a SUSTAINED $/hr ≥ gate_income_bar — obs.IncomePerHour here carries the rolling-window MEAN the
-//     reconciler substitutes when armed (an instantaneous spike is diluted to well under the bar; a
+//     reconciler substitutes when armed (an instantaneous spike is diluted well under the bar; a
 //     not-yet-full window reads −inf), so a fresh spike on short history can never trip GATE.
 //
 // This is also WHY the ConstructionStarted sticky latch in derivePhase is safe when armed: construction is
@@ -580,9 +580,7 @@ func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
 	if !cfg.ScaledGateEntry {
 		return obs.IncomePerHour >= cfg.IncomeBar
 	}
-	return obs.MarketsTotal > 0 &&
-		obs.CoverageFraction() >= cfg.CoverageBar &&
-		len(obs.Haulers) >= cfg.GateMinHaulers &&
+	return len(obs.Haulers) >= cfg.GateMinHaulers &&
 		obs.IncomePerHour >= cfg.GateIncomeBar
 }
 
@@ -915,8 +913,8 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		blockers = "none"
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%/%.0f%% bar) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
+		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
 		"action":             "bootstrap_heartbeat",
 		"container_id":       cmd.ContainerID,
 		"phase":              string(phase),
@@ -959,7 +957,7 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
 			return "home scout post declared — awaiting the scout-post coordinator to man idle probe(s) (sp-pt7d)"
 		}
-		return fmt.Sprintf("scan to coverage bar in parallel with contracts (%.0f%%/%.0f%%)", obs.CoverageFraction()*100, cfg.CoverageBar*100)
+		return fmt.Sprintf("scan home system in parallel with contracts (coverage %.0f%%)", obs.CoverageFraction()*100)
 	case PhaseIncome:
 		if obs.CommandFrigateOnContract {
 			return "retire the command frigate from contract work"
