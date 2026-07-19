@@ -17,11 +17,12 @@ import (
 // guarantee directly on the pure filter so a future edit cannot
 // silently drop the dedication check and re-open the poach vector.
 func TestReuseEligibleIdleHulls_ExcludesContractDedicatedHull(t *testing.T) {
+	// All cargo-capable, so dedication/idle is the ONLY exclusion reason under test.
 	hulls := []domcap.HullUtilization{
-		{ShipSymbol: "CONTRACT-RESERVE", DedicatedFleet: "contract", Idle: true},
-		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true},
-		{ShipSymbol: "DEPOT-PIN", DedicatedFleet: "depot-delivery", Idle: true},
-		{ShipSymbol: "BUSY-1", DedicatedFleet: "", Idle: false},
+		{ShipSymbol: "CONTRACT-RESERVE", DedicatedFleet: "contract", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "DEPOT-PIN", DedicatedFleet: "depot-delivery", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "BUSY-1", DedicatedFleet: "", Idle: false, CargoCapacity: 80},
 	}
 
 	eligible := reuseEligibleIdleHulls(hulls, nil)
@@ -42,8 +43,8 @@ func TestReuseEligibleIdleHulls_ExcludesContractDedicatedHull(t *testing.T) {
 // filter (keyed to navigation.PurchasingFleet) so a future edit cannot silently re-open the poach.
 func TestReuseEligibleIdleHulls_ExcludesPurchasingDedicatedHull(t *testing.T) {
 	hulls := []domcap.HullUtilization{
-		{ShipSymbol: "FRIGATE-BUYER", DedicatedFleet: navigation.PurchasingFleet, Idle: true},
-		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true},
+		{ShipSymbol: "FRIGATE-BUYER", DedicatedFleet: navigation.PurchasingFleet, Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
 	}
 
 	eligible := reuseEligibleIdleHulls(hulls, nil)
@@ -56,13 +57,58 @@ func TestReuseEligibleIdleHulls_ExcludesPurchasingDedicatedHull(t *testing.T) {
 		"the exclusive purchasing ship (dedicated_fleet=purchasing) is invisible to tier-1 reuse-idle — the reconciler can never poach it into contract-delivery")
 }
 
+// sp-5nd2 staging-gate count: EconomicsSignals.ContractHaulerCount is the DISTINCT union of
+// the depot delivery hulls already serving (cluster workers) and the cargo-capable hulls
+// tagged to a hauler fleet (contract-fulfillment + adopted depot-delivery), deduped by ship
+// symbol. It EXCLUDES 0-cargo probes, warehouse/stocker infra hulls, and the undedicated idle
+// reuse pool (which the reconciler consumes into roles each tick — counting it would thrash
+// the gate).
+func TestCountContractHaulers_UnionOfClusterWorkersAndDedicatedHaulersDeduped(t *testing.T) {
+	hulls := []domcap.HullUtilization{
+		{ShipSymbol: "FRIGATE", DedicatedFleet: "contract", Idle: true, CargoCapacity: 80},       // counts (contract pool)
+		{ShipSymbol: "DELIV-1", DedicatedFleet: "depot-delivery", Idle: true, CargoCapacity: 80}, // counts AND a cluster worker -> deduped
+		{ShipSymbol: "PROBE", DedicatedFleet: "contract", Idle: true, CargoCapacity: 0},          // 0-cargo: excluded
+		{ShipSymbol: "IDLE-FREE", DedicatedFleet: "", Idle: true, CargoCapacity: 80},             // undedicated reuse pool: excluded
+		{ShipSymbol: "WAREHOUSE-1", DedicatedFleet: "warehouse", Idle: true, CargoCapacity: 80},  // infra, not a hauler: excluded
+	}
+	topology := domcap.TopologySignals{Clusters: []domcap.ClusterState{{
+		HubSymbol: "X1-H1",
+		Workers:   []domcap.WorkerState{{ShipSymbol: "DELIV-1"}, {ShipSymbol: "DELIV-2"}},
+	}}}
+
+	require.Equal(t, 3, countContractHaulers(hulls, topology),
+		"FRIGATE + DELIV-1 + DELIV-2 (DELIV-1 counted once across both sources); probe/idle-free/warehouse excluded")
+}
+
+// sp-5nd2 never-mispick: an idle, undedicated hull that CANNOT haul (a 0-cargo
+// probe/satellite) is NOT reuse-eligible — every reconciler reuse target is a
+// cargo-required hauling role (sp-r6f1), so offering a can't-haul hull only emits
+// a reassign the assign gate BLOCKS, erroring CONVERGE. The filter mirrors the
+// ladder's own cargo re-verify (domcap.MinReuseCargoCapacity) so the two layers
+// cannot drift.
+func TestReuseEligibleIdleHulls_ExcludesCargoIncapableHull(t *testing.T) {
+	hulls := []domcap.HullUtilization{
+		{ShipSymbol: "PROBE-0", DedicatedFleet: "", Idle: true, CargoCapacity: 0},
+		{ShipSymbol: "HAULER-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
+	}
+
+	eligible := reuseEligibleIdleHulls(hulls, nil)
+
+	symbols := make([]string, 0, len(eligible))
+	for _, h := range eligible {
+		symbols = append(symbols, h.ShipSymbol)
+	}
+	require.Equal(t, []string{"HAULER-1"}, symbols,
+		"a 0-cargo probe cannot haul, so it is never reuse-eligible for the reconciler's cargo-required hauling roles; only the cargo-capable hull is offered")
+}
+
 // A hull already holding a cluster role stays excluded even when idle+undedicated —
 // so the contract-dedication check added value is isolated (the "contract" exclusion
 // is not accidentally load-bearing for the cluster-role case).
 func TestReuseEligibleIdleHulls_ExcludesClusterRoleHull(t *testing.T) {
 	hulls := []domcap.HullUtilization{
-		{ShipSymbol: "WAREHOUSE-1", DedicatedFleet: "", Idle: true},
-		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true},
+		{ShipSymbol: "WAREHOUSE-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
 	}
 	clusters := []domcap.ClusterState{{Warehouses: []domcap.WarehouseState{{ShipSymbol: "WAREHOUSE-1"}}}}
 
@@ -82,8 +128,8 @@ func TestReuseEligibleIdleHulls_ExcludesClusterRoleHull(t *testing.T) {
 // with the dedication guard this filter enforces, it no longer can be.)
 func TestReuseEligibleIdleHulls_ExcludesTradeDedicatedHull(t *testing.T) {
 	hulls := []domcap.HullUtilization{
-		{ShipSymbol: "LIGHT-TRADE", DedicatedFleet: "trade", Idle: true},
-		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true},
+		{ShipSymbol: "LIGHT-TRADE", DedicatedFleet: "trade", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
 	}
 
 	eligible := reuseEligibleIdleHulls(hulls, nil)

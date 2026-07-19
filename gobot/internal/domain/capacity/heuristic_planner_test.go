@@ -79,6 +79,9 @@ func contractMachineSignals() capacity.Signals {
 			TreasuryCredits:  500000,
 			FleetPerHullCrHr: 2000,
 			FleetHullCount:   12,
+			// The operating contract machine: the hauler tier is saturated, so the
+			// depot buffer capacity these tests size is legitimately desired (sp-5nd2).
+			ContractHaulerCount: capacity.ContractHaulerTierSaturation,
 			SourceDistances: []capacity.GoodSourceDistance{
 				{HubSymbol: "X1-J58-A1", Good: "IRON", Distance: 60},
 				{HubSymbol: "X1-J58-A1", Good: "FUEL", Distance: 40},
@@ -99,7 +102,9 @@ func singleGoodSignals(hubFrequency, payment, cycleSeconds, goodFrequency, avera
 			GoodMix:           []capacity.GoodDemand{{Good: "ORE", Frequency: goodFrequency, AvgUnits: averageUnits}},
 		}}},
 		Economics: capacity.EconomicsSignals{
-			SourceDistances: []capacity.GoodSourceDistance{{HubSymbol: "X1-CAP-H1", Good: "ORE", Distance: distance}},
+			// Saturated hauler tier: the buffer sizing these tests assert is desired.
+			ContractHaulerCount: capacity.ContractHaulerTierSaturation,
+			SourceDistances:     []capacity.GoodSourceDistance{{HubSymbol: "X1-CAP-H1", Good: "ORE", Distance: distance}},
 		},
 	}
 	if cycleSeconds > 0 {
@@ -532,11 +537,14 @@ func TestHeuristicPlanner_SizesCountsToBufferedVolumeAndRestockCadence(t *testin
 			Performance: capacity.PerformanceSignals{Hubs: []capacity.HubPerformance{
 				{HubSymbol: "X1-VOL-H1", CycleTimeSeconds: 3600},
 			}},
-			Economics: capacity.EconomicsSignals{SourceDistances: []capacity.GoodSourceDistance{
-				{HubSymbol: "X1-VOL-H1", Good: "ALUMINUM", Distance: 50},
-				{HubSymbol: "X1-VOL-H1", Good: "BARRELS", Distance: 60},
-				{HubSymbol: "X1-VOL-H1", Good: "CABLES", Distance: 70},
-			}},
+			Economics: capacity.EconomicsSignals{
+				ContractHaulerCount: capacity.ContractHaulerTierSaturation, // saturated: buffer capacity is desired
+				SourceDistances: []capacity.GoodSourceDistance{
+					{HubSymbol: "X1-VOL-H1", Good: "ALUMINUM", Distance: 50},
+					{HubSymbol: "X1-VOL-H1", Good: "BARRELS", Distance: 60},
+					{HubSymbol: "X1-VOL-H1", Good: "CABLES", Distance: 70},
+				},
+			},
 		}
 
 		desired := computeDesired(t, signals, plannerCalibration(0, 0))
@@ -577,6 +585,64 @@ func TestHeuristicPlanner_SizesCountsToBufferedVolumeAndRestockCadence(t *testin
 		require.Equal(t, 1, hub.WorkerCount)
 		require.Zero(t, hub.WarehouseCount)
 		require.Zero(t, hub.StockerCount)
+	})
+}
+
+// Behavior (hauler-first staging, sp-5nd2 / sp-u5nh): the desired topology WITHHOLDS
+// all depot buffer capacity (warehouse + stocker + buffered-goods whitelist) until the
+// contract-delivery hauler tier is saturated (>= ContractHaulerTierSaturation cargo
+// haulers). Below it the reconciler desires delivery haulers ONLY — a warehouse with no
+// hauler pool to fill/drain it is premature capital (PLAYBOOK §5). The SAME buffer-worthy
+// demand that sizes two warehouses when saturated desires ZERO buffer capacity at 0–1
+// haulers, keeping only the worker (hauler) intent so the gap escalates to a hauler buy.
+func TestHeuristicPlanner_WithholdsBufferCapacityUntilHaulerTierSaturated(t *testing.T) {
+	bufferWorthy := func(haulers int) capacity.Signals {
+		return capacity.Signals{
+			Demand: capacity.DemandSignals{Hubs: []capacity.HubDemand{{
+				HubSymbol:         "X1-STAGE-H1",
+				ContractFrequency: 1.5,
+				AvgPaymentCredits: 20000,
+				GoodMix: []capacity.GoodDemand{
+					{Good: "ALUMINUM", Frequency: 1.0, AvgUnits: 40},
+					{Good: "BARRELS", Frequency: 0.9, AvgUnits: 50},
+					{Good: "CABLES", Frequency: 0.8, AvgUnits: 30},
+				},
+			}}},
+			Performance: capacity.PerformanceSignals{Hubs: []capacity.HubPerformance{
+				{HubSymbol: "X1-STAGE-H1", CycleTimeSeconds: 3600},
+			}},
+			Economics: capacity.EconomicsSignals{
+				ContractHaulerCount: haulers,
+				SourceDistances: []capacity.GoodSourceDistance{
+					{HubSymbol: "X1-STAGE-H1", Good: "ALUMINUM", Distance: 50},
+					{HubSymbol: "X1-STAGE-H1", Good: "BARRELS", Distance: 60},
+					{HubSymbol: "X1-STAGE-H1", Good: "CABLES", Distance: 70},
+				},
+			},
+		}
+	}
+
+	t.Run("0 haulers: delivery-hauler intent only, ZERO buffer capacity", func(t *testing.T) {
+		hub := computeDesired(t, bufferWorthy(0), plannerCalibration(0, 0)).Hubs[0]
+
+		require.GreaterOrEqual(t, hub.WorkerCount, 1, "the delivery-hauler (worker) intent is still desired — hauler-first")
+		require.Zero(t, hub.WarehouseCount, "no warehouse until the hauler tier is saturated")
+		require.Zero(t, hub.StockerCount, "no stocker until the hauler tier is saturated")
+		require.Empty(t, hub.BufferedGoods, "no buffered-goods whitelist until the hauler tier is saturated")
+	})
+
+	t.Run("1 hauler: still below the >=2 tier, no buffer capacity", func(t *testing.T) {
+		hub := computeDesired(t, bufferWorthy(1), plannerCalibration(0, 0)).Hubs[0]
+
+		require.Zero(t, hub.WarehouseCount, "one hauler is below the saturation tier")
+		require.Empty(t, hub.BufferedGoods)
+	})
+
+	t.Run("2 haulers: tier saturated, buffer capacity unlocks", func(t *testing.T) {
+		hub := computeDesired(t, bufferWorthy(2), plannerCalibration(0, 0)).Hubs[0]
+
+		require.Equal(t, 2, hub.WarehouseCount, "180 buffered units need two 120-unit holds once the hauler tier is saturated")
+		require.NotEmpty(t, hub.BufferedGoods, "the buffer whitelist is desired once haulers exist")
 	})
 }
 

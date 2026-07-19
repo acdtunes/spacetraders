@@ -404,9 +404,9 @@ func TestSense_ReportsPerHullUtilization(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []capacity.HullUtilization{
-		{ShipSymbol: "DL-1", DedicatedFleet: "", Waypoint: hubWaypoint, DutyCyclePct: 0, Idle: true},
-		{ShipSymbol: "ST-1", DedicatedFleet: "contract", Waypoint: sourceWaypoint, DutyCyclePct: 25, Idle: true},
-		{ShipSymbol: "WH-1", DedicatedFleet: "contract", Waypoint: hubWaypoint, DutyCyclePct: 90, Idle: false},
+		{ShipSymbol: "DL-1", DedicatedFleet: "", Waypoint: hubWaypoint, DutyCyclePct: 0, Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "ST-1", DedicatedFleet: "contract", Waypoint: sourceWaypoint, DutyCyclePct: 25, Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "WH-1", DedicatedFleet: "contract", Waypoint: hubWaypoint, DutyCyclePct: 90, Idle: false, CargoCapacity: 80},
 	}, signals.Utilization.Hulls)
 }
 
@@ -537,8 +537,8 @@ func TestSense_FillsIdleHullsWithReuseEligibleSubset(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []capacity.HullUtilization{
-		{ShipSymbol: "FREE-1", DedicatedFleet: "", Waypoint: sourceWaypoint, DutyCyclePct: 42, Idle: true},
-	}, signals.Topology.IdleHulls, "only the idle, undedicated, non-cluster hull is reuse-eligible")
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Waypoint: sourceWaypoint, DutyCyclePct: 42, Idle: true, CargoCapacity: 80},
+	}, signals.Topology.IdleHulls, "only the idle, undedicated, cargo-capable, non-cluster hull is reuse-eligible")
 	// Same tick, same snapshot: every IdleHulls entry is field-for-field one of
 	// Utilization.Hulls (not a second DB read that could diverge).
 	require.Subset(t, signals.Utilization.Hulls, signals.Topology.IdleHulls)

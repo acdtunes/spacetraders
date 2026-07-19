@@ -427,14 +427,21 @@ func newIdlePool(actual TopologySignals) *idlePool {
 	return &idlePool{hulls: eligible}
 }
 
-// reusable applies the never-poach guard: only a genuinely idle, undedicated
-// hull not already holding a cluster role (and not listed twice) may be
-// reassigned.
+// reusable applies the never-poach + never-mispick guard: only a genuinely
+// idle, undedicated, cargo-capable hull not already holding a cluster role (and
+// not listed twice) may be reassigned. The cargo floor (sp-5nd2) keeps a
+// 0-cargo probe/satellite out of the reuse pool: every reconciler reuse target
+// is a hauling role the sp-r6f1 assign gate cargo-requires, so offering a
+// can't-haul hull only emits a reassign that gate BLOCKS — erroring CONVERGE and
+// swallowing the escalation. Excluding it lets the gap fall through to capital.
 func reusable(hull HullUtilization, serving, taken map[string]bool) bool {
 	if !hull.Idle {
 		return false
 	}
 	if hull.DedicatedFleet != "" {
+		return false
+	}
+	if hull.CargoCapacity < MinReuseCargoCapacity {
 		return false
 	}
 	if serving[hull.ShipSymbol] {

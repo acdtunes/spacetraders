@@ -24,8 +24,20 @@ func diffActions(t *testing.T, desired DesiredTopology, actual TopologySignals) 
 	return actions
 }
 
+// haulCapableCargoUnits is a positive cargo hold clearing MinReuseCargoCapacity —
+// a reuse fixture MUST be able to haul, since the reconciler only reassigns idle
+// hulls into cargo-required hauling roles.
+const haulCapableCargoUnits = 40
+
+// idleHull is a reuse-eligible idle hull: idle, undedicated, cargo-capable.
 func idleHull(ship string) HullUtilization {
-	return HullUtilization{ShipSymbol: ship, Idle: true}
+	return HullUtilization{ShipSymbol: ship, Idle: true, CargoCapacity: haulCapableCargoUnits}
+}
+
+// cargoZeroIdleHull is idle and undedicated but CANNOT haul (a 0-cargo
+// probe/satellite) — never reuse-eligible for the reconciler's hauling roles.
+func cargoZeroIdleHull(ship string) HullUtilization {
+	return HullUtilization{ShipSymbol: ship, Idle: true, CargoCapacity: 0}
 }
 
 func actionsByVerb(actions []Action, verb ActionVerb) []Action {
@@ -185,9 +197,12 @@ func TestLadderDiffer_UncoveredHubReusesIdleHullInsteadOfBuying(t *testing.T) {
 	}
 }
 
-// Behavior (never poach): a hull that is pinned to another fleet, not actually
-// idle, or already serving a cluster role is NOT reusable — the gap escalates
-// up the ladder instead of stealing the hull.
+// Behavior (never poach / never mispick): a hull that is pinned to another
+// fleet, not actually idle, already serving a cluster role, or CANNOT HAUL
+// (0-cargo probe) is NOT reuse-eligible — the gap escalates up the ladder to
+// capital instead of emitting a reassign that would only be rejected downstream
+// (the cargo case: sp-5nd2 — selecting a 0-cargo probe for a hauling role
+// erroring CONVERGE at the sp-r6f1 assign gate).
 func TestLadderDiffer_IneligibleIdleHullsAreNeverReassigned(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -196,7 +211,13 @@ func TestLadderDiffer_IneligibleIdleHullsAreNeverReassigned(t *testing.T) {
 		{
 			name: "pinned to another operation's fleet",
 			actual: TopologySignals{IdleHulls: []HullUtilization{
-				{ShipSymbol: "SHIP-PINNED", DedicatedFleet: "MANUFACTURING_C", Idle: true},
+				{ShipSymbol: "SHIP-PINNED", DedicatedFleet: "MANUFACTURING_C", Idle: true, CargoCapacity: haulCapableCargoUnits},
+			}},
+		},
+		{
+			name: "a 0-cargo probe cannot haul (sp-5nd2)",
+			actual: TopologySignals{IdleHulls: []HullUtilization{
+				cargoZeroIdleHull("SHIP-PROBE"),
 			}},
 		},
 		{

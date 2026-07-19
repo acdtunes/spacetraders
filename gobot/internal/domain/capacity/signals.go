@@ -153,7 +153,25 @@ type HullUtilization struct {
 	DutyCyclePct float64
 	// Idle reports the hull currently has no container flying it.
 	Idle bool
+	// CargoCapacity is the hull's total cargo hold (units). The reuse-first tier
+	// (tier 1) reassigns ONLY into cargo-required hauling roles (warehouse /
+	// stocker / delivery), so a hull below MinReuseCargoCapacity — a 0-cargo
+	// probe/satellite — is NEVER reuse-eligible: selecting it only produces a
+	// reassign the sp-r6f1 assign gate then BLOCKS, erroring CONVERGE and
+	// starving escalation. Excluding it lets the gap escalate to capital instead
+	// (sp-5nd2). SENSE fills it; a zero value fails SAFE (excluded, never poached).
+	CargoCapacity int
 }
+
+// MinReuseCargoCapacity is the cargo-hold floor an idle hull must clear to be
+// tier-1 reuse-eligible. The reconciler only ever reassigns idle hulls into
+// HAULING roles (warehouse / stocker / delivery), each cargo-required at the
+// sp-r6f1 auto-assign gate (application/ship/commands/assignment's
+// DefaultFleetCargoRequirement, floor 1). The domain cannot import that
+// application floor; 1 mirrors it — any hull with a hold clears it, a 0-cargo
+// probe/satellite never does. Shared by the ladder's reusable guard and the
+// SENSE-side reuse-eligible filter so the two cannot drift (sp-5nd2).
+const MinReuseCargoCapacity = 1
 
 // EconomicsSignals: treasury, income velocity, per-good source distances, and
 // stocker load (spec SENSE: Economics). The GOVERN phase paces capital spend
@@ -172,6 +190,13 @@ type EconomicsSignals struct {
 	// ProjectedGainPerHour without dividing by a cold-start zero
 	// (see proposal.go's ROIEvidence derivation).
 	FleetHullCount int
+	// ContractHaulerCount is the contract-delivery op's current cargo-hauler
+	// count — the hauler-first STAGING input (sp-5nd2 / sp-u5nh). Below the
+	// planner's ContractHaulerTierSaturation the desired topology withholds ALL
+	// depot buffer capacity (warehouse/stocker/buffered goods) and desires
+	// delivery haulers ONLY: warehouse capital with no hauler pool to fill/drain
+	// it is premature (PLAYBOOK §5). SENSE fills it; 0 (cold start) => hauler-first.
+	ContractHaulerCount int
 	// SourceDistances is the per-good distance from each hub to its nearest
 	// source market — the denominator of the buffer-selection score.
 	SourceDistances []GoodSourceDistance

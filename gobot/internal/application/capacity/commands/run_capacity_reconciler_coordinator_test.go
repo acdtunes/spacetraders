@@ -190,6 +190,29 @@ func (s *spyProposals) all() []capacity.Proposal {
 	return append([]capacity.Proposal(nil), s.submitted...)
 }
 
+// spyDemandSink captures what the real CapexEmitter publishes to the fleet
+// autosizer's demand bridge — the seam contract-delivery capital escalation
+// travels through (its guarded buy is the money-gated auto-execute).
+type spyDemandSink struct {
+	mu      sync.Mutex
+	demands []capacity.CapitalDemand
+}
+
+func (s *spyDemandSink) EmitCapitalDemand(d capacity.CapitalDemand) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.demands = append(s.demands, d)
+}
+
+func (s *spyDemandSink) latest() capacity.CapitalDemand {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.demands) == 0 {
+		return capacity.CapitalDemand{}
+	}
+	return s.demands[len(s.demands)-1]
+}
+
 type fakeKillSwitch struct {
 	mu      sync.Mutex
 	engaged bool
@@ -851,6 +874,55 @@ func TestCapacityReconciler_InvalidCalibrationFailsLaunch(t *testing.T) {
 			require.Zero(t, f.sensor.calls, "an invalid calibration must never start the loop")
 		})
 	}
+}
+
+// Behavior (sp-5nd2, FAULT 3 end-to-end): a reconcile tick whose only idle
+// hulls are cargo-0 probes, over an uncovered hauling hub, must NOT error at
+// CONVERGE and must ESCALATE the gap to contract-delivery capital DEMAND — the
+// seam the fleet autosizer's guarded (money-gated) buy consumes — rather than
+// emit a reassign the sp-r6f1 assign gate blocks. Wires the REAL ladder differ +
+// REAL capex emitter so the exercised chain is production's: with the fix, no
+// probe is reassigned (the actuator's sp-r6f1-mimicking failVerb is never hit),
+// the worker gap becomes an add_cluster the emitter publishes as demand, and NO
+// captain proposal is filed — contract-delivery capital auto-executes behind the
+// autosizer's guards, it is never approval-gated.
+func TestCapacityReconciler_CargoZeroProbesEscalateToCapitalDemandWithoutConvergeError(t *testing.T) {
+	sink := &spyDemandSink{}
+	actuator := newSpyActuator()
+	actuator.failVerb = capacity.VerbReassignHull // the sp-r6f1 assign gate blocks any 0-cargo reassign
+	proposals := &spyProposals{}
+	sensor := &fakeSensor{signals: capacity.Signals{
+		Topology: capacity.TopologySignals{IdleHulls: []capacity.HullUtilization{
+			{ShipSymbol: "PROBE-1", Idle: true, CargoCapacity: 0},
+			{ShipSymbol: "PROBE-2", Idle: true, CargoCapacity: 0},
+			{ShipSymbol: "PROBE-3", Idle: true, CargoCapacity: 0},
+		}},
+	}}
+	planner := &fakePlanner{desired: capacity.DesiredTopology{Hubs: []capacity.DesiredHub{
+		{HubSymbol: "X1-HUB-B", WorkerCount: 1},
+	}}}
+	h := NewRunCapacityReconcilerCoordinatorHandler(
+		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, sensor, planner),
+		capacity.NewLadderDiffer(),
+		capacity.NewCapexEmitter(sink),
+		actuator,
+		proposals,
+		&fakeKillSwitch{},
+		&shared.MockClock{CurrentTime: time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)},
+	)
+
+	outcomes := runTicks(t, h, reconcilerCmd(), 1, nil)
+
+	require.Empty(t, outcomes[0].FailedPhase,
+		"a cargo-0 probe must never be reassigned, so CONVERGE never errors on the sp-r6f1 block")
+	require.Empty(t, actuator.calls(capacity.VerbReassignHull),
+		"no reassign may be emitted for a can't-haul probe")
+	require.Empty(t, proposals.all(),
+		"contract-delivery capital auto-executes via the autosizer demand path — never a captain proposal")
+	require.True(t, sink.latest().Present,
+		"the tier-4 gap must be emitted as contract-delivery capital demand")
+	require.Equal(t, 1, sink.latest().DeliveryHulls,
+		"the delivery-hull gap escalates to capital demand instead of a blocked reassign")
 }
 
 // Behavior: a handler missing any wired component refuses to run — a

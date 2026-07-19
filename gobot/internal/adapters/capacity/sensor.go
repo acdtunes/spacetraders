@@ -170,10 +170,10 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 		Performance: s.sensePerformance(ctx, playerID, contracts),
 		Topology:    topology,
 		Utilization: utilization,
-		// FleetHullCount derives from the SAME hull set Utilization carries —
-		// the len(Utilization.Hulls) consistency the contract requires is
+		// FleetHullCount and ContractHaulerCount both derive from the SAME hull
+		// set Utilization carries — the consistency the contract requires is
 		// structural, not coincidental.
-		Economics: s.senseEconomics(ctx, playerID, demand, topology, len(utilization.Hulls)),
+		Economics: s.senseEconomics(ctx, playerID, demand, topology, len(utilization.Hulls), countContractHaulers(utilization.Hulls, topology)),
 	}, nil
 }
 
@@ -186,18 +186,21 @@ func (s *Sensor) note(family string, err error) {
 // reuseEligibleIdleHulls filters the utilization hull snapshot to the tier-1
 // REUSE-ELIGIBLE idle subset the DIFF ladder may reassign. Eligibility mirrors
 // the ladder's own re-verification EXACTLY (domain/capacity/ladder.go's reusable
-// guard): idle AND undedicated AND not already holding a cluster role — a
-// stationary depot hull can read idle in the ships table yet still anchor its
-// cluster, so it must never be offered as free. Reads the SAME []HullUtilization
-// the Utilization family carries (no second DB read), so the differ re-verifies
-// against a signal that cannot have drifted from Utilization.Hulls. The differ
-// re-checks per hull, so an over-inclusive slice fails safe; matching here keeps
-// the signal honest and prevents an empty slice from starving tier-1.
+// guard): idle AND undedicated AND cargo-capable AND not already holding a
+// cluster role — a stationary depot hull can read idle in the ships table yet
+// still anchor its cluster, so it must never be offered as free; and a 0-cargo
+// probe/satellite (below domainCapacity.MinReuseCargoCapacity) cannot serve a
+// hauling role, so offering it only emits a reassign the sp-r6f1 assign gate
+// BLOCKS (sp-5nd2). Reads the SAME []HullUtilization the Utilization family
+// carries (no second DB read), so the differ re-verifies against a signal that
+// cannot have drifted from Utilization.Hulls. The differ re-checks per hull, so
+// an over-inclusive slice fails safe; matching here keeps the signal honest and
+// prevents an empty slice from starving tier-1.
 func reuseEligibleIdleHulls(hulls []domainCapacity.HullUtilization, clusters []domainCapacity.ClusterState) []domainCapacity.HullUtilization {
 	serving := clusterRoleShipSymbols(clusters)
 	var eligible []domainCapacity.HullUtilization
 	for _, hull := range hulls {
-		if hull.Idle && hull.DedicatedFleet == "" && !serving[hull.ShipSymbol] {
+		if hull.Idle && hull.DedicatedFleet == "" && hull.CargoCapacity >= domainCapacity.MinReuseCargoCapacity && !serving[hull.ShipSymbol] {
 			eligible = append(eligible, hull)
 		}
 	}

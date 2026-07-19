@@ -44,10 +44,13 @@ func twoGoodHub(nearDistance, farDistance float64) capacity.Signals {
 		Performance: capacity.PerformanceSignals{Hubs: []capacity.HubPerformance{
 			{HubSymbol: "X1-DIR-H1", CycleTimeSeconds: 3600},
 		}},
-		Economics: capacity.EconomicsSignals{SourceDistances: []capacity.GoodSourceDistance{
-			{HubSymbol: "X1-DIR-H1", Good: "NEAR_GOOD", Distance: nearDistance},
-			{HubSymbol: "X1-DIR-H1", Good: "FAR_GOOD", Distance: farDistance},
-		}},
+		Economics: capacity.EconomicsSignals{
+			ContractHaulerCount: capacity.ContractHaulerTierSaturation, // saturated: buffer whitelist is desired
+			SourceDistances: []capacity.GoodSourceDistance{
+				{HubSymbol: "X1-DIR-H1", Good: "NEAR_GOOD", Distance: nearDistance},
+				{HubSymbol: "X1-DIR-H1", Good: "FAR_GOOD", Distance: farDistance},
+			},
+		},
 	}
 }
 
@@ -106,7 +109,10 @@ func farSourcedHomeHubDilutedSignals() (capacity.Signals, []farGood) {
 			AvgPaymentCredits: 500000,
 			GoodMix:           goodMix,
 		}}},
-		Economics: capacity.EconomicsSignals{SourceDistances: distances},
+		Economics: capacity.EconomicsSignals{
+			ContractHaulerCount: capacity.ContractHaulerTierSaturation, // saturated: the far-sourced buffer is desired
+			SourceDistances:     distances,
+		},
 	}
 	return signals, goods
 }
