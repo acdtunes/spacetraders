@@ -103,6 +103,10 @@ bootstrap:
   tick_seconds: 45
   probe_target: 3
   coverage_bar: 0.90
+  # sp-5nd2 cold-start economics arms — DEFAULT-ON (false = armed). Set true to stand a feature down at
+  # launch; the live scaled_gate_entry_disabled / autosizer_early_scaling_disabled tunes disable with no restart.
+  scaled_gate_entry_disabled: false
+  autosizer_early_scaling_disabled: false
 
 fleet_autosizer:
   contract_delivery_hulls_enabled: true

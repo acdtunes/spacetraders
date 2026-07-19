@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
 // --- INCOME fakes (black-box: the reconciler is driven through its ports only) ---
@@ -267,11 +269,11 @@ func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
 	}
 }
 
-func TestBootstrap_DerivePhase_GateAtIncomeBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
+func TestBootstrap_DerivePhase_Disabled_GateAtIncomeBar(t *testing.T) {
+	cfg := disabledCfg(t) // gate disarmed → bare income_bar trigger (pre-arm)
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 10000}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("realized $/hr ≥ bar should derive GATE, got %s", p)
+		t.Fatalf("disabled: realized $/hr ≥ bar should derive GATE, got %s", p)
 	}
 }
 
@@ -568,6 +570,8 @@ func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	run := &fakeContractRunner{}
 	h := newIncomeHandler(obs, ret, acq, run) // no GATE collaborators wired
+	// Disable the scaled gate so income-over-bar crosses to GATE (this test predates the sp-5nd2 default-on arm).
+	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"scaled_gate_entry_disabled": 1}})
 	log := &capturingLogger{}
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	if res.Phase != PhaseGate {

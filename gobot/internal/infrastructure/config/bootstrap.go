@@ -64,6 +64,19 @@ type BootstrapConfig struct {
 	// stays on contracts to fund material acquisition). 0/absent → 6. Gate workers reuse hauler_ship_type.
 	GateWorkerTarget int `mapstructure:"gate_worker_target"`
 
+	// --- Cold-start economics arms (sp-5nd2), DEFAULT-ON via the bootstrap_disabled negation idiom:
+	// absent/false = ARMED, so a fresh cold start runs both without any config or tune. Set true ONLY to
+	// stand a feature down at launch (the live *_disabled tune is the no-restart kill-switch). ---
+
+	// ScaledGateEntryDisabled stands down the sp-fp3y scaled GATE-entry gate: GATE then re-enters on the
+	// bare income_bar (the pre-arm behavior). Absent/false = armed (a scaled contract op — haulers + a
+	// sustained $/hr — is required to enter GATE).
+	ScaledGateEntryDisabled bool `mapstructure:"scaled_gate_entry_disabled"`
+	// AutosizerEarlyScalingDisabled stands down the sp-sjvv early autosizer launch + single-buyer
+	// arbitration. Absent/false = armed (the autosizer launches during DATA/INCOME so the reconciler's
+	// contract-delivery demand has a buyer). Arms as a pair with ScaledGateEntryDisabled.
+	AutosizerEarlyScalingDisabled bool `mapstructure:"autosizer_early_scaling_disabled"`
+
 	// GateSourceFeeders is the config-driven set of gate source EXPORT-factory feeders (sp-hoc6). For
 	// each entry, the daemon launches a STANDING InputsOnly goods_factory coordinator ALONGSIDE the
 	// construction drain: the feeder BUYS the source factory's IMPORT inputs and delivers them in,

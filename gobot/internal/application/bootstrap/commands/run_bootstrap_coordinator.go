@@ -89,14 +89,13 @@ const (
 	// the freshsizer once the first market is covered (coverage>0) and a freshsizer coordinator runs.
 	defaultDeferProbeToFreshsizer = 0
 
-	// sp-fp3y GATE-entry gate. defaultScaledGateEntry is the arming-flag default: 0 = OFF, so the phase
-	// derivation is byte-identical (GATE still enters the instant instantaneous income clears income_bar).
-	// Armed to 1 via `tune --operation bootstrap scaled_gate_entry 1`, GATE entry instead requires a
-	// genuinely SCALED contract op (coverage + haulers + a SUSTAINED $/hr) — closing the ktio deadlock
-	// where a single contract payout spiked income past the 10000 income_bar and drove GATE with ZERO
-	// haulers, permanently latching on ConstructionStarted. MUST arm TOGETHER WITH ktio-B (sp-sjvv
-	// autosizer-early): armed alone it would wedge the arc in INCOME forever (the op never scales haulers,
-	// so haulers>=gate_min_haulers never holds). Tunable-only flag (no launch key), reusing the sp-r6yq seam.
+	// sp-fp3y GATE-entry gate — now DEFAULT-ON (sp-5nd2): the arm lives in the config.yaml launch layer
+	// (cmd.ScaledGateEntryDisabled negation), so GATE entry requires a genuinely SCALED contract op
+	// (haulers + a SUSTAINED $/hr) — closing the ktio deadlock where one contract payout spiked income
+	// past income_bar and drove GATE with ZERO haulers, latching on ConstructionStarted. defaultScaledGateEntry
+	// is the FORCE-ON positive tune's default: 0 = not-forced (the config default carries the arm); a live
+	// `tune scaled_gate_entry 1` still force-arms even if config disabled it. The live scaled_gate_entry_disabled
+	// tune is the no-restart kill-switch. Arms TOGETHER WITH ktio-B (sp-sjvv) — both default-on as a pair.
 	defaultScaledGateEntry = 0
 	// defaultGateIncomeBar is the SUSTAINED (rolling-mean over gateIncomeWindowTicks) net credits/hour the
 	// contract fleet must clear to enter GATE when scaled_gate_entry is armed. Deliberately well ABOVE
@@ -120,10 +119,10 @@ const (
 	// (the first ticks after arming, or after a restart drops the window) can never trip GATE.
 	gateIncomeWindowTicks = 5
 
-	// defaultAutosizerEarlyScaling is the sp-sjvv cold-start-contract-scaling flag default: 0 = OFF
-	// (byte-identical — the fleet autosizer stays OFF the whole bootstrap run, exactly as today, and
-	// bootstrap buys its contract haulers itself). Armed to 1 via
-	// `tune --operation bootstrap autosizer_early_scaling 1`, ONE flag arms TWO coupled behaviors so
+	// defaultAutosizerEarlyScaling is the sp-sjvv cold-start-contract-scaling flag — now DEFAULT-ON
+	// (sp-5nd2) via the config.yaml launch layer (cmd.AutosizerEarlyScalingDisabled negation). This const
+	// is the FORCE-ON positive tune's default: 0 = not-forced (the config default carries the arm); the
+	// live autosizer_early_scaling_disabled tune is the no-restart kill-switch. Armed, ONE flag arms TWO coupled behaviors so
 	// the capacity reconciler's emitted contract-delivery demand finally has a buyer during cold start
 	// (the ktio-B fix): (1) bootstrap LAUNCHES the fleet autosizer EARLY, during the DATA/INCOME
 	// scaling window, so the reconciler's demand is consumed by the autosizer's guard-gated buy path
@@ -135,6 +134,14 @@ const (
 	// REVERSES the deliberate "autosizer off the whole bootstrap run" guard; the arbitration + the
 	// ktio-A absolute treasury floor (sp-bpdf) are the load-bearing safety that replaces it.
 	defaultAutosizerEarlyScaling = 0
+
+	// The sp-5nd2 live kill-switches: 0 = NOT disabled (the default — both features run, armed via the
+	// config.yaml launch layer). A live `tune scaled_gate_entry_disabled 1` / `autosizer_early_scaling_disabled 1`
+	// stands the respective feature down on the next tick with no restart; `... 0` deletes the key → reverts
+	// to the config default (armed). Inverted polarity so the zero value stays default-ON, and so the
+	// mutateTuneConfigKey `0 = revert-to-default` contract is untouched (RULINGS #4 — no tune-write change).
+	defaultScaledGateEntryDisabled       = 0
+	defaultAutosizerEarlyScalingDisabled = 0
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -335,6 +342,13 @@ type RunBootstrapCoordinatorCommand struct {
 
 	// GATE-phase knob (RULINGS #5; the zero value defers to the documented default).
 	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
+
+	// Cold-start economics arms (sp-5nd2), default-ON via the bootstrap_disabled negation idiom: an
+	// absent/false disable flag reads as ARMED, so the zero value is LIVE-BY-DEFAULT and resolve needs
+	// no positive fallback. Set true (config.yaml bootstrap_*_disabled) to stand the feature down at
+	// launch; the live *_disabled tune is the no-restart kill-switch.
+	ScaledGateEntryDisabled       bool // true ⇒ GATE entry falls back to the bare income_bar (sp-fp3y off).
+	AutosizerEarlyScalingDisabled bool // true ⇒ the early autosizer + single-buyer arbitration stay off (sp-sjvv off).
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress. Because the loop is infinite it is

@@ -51,22 +51,22 @@ func sjvvIncomeObs(autosizerRunning bool, haulers int) Observation {
 
 // --- single-buyer arbitration: bootstrap defers the contract-hauler buy to the autosizer ---
 
-// Default OFF: even with the autosizer running, bootstrap buys its contract hauler exactly as today — the
-// byte-identical guarantee (the arbitration is inert until armed).
-func TestBootstrap_HaulerArbitration_DefaultOff_BuysAsToday(t *testing.T) {
+// DISABLED (kill-switch): even with the autosizer running, bootstrap buys its contract hauler exactly as the
+// pre-arm behavior — the arbitration is inert once disabled.
+func TestBootstrap_HaulerArbitration_Disabled_BuysAsToday(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
-	// Autosizer running, flag OFF: the defer must NOT engage.
-	h := sjvvHandler(sjvvIncomeObs(true, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq)
+	// Autosizer running, arbitration DISABLED: the defer must NOT engage.
+	h := sjvvHandler(sjvvIncomeObs(true, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{"autosizer_early_scaling_disabled": 1}}, &fakeHandoff{}, acq)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if acq.buys != 1 || res.HaulersBought != 1 {
-		t.Fatalf("default-off: bootstrap must buy its contract hauler as today (buys=%d haulers_bought=%d blocker=%q)", acq.buys, res.HaulersBought, res.Blocker)
+		t.Fatalf("disabled: bootstrap must buy its contract hauler as pre-arm (buys=%d haulers_bought=%d blocker=%q)", acq.buys, res.HaulersBought, res.Blocker)
 	}
 	if res.Blocker == "deferred_to_autosizer" {
-		t.Fatalf("default-off must NOT defer, got blocker=%q", res.Blocker)
+		t.Fatalf("disabled must NOT defer, got blocker=%q", res.Blocker)
 	}
 }
 
@@ -153,17 +153,33 @@ func TestBootstrap_EarlyAutosizer_ArmedInIncome_Launches(t *testing.T) {
 	}
 }
 
-// Default OFF: the autosizer is NEVER launched during bootstrap (byte-identical — it stays off the whole
-// run, exactly as today).
-func TestBootstrap_EarlyAutosizer_DefaultOff_NeverLaunches(t *testing.T) {
+// DEFAULT-ON (sp-5nd2), no tune: the autosizer launches early in the scaling window with NO explicit arm —
+// the awakened behavior a fresh cold start now runs. (3 haulers = desired, isolating the launch from the
+// hauler decision.)
+func TestBootstrap_EarlyAutosizer_DefaultOn_LaunchesInScalingWindow(t *testing.T) {
 	ho := &fakeHandoff{}
-	h := sjvvHandler(sjvvIncomeObs(false, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+	h := sjvvHandler(sjvvIncomeObs(false, 3), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if ho.autosizer != 1 || !res.AutosizerLaunchedEarly {
+		t.Fatalf("default-on + INCOME + autosizer down: must launch the autosizer early with NO tune (autosizer_launches=%d early=%v)", ho.autosizer, res.AutosizerLaunchedEarly)
+	}
+}
+
+// DISABLED (sp-5nd2 live kill-switch): the autosizer is NEVER launched even in the scaling window — the
+// operator's no-restart OFF, restoring the pre-arm behavior (autosizer off the whole run).
+func TestBootstrap_EarlyAutosizer_Disabled_NeverLaunches(t *testing.T) {
+	ho := &fakeHandoff{}
+	h := sjvvHandler(sjvvIncomeObs(false, 3), &fakeLiveConfig{snap: liveconfig.Snapshot{"autosizer_early_scaling_disabled": 1}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if ho.autosizer != 0 {
-		t.Fatalf("default-off: the autosizer must NEVER be launched during bootstrap, got autosizer_launches=%d", ho.autosizer)
+		t.Fatalf("disabled: the autosizer must NEVER be launched during bootstrap, got autosizer_launches=%d", ho.autosizer)
 	}
 }
 
@@ -254,18 +270,28 @@ func TestBootstrap_Complete_ArmedEarlyLaunched_HoldsWhenStandingLaunchFails(t *t
 	}
 }
 
-// --- config resolution: the flag is a tunable, default OFF, armable live ---
+// --- config resolution: DEFAULT-ON, live-disable-able, force-on override, disable-wins (sp-5nd2) ---
 
-func TestBootstrap_AutosizerEarlyScaling_DefaultOffAndArmable(t *testing.T) {
+func TestBootstrap_AutosizerEarlyScaling_DefaultOnAndDisablable(t *testing.T) {
+	// The arm now lives in the config default (the cmd disable-flag negation), NOT a positive const:
+	// the FORCE-ON knob's default stays 0 (not-forced), so the tunable-defaults mirror still reads 0 —
+	// the real default is the RESOLVED config below (nil live ⇒ armed).
 	if BootstrapTunableDefaults()["autosizer_early_scaling"] != 0 {
-		t.Fatalf("autosizer_early_scaling default must be 0 (OFF)")
+		t.Fatalf("the force-on knob's default must stay 0 (not-forced) — the arm is the config default")
 	}
-	off := resolveBootstrapConfig(baseCmd(), nil)
-	if off.AutosizerEarlyScaling {
-		t.Fatalf("autosizer_early_scaling must default OFF (nil live config)")
+	if on := resolveBootstrapConfig(baseCmd(), nil); !on.AutosizerEarlyScaling {
+		t.Fatalf("autosizer_early_scaling must be armed by DEFAULT (sp-5nd2, nil live config)")
 	}
-	armed := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"autosizer_early_scaling": 1})
-	if !armed.AutosizerEarlyScaling {
-		t.Fatalf("autosizer_early_scaling must arm when the live snapshot carries a positive value")
+	// Live kill-switch: the *_disabled tune stands it down next tick (no restart).
+	if d := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"autosizer_early_scaling_disabled": 1}); d.AutosizerEarlyScaling {
+		t.Fatalf("autosizer_early_scaling_disabled=1 must stand the feature down")
+	}
+	// Force-on override still arms (backward compat with the original positive knob).
+	if f := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"autosizer_early_scaling": 1}); !f.AutosizerEarlyScaling {
+		t.Fatalf("autosizer_early_scaling=1 must force-arm")
+	}
+	// Disable WINS over force-on — the kill-switch is the safety.
+	if both := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"autosizer_early_scaling": 1, "autosizer_early_scaling_disabled": 1}); both.AutosizerEarlyScaling {
+		t.Fatalf("the disable kill-switch must WIN over the force-on override")
 	}
 }

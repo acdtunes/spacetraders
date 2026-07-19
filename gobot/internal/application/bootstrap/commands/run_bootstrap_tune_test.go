@@ -47,19 +47,21 @@ func (f *fakeLiveConfig) set(s liveconfig.Snapshot) {
 func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	got := BootstrapTunableDefaults()
 	want := map[string]int{
-		"probe_target":              defaultProbeTarget,            // 3
-		"coverage_bar_percent":      90,                            // defaultCoverageBar 0.90 → 90%
-		"reserve_margin_percent":    50,                            // defaultReserveMargin 0.50 → 50%
-		"hauler_target":             defaultHaulerTarget,           // 4
-		"income_bar":                10000,                         // defaultIncomeBar 10000.0 → 10000 credits
-		"min_contract_earners":      defaultMinContractEarners,     // 1
-		"gate_worker_target":        defaultGateWorkerTarget,       // 6
-		"tick_secs":                 defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
-		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
-		"scaled_gate_entry":         defaultScaledGateEntry,        // 0 (off) — sp-fp3y GATE-entry gate
-		"gate_income_bar":           50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
-		"gate_min_haulers":          defaultGateMinHaulers,         // 2 — sp-fp3y armed-GATE hauler floor
-		"autosizer_early_scaling":   defaultAutosizerEarlyScaling,  // 0 (off) — sp-sjvv cold-start scaling flag
+		"probe_target":                     defaultProbeTarget,                   // 3
+		"coverage_bar_percent":             90,                                   // defaultCoverageBar 0.90 → 90%
+		"reserve_margin_percent":           50,                                   // defaultReserveMargin 0.50 → 50%
+		"hauler_target":                    defaultHaulerTarget,                  // 4
+		"income_bar":                       10000,                                // defaultIncomeBar 10000.0 → 10000 credits
+		"min_contract_earners":             defaultMinContractEarners,            // 1
+		"gate_worker_target":               defaultGateWorkerTarget,              // 6
+		"tick_secs":                        defaultBootstrapTickSeconds,          // 45 (sp-lgo3: short cold-start cadence)
+		"defer_probe_to_freshsizer":        defaultDeferProbeToFreshsizer,        // 0 (off) — sp-tsn2 arbitration flag
+		"scaled_gate_entry":                defaultScaledGateEntry,               // 0 (off) — sp-fp3y GATE-entry gate
+		"gate_income_bar":                  50000,                                // defaultGateIncomeBar 50000.0 → 50000 credits
+		"gate_min_haulers":                 defaultGateMinHaulers,                // 2 — sp-fp3y armed-GATE hauler floor
+		"autosizer_early_scaling":          defaultAutosizerEarlyScaling,         // 0 (not-forced) — sp-sjvv positive force-on knob (feature is DEFAULT-ON via config)
+		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,       // 0 (not-disabled) — sp-5nd2 live kill-switch
+		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled, // 0 (not-disabled) — sp-5nd2 live kill-switch
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)
@@ -113,10 +115,10 @@ func TestBootstrap_ResolveConfig_LiveOverlayOverridesLaunchAndConvertsFractions(
 	}
 }
 
-// Byte-identical default: a nil snapshot (reader unwired/unreadable), an empty snapshot, and
-// a snapshot carrying only the prefixed launch keys (no bare tune key) ALL resolve to exactly
-// today's launch-frozen defaults. This is the arming-is-default-off guarantee — the live-read
-// seam changes nothing until an operator tunes a bare key.
+// Seam-inertness: a nil snapshot (reader unwired/unreadable), an empty snapshot, and a snapshot
+// carrying only the prefixed launch keys (no bare tune key) ALL resolve identically to the
+// launch-frozen defaults (including the sp-5nd2 default-ON arms, which come from the launch cmd,
+// not this seam). The live-read seam changes nothing until an operator tunes a bare key.
 func TestBootstrap_ResolveConfig_NilAndEmptyAndNoiseLive_ByteIdentical(t *testing.T) {
 	base := resolveBootstrapConfig(baseCmd(), nil)
 

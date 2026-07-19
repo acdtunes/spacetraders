@@ -40,10 +40,13 @@ func BootstrapTunableDefaults() map[string]int {
 		"scaled_gate_entry": defaultScaledGateEntry,
 		"gate_income_bar":   int(math.Round(defaultGateIncomeBar)),
 		"gate_min_haulers":  defaultGateMinHaulers,
-		// sp-sjvv cold-start-contract-scaling flag (0=off default, 1=on). A tunable flag with no launch
-		// key. Armed, bootstrap launches the fleet autosizer early (DATA/INCOME) + defers its own
-		// contract-hauler buys to it (single-buyer arbitration).
+		// sp-sjvv/sp-fp3y positive FORCE-ON knobs (0=not-forced default — both features are DEFAULT-ON via
+		// the config.yaml launch layer, so these only matter to force-arm a config-disabled run).
 		"autosizer_early_scaling": defaultAutosizerEarlyScaling,
+		// sp-5nd2 live kill-switches (0=not-disabled default, 1=disable live next tick, no restart). The
+		// inverted polarity keeps the default-ON arm intact while giving an operator a no-restart OFF.
+		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,
+		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled,
 	}
 }
 
@@ -117,6 +120,12 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		HaulerShipType:     cmd.HaulerShipType,
 
 		GateWorkerTarget: cmd.GateWorkerTarget,
+
+		// sp-5nd2 cold-start arms, DEFAULT-ON via the bootstrap_disabled negation idiom: an absent/false
+		// launch disable flag ⇒ armed, so a fresh cold start (no config, no tune) runs both features. The
+		// live *_disabled tune below is the no-restart kill-switch; the positive knobs stay as force-on.
+		ScaledGateEntry:       !cmd.ScaledGateEntryDisabled,
+		AutosizerEarlyScaling: !cmd.AutosizerEarlyScalingDisabled,
 	}
 
 	// Live overlay (sp-r6yq): a `tune` writes a BARE positive key to the persisted config
@@ -164,14 +173,23 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("gate_min_haulers"); v > 0 {
 			c.GateMinHaulers = v
 		}
+		// sp-fp3y is DEFAULT-ON (seeded above). The positive knob is now a FORCE-ON override (re-arms even
+		// if config.yaml disabled it); the *_disabled tune is the live kill-switch and WINS (checked last),
+		// so `tune scaled_gate_entry_disabled 1` stands the armed gate down next tick with no restart, and
+		// `... 0` deletes the key → reverts to the config default (armed) — no mutateTuneConfigKey change (sp-5nd2).
 		if v := live.PositiveIntOrZero("scaled_gate_entry"); v > 0 {
 			c.ScaledGateEntry = true
 		}
-		// sp-sjvv cold-start-contract-scaling flag: tunable-only (no launch key), default off. A
-		// positive value arms the early autosizer launch + hauler-defer arbitration; absent/zeroed
-		// reverts to off (byte-identical). Same sp-r6yq live-read seam as the sp-tsn2 flag above.
+		if v := live.PositiveIntOrZero("scaled_gate_entry_disabled"); v > 0 {
+			c.ScaledGateEntry = false
+		}
+		// sp-sjvv is DEFAULT-ON (seeded above), armed as a pair with sp-fp3y. Same force-on / disabled-wins
+		// live seam: the positive knob force-arms, the *_disabled tune is the no-restart kill-switch.
 		if v := live.PositiveIntOrZero("autosizer_early_scaling"); v > 0 {
 			c.AutosizerEarlyScaling = true
+		}
+		if v := live.PositiveIntOrZero("autosizer_early_scaling_disabled"); v > 0 {
+			c.AutosizerEarlyScaling = false
 		}
 	}
 
