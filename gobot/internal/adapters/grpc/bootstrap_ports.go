@@ -794,6 +794,69 @@ func (s *bootstrapShipyardScanner) EnsureHomeShipyardReadable(ctx context.Contex
 	return true, nil
 }
 
+// PositionPurchaserAtShipyard navigates the NAMED purchasing hull (the freed+dedicated command frigate at
+// the sp-5nd2 first-hauler pivot) to a home-system SHIPYARD waypoint so the NEXT tick's presence-gated
+// PriceCheck reads the LIGHT_SHUTTLE price. It targets the frigate by SYMBOL — not "any idle hull" —
+// because the pivot already committed it: it must go regardless of whether its loop-claim release has
+// propagated to an idle read this tick, and it is purchasing-dedicated (EnsureHomeShipyardReadable skips
+// dedicated hulls). Idempotent via the high-level NavigateRouteCommand (route/refuel handled): a no-op when
+// the frigate is already at the yard or already en route, so calling it each unreadable tick never
+// re-navigates. It NEVER buys and NEVER weakens the price guard (RULINGS #4) — the reconciler still spends
+// nothing while unreadable; the frigate's presence is what makes the guard clear on evidence.
+func (s *bootstrapShipyardScanner) PositionPurchaserAtShipyard(ctx context.Context, playerID int, shipSymbol, homeSystem string) (bool, error) {
+	if shipSymbol == "" || homeSystem == "" {
+		return false, nil
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return false, nil
+	}
+	yardWps, werr := s.waypointRepo.ListBySystemWithTrait(ctx, homeSystem, shipyardTrait)
+	if werr != nil {
+		return false, nil
+	}
+	isYard := map[string]struct{}{}
+	dest := ""
+	for _, wp := range yardWps {
+		if wp == nil {
+			continue
+		}
+		isYard[wp.Symbol] = struct{}{}
+		if dest == "" {
+			dest = wp.Symbol
+		}
+	}
+	if dest == "" {
+		return false, nil // no known home-system shipyard yet — retry once waypoint data arrives
+	}
+
+	// Idempotency: if the frigate is already AT a shipyard (not in transit) the live price reads next tick,
+	// and if it is already en route a prior dispatch is under way — either way issue no second nav.
+	ships, serr := s.shipRepo.FindAllByPlayer(ctx, pid)
+	if serr != nil {
+		return false, nil
+	}
+	for _, sh := range ships {
+		if sh.ShipSymbol() != shipSymbol {
+			continue
+		}
+		if loc := sh.CurrentLocation(); loc != nil {
+			if _, ok := isYard[loc.Symbol]; ok && !sh.IsInTransit() {
+				return false, nil // already at the yard — price reads next tick, no dispatch
+			}
+		}
+		if sh.IsInTransit() {
+			return false, nil // already heading somewhere (a prior dispatch) — just wait
+		}
+		break
+	}
+
+	if _, nerr := s.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: shipSymbol, Destination: dest, PlayerID: pid}); nerr != nil {
+		return false, fmt.Errorf("navigate purchaser %s to home shipyard %s: %w", shipSymbol, dest, nerr)
+	}
+	return true, nil
+}
+
 // --- metrics sink (adapts to the global bootstrap collector; pure observation, nil-safe) ---
 
 type bootstrapMetricsSink struct{}

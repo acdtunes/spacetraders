@@ -189,3 +189,158 @@ func TestBootstrap_Pivot_LoopNeverRestartsOnPurchasingFrigate(t *testing.T) {
 		t.Fatalf("a purchasing-dedicated frigate must NEVER be put back on the pre-hauler loop, got calls=%d", loop.calls)
 	}
 }
+
+// --- sp-5nd2 fault-2: cold-price positioning (free the frigate → position it at the yard → buy) ---
+//
+// The live deadlock: the pivot is warranted (0 haulers, frigate on its loop, cargo empty) but the LIGHT_SHUTTLE
+// price is UNREADABLE because the SpaceTraders shipyard listing is presence-gated and nothing is at the yard
+// (frigate on its loop, probes scouting). The pre-fix pivot price-checks BEFORE positioning, so it failed
+// closed forever (price_unreadable). The fix FREES the frigate at the inter-contract window and POSITIONS it
+// at the shipyard so the next tick's read succeeds and the buy runs behind the working-capital floor.
+
+// pivotHandlerScanned wires the pivot handler AND the shipyard scanner (the fault-2 positioner).
+func pivotHandlerScanned(obs Observation, ret *fakeRetirer, acq *fakeHaulerAcquirer, loop *fakeFrigateLoop, scanner *fakeScanner) *RunBootstrapCoordinatorHandler {
+	h := pivotHandler(obs, ret, acq, loop)
+	h.SetShipyardScanner(scanner)
+	return h
+}
+
+// COLD PRICE (the deadlock): pivot warranted + price unreadable → FREE the frigate (stop loop + dedicate) and
+// POSITION it at the home shipyard. No buy this tick (fail closed on the price guard, RULINGS #4).
+func TestBootstrap_Pivot_ColdPrice_FreesFrigateAndPositionsAtShipyard(t *testing.T) {
+	ret := &fakeRetirer{}
+	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: false} // presence-gated: unreadable
+	loop := &fakeFrigateLoop{}
+	scanner := &fakeScanner{positionDispatched: true}
+	h := pivotHandlerScanned(pivotObs(), ret, acq, loop, scanner)
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if loop.stopCalls != 1 || len(loop.stopped) != 1 || loop.stopped[0] != "FRIGATE-1" {
+		t.Fatalf("cold price must FREE the frigate (stop its loop) to position it; stopCalls=%d stopped=%v (blocker=%q)", loop.stopCalls, loop.stopped, res.Blocker)
+	}
+	if len(ret.dedications) != 1 || ret.dedications[0] != "FRIGATE-1" {
+		t.Fatalf("cold price must dedicate the frigate as the purchasing ship before positioning; dedications=%v", ret.dedications)
+	}
+	if scanner.positionCalls != 1 || len(scanner.positioned) != 1 || scanner.positioned[0] != "FRIGATE-1" {
+		t.Fatalf("cold price must POSITION the freed frigate at the home shipyard by symbol; positionCalls=%d positioned=%v", scanner.positionCalls, scanner.positioned)
+	}
+	if acq.buys != 0 {
+		t.Fatalf("cold price must NOT buy this tick (fail closed on the price guard); buys=%d", acq.buys)
+	}
+	if res.Blocker != "positioning_purchaser_at_shipyard" {
+		t.Fatalf("expected positioning_purchaser_at_shipyard, got %q", res.Blocker)
+	}
+	if !res.FrigatePivoted {
+		t.Fatalf("res.FrigatePivoted must be true (the pivot's free step fired)")
+	}
+}
+
+// COMPLETION: once the freed frigate is dedicated (committed purchaser) and positioned so the price reads, the
+// buy runs WITH the frigate as the purchaser and WITHOUT re-stopping a loop (already stopped) or re-positioning.
+func TestBootstrap_Pivot_ColdPrice_CommittedPurchaserBuysOncePriceReads(t *testing.T) {
+	ret := &fakeRetirer{}
+	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true} // frigate now at the yard → readable
+	loop := &fakeFrigateLoop{}
+	scanner := &fakeScanner{positionDispatched: true}
+	obs := pivotObs()
+	obs.FrigateContractLoopRunning = false // loop already stopped on the prior (free) tick
+	obs.CommandFrigatePurchasing = true    // already dedicated as the exclusive purchasing ship
+	obs.HasIdlePurchaser = true            // the frigate now stands idle at the yard
+	h := pivotHandlerScanned(obs, ret, acq, loop, scanner)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.stopCalls != 0 || scanner.positionCalls != 0 {
+		t.Fatalf("a committed purchaser at a readable yard must NOT re-stop or re-position; stopCalls=%d positionCalls=%d", loop.stopCalls, scanner.positionCalls)
+	}
+	if acq.buys != 1 || len(acq.purchasers) != 1 || acq.purchasers[0] != "FRIGATE-1" {
+		t.Fatalf("the committed purchaser must buy hauler #1 with the frigate; buys=%d purchasers=%v (blocker=%q)", acq.buys, acq.purchasers, res.Blocker)
+	}
+	if res.HaulersBought != 1 {
+		t.Fatalf("res.HaulersBought must be 1")
+	}
+}
+
+// SAFE POINT under a cold price: a frigate carrying contract cargo is NOT freed even when the price is
+// unreadable — stopping mid-delivery loses cargo. Block no_purchaser BEFORE the price-check; no stop/position.
+func TestBootstrap_Pivot_ColdPrice_LoadedFrigate_NotFreed(t *testing.T) {
+	ret := &fakeRetirer{}
+	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: false}
+	loop := &fakeFrigateLoop{}
+	scanner := &fakeScanner{positionDispatched: true}
+	obs := pivotObs()
+	obs.FrigateCargoEmpty = false // mid-delivery: not a safe point
+	h := pivotHandlerScanned(obs, ret, acq, loop, scanner)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.stopCalls != 0 || len(ret.dedications) != 0 || scanner.positionCalls != 0 {
+		t.Fatalf("a loaded frigate must NOT be freed or positioned (no cargo loss); stopCalls=%d dedications=%v positionCalls=%d", loop.stopCalls, ret.dedications, scanner.positionCalls)
+	}
+	if acq.priceChks != 0 {
+		t.Fatalf("no_purchaser must block BEFORE the price-check; priceChks=%d", acq.priceChks)
+	}
+	if res.Blocker != "no_purchaser" {
+		t.Fatalf("expected no_purchaser, got %q", res.Blocker)
+	}
+}
+
+// NIL-SAFE / byte-identical: pivot warranted + price unreadable but NO shipyard scanner wired → fail closed
+// (price_unreadable) and NEVER stop the frigate — an earning loop is never halted for a positioning it
+// cannot perform.
+func TestBootstrap_Pivot_ColdPrice_NoScanner_FailsClosedNoFree(t *testing.T) {
+	ret := &fakeRetirer{}
+	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: false}
+	loop := &fakeFrigateLoop{}
+	h := pivotHandler(pivotObs(), ret, acq, loop) // NO scanner wired
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.stopCalls != 0 || len(ret.dedications) != 0 {
+		t.Fatalf("no scanner: must NOT free the frigate it cannot position; stopCalls=%d dedications=%v", loop.stopCalls, ret.dedications)
+	}
+	if acq.buys != 0 || res.Blocker != "price_unreadable" {
+		t.Fatalf("no scanner: fail closed price_unreadable, no buy; buys=%d blocker=%q", acq.buys, res.Blocker)
+	}
+}
+
+// END-TO-END (anti-theatre): the cold-start deadlock → cure across ticks. Tick 1: pivot warranted, price
+// unreadable → free the frigate + position it (the scanner's dispatch models the frigate reaching the yard,
+// flipping the price readable + marking it idle). Tick 2: price reads → the buy executes with the frigate.
+func TestBootstrap_Pivot_ColdPrice_EndToEnd_DeadlockToBuy(t *testing.T) {
+	world := &incomeWorld{
+		treasury: 2000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
+		frigateID: "FRIGATE-1", probeCount: 3, batchRunning: true,
+		frigateLoopRunning: true, frigateCargoEmpty: true, hasPurchaser: false,
+		markets: incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
+	}
+	acq := &fakeHaulerAcquirer{price: 300000, yard: "X1-YARD", readable: false, world: world}
+	ret := &fakeRetirer{world: world}
+	loop := &fakeFrigateLoop{world: world}
+	scanner := &fakeScanner{positionDispatched: true, readyHaul: acq, world: world}
+
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetShipRefresher(&fakeRefresher{})
+	h.SetWorldObserver(&fakeIncomeObserver{world: world})
+	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
+	h.SetFrigateRetirer(ret)
+	h.SetHaulerAcquirer(acq)
+	h.SetContractRunner(&fakeContractRunner{world: world})
+	h.SetFrigateContractLoopStarter(loop)
+	h.SetShipyardScanner(scanner)
+
+	// Tick 1: cold price → free + position, buy nothing.
+	res1, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.stopCalls != 1 || scanner.positionCalls != 1 || acq.buys != 0 {
+		t.Fatalf("tick 1 must free + position the frigate and buy nothing; stopCalls=%d positionCalls=%d buys=%d blocker=%q", loop.stopCalls, scanner.positionCalls, acq.buys, res1.Blocker)
+	}
+
+	// Tick 2: the frigate is at the yard (price readable, idle) → the buy executes with the frigate.
+	res2, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 1 || len(acq.purchasers) != 1 || acq.purchasers[0] != "FRIGATE-1" {
+		t.Fatalf("tick 2 must buy hauler #1 with the freed frigate; buys=%d purchasers=%v blocker=%q", acq.buys, acq.purchasers, res2.Blocker)
+	}
+	if len(world.haulers) != 1 {
+		t.Fatalf("the world must reflect one hauler bought; haulers=%d", len(world.haulers))
+	}
+}

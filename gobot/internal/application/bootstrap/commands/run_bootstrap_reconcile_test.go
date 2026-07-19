@@ -93,6 +93,14 @@ type fakeScanner struct {
 	calls       int
 	homeSystems []string
 	readyAcq    *fakeAcquirer // if set, its readable is flipped true on a dispatch
+
+	// sp-5nd2 fault-2: the targeted first-hauler-pivot positioner (PositionPurchaserAtShipyard).
+	positionCalls      int
+	positioned         []string // ship symbols the pivot asked to position at the yard (order = call order)
+	positionErr        error
+	positionDispatched bool                // what PositionPurchaserAtShipyard returns
+	readyHaul          *fakeHaulerAcquirer // if set, its readable is flipped true on a position dispatch
+	world              *incomeWorld        // if set, a position dispatch marks the frigate idle at the yard
 }
 
 func (f *fakeScanner) EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (bool, error) {
@@ -105,6 +113,23 @@ func (f *fakeScanner) EnsureHomeShipyardReadable(ctx context.Context, playerID i
 		f.readyAcq.readable = true // the hull reaches the yard → the live price becomes readable
 	}
 	return f.dispatched, nil
+}
+
+func (f *fakeScanner) PositionPurchaserAtShipyard(ctx context.Context, playerID int, shipSymbol, homeSystem string) (bool, error) {
+	f.positionCalls++
+	f.positioned = append(f.positioned, shipSymbol)
+	if f.positionErr != nil {
+		return false, f.positionErr
+	}
+	if f.positionDispatched {
+		if f.readyHaul != nil {
+			f.readyHaul.readable = true // the frigate reaches the yard → the live price becomes readable
+		}
+		if f.world != nil {
+			f.world.purchaserAtYard() // the frigate now stands idle at the yard as the purchaser
+		}
+	}
+	return f.positionDispatched, nil
 }
 
 type fakeMetrics struct {

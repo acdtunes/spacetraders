@@ -193,6 +193,16 @@ type ScoutPostDeclarer interface {
 // (nil) → the reconciler preserves the pre-hh0h fail-closed behavior (byte-identical).
 type ShipyardScanner interface {
 	EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (dispatched bool, err error)
+	// PositionPurchaserAtShipyard navigates the NAMED hull (the freed+dedicated command frigate at the
+	// sp-5nd2 first-hauler pivot) to a home-system shipyard so the NEXT tick's presence-gated hauler
+	// PriceCheck reads. It differs from EnsureHomeShipyardReadable in two load-bearing ways: it targets a
+	// SPECIFIC hull by symbol (so it does not depend on the frigate reading idle the instant after its
+	// loop-claim is released), and it positions the PURCHASING-dedicated frigate that EnsureHomeShipyardReadable
+	// deliberately skips (that one only repositions undedicated hulls, RULINGS #7). Idempotent + best-effort:
+	// dispatched=false (no re-nav) when the hull is already present (not in transit) at a home shipyard, already
+	// en route, or no home-system shipyard is known yet. It NEVER buys and NEVER weakens the price guard —
+	// the reconciler still spends nothing while the price is unreadable.
+	PositionPurchaserAtShipyard(ctx context.Context, playerID int, shipSymbol, homeSystem string) (dispatched bool, err error)
 }
 
 // MetricsSink records the bootstrap's observation series (spec §Observability). Pure observation:

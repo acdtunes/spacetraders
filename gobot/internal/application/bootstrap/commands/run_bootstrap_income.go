@@ -276,7 +276,11 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// earning once the buy is affordable AND warranted. When NOT pivoting, an existing idle hull buys as
 	// before; with neither an idle hull nor a pivot available, BLOCK (no_purchaser) and retry.
 	pivot := len(obs.Haulers) == 0 && obs.FrigateContractLoopRunning && obs.CommandFrigateID != "" && obs.FrigateCargoEmpty && h.frigateLoop != nil
-	if !pivot && !obs.HasIdlePurchaser {
+	// committedPurchaser: a prior tick already FREED + DEDICATED the frigate as the exclusive buy ship
+	// (sp-5nd2 fault-2 pivot), so it is THE purchaser even while it is still navigating to the shipyard for
+	// the cold-price read — recognise it here so an en-route tick surfaces "positioning", not no_purchaser.
+	committedPurchaser := len(obs.Haulers) == 0 && obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
+	if !pivot && !committedPurchaser && !obs.HasIdlePurchaser {
 		res.Blocker = "no_purchaser"
 		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, hub %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d loop_running=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), cfg.HaulerTarget, hub, len(obs.Haulers), obs.FrigateContractLoopRunning, obs.FrigateCargoEmpty), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
@@ -286,15 +290,17 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
-	// Price-check (reuse shipyard list). Unreadable price ⇒ the capital gate fails CLOSED.
+	// Price-check (reuse shipyard list — a live, PRESENCE-GATED GetShipyard). Unreadable ⇒ the capital gate
+	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed).
 	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
 	if err != nil || !readable {
-		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
-			"action":       "bootstrap_income_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "price_unreadable",
-		})
+		// sp-5nd2 fault-2: on cold start the price is unreadable because NOTHING is at the home shipyard (the
+		// frigate is on its loop, the probes are scouting), so the presence-gated live read returns no priced
+		// listing. Rather than fail closed forever (the deadlock), FREE the command frigate at the inter-contract
+		// window and get it to the yard so the NEXT tick's read succeeds and the buy — which itself navigates +
+		// docks + reads + purchases (BatchPurchaseShips) — runs behind bootstrap's own working-capital floor,
+		// which stays HERE and is evaluated on the real price once it reads.
+		h.ensureHaulerPriceReadable(ctx, cmd, cfg, obs, res, pivot, err)
 		return
 	}
 
@@ -382,10 +388,11 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		})
 	}
 
-	// The purchaser is the freed command frigate at the pivot; otherwise "" lets the acquirer use any
-	// idle hull (the direct-buy behavior for a subsequent hauler bootstrap buys itself).
+	// The purchaser is the command frigate whenever the pivot owns it — freed THIS tick (pivot) or already
+	// freed+dedicated on a prior tick and now positioned at the yard (committedPurchaser). Otherwise "" lets
+	// the acquirer use any idle hull (the direct-buy behavior for a subsequent hauler bootstrap buys itself).
 	purchaser := ""
-	if pivot {
+	if pivot || committedPurchaser {
 		purchaser = obs.CommandFrigateID
 	}
 	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, cfg.HaulerShipType, yard, hub, purchaser)
@@ -407,6 +414,114 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		"ship":         bought.ShipSymbol,
 		"price":        bought.Price,
 		"hub":          hub,
+	})
+}
+
+// ensureHaulerPriceReadable breaks the sp-5nd2 fault-2 cold-start deadlock: the first-hauler buy needs the
+// live LIGHT_SHUTTLE price, but the home shipyard listing is PRESENCE-GATED (GetShipyard returns a priced
+// listing only with a hull AT the yard) and on cold start nothing is there — the frigate is on its contract
+// loop, the probes are scouting. Rather than fail closed forever, it FREES the command frigate at the
+// inter-contract SAFE POINT (StopLoop + DedicateAsPurchaser — command duty per RULINGS #7; cargo-empty so no
+// in-flight contract is lost) and POSITIONS it at the home shipyard, so the NEXT tick's read succeeds and the
+// buy runs behind the working-capital floor. The buy itself (BatchPurchaseShips) navigates + docks + reads +
+// purchases; positioning just makes bootstrap's OWN pre-buy floor guard evaluable on the real price. It NEVER
+// buys and NEVER weakens the price guard (RULINGS #4) — the tick spends nothing while unreadable — and it
+// NEVER stops a frigate it cannot then position (no earner lost for nothing). Nil-scanner / dry-run:
+// byte-identical to the pre-fix fail-closed behavior.
+func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult, pivot bool, priceErr error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if cfg.DryRun {
+		res.Blocker = "price_unreadable"
+		logger.Log("INFO", "Bootstrap DRY-RUN: hauler price unreadable — WOULD free the command frigate at the inter-contract window and position it at the home shipyard to make the price readable (took no action)", map[string]interface{}{
+			"action":       "bootstrap_would_position_purchaser",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	// Positioning needs the shipyard scanner. Without it, keep the pre-fix fail-closed behavior EXACTLY — and
+	// never stop the frigate's earning loop when we could not then position it (no earner lost for nothing).
+	if h.scanner == nil {
+		res.Blocker = "price_unreadable"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler price unreadable and no shipyard scanner wired — failing closed (no buy): err=%v", priceErr), map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "price_unreadable",
+		})
+		return
+	}
+
+	// FREE the frigate at the inter-contract window when the pivot is warranted but it is still on its loop
+	// (it must idle before it can go to the yard). Once dedicated it is the committed purchaser, so a later
+	// unreadable tick (still en route) re-positions idempotently WITHOUT re-freeing.
+	frigateReady := obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
+	if pivot {
+		if h.retirer == nil {
+			res.Blocker = "price_unreadable"
+			logger.Log("WARN", "Bootstrap hauler price unreadable and no retirer wired to free the command frigate — failing closed (no buy)", map[string]interface{}{
+				"action":       "bootstrap_income_blocked",
+				"container_id": cmd.ContainerID,
+				"blocker":      "price_unreadable",
+			})
+			return
+		}
+		if err := h.frigateLoop.StopLoop(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+			res.Blocker = "frigate_loop_stop_error"
+			logger.Log("ERROR", fmt.Sprintf("Bootstrap first-hauler pivot: stopping the command frigate %s contract loop to position it for the price read failed — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+				"action":       "bootstrap_frigate_pivot_stop_error",
+				"container_id": cmd.ContainerID,
+				"ship":         obs.CommandFrigateID,
+			})
+			return
+		}
+		if err := h.retirer.DedicateAsPurchaser(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+			res.Blocker = "frigate_dedicate_error"
+			logger.Log("ERROR", fmt.Sprintf("Bootstrap first-hauler pivot: dedicating the command frigate %s as the exclusive purchasing ship failed — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+				"action":       "bootstrap_frigate_pivot_dedicate_error",
+				"container_id": cmd.ContainerID,
+				"ship":         obs.CommandFrigateID,
+			})
+			return
+		}
+		res.FrigatePivoted = true
+		frigateReady = true
+		logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler PIVOT: FREED the command frigate %s at the inter-contract window (loop stopped + dedicated the exclusive purchasing ship) — positioning it at the home shipyard so the presence-gated hauler price reads next tick (sp-5nd2 fault-2)", obs.CommandFrigateID), map[string]interface{}{
+			"action":       "bootstrap_frigate_pivot",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+	}
+
+	if !frigateReady {
+		// No frigate to free/position (e.g. a subsequent buy resting on an incidentally-idle probe that is
+		// not at the yard): reuse the sp-hh0h probe-path positioner for any idle undedicated hull.
+		h.ensureShipyardReadable(ctx, cmd, cfg, obs, res, priceErr)
+		return
+	}
+
+	// POSITION the freed+dedicated frigate at the home shipyard (idempotent: a no-op when it is already there
+	// / en route). The buy stays blocked THIS tick (fail closed) and fires next tick once the frigate arrives
+	// and the live price reads.
+	dispatched, serr := h.scanner.PositionPurchaserAtShipyard(ctx, cmd.PlayerID, obs.CommandFrigateID, obs.HomeSystem)
+	if serr != nil {
+		res.Blocker = "price_unreadable"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler price unreadable and positioning the purchasing frigate failed — failing closed (no buy): %v", serr), map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "price_unreadable",
+		})
+		return
+	}
+	res.Blocker = "positioning_purchaser_at_shipyard"
+	positionNote := fmt.Sprintf("purchasing frigate %s already at/heading to the home shipyard — awaiting a readable price", obs.CommandFrigateID)
+	if dispatched {
+		positionNote = fmt.Sprintf("navigated the purchasing frigate %s to the home shipyard so the presence-gated hauler price reads next tick", obs.CommandFrigateID)
+	}
+	logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot: %s (no buy this tick — sp-5nd2 fault-2)", positionNote), map[string]interface{}{
+		"action":       "bootstrap_positioning_purchaser",
+		"container_id": cmd.ContainerID,
+		"blocker":      "positioning_purchaser_at_shipyard",
+		"ship":         obs.CommandFrigateID,
 	})
 }
 

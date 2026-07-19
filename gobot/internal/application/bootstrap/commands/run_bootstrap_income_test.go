@@ -202,6 +202,15 @@ func (w *incomeWorld) retireFrigate() {
 	w.frigateOnContract = false
 }
 
+// purchaserAtYard models the freed+dedicated command frigate arriving at the home shipyard (sp-5nd2
+// fault-2): it now stands idle at the yard as the purchaser, so the next tick reads a live price and
+// sees an idle purchasing hull.
+func (w *incomeWorld) purchaserAtYard() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.hasPurchaser = true
+}
+
 func (w *incomeWorld) startBatch() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

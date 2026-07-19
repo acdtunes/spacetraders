@@ -253,7 +253,7 @@ type reconcileResult struct {
 	FrigateRetired     bool // the command frigate was retired from contract work this tick
 	ContractRun        bool // batch-contract was launched this tick
 	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
-	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + frigate bought hauler #1 + dedicated purchasing (sp-7r7w)
+	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship (sp-7r7w). With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (sp-5nd2 fault-2)
 	ViableHubs         int  // viable contract hubs the selector found (for the heartbeat)
 
 	// GATE tallies.
