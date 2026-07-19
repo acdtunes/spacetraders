@@ -1,0 +1,108 @@
+# =============================================================================
+# STAGING configuration (sp-widl) — a first-class, provably-isolated staging
+# environment for era-4 cold-start rehearsals and live-API validation.
+#
+# HOW IT IS LOADED: the staging daemon/CLI is pointed here explicitly via
+#   SPACETRADERS_CONFIG=<repo>/gobot/config.staging.yaml
+# (see deploy/staging/env.sh). Prod is UNAFFECTED: the prod daemon runs with
+# SPACETRADERS_CONFIG unset and resolves gobot/config.yaml exactly as before.
+# This file sitting next to config.yaml is inert for prod (config discovery
+# looks for the literal name "config.yaml", never "config.staging.yaml").
+#
+# ISOLATION CONTRACT: every mutable resource below is DISJOINT from prod —
+#   DB name   spacetraders_staging   (prod: spacetraders)
+#   socket    /tmp/spacetraders-staging.sock   (prod: /tmp/spacetraders-daemon.sock)
+#   pid file  /tmp/spacetraders-staging.pid    (prod: /tmp/spacetraders-daemon.pid)
+#   daemon    localhost:50054        (prod: localhost:50052)
+#   routing   localhost:50053        (prod: localhost:50051)
+#   metrics   127.0.0.1:9095         (prod: localhost:9090)
+# Nothing here points at a live resource. deploy/staging/env.sh re-asserts this
+# disjointness fail-closed at bring-up, and internal/infrastructure/config/
+# staging_isolation_test.go pins it against gobot/config.yaml in CI.
+# =============================================================================
+
+# Database — the isolation boundary. `url` takes precedence (buildPostgresDSN),
+# so this is self-contained: NO grep-and-swap of the live DSN (the fragile
+# ad-hoc stc.sh trick) is required. The individual fields below are kept in
+# sync (they also name spacetraders_staging) so clearing `url` still resolves
+# to the staging database — belt-and-suspenders, never to prod.
+database:
+  type: postgres
+  url: postgresql://spacetraders:dev_password@localhost:5432/spacetraders_staging
+  host: localhost
+  port: 5432                     # same local postgres SERVER …
+  user: spacetraders
+  password: dev_password         # same dev credential already committed in config.yaml
+  name: spacetraders_staging     # … but a SEPARATE database — the isolation boundary
+  sslmode: disable
+  pool:
+    max_open: 10
+    max_idle: 3
+    max_lifetime: 5m
+
+# API — CONSERVATIVE by default because staging shares the live fleet's
+# 2 req/s ACCOUNT budget unless staging is registered on a SEPARATE account.
+# Raise to 2/10 only once staging has its own account/token.
+api:
+  base_url: https://api.spacetraders.io/v2
+  timeout: 30s
+  rate_limit:
+    requests: 1
+    burst: 3
+  retry:
+    max_attempts: 3
+    backoff_base: 1s
+
+# Routing — the staging daemon connects to the staging routing service on
+# :50053 (prod routing is :50051). deploy/staging/up.sh starts run.sh with
+# ROUTING_PORT=50053.
+routing:
+  address: localhost:50053
+
+# Daemon — its own gRPC port, unix socket, and pid file. Because `--force`
+# operates on cfg.Daemon.PIDFile (config-derived, never hardcoded), a staging
+# daemon started with --force can only ever reap the STAGING pid — it can never
+# reach the live daemon (the sp-widl near-miss this design closes).
+daemon:
+  address: localhost:50054
+  socket_path: /tmp/spacetraders-staging.sock
+  pid_file: /tmp/spacetraders-staging.pid
+  max_containers: 100
+  health_check_interval: 30s
+  shutdown_timeout: 30s
+  restart_policy:
+    enabled: true
+    max_attempts: 3
+    delay: 5s
+    backoff_multiplier: 2.0
+
+# Metrics — a distinct Prometheus port so a staging daemon never binds the
+# live :9090 (prod). Bound to loopback.
+metrics:
+  enabled: true
+  host: 127.0.0.1
+  port: 9095
+
+logging:
+  level: info
+  format: json
+  output: stdout
+
+# Captain (the autonomous LLM supervisor) is a SEPARATE prod-only process
+# (com.spacetraders.captain launchd). Staging never runs it; disabled here as
+# an explicit marker so nothing in a staging context spins up a supervisor.
+captain:
+  enabled: false
+
+# --- Staging cold-start rehearsal knobs -------------------------------------
+# These drive an era-4 cold-start simulation in the isolated staging DB. Tuned
+# for a fast local rehearsal, NOT for prod economics.
+bootstrap:
+  bootstrap_disabled: false
+  dry_run: false
+  tick_seconds: 45
+  probe_target: 3
+  coverage_bar: 0.90
+
+fleet_autosizer:
+  contract_delivery_hulls_enabled: true

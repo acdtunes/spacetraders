@@ -1,4 +1,4 @@
-.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man
+.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
 
 # ---- Build stamp (sp-898q) --------------------------------------------------
 # Injected into internal/infrastructure/buildinfo at LINK time so every binary's
@@ -14,36 +14,68 @@ BUILD_TIME    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS       := -X '$(BUILDINFO_PKG).Commit=$(COMMIT)' -X '$(BUILDINFO_PKG).BuildTime=$(BUILD_TIME)' -X '$(BUILDINFO_PKG).Version=$(VERSION)'
 
+# ---- Environment selection (sp-widl) ----------------------------------------
+# ENV selects the deployment environment for the BUILD targets. It defaults to
+# 'prod'. With ENV unset or ENV=prod, BIN_SUFFIX is EMPTY and every build path
+# and launchd label below is BYTE-IDENTICAL to before this change — the prod
+# binaries (bin/spacetraders, bin/spacetraders-daemon, ...) are untouched.
+#
+# ENV=staging appends a '-staging' suffix to the built binary names, so a
+# staging build can NEVER overwrite the prod binary the LIVE launchd daemon
+# runs. This closes the sp-widl near-miss: `make build` used to clobber the
+# shared bin/ that a live restart then picks up, so unvalidated staging code
+# could re-run on the live fleet. The staging lifecycle is driven entirely by
+# deploy/staging/*.sh; the deploy/restart/install-launchd targets are GUARDED
+# (assert-prod-env) to refuse any non-prod ENV, so they can only ever touch
+# the prod services.
+# ENV is a COMMAND-LINE knob (`make build ENV=staging`). A stray ENV EXPORTED in
+# the shell (some shells use $ENV for their startup file, e.g. ENV=~/.shrc) must
+# never hijack the build, so an environment-origin ENV is ignored and prod is
+# used — plain `make build` is always a prod build regardless of the shell env.
+ifeq ($(origin ENV),environment)
+  ENV := prod
+endif
+ENV ?= prod
+VALID_ENVS := prod staging
+ifeq ($(filter $(ENV),$(VALID_ENVS)),)
+  $(error ENV must be one of [$(VALID_ENVS)] (got '$(ENV)'))
+endif
+ifeq ($(ENV),prod)
+  BIN_SUFFIX :=
+else
+  BIN_SUFFIX := -$(ENV)
+endif
+
 # Build all binaries
 build: build-cli build-daemon build-routing-service build-watchkeeper
 
 # Build CLI binary
 build-cli:
 	@echo "Building CLI..."
-	@go build -ldflags "$(LDFLAGS)" -o bin/spacetraders ./cmd/spacetraders
+	@go build -ldflags "$(LDFLAGS)" -o bin/spacetraders$(BIN_SUFFIX) ./cmd/spacetraders
 
 # Install the CLI on PATH: symlink bin/spacetraders into ~/.local/bin (idempotent).
 # Config resolution finds config.yaml next to the real binary, so the shim works
 # from any cwd.
 install-cli: build-cli
 	@mkdir -p $(HOME)/.local/bin
-	@ln -sf $(abspath bin/spacetraders) $(HOME)/.local/bin/spacetraders
-	@echo "Linked $(HOME)/.local/bin/spacetraders -> $(abspath bin/spacetraders)"
+	@ln -sf $(abspath bin/spacetraders$(BIN_SUFFIX)) $(HOME)/.local/bin/spacetraders$(BIN_SUFFIX)
+	@echo "Linked $(HOME)/.local/bin/spacetraders$(BIN_SUFFIX) -> $(abspath bin/spacetraders$(BIN_SUFFIX))"
 
 # Build daemon binary
 build-daemon:
 	@echo "Building daemon..."
-	@go build -ldflags "$(LDFLAGS)" -o bin/spacetraders-daemon ./cmd/spacetraders-daemon
+	@go build -ldflags "$(LDFLAGS)" -o bin/spacetraders-daemon$(BIN_SUFFIX) ./cmd/spacetraders-daemon
 
 # Build routing service manager binary
 build-routing-service:
 	@echo "Building routing service manager..."
-	@go build -o bin/routing-service ./cmd/routing-service
+	@go build -o bin/routing-service$(BIN_SUFFIX) ./cmd/routing-service
 
 # Build watchkeeper supervisor binary
 build-watchkeeper:
 	@echo "Building watchkeeper..."
-	@go build -ldflags "$(LDFLAGS)" -o bin/watchkeeper ./cmd/watchkeeper
+	@go build -ldflags "$(LDFLAGS)" -o bin/watchkeeper$(BIN_SUFFIX) ./cmd/watchkeeper
 
 # build-captain: back-compat alias for build-watchkeeper (muscle memory / scripts)
 build-captain: build-watchkeeper
@@ -55,8 +87,20 @@ run-watchkeeper: build-watchkeeper
 # run-captain: back-compat alias for run-watchkeeper
 run-captain: run-watchkeeper
 
+# Guard (sp-widl): the deploy / restart / install-launchd targets MUTATE the
+# LIVE prod launchd services and the prod bin/ paths. They must NEVER run for a
+# non-prod ENV. This recipe is INERT (no-op, exit 0) when ENV=prod or unset, so
+# every prod invocation is byte-identical; it hard-fails otherwise. The staging
+# lifecycle is driven by deploy/staging/{up,down}.sh, never by `make deploy`.
+assert-prod-env:
+	@if [ "$(ENV)" != "prod" ]; then \
+		echo "REFUSING: this target manages the LIVE prod services and cannot run with ENV=$(ENV)." >&2; \
+		echo "  Staging is brought up/down by deploy/staging/up.sh + deploy/staging/down.sh." >&2; \
+		exit 1; \
+	fi
+
 # Restart the daemon (used by the watchkeeper fix pipeline's default restart_cmd)
-restart-daemon: build-daemon
+restart-daemon: assert-prod-env build-daemon
 	@if launchctl list com.spacetraders.daemon >/dev/null 2>&1; then \
 		launchctl kickstart -k gui/$$(id -u)/com.spacetraders.daemon; \
 		echo "daemon restarted via launchd"; \
@@ -98,7 +142,7 @@ launchd:
 # Delegates each unit to the SAME hardened scripts/reload-unit.sh as reload-unit
 # (sp-516j) — the old inline loop here carried the identical fail-into-a-down-
 # state bug, so bulk-installing could also strand a service booted-out.
-install-launchd: launchd
+install-launchd: assert-prod-env launchd
 	@for f in $(LAUNCHD_OUT)/*.plist; do \
 		label=$$(basename "$$f" .plist); \
 		LAUNCHD_OUT='$(LAUNCHD_OUT)' AGENTS_DIR='$(AGENTS_DIR)' \
@@ -171,21 +215,21 @@ reload-unit:
 #   make deploy-all       -> everything (daemon + captain + routing + dashboard)
 deploy: deploy-daemon
 
-deploy-daemon: build-cli build-daemon launchd
+deploy-daemon: assert-prod-env build-cli build-daemon launchd
 	@$(MAKE) reload-unit LABEL=com.spacetraders.daemon
 	@$(MAKE) assert-stamp LOG=daemon.log
 
-deploy-captain: build-watchkeeper launchd
+deploy-captain: assert-prod-env build-watchkeeper launchd
 	@$(MAKE) reload-unit LABEL=com.spacetraders.captain
 	@$(MAKE) assert-stamp LOG=captain-supervisor.log
 
-deploy-routing: build-routing-service launchd
+deploy-routing: assert-prod-env build-routing-service launchd
 	@$(MAKE) reload-unit LABEL=com.spacetraders.routing
 
-deploy-dashboard: launchd
+deploy-dashboard: assert-prod-env launchd
 	@$(MAKE) reload-unit LABEL=com.spacetraders.dashboard
 
-deploy-all: build launchd
+deploy-all: assert-prod-env build launchd
 	@$(MAKE) reload-unit LABEL=com.spacetraders.daemon
 	@$(MAKE) reload-unit LABEL=com.spacetraders.captain
 	@$(MAKE) reload-unit LABEL=com.spacetraders.routing
