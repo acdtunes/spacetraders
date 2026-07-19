@@ -79,6 +79,37 @@ const (
 	// `tune --operation bootstrap defer_probe_to_freshsizer 1`, bootstrap hands probe acquisition to
 	// the freshsizer once the first market is covered (coverage>0) and a freshsizer coordinator runs.
 	defaultDeferProbeToFreshsizer = 0
+
+	// sp-fp3y GATE-entry gate. defaultScaledGateEntry is the arming-flag default: 0 = OFF, so the phase
+	// derivation is byte-identical (GATE still enters the instant instantaneous income clears income_bar).
+	// Armed to 1 via `tune --operation bootstrap scaled_gate_entry 1`, GATE entry instead requires a
+	// genuinely SCALED contract op (coverage + haulers + a SUSTAINED $/hr) — closing the ktio deadlock
+	// where a single contract payout spiked income past the 10000 income_bar and drove GATE with ZERO
+	// haulers, permanently latching on ConstructionStarted. MUST arm TOGETHER WITH ktio-B (sp-sjvv
+	// autosizer-early): armed alone it would wedge the arc in INCOME forever (the op never scales haulers,
+	// so haulers>=gate_min_haulers never holds). Tunable-only flag (no launch key), reusing the sp-r6yq seam.
+	defaultScaledGateEntry = 0
+	// defaultGateIncomeBar is the SUSTAINED (rolling-mean over gateIncomeWindowTicks) net credits/hour the
+	// contract fleet must clear to enter GATE when scaled_gate_entry is armed. Deliberately well ABOVE
+	// income_bar (10000): a single contract payout momentarily spikes instantaneous income past 10000 (the
+	// ktio false trigger), but a genuinely scaled 2–4 hauler op sustains net $/hr in this range once warmed
+	// while a lone spike, smoothed over the window alongside the net-negative spend ticks, nets far less.
+	// The primary field-calibration knob for the armed gate (tunable via gate_income_bar). It is a
+	// phase-transition threshold like income_bar, NOT a money-floor (RULINGS #5) — no spend guard reads it.
+	// A bar set too HIGH only delays GATE; too low re-opens the spurious trigger.
+	defaultGateIncomeBar = 50000.0
+	// defaultGateMinHaulers is the hauler floor for armed GATE entry: the INCOME ramp must hold at least
+	// this many contract-dedicated haulers, proving a multi-hull op (the ktio deadlock entered GATE with
+	// ZERO haulers — a frigate-only contract spike). Set BELOW hauler_target (4) because viable hubs may be
+	// fewer than the target, so requiring the full target could wedge a legitimately-scaled op; 2 clearly
+	// separates a scaled op from the 0-hauler spike. Tunable via gate_min_haulers.
+	defaultGateMinHaulers = 2
+	// gateIncomeWindowTicks is how many recent reconcile ticks the armed GATE-entry $/hr is smoothed over
+	// (the "sustained" window). A call-site constant, not a knob — a shape detail of the sustained metric,
+	// bounded in wall-clock by tick_secs (at the 45s cold-start cadence, 5 ticks ≈ 3.75 min of sustained
+	// earning). The window must be FULL before it can clear the bar, so a spike on a fresh/short history
+	// (the first ticks after arming, or after a restart drops the window) can never trip GATE.
+	gateIncomeWindowTicks = 5
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -309,6 +340,16 @@ type RunBootstrapCoordinatorHandler struct {
 	// which point the buys have long synced), so phase/progress stays derived purely from observation.
 	buyBridgeMu sync.Mutex
 	buyBridges  map[string]*probeBuyBridge
+
+	// incomeWindows holds the per-container GATE-entry income smoother (sp-fp3y): the rolling window of
+	// recent realized-$/hr readings whose mean is the SUSTAINED $/hr the armed scaled-gate-entry gate reads,
+	// so a lone instantaneous income spike never trips GATE with an unscaled op (the ktio deadlock). Keyed by
+	// ContainerID for the same singleton reason as buyBridges; incomeWindowMu guards the MAP only (one
+	// container's ticks are sequential — see incomeWindowFor). Consulted only when scaled_gate_entry is armed;
+	// like buyBridges it is NOT a progress cursor (dropped on restart, and GATE entry re-defers a few ticks
+	// while it re-fills), so phase/progress stays derived purely from observation.
+	incomeWindowMu sync.Mutex
+	incomeWindows  map[string]*incomeWindow
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when

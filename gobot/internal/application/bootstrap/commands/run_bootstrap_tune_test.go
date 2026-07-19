@@ -56,6 +56,9 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"gate_worker_target":        defaultGateWorkerTarget,       // 6
 		"tick_secs":                 defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
 		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
+		"scaled_gate_entry":         defaultScaledGateEntry,        // 0 (off) — sp-fp3y GATE-entry gate
+		"gate_income_bar":           50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
+		"gate_min_haulers":          defaultGateMinHaulers,         // 2 — sp-fp3y armed-GATE hauler floor
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)

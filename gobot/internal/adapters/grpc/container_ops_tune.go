@@ -172,6 +172,14 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			// the shared fleet — the era-3 multi-buyer lesson); 0 (default) ⇒ today's behavior, both buy
 			// behind their own guards. Bootstrap never defers into a vacuum (freshsizer must be running).
 			"defer_probe_to_freshsizer": {Type: "int", Min: 0, Max: 1, Default: bootstrap["defer_probe_to_freshsizer"], Unit: "flag", Description: "sp-tsn2: 1 ⇒ bootstrap hands DATA probe acquisition to the freshsizer once the first market is covered and a freshsizer coordinator runs (single-buyer arbitration); 0 (default) ⇒ both buy independently (byte-identical)"},
+			// sp-fp3y scaled-GATE-entry gate: the arming flag + two calibration knobs. 1 ⇒ GATE requires a
+			// SCALED contract op (coverage + haulers + a SUSTAINED rolling-window $/hr) instead of the bare
+			// instantaneous income_bar (which one contract payout trivially cleared — the ktio deadlock). 0
+			// (default) ⇒ byte-identical. MUST arm together with ktio-B (autosizer-early) or the arc wedges in
+			// INCOME. The two bars are phase thresholds like income_bar, NOT money-floors (RULINGS #5).
+			"scaled_gate_entry": {Type: "int", Min: 0, Max: 1, Default: bootstrap["scaled_gate_entry"], Unit: "flag", Description: "sp-fp3y: 1 ⇒ GATE entry requires a SCALED contract op — coverage ≥ coverage_bar AND haulers ≥ gate_min_haulers AND a SUSTAINED (rolling-window) $/hr ≥ gate_income_bar — instead of instantaneous income_bar; 0 (default) ⇒ byte-identical. Arm WITH ktio-B (autosizer-early)"},
+			"gate_income_bar":   {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["gate_income_bar"], Unit: "credits", Description: "sp-fp3y armed GATE-entry bar: SUSTAINED (rolling-window mean) net credits/hour the contract fleet must clear to enter GATE (whole credits; default 50000, well above income_bar so a single contract payout cannot trip it). Inert while scaled_gate_entry=0"},
+			"gate_min_haulers":  {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_min_haulers"], Unit: "hulls", Description: "sp-fp3y armed GATE-entry hauler floor: contract-dedicated haulers required to enter GATE, proving a multi-hull op (the ktio deadlock entered GATE with ZERO). Default 2, below hauler_target so few-hub universes still gate. Inert while scaled_gate_entry=0"},
 		},
 	}
 }
