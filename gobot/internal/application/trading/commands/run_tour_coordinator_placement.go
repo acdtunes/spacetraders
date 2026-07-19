@@ -251,6 +251,12 @@ func (h *RunTourCoordinatorHandler) convergePlacementJump(
 	winner *placement.Evaluation,
 	maxSpend, reserve int64,
 ) (bool, bool, error) {
+	// sp-lq64: register the in-flight reposition target at commit (BEFORE the jump), released on
+	// return (defer, after the synchronous jump). Mirrors the margins-death + rate-floor commits so
+	// the fleet-wide per-system herd check (excludeHerdedSystems) sees a placement-driven mover while
+	// it is mid-flight and its landed count still lags. Dispatch-spreading only, no money guard.
+	h.incrementPendingRelocation(winner.System)
+	defer h.decrementPendingRelocation(winner.System)
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: true, TargetSystem: winner.System, TargetWaypoint: winner.Waypoint})
 	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, winner.System, maxSpend, reserve)
 	jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)

@@ -232,10 +232,23 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	currentSystem := ship.CurrentLocation().SystemSymbol
 
 	candidates := h.buildRepositionCandidates(ctx, cmd, currentSystem)
+	// sp-lq64: exclude herd-saturated systems on the DEFAULT margins-death path too. Until now only
+	// the reach (RepositionReachEnabled) and rate-floor paths ran this cap; the default path — the one
+	// the sp-fmxp thundering-herd trace observed — ranked contention-blind, so N simultaneously
+	// margins-dead hulls each picked the same top system and deadheaded into a fleet-wide sink-cap
+	// breach on arrival (the pre-flight already nets the absorption ledger read-only, but a hull
+	// mid-deadhead has released its old reservation and not yet re-reserved, so it is invisible to the
+	// others' netting — a pure TOCTOU). With both reposition COMMITs now registering their in-flight
+	// target (incrementPendingRelocation, below + convergePlacementJump), this cap sees the in-flight
+	// movers and spreads the cohort. Strictly stricter (RULINGS #4): it only REMOVES over-subscribed
+	// candidates, never relaxes the 25000 floor or any money guard; fail-open when the fleet snapshot
+	// is unreadable AND nothing is in flight (byte-identical to pre-sp-lq64). Idempotent with the reach
+	// path's own exclusion — the same harmless re-check the rate-floor path documents.
+	candidates, herdExcluded := h.excludeHerdedSystems(ctx, cmd, candidates)
 	if len(candidates) == 0 {
 		metrics.RecordTourReposition(cmd.PlayerID, "no_candidate") // sp-fbih P3: map-wide margin exhaustion signal
-		logger.Log("INFO", fmt.Sprintf("Reposition: no jump-reachable candidate system with cached market data from %s - exiting honestly (margins died)", currentSystem), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem,
+		logger.Log("INFO", fmt.Sprintf("Reposition: no non-herded jump-reachable candidate system with cached market data from %s (%d herd-excluded) - exiting honestly (margins died)", currentSystem, herdExcluded), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem, "herd_excluded": herdExcluded,
 		})
 		return false, nil
 	}
@@ -286,6 +299,16 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		metrics.RecordTourReposition(cmd.PlayerID, "no_candidate") // sp-fbih P3: candidates ranked, none worth the jump
 		return false, nil
 	}
+
+	// sp-lq64: register this hull's in-flight reposition target at the commit-decision (BEFORE the
+	// jump) and release it on return (defer, after the synchronous jump — success OR error), mirroring
+	// the proven rate-floor pattern (commitRateFloorRelocation). This is what a CONCURRENT margins-dead
+	// hull's excludeHerdedSystems (above) reads so N hulls don't all deadhead onto the same system
+	// while their landed count still lags a full multi-hop flight (the sp-fmxp TOCTOU herd). The jump
+	// blocks until arrival, so the claim is held for the whole flight — exactly the window the landed
+	// count cannot yet see. Dispatch-spreading only: never a money guard (RULINGS #4).
+	h.incrementPendingRelocation(best.system)
+	defer h.decrementPendingRelocation(best.system)
 
 	// Commit the reposition. Persist the in-flight destination FIRST (RULINGS #2) so a
 	// restart mid-jump resumes toward the same ground, jump through the shared

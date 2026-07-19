@@ -62,6 +62,12 @@ type tourFixture struct {
 	// destination system so a reposition test can assert the hull actually jumped.
 	neighbors map[string][]string
 	jumps     []string
+	// jumpHook, when set, fires at each JumpShipCommand AFTER the destination is recorded and the
+	// fixture lock is released — the sp-lq64 seam a contention test uses to snapshot in-flight
+	// reposition intent (pendingRelocationsBySystem) DURING the flight window, since the commit's
+	// incrementPendingRelocation is released by a deferred decrement the instant the reposition call
+	// returns. Default nil = no-op, byte-identical for every existing jump test.
+	jumpHook func()
 	// activeHulls is the fleet snapshot tourFakeShipRepo.FindActiveByPlayer returns for the
 	// sp-uf64 reposition-reach anti-herd count: each entry is one active hull's (system, fleet).
 	// Absent (nil) → no active hulls, so the anti-herd cap never excludes a candidate and every
@@ -262,7 +268,11 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		}
 		m.fx.jumps = append(m.fx.jumps, cmd.DestinationSystem)
 		m.fx.location = cmd.DestinationSystem + "-GATE"
+		hook := m.fx.jumpHook
 		m.fx.mu.Unlock()
+		if hook != nil {
+			hook() // sp-lq64: observe in-flight pending-reposition intent mid-jump
+		}
 		return &navCmd.JumpShipResponse{Success: true, DestinationSystem: cmd.DestinationSystem, CooldownSeconds: 0}, nil
 	default:
 		return nil, nil // dock, orbit, etc. succeed silently
