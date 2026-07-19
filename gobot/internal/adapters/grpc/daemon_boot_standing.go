@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // bootStandingCoordinatorTypes are the container types launched unconditionally at every daemon
@@ -37,6 +38,31 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// every action it takes is guarded — money guards on buys, and a fail-safe that never
 	// mass-retires on an empty census — so an armed auto-start is safe.
 	container.ContainerTypeMarketFreshnessSizer,
+	// sp-ov8z (epic sp-difa, Auto-pilot Phase 1 — the ARMING half of zero-intervention cold start):
+	// the captain-bootstrap coordinator is the MASTER SWITCH of the cold-start machine. Boot-launched
+	// unconditionally, it OBSERVES the live world each tick, DERIVES its phase (DATA/INCOME/GATE/
+	// COMPLETE — never a stored cursor), drives a cold agent to the jump gate, and at GATE hands the
+	// mature economy off to the fleet-autosizer + siting + worker-rebalancer, then exits. A mid-era
+	// restart in a built world re-observes COMPLETE, ensures the autosizer is running, and exits — so
+	// re-launching it every boot is a safe no-op. Its launch is idempotent (skips if already RUNNING/
+	// PENDING). THIS is what removes the manual `workflow bootstrap` at every era start.
+	container.ContainerTypeBootstrapCoordinator,
+	// sp-ov8z: the capacity reconciler is the only standing brain with NO other auto-launch path — the
+	// bootstrap GATE hand-off launches the autosizer/siting/rebalancer but NOT this — so it must be
+	// boot-standing for a zero-intervention cold start. It reconciles the contract-delivery topology
+	// toward a computed desired topology and IDLES when converged (an empty desired during cold start ⇒
+	// no actions); tier-4 capital stays gated behind the human-approved proposal path (no auto-buy).
+	// Auto-arming it is safe ONLY because sp-2jrz (stop-is-complete-retire) landed: a deploy re-adopts a
+	// live reconciler unchanged (the INTERRUPTED path never retires), and a decommission STOP retires it
+	// cleanly. This DELIBERATELY reverses the earlier "st-fyr deploy-inert hard requirement". Its launch
+	// is idempotent (skips if already RUNNING/PENDING); its own creation path also refuses a second live
+	// reconciler. FLAGGED (sp-ov8z): once boot-standing, a bare STOP no longer decommissions it across a
+	// restart — boot re-launches it — so a durable decommission additionally needs config dry_run/disable
+	// (cf. the sp-udgc demand-driven-boot-guard pattern).
+	//
+	// The fleet autosizer is DELIBERATELY NOT a member: the bootstrap GATE hand-off already launches it
+	// at the mature-economy phase; boot-standing it would launch it prematurely during DATA/INCOME.
+	container.ContainerTypeCapacityReconciler,
 }
 
 // ensureBootStandingCoordinators launches every boot-standing coordinator type not already
@@ -74,6 +100,10 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 					fmt.Printf("Warning: failed to launch boot-standing market-freshness sizer: %v\n", lerr)
 				}
 			}
+		case container.ContainerTypeBootstrapCoordinator:
+			s.ensureBootstrapStanding(ctx, playerID)
+		case container.ContainerTypeCapacityReconciler:
+			s.ensureCapacityReconcilerStanding(ctx, playerID)
 		}
 	}
 
@@ -84,4 +114,62 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 	// goods_factory coordinators re-adopted by RecoverRunningContainers, and this pass skips any already
 	// running (RULINGS #2). Runs here, after recovery, so a warm restart re-adopts rather than duplicates.
 	s.ensureGateSourceFeeders(ctx, playerID)
+}
+
+// ensureBootstrapStanding launches the standing captain-bootstrap coordinator (sp-ov8z) when none is
+// already running for the player. Idempotent via the same containerTypeRunning pre-check the
+// market-freshness sizer uses, so a warm restart re-adopts the existing one (via
+// RecoverRunningContainers) instead of double-launching. Auto-armed (dryRun=false) — config.yaml
+// [bootstrap] dry_run can still force observe-only. The agent symbol is resolved from the player row
+// because the bootstrap threads it into the GATE hand-off. A launch failure is logged and non-fatal.
+func (s *DaemonServer) ensureBootstrapStanding(ctx context.Context, playerID int) {
+	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeBootstrapCoordinator)
+	if err != nil {
+		fmt.Printf("Warning: failed to check bootstrap coordinator state: %v\n", err)
+		return
+	}
+	if running {
+		return
+	}
+	if _, lerr := s.BootstrapCoordinator(ctx, playerID, s.agentSymbolForPlayer(ctx, playerID), false); lerr != nil {
+		fmt.Printf("Warning: failed to launch boot-standing bootstrap coordinator: %v\n", lerr)
+	}
+}
+
+// ensureCapacityReconcilerStanding launches the standing capacity reconciler (sp-ov8z) when none is
+// already running for the player. Idempotent via the containerTypeRunning pre-check (the reconciler's
+// own creation path also refuses a second live reconciler), so a warm restart re-adopts the existing
+// one instead of double-launching. Auto-armed (dryRun=false) — config.yaml [capacity_reconciler]
+// dry_run can still force observe-only. A launch failure is logged and non-fatal.
+func (s *DaemonServer) ensureCapacityReconcilerStanding(ctx context.Context, playerID int) {
+	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeCapacityReconciler)
+	if err != nil {
+		fmt.Printf("Warning: failed to check capacity reconciler state: %v\n", err)
+		return
+	}
+	if running {
+		return
+	}
+	if _, lerr := s.CapacityReconcilerCoordinator(ctx, playerID, false); lerr != nil {
+		fmt.Printf("Warning: failed to launch boot-standing capacity reconciler: %v\n", lerr)
+	}
+}
+
+// agentSymbolForPlayer resolves the agent symbol for a player at boot — needed by the coordinators
+// whose launch threads it into a downstream hand-off (bootstrap → GATE hand-off). Best-effort: at a
+// real boot the player row exists and this resolves the symbol; a lookup miss (nil repo / not found)
+// yields "" rather than blocking the launch (the coordinator is keyed by player id, not the symbol).
+func (s *DaemonServer) agentSymbolForPlayer(ctx context.Context, playerID int) string {
+	if s.playerRepo == nil {
+		return ""
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return ""
+	}
+	p, err := s.playerRepo.FindByID(ctx, pid)
+	if err != nil || p == nil {
+		return ""
+	}
+	return p.AgentSymbol
 }

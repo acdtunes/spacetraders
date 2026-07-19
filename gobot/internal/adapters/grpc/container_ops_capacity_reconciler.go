@@ -19,16 +19,19 @@ import (
 // config.yaml inside buildCommandForType, so a config edit + restart retunes even a recovered
 // coordinator.
 //
-// DEPLOY-INERT (st-fyr hard requirement): this coordinator is deliberately NOT a member of
-// bootStandingCoordinatorTypes (contrast the market-freshness sizer, sp-orgp). Nothing launches
-// it at boot; a fresh deploy changes nothing for live players. It runs ONLY when explicitly
-// started:
+// BOOT-STANDING (sp-ov8z, epic sp-difa): this coordinator IS now a member of
+// bootStandingCoordinatorTypes — daemon boot launches it unconditionally for a zero-intervention
+// cold start (it is the only standing brain the bootstrap GATE hand-off does not launch). This
+// DELIBERATELY reverses the earlier "st-fyr deploy-inert hard requirement"; the reversal is safe
+// ONLY because sp-2jrz (stop-is-complete-retire) landed. It can also still be started explicitly:
 //
 //	spacetraders workflow capacity-reconciler --agent <AGENT>   (CLI → gRPC CapacityReconcilerCoordinator)
 //
-// Once started it is restart-safe: the container persists as RUNNING, and a daemon restart
-// re-adopts it through RecoverRunningContainers → buildCommandForType, the same recovery idiom
-// every standing coordinator uses (RULINGS #2). Stop with `spacetraders container stop <id>`.
+// It is restart-safe: the container persists as RUNNING, and a daemon restart re-adopts it through
+// RecoverRunningContainers → buildCommandForType, the same recovery idiom every standing coordinator
+// uses (RULINGS #2). FLAGGED (sp-ov8z): now that it is boot-standing, a bare `container stop` no
+// longer decommissions it across a restart — the next boot re-launches it — so a durable decommission
+// additionally needs config dry_run/disable (cf. the sp-udgc demand-driven-boot-guard pattern).
 
 // CapacityReconcilerCoordinator starts the standing capacity reconciler for a player: a
 // recovery-safe container that each tick drives the contract-delivery machine's actual capacity

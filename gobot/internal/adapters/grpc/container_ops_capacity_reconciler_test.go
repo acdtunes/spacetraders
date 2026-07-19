@@ -12,17 +12,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
-// DEPLOY-INERT pin (st-fyr hard requirement): a fresh deploy of the capacity
-// reconciler changes NOTHING for live players. The engine must ONLY run when
-// explicitly started (workflow capacity-reconciler / the RPC) — it must NEVER
-// be boot-standing-armed the way the market-freshness sizer is (sp-orgp,
-// bootStandingCoordinatorTypes). If a future change adds it to the boot set,
-// this test is the tripwire.
-func TestCapacityReconciler_NotBootStandingArmed(t *testing.T) {
-	for _, ct := range bootStandingCoordinatorTypes {
-		require.NotEqual(t, container.ContainerTypeCapacityReconciler, ct,
-			"the capacity reconciler must stay deploy-inert: never boot-standing-armed")
-	}
+// BOOT-STANDING-ARMED (sp-ov8z, epic sp-difa — the ARMING half of zero-intervention cold start).
+// This DELIBERATELY reverses the earlier "st-fyr deploy-inert hard requirement": the reconciler is
+// now a member of bootStandingCoordinatorTypes so an era transition + daemon boot self-starts it
+// with no manual `workflow capacity-reconciler`. The reversal is safe ONLY because sp-2jrz
+// (stop-is-complete-retire) landed — a mid-era restart re-adopts a live reconciler unchanged, and a
+// decommission STOP retires it cleanly. NOTE (flagged on sp-ov8z): once boot-standing, a bare STOP no
+// longer decommissions the reconciler across a restart — boot re-launches it — so a durable
+// decommission additionally needs config dry_run/disable (see the sp-udgc demand-driven-boot-guard
+// pattern). If this reverts to deploy-inert, flip this back to NotEqual.
+func TestCapacityReconciler_IsBootStandingArmed(t *testing.T) {
+	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeCapacityReconciler,
+		"the capacity reconciler must be boot-standing-armed for zero-intervention cold start (sp-ov8z, safe post-sp-2jrz)")
 }
 
 // Double-launch guard: a second explicit start for a player who already has an
