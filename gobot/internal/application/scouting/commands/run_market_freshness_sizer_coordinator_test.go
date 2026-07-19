@@ -1283,3 +1283,89 @@ func TestResolveSizerConfig_ReadsHoldUnscannedMarketPostsLiveWithDefaultFallback
 	require.False(t, resolveSizerConfig(launch, liveconfig.Snapshot{"hold_unscanned_market_posts": 0}).HoldUnscannedMarketPosts,
 		"a live 0 reverts even a launch-armed flag (tune 0 = off)")
 }
+
+// ---- sp-7pdo: cold-start scale-up — size a partially-scanned system by its CHARTED market count ----
+
+// THE COLD-START SCALE-UP FIX. The freshness census keys "markets" on SCANNED market_data, so a
+// home post part-way through its FIRST circuit — one probe having scanned 9 of a 27-market system —
+// reads as 9 markets and sizes to RequiredHulls(9, 180s, 3600s)=1, so the bootstrap-declared single
+// hull never grows and the idle sibling probes sit unused (the scout-post coordinator sees the full
+// 27 charted markets and WARNS "needs 2 hulls", but nothing raises the budget — sp-7pdo root cause A).
+// Armed, the sizer sizes the SAME system against its 27 CHARTED markets → RequiredHulls(27,180,3600)=2,
+// so the post reaches its true hull count immediately and the coordinator mans + partitions the idle
+// probes. Disabled (the default) is byte-identical: it sizes on the scanned 9 and stays at 1. The
+// RED case is the armed scale-up row: on pre-fix code the sizer computes 1 and never resizes, so the
+// UpdateHulls==2 assertion fails. It also carries the mutation guard — revert the charted-count
+// override and the armed row sizes to 1, failing here.
+func TestSizer_SizesPartiallyScannedSystemByChartedMarketsWhenArmed(t *testing.T) {
+	cases := []struct {
+		name          string
+		armed         bool
+		readerWired   bool
+		existingHulls int // the bootstrap-declared / current post budget
+		wantHulls     int // expected UpdateHulls value; 0 ⇒ no resize (byte-identical / idempotent)
+	}{
+		{"armed + 27 charted over 9 scanned + 1 hull → resize to 2 (RED: cold-start scale-up)", true, true, 1, 2},
+		{"disabled + 27 charted over 9 scanned + 1 hull → no resize (byte-identical, sizes on scanned 9)", false, true, 1, 0},
+		{"armed but charted reader unwired → no resize (fail-closed fallback to the scanned count)", true, false, 1, 0},
+		{"armed + already sized to 2 → no resize (idempotent, no re-partition thrash)", true, true, 2, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// One probe has scanned 9 of the system's 27 markets at the true ~180s per-market pace
+			// (measured cycle 180s, trusted), all freshly scanned (oldest age well under the 1h SLA).
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snap("X1-UM5", 9 /*scanned*/, 100 /*fresh oldest*/, 180 /*measured cycle*/, 8 /*trusted*/),
+			}}
+			var post *domainScouting.ScoutPost
+			if tc.existingHulls > 1 {
+				post = fullyMannedSizerPost("X1-UM5", tc.existingHulls)
+			} else {
+				post = standingSizerPost("X1-UM5", tc.existingHulls, "P-UM5")
+			}
+			pr := newSizerPostRepo(post)
+			fl := &fakeSizerFleetRepo{all: scouts(t, 10)} // supply ≫ demand → no buy in the way
+			h := newSizer(fr, pr, fl)
+			if tc.readerWired {
+				// 27 charted marketplace waypoints, only 9 scanned so far — the cold-start circuit state.
+				h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: map[string]int{"X1-UM5": 27}})
+			}
+			cmd := sizerCmd()
+			if tc.armed {
+				cmd.SizeByChartedMarkets = 1
+			}
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+			if tc.wantHulls == 0 {
+				require.NotContains(t, pr.hullUpdates, "X1-UM5",
+					"no resize expected — the post stays at its current budget")
+			} else {
+				require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-UM5"],
+					"armed, the post is sized against its 27 CHARTED markets → RequiredHulls(27,180,3600)=2")
+				require.Empty(t, pr.upserts,
+					"the resize goes through the manning-preserving UpdateHulls seam, never a clobbering Upsert")
+			}
+		})
+	}
+}
+
+// Config wiring: size_by_charted_markets is a live-tunable int-mode flag. resolveSizerConfig reads it
+// from the tick's live-config snapshot (live > launch); with NO snapshot it falls back to the launch
+// command, else the documented default (OFF, size on the scanned count) — guarding the registry↔
+// overlay drift that would leave the knob registered but silently ineffective.
+func TestResolveSizerConfig_ReadsSizeByChartedMarketsLiveWithDefaultFallback(t *testing.T) {
+	require.False(t, resolveSizerConfig(sizerCmd(), nil).SizeByChartedMarkets,
+		"no snapshot, no launch value → the documented default (OFF, size on scanned)")
+
+	launch := sizerCmd()
+	launch.SizeByChartedMarkets = 1
+	require.True(t, resolveSizerConfig(launch, nil).SizeByChartedMarkets,
+		"no snapshot → the launch command value governs")
+
+	require.True(t, resolveSizerConfig(sizerCmd(), liveconfig.Snapshot{"size_by_charted_markets": 1}).SizeByChartedMarkets,
+		"a live snapshot arms it next tick")
+
+	require.False(t, resolveSizerConfig(launch, liveconfig.Snapshot{"size_by_charted_markets": 0}).SizeByChartedMarkets,
+		"a live 0 reverts even a launch-armed flag (tune 0 = off)")
+}

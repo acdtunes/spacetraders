@@ -141,6 +141,18 @@ const (
 	// still retire. Live-tunable (SizerTunableDefaults); requires the daemon to have wired the
 	// charted-marketplace reader (SetChartedMarketplaceReader).
 	defaultHoldUnscannedMarketPosts = 0
+	// defaultSizeByChartedMarkets is the sp-7pdo cold-start scale-up flag (int-mode, 0 = OFF =
+	// byte-identical). The sizing numerator is the census MarketCount = SCANNED market_data rows,
+	// so during an initial circuit — one probe part-way through a big system — a post reads as far
+	// fewer markets than it truly covers, sizes to RequiredHulls(scanned, …)=1, and never grows past
+	// the bootstrap-declared single hull while its idle sibling probes sit unused (the scout-post
+	// coordinator sees the full charted count and WARNS "undersized", but no one raises the budget).
+	// 1 ⇒ a market-bearing system whose CHARTED marketplace-waypoint count exceeds its scanned count
+	// is sized against the charted count, so the post reaches its true RequiredHulls immediately and
+	// the coordinator mans + VRP-partitions the idle probes. The age/percentile telemetry stays on the
+	// scanned reality (only the market-count numerator changes). Live-tunable (SizerTunableDefaults);
+	// reuses the same charted-marketplace reader as hold_unscanned (SetChartedMarketplaceReader).
+	defaultSizeByChartedMarkets = 0
 )
 
 // FleetReader is the narrow slice of the ship repository the sizer reads: the whole fleet,
@@ -218,6 +230,13 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	// byte-identical. Live-tunable (SizerTunableDefaults). Inert unless the daemon also wired the
 	// charted-marketplace reader (SetChartedMarketplaceReader).
 	HoldUnscannedMarketPosts int
+
+	// SizeByChartedMarkets (sp-7pdo) is the int-mode cold-start scale-up flag: >0 ⇒ a market-bearing
+	// system whose CHARTED marketplace-waypoint count exceeds its scanned census count is SIZED against
+	// the charted count, so a post reaches its true RequiredHulls during the initial circuit instead of
+	// crawling on one hull; 0 (default) ⇒ size on the scanned count only, byte-identical. Live-tunable
+	// (SizerTunableDefaults). Inert unless the daemon also wired the charted-marketplace reader.
+	SizeByChartedMarkets int
 
 	MaxProbeFleet        int // total satellite cap
 	MaxSpendPerCycle     int // max probe spend within the trailing spend window
@@ -422,6 +441,7 @@ func SizerTunableDefaults() map[string]int {
 		"release_stable_window_secs":  defaultReleaseStableWindowSecs,
 		"reserved_frontier_floor":     defaultReservedFrontierFloor,
 		"hold_unscanned_market_posts": defaultHoldUnscannedMarketPosts, // sp-u8jc/sp-gucu bootstrap flag (0=off)
+		"size_by_charted_markets":     defaultSizeByChartedMarkets,     // sp-7pdo cold-start scale-up flag (0=off)
 	}
 }
 
@@ -441,6 +461,7 @@ type sizerConfig struct {
 	ReleaseStableWindow      time.Duration
 	ReservedFrontierFloor    int
 	HoldUnscannedMarketPosts bool // sp-u8jc/sp-gucu: hold-not-retire charted-but-unscanned posts
+	SizeByChartedMarkets     bool // sp-7pdo: size a partially-scanned system against its charted market count
 	Buy                      probebuy.Config
 }
 
@@ -468,6 +489,8 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		ReservedFrontierFloor: cmd.ReservedFrontierFloor,
 		// sp-u8jc/sp-gucu int-mode flag: >0 ⇒ hold-not-retire charted-but-unscanned posts.
 		HoldUnscannedMarketPosts: cmd.HoldUnscannedMarketPosts > 0,
+		// sp-7pdo int-mode flag: >0 ⇒ size a partially-scanned system against its charted market count.
+		SizeByChartedMarkets: cmd.SizeByChartedMarkets > 0,
 		Buy: probebuy.Config{
 			MaxProbeFleet:    cmd.MaxProbeFleet,
 			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
@@ -493,6 +516,9 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		// sp-u8jc/sp-gucu hold-unscanned flag: live-authoritative int-mode bool. Absent/zeroed ⇒
 		// OFF (the documented default, retire-as-gone) — no fallback, since 0 IS the default here.
 		c.HoldUnscannedMarketPosts = live.PositiveIntOrZero("hold_unscanned_market_posts") > 0
+		// sp-7pdo size-by-charted flag: live-authoritative int-mode bool. Absent/zeroed ⇒ OFF
+		// (size on the scanned count only) — no fallback, since 0 IS the default here.
+		c.SizeByChartedMarkets = live.PositiveIntOrZero("size_by_charted_markets") > 0
 		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
 		c.Buy.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
 		c.Buy.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
@@ -617,15 +643,23 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		return err
 	}
 
-	// CHARTED-MARKETPLACE signal (sp-u8jc/sp-gucu): system → charted marketplace-waypoint count,
-	// independent of whether prices were scanned. Empty (nil) unless the hold_unscanned_market_posts
-	// knob is armed AND the reader is wired — so the retire-as-gone behavior is byte-identical by
-	// default. When armed, a read failure aborts THIS tick (fail-safe: never retire a charted post
-	// on a partial view) and the error-streak monitor handles a persistent gap — mirroring the
-	// dark-market scanner's "idle rather than act on a partial census".
+	// CHARTED-MARKETPLACE signal (sp-u8jc/sp-gucu, sp-7pdo): system → charted marketplace-waypoint
+	// count, independent of whether prices were scanned. Empty (nil) unless the reader is wired AND at
+	// least one consumer knob is armed (hold_unscanned_market_posts OR size_by_charted_markets) — so
+	// the default behavior is byte-identical. When read, a failure aborts THIS tick (fail-safe: never
+	// retire a charted post or size off a partial view) and the error-streak monitor handles a
+	// persistent gap — mirroring the dark-market scanner's "idle rather than act on a partial census".
 	chartedMarketplace, err := h.chartedMarketplaceSystems(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to read charted marketplace systems: %w", err)
+	}
+	// The hold/retire + initial-scan-demand consumers (sp-u8jc/sp-gucu) read the charted signal ONLY
+	// when hold_unscanned_market_posts is armed; size_by_charted_markets (sp-7pdo) shares the SAME
+	// read but drives ONLY the per-system sizing numerator below, so arming it alone never disturbs
+	// the retire-as-gone / initial-scan-demand behavior.
+	var holdCharted map[string]int
+	if cfg.HoldUnscannedMarketPosts {
+		holdCharted = chartedMarketplace
 	}
 
 	marketBearing := make(map[string]bool, len(snapshots))
@@ -649,7 +683,20 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			current = existing.HullBudget()
 			fullyManned = existing.IsFullyManned() // sp-iupr issue 3a: gates the empirical-age sanity floor.
 		}
-		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, fullyManned, snap, sla, cycle, cfg)
+		// sp-7pdo COLD-START SCALE-UP: while an initial circuit is still in progress the census
+		// MarketCount is only the SCANNED subset, so a big post sizes to one hull and never grows past
+		// the bootstrap-declared single hull. Armed, size against the full CHARTED market count so the
+		// post reaches its true RequiredHulls immediately (the coordinator then mans + partitions the
+		// idle probes). Only the sizing NUMERATOR changes — the age/percentile telemetry stays on the
+		// scanned reality (you can only measure the age of a market you have scanned). Off, or once
+		// scanning has caught up (charted ≤ scanned), this is the scanned count — byte-identical.
+		sizingSnap := snap
+		if cfg.SizeByChartedMarkets {
+			if charted := chartedMarketplace[snap.SystemSymbol]; charted > sizingSnap.MarketCount {
+				sizingSnap.MarketCount = charted
+			}
+		}
+		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, fullyManned, sizingSnap, sla, cycle, cfg)
 		desiredBySystem[snap.SystemSymbol] = desired
 		totalDemand += desired
 	}
@@ -673,8 +720,8 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// this buy); once scanned it lands market_data and enters the census-sized rotation above. Added
 	// AFTER the reserved-frontier-floor recompute (which resets totalDemand from the per-system map)
 	// so the floor never wipes it — this is NEW buy-demand, not a per-system holding the floor caps.
-	// Empty chartedMarketplace (knob off / reader unwired) ⇒ 0 ⇒ byte-identical.
-	totalDemand += initialScanDemand(posts, marketBearing, chartedMarketplace)
+	// Empty holdCharted (hold_unscanned off / reader unwired) ⇒ 0 ⇒ byte-identical.
+	totalDemand += initialScanDemand(posts, marketBearing, holdCharted)
 
 	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
 	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
@@ -705,7 +752,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// markets retired) is removed, freeing its probes back to the pool. A charted-but-unscanned
 	// system (marketplace waypoints present, no market_data yet) is HELD when armed — it needs an
 	// initial scan, not retirement (sp-u8jc/sp-gucu).
-	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, chartedMarketplace)
+	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, holdCharted)
 
 	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply. With the
 	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
@@ -1082,13 +1129,14 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx co
 	return retired
 }
 
-// chartedMarketplaceSystems reads the "has a marketplace" signal (sp-u8jc/sp-gucu) for this tick:
-// system → charted marketplace-waypoint count. It returns nil (⇒ every lookup is zero ⇒ the
-// retire-as-gone behavior byte-identical) unless the hold_unscanned_market_posts knob is armed AND
-// the charted-marketplace reader is wired. A read error is returned to ReconcileOnce, which aborts
-// the tick rather than retire charted posts on a partial view (fail-safe).
+// chartedMarketplaceSystems reads the "has a marketplace" signal (sp-u8jc/sp-gucu, sp-7pdo) for this
+// tick: system → charted marketplace-waypoint count. It returns nil (⇒ every lookup is zero ⇒ both
+// consumers byte-identical) unless the charted-marketplace reader is wired AND at least one consumer
+// knob is armed — hold_unscanned_market_posts (retire/demand) or size_by_charted_markets (sizing). A
+// read error is returned to ReconcileOnce, which aborts the tick rather than act on a partial view
+// (fail-safe: never retire a charted post or size off an incomplete census).
 func (h *RunMarketFreshnessSizerCoordinatorHandler) chartedMarketplaceSystems(ctx context.Context, cfg sizerConfig) (map[string]int, error) {
-	if !cfg.HoldUnscannedMarketPosts || h.chartedMarketplaceReader == nil {
+	if (!cfg.HoldUnscannedMarketPosts && !cfg.SizeByChartedMarkets) || h.chartedMarketplaceReader == nil {
 		return nil, nil
 	}
 	return h.chartedMarketplaceReader.ChartedMarketSystemCounts(ctx)
