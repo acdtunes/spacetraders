@@ -587,6 +587,15 @@ func (s *autosizerHeavySources) UnservedLaneCount(ctx context.Context, playerID 
 // to the pure trading.ComputeFleetTourRate. Fails CLOSED (readable=false) on a telemetry read
 // failure or when no ship has a computable realized rate — the heavy realized-rate/payback guards
 // then block on their own, never buying against an unseen rate.
+//
+// sp-461l (epic sp-g9td) cash-true audit: this MONEY-GUARD source STAYS on telemetry. The autosizer's
+// realized_rate + era_payback guards need PER-HULL rates — the MIN per-ship marginal (a deliberately
+// conservative next-hull proxy) and the fleet-average floor basis — which the transactions ledger has
+// NO ship column to produce; deriving a per-hull figure by dividing an aggregate cash rate by hull
+// count would RAISE the min-based marginal and thereby WEAKEN era_payback (RULINGS #4 forbids). What
+// fixed the ~2x inflation was sp-rd21's write-path repair: the dropped buy legs are now recorded, so
+// ComputeFleetTourRate's per-ship netting reconciles 1.00x and the marginal this feeds the guard is
+// the TRUE rate. (Guard-level proof: fleet/commands TestGuard_EraPayback_FiresOnCashTrueRateNotInflatedTelemetry.)
 func (s *autosizerHeavySources) FleetTourRate(ctx context.Context, playerID int) (float64, float64, bool, bool, error) {
 	since := s.clock.Now().Add(-heavyTourRateWindow)
 	rows, err := s.tourRates.ListByPlayer(ctx, playerID, since)

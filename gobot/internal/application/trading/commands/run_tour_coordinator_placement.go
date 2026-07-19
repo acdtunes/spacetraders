@@ -148,6 +148,13 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 // existing telemetry seam (ListByPlayer with the window as its since bound) + trading.MedianTourRate.
 // Readable=false (nil repo, read error, no computable tour, or a non-positive median) ⇒ the caller
 // falls back to the legacy engine — β is never invented (fail-closed, mirroring MedianTourRate).
+//
+// sp-461l (epic sp-g9td) cash-true audit: β STAYS on telemetry — it is a per-TOUR median that must be
+// dimensionally commensurable with the per-candidate PROJECTED E_x (ProjectedCreditsPerHour) the score
+// function subtracts it from, and the transactions ledger has no ship/tour column to reproduce it.
+// sp-rd21's write-path fix (dropped buy legs now recorded) is what makes this honest: MedianTourRate
+// now nets the once-missing buys, so β is the true (not ~2x-inflated) rate. The 60-min window is
+// always fresh post-deploy, so the netting reconciles 1.00x.
 func (h *RunTourCoordinatorHandler) senseBeta(ctx context.Context, cmd *RunTourCoordinatorCommand) (float64, bool) {
 	if h.telemetry == nil {
 		return 0, false

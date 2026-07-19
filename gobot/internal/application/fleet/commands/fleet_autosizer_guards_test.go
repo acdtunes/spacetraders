@@ -139,6 +139,40 @@ func TestGuard_RealizedRate_BelowFloor(t *testing.T) {
 	assertBlockedBy(t, r, GuardRealizedRate)
 }
 
+// sp-461l (epic sp-g9td) — the era-payback MONEY GUARD fires on the CASH-TRUE marginal rate, not the
+// ~2x-inflated telemetry-netting rate sp-rd21 diagnosed. The autosizer feeds this guard a MarginalRate
+// from fleet_autosizer_ports.FleetTourRate → trading.ComputeFleetTourRate, which reads PER-HULL
+// telemetry (the min per-ship realized $/hr). That per-hull attribution is why this consumer stays on
+// telemetry rather than the transactions-cash rate: the transactions ledger has NO ship column, so it
+// cannot yield a per-hull marginal, AND dividing an aggregate cash rate by hull count would raise the
+// min-based marginal and WEAKEN this guard (RULINGS #4 forbids). sp-rd21's write-path fix (dropped buy
+// legs now recorded) makes ComputeFleetTourRate reconcile 1.00x, so the marginal the guard reads is now
+// the TRUE rate. This test pins the consequence at the guard boundary: only the marginal source differs
+// between the two requests, and the money guard now REFUSES the overpriced hull the inflated speedo
+// would have APPROVED. The threshold arithmetic is unchanged — only the rate it reads is now honest.
+func TestGuard_EraPayback_FiresOnCashTrueRateNotInflatedTelemetry(t *testing.T) {
+	base := heavyRequest()
+	base.HoursToEraEnd = 10
+	base.PaybackSafety = 0.5
+	base.Price = 300000
+	base.MaxPriceClass = 0           // no absolute cap → isolate era_payback as the flip
+	base.CheapestKnownPrice = 300000 // premium cap 450k ≥ price → price_ceiling passes both cases
+	base.RateFloor = 30000           // both marginals clear the floor → realized_rate is not the flip
+
+	// TRUE (rd21-netted) marginal 40k/hr: maxAffordable = 40k × 10h × 0.5 = 200k < price 300k → REFUSE.
+	trueRate := base
+	trueRate.MarginalRate = 40000
+	assertBlockedBy(t, trueRate, GuardEraPayback)
+
+	// INFLATED (dropped-buy) marginal 80k/hr: maxAffordable = 80k × 10h × 0.5 = 400k ≥ 300k → the
+	// overpriced hull would have been APPROVED. This is the exact over-buy the cash-true fix prevents.
+	inflated := base
+	inflated.MarginalRate = 80000
+	if d := EvaluateGuards(inflated); !d.Approved {
+		t.Fatalf("the inflated 80k/hr marginal should have (wrongly) APPROVED the 300k hull — proving the guard's sensitivity to the rate — but blocked by %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+}
+
 // heavyRequest is a HEAVY (trade) candidate where every guard passes — the class the sp-zbe6
 // concentration carve-out applies to (its Shortfall is the unserved profitable-lane count). Based on
 // the all-pass light request with the class flipped and the rate headroom kept (marginal 80000 ≥

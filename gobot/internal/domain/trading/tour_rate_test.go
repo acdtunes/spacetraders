@@ -131,6 +131,45 @@ func TestMedianTourRate_PerTourMedianOddAndEven(t *testing.T) {
 // RED#2 (sp-z7ng): β fails CLOSED — empty rows, buys with no realized sell, and a zero-span tour
 // each yield ok=false, never a misleading readable 0. A placement caller that cannot see β falls
 // back to the legacy engine; a fabricated 0 would silently arm the park floor at φ*0 = 0.
+// sp-461l (epic sp-g9td): MedianTourRate is the realized-rate SOURCE the reposition rate-floor
+// (run_tour_coordinator_rate_floor.senseRateFloor) and placement β (run_tour_coordinator_placement.
+// senseBeta) steer on. Those consumers STAY on telemetry — they need PER-TOUR / PER-HULL rates the
+// transactions ledger (no ship column) cannot give, and β must be dimensionally commensurable with
+// the per-candidate PROJECTED E_x — but sp-rd21's write-path fix (dropped buy legs now recorded) is
+// what makes the telemetry honest. This pins the fix's effect at the source: with the buy legs
+// PRESENT the median is the NETTED (true) rate; the sells-only pathology sp-rd21 diagnosed read ~2x
+// higher, so a hull with dropped buys looked like a star and the under-earner floor relocated the
+// WRONG hulls. The consumers now relocate/hold on the true rate.
+func TestMedianTourRate_NetsBuyLegs_NotSellsOnlyInflated(t *testing.T) {
+	base := time.Date(2026, 7, 18, 6, 0, 0, 0, time.UTC)
+	end := base.Add(time.Hour)
+	// Two 1h tours, each: buy 100@1000 (−100k) then sell 100@2000 (+200k) ⇒ TRUE net 100k/hr.
+	netted := []TourLegTelemetry{
+		tleg("t1", "S1", true, 100, 1000, base, base),
+		tleg("t1", "S1", false, 100, 2000, base, end),
+		tleg("t2", "S2", true, 100, 1000, base, base),
+		tleg("t2", "S2", false, 100, 2000, base, end),
+	}
+	trueMedian, ok := MedianTourRate(netted)
+	if !ok || trueMedian != 100000 {
+		t.Fatalf("netted median = %.0f (ok=%v), want 100000 (sell 200k − buy 100k over 1h)", trueMedian, ok)
+	}
+
+	// The dropped-buy pathology: the SAME tours with the BUY legs MISSING (what tour_leg_telemetry
+	// looked like before sp-rd21). Net = sells only = 200k/hr — 2x the true rate.
+	sellsOnly := []TourLegTelemetry{
+		tleg("t1", "S1", false, 100, 2000, base, end),
+		tleg("t2", "S2", false, 100, 2000, base, end),
+	}
+	inflatedMedian, _ := MedianTourRate(sellsOnly)
+	if inflatedMedian != 200000 {
+		t.Fatalf("sells-only median = %.0f, want 200000 (the inflated shape)", inflatedMedian)
+	}
+	if trueMedian >= inflatedMedian {
+		t.Fatalf("the netted (true) median %.0f must be below the sells-only inflated %.0f", trueMedian, inflatedMedian)
+	}
+}
+
 func TestMedianTourRate_FailsClosedWhenNoComputableTour(t *testing.T) {
 	base := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
 	if _, ok := MedianTourRate(nil); ok {

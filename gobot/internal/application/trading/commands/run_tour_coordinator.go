@@ -1247,6 +1247,11 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 			break
 		}
 	}
+	// sp-461l (epic sp-g9td) cash-true audit: the phase="realized" observation is ALREADY cash-true
+	// and needed NO change. The profit here is BOOKED cash — revenue minus spend accumulated from the
+	// actual buy/sell API responses (response.TotalRevenue/TotalSpent), which INCLUDE the look-back
+	// manifest buys (run_tour_coordinator_lookback.go increments TotalSpent). The sp-rd21 bug dropped
+	// TELEMETRY legs, never these ledger-backed accumulators, so this histogram was never inflated.
 	if rate, ok := realizedRatePerHour(
 		(response.TotalRevenue-revenueBefore)-(response.TotalSpent-spentBefore),
 		h.clock.Now().Sub(acceptedAt).Seconds()); ok {

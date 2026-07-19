@@ -46,46 +46,48 @@ type TourGateMetrics struct {
 // is unit-testable with a fake (the engine-report idiom).
 type tourReportSource interface {
 	// TourTelemetry returns the player's per-leg planned-vs-realized rows in the window.
+	// Used ONLY for the tour COUNT and the plan-vs-realized price-error median — the
+	// two metrics that are inherently telemetry (planned vs realized unit price). The
+	// tour $/hr itself is NOT netted from these rows (see TourCreditsPerHour).
 	TourTelemetry(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error)
 	// FailedTourRunCount is the guard-violation count: tour_run containers that
 	// terminalized FAILED (a stranded-cargo veto or an operational failure).
 	FailedTourRunCount(ctx context.Context, playerID int, since time.Time) (int, error)
+	// TourCreditsPerHour is the tour realized $/hr from the TRANSACTIONS-CASH ledger
+	// (operation_type="tour"), not telemetry netting (sp-461l, epic sp-g9td). sp-rd21
+	// proved telemetry netting read ~2x inflated — it dropped ~1/3 of buy legs while
+	// their sells stayed logged, so net = sells − (partial buys) over-counted. The
+	// transactions ledger records EVERY cargo trade and reconciles to the treasury, so
+	// this is the true tour $/hr the graduation ratio judges. ok=false (fail-closed) on
+	// an empty tour window — the ratio is then n/a and the gate cannot pass.
+	TourCreditsPerHour(ctx context.Context, playerID int, since time.Time) (float64, bool, error)
 	// TradeCreditsPerHour is the trailing single-lane baseline (proxy): net trade
-	// credits over the window ÷ window hours. ok=false when there is no trade activity
-	// to form a baseline. NOTE (follow-up): this is a per-player proxy that until tour
-	// ledger writes are stamped operation_type="tour" cannot cleanly exclude tour
-	// trades — it filters operation_type <> 'tour' so it self-corrects once tagging lands.
+	// credits over the window ÷ window hours, filtering operation_type <> 'tour' so a
+	// tour is never measured against its own trades (tour writes ARE stamped
+	// operation_type="tour", sp-lgnh). ok=false when there is no trade activity to form
+	// a baseline. It omits REFUEL (a small cost) the tour side includes, which leaves
+	// the baseline marginally HIGHER ⇒ the ratio marginally LOWER ⇒ the gate marginally
+	// TIGHTER (never loosened — RULINGS #4).
 	TradeCreditsPerHour(ctx context.Context, playerID int, since time.Time) (float64, bool, error)
 }
 
 // computeTourGateMetrics derives the three gate metrics from the telemetry rows, the
-// failed-tour count, and the single-lane baseline. Tour $/hr and the median price
-// error come entirely from telemetry; the ratio needs the baseline. A tour is one
-// distinct tour_id (container id).
-func computeTourGateMetrics(rows []trading.TourLegTelemetry, failedTours int, singleLaneCPH float64, singleLaneAvailable bool) TourGateMetrics {
+// failed-tour count, the transactions-cash tour $/hr, and the single-lane baseline.
+// sp-461l: the tour $/hr is the TRANSACTIONS-CASH tour rate (tourCPH), NOT telemetry
+// netting — sp-rd21 proved telemetry netting read ~2x inflated (dropped buy legs), so a
+// graduation ratio built on it over-stated the multiple. The telemetry rows are still the
+// source for the two metrics that are inherently telemetry: the completed-tour COUNT (one
+// distinct tour_id) and the plan-vs-realized price-error median. The ratio needs BOTH the
+// cash tour rate and the baseline to be readable; an unreadable tour rate fails the ratio
+// closed (n/a) so the gate cannot pass on a fabricated number.
+func computeTourGateMetrics(rows []trading.TourLegTelemetry, failedTours int, tourCPH float64, tourCPHAvailable bool, singleLaneCPH float64, singleLaneAvailable bool) TourGateMetrics {
 	tourIDs := map[string]bool{}
-	var net int64
-	var earliest, latest time.Time
 	var errs []float64
 
-	for i, r := range rows {
+	for _, r := range rows {
 		tourIDs[r.TourID] = true
 
-		value := int64(r.RealizedUnits) * int64(r.RealizedUnitPrice)
-		if r.IsBuy {
-			net -= value
-		} else {
-			net += value
-		}
-
-		if i == 0 || r.PlannedAt.Before(earliest) {
-			earliest = r.PlannedAt
-		}
-		if r.RealizedAt.After(latest) {
-			latest = r.RealizedAt
-		}
-
-		// Price error only over executed trades with a realized price.
+		// Price error only over executed trades with a realized price (telemetry-native).
 		if r.RealizedUnits > 0 && r.PlannedUnitPrice > 0 && r.RealizedUnitPrice > 0 {
 			errs = append(errs, math.Abs(float64(r.RealizedUnitPrice-r.PlannedUnitPrice))/float64(r.PlannedUnitPrice)*100)
 		}
@@ -96,12 +98,12 @@ func computeTourGateMetrics(rows []trading.TourLegTelemetry, failedTours int, si
 		GuardViolations:          failedTours,
 		SingleLaneCreditsPerHour: singleLaneCPH,
 	}
-	if hours := latest.Sub(earliest).Hours(); hours > 0 {
-		m.TourCreditsPerHour = float64(net) / hours
+	if tourCPHAvailable {
+		m.TourCreditsPerHour = tourCPH
 	}
-	if singleLaneAvailable && singleLaneCPH > 0 {
+	if tourCPHAvailable && singleLaneAvailable && singleLaneCPH > 0 {
 		m.RatioAvailable = true
-		m.Ratio = m.TourCreditsPerHour / singleLaneCPH
+		m.Ratio = tourCPH / singleLaneCPH
 	}
 	if len(errs) > 0 {
 		m.MedianAvailable = true
@@ -156,11 +158,15 @@ func runTourReport(ctx context.Context, source tourReportSource, playerID int, s
 	if err != nil {
 		return fmt.Errorf("count failed tours: %w", err)
 	}
+	tourCPH, tourOK, err := source.TourCreditsPerHour(ctx, playerID, since)
+	if err != nil {
+		return fmt.Errorf("read tour cash rate: %w", err)
+	}
 	baseline, ok, err := source.TradeCreditsPerHour(ctx, playerID, since)
 	if err != nil {
 		return fmt.Errorf("read single-lane baseline: %w", err)
 	}
-	renderTourReport(computeTourGateMetrics(rows, failed, baseline, ok), w)
+	renderTourReport(computeTourGateMetrics(rows, failed, tourCPH, tourOK, baseline, ok), w)
 	return nil
 }
 
@@ -179,6 +185,19 @@ func (s *gormTourReportSource) FailedTourRunCount(ctx context.Context, playerID 
 		Where("player_id = ? AND command_type = ? AND status = ? AND started_at >= ?", playerID, "tour_run", "FAILED", since).
 		Count(&n).Error
 	return int(n), err
+}
+
+// TourCreditsPerHour is the transactions-cash tour realized $/hr over [since, now) —
+// SELL_CARGO(+) − PURCHASE_CARGO(−) − REFUEL(−) scoped to operation_type="tour", divided
+// by the window's wall-clock hours (sp-461l). It defers to the canonical cash-rate reader
+// (GormTransactionRepository.RealizedCashRate) so this and every other cash-true consumer
+// share one window basis. Readable=false on an empty tour window → the ratio fails closed.
+func (s *gormTourReportSource) TourCreditsPerHour(ctx context.Context, playerID int, since time.Time) (float64, bool, error) {
+	rate, err := persistence.NewGormTransactionRepository(s.db).RealizedCashRate(ctx, playerID, since, s.now, "tour")
+	if err != nil {
+		return 0, false, err
+	}
+	return rate.CreditsPerHour, rate.Readable, nil
 }
 
 func (s *gormTourReportSource) TradeCreditsPerHour(ctx context.Context, playerID int, since time.Time) (float64, bool, error) {

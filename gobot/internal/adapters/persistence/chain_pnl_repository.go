@@ -16,11 +16,13 @@ import (
 // GormMarketPriceHistoryRepository satisfies InputPriceHistoryReader via domain/market types.
 // It runs, Go-side, the SAME per-good attribution the validated manufacturing dashboard uses
 // (panel 502 / sp-i0hl): transactions.metadata->>'good_symbol' for factory local buys/sells
-// under the manufacturing/factory operation types, and tour_leg_telemetry for tour realized
-// net. It adds the refuel pool the dashboard omits (attributed per-good in the service's
-// ComputeChainPnL — refuel rows carry no good_symbol). PostgreSQL-specific (JSONB ->>, FILTER),
-// matching the sibling manufacturing metrics collector; the daemon only ever wires it against
-// Postgres.
+// under the manufacturing/factory operation types, AND — since sp-461l — for tour realized net
+// under operation_type='tour' too. The tour net formerly netted tour_leg_telemetry, which sp-rd21
+// proved read ~2x inflated (dropped buy legs); it now reads the treasury-true transactions ledger,
+// so every per-good flow this reader returns reconciles to the treasury on one consistent source.
+// It adds the refuel pool the dashboard omits (attributed per-good in the service's ComputeChainPnL
+// — refuel rows carry no good_symbol). PostgreSQL-specific (JSONB ->>, FILTER), matching the sibling
+// manufacturing metrics collector; the daemon only ever wires it against Postgres.
 type GormChainPnLRepository struct {
 	db *gorm.DB
 }
@@ -72,21 +74,30 @@ func (r *GormChainPnLRepository) ReadRealizedPnL(ctx context.Context, playerID i
 		return manufacturing.ChainPnLRaw{}, err
 	}
 
-	// Per-good tour realized net: SUM(sign(is_buy) * realized_units * realized_unit_price) over
-	// realized legs in the window (the panel's tour CTE). Signed: sells +, buys −.
+	// Per-good tour realized net from the TRANSACTIONS ledger (sp-461l, epic sp-g9td): a signed
+	// SUM(amount) over the tour cargo trades — SELL_CARGO(+) and PURCHASE_CARGO(−) — scoped to
+	// operation_type='tour' and attributed to metadata->>'good_symbol', the SAME treasury-true,
+	// per-good source the factory-flows CTE above reads. It REPLACES the former tour_leg_telemetry
+	// netting (SUM(sign(is_buy)·realized_units·realized_unit_price)) that sp-rd21 proved read ~2x
+	// inflated: telemetry dropped ~1/3 of buy legs while their sells stayed logged, so net = sells −
+	// (partial buys) over-counted. The ledger records EVERY cargo trade and reconciles to the
+	// treasury, so this is the definitive per-good tour net the factory chain kill-switch judges.
+	// REFUEL is excluded (it carries no good_symbol and the prior CTE summed only cargo legs), so
+	// the semantics — signed cargo net per good — are preserved, only the source is now treasury-true.
 	var tourRows []struct {
 		Good    string
 		TourNet int
 	}
 	if err := db.Raw(`
-		SELECT good,
-		       COALESCE(SUM(CASE WHEN is_buy THEN -1 ELSE 1 END * realized_units * realized_unit_price), 0) AS tour_net
-		FROM tour_leg_telemetry
-		WHERE realized_at >= ?
-		  AND realized_units IS NOT NULL
-		  AND realized_unit_price IS NOT NULL
+		SELECT metadata->>'good_symbol' AS good,
+		       COALESCE(SUM(amount), 0) AS tour_net
+		FROM transactions
+		WHERE operation_type = 'tour'
+		  AND transaction_type IN ('PURCHASE_CARGO', 'SELL_CARGO')
+		  AND metadata->>'good_symbol' IS NOT NULL
+		  AND created_at >= ?
 		  AND player_id = ?
-		GROUP BY good
+		GROUP BY 1
 	`, since, playerID).Scan(&tourRows).Error; err != nil {
 		return manufacturing.ChainPnLRaw{}, err
 	}
