@@ -166,7 +166,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"income_bar":             {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
 			"min_contract_earners":   {Type: "int", Min: 1, Max: 50, Default: bootstrap["min_contract_earners"], Unit: "hulls", Description: "haulers kept on contracts through GATE to keep funding gate-material acquisition"},
 			"gate_worker_target":     {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (mostly repurposed idle haulers, rarely a buy)"},
-			"tick_secs":              {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — the cold-start ramp is a deliberately slow, staged buy loop (default 300s)"},
+			"tick_secs":              {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
 			// sp-tsn2 single-buyer arbitration flag: 1 ⇒ bootstrap DEFERS its DATA probe buy to the
 			// freshsizer once coverage>0 and a freshsizer coordinator is running (so exactly one buyer grows
 			// the shared fleet — the era-3 multi-buyer lesson); 0 (default) ⇒ today's behavior, both buy

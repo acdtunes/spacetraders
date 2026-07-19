@@ -183,6 +183,66 @@ type reconcileResult struct {
 	Done            bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 }
 
+// probeBuyBridge closes the sync-lag window between a probe purchase and the ship-count observation
+// reflecting it (sp-lgo3). The observed count LAGS a fresh buy — the count query does not see
+// just-bought hulls until a later sync — so at a SHORT reconcile tick the next tick would read the
+// stale low count and re-buy toward a target it already reached (over-buy → wasted capital). This
+// tracks the probes THIS coordinator bought but the observation has not yet confirmed (pending), folds
+// them into the effective count the buy gate reads, and DECAYS pending as the observation catches up so
+// the effective count converges to the true count (a genuinely lost hull is still replaced — the bridge
+// never wedges a legitimate re-buy). It bridges only the sync window; it is not a persisted progress
+// cursor.
+type probeBuyBridge struct {
+	pending      int // probes bought that the observed count has not yet reflected
+	lastObserved int // the raw observed ProbeCount at the previous tick — drives the decay
+}
+
+// effectiveProbeCount folds still-unobserved buys into the raw observed count and retires (decays) the
+// pending tally by however many buys the observation has now absorbed since the last tick. Called once
+// per readable tick, before the buy gate. A rise in the observed count only ever REDUCES pending; a
+// drop (a lost hull) leaves pending untouched, so the effective count falls and the lost hull is bought
+// again. When another actor also raised the count the bridge is only OVER-eager to decay (it would buy,
+// not over-buy), which keeps the money-safety bias one-directional — never a re-buy past target.
+func (b *probeBuyBridge) effectiveProbeCount(observed int) int {
+	if observed > b.lastObserved {
+		if absorbed := observed - b.lastObserved; absorbed >= b.pending {
+			b.pending = 0
+		} else {
+			b.pending -= absorbed
+		}
+	}
+	b.lastObserved = observed
+	return observed + b.pending
+}
+
+// recordProbeBuys adds probes bought THIS tick to the pending tally, so the next tick counts them
+// against target before the observation reflects them. A no-op for a zero/negative delta (non-DATA
+// ticks and dry-runs buy nothing).
+func (b *probeBuyBridge) recordProbeBuys(n int) {
+	if n > 0 {
+		b.pending += n
+	}
+}
+
+// probeBridge returns the per-container count-sync bridge (sp-lgo3), lazily created. Keyed by
+// ContainerID because this handler is a REGISTERED SINGLETON serving every bootstrap container: a bare
+// field would be shared and RACED across concurrent players. One container's ticks run sequentially
+// (the Handle loop awaits each reconcile), so the returned *probeBuyBridge is only ever touched by a
+// single goroutine — the mutex guards the map, not the returned struct.
+func (h *RunBootstrapCoordinatorHandler) probeBridge(containerID string) *probeBuyBridge {
+	h.buyBridgeMu.Lock()
+	defer h.buyBridgeMu.Unlock()
+	if h.buyBridges == nil {
+		h.buyBridges = map[string]*probeBuyBridge{}
+	}
+	b := h.buyBridges[containerID]
+	if b == nil {
+		b = &probeBuyBridge{}
+		h.buyBridges[containerID] = b
+	}
+	return b
+}
+
 // reconcileOnce runs one full pass: phantom-cache refresh → observe → derive phase → act on the
 // delta → heartbeat. It is the unit the tests drive directly; Handle just calls it on the tick.
 // Every side-effecting step is guarded "already done / in-flight?" and fails CLOSED on an
@@ -253,6 +313,17 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		return res, nil
 	}
 
+	// Fresh-buy count-sync (sp-lgo3): fold probes this coordinator has bought but the ship-count
+	// observation has not yet reflected into the count the tick reads. The observed count lags a fresh
+	// buy (the count query does not see just-bought hulls until a later sync); at a SHORT tick that lag
+	// spans the next tick, so without this the buy gate would re-buy toward a target already reached
+	// (over-buy → wasted capital, the money-safety hole a short tick exposes). Applied here, before the
+	// phase derivation and the switch, so the whole tick — buy gate, scout guard, heartbeat — reads one
+	// consistent effective count. It only ADJUSTS the count; the money guard (reserve_margin) is
+	// untouched. The bridge decays to zero as the observation catches up (see probeBuyBridge).
+	bridge := h.probeBridge(cmd.ContainerID)
+	obs.ProbeCount = bridge.effectiveProbeCount(obs.ProbeCount)
+
 	// Derive the phase from the observation — NEVER from a persisted enum (spec §Architecture).
 	phase := derivePhase(obs, cfg)
 	res.Phase = phase
@@ -287,6 +358,12 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	case PhaseComplete:
 		h.actComplete(ctx, cmd, cfg, obs, &res)
 	}
+
+	// Fold any probes bought this tick into the count-sync bridge (sp-lgo3), so the NEXT tick counts
+	// them against target before the observation reflects them — the invariant that prevents the
+	// short-tick cross-tick over-buy. Only the DATA probe buy sets res.Purchased; other phases and
+	// dry-runs record nothing.
+	bridge.recordProbeBuys(res.Purchased)
 
 	h.emitHeartbeat(ctx, cmd, cfg, phase, obs, res)
 	return res, nil

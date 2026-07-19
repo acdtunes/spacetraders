@@ -138,6 +138,13 @@ type scriptedWorld struct {
 	marketsCovered int
 	marketsTotal   int
 	hasPurchaser   bool
+
+	// lagBuys models the sp-lgo3 ship-count sync lag: when true, addProbe() stages the just-bought hull
+	// into pendingReveal instead of the visible count, so snapshot() keeps returning the PRE-buy count
+	// until revealBuys() lands the deferred buys (the "later sync" catching up). Zero value = immediate
+	// visibility, so every pre-existing test is byte-identical.
+	lagBuys       bool
+	pendingReveal int
 }
 
 func (w *scriptedWorld) snapshot() Observation {
@@ -158,7 +165,37 @@ func (w *scriptedWorld) snapshot() Observation {
 func (w *scriptedWorld) addProbe() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.lagBuys {
+		w.pendingReveal++ // sp-lgo3: not yet visible to the count query — lands on revealBuys()
+		return
+	}
 	w.probeCount++
+}
+
+// revealBuys lands every deferred (lagged) buy into the visible count — models the ship-count sync
+// finally catching up to the freshly-bought hulls (sp-lgo3).
+func (w *scriptedWorld) revealBuys() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.probeCount += w.pendingReveal
+	w.pendingReveal = 0
+}
+
+// loseProbe drops one visible probe — models a hull genuinely lost/destroyed after steady state, so a
+// test can prove the count-sync bridge decays and does not wedge a legitimate replacement buy.
+func (w *scriptedWorld) loseProbe() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.probeCount > 0 {
+		w.probeCount--
+	}
+}
+
+// setLagBuys toggles the sync-lag model mid-test.
+func (w *scriptedWorld) setLagBuys(v bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lagBuys = v
 }
 
 func (w *scriptedWorld) scoutAll() {
@@ -626,6 +663,98 @@ func TestBootstrap_DataAcceptance_ReachesThreeProbesScouting(t *testing.T) {
 	}
 	if acq.buys != 3 {
 		t.Fatalf("DATA acceptance: expected exactly 3 buys total (no overshoot), got %d", acq.buys)
+	}
+}
+
+// --- sp-lgo3 PART 1 (money-safety): fresh-buy count-sync — never re-buy toward a target already reached ---
+
+// The ship-count observation LAGS a fresh probe buy (observed live: probes=1/3 AFTER buying to 3/3 —
+// the count query does not see the just-bought hulls until a later sync). At the old 5m tick this
+// self-heals before the next tick; at a SHORT tick it does NOT, so the next tick reads the stale low
+// count and RE-BUYS toward a target it already reached → OVER-BUY → wasted capital. The coordinator
+// must count the hulls IT just bought until the observation catches up, so a re-observe on the very
+// next tick never re-triggers the buy. This is the money-safety GATE for the short-tick speedup.
+func TestBootstrap_FreshBuyCountSync_NoOverBuyWhenObservationLags(t *testing.T) {
+	world := &scriptedWorld{probeCount: 0, treasury: 500000, homeSystem: "X1-HQ", hasPurchaser: true, marketsTotal: 10, lagBuys: true}
+	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true, world: world}
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetShipRefresher(&fakeRefresher{})
+	h.SetWorldObserver(&fakeObserver{world: world})
+	h.SetProbeAcquirer(acq)
+	h.SetScoutAssigner(&fakeScouter{})
+	cmd := baseCmd()
+
+	// Tick 0: observes 0/3, buys the whole 3-probe remainder. The buys are NOT yet visible (sync lag).
+	res0, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+	if err != nil {
+		t.Fatalf("tick 0: %v", err)
+	}
+	if res0.Purchased != 3 || acq.buys != 3 {
+		t.Fatalf("tick 0 should buy exactly the 3-probe remainder to target, got purchased=%d buys=%d", res0.Purchased, acq.buys)
+	}
+
+	// Tick 1: the observation STILL reports 0 probes (the sync has not caught up). This is the over-buy
+	// hole: need = target - observed = 3 would re-buy the whole fleet AGAIN. The count-sync must count
+	// the 3 in-flight buys, so the effective count is 3 → need 0 → NO buy.
+	res1, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+	if err != nil {
+		t.Fatalf("tick 1: %v", err)
+	}
+	if res1.Purchased != 0 {
+		t.Fatalf("tick 1 (observation still lagging) must NOT re-buy — the just-bought hulls count against target; got purchased=%d", res1.Purchased)
+	}
+	if acq.buys != 3 {
+		t.Fatalf("OVER-BUY: total buys must stay 3 across the sync-lag window, got %d", acq.buys)
+	}
+
+	// Tick 2: the lagged sync finally lands (visible count = 3). Still no buy; steady state, no overshoot.
+	world.revealBuys()
+	res2, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+	if err != nil {
+		t.Fatalf("tick 2: %v", err)
+	}
+	if res2.Purchased != 0 || acq.buys != 3 {
+		t.Fatalf("after the sync lands: no further buys, total stays 3; got purchased=%d buys=%d", res2.Purchased, acq.buys)
+	}
+	if got := world.snapshot().ProbeCount; got != 3 {
+		t.Fatalf("exactly 3 probes should exist (no overshoot), got %d", got)
+	}
+}
+
+// The count-sync bridge must not OVER-correct: once the observation catches up it decays to zero, so a
+// probe genuinely lost AFTER steady state is still replaced. This proves the fix closes the over-buy
+// hole WITHOUT wedging a legitimate re-buy (a permanent over-count would starve the fleet).
+func TestBootstrap_FreshBuyCountSync_BridgeDecays_ReplacesLostProbe(t *testing.T) {
+	world := &scriptedWorld{probeCount: 0, treasury: 500000, homeSystem: "X1-HQ", hasPurchaser: true, marketsTotal: 10, lagBuys: true}
+	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true, world: world}
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetShipRefresher(&fakeRefresher{})
+	h.SetWorldObserver(&fakeObserver{world: world})
+	h.SetProbeAcquirer(acq)
+	h.SetScoutAssigner(&fakeScouter{})
+	cmd := baseCmd()
+
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd) // tick 0: buy 3 (not yet visible)
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd) // tick 1: lag → no re-buy
+	world.revealBuys()
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd) // tick 2: synced → no buy, bridge decays to 0
+	if acq.buys != 3 {
+		t.Fatalf("precondition: exactly 3 buys through steady state, got %d", acq.buys)
+	}
+
+	// A probe is lost after steady state (visible count drops to 2). The bridge has decayed to 0, so the
+	// coordinator must buy exactly 1 replacement — not stay wedged at "already bought 3".
+	world.loseProbe()
+	world.setLagBuys(false) // the replacement is visible immediately (keeps the assertion crisp)
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+	if err != nil {
+		t.Fatalf("replacement tick: %v", err)
+	}
+	if res.Purchased != 1 {
+		t.Fatalf("a lost probe after steady state must be replaced (bridge decayed), got purchased=%d", res.Purchased)
+	}
+	if acq.buys != 4 {
+		t.Fatalf("total buys should be 4 (3 + 1 replacement), got %d", acq.buys)
 	}
 }
 

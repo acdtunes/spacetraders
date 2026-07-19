@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -14,7 +15,18 @@ const (
 	// Config defaults (RULINGS #5: every operational value is a config key, filled here only when
 	// the launch config leaves it unset — the Analyst/Admiral own the numbers). Documented on
 	// config.BootstrapConfig.
-	defaultBootstrapTickSeconds = 300 // 5min — cold-start is a slow, deliberate ramp
+	// defaultBootstrapTickSeconds is the cold-start reconcile cadence. SHORT on purpose (sp-lgo3):
+	// bootstrap runs ONLY during cold start — 1 frigate + 1-3 probes make <0.1 req/s vs the 2 req/s
+	// ACCOUNT limit (20x+ headroom) and it exits at COMPLETE before the fleet is ever large, so a fast
+	// tick carries zero API-pacing concern for its whole lifetime. The old 300s injected up to 5min of
+	// dead time between a real event (frigate docks, scan/arrival completes) and the coordinator
+	// reacting — almost all of the observed ~11min probe-buy was poll latency, not travel. 45s cuts
+	// time-to-gate (→ more Phase-2 time → higher rank) with ample headroom. Made SAFE against the
+	// fresh-buy over-buy the short tick would otherwise expose by the sp-lgo3 count-sync bridge (PART 1).
+	// Live-tunable via the tick_secs knob (bounds 10..86400) with no restart. Event-driven reaction
+	// (react to arrival/scan-complete via the wake/watch model instead of a fixed poll) is a future
+	// follow-up — the tick drop is the scoped fix.
+	defaultBootstrapTickSeconds = 45
 	defaultProbeTarget          = 3   // DATA target: 3 probes scouting so market data flows ASAP
 	defaultCoverageBar          = 0.9 // DATA→exit: 90% of home-system marketplaces fresh
 	defaultReserveMargin        = 0.5 // spend ≤ 50% of treasury per decision (guardrail + pacer)
@@ -259,6 +271,17 @@ type RunBootstrapCoordinatorHandler struct {
 	// so a `spacetraders tune --operation bootstrap` of a knob takes effect on the NEXT tick with
 	// no restart. Optional-injection: nil keeps the launch-frozen behavior byte-identical.
 	liveConfig liveconfig.Reader
+
+	// buyBridges holds the per-container fresh-buy count-sync bridge (sp-lgo3): it folds probes the
+	// coordinator has bought but the ship-count observation has not yet reflected into the count the
+	// DATA buy gate reads, so a SHORT reconcile tick never re-buys toward a target already reached
+	// (the over-buy the sync lag would otherwise cause). Keyed by ContainerID because this handler is
+	// a REGISTERED SINGLETON serving every bootstrap container — a bare field would be shared/raced
+	// across concurrent players; buyBridgeMu guards the MAP only (see probeBridge). It is NOT a
+	// progress cursor: it DECAYS to zero as the observation catches up and is dropped on restart (by
+	// which point the buys have long synced), so phase/progress stays derived purely from observation.
+	buyBridgeMu sync.Mutex
+	buyBridges  map[string]*probeBuyBridge
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when

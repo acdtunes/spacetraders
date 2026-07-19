@@ -54,7 +54,7 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"income_bar":                10000,                         // defaultIncomeBar 10000.0 → 10000 credits
 		"min_contract_earners":      defaultMinContractEarners,     // 1
 		"gate_worker_target":        defaultGateWorkerTarget,       // 6
-		"tick_secs":                 defaultBootstrapTickSeconds,   // 300
+		"tick_secs":                 defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
 		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
 	}
 	if len(got) != len(want) {
