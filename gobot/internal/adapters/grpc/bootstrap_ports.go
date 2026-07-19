@@ -20,6 +20,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -28,7 +29,7 @@ import (
 // (bootstrapCmd.RunBootstrapCoordinatorHandler) owns the sequencing/gating/staging/recovery logic
 // and is unit-tested against fakes; these adapters are the thin, real-service edges — reusing
 // SyncAllFromAPI (the phantom-cache guard), GetAgent (treasury), shipyard list + BatchPurchaseShips
-// (price-check + buy), and AssignScoutingFleet (scout-all-markets). It BUILDS nothing new.
+// (price-check + buy), and AddScoutPost (declare the home coverage post — sp-pt7d). It BUILDS nothing new.
 
 const (
 	// commandRole is the flagship's registration role — its system is the cold-start home system.
@@ -47,6 +48,11 @@ const (
 	// retire clears it. The INCOME window (1h) is the trailing span the realized-$/hr read averages.
 	contractFleetTag      = "contract"
 	bootstrapIncomeWindow = time.Hour
+	// bootstrapHomeScoutPostFreshness is the SEED freshness SLA stamped on the cold-start home scout
+	// post (sp-pt7d). Transitional: the market-freshness sizer RESIZES the post's SLA + hull budget
+	// once the home system enters the scanned census, so this only paces the FIRST scans. 1h mirrors
+	// the sizer's baseline cadence.
+	bootstrapHomeScoutPostFreshness = time.Hour
 )
 
 // NewBootstrapCoordinatorHandler assembles the bootstrap reconciler (sp-3nbe M4), wiring every
@@ -75,7 +81,7 @@ func NewBootstrapCoordinatorHandler(
 	acq := &bootstrapAcquirer{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo}
 	h.SetProbeAcquirer(acq)
 	h.SetHaulerAcquirer(&bootstrapHaulerAcquirer{bootstrapAcquirer: acq})
-	h.SetScoutAssigner(&bootstrapScouter{server: server})
+	h.SetScoutPostDeclarer(&bootstrapScoutPostDeclarer{server: server})
 	// sp-hh0h: the cold-start shipyard-readability positioner. On a fresh universe nothing has visited
 	// the home shipyard, so its live (presence-gated) price is unreadable and the probe buy fails closed
 	// forever; this flies an idle hull to the yard so the next tick's live PriceCheck reads. Same deps as
@@ -616,12 +622,29 @@ func (r *bootstrapFrigateContractLoop) StartLoop(ctx context.Context, playerID i
 	return nil
 }
 
-// --- scout assigner (reuse the VRP scout-all-markets fleet assignment) ---
+// --- scout-post declarer (declare the home COVERAGE target; the boot-standing scout-post
+// coordinator sp-9ujl mans it by claiming an idle probe — sp-pt7d) ---
 
-type bootstrapScouter struct{ server *DaemonServer }
+type bootstrapScoutPostDeclarer struct{ server *DaemonServer }
 
-func (s *bootstrapScouter) AssignAllMarkets(ctx context.Context, playerID int, system string) error {
-	_, err := s.server.AssignScoutingFleet(ctx, system, playerID)
+// DeclareHomeScoutPost ensures a STANDING scout post exists for the home system so the boot-standing
+// scout-post coordinator (sp-9ujl) has a coverage target to man. Idempotent: if a post already covers
+// the system it is left UNTOUCHED — the coordinator's manning (AssignedHull/partition) and the
+// freshsizer's later SLA/hull resize own it from there, so bootstrap declares ONCE and never re-touches
+// (re-Upsert every DATA tick would churn live state). It assigns/dedicates NO probe; the coordinator
+// claims an idle one. hulls=1: one probe slot initially; the freshsizer resizes the budget once the
+// system enters the scanned census. Replaces the old AssignScoutingFleet sweep that HELD the probes.
+func (s *bootstrapScoutPostDeclarer) DeclareHomeScoutPost(ctx context.Context, playerID int, system string) error {
+	existing, err := s.server.ListScoutPosts(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("list scout posts: %w", err)
+	}
+	for _, p := range existing {
+		if p.SystemSymbol == system {
+			return nil // already declared — leave the coordinator's/freshsizer's live state untouched
+		}
+	}
+	_, err = s.server.AddScoutPost(ctx, playerID, system, bootstrapHomeScoutPostFreshness, domainScouting.PostKindStanding, 1)
 	return err
 }
 

@@ -167,7 +167,7 @@ func TestBootstrap_LiveRetune_ProbeTarget_LandsNextTick_NoRestart(t *testing.T) 
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutAssigner(&fakeScouter{})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetLiveConfigReader(live)
 
 	cmd := baseCmd() // all-zero → probe_target resolves to default 3
@@ -231,7 +231,7 @@ func TestBootstrap_LiveConfigUnreadable_FallsBackToLaunchValues(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutAssigner(&fakeScouter{})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetLiveConfigReader(live)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())

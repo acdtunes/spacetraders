@@ -17,7 +17,7 @@ func graduationIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerA
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutAssigner(&fakeScouter{})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(run)
@@ -32,7 +32,7 @@ func graduationIncomeObs() Observation {
 	obs := incomeObs() // coverage met, income 0 < bar → INCOME
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.CommandFrigateOnContract = true // would retire
-	obs.ProbeCount = 3                   // >= default probe_target → frigate loop eligible
+	obs.ProbeCount = 3                  // >= default probe_target → frigate loop eligible
 	obs.FrigateContractLoopRunning = false
 	obs.BatchContractRunning = false // would launch batch-contract
 	// Haulers empty + hubs present + idle purchaser + treasury → would buy a hauler.

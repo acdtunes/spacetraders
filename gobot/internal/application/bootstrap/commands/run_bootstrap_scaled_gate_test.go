@@ -163,7 +163,7 @@ func TestBootstrap_ScaledGate_Armed_SpikeStaysIncome_SustainedEntersGate(t *test
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutAssigner(&fakeScouter{})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetLiveConfigReader(armed)
 	cmd := baseCmd()
 
@@ -211,7 +211,7 @@ func TestBootstrap_ScaledGate_FlagOff_ReconcileGatesOnInstantSpike(t *testing.T)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutAssigner(&fakeScouter{})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{}}) // armed reader, nothing tuned → OFF
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())

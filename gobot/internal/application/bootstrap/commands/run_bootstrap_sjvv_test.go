@@ -23,7 +23,7 @@ func sjvvHandler(obs Observation, live *fakeLiveConfig, ho *fakeHandoff, haul *f
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true}) // present, unused in INCOME
-	h.SetScoutAssigner(&fakeScouter{})
+	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(&fakeRetirer{})
 	h.SetContractRunner(&fakeContractRunner{})
 	if haul != nil {

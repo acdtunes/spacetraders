@@ -224,11 +224,11 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 
 // reconcileResult tallies one tick's effect for the heartbeat and the tests.
 type reconcileResult struct {
-	Phase     Phase
-	Purchased int    // probes actually bought this tick (DATA)
-	WouldBuy  int    // ships a dry-run WOULD have bought this tick (DATA probe or INCOME hauler)
-	Scouted   bool   // scout-all-markets assignment ran this tick (DATA)
-	Blocker   string // the one guard that blocked the highest-priority action (for the heartbeat)
+	Phase            Phase
+	Purchased        int    // probes actually bought this tick (DATA)
+	WouldBuy         int    // ships a dry-run WOULD have bought this tick (DATA probe or INCOME hauler)
+	HomePostDeclared bool   // the home scout-post coverage target was ensured this tick (DATA, sp-pt7d)
+	Blocker          string // the one guard that blocked the highest-priority action (for the heartbeat)
 
 	// INCOME tallies (Slice 2).
 	HaulersBought      int  // contract haulers actually bought this tick (staged: at most 1)
@@ -589,9 +589,10 @@ func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
 // actData runs the DATA (scanning) workstream: (1) drive the probe fleet to probe_target THIS tick —
 // buying up to (target-count) probes in a capital-gated loop, or (when the home shipyard price is not
 // yet readable) positioning a hull at the yard so the next tick's live read succeeds (sp-hh0h);
-// (2) assign every probe to scout-all-markets when any probe is not yet scouting. Both actions are
-// independently guarded and idempotent, so re-evaluation never double-acts. It runs in the DATA phase,
-// which — under the parallel model (sp-t39j) — executes ALONGSIDE actIncome during cold start.
+// (2) declare the home-system scout post as a coverage target (sp-pt7d) — the boot-standing scout-post
+// coordinator (sp-9ujl) mans it by claiming an idle probe (bootstrap assigns NO probes itself). Both
+// actions are independently guarded and idempotent, so re-evaluation never double-acts. It runs in the
+// DATA phase, which — under the parallel model (sp-t39j) — executes ALONGSIDE actIncome during cold start.
 func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	// (1) Capital-gated probe acquisition — buy to target in ONE pass (sp-hh0h: a fresh universe must
 	// reach probe_target fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
@@ -603,10 +604,16 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 		h.acquireProbesToTarget(ctx, cmd, cfg, obs, res)
 	}
 
-	// (2) Assign every probe to scout-all-markets. Idempotent: skip when every probe already
-	// scouts (else the VRP re-optimizes across the current probe set each call).
-	if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
-		h.assignScouting(ctx, cmd, cfg, obs, res)
+	// (2) Declare the home-system scout post as a COVERAGE target (sp-pt7d). Bootstrap no longer
+	// ASSIGNS probes to scout tours — the old scout-all-markets sweep HELD the probes and starved
+	// the now-boot-standing scout-post coordinator (sp-9ujl). Instead it declares the desired-state
+	// home post; the coordinator mans it by claiming an IDLE probe (→ VRP-partition → scan), seeding
+	// the initial home scan → census → the freshsizer takes over declaring the rest. Idempotent (the
+	// declarer skips a post that already exists), so re-declaring every DATA tick is a no-op. Guarded
+	// on a resolved home system only — declare the coverage target even before the first probe lands,
+	// so manning starts the instant a probe is idle.
+	if obs.HomeSystem != "" {
+		h.declareHomeScoutPost(ctx, cmd, cfg, obs, res)
 	}
 }
 
@@ -851,52 +858,44 @@ func buyBlockNote(affordable bool) string {
 	return "BLOCKED by the capital gate (would exceed reserve_margin × treasury)"
 }
 
-// assignScouting assigns every probe to scout-all-markets (reuse the VRP fleet assignment). Caller
-// has checked that at least one probe is not yet scouting.
-func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+// declareHomeScoutPost declares the STANDING home-system scout post as a coverage target (sp-pt7d):
+// the desired state the boot-standing scout-post coordinator (sp-9ujl) mans by claiming an IDLE
+// probe. It does NOT assign or dedicate a probe — that is the coordinator's job — so bootstrap's
+// probes stay idle and claimable. Idempotent: the declarer skips a post that already exists, so
+// re-declaring every DATA tick is a no-op. Caller has checked HomeSystem is resolved.
+func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if obs.HomeSystem == "" {
-		res.Blocker = "no_home_system"
-		logger.Log("WARN", "Bootstrap cannot assign scouting: home system unresolved", map[string]interface{}{
-			"action":       "bootstrap_scout_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "no_home_system",
-		})
-		return
-	}
-
 	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD assign %d probe(s) to scout-all-markets in %s (%d already scouting) (took no action)", obs.ProbeCount, obs.HomeSystem, obs.ProbesScouting), map[string]interface{}{
-			"action":       "bootstrap_would_scout",
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD declare the home scout post %s for the scout-post coordinator to man (took no action)", obs.HomeSystem), map[string]interface{}{
+			"action":       "bootstrap_would_declare_home_post",
 			"container_id": cmd.ContainerID,
 		})
 		return
 	}
 
-	if h.scouter == nil {
-		res.Blocker = "no_scouter"
-		logger.Log("WARN", "Bootstrap has probes to scout but no scout assigner wired", map[string]interface{}{
-			"action":       "bootstrap_scout_blocked",
+	if h.postDeclarer == nil {
+		res.Blocker = "no_scout_post_declarer"
+		logger.Log("WARN", "Bootstrap cannot declare the home scout post: no scout-post declarer wired — probes will be bought but no coverage target exists for the coordinator to man", map[string]interface{}{
+			"action":       "bootstrap_scout_post_blocked",
 			"container_id": cmd.ContainerID,
-			"blocker":      "no_scouter",
+			"blocker":      "no_scout_post_declarer",
 		})
 		return
 	}
 
-	if err := h.scouter.AssignAllMarkets(ctx, cmd.PlayerID, obs.HomeSystem); err != nil {
-		res.Blocker = "scout_error"
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap scout assignment failed: %v", err), map[string]interface{}{
-			"action":       "bootstrap_scout_error",
+	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem); err != nil {
+		res.Blocker = "scout_post_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap home scout-post declaration failed: %v", err), map[string]interface{}{
+			"action":       "bootstrap_scout_post_error",
 			"container_id": cmd.ContainerID,
 		})
 		return
 	}
-	res.Scouted = true
-	logger.Log("INFO", fmt.Sprintf("Bootstrap assigned %d probe(s) to scout-all-markets in %s (%d were already scouting)", obs.ProbeCount, obs.HomeSystem, obs.ProbesScouting), map[string]interface{}{
-		"action":       "bootstrap_scout_assigned",
+	res.HomePostDeclared = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap ensured the home scout post %s (coverage target; the scout-post coordinator mans it by claiming an idle probe)", obs.HomeSystem), map[string]interface{}{
+		"action":       "bootstrap_home_scout_post_declared",
 		"container_id": cmd.ContainerID,
-		"probes":       obs.ProbeCount,
 		"system":       obs.HomeSystem,
 	})
 }
@@ -906,7 +905,7 @@ func (h *RunBootstrapCoordinatorHandler) assignScouting(ctx context.Context, cmd
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d scouted=%v haulers_bought=%d frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.Scouted, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
 	if cfg.DryRun {
 		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
 	}
@@ -918,33 +917,33 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 
 	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%/%.0f%% bar) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
 		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, cfg.CoverageBar*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
-		"action":           "bootstrap_heartbeat",
-		"container_id":     cmd.ContainerID,
-		"phase":            string(phase),
-		"probes":           obs.ProbeCount,
-		"probe_target":     cfg.ProbeTarget,
-		"probes_scouting":  obs.ProbesScouting,
-		"markets_covered":  obs.MarketsCovered,
-		"markets_total":    obs.MarketsTotal,
-		"haulers":          len(obs.Haulers),
-		"hauler_target":    cfg.HaulerTarget,
-		"viable_hubs":      res.ViableHubs,
-		"income_per_hour":  obs.IncomePerHour,
-		"income_bar":       cfg.IncomeBar,
-		"treasury":         obs.Treasury,
-		"purchased":        res.Purchased,
-		"haulers_bought":   res.HaulersBought,
-		"frigate_retired":  res.FrigateRetired,
-		"batch_contract":   res.ContractRun,
-		"frigate_loop":     res.FrigateLoopStarted,
-		"scouted":          res.Scouted,
-		"gate_site":        obs.GateSite,
-		"construction_pct": obs.ConstructionPercent,
-		"gate_workers":     obs.GateWorkers,
-		"desired_workers":  res.DesiredWorkers,
-		"workers_released": res.WorkersReleased,
-		"handoff":          res.HandoffLaunched,
-		"blocker":          blockers,
+		"action":             "bootstrap_heartbeat",
+		"container_id":       cmd.ContainerID,
+		"phase":              string(phase),
+		"probes":             obs.ProbeCount,
+		"probe_target":       cfg.ProbeTarget,
+		"probes_scouting":    obs.ProbesScouting,
+		"markets_covered":    obs.MarketsCovered,
+		"markets_total":      obs.MarketsTotal,
+		"haulers":            len(obs.Haulers),
+		"hauler_target":      cfg.HaulerTarget,
+		"viable_hubs":        res.ViableHubs,
+		"income_per_hour":    obs.IncomePerHour,
+		"income_bar":         cfg.IncomeBar,
+		"treasury":           obs.Treasury,
+		"purchased":          res.Purchased,
+		"haulers_bought":     res.HaulersBought,
+		"frigate_retired":    res.FrigateRetired,
+		"batch_contract":     res.ContractRun,
+		"frigate_loop":       res.FrigateLoopStarted,
+		"home_post_declared": res.HomePostDeclared,
+		"gate_site":          obs.GateSite,
+		"construction_pct":   obs.ConstructionPercent,
+		"gate_workers":       obs.GateWorkers,
+		"desired_workers":    res.DesiredWorkers,
+		"workers_released":   res.WorkersReleased,
+		"handoff":            res.HandoffLaunched,
+		"blocker":            blockers,
 	})
 }
 
@@ -958,7 +957,7 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 			return fmt.Sprintf("buy probes to target (%d/%d, capital-gated; positions a hull at the yard first if the price is cold)", obs.ProbeCount, cfg.ProbeTarget)
 		}
 		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
-			return "assign probes to scout-all-markets"
+			return "home scout post declared — awaiting the scout-post coordinator to man idle probe(s) (sp-pt7d)"
 		}
 		return fmt.Sprintf("scan to coverage bar in parallel with contracts (%.0f%%/%.0f%%)", obs.CoverageFraction()*100, cfg.CoverageBar*100)
 	case PhaseIncome:

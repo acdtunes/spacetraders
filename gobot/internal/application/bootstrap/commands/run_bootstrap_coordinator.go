@@ -155,11 +155,17 @@ type ProbeAcquirer interface {
 	Buy(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
 }
 
-// ScoutAssigner assigns every probe/satellite in a system to scout all its markets (reuses
-// workflow scout-all-markets' VRP fleet assignment). It is idempotent — re-running re-optimizes
-// across the current probe set — so the reconciler can call it whenever a probe is not yet scouting.
-type ScoutAssigner interface {
-	AssignAllMarkets(ctx context.Context, playerID int, system string) error
+// ScoutPostDeclarer declares the STANDING scout-post COVERAGE target for a system — the
+// desired-state post the boot-standing scout-post coordinator (sp-9ujl) mans by claiming an idle
+// probe. It is a coverage declaration, NOT a probe assignment: bootstrap declares the home post and
+// leaves its probes IDLE, and the coordinator does the manning (claim → VRP-partition → scan),
+// which seeds the initial home scan → census → the freshsizer takes over declaring the rest.
+// Idempotent — a post already declared for the system is preserved, not re-touched — so bootstrap
+// can call it every DATA tick. This REPLACES the old probe-holding scout-all-markets sweep, which
+// held the probes and starved the now-boot-standing coordinator (sp-pt7d, Admiral intent: bootstrap
+// buys probes but assigns them to nothing; the coordinator mans them).
+type ScoutPostDeclarer interface {
+	DeclareHomeScoutPost(ctx context.Context, playerID int, system string) error
 }
 
 // ShipyardScanner positions an idle hull AT a home-system shipyard so the NEXT tick's live PriceCheck
@@ -323,12 +329,12 @@ type RunBootstrapCoordinatorResponse struct {
 type RunBootstrapCoordinatorHandler struct {
 	clock shared.Clock
 
-	refresher ShipRefresher
-	observer  WorldObserver
-	acquirer  ProbeAcquirer
-	scouter   ScoutAssigner
-	scanner   ShipyardScanner // sp-hh0h: positions a hull at the home yard so the cold price reads
-	metrics   MetricsSink
+	refresher    ShipRefresher
+	observer     WorldObserver
+	acquirer     ProbeAcquirer
+	postDeclarer ScoutPostDeclarer
+	scanner      ShipyardScanner // sp-hh0h: positions a hull at the home yard so the cold price reads
+	metrics      MetricsSink
 
 	// INCOME-phase collaborators. Each is nil-safe: a nil collaborator degrades the INCOME
 	// action it drives to a logged skip (surfaced as a blocker), never a panic.
@@ -392,9 +398,11 @@ func (h *RunBootstrapCoordinatorHandler) SetWorldObserver(o WorldObserver) { h.o
 // coordinator evaluates and logs but never spends (an implicit dry-run, surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetProbeAcquirer(a ProbeAcquirer) { h.acquirer = a }
 
-// SetScoutAssigner wires the scout-all-markets assignment (reuses the VRP fleet assignment). Unset
-// → probes are bought but not assigned (surfaced loudly).
-func (h *RunBootstrapCoordinatorHandler) SetScoutAssigner(s ScoutAssigner) { h.scouter = s }
+// SetScoutPostDeclarer wires the home scout-post declaration (AddScoutPost). Unset → the home
+// coverage post is not declared (surfaced loudly); bootstrap still buys probes and leaves them idle.
+func (h *RunBootstrapCoordinatorHandler) SetScoutPostDeclarer(s ScoutPostDeclarer) {
+	h.postDeclarer = s
+}
 
 // SetShipyardScanner wires the cold-start shipyard-readability positioner (sp-hh0h): when the home
 // shipyard price is unreadable, it flies an idle hull to the yard so the next tick's live price read

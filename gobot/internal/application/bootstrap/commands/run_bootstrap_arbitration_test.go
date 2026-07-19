@@ -17,13 +17,13 @@ import (
 // byte-identical to today until the captain arms it live.
 
 // arbHandler wires a bootstrap handler for the arbitration tests: a fixed observation, a ready
-// probe acquirer, a scout assigner, and a live-config reader carrying (or not) the arbitration flag.
-func arbHandler(obs Observation, acq *fakeAcquirer, scout *fakeScouter, live *fakeLiveConfig) *RunBootstrapCoordinatorHandler {
+// probe acquirer, a scout-post declarer, and a live-config reader carrying (or not) the arbitration flag.
+func arbHandler(obs Observation, acq *fakeAcquirer, declarer *fakeDeclarer, live *fakeLiveConfig) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutAssigner(scout)
+	h.SetScoutPostDeclarer(declarer)
 	h.SetLiveConfigReader(live)
 	return h
 }
@@ -43,7 +43,7 @@ func dataObs(marketsCovered int, freshsizerActive bool) Observation {
 // until armed.
 func TestBootstrap_ProbeArbitration_DefaultOff_BuysAsToday(t *testing.T) {
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
-	h := arbHandler(dataObs(1, true), acq, &fakeScouter{}, &fakeLiveConfig{snap: liveconfig.Snapshot{}})
+	h := arbHandler(dataObs(1, true), acq, &fakeDeclarer{}, &fakeLiveConfig{snap: liveconfig.Snapshot{}})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -60,7 +60,7 @@ func TestBootstrap_ProbeArbitration_DefaultOff_BuysAsToday(t *testing.T) {
 func TestBootstrap_ProbeArbitration_ArmedAndCovered_DefersBuyToFreshsizer(t *testing.T) {
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
 	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"defer_probe_to_freshsizer": 1}}
-	h := arbHandler(dataObs(1, true), acq, &fakeScouter{}, armed)
+	h := arbHandler(dataObs(1, true), acq, &fakeDeclarer{}, armed)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -80,7 +80,7 @@ func TestBootstrap_ProbeArbitration_ArmedAndCovered_DefersBuyToFreshsizer(t *tes
 func TestBootstrap_ProbeArbitration_ArmedButNoCoverageYet_StillBuys(t *testing.T) {
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
 	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"defer_probe_to_freshsizer": 1}}
-	h := arbHandler(dataObs(0, true), acq, &fakeScouter{}, armed) // 0 markets covered
+	h := arbHandler(dataObs(0, true), acq, &fakeDeclarer{}, armed) // 0 markets covered
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -97,7 +97,7 @@ func TestBootstrap_ProbeArbitration_ArmedButNoCoverageYet_StillBuys(t *testing.T
 func TestBootstrap_ProbeArbitration_ArmedButFreshsizerDown_StillBuys(t *testing.T) {
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
 	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"defer_probe_to_freshsizer": 1}}
-	h := arbHandler(dataObs(1, false), acq, &fakeScouter{}, armed) // coverage>0 but freshsizer down
+	h := arbHandler(dataObs(1, false), acq, &fakeDeclarer{}, armed) // coverage>0 but freshsizer down
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -108,17 +108,17 @@ func TestBootstrap_ProbeArbitration_ArmedButFreshsizerDown_StillBuys(t *testing.
 	}
 }
 
-// The deferral is BUY-ONLY: while deferring the probe buy, bootstrap still assigns its existing probes
-// to scout-all-markets (the arbitration is about the fleet-total BUY, not scouting). A probe short of
-// scouting is still assigned.
-func TestBootstrap_ProbeArbitration_DefersBuyButStillAssignsScouting(t *testing.T) {
+// The deferral is BUY-ONLY: while deferring the probe buy to the freshsizer, bootstrap still declares
+// the home scout post (the arbitration is about the fleet-total BUY, not coverage declaration). The
+// coverage target is still ensured so the scout-post coordinator can man idle probes (sp-pt7d).
+func TestBootstrap_ProbeArbitration_DefersBuyButStillDeclaresHomePost(t *testing.T) {
 	obs := dataObs(1, true)
 	obs.ProbeCount = 2
 	obs.ProbesScouting = 0 // two probes exist, none scouting yet
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
-	scout := &fakeScouter{}
+	declarer := &fakeDeclarer{}
 	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"defer_probe_to_freshsizer": 1}}
-	h := arbHandler(obs, acq, scout, armed)
+	h := arbHandler(obs, acq, declarer, armed)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -127,7 +127,7 @@ func TestBootstrap_ProbeArbitration_DefersBuyButStillAssignsScouting(t *testing.
 	if res.Purchased != 0 || acq.buys != 0 {
 		t.Fatalf("armed: the buy must be deferred (purchased=%d buys=%d)", res.Purchased, acq.buys)
 	}
-	if scout.calls != 1 || !res.Scouted {
-		t.Fatalf("deferral is buy-only: bootstrap must still assign scouting (scout.calls=%d scouted=%v)", scout.calls, res.Scouted)
+	if declarer.calls != 1 || !res.HomePostDeclared {
+		t.Fatalf("deferral is buy-only: bootstrap must still declare the home scout post (declarer.calls=%d home_post=%v)", declarer.calls, res.HomePostDeclared)
 	}
 }

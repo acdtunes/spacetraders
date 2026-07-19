@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -540,5 +541,117 @@ func TestAssignShipFleet_WriteEmitsAssignerNamedAuditLine(t *testing.T) {
 	}
 	if line.metadata["cargo_capacity"] != 40 {
 		t.Fatalf("audit line must carry cargo capacity, got metadata: %+v", line.metadata)
+	}
+}
+
+// The depot-delivery fleet (depot.DeliveryHullFleet) is the depot's delivery-hull
+// fleet the capacity reconciler pins via GapWorkerShort (fleetForRole). A delivery
+// hull HAULS goods, so an AUTOMATED attempt to pin a 0-cargo satellite into it must
+// be BLOCKED. This is the sp-pt7d run-blocker verbatim: the reconciler dedicated an
+// idle PROBE to depot-delivery, the scout-tour could then not claim the pinned hull,
+// and cold-start scout coverage froze. RED before depot-delivery joined the
+// cargo-floor set (the pin previously succeeded, ungated).
+func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoDepotDeliveryFleet(t *testing.T) {
+	log := &captureLogger{}
+	ctx := common.WithLogger(context.Background(), log)
+	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND_DEV6-4", "FRAME_PROBE", "SATELLITE", 0, "")}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 2
+	_, err := handler.Handle(ctx, &AssignShipFleetCommand{
+		ShipSymbol: "TORWIND_DEV6-4",
+		Fleet:      depot.DeliveryHullFleet, // "depot-delivery"
+		PlayerID:   &pid,
+		Assigner:   "capacity-reconciler",
+		Manual:     false,
+	})
+	if err == nil {
+		t.Fatalf("expected an auto-assign of a 0-cargo probe into depot-delivery to be blocked (sp-pt7d)")
+	}
+	if repo.assignCalled != 0 {
+		t.Fatalf("a blocked auto-assign must never write to the repository, got %d writes", repo.assignCalled)
+	}
+	if !strings.Contains(err.Error(), "TORWIND_DEV6-4") {
+		t.Fatalf("expected the block error to name the probe, got: %v", err)
+	}
+	line, ok := log.find("ERROR", "BLOCKED")
+	if !ok {
+		t.Fatalf("expected a loud ERROR block line, got lines: %+v", log.lines)
+	}
+	if !strings.Contains(line.message, "capacity-reconciler") {
+		t.Fatalf("expected the block line to name the capacity-reconciler assigner, got: %q", line.message)
+	}
+}
+
+// A genuine light hauler (cargo>0) is still auto-assignable into depot-delivery:
+// the floor excludes ONLY 0-cargo satellites, never a real delivery hull (the
+// legitimate light-hauler side of the eligibility predicate — sp-pt7d guard
+// discipline).
+func TestAssignShipFleet_AutoAssignAllowsHaulerIntoDepotDeliveryFleet(t *testing.T) {
+	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-8", "FRAME_LIGHT_FREIGHTER", "HAULER", 40, "")}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 2
+	_, err := handler.Handle(context.Background(), &AssignShipFleetCommand{
+		ShipSymbol: "TORWIND-8",
+		Fleet:      depot.DeliveryHullFleet,
+		PlayerID:   &pid,
+		Assigner:   "capacity-reconciler",
+		Manual:     false,
+	})
+	if err != nil {
+		t.Fatalf("expected a real hauler to be assignable into depot-delivery, got: %v", err)
+	}
+	if repo.assignCalled != 1 {
+		t.Fatalf("expected the hauler to be written once, got %d", repo.assignCalled)
+	}
+	if repo.assignedFleet != depot.DeliveryHullFleet {
+		t.Fatalf("expected fleet %q, got %q", depot.DeliveryHullFleet, repo.assignedFleet)
+	}
+}
+
+// The warehouse fleet (the reconciler's GapWarehouseShort pin) carries the same
+// cargo floor: a warehouse hull holds buffered cargo, so an AUTOMATED pin of a
+// 0-cargo satellite into it is BLOCKED — closing the sibling of the depot-delivery
+// hole rather than leaving an identical fleet-killer latent (sp-pt7d guard
+// discipline: enumerate + close the whole reconciler-pinnable class).
+func TestAssignShipFleet_AutoAssignBlocksZeroCargoIntoWarehouseFleet(t *testing.T) {
+	log := &captureLogger{}
+	ctx := common.WithLogger(context.Background(), log)
+	repo := &assignStubShipRepo{ship: newFleetTestShip(t, "TORWIND-25", "FRAME_PROBE", "SATELLITE", 0, "")}
+	handler := NewAssignShipFleetHandler(repo, nil)
+
+	pid := 2
+	_, err := handler.Handle(ctx, &AssignShipFleetCommand{
+		ShipSymbol: "TORWIND-25",
+		Fleet:      "warehouse",
+		PlayerID:   &pid,
+		Assigner:   "capacity-reconciler",
+		Manual:     false,
+	})
+	if err == nil {
+		t.Fatalf("expected an auto-assign of a 0-cargo probe into warehouse to be blocked (sp-pt7d)")
+	}
+	if repo.assignCalled != 0 {
+		t.Fatalf("a blocked auto-assign must never write to the repository, got %d writes", repo.assignCalled)
+	}
+	if _, ok := log.find("ERROR", "BLOCKED"); !ok {
+		t.Fatalf("expected a loud ERROR block line for the ineligible warehouse pin, got lines: %+v", log.lines)
+	}
+}
+
+// Drift guard: the production eligibility rule MUST gate the depot delivery-hull
+// fleet keyed by its DOMAIN constant, so a rename of depot.DeliveryHullFleet can
+// never silently reopen the sp-pt7d hole (the gate matches on the literal string).
+func TestDefaultFleetCargoRequirement_GatesReconcilerHaulingFleets(t *testing.T) {
+	if got := DefaultFleetCargoRequirement.MinCargoCapacity(depot.DeliveryHullFleet); got <= 0 {
+		t.Fatalf("depot-delivery (%q) must carry a positive cargo floor, got %d", depot.DeliveryHullFleet, got)
+	}
+	if got := DefaultFleetCargoRequirement.MinCargoCapacity("warehouse"); got <= 0 {
+		t.Fatalf("warehouse must carry a positive cargo floor, got %d", got)
+	}
+	// A non-cargo fleet (scouts legitimately fly 0-cargo hulls) must stay ungated.
+	if got := DefaultFleetCargoRequirement.MinCargoCapacity("scout"); got != 0 {
+		t.Fatalf("scout must NOT carry a cargo floor (0-cargo probes man it), got %d", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
@@ -87,14 +88,32 @@ const dedicatedFleetContract = "contract"
 // cargo-floor set alongside contract: a 0-cargo hull can never be pinned to it.
 const dedicatedFleetStocker = "stocker"
 
+// dedicatedFleetWarehouse is the stationary buffer-anchor fleet, matching
+// operationWarehouse in container_ops_warehouse.go and fleetWarehouse in the
+// capacity actuator (fleetForRole maps GapWarehouseShort to it). A warehouse hull
+// HOLDS buffered cargo, so it is cargo-required — the capacity reconciler's tier-1
+// reuse-idle rung can pin an idle hull here, and a 0-cargo satellite pinned as a
+// warehouse can hold nothing. Duplicated as a local literal (like contract/stocker
+// above) because "warehouse" has no single exported constant to import. (sp-pt7d)
+const dedicatedFleetWarehouse = "warehouse"
+
 // DefaultFleetCargoRequirement is the standing eligibility rule wired in
-// production: a hauling fleet's members must carry cargo (floor 1).
-// Parametrized here rather than hardcoded in the handler so the rule has one
-// obvious home and can grow other hauling fleets without touching the gate. Both
-// the contract pool and the stocker dedication are cargo-required.
+// production: a hauling fleet's members must carry cargo (floor 1). Parametrized
+// here rather than hardcoded in the handler so the rule has one obvious home and
+// can grow other hauling fleets without touching the gate. Its members are exactly
+// the cargo-required fleets an AUTOMATED assigner can pin a hull to — the contract
+// pool, the stocker dedication, and the capacity reconciler's tier-1 reuse-idle
+// targets (fleetForRole maps a role gap to warehouse / stocker /
+// depot.DeliveryHullFleet). depot-delivery + warehouse close the sp-pt7d hole: the
+// reconciler pinned an idle PROBE to depot-delivery (a delivery hull that cannot
+// haul), the scout-tour could then not claim it, and cold-start scout coverage
+// froze. depot-delivery is keyed by its domain constant so a rename can never
+// silently reopen the hole.
 var DefaultFleetCargoRequirement = FleetCargoRequirement{
-	dedicatedFleetContract: 1,
-	dedicatedFleetStocker:  1,
+	dedicatedFleetContract:  1,
+	dedicatedFleetStocker:   1,
+	dedicatedFleetWarehouse: 1,
+	depot.DeliveryHullFleet: 1, // "depot-delivery" — the reconciler's GapWorkerShort pin (sp-pt7d)
 }
 
 // AssignShipFleetHandler handles the AssignShipFleet command.
