@@ -170,10 +170,10 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 		Performance: s.sensePerformance(ctx, playerID, contracts),
 		Topology:    topology,
 		Utilization: utilization,
-		// FleetHullCount derives from the SAME hull set Utilization carries —
-		// the len(Utilization.Hulls) consistency the contract requires is
+		// FleetHullCount and ContractHaulerCount both derive from the SAME hull
+		// set Utilization carries — the consistency the contract requires is
 		// structural, not coincidental.
-		Economics: s.senseEconomics(ctx, playerID, demand, topology, len(utilization.Hulls)),
+		Economics: s.senseEconomics(ctx, playerID, demand, topology, len(utilization.Hulls), countContractHaulers(utilization.Hulls, topology)),
 	}, nil
 }
 

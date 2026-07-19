@@ -190,6 +190,13 @@ type EconomicsSignals struct {
 	// ProjectedGainPerHour without dividing by a cold-start zero
 	// (see proposal.go's ROIEvidence derivation).
 	FleetHullCount int
+	// ContractHaulerCount is the contract-delivery op's current cargo-hauler
+	// count — the hauler-first STAGING input (sp-5nd2 / sp-u5nh). Below the
+	// planner's ContractHaulerTierSaturation the desired topology withholds ALL
+	// depot buffer capacity (warehouse/stocker/buffered goods) and desires
+	// delivery haulers ONLY: warehouse capital with no hauler pool to fill/drain
+	// it is premature (PLAYBOOK §5). SENSE fills it; 0 (cold start) => hauler-first.
+	ContractHaulerCount int
 	// SourceDistances is the per-good distance from each hub to its nearest
 	// source market — the denominator of the buffer-selection score.
 	SourceDistances []GoodSourceDistance

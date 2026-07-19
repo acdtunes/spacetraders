@@ -12,6 +12,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -170,6 +171,25 @@ func seedIdleHull(t *testing.T, db *gorm.DB, playerID int, symbol, location, sys
 		DedicatedFleet: "",  // undedicated: reuse may reassign it
 		CargoCapacity:  80,
 	}).Error)
+}
+
+// seedContractHaulers persists n cargo-capable hulls dedicated to the contract-fulfillment
+// fleet — members of the hauler tier the hauler-first staging gate counts (sp-5nd2 /
+// sp-u5nh). Dedicated (so never reuse-eligible) and outside every depot, they are inert to
+// the reconciler except to lift EconomicsSignals.ContractHaulerCount to the saturated tier
+// these depot scenarios assert: below it the planner desires haulers only, no buffer capacity.
+func seedContractHaulers(t *testing.T, db *gorm.DB, playerID, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		require.NoError(t, db.Create(&persistence.ShipModel{
+			ShipSymbol:     fmt.Sprintf("CONTRACT-HAUL-%d-%d", playerID, i),
+			PlayerID:       playerID,
+			LocationSymbol: "X1-HAULER-DOCK",
+			SystemSymbol:   "X1-HAULER",
+			DedicatedFleet: "contract",
+			CargoCapacity:  80,
+		}).Error)
+	}
 }
 
 // fakeTreasury doubles the sensor's ONLY live-API boundary (agent credit
@@ -595,6 +615,8 @@ func seedConvergenceWorld(t *testing.T, db *gorm.DB) int {
 		[]depot.Element{{Waypoint: convHub, ShipSymbol: "DL-1"}})
 	seedWarehouseContainer(t, db, playerID, "wh-container-cv", "WH-1", convHub, map[string]int{"IRON": 120, "COPPER": 60})
 
+	// The hauler tier is saturated, so the depot buffer capacity this scenario converges is desired.
+	seedContractHaulers(t, db, playerID, 2)
 	return playerID
 }
 
@@ -619,6 +641,8 @@ func seedConvergedFixpointWorld(t *testing.T, db *gorm.DB) int {
 		[]depot.Element{{Waypoint: convHub, ShipSymbol: "DL-1"}})
 	seedWarehouseContainer(t, db, playerID, "wh-container-fx", "WH-1", convHub, map[string]int{"IRON": 45})
 
+	// Saturated hauler tier: the depot buffer this fixpoint holds at desired is legitimately wanted.
+	seedContractHaulers(t, db, playerID, 2)
 	return playerID
 }
 
@@ -638,6 +662,9 @@ func seedUncoveredCapitalWorld(t *testing.T, db *gorm.DB) int {
 	seedWaypoint(t, db, capitalSource, "X1-CP88", 30, 40)
 	seedMarketSelling(t, db, playerID, capitalSource, "IRON")
 
+	// Saturated hauler tier so the uncovered hub is desired at its full depot shape
+	// (warehouse + stocker + worker) — the add-cluster/reuse behaviour these scenarios assert.
+	seedContractHaulers(t, db, playerID, 2)
 	return playerID
 }
 
