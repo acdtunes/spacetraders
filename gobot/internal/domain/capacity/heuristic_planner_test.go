@@ -215,6 +215,8 @@ func TestHeuristicPlanner_CyclePenaltyInvertsRawRevenueRankAndDecidesCoverage(t 
 			{HubSymbol: "X1-FST-A1", CycleTimeSeconds: 1800},
 			{HubSymbol: "X1-SLW-B2", CycleTimeSeconds: 7200},
 		}},
+		// Hauler tier saturated so the coverage walk plans a depot to rank at all.
+		Economics: capacity.EconomicsSignals{ContractHaulerCount: capacity.ContractHaulerTierSaturation},
 	}
 
 	desired := computeDesired(t, signals, plannerCalibration(6000, 0))
@@ -242,6 +244,8 @@ func addWalkRankedSignals() capacity.Signals {
 			{HubSymbol: "X1-FAT-R2", CycleTimeSeconds: 7200},
 			{HubSymbol: "X1-LEAN-R3", CycleTimeSeconds: 1800},
 		}},
+		// Hauler tier saturated so the add walk has depots to rank.
+		Economics: capacity.EconomicsSignals{ContractHaulerCount: capacity.ContractHaulerTierSaturation},
 	}
 }
 
@@ -565,7 +569,7 @@ func TestHeuristicPlanner_SizesCountsToBufferedVolumeAndRestockCadence(t *testin
 			"400 units/hr restocked over 400 distance exceeds one stocker's round-trip cadence")
 	})
 
-	t.Run("a hub with nothing buffered gets a worker but no warehouse or stocker", func(t *testing.T) {
+	t.Run("a saturated hub with nothing buffered gets a worker but no warehouse or stocker", func(t *testing.T) {
 		signals := capacity.Signals{
 			Demand: capacity.DemandSignals{Hubs: []capacity.HubDemand{{
 				HubSymbol:         "X1-BARE-H1",
@@ -573,8 +577,10 @@ func TestHeuristicPlanner_SizesCountsToBufferedVolumeAndRestockCadence(t *testin
 				AvgPaymentCredits: 5000,
 				GoodMix:           []capacity.GoodDemand{{Good: "IRON", Frequency: 1.0, AvgUnits: 30}},
 			}}},
-			// No performance history and no source distances: cycle unknown ⇒ one
-			// worker; goods uncostable ⇒ nothing buffered.
+			// Hauler tier saturated (so a depot is planned at all); no performance
+			// history and no source distances: cycle unknown ⇒ one worker; goods
+			// uncostable ⇒ nothing buffered.
+			Economics: capacity.EconomicsSignals{ContractHaulerCount: capacity.ContractHaulerTierSaturation},
 		}
 
 		desired := computeDesired(t, signals, plannerCalibration(0, 0))
@@ -588,14 +594,14 @@ func TestHeuristicPlanner_SizesCountsToBufferedVolumeAndRestockCadence(t *testin
 	})
 }
 
-// Behavior (hauler-first staging, sp-5nd2 / sp-u5nh): the desired topology WITHHOLDS
-// all depot buffer capacity (warehouse + stocker + buffered-goods whitelist) until the
-// contract-delivery hauler tier is saturated (>= ContractHaulerTierSaturation cargo
-// haulers). Below it the reconciler desires delivery haulers ONLY — a warehouse with no
-// hauler pool to fill/drain it is premature capital (PLAYBOOK §5). The SAME buffer-worthy
-// demand that sizes two warehouses when saturated desires ZERO buffer capacity at 0–1
-// haulers, keeping only the worker (hauler) intent so the gap escalates to a hauler buy.
-func TestHeuristicPlanner_WithholdsBufferCapacityUntilHaulerTierSaturated(t *testing.T) {
+// Behavior (hauler-first staging, sp-cr2v / sp-u5nh): the reconciler desires NO depot at
+// all — warehouse, stocker, AND delivery haulers — until the contract op's LIGHT-hauler
+// pool binds the tier (>= ContractHaulerTierSaturation). Below it the desired topology is
+// EMPTY (the op's own light haulers, grown by the autosizer's light class, do contract work
+// directly; a depot with no hauler pool to serve is premature capital, PLAYBOOK §5). The
+// SAME buffer-worthy demand that stands up a full depot when saturated desires ZERO topology
+// at 0–1 haulers.
+func TestHeuristicPlanner_WithholdsTheWholeDepotUntilHaulerTierSaturated(t *testing.T) {
 	bufferWorthy := func(haulers int) capacity.Signals {
 		return capacity.Signals{
 			Demand: capacity.DemandSignals{Hubs: []capacity.HubDemand{{
@@ -622,25 +628,22 @@ func TestHeuristicPlanner_WithholdsBufferCapacityUntilHaulerTierSaturated(t *tes
 		}
 	}
 
-	t.Run("0 haulers: delivery-hauler intent only, ZERO buffer capacity", func(t *testing.T) {
-		hub := computeDesired(t, bufferWorthy(0), plannerCalibration(0, 0)).Hubs[0]
+	t.Run("0 haulers: EMPTY topology — the whole depot is withheld", func(t *testing.T) {
+		desired := computeDesired(t, bufferWorthy(0), plannerCalibration(0, 0))
 
-		require.GreaterOrEqual(t, hub.WorkerCount, 1, "the delivery-hauler (worker) intent is still desired — hauler-first")
-		require.Zero(t, hub.WarehouseCount, "no warehouse until the hauler tier is saturated")
-		require.Zero(t, hub.StockerCount, "no stocker until the hauler tier is saturated")
-		require.Empty(t, hub.BufferedGoods, "no buffered-goods whitelist until the hauler tier is saturated")
+		require.True(t, desired.IsEmpty(), "no depot (warehouse/stocker/delivery) is desired below the hauler tier")
 	})
 
-	t.Run("1 hauler: still below the >=2 tier, no buffer capacity", func(t *testing.T) {
-		hub := computeDesired(t, bufferWorthy(1), plannerCalibration(0, 0)).Hubs[0]
+	t.Run("1 hauler: still below the >=2 tier, EMPTY topology", func(t *testing.T) {
+		desired := computeDesired(t, bufferWorthy(1), plannerCalibration(0, 0))
 
-		require.Zero(t, hub.WarehouseCount, "one hauler is below the saturation tier")
-		require.Empty(t, hub.BufferedGoods)
+		require.True(t, desired.IsEmpty(), "one hauler is below the saturation tier")
 	})
 
-	t.Run("2 haulers: tier saturated, buffer capacity unlocks", func(t *testing.T) {
+	t.Run("2 haulers: tier saturated, the full depot stands up", func(t *testing.T) {
 		hub := computeDesired(t, bufferWorthy(2), plannerCalibration(0, 0)).Hubs[0]
 
+		require.GreaterOrEqual(t, hub.WorkerCount, 1, "delivery haulers are desired once the tier binds")
 		require.Equal(t, 2, hub.WarehouseCount, "180 buffered units need two 120-unit holds once the hauler tier is saturated")
 		require.NotEmpty(t, hub.BufferedGoods, "the buffer whitelist is desired once haulers exist")
 	})

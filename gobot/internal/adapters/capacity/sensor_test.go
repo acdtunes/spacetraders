@@ -285,21 +285,23 @@ func seedRoledShip(t *testing.T, db *gorm.DB, playerID int, symbol, role, fleet 
 }
 
 // sp-cr2v (Admiral: "a light hauler is a light hauler"): EconomicsSignals.ContractHaulerCount
-// counts ONLY the LIGHT-hauler class (role "HAULER") dedicated to the contract op — the
-// COMMAND frigate, seeded role "COMMAND", never lifts the tier however cargo-capable and
-// contract-dedicated it is. Proves the DB role → count path end-to-end.
-func TestSense_ContractHaulerCountCountsLightHaulersNotTheCommandFrigate(t *testing.T) {
+// counts the FREE contract LIGHT-hauler pool (role "HAULER", undedicated or "contract"). The
+// COMMAND frigate (role "COMMAND") never lifts the tier however cargo-capable and
+// contract-dedicated, and a hull already committed to a DEPOT role (depot-delivery) is the
+// depot the tier gates, not the free pool. Proves the DB role → count path end-to-end.
+func TestSense_ContractHaulerCountCountsFreeLightHaulersNotFrigateNorDepot(t *testing.T) {
 	db := newTestDB(t)
 	playerID := seedWorld(t, db)
 	seedRoledShip(t, db, playerID, "TORWIND-1", "COMMAND", "contract")    // command frigate — excluded
-	seedRoledShip(t, db, playerID, "LIGHT-1", "HAULER", "contract")       // light contract hauler — counts
-	seedRoledShip(t, db, playerID, "LIGHT-2", "HAULER", "depot-delivery") // adopted depot delivery hauler — counts
+	seedRoledShip(t, db, playerID, "LIGHT-1", "HAULER", "contract")       // contract-pool light hauler — counts
+	seedRoledShip(t, db, playerID, "LIGHT-2", "HAULER", "")               // fresh undedicated buy — counts
+	seedRoledShip(t, db, playerID, "DELIV-1", "HAULER", "depot-delivery") // committed to the depot — excluded
 
 	signals, err := newSensorUnderTest(db, fakeTreasury{credits: 1}).Sense(context.Background(), playerID)
 
 	require.NoError(t, err)
 	require.Equal(t, 2, signals.Economics.ContractHaulerCount,
-		"only the two LIGHT haulers count; the COMMAND frigate is the last-resort command ship, never a light hauler")
+		"only the two FREE light haulers count; the COMMAND frigate and the depot-committed hull do not")
 }
 
 // --- behaviors ---------------------------------------------------------------

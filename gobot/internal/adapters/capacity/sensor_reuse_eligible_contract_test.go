@@ -57,42 +57,43 @@ func TestReuseEligibleIdleHulls_ExcludesPurchasingDedicatedHull(t *testing.T) {
 		"the exclusive purchasing ship (dedicated_fleet=purchasing) is invisible to tier-1 reuse-idle — the reconciler can never poach it into contract-delivery")
 }
 
-// sp-cr2v staging-gate count (Admiral: "a light hauler is a light hauler"): the hauler tier
-// counts ONLY the LIGHT-hauler class (role "HAULER") dedicated to a contract-delivery hauler
-// fleet (contract-fulfillment or adopted depot-delivery). It EXCLUDES the COMMAND frigate
-// (role "COMMAND" — the last-resort command ship, NOT a light hauler), probes/satellites
-// (0-cargo / non-hauler role), warehouse/stocker infra, trade/manufacturing haulers (wrong
-// op), and the undedicated idle reuse pool (which the reconciler consumes each tick).
-func TestCountContractHaulers_CountsOnlyLightHaulersExcludingTheCommandFrigate(t *testing.T) {
+// sp-cr2v staging-gate count (Admiral: "a light hauler is a light hauler"): the tier counts
+// the FREE contract-fulfillment LIGHT-hauler pool — role "HAULER", cargo-capable, and either
+// undedicated (a fresh autosizer buy lands here) or "contract". It EXCLUDES the COMMAND
+// frigate (role "COMMAND"), probes/satellites (0-cargo / non-hauler role), the DEPOT roles
+// (depot-delivery / warehouse / stocker — the depot the tier gates, not the free pool that
+// must bind first), and trade/manufacturing haulers (wrong op).
+func TestCountContractHaulers_CountsFreeLightHaulersExcludingFrigateAndDepot(t *testing.T) {
 	cases := []struct {
 		name  string
 		hulls []domcap.HullUtilization
 		want  int
 	}{
 		{
-			name: "the command frigate + one light hauler is ONE — the frigate never lifts the tier",
+			name: "the command frigate + one free light hauler is ONE — the frigate never lifts the tier",
 			hulls: []domcap.HullUtilization{
 				{ShipSymbol: "TORWIND-1", Role: "COMMAND", DedicatedFleet: "contract", CargoCapacity: 80},
-				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80},
+				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "", CargoCapacity: 80},
 			},
 			want: 1,
 		},
 		{
-			name: "two light haulers reach the tier",
+			name: "two free light haulers (a fresh undedicated buy + the contract pool) reach the tier",
 			hulls: []domcap.HullUtilization{
-				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80},
-				{ShipSymbol: "DELIV-1", Role: "HAULER", DedicatedFleet: "depot-delivery", CargoCapacity: 80},
+				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "", CargoCapacity: 80},         // undedicated fresh buy
+				{ShipSymbol: "LIGHT-2", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80}, // contract pool
 			},
 			want: 2,
 		},
 		{
-			name: "non-light / wrong-op / 0-cargo / undedicated are all excluded",
+			name: "depot roles / other-op / non-light / 0-cargo are all excluded",
 			hulls: []domcap.HullUtilization{
-				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80}, // the only one that counts
-				{ShipSymbol: "FRIGATE", Role: "COMMAND", DedicatedFleet: "contract", CargoCapacity: 80},
-				{ShipSymbol: "PROBE", Role: "SATELLITE", DedicatedFleet: "contract", CargoCapacity: 0},
-				{ShipSymbol: "TRADE-1", Role: "HAULER", DedicatedFleet: "trade", CargoCapacity: 80},
-				{ShipSymbol: "IDLE-FREE", Role: "HAULER", DedicatedFleet: "", CargoCapacity: 80},
+				{ShipSymbol: "LIGHT-1", Role: "HAULER", DedicatedFleet: "contract", CargoCapacity: 80},       // the only one that counts
+				{ShipSymbol: "FRIGATE", Role: "COMMAND", DedicatedFleet: "contract", CargoCapacity: 80},      // command frigate
+				{ShipSymbol: "DELIV-1", Role: "HAULER", DedicatedFleet: "depot-delivery", CargoCapacity: 80}, // the depot the tier gates
+				{ShipSymbol: "WH-1", Role: "HAULER", DedicatedFleet: "warehouse", CargoCapacity: 80},         // depot infra
+				{ShipSymbol: "TRADE-1", Role: "HAULER", DedicatedFleet: "trade", CargoCapacity: 80},          // other op
+				{ShipSymbol: "PROBE", Role: "SATELLITE", DedicatedFleet: "", CargoCapacity: 0},               // 0-cargo / non-hauler
 			},
 			want: 1,
 		},

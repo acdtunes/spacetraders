@@ -144,20 +144,25 @@ const (
 // DesiredTopology regardless of input slice order. Always returns nil error —
 // a pure heuristic cannot fail, only plan conservatively.
 func (HeuristicPlanner) ComputeDesired(_ context.Context, signals Signals, cal Calibration) (DesiredTopology, error) {
+	// Hauler-first staging (sp-cr2v / sp-u5nh): the reconciler desires NO depot at all —
+	// warehouse, stocker, AND delivery haulers — until the contract op has a bound LIGHT-hauler
+	// pool (>= ContractHaulerTierSaturation). Below it the op's own light haulers (grown by the
+	// autosizer's light class as treasury clears the 25% guard, not by this reconciler) do
+	// contract work directly; standing up a depot with no hauler pool to serve is premature
+	// capital that races the cargo spend past the working capital the haulers need (PLAYBOOK §5).
+	if signals.Economics.ContractHaulerCount < ContractHaulerTierSaturation {
+		return DesiredTopology{}, nil
+	}
+
 	walk := newCoverageWalk(cal, signals)
 	sourceDistances := sourceDistancesByHub(signals.Economics.SourceDistances)
 	localProduction := localProductionByHub(signals.Economics.LocalProduction)
 	gate := buffer.Gate{MinExternalSourceDistance: reconcilerMinSourceDistance}
 	budgetUnits := stockerBudgetUnits(cal)
 
-	// Hauler-first staging (sp-5nd2 / sp-u5nh): below the saturation tier the desired
-	// topology carries delivery haulers ONLY — no depot buffer capacity is planned until
-	// a hauler pool exists to serve it.
-	haulerTierSaturated := signals.Economics.ContractHaulerCount >= ContractHaulerTierSaturation
-
 	var hubs []DesiredHub
 	for _, candidate := range rankHubCandidates(signals.Demand.Hubs, performanceByHub(signals.Performance.Hubs)) {
-		hub := planHub(candidate, sourceDistances[candidate.demand.HubSymbol], localProduction[candidate.demand.HubSymbol], gate, budgetUnits, haulerTierSaturated)
+		hub := planHub(candidate, sourceDistances[candidate.demand.HubSymbol], localProduction[candidate.demand.HubSymbol], gate, budgetUnits)
 		if walk.admits(candidate, hub) {
 			hubs = append(hubs, hub)
 		}
@@ -334,25 +339,17 @@ func keepRequiredPerHullCrHr(cal Calibration) float64 {
 // planHub assembles one covered hub: buffer whitelist + caps, then counts
 // sized to that buffered volume and the hub's observed cycle. Positions stay
 // empty — the contract defaults them to the hub itself, and co-location IS
-// the cycle-time lever.
-//
-// Hauler-first staging: until the contract-hauler tier is saturated the hub carries
-// its delivery-hauler (worker) desire ONLY — the buffer whitelist, warehouses, and
-// stockers are withheld so the reconciler builds haulers before the depot capacity that
-// serves them (sp-5nd2 / sp-u5nh).
-func planHub(candidate hubCandidate, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate, budgetUnits int, haulerTierSaturated bool) DesiredHub {
-	hub := DesiredHub{
-		HubSymbol:   candidate.demand.HubSymbol,
-		WorkerCount: workerCount(candidate.demand, candidate.performance),
-	}
-	if !haulerTierSaturated {
-		return hub
-	}
+// the cycle-time lever. Only reached once the hauler tier is saturated — the
+// hauler-first gate is applied in ComputeDesired (sp-cr2v).
+func planHub(candidate hubCandidate, sourceDistances map[string]float64, localProduction map[string]bool, gate buffer.Gate, budgetUnits int) DesiredHub {
 	selected := selectBufferGoods(candidate.demand.GoodMix, sourceDistances, localProduction, gate, budgetUnits)
-	hub.BufferedGoods = desiredBufferedGoods(selected)
-	hub.WarehouseCount = warehouseCount(selected)
-	hub.StockerCount = stockerCount(selected)
-	return hub
+	return DesiredHub{
+		HubSymbol:      candidate.demand.HubSymbol,
+		BufferedGoods:  desiredBufferedGoods(selected),
+		WarehouseCount: warehouseCount(selected),
+		StockerCount:   stockerCount(selected),
+		WorkerCount:    workerCount(candidate.demand, candidate.performance),
+	}
 }
 
 // workerCount conserves work: frequency (contracts/hr) × cycle (hours) is the

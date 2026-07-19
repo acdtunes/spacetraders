@@ -4,7 +4,6 @@ import (
 	"context"
 
 	domainCapacity "github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/dutycycle"
 )
 
@@ -16,27 +15,24 @@ import (
 // role entirely — neither lifts the hauler tier (sp-cr2v).
 const roleLightHauler = "HAULER"
 
-// contractHaulerFleets are the dedication tags a LIGHT hauler is counted under toward the
-// hauler tier (sp-cr2v / sp-u5nh). "contract" is the contract-fulfillment hauler pool (the
-// literal matches application/ship/commands/assignment's dedicatedFleetContract, which the
-// domain layer cannot import); depot.DeliveryHullFleet is the depot delivery-hull fleet the
-// reconciler dedicates an adopted light hauler to. A hauler dedicated to trade/manufacturing
-// serves a different op and is NOT counted.
-var contractHaulerFleets = map[string]bool{
-	"contract":              true,
-	depot.DeliveryHullFleet: true,
+// isFreeContractHauler reports whether a light hauler's dedication puts it in the FREE
+// contract-fulfillment pool the hauler tier measures (sp-cr2v / sp-u5nh): undedicated —
+// where the autosizer's light / contract-delivery buys land (autosizerDedicatedFleet tags
+// them "") — or the "contract" fleet (the literal matches assignment.dedicatedFleetContract,
+// which the domain layer cannot import). A hull already committed to a DEPOT role
+// (depot-delivery / warehouse / stocker) is the depot the tier GATES, not the free pool that
+// must bind first, so it is NOT counted; trade / manufacturing dedications are other ops.
+func isFreeContractHauler(dedicatedFleet string) bool {
+	return dedicatedFleet == "" || dedicatedFleet == "contract"
 }
 
-// countContractHaulers counts the contract-delivery op's LIGHT haulers — the staging-gate
-// input the planner reads as EconomicsSignals.ContractHaulerCount. A hull counts iff it is
-// the LIGHT-hauler class (role "HAULER" — excludes the COMMAND frigate + probes/satellites),
-// cargo-capable, AND dedicated to a contract-delivery hauler fleet (contract-fulfillment or
-// adopted depot-delivery). DELIBERATELY EXCLUDES the undedicated idle reuse pool: the
-// reconciler consumes it into roles each tick, so counting it would drop the tally the moment
-// an idle hull is reassigned and thrash the gate. Deadlock-safe: contract-delivery hulls are
-// bought UNDEDICATED (autosizerDedicatedFleet default), but staged mode has only worker gaps,
-// so the reconciler dedicates each adopted light hauler to depot-delivery — where this count
-// then sees it (still role "HAULER") — before any warehouse is desired.
+// countContractHaulers counts the contract op's FREE LIGHT haulers — the staging-gate input
+// the planner reads as EconomicsSignals.ContractHaulerCount. A hull counts iff it is the
+// LIGHT-hauler class (role "HAULER" — excludes the COMMAND frigate + probes/satellites),
+// cargo-capable, AND in the free contract-fulfillment pool (undedicated or "contract").
+// Deadlock-safe: below the tier the reconciler desires NOTHING (ComputeDesired), so it never
+// adopts a free hauler into a depot role that would drop the tally — the pool only grows (the
+// autosizer's light class buys as treasury clears the 25% guard) until it binds the tier.
 func countContractHaulers(hulls []domainCapacity.HullUtilization) int {
 	count := 0
 	for _, hull := range hulls {
@@ -46,7 +42,7 @@ func countContractHaulers(hulls []domainCapacity.HullUtilization) int {
 		if hull.CargoCapacity < domainCapacity.MinReuseCargoCapacity {
 			continue
 		}
-		if contractHaulerFleets[hull.DedicatedFleet] {
+		if isFreeContractHauler(hull.DedicatedFleet) {
 			count++
 		}
 	}
