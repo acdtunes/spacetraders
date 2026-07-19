@@ -110,8 +110,6 @@ func seedEra3DemandWorld(t *testing.T, db *gorm.DB) int {
 	seedHubGoods(t, db, playerID, era3MixedHub, era3MixedSrc, "a1", era3MixedGoods)
 	seedCoveredDepot(t, db, playerID, "depot-a1", era3MixedHub, era3MixedSrc, "A1")
 
-	// Saturated hauler tier: the far-sourced home hub's buffer is desired (the point of this test).
-	seedContractHaulers(t, db, playerID, 2)
 	return playerID
 }
 

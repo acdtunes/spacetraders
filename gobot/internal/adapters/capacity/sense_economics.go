@@ -16,12 +16,11 @@ import (
 // gets NO distance row (mirroring the demand miner's fail-closed drop).
 // FleetHullCount is derived from the SAME hull set Utilization reports, so the
 // two can never diverge.
-func (s *Sensor) senseEconomics(ctx context.Context, playerID int, demand domainCapacity.DemandSignals, topology domainCapacity.TopologySignals, hullCount, contractHaulerCount int) domainCapacity.EconomicsSignals {
+func (s *Sensor) senseEconomics(ctx context.Context, playerID int, demand domainCapacity.DemandSignals, topology domainCapacity.TopologySignals, hullCount int) domainCapacity.EconomicsSignals {
 	economics := domainCapacity.EconomicsSignals{
 		TreasuryCredits:       s.liveTreasuryCredits(ctx, playerID),
 		IncomeVelocityPerHour: s.incomeVelocityPerHour(ctx, playerID),
 		FleetHullCount:        hullCount,
-		ContractHaulerCount:   contractHaulerCount,
 		SourceDistances:       s.sourceDistances(ctx, playerID, demand),
 		StockerLoad:           stockerLoad(topology),
 	}
