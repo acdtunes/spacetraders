@@ -19,6 +19,23 @@ import (
 // player so a restart re-adopts the same one. tickIntervalSecs is parametrized
 // (RULINGS #5); 0 uses the coordinator's default.
 func (s *DaemonServer) ScoutPostCoordinator(ctx context.Context, playerID int, tickIntervalSecs int) (string, error) {
+	// Double-launch guard (sp-9ujl): ONE standing scout-post coordinator per player. GenerateContainerID
+	// mints a fresh RANDOM id each call (it is not keyed by player), so without this guard a second
+	// launch — e.g. a captain's manual `scout post-coordinator` while the boot-standing one (sp-9ujl,
+	// bootStandingCoordinatorTypes) is already up — spawns a TWIN reconcile loop, and the two fight over
+	// the same posts and idle probes (double SetAssignedHull / re-partition / relay dispatch). Refuse
+	// loudly and name the live one, mirroring CapacityReconcilerCoordinator's guard. A warm restart
+	// re-adopts the persisted RUNNING container through RecoverRunningContainers, never this path, so
+	// recovery is unaffected.
+	existingID, err := firstContainerIDOfType(ctx, s.containerRepo, playerID, container.ContainerTypeScoutPostCoordinator)
+	if err != nil {
+		return "", fmt.Errorf("failed to check for a running scout-post coordinator: %w", err)
+	}
+	if existingID != "" {
+		return "", fmt.Errorf("scout-post coordinator already running for player %d (container %s) — stop it first: spacetraders container stop %s",
+			playerID, existingID, existingID)
+	}
+
 	containerID := utils.GenerateContainerID("scout_post_coordinator", fmt.Sprintf("player-%d", playerID))
 
 	config := map[string]interface{}{

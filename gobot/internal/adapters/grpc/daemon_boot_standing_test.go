@@ -165,3 +165,51 @@ func TestEnsureBootStandingCoordinators_IdempotentForBootstrapAndReconciler(t *t
 	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeCapacityReconciler),
 		"a warm restart must not launch a duplicate capacity reconciler when one is already RUNNING")
 }
+
+// sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator must be BOOT-STANDING. The
+// MarketFreshnessSizer (already boot-standing) only DECLARES a standing freshness post; the scout-post
+// coordinator is what MANS it — assigns a probe (SetAssignedHull), partitions the system, drives the
+// P90 rescans + idle-probe re-tasking. Its only pre-fix launch path was the manual CLI, which a cold
+// start never runs, so a zero-intervention boot left the declared post UNMANNED with no standing owner
+// for market coverage. This tripwire fires if a future change drops it from the boot set.
+func TestBootStandingSet_IncludesScoutPostCoordinator(t *testing.T) {
+	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeScoutPostCoordinator,
+		"the scout-post coordinator must be boot-standing: it MANS the freshness posts the MarketFreshnessSizer declares — without it a cold-start post stays UNMANNED (sp-9ujl)")
+}
+
+// sp-9ujl: on a boot with a player present and no standing scout-post coordinator yet, exactly one must
+// be launched — the manner for the freshness posts the sizer declares.
+func TestEnsureBootStandingCoordinators_LaunchesScoutPostCoordinatorWhenAbsent(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.playerRepo = persistence.NewGormPlayerRepository(db) // the co-launched bootstrap resolves the agent symbol
+
+	// The launched standing coordinators spawn background runners that block on the (blocking) test
+	// mediator; a cancelable context lets them exit cleanly when the test ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.ensureBootStandingCoordinators(ctx, playerID)
+
+	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeScoutPostCoordinator),
+		"boot must launch exactly one standing scout-post coordinator when none is running (sp-9ujl)")
+}
+
+// sp-9ujl: idempotence — a warm restart must never double-launch. With a scout-post coordinator already
+// RUNNING (recovered from a prior boot), a second ensureBootStandingCoordinators pass must launch no
+// duplicate, mirroring the market-freshness sizer's containerTypeRunning guard. A twin reconcile loop
+// would fight the first over the same posts and idle probes.
+func TestEnsureBootStandingCoordinators_IdempotentForScoutPostCoordinator(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.playerRepo = persistence.NewGormPlayerRepository(db)
+
+	insertRunningContainer(t, db, "scoutpost-existing", "scout_post_coordinator",
+		string(container.ContainerTypeScoutPostCoordinator), `{"container_id":"scoutpost-existing"}`, playerID, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.ensureBootStandingCoordinators(ctx, playerID)
+
+	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeScoutPostCoordinator),
+		"a warm restart must not launch a duplicate scout-post coordinator when one is already RUNNING (sp-9ujl)")
+}

@@ -63,6 +63,17 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// The fleet autosizer is DELIBERATELY NOT a member: the bootstrap GATE hand-off already launches it
 	// at the mature-economy phase; boot-standing it would launch it prematurely during DATA/INCOME.
 	container.ContainerTypeCapacityReconciler,
+	// sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator MANS the standing
+	// freshness posts the MarketFreshnessSizer (above) only DECLARES — each tick it assigns a probe to
+	// every unmanned slot (SetAssignedHull), partitions the system's markets across the post's hulls,
+	// and drives the P90 rescans + idle-probe re-tasking. Without it a cold-start post stays UNMANNED
+	// (assigned_hull/tour_container_id/primary_partition all empty), so freshness coverage has no
+	// standing owner — the sizer's declarer is armed but its manner never was. Same profile as the
+	// members above: genuinely standing and self-adopting (sp-cxpq: persisted container_id re-adopted by
+	// RecoverRunningContainers across restart). Launch is idempotent — the boot path skips when one is
+	// already RUNNING/PENDING, and its creation path's own double-launch guard (sp-9ujl) refuses a twin
+	// whose second reconcile loop would fight the first over the same posts and idle probes.
+	container.ContainerTypeScoutPostCoordinator,
 }
 
 // ensureBootStandingCoordinators launches every boot-standing coordinator type not already
@@ -104,6 +115,8 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			s.ensureBootstrapStanding(ctx, playerID)
 		case container.ContainerTypeCapacityReconciler:
 			s.ensureCapacityReconcilerStanding(ctx, playerID)
+		case container.ContainerTypeScoutPostCoordinator:
+			s.ensureScoutPostStanding(ctx, playerID)
 		}
 	}
 
@@ -152,6 +165,26 @@ func (s *DaemonServer) ensureCapacityReconcilerStanding(ctx context.Context, pla
 	}
 	if _, lerr := s.CapacityReconcilerCoordinator(ctx, playerID, false); lerr != nil {
 		fmt.Printf("Warning: failed to launch boot-standing capacity reconciler: %v\n", lerr)
+	}
+}
+
+// ensureScoutPostStanding launches the standing scout-post coordinator (sp-9ujl) when none is already
+// running for the player. Idempotent via the containerTypeRunning pre-check (the coordinator's own
+// creation path also refuses a second live instance), so a warm restart re-adopts the existing one via
+// RecoverRunningContainers instead of double-launching. tickIntervalSecs=0 uses the coordinator's
+// documented default (RULINGS #5); the [scouting] config.yaml knobs are injected in buildCommandForType
+// (resolveScoutingConfig). A launch failure is logged and non-fatal.
+func (s *DaemonServer) ensureScoutPostStanding(ctx context.Context, playerID int) {
+	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeScoutPostCoordinator)
+	if err != nil {
+		fmt.Printf("Warning: failed to check scout-post coordinator state: %v\n", err)
+		return
+	}
+	if running {
+		return
+	}
+	if _, lerr := s.ScoutPostCoordinator(ctx, playerID, 0); lerr != nil {
+		fmt.Printf("Warning: failed to launch boot-standing scout-post coordinator: %v\n", lerr)
 	}
 }
 
