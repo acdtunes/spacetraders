@@ -106,6 +106,45 @@ func TestBootstrap_ScaledGate_Armed_ConstructionStartedStaysGateEvenUnfunded(t *
 	}
 }
 
+// --- CURATIVE re-derive (sp-5nd2): the deploy's daemon RESTART cures the LIVE stuck-GATE latch ---
+
+// Arming gates GATE ENTRY, not EXIT — a live-armed running container stuck in GATE stays there. The CURE is
+// the deploy's fresh container BUILD (restart), which re-derives phase from live signals (no persisted phase
+// cursor). This pins that re-derive against the LIVE torwind-2026-07-19 stuck-GATE state: construction 0%
+// (never started — blocked on no_purchaser), ZERO haulers, income ≈68000/hr, coverage ≈0.89, probes at
+// target & scouting. Armed, it must re-derive INCOME — NOT GATE (the unarmed wedge), NOT DATA (coverage is
+// no longer a phase gate, sp-nsge). GATES THE DEPLOY: if the armed restart did not cure the latch here, the
+// live P1 would stay wedged after redeploy.
+func TestBootstrap_ScaledGate_ArmedRestart_ReDerivesIncomeFromStuckGateLiveState(t *testing.T) {
+	// The live stuck-GATE observation, modeled faithfully. ConstructionStarted=false is load-bearing: the
+	// pipeline never actually started, so NO sticky latch (derivePhase line: obs.ConstructionStarted) fights
+	// the re-derive. The scanning workstream is mature (probes at target, all scouting; 89% coverage).
+	stuck := Observation{
+		ConstructionStarted:  false, // construction 0% — never started, so the sticky-GATE latch does not hold
+		ConstructionComplete: false,
+		Haulers:              nil,   // ZERO haulers — the op never scaled past the sole frigate
+		IncomePerHour:        68000, // ≈ live realized $/hr; on its own clears BOTH income_bar(10000) and gate_income_bar(50000)
+		ProbeCount:           3,     // == defaultProbeTarget: scanning workstream done
+		ProbesScouting:       3,     // all scouting
+		MarketsTotal:         9,
+		MarketsCovered:       8, // coverage ≈ 0.89 — must NOT route to DATA (sp-nsge removed the coverage phase gate)
+	}
+
+	// UNARMED = today's live wedge: the bare income≥income_bar(10000) trigger forces GATE with 0 haulers.
+	// Pins exactly WHAT the deploy must cure (and proves the armed assertion below is falsifiable — same obs,
+	// only the arming flag differs, yet the derived phase must change).
+	if p := derivePhase(stuck, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseGate {
+		t.Fatalf("unarmed must reproduce the live wedge (income≥income_bar → GATE with 0 haulers), got %s", p)
+	}
+
+	// ARMED restart: gateFunded is FALSE — the hauler floor (0 < gate_min_haulers 2) blocks GATE even though
+	// 68000 ≥ gate_income_bar 50000 — and ConstructionStarted is false (no sticky latch), so the arc falls
+	// through to INCOME (probes at target & scouting). This is the cure the deploy's restart delivers.
+	if p := derivePhase(stuck, armedCfg(t)); p != PhaseIncome {
+		t.Fatalf("armed restart must re-derive INCOME from the stuck-GATE live state (cure the latch), got %s", p)
+	}
+}
+
 // --- the sustained-income smoother: a spike is diluted; only a full window of sustained income clears ---
 
 // A not-yet-full window can never clear a bar: sustained() returns −inf until it holds gateIncomeWindowTicks
