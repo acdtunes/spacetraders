@@ -1285,6 +1285,10 @@ func run(cfg *config.Config) error {
 		nil, // nil = use RealClock
 	)
 	capacityReconcilerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
+	// sp-difa.1: the durable per-player era-scoped contract-graduation gate. When the operator has
+	// graduated a player (`contract graduate`), the reconciler idles its contract-delivery reconciliation
+	// (no re-strand of idle hulls from contract HISTORY) DURABLY across restarts. Reads eras.contracts_graduated.
+	capacityReconcilerHandler.SetContractGraduationReader(persistence.NewEraRepository(db))
 	if err := mediator.RegisterHandler[*capacityCmd.RunCapacityReconcilerCoordinatorCommand](med, capacityReconcilerHandler); err != nil {
 		return fmt.Errorf("failed to register CapacityReconcilerCoordinator handler: %w", err)
 	}

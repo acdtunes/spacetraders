@@ -68,6 +68,7 @@ func NewBootstrapCoordinatorHandler(
 	h.SetWorldObserver(&bootstrapObserver{
 		api: apiClient, shipRepo: shipRepo, waypointRepo: waypointRepo, marketRepo: marketRepo,
 		med: med, contractRepo: contractRepo, containerRepo: server.containerRepo, server: server,
+		eraRepo: persistence.NewEraRepository(server.db),
 	})
 	// One acquirer instance drives both the DATA probe buy and (embedded) the INCOME hauler price-check
 	// + buy — the yard price-scan + batch-purchase plumbing is asset-agnostic (parameterised by shipType).
@@ -131,6 +132,10 @@ type bootstrapObserver struct {
 	// GATE-phase reads (Slice 3). server runs the construction-site discovery + status snapshot and the
 	// executor/autosizer container-running checks. All best-effort (a miss leaves the field zero-valued).
 	server *DaemonServer
+	// eraRepo reads the durable per-player era-scoped contract-graduation flag (sp-difa.1) — the SAME
+	// read the capacity reconciler consults. Best-effort: a nil repo or read error leaves ContractGraduated
+	// false (fail-OPEN — contracts run as today), so a mis-wire never silently kills the funding floor.
+	eraRepo *persistence.EraRepository
 }
 
 func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstrapCmd.Observation, error) {
@@ -210,6 +215,16 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if mkts, merr := o.marketRepo.ListMarketsInSystem(ctx, uint(playerID), obs.HomeSystem, bootstrapMarketFreshnessMin); merr == nil {
 			obs.MarketsCovered = len(mkts)
 			obs.Markets = toMarketSnapshots(mkts)
+		}
+	}
+
+	// Contract graduation (sp-difa.1): the durable per-player era-scoped flag that gates the whole INCOME
+	// (contract) workstream. Best-effort + fail-OPEN — a nil repo or read error leaves it false, so
+	// contracts run as today (a mis-wire never silently kills the funding floor). This is the SAME read
+	// the capacity reconciler consults, so both coordinators honor one operator decision.
+	if o.eraRepo != nil {
+		if graduated, gerr := o.eraRepo.IsContractGraduated(ctx, playerID); gerr == nil {
+			obs.ContractGraduated = graduated
 		}
 	}
 

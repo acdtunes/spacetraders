@@ -108,6 +108,18 @@ type KillSwitch interface {
 	Disabled() bool
 }
 
+// ContractGraduationReader reports whether a player has been MANUALLY contract-graduated (sp-difa.1)
+// — the durable, per-player, era-scoped operator decision to retire the contract-delivery op once
+// trades earn enough. The reconciler consults it at the TOP OF EVERY TICK (like the kill switch) and
+// idles its contract-delivery reconciliation while set, DURABLY across restarts (the fix for a manual
+// decommission being undone by a boot-standing relaunch). Production wires the EraRepository (the
+// eras.contracts_graduated column). A nil reader (unwired) or a read error is treated as UN-graduated
+// (fail-OPEN): the reconciler runs exactly as today, so a mis-wire or transient DB hiccup never
+// silently suppresses the funding floor. This is the SAME read the bootstrap observer consults.
+type ContractGraduationReader interface {
+	IsContractGraduated(ctx context.Context, playerID int) (bool, error)
+}
+
 // Phase names one reconcile-loop phase, in execution order.
 type Phase string
 
@@ -128,8 +140,13 @@ type TickOutcome struct {
 	Sequence int
 	// At is the tick's start time on the injected clock.
 	At time.Time
-	// Idle reports the kill switch was engaged: NO phase ran this tick.
+	// Idle reports NO phase ran this tick — either the kill switch was engaged or the player is
+	// contract-graduated (see Graduated).
 	Idle bool
+	// Graduated reports the tick idled because the player is contract-graduated (sp-difa.1): the
+	// operator has durably retired the contract-delivery op, so this contract-delivery-domain
+	// reconciler emits no desired topology and reassigns no hulls. Distinct from a kill-switch idle.
+	Graduated bool
 	// FailedPhase is the phase that errored ("" = every phase completed).
 	// The rest of that tick was skipped; the loop continued to the next tick.
 	FailedPhase Phase

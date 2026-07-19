@@ -30,6 +30,22 @@ import (
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
 func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	// CONTRACT GRADUATION (sp-difa.1): a graduated player has DURABLY retired contracts as the funding
+	// floor (the operator's manual, era-scoped decision). The whole INCOME workstream is contract-income
+	// — batch-contract, the frigate sole-earner loop, staged hauler buys — so when graduated it does
+	// NOTHING: bootstrap never (re)starts or maintains a contract earner, even after a boot-standing
+	// relaunch. Fail-OPEN (obs.ContractGraduated defaults false on a fresh era / read miss) ⇒ byte-identical
+	// to today. Scanning (actData) and gate construction (actGate) run regardless — this gates ONLY
+	// contract income, and never touches trade.
+	if obs.ContractGraduated {
+		res.Blocker = "contract_graduated"
+		common.LoggerFromContext(ctx).Log("INFO", "Bootstrap INCOME workstream OFF: player is contract-graduated — not starting/maintaining any contract earner (durable, sp-difa.1); scanning + gate construction + trade unaffected", map[string]interface{}{
+			"action":       "bootstrap_contract_graduated",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
 	// (1) Retire the frigate from contract work — only if it still carries the tag (idempotent).
 	if obs.CommandFrigateOnContract && obs.CommandFrigateID != "" {
 		h.retireFrigate(ctx, cmd, cfg, obs, res)

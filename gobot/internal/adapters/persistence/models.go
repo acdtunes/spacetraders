@@ -518,6 +518,14 @@ type EraModel struct {
 	ClosedAt          *time.Time `gorm:"column:closed_at"`
 	FinalCredits      *int64     `gorm:"column:final_credits"`
 	Notes             *string    `gorm:"column:notes"`
+	// ContractsGraduated is the durable, per-player, ERA-SCOPED manual contract-graduation flag
+	// (sp-difa.1). The era row is one-per-player and a fresh era is a NEW row, so a new era/agent
+	// reads the column default (false = UN-graduated) and contracts run as the funding floor. The
+	// operator sets it (`contract graduate`) once trades earn enough; while SET, the boot-standing
+	// bootstrap + capacity reconciler must NOT (re)start/maintain the contract-delivery op, DURABLY
+	// across daemon restarts — the fix for the manual decommission being undone by a restart.
+	// AutoMigrate adds the column with default false; existing rows read it as un-graduated.
+	ContractsGraduated bool `gorm:"column:contracts_graduated;not null;default:false"`
 }
 
 func (EraModel) TableName() string {

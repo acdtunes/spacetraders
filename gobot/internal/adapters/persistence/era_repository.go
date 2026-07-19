@@ -52,6 +52,41 @@ func (r *EraRepository) FindOpenEra(ctx context.Context) (*EraModel, error) {
 	return &era, nil
 }
 
+// IsContractGraduated reports whether the player's CURRENT era is contract-graduated (sp-difa.1) —
+// the durable manual signal that the operator has retired contracts as the funding floor. Scoped by
+// player_id to the player's era row (one-per-player; the most recent era_id if several linger), so a
+// FRESH era reads its column default (false = UN-graduated). No era row yet ⇒ false (fail-OPEN: an
+// unprovisioned/unknown player is treated as UN-graduated, so contracts run — a missing row must never
+// silently suppress the funding floor). It is the shared read both the capacity reconciler and the
+// bootstrap observer consult to decide whether to run the contract-delivery op.
+func (r *EraRepository) IsContractGraduated(ctx context.Context, playerID int) (bool, error) {
+	var eras []EraModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Order("era_id DESC").Limit(1).
+		Find(&eras).Error; err != nil {
+		return false, fmt.Errorf("failed to read contract-graduation for player %d: %w", playerID, err)
+	}
+	if len(eras) == 0 {
+		return false, nil
+	}
+	return eras[0].ContractsGraduated, nil
+}
+
+// SetContractGraduated sets (graduate) or clears (ungraduate) the player's contract-graduation flag on
+// its era row(s) (sp-difa.1) — the durable per-player era-scoped manual decision. Returns the number of
+// era rows updated so the caller can distinguish a real change from "no era row for this player".
+func (r *EraRepository) SetContractGraduated(ctx context.Context, playerID int, graduated bool) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Model(&EraModel{}).
+		Where("player_id = ?", playerID).
+		Update("contracts_graduated", graduated)
+	if res.Error != nil {
+		return 0, fmt.Errorf("failed to set contract-graduation=%v for player %d: %w", graduated, playerID, res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 func (r *EraRepository) FindByName(ctx context.Context, name string) (*EraModel, error) {
 	var era EraModel
 	err := r.db.WithContext(ctx).Where("name = ?", name).First(&era).Error

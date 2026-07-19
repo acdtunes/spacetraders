@@ -113,6 +113,14 @@ type Observation struct {
 	// density + cheapness (a dense, cheap market is a sound generic contract hub), so hub selection
 	// works even before the first contract is accepted.
 	ContractGoods []string
+	// ContractGraduated reports the durable per-player era-scoped contract-graduation flag (sp-difa.1):
+	// the operator has retired contracts as the funding floor. When true, the INCOME workstream (actIncome
+	// — batch-contract, the frigate sole-earner loop, staged hauler buys) does NOT run, DURABLY across
+	// restarts, so a boot-standing bootstrap never re-establishes the contract earner on a graduated fleet.
+	// False (the default / a fresh era / a read miss) ⇒ contracts run as today — byte-identical, fail-OPEN.
+	// It gates ONLY the contract-income workstream; DATA (probes/scouting), GATE (construction), and trade
+	// are untouched.
+	ContractGraduated bool
 
 	// --- GATE-phase signals (Slice 3). Zero values are the pre-GATE default (no gate site known, no
 	// construction pipeline, the executor down, no gate workers), so an INCOME-phase observation that

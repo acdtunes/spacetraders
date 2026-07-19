@@ -345,7 +345,86 @@ Examples:
 	cmd.AddCommand(newContractDemandCommand())
 	// Contract depots live under the contract group (sp-38xc): `contract depot ...`.
 	cmd.AddCommand(NewDepotCommand())
+	// sp-difa.1: the durable, per-player, era-scoped MANUAL contract-graduation switch.
+	cmd.AddCommand(newContractGraduateCommand(true))
+	cmd.AddCommand(newContractGraduateCommand(false))
 
+	return cmd
+}
+
+// newContractGraduateCommand builds `contract graduate` (graduate=true) / `contract ungraduate`
+// (graduate=false): the durable, per-player, ERA-SCOPED manual switch that retires (or resumes)
+// contracts as the funding floor (sp-difa.1). Writing the eras.contracts_graduated flag directly
+// (mirroring the era-admin CLI path) makes the decision survive daemon restarts — the boot-standing
+// bootstrap + capacity reconciler read it every tick, so a graduated fleet never re-establishes the
+// contract-delivery op across a restart. A fresh era (new agent/universe) reads UN-graduated, so the
+// next bootstrap runs contracts normally. Contracts are ON by default until graduated.
+func newContractGraduateCommand(graduate bool) *cobra.Command {
+	verb, gerund := "graduate", "graduating"
+	short := "Retire a player OFF contracts, the funding floor (durable, per-player, era-scoped)"
+	if !graduate {
+		verb, gerund = "ungraduate", "resuming contracts for"
+		short = "Resume contracts for a player, the funding floor (durable, per-player, era-scoped)"
+	}
+	var playerID int
+	cmd := &cobra.Command{
+		Use:   verb,
+		Short: short,
+		Long: `Manually graduate a player OFF contracts (or ungraduate to resume) — a durable,
+per-player, era-scoped decision (sp-difa.1). When GRADUATED, the boot-standing bootstrap
+coordinator and the capacity reconciler will NOT start, maintain, or re-establish the
+contract-delivery op, ACROSS daemon restarts, until you ungraduate or a fresh era begins.
+Trade (the trade fleet + autosizer lights) is unaffected — only contract-delivery is gated.
+
+Contracts run by default (the funding floor). Graduate once trades earn enough that
+contracts are negligible.
+
+Examples:
+  spacetraders contract graduate --player-id 3
+  spacetraders contract ungraduate --player-id 3
+  spacetraders contract graduate            # the current default player`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadConfig("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			db, err := database.NewConnection(&cfg.Database)
+			if err != nil {
+				return fmt.Errorf("failed to connect to database: %w", err)
+			}
+			ctx := context.Background()
+
+			pid := playerID
+			if pid <= 0 {
+				p, rerr := resolveDefaultPlayer(ctx, persistence.NewGormPlayerRepository(db))
+				if rerr != nil {
+					return fmt.Errorf("resolve default player (pass --player-id to be explicit): %w", rerr)
+				}
+				pid = p.ID.Value()
+			}
+
+			eraRepo := persistence.NewEraRepository(db)
+			rows, err := eraRepo.SetContractGraduated(ctx, pid, graduate)
+			if err != nil {
+				return fmt.Errorf("failed %s player %d: %w", gerund, pid, err)
+			}
+			if rows == 0 {
+				return fmt.Errorf("no era row for player %d — nothing updated (is the player registered?)", pid)
+			}
+
+			state, err := eraRepo.IsContractGraduated(ctx, pid)
+			if err != nil {
+				return fmt.Errorf("read-back failed for player %d: %w", pid, err)
+			}
+			effect := "contracts ON — the funding floor runs (bootstrap + capacity reconciler manage contract-delivery as usual)"
+			if state {
+				effect = "contracts OFF — bootstrap + capacity reconciler will NOT start/maintain contract-delivery, durably across restarts; trade + lights unaffected"
+			}
+			fmt.Fprintf(os.Stdout, "player %d: contract_graduated=%v (durable, era-scoped)\n  %s\n", pid, state, effect)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&playerID, "player-id", 0, "Player ID (default: the current default player)")
 	return cmd
 }
 

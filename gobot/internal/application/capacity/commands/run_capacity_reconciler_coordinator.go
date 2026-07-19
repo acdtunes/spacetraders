@@ -107,6 +107,15 @@ type RunCapacityReconcilerCoordinatorHandler struct {
 	// pass fails identically for DefaultStreakThreshold consecutive ticks.
 	// Optional-injection.
 	captainEvents captain.EventRecorder
+
+	// graduation reports the durable per-player era-scoped contract-graduation flag (sp-difa.1).
+	// This reconciler is CONTRACT-DELIVERY-domain-only, so when a player is graduated the whole tick
+	// idles cleanly — no contract-delivery desired topology, no idle-hull reassignment — which is the
+	// durable fix for the boot-standing relaunch re-stranding hulls from contract HISTORY after a manual
+	// decommission. Optional-injection; nil (or a read error) ⇒ NOT graduated ⇒ reconcile as today
+	// (fail-OPEN, byte-identical). It does NOT touch trade — the trade fleet + autosizer LIGHTS class
+	// are a different domain, unaffected by idling this reconciler.
+	graduation capacity.ContractGraduationReader
 }
 
 // NewRunCapacityReconcilerCoordinatorHandler wires the loop. clock defaults to
@@ -144,6 +153,13 @@ func (h *RunCapacityReconcilerCoordinatorHandler) SetTickObserver(o capacity.Tic
 // SetEventRecorder wires the captain outbox for the reconcile error-loop event.
 func (h *RunCapacityReconcilerCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
 	h.captainEvents = rec
+}
+
+// SetContractGraduationReader wires the durable per-player era-scoped contract-graduation read
+// (sp-difa.1). Call before Handle; the loop reads it at the top of every tick. Left unset (nil),
+// the reconciler never idles for graduation — byte-identical to pre-sp-difa.1.
+func (h *RunCapacityReconcilerCoordinatorHandler) SetContractGraduationReader(r capacity.ContractGraduationReader) {
+	h.graduation = r
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -262,6 +278,26 @@ func (h *RunCapacityReconcilerCoordinatorHandler) reconcileTick(ctx context.Cont
 	if h.killSwitch == nil || h.killSwitch.Disabled() {
 		outcome.Idle = true
 		return outcome
+	}
+
+	// Contract graduation (sp-difa.1), re-read EVERY tick after the kill switch: a graduated player has
+	// DURABLY retired the contract-delivery op (the operator's manual decision, persisted era-scoped). This
+	// reconciler is contract-delivery-domain-only, so idling the whole tick emits NO contract-delivery
+	// desired topology and does NO idle-hull reassignment — the durable fix for the boot-standing relaunch
+	// re-stranding hulls from contract HISTORY. Fail-OPEN: a nil reader or a read error is treated as
+	// UN-graduated, so the reconciler runs exactly as today (a mis-wire / transient DB hiccup never
+	// silently suppresses the funding floor). Trade is untouched — a different domain.
+	if h.graduation != nil {
+		if graduated, gerr := h.graduation.IsContractGraduated(ctx, cmd.PlayerID.Value()); gerr == nil && graduated {
+			outcome.Idle = true
+			outcome.Graduated = true
+			common.LoggerFromContext(ctx).Log("INFO", "Capacity reconciler idle: player is contract-graduated — contract-delivery reconciliation OFF (durable, sp-difa.1); trade + lights unaffected", map[string]interface{}{
+				"action":       "capacity_reconciler_contract_graduated_idle",
+				"container_id": cmd.ContainerID,
+				"tick":         seq,
+			})
+			return outcome
+		}
 	}
 
 	signals, err := h.domain.Sensor().Sense(ctx, cmd.PlayerID.Value())
