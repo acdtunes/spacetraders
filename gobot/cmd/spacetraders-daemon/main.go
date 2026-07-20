@@ -1283,6 +1283,11 @@ func run(cfg *config.Config) error {
 	// graduated a player (`contract graduate`), the reconciler idles its contract-delivery reconciliation
 	// (no re-strand of idle hulls from contract HISTORY) DURABLY across restarts. Reads eras.contracts_graduated.
 	capacityReconcilerHandler.SetContractGraduationReader(persistence.NewEraRepository(db))
+	// The reuse-path depot LAUNCH bridge. When the reconciler reuses idle hulls to FULLY staff a
+	// hub's depot roles, this LAUNCHES the depot (persist + idempotent coordinator launch via the
+	// StartDepot lifecycle) so the reused hulls actually operate and the hub becomes covered — the
+	// reuse-path twin of the autosizer's buy-path StartWarehouse bridge.
+	capacityReconcilerHandler.SetDepotLauncher(grpc.NewCapacityReconcilerDepotLauncher(daemonServer))
 	if err := mediator.RegisterHandler[*capacityCmd.RunCapacityReconcilerCoordinatorCommand](med, capacityReconcilerHandler); err != nil {
 		return fmt.Errorf("failed to register CapacityReconcilerCoordinator handler: %w", err)
 	}

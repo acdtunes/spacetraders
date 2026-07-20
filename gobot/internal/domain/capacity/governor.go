@@ -64,6 +64,21 @@ type Calibration struct {
 	// planner's own documented default until calibrated.
 	StockerCapacityBudget int
 
+	// ContractDeliveryHullCeiling caps the TOTAL desired contract-delivery hulls
+	// (Σ warehouse+stocker+delivery across admitted hubs) the planner will plan:
+	// the ranked ADD walk stops admitting NEW hubs once the cumulative hull total
+	// would exceed it, so reuse + buy can never draw the class past the ceiling by
+	// construction (the ContractDeliveryDemandBridge reports Current:0, so the
+	// autosizer's class guard never binds — the real bound has to live in the PLAN).
+	// Whole-hub boundary: a hub that would blow the cap is not admitted (the walk
+	// stops), never split. Covered (producing) hubs are ALWAYS kept — the cap only
+	// gates NEW coverage, never evicts the existing machine (the planner north-star).
+	// Default 0 = NO cap = byte-identical (the planner admits ranked hubs exactly as
+	// before). The application resolver injects the live value from the autosizer's
+	// OWN fleet_ceiling_contract_delivery so the two ceilings share one source and
+	// cannot drift (RULINGS #5).
+	ContractDeliveryHullCeiling int
+
 	// ContractAddGateTradeBlind switches the contract-delivery ADD gate from the
 	// TRADE-contaminated fleet-wide per-hull average (FleetPerHullCrHr) to the
 	// CONTRACT op's own economics: a new depot is gated on the universal per-hull
@@ -102,15 +117,16 @@ const (
 // DefaultCalibration is the engine's documented protective default set.
 func DefaultCalibration() Calibration {
 	return Calibration{
-		ReserveFloorCredits:       DefaultReserveFloorCredits,
-		SurplusFraction:           DefaultSurplusFraction,
-		PerDecisionCapPct:         DefaultPerDecisionCapPct,
-		ROIPaybackHorizon:         DefaultROIPaybackHorizon,
-		AddThresholdPerHullCrHr:   0,
-		StockerCapacityBudget:     0,
-		ContractAddGateTradeBlind: false,
-		TickInterval:              DefaultTickInterval,
-		ApprovalThresholdCredits:  0,
+		ReserveFloorCredits:         DefaultReserveFloorCredits,
+		SurplusFraction:             DefaultSurplusFraction,
+		PerDecisionCapPct:           DefaultPerDecisionCapPct,
+		ROIPaybackHorizon:           DefaultROIPaybackHorizon,
+		AddThresholdPerHullCrHr:     0,
+		StockerCapacityBudget:       0,
+		ContractDeliveryHullCeiling: 0, // 0 = no cap = byte-identical
+		ContractAddGateTradeBlind:   false,
+		TickInterval:                DefaultTickInterval,
+		ApprovalThresholdCredits:    0,
 	}
 }
 
@@ -135,6 +151,9 @@ func (c Calibration) Validate() error {
 	}
 	if c.StockerCapacityBudget < 0 {
 		return fmt.Errorf("stocker_capacity_budget must be >= 0, got %d", c.StockerCapacityBudget)
+	}
+	if c.ContractDeliveryHullCeiling < 0 {
+		return fmt.Errorf("contract_delivery_hull_ceiling must be >= 0, got %d", c.ContractDeliveryHullCeiling)
 	}
 	if c.TickInterval <= 0 {
 		return fmt.Errorf("tick_interval must be > 0, got %v", c.TickInterval)

@@ -70,6 +70,12 @@ const (
 	defaultShipTypeContractDelivery               = "SHIP_LIGHT_HAULER"
 )
 
+// DefaultFleetCeilingContractDelivery is the contract-delivery class ceiling the
+// autosizer applies when config.yaml leaves it unset. Exported as the SINGLE source the
+// capacity reconciler's planner cap shares, so the two ceilings can never drift on their
+// default (RULINGS #5) — there is no second default to keep in lockstep, only this one.
+const DefaultFleetCeilingContractDelivery = defaultFleetCeilingContractDelivery
+
 // DemandParams carries the live-resolved config the demand providers need each tick (rotation
 // slots, etc.). The coordinator fills it from its runConfig so the providers, constructed once at
 // boot, still see the current config.yaml value (the live-config discipline) without

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	capacityCmd "github.com/andrescamacho/spacetraders-go/internal/application/capacity/commands"
+	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -114,6 +115,9 @@ var capacityReconcilerConfigKeys = []string{
 	"capacity_contract_add_gate_trade_blind",
 	"capacity_tick_interval_secs",
 	"capacity_approval_threshold",
+	// Derived from the autosizer's ceiling (not a [capacity_reconciler] knob) — cleared
+	// so a stale copy from a prior boot can never shadow the live derived value.
+	"capacity_fleet_ceiling_contract_delivery",
 }
 
 // resolveCapacityReconcilerConfig makes config.yaml the single LIVE source of truth for the
@@ -166,6 +170,17 @@ func (s *DaemonServer) injectCapacityReconcilerConfig(config map[string]interfac
 	if cr.ApprovalThreshold != 0 {
 		config["capacity_approval_threshold"] = int(cr.ApprovalThreshold)
 	}
+	// The contract-delivery hull ceiling is NOT a [capacity_reconciler] knob — it is
+	// DERIVED from the fleet autosizer's OWN fleet_ceiling_contract_delivery so the
+	// reconciler's planner cap and the autosizer's class ceiling share ONE source and
+	// can never drift (RULINGS #5). Always injected as the EFFECTIVE value (the
+	// autosizer's config value, or the autosizer's OWN default when unset), so the
+	// reconciler never defines a second default that could drift.
+	ceiling := s.fleetAutosizerConfig.FleetCeilingContractDelivery
+	if ceiling <= 0 {
+		ceiling = fleetCmd.DefaultFleetCeilingContractDelivery
+	}
+	config["capacity_fleet_ceiling_contract_delivery"] = ceiling
 }
 
 // buildCapacityReconcilerCoordinatorCommand rebuilds the standing reconciler command from a
@@ -199,6 +214,9 @@ func buildCapacityReconcilerCoordinatorCommand(cfg *configReader, playerID int, 
 		StockerCapacityBudget:     cfg.OptionalInt("capacity_stocker_capacity_budget", 0),
 		ContractAddGateTradeBlind: cfg.OptionalBool("capacity_contract_add_gate_trade_blind"),
 		ApprovalThresholdCredits:  int64(cfg.OptionalInt("capacity_approval_threshold", 0)),
+		// Derived from the autosizer's ceiling at inject time (the single no-drift
+		// source), so it is always present and effective — never the reconciler's own 0.
+		ContractDeliveryHullCeiling: cfg.OptionalInt("capacity_fleet_ceiling_contract_delivery", 0),
 	}
 }
 

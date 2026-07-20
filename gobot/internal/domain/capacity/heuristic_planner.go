@@ -260,6 +260,11 @@ type coverageWalk struct {
 	covered     map[string]bool
 	addStopped  bool
 	tradeBlind  bool
+	// ceiling caps the TOTAL desired contract-delivery hulls (Σ across admitted
+	// hubs). 0 = no cap. admittedHulls is the running total of every hub admitted
+	// so far (covered AND added), so the cap bounds reuse + buy TOGETHER.
+	ceiling       int
+	admittedHulls int
 }
 
 func newCoverageWalk(cal Calibration, signals Signals) *coverageWalk {
@@ -281,7 +286,14 @@ func newCoverageWalk(cal Calibration, signals Signals) *coverageWalk {
 		addRequired: addRequired,
 		covered:     coveredHubs(signals.Topology),
 		tradeBlind:  cal.ContractAddGateTradeBlind,
+		ceiling:     cal.ContractDeliveryHullCeiling,
 	}
+}
+
+// hubHullCount is one hub's total desired hull draw — the unit the class ceiling
+// caps (warehouse + stocker + worker).
+func hubHullCount(hub DesiredHub) int {
+	return hub.WarehouseCount + hub.StockerCount + hub.WorkerCount
 }
 
 // admits decides one ranked hub. Covered hubs KEEP their place while the
@@ -289,7 +301,15 @@ func newCoverageWalk(cal Calibration, signals Signals) *coverageWalk {
 // hub below the floor drops out. Uncovered hubs face the ADD gate.
 func (walk *coverageWalk) admits(candidate hubCandidate, hub DesiredHub, compressionMinutesPerHour float64) bool {
 	if walk.covered[candidate.demand.HubSymbol] {
-		return clearsCoverageGate(candidate, hub, walk.keepFloor)
+		// A covered/producing hub is ALWAYS kept while it clears the keep floor —
+		// the class ceiling never evicts the existing machine (north-star). It still
+		// COUNTS toward the running total so a later NEW add is bounded by covered +
+		// added together.
+		if clearsCoverageGate(candidate, hub, walk.keepFloor) {
+			walk.admittedHulls += hubHullCount(hub)
+			return true
+		}
+		return false
 	}
 	return walk.admitsAdd(candidate, hub, compressionMinutesPerHour)
 }
@@ -313,8 +333,28 @@ func (walk *coverageWalk) admitsAdd(candidate hubCandidate, hub DesiredHub, comp
 		// buffer physics — trade never enters.
 		marginal += compressionMarginalPerHull(candidate, hub, compressionMinutesPerHour)
 	}
-	walk.addStopped = !(marginal > 0 && marginal >= walk.addRequired)
-	return !walk.addStopped
+	if !(marginal > 0 && marginal >= walk.addRequired) {
+		walk.addStopped = true
+		return false
+	}
+	// The class hull cap: STOP the add walk once this NEW hub would push the
+	// cumulative desired total past the ceiling — a whole-hub boundary (never admit a
+	// hub that would blow the cap, and — like the marginal stop — a leaner lower-ranked
+	// hub behind it is not admitted either). This is the only real bound on the class:
+	// the autosizer's ContractDeliveryDemandBridge reports Current:0, so its class guard
+	// never binds; capping the PLAN makes reuse + buy ≤ ceiling.
+	if walk.exceedsCeiling(hub) {
+		walk.addStopped = true
+		return false
+	}
+	walk.admittedHulls += hubHullCount(hub)
+	return true
+}
+
+// exceedsCeiling reports whether admitting hub would push the cumulative desired
+// contract-delivery hull total past the class ceiling. A zero ceiling is no cap.
+func (walk *coverageWalk) exceedsCeiling(hub DesiredHub) bool {
+	return walk.ceiling > 0 && walk.admittedHulls+hubHullCount(hub) > walk.ceiling
 }
 
 // clearsCoverageGate is the ROI self-limit: the hub's marginal hull must yield

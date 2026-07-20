@@ -166,6 +166,14 @@ type TickOutcome struct {
 	// WouldFile lists the capital proposals a DryRun tick WOULD have filed (it
 	// called ProposalChannel.Submit for none). Always empty when armed.
 	WouldFile []Proposal
+	// DepotsLaunched lists the hub symbols whose depot coordinators this tick LAUNCHED
+	// on the reuse path: a hub the executed reassigns fully staffed, persisted and
+	// coordinator-launched via the depot lifecycle so the reused hulls actually operate.
+	// Empty in DryRun (see WouldLaunchDepots).
+	DepotsLaunched []string
+	// WouldLaunchDepots lists the hub symbols a DryRun tick WOULD have launched on the
+	// reuse path — the observe-only twin of DepotsLaunched. Always empty when armed.
+	WouldLaunchDepots []string
 }
 
 // TickObserver receives every tick's outcome. Optional seam for the

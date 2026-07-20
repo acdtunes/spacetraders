@@ -95,6 +95,13 @@ type RunCapacityReconcilerCoordinatorCommand struct {
 	StockerCapacityBudget    int     // per-hub stocker budget; 0 → planner default
 	ApprovalThresholdCredits int64   // tier-4 cost needing approval; 0 → ALL tier-4
 
+	// ContractDeliveryHullCeiling caps the planner's TOTAL desired contract-delivery
+	// hulls. Derived in the grpc build from the autosizer's OWN
+	// fleet_ceiling_contract_delivery (the single no-drift source), so 0 here means
+	// "no ceiling supplied" = no cap = byte-identical PLAN — the resolver adds no
+	// independent default of its own.
+	ContractDeliveryHullCeiling int
+
 	// ContractAddGateTradeBlind arms the trade-blind contract-delivery ADD gate.
 	// false → OFF = byte-identical (add gate benchmarks the fleet average).
 	ContractAddGateTradeBlind bool
@@ -127,6 +134,13 @@ type RunCapacityReconcilerCoordinatorHandler struct {
 	// pass fails identically for DefaultStreakThreshold consecutive ticks.
 	// Optional-injection.
 	captainEvents captain.EventRecorder
+
+	// depotLauncher LAUNCHES a hub's depot when the reuse path fully staffs it — the
+	// missing half that makes a reused hull actually operate instead of sitting
+	// dedicated-but-idle (and closes the coverage gap so the autosizer stops buying).
+	// Optional-injection; nil = byte-identical OFF (the reuse path re-tags but does not
+	// launch, as before). Mirrors SetContractGraduationReader's nil-safe wiring.
+	depotLauncher DepotLauncher
 
 	// graduation reports the durable per-player era-scoped contract-graduation flag (sp-difa.1).
 	// This reconciler is CONTRACT-DELIVERY-domain-only, so when a player is graduated the whole tick
@@ -173,6 +187,13 @@ func (h *RunCapacityReconcilerCoordinatorHandler) SetTickObserver(o capacity.Tic
 // SetEventRecorder wires the captain outbox for the reconcile error-loop event.
 func (h *RunCapacityReconcilerCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
 	h.captainEvents = rec
+}
+
+// SetDepotLauncher wires the reuse-path depot launcher. Call before Handle; the loop
+// reads it after CONVERGE each tick. Left unset (nil), the reuse path re-tags dedications
+// but launches no depot — byte-identical to the pre-launch behavior.
+func (h *RunCapacityReconcilerCoordinatorHandler) SetDepotLauncher(l DepotLauncher) {
+	h.depotLauncher = l
 }
 
 // SetContractGraduationReader wires the durable per-player era-scoped contract-graduation read
@@ -281,6 +302,10 @@ func resolveCalibration(cmd *RunCapacityReconcilerCoordinatorCommand) (capacity.
 	if cmd.StockerCapacityBudget != 0 {
 		cal.StockerCapacityBudget = cmd.StockerCapacityBudget
 	}
+	// The contract-delivery hull ceiling is already the effective value (the grpc
+	// build derived it from the autosizer's own ceiling + default — the single
+	// no-drift source), so it copies straight through; 0 = no cap (byte-identical).
+	cal.ContractDeliveryHullCeiling = cmd.ContractDeliveryHullCeiling
 	// Bool knob: false (default) leaves the byte-identical OFF path; no zero-means-
 	// default indirection needed.
 	cal.ContractAddGateTradeBlind = cmd.ContractAddGateTradeBlind
@@ -341,7 +366,152 @@ func (h *RunCapacityReconcilerCoordinatorHandler) reconcileTick(ctx context.Cont
 	}
 	h.logCapitalDemand(ctx, cal, desired, actions, seq)
 	h.converge(ctx, cmd.PlayerID.Value(), cal, governed, cmd.DryRun, &outcome)
+	h.launchReusedDepots(ctx, cmd, desired, actions, &outcome)
 	return outcome
+}
+
+// launchReusedDepots is the reuse-path LAUNCH: after CONVERGE, LAUNCH the depot of every
+// hub this tick FULLY staffed by reuse, so the reassigned hulls actually
+// operate (and the hub becomes covered — closing the gap the autosizer would otherwise
+// keep buying against). A hub qualifies only when its EXECUTED reassigns meet the hub's
+// desired warehouse+stocker+worker counts AND no tier-4 capital action targets it — a
+// complete hub staffed entirely by reuse, never a partial depot. It is idempotent by
+// construction: once launched the hub persists + is covered, so it emits zero reassigns
+// next tick and is not relaunched (and the depot lifecycle's idle-gate refuses a
+// double-launch regardless). nil launcher = byte-identical OFF; DryRun records the
+// would-launch set (from the WOULD-execute reassigns) and dispatches nothing.
+func (h *RunCapacityReconcilerCoordinatorHandler) launchReusedDepots(ctx context.Context, cmd *RunCapacityReconcilerCoordinatorCommand, desired capacity.DesiredTopology, actions []capacity.Action, outcome *capacity.TickOutcome) {
+	if h.depotLauncher == nil {
+		return // OFF = byte-identical: the reuse path re-tags but launches no depot
+	}
+	capitalHubs := hubsWithCapitalActions(actions)
+
+	if cmd.DryRun {
+		for _, spec := range completeReuseDepotSpecs(desired, outcome.WouldExecute, capitalHubs) {
+			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("DRY-RUN would launch depot for hub %s (fully reuse-staffed: %d warehouse, %d stocker, %d delivery)",
+				spec.HubSymbol, len(spec.Warehouses), len(spec.Stockers), len(spec.DeliveryHulls)), map[string]interface{}{
+				"action": "capacity_reconciler_dry_run_would_launch_depot", "tick": outcome.Sequence, "hub": spec.HubSymbol,
+			})
+			outcome.WouldLaunchDepots = append(outcome.WouldLaunchDepots, spec.HubSymbol)
+		}
+		return
+	}
+
+	for _, spec := range completeReuseDepotSpecs(desired, outcome.ActionsExecuted, capitalHubs) {
+		if err := h.depotLauncher.LaunchDepot(ctx, cmd.PlayerID.Value(), spec); err != nil {
+			recordLaunchFailure(outcome, fmt.Sprintf("depot launch %s: %v", spec.HubSymbol, err))
+			continue
+		}
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Launched reuse-staffed depot for hub %s (%d warehouse, %d stocker, %d delivery)",
+			spec.HubSymbol, len(spec.Warehouses), len(spec.Stockers), len(spec.DeliveryHulls)), map[string]interface{}{
+			"action": "capacity_reconciler_launch_reused_depot", "tick": outcome.Sequence, "hub": spec.HubSymbol,
+		})
+		outcome.DepotsLaunched = append(outcome.DepotsLaunched, spec.HubSymbol)
+	}
+}
+
+// recordLaunchFailure surfaces a post-CONVERGE depot-launch failure on the outcome — a
+// failed launch is loud (a captain must see it), never silently swallowed. It joins any
+// existing CONVERGE error and marks the phase CONVERGE (the actuation stage it belongs to).
+func recordLaunchFailure(outcome *capacity.TickOutcome, msg string) {
+	if outcome.Error == "" {
+		outcome.Error = msg
+	} else {
+		outcome.Error += "; " + msg
+	}
+	if outcome.FailedPhase == "" {
+		outcome.FailedPhase = capacity.PhaseConverge
+	}
+}
+
+// completeReuseDepotSpecs builds one DepotLaunchSpec per hub the reuse path FULLY
+// staffed this tick — the complete-hub-first gate. A hub qualifies only when it desires
+// at least one warehouse (a depot's routing anchor), no tier-4 capital action targets it
+// (its remainder is not being bought), and its reassigns meet every desired role count.
+// A partial hub yields no spec. Reassigns are grouped by hub and role from the tick's
+// reassign actions (the ship is the reused idle hull, the role its GapKind).
+func completeReuseDepotSpecs(desired capacity.DesiredTopology, reassigns []capacity.Action, capitalHubs map[string]bool) []DepotLaunchSpec {
+	byHub := groupReassignsByHubRole(reassigns)
+	var specs []DepotLaunchSpec
+	for _, hub := range desired.Hubs {
+		if hub.WarehouseCount < 1 {
+			continue // no warehouse anchor ⇒ no depot to launch (NewContractDepot invariant)
+		}
+		if capitalHubs[hub.HubSymbol] {
+			continue // a tier-4 capital draw ⇒ NOT fully staffed by reuse ⇒ never a partial launch
+		}
+		r := byHub[hub.HubSymbol]
+		if r == nil {
+			continue
+		}
+		if len(r.warehouses) < hub.WarehouseCount || len(r.stockers) < hub.StockerCount || len(r.delivery) < hub.WorkerCount {
+			continue // partial — the reuse path did not fully staff this hub
+		}
+		specs = append(specs, DepotLaunchSpec{
+			HubSymbol:     hub.HubSymbol,
+			Warehouses:    r.warehouses,
+			Stockers:      r.stockers,
+			DeliveryHulls: r.delivery,
+		})
+	}
+	return specs
+}
+
+// hubReassigns accumulates one hub's reassigned hulls by depot role.
+type hubReassigns struct {
+	warehouses []DepotLaunchElement
+	stockers   []DepotLaunchElement
+	delivery   []DepotLaunchElement
+}
+
+// groupReassignsByHubRole buckets the tick's tier-1 reassign actions by hub and role.
+// The role is the action's GapKind (the ladder stamps GapWarehouseShort/GapStockerShort/
+// GapWorkerShort on each reassign); the capacity "worker" is the depot delivery hull.
+// Non-reassign actions are ignored.
+func groupReassignsByHubRole(reassigns []capacity.Action) map[string]*hubReassigns {
+	byHub := map[string]*hubReassigns{}
+	for _, action := range reassigns {
+		if action.Verb != capacity.VerbReassignHull {
+			continue
+		}
+		bucket := byHub[action.HubSymbol]
+		if bucket == nil {
+			bucket = &hubReassigns{}
+			byHub[action.HubSymbol] = bucket
+		}
+		element := DepotLaunchElement{Waypoint: reassignWaypoint(action), ShipSymbol: action.ShipSymbol}
+		switch action.GapKind {
+		case capacity.GapWarehouseShort:
+			bucket.warehouses = append(bucket.warehouses, element)
+		case capacity.GapStockerShort:
+			bucket.stockers = append(bucket.stockers, element)
+		case capacity.GapWorkerShort:
+			bucket.delivery = append(bucket.delivery, element)
+		}
+	}
+	return byHub
+}
+
+// reassignWaypoint is the element's anchor waypoint — the reassign's target, defaulting
+// to the hub itself (co-location is the depot's cycle-time lever).
+func reassignWaypoint(action capacity.Action) string {
+	if action.TargetWaypoint != "" {
+		return action.TargetWaypoint
+	}
+	return action.HubSymbol
+}
+
+// hubsWithCapitalActions is the set of hubs with a tier-4 capital action this tick — the
+// hubs whose remainder is being BOUGHT (so the reuse path has NOT fully staffed them and
+// must not launch a partial depot; the buy path launches once the bought hull lands).
+func hubsWithCapitalActions(actions []capacity.Action) map[string]bool {
+	hubs := map[string]bool{}
+	for _, action := range actions {
+		if action.Tier == capacity.TierCapital && action.HubSymbol != "" {
+			hubs[action.HubSymbol] = true
+		}
+	}
+	return hubs
 }
 
 // logCapitalDemand records, every tick, the contract-delivery CAPITAL demand this

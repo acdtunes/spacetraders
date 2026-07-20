@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	capacityCmd "github.com/andrescamacho/spacetraders-go/internal/application/capacity/commands"
+	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -64,7 +65,11 @@ func TestRecoveryFactoryRebuildsCapacityReconcilerCommand(t *testing.T) {
 		PlayerID:    shared.MustNewPlayerID(7),
 		ContainerID: "capacity-reconciler-7",
 		// Every calibration knob zero: the coordinator resolves its documented
-		// defaults (per-decision cap 25% included) at launch.
+		// defaults (per-decision cap 25% included) at launch. EXCEPT the
+		// contract-delivery hull ceiling, which is always DERIVED from the autosizer's
+		// own ceiling (sp-rt3b6) — here the autosizer is unset, so it is the autosizer's
+		// own default (the single no-drift source), never zero.
+		ContractDeliveryHullCeiling: fleetCmd.DefaultFleetCeilingContractDelivery,
 	}, cmd)
 }
 
