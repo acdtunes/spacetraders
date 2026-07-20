@@ -86,3 +86,4 @@ logs/
 # repo root so tracked beads DBs (.beads/issues.jsonl, city/.beads/issues.jsonl)
 # are unaffected.
 /issues.jsonl
+staging/

@@ -100,9 +100,12 @@ const (
 	// per-player coordinator that loops forever inside one Handle() driving the
 	// contract-delivery machine's actual topology toward a computed desired topology
 	// (SENSE → PLAN → DIFF → GOVERN → CONVERGE), capex-paced. Like the siting/autosizer
-	// coordinators it is NOT a CoordinatorOwnsIterations type. DEPLOY-INERT: it is never
-	// boot-standing-armed — it runs only when explicitly started, then survives restarts
-	// through the persisted-container recovery idiom.
+	// coordinators it is NOT a CoordinatorOwnsIterations type. BOOT-STANDING (sp-ov8z): it
+	// is a member of bootStandingCoordinatorTypes and auto-launches every daemon boot
+	// (idempotent — skips if already RUNNING/PENDING), IDLING when the desired topology is
+	// empty (the cold-start state) and gating all tier-4 capital behind the human-approved
+	// proposal path; it survives restarts through the persisted-container recovery idiom. A
+	// durable decommission needs config dry_run/disable, not a bare stop (boot re-launches it).
 	ContainerTypeCapacityReconciler ContainerType = "CAPACITY_RECONCILER_COORDINATOR"
 	// ContainerTypeAutoOutfitCoordinator is the standing guarded auto-outfit coordinator: a
 	// per-player coordinator that loops forever inside one Handle() reading

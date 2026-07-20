@@ -18,6 +18,40 @@ VRP_TIMEOUT="${VRP_TIMEOUT:-30}"
 # in-code default stays "profit" (fail-safe), so an operator reverts by exporting
 # TOUR_SOLVER_OBJECTIVE=profit — no code change, next restart applies it.
 export TOUR_SOLVER_OBJECTIVE="${TOUR_SOLVER_OBJECTIVE:-rate}"
+# ARMED (Admiral 2026-07-17): long-tour rate arm for cap-4. For a long tour (cap>2) this
+# flag is the SOLE objective governor (sp-ljh5). RUNTIME OVERRIDE — leave uncommitted;
+# disarm with `git checkout -- run.sh` (or export TOUR_SOLVER_RATE_ARMED_LONG=0) + restart.
+export TOUR_SOLVER_RATE_ARMED_LONG="${TOUR_SOLVER_RATE_ARMED_LONG:-1}"
+# ARMED (Admiral 2026-07-17): OR-Tools prize-collecting sequencer (sp-y05b). The $/hr-critical
+# market-sequencing decision (which markets to arb + in what order) had been running on the
+# greedy BEAM heuristic — sp-y05b was built+merged but never armed. Replay-measured +12.8%
+# rate-$/hr vs beam (429,138 vs 380,464 cr/hr over the same 310 windows). Pure-add (solve_tour
+# unions ortools+beam candidates, stage-2 arbiter picks best -> can only match-or-beat beam),
+# and ZERO extra API (planning-only on cached market data). RUNTIME OVERRIDE — leave uncommitted;
+# disarm with `git checkout -- run.sh` (or export TOUR_SOLVER_SEQUENCER=beam) + restart routing.
+export TOUR_SOLVER_SEQUENCER="${TOUR_SOLVER_SEQUENCER:-ortools}"
+# ARMED LIVE (Admiral 2026-07-17 "do this live, out of time, risk accepted"): sp-acb8 Tune 1,
+# ordered-path #2. Raises MAX_PLANNED_TRANCHES 2->3 — the throughput knob (throughput = 76% of
+# the $/hr spread). Lets a hull load one more decayed tranche per market/good (+10-15%/market),
+# stacking on the widening's newly-opened sinks toward 15M. NOT replay-gated (Admiral override);
+# impact model still decays each tranche (buy x1.1/sell x0.9) so it self-limits on crush. RUNTIME
+# OVERRIDE — leave uncommitted; disarm with `export TOUR_SOLVER_MAX_PLANNED_TRANCHES=2` (or git
+# checkout run.sh) + deploy-routing. Watch per-good realized sell price for concentration erosion.
+export TOUR_SOLVER_MAX_PLANNED_TRANCHES="${TOUR_SOLVER_MAX_PLANNED_TRANCHES:-3}"
+# ARMED LIVE (Admiral 2026-07-17 "build everything", toward 15M): sp-7q5t/sp-fguo WIDENING UNLOCK.
+# candidate_hop_depth=2 (daemon) widened the candidate set, but the distant rich sinks were being
+# CUT at the stage-2 full-scoring shortlist (FULL_SCORE_TOP_N=20) before they could compete —
+# systems/tour stuck at ~1.4 vs the >3 bar. Raise the shortlist 20->35 (analyst rec) so the widened
+# candidates survive to scoring. FULL_SCORE_TOP_N affects BOTH sequencer paths (lives in solve_tour).
+# clamp [10,100]; disarm with `export TOUR_SOLVER_FULL_SCORE_TOP_N=20` (or git checkout run.sh) + deploy-routing.
+export TOUR_SOLVER_FULL_SCORE_TOP_N="${TOUR_SOLVER_FULL_SCORE_TOP_N:-35}"
+# ARMED LIVE (same): OR-Tools per-model node cap 80->160. Admits ~2x pruned candidate nodes per subset
+# model so a distant rich cluster survives pruning to compete in-model. ONLY bites under
+# TOUR_SOLVER_SEQUENCER=ortools (armed); inert under beam. 160 stays well under the [40,400] ceiling and
+# the 2-5s anytime wall (ORTOOLS_TIME_BUDGET_SECONDS) that bounds per-model solve cost, so p99 tour-solve
+# latency is protected — a larger jump waits on a latency sweep. Disarm: `export TOUR_SOLVER_ORTOOLS_MAX_NODES=80`.
+export TOUR_SOLVER_ORTOOLS_MAX_NODES="${TOUR_SOLVER_ORTOOLS_MAX_NODES:-160}"
+export TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS="${TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS:-1200}"  # sp-kab1c
 
 echo "Starting Routing Service..."
 echo "Host: $HOST"

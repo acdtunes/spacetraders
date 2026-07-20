@@ -6,6 +6,7 @@ import agentsRouter from './routes/agents.js';
 import systemsRouter from './routes/systems.js';
 import flowsRouter from './routes/flows.js';
 import contractOpsRouter from './routes/contract-ops.js';
+import leaderboardRouter from './routes/leaderboard.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -19,6 +20,7 @@ app.use('/api/agents', agentsRouter);
 app.use('/api/systems', systemsRouter);
 app.use('/api/flows', flowsRouter);
 app.use('/api/contract-ops', contractOpsRouter);
+app.use('/api/leaderboard', leaderboardRouter);
 
 // Optional bot routes (requires PostgreSQL)
 try {

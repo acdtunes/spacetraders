@@ -2,4 +2,5 @@
 export * from './agents';
 export * from './systems';
 export * from './bot';
+export * from './leaderboard';
 export { apiClient, fetchApi, ApiError, type ApiRequestOptions } from './client';

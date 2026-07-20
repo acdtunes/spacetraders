@@ -61,6 +61,12 @@ Engineering reference (shipwright + build agents): `ENGINEERING.md` — gobot co
 worktree/lane hazards, deploy recovery, data-model gotchas, the digital twin. Read by area,
 not primed every wake.
 
+Automation reference (whole crew): `MECHANICS.md` — how the standing coordinators (the bot's
+"brain") decide and compose across the cold-start → GATE → steady-state lifecycle: per-coordinator
+sizing logic, arming (boot-standing vs GATE-handoff vs captain-launched), and the money-guard
+model. Read by area, not primed every wake. Distinct from `CLI-PRIMER.md` (the knobs), `PLAYBOOK.md`
+(strategy), and `RULINGS.md` (orders).
+
 Historical context (incidents, numbers, the why) lives under `docs/retrospectives/` —
 reference material, not doctrine. Doctrine is the books above plus bd memories.
 

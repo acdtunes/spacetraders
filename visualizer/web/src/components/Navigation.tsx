@@ -55,6 +55,16 @@ export function Navigation() {
             >
               Contract Ops
             </Link>
+            <Link
+              to="/leaderboards"
+              className={`px-4 py-2 rounded transition-colors ${
+                location.pathname === '/leaderboards'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              Leaderboards
+            </Link>
           </div>
         </div>
         <div className="flex items-center gap-4">

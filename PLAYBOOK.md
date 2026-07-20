@@ -79,9 +79,22 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   worker's system (RULINGS #14) — both engine-enforced. Portfolio weighting between
   contracts and trade is a captain/Admiral call, made through config — never through code
   that declines work.
+- **Scale the operation, not just its placement.** Beyond converging hub/hauler/warehouse
+  placement, the capacity reconciler GROWS contract capacity to demand — contract workers
+  (light haulers) + warehouse + stockers — to lift $/hr. Buy the first light hauler as soon as it
+  is affordable — where **"affordable" means the buy still leaves a safe cash cushion to keep
+  funding the contract operation**, NOT merely that treasury ≥ the hauler price. The command
+  frigate alone cannot sustain throughput, but a hauler bought out of the contract operation's
+  working capital starves the very cash flow it was meant to grow.
 
 ## 4. Construction & the gate
 
+- **Earn the gate from contract SURPLUS — never race it on raw treasury.** The build signal
+  is a scaled contract operation sustaining healthy $/hr, NOT a large balance. Scale contracts
+  first (§3); only their surplus funds gate workers and the fill, and a minimum treasury floor
+  (contract working capital) is held throughout — gate spend may never breach it. Cash piling
+  up while construction stalls means the contract op is under-scaled: fix the scaling, don't
+  force the gate.
 - Only the home gate must be built; it opens the entire connected graph. The bill is a public
   read (~1600 FAB_MATS + 400 ADVANCED_CIRCUITRY **(prior)** — read it fresh).
 - **The fill model:** gate materials are the EXPORT of a source factory. Buy that output and

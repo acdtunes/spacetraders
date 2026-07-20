@@ -748,8 +748,10 @@ Available Commands:
   demand      Recurring contract demand joined to the cheapest source market anywhere (pre-positioning candidates)
   depot       Contract depots: localize contract supply chains to a region
   get         Show full detail for a contract
+  graduate    Retire a player OFF contracts, the funding floor (durable, per-player, era-scoped)
   list        List contracts for a player
   start       Start contract fleet coordinator
+  ungraduate  Resume contracts for a player, the funding floor (durable, per-player, era-scoped)
 
 Flags:
   -h, --help   help for contract
@@ -861,6 +863,35 @@ Global Flags:
   -v, --verbose         Enable verbose output
 ```
 
+### spacetraders contract graduate
+```
+Manually graduate a player OFF contracts (or ungraduate to resume) — a durable,
+per-player, era-scoped decision (sp-difa.1). When GRADUATED, the boot-standing bootstrap
+coordinator and the capacity reconciler will NOT start, maintain, or re-establish the
+contract-delivery op, ACROSS daemon restarts, until you ungraduate or a fresh era begins.
+Trade (the trade fleet + autosizer lights) is unaffected — only contract-delivery is gated.
+
+Contracts run by default (the funding floor). Graduate once trades earn enough that
+contracts are negligible.
+
+Examples:
+  spacetraders contract graduate --player-id 3
+  spacetraders contract ungraduate --player-id 3
+  spacetraders contract graduate            # the current default player
+
+Usage:
+  spacetraders contract graduate [flags]
+
+Flags:
+  -h, --help            help for graduate
+      --player-id int   Player ID (default: the current default player)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
 ### spacetraders contract list
 ```
 List contracts for a player, one row per contract, including deadline
@@ -925,6 +956,35 @@ Flags:
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
       --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+### spacetraders contract ungraduate
+```
+Manually graduate a player OFF contracts (or ungraduate to resume) — a durable,
+per-player, era-scoped decision (sp-difa.1). When GRADUATED, the boot-standing bootstrap
+coordinator and the capacity reconciler will NOT start, maintain, or re-establish the
+contract-delivery op, ACROSS daemon restarts, until you ungraduate or a fresh era begins.
+Trade (the trade fleet + autosizer lights) is unaffected — only contract-delivery is gated.
+
+Contracts run by default (the funding floor). Graduate once trades earn enough that
+contracts are negligible.
+
+Examples:
+  spacetraders contract graduate --player-id 3
+  spacetraders contract ungraduate --player-id 3
+  spacetraders contract graduate            # the current default player
+
+Usage:
+  spacetraders contract ungraduate [flags]
+
+Flags:
+  -h, --help            help for ungraduate
+      --player-id int   Player ID (default: the current default player)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
       --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
   -v, --verbose         Enable verbose output
 ```
@@ -3147,17 +3207,19 @@ Global Flags:
 ```
 Perform the full universe-era rollover as one idempotent, guarded command.
 
-It validates --token against the API (GetAgent) BEFORE writing anything, so a
-corrupt token is rejected with zero partial state. On --confirm it then flips the
-era table WITHOUT truncating the player-partitioned market_data / system_graphs
-caches, repoints both the CLI default player AND captain.player_id, and drains the
-prior era's containers coordinators-first (reconciling daemon-unknown orphan rows
-to STOPPED).
+With --token it validates that token against the API (GetAgent) BEFORE writing
+anything, so a corrupt token is rejected with zero partial state. Without --token it
+mints the new era's JWT by registering --agent via ST_ACCOUNT_TOKEN (only on
+--confirm), then validates and uses it. On --confirm it flips the era table WITHOUT
+truncating the player-partitioned market_data / system_graphs caches, repoints both
+the CLI default player AND captain.player_id, and drains the prior era's containers
+coordinators-first (reconciling daemon-unknown orphan rows to STOPPED).
 
 Idempotent: re-running once the universe is in sync is a no-op. --dry-run (or the
-absence of --confirm) previews the plan and mutates nothing.
+absence of --confirm) previews the plan and mutates nothing (and mints nothing).
 
 Examples:
+  spacetraders universe transition --agent TORWIND --confirm            # mints from ST_ACCOUNT_TOKEN
   spacetraders universe transition --agent TORWIND --token eyJ... --dry-run
   spacetraders universe transition --agent TORWIND --token eyJ... --confirm
 
@@ -3169,7 +3231,7 @@ Flags:
       --confirm        apply the destructive rollover (era flip, repoint, drain)
       --dry-run        preview the rollover plan without mutating anything
   -h, --help           help for transition
-      --token string   JWT for the new era's agent (validated via API before any write)
+      --token string   JWT for the new era's agent; if omitted, one is minted from ST_ACCOUNT_TOKEN (validated via API before any write)
 
 Global Flags:
       --player-id int   Player ID (required if agent not specified)
@@ -3443,19 +3505,26 @@ The daemon will automatically:
 - Fulfill contracts
 - Return a container ID for tracking progress
 
-This runs a single contract to completion. For continuous, multi-contract
-operation across all idle light hauler ships, use 'spacetraders contract start'
-instead.
+By default this runs a SINGLE contract to completion. Pass --loop to run a
+CONTINUOUS single-hull loop on this one ship: it re-negotiates and runs the next
+contract after each fulfillment, until the container is stopped
+('spacetraders container stop <id>'), money-guarded (an unaffordable contract
+parks and retries rather than crashing). This is the bootstrap command frigate's
+sole-earner loop before the first light hauler exists. For continuous
+MULTI-hull operation across all idle light haulers, use 'spacetraders contract
+start' instead.
 
 Examples:
   spacetraders workflow batch-contract --ship SHIP-1 --player-id 1
   spacetraders workflow batch-contract --ship SHIP-1 --agent ENDURANCE
+  spacetraders workflow batch-contract --ship SHIP-1 --loop --agent ENDURANCE
 
 Usage:
   spacetraders workflow batch-contract [flags]
 
 Flags:
   -h, --help          help for batch-contract
+      --loop          Run a continuous single-hull contract loop (re-negotiate + run until stopped) instead of a single contract (sp-ehg9)
       --ship string   Ship symbol to use for contracts (required)
 
 Global Flags:

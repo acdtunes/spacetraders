@@ -114,7 +114,7 @@ CONVERGE backstops (structural, independent of governor correctness):
 
 **noop.go** — `NoOpSensor`, `NoOpPlanner`, `NoOpDiffer`, `NoOpGovernor` (inert), `NoOpActuator`, `NoOpProposalChannel` (FAIL LOUD if invoked).
 
-## Start / stop / recovery (deploy-inert)
+## Start / stop / recovery (boot-standing)
 
 - Start: `spacetraders workflow capacity-reconciler --agent <A>` → gRPC
   `CapacityReconcilerCoordinator` → `DaemonServer.CapacityReconcilerCoordinator(ctx, playerID)`
@@ -122,8 +122,11 @@ CONVERGE backstops (structural, independent of governor correctness):
 - **Double-launch guarded**: one standing reconciler per player. A second start while an
   ACTIVE (PENDING/RUNNING) reconciler exists fails with "already running" naming the
   existing container ID.
-- **Never boot-standing-armed** — pinned by `TestCapacityReconciler_NotBootStandingArmed`.
-  A fresh deploy changes nothing until an operator starts it.
+- **Boot-standing-armed** (sp-ov8z) — a member of `bootStandingCoordinatorTypes`; it auto-launches
+  every daemon boot and IDLES when the desired topology is empty (the cold-start state). Pinned by
+  the `require.Contains(bootStandingCoordinatorTypes, ContainerTypeCapacityReconciler)` assertion in
+  `container_ops_capacity_reconciler_test.go`. A durable decommission needs config dry_run/disable,
+  not a bare STOP (boot re-launches it).
 - Restart-safe: RUNNING container re-adopts via `RecoverRunningContainers` →
   `buildCommandForType("capacity_reconciler_coordinator")`, calibration re-resolved LIVE from
   config.yaml (`resolveCapacityReconcilerConfig`, sp-ts82 pattern).

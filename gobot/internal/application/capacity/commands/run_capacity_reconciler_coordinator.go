@@ -13,13 +13,16 @@
 // The production wiring (main.go) is the FULLY ARMED engine — real
 // SENSE/PLAN/DIFF/GOVERN components and a cheap-tier actuator (tier-1 reassign,
 // tier-2 reposition + worker-rebalance, tier-3 depot buffer writes); only tier-4
-// capital stays gated behind the human-approved proposal path. It is DEPLOY-INERT
-// only in that it is NOT boot-standing-armed (contrast: the market-freshness sizer
-// in bootStandingCoordinatorTypes); it runs only when explicitly started via
-// `spacetraders workflow capacity-reconciler` / the CapacityReconcilerCoordinator
-// RPC, and then survives restarts through the persisted-container recovery idiom
-// (RULINGS #2). Stopping it is a complete decommission (sp-2jrz): the stop reaps its
-// buffer containers and releases their role-fleet dedications back to the pool.
+// capital stays gated behind the human-approved proposal path. It is BOOT-STANDING-ARMED
+// (sp-ov8z): a member of bootStandingCoordinatorTypes, so it auto-launches on every daemon
+// boot (idempotent — skips if already RUNNING/PENDING) and IDLES when the desired topology
+// is empty (the cold-start state). It can also be started explicitly via
+// `spacetraders workflow capacity-reconciler` / the CapacityReconcilerCoordinator RPC, and
+// it survives restarts through the persisted-container recovery idiom (RULINGS #2). A bare
+// stop is a complete decommission of the running instance (sp-2jrz): the stop reaps its
+// buffer containers and releases their role-fleet dedications back to the pool — but because
+// it is boot-standing, the next boot RE-LAUNCHES it, so a durable decommission also needs
+// config dry_run/disable.
 //
 // The captain/DISABLED kill switch is honored at the TOP OF EVERY TICK, not
 // just at startup: an engaged switch idles the tick without invoking a single

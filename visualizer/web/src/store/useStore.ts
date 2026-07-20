@@ -546,3 +546,10 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
 export const createAppStore = () => createStore<AppState>(storeInitializer);
 
 export const useStore = create<AppState>()(storeInitializer);
+
+// Dev-only debugging affordance: expose the store so the map can be driven from
+// the console / e2e (e.g. window.__store.getState().setCurrentSystem('X1-UM5')).
+// Guarded by import.meta.env.DEV, so it is stripped from production builds.
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
+  (window as unknown as { __store?: typeof useStore }).__store = useStore;
+}
