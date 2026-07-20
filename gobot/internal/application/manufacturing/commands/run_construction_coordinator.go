@@ -63,6 +63,18 @@ const (
 	// hull's ACTUAL capacity (representativeLotUnits); this only backstops a capacity-less hull so
 	// ceil(remaining/lotUnits) never divides by zero.
 	defaultConstructionLotUnits = 40
+
+	// constructionSupplyTaskMaxTimeout is the ABSOLUTE ceiling on the depth-scaled per-task deadline
+	// (scaledSupplyTaskTimeout): depth scaling gives a deep fabricate chain the headroom a flat deadline
+	// cannot, and this ceiling still bounds a genuine hang so a mis-set depth/override can never hold a
+	// tick open indefinitely. 30m*3 = 90m at the fleet default sits well under it.
+	constructionSupplyTaskMaxTimeout = 2 * time.Hour
+
+	// constructionDefaultChainDepth is the depth an unset (<=0) pipeline SupplyChainDepth resolves to
+	// for timeout scaling. Must stay in lockstep with the fabricate resolver's own default
+	// (services.defaultFabricateMaxDepth = 3) so the timeout scales by the SAME work-depth the resolver
+	// fabricates down to before it market-buys the deeper inputs.
+	constructionDefaultChainDepth = 3
 )
 
 // ConstructionProducer is the narrow slice of the shared ProductionExecutor the drain
@@ -840,14 +852,119 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskTimeout() time.Duration {
 	return constructionSupplyTaskDefaultTimeout
 }
 
-// effectiveSupplyTaskTimeout resolves the per-supplyTask deadline for this run: a per-launch
+// effectiveSupplyTaskTimeout resolves the per-supplyTask BASE deadline for this run: a per-launch
 // SupplyTaskTimeoutSeconds ([manufacturing].construction_supply_task_timeout_seconds) wins, else the
-// handler default (supplyTaskTimeout — 30m, or a test override).
+// handler default (supplyTaskTimeout — 30m, or a test override). scaledSupplyTaskTimeout scales this
+// base by the material's supply-chain depth.
 func (h *RunConstructionCoordinatorHandler) effectiveSupplyTaskTimeout(cmd *RunConstructionCoordinatorCommand) time.Duration {
 	if cmd != nil && cmd.SupplyTaskTimeoutSeconds > 0 {
 		return time.Duration(cmd.SupplyTaskTimeoutSeconds) * time.Second
 	}
 	return h.supplyTaskTimeout()
+}
+
+// scaledSupplyTaskTimeout resolves the per-supplyTask deadline scaled by the material's supply-chain
+// DEPTH: a shallow buy-and-haul keeps the flat base (byte-identical); a deep fabricate chain (buy
+// inputs -> fabricate -> feed factory -> buy output -> haul) legitimately needs more than one round
+// trip, so it gets base*depth, clamped to constructionSupplyTaskMaxTimeout so a genuine hang stays
+// bounded. base is effectiveSupplyTaskTimeout, so the per-launch override seam is the value depth
+// multiplies.
+func (h *RunConstructionCoordinatorHandler) scaledSupplyTaskTimeout(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask) time.Duration {
+	base := h.effectiveSupplyTaskTimeout(cmd)
+	depth := h.supplyTaskChainDepth(ctx, cmd, task)
+	return depthScaledTimeout(base, depth, constructionSupplyTaskMaxTimeout)
+}
+
+// supplyTaskChainDepth is the effective fabrication depth this task will drive. A BUY task (the planner
+// resolved a market for the final good, no factory) is a buy+haul — depth 1, the flat-30m shallow path
+// (byte-identical). A FABRICATE task drives the resolver tree, so it takes the good's static chain
+// depth bounded by the pipeline's configured fabricate cap (the depth the resolver actually walks).
+// Unified gate-fill resolves the full tree for EVERY material regardless of the frozen buy/fabricate
+// decision, so it uses the chain depth even for a buy-planned good.
+func (h *RunConstructionCoordinatorHandler) supplyTaskChainDepth(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask) int {
+	if task.FactorySymbol() == "" && !cmd.UnifiedGateFill {
+		return 1
+	}
+	depth := staticSupplyChainDepth(task.Good(), h.resolveChainDepthCap(ctx, task))
+	if depth < 1 {
+		depth = 1
+	}
+	return depth
+}
+
+// resolveChainDepthCap is the fabricate depth cap for this task's pipeline, resolved the SAME way
+// resolveFabricationTree resolves it: the pipeline's SupplyChainDepth, or constructionDefaultChainDepth
+// when unset (<=0). Bounding the timeout depth by this cap makes the timeout scale by the depth the
+// resolver will actually fabricate down to (deeper inputs are market-bought, not fabricated).
+func (h *RunConstructionCoordinatorHandler) resolveChainDepthCap(ctx context.Context, task *manufacturing.ManufacturingTask) int {
+	cap := 0
+	if task.PipelineID() != "" {
+		if pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID()); err == nil && pipeline != nil {
+			cap = pipeline.SupplyChainDepth()
+		}
+	}
+	if cap <= 0 {
+		cap = constructionDefaultChainDepth
+	}
+	return cap
+}
+
+// depthScaledTimeout scales base by chain depth, clamped to [base, ceiling]. depth<=1 returns base
+// UNCHANGED (a shallow buy-and-haul keeps the flat default — byte-identical). A pure function so the
+// scaling is unit-provable independent of pipeline/task plumbing.
+func depthScaledTimeout(base time.Duration, depth int, ceiling time.Duration) time.Duration {
+	if depth <= 1 {
+		return base
+	}
+	scaled := time.Duration(depth) * base
+	if ceiling > 0 && scaled > ceiling {
+		return ceiling
+	}
+	return scaled
+}
+
+// staticSupplyChainDepth is the material's fabrication depth from the STATIC recipe graph
+// (goods.GetRequiredInputs): how many tiers of fabricate-from-inputs sit under the good, bounded by
+// maxDepth. A leaf/raw good (no recipe inputs) is depth 1. The recipe graph has CYCLES
+// (IRON_ORE -> EXPLOSIVES -> LIQUID_* -> MACHINERY -> IRON -> IRON_ORE), so a PATH-visited guard treats
+// a good already on the current path as a leaf, and maxDepth is the hard recursion bound — together
+// they terminate the walk and cap it at the resolver's fabricate depth. Pure over the static map (no
+// market data, no ctx), so it is a cheap, deterministic timeout input.
+func staticSupplyChainDepth(good string, maxDepth int) int {
+	return chainDepthWalk(good, maxDepth, map[string]bool{})
+}
+
+func chainDepthWalk(good string, budget int, path map[string]bool) int {
+	if budget <= 0 || path[good] {
+		return 0 // budget exhausted, or a cycle on the current path: no further fabricate tier here
+	}
+	inputs := goods.GetRequiredInputs(good)
+	if len(inputs) == 0 {
+		return 1 // raw/leaf: one tier (itself)
+	}
+	path[good] = true
+	maxChild := 0
+	for _, input := range inputs {
+		if d := chainDepthWalk(input, budget-1, path); d > maxChild {
+			maxChild = d
+		}
+	}
+	delete(path, good)
+	return 1 + maxChild
+}
+
+// persistCleanupCtx returns ctx unchanged while it is still live, or a short DETACHED context once ctx
+// is already cancelled — so a cleanup WRITE triggered by an abandon survives instead of failing
+// 'context canceled'. A timed-out supplyTask runs under a cancelled taskCtx; persisting a Fail/Defer
+// or a hull release through that ctx would fail and strand the task in a limbo that forces a blind
+// restart. On the happy path (live ctx) this is byte-identical — it returns ctx and a no-op cancel.
+// Single-writer preserved (still the daemon writing); mirrors the detached-ctx write
+// enqueueReplenishmentIfNeeded already uses for the same reason.
+func persistCleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.Background(), 15*time.Second)
 }
 
 // supplyTaskBounded runs supplyTask under a per-task deadline so a single wedged task can NEVER hold
@@ -863,7 +980,9 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Contex
 	logger := common.LoggerFromContext(ctx)
 	task := lot.task
 	ship := lot.ship
-	timeout := h.effectiveSupplyTaskTimeout(cmd)
+	// Scale the per-task deadline by the material's supply-chain depth: a shallow buy-and-haul keeps
+	// the flat base; a deep fabricate chain gets depth-proportional headroom.
+	timeout := h.scaledSupplyTaskTimeout(ctx, cmd, task)
 	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1206,7 +1325,12 @@ func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task 
 		logger.Log("WARNING", fmt.Sprintf("Could not park construction task %s for resupply: %v", task.ID(), err), nil)
 		return
 	}
-	if err := h.taskRepo.Update(ctx, task); err != nil {
+	// Persist through a detached ctx when the caller's ctx is already cancelled (the timeout-abandon
+	// path), so the parked PENDING survives instead of failing 'context canceled' — the SupplyMonitor
+	// then re-activates it rather than the drain blindly restarting a still-READY task.
+	wctx, cancel := persistCleanupCtx(ctx)
+	defer cancel()
+	if err := h.taskRepo.Update(wctx, task); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist deferred construction task %s: %v", task.ID(), err), nil)
 	}
 	logger.Log("INFO", fmt.Sprintf("Deferred unsourceable construction material %s for resupply", task.Good()), map[string]interface{}{
@@ -1270,7 +1394,11 @@ func (h *RunConstructionCoordinatorHandler) failTask(ctx context.Context, task *
 	if err := task.Fail(reason); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not fail construction task %s: %v", task.ID(), err), nil)
 	}
-	if err := h.taskRepo.Update(ctx, task); err != nil {
+	// Persist through a detached ctx when the caller's ctx is already cancelled (the timeout-abandon
+	// path), so the FAIL survives instead of failing 'context canceled' and stranding the task READY.
+	wctx, cancel := persistCleanupCtx(ctx)
+	defer cancel()
+	if err := h.taskRepo.Update(wctx, task); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist failed construction task %s: %v", task.ID(), err), nil)
 	}
 }
@@ -1278,6 +1406,13 @@ func (h *RunConstructionCoordinatorHandler) failTask(ctx context.Context, task *
 // releaseClaims returns every hull this container claimed this tick to the idle pool.
 func (h *RunConstructionCoordinatorHandler) releaseClaims(ctx context.Context, containerID string, playerID shared.PlayerID) {
 	logger := common.LoggerFromContext(ctx)
+	// Detach the release read+write from a cancelled ctx (coordinator stop) so a claimed hull is
+	// returned to the pool instead of failing 'context canceled' and stranding out of the idle set.
+	// Idempotent: the CAS guard below only releases a hull STILL assigned to this container, so a
+	// hull already released or re-claimed by another container is left untouched. Byte-identical on a
+	// live ctx (persistCleanupCtx returns it unchanged).
+	ctx, cancel := persistCleanupCtx(ctx)
+	defer cancel()
 	ships, err := h.shipRepo.FindByContainer(ctx, containerID, playerID)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not list claimed haulers for release: %v", err), nil)
