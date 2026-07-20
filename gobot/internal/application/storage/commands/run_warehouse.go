@@ -9,13 +9,25 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
+)
+
+// A warehouse hull can be momentarily mid-flight when bring-up tries to position
+// it — the API rejects a navigate/orbit on an in-transit hull — and that clears
+// once the flight lands. So positioning is retried a bounded number of times before
+// the operation is failed, rather than the hull silently anchored away from home.
+const (
+	warehousePositionMaxAttempts = 3
+	warehousePositionBackoff     = 2 * time.Second
 )
 
 // RunWarehouseCommand starts (or resumes) a warehouse storage operation on one
@@ -123,7 +135,8 @@ func (h *RunWarehouseHandler) setup(ctx context.Context, cmd *RunWarehouseComman
 	// a ContainerID yields a nil context and honestly stays 'manual'.
 	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "warehouse"))
 
-	if _, err := h.getOrCreateWarehouseOperation(ctx, cmd, logger); err != nil {
+	operation, err := h.getOrCreateWarehouseOperation(ctx, cmd, logger)
+	if err != nil {
 		return "", err
 	}
 
@@ -135,14 +148,85 @@ func (h *RunWarehouseHandler) setup(ctx context.Context, cmd *RunWarehouseComman
 		return "", fmt.Errorf("warehouse hull %s not found", cmd.ShipSymbol)
 	}
 
-	// Park the hull at the home waypoint if it is not already there. Guarded so
-	// a hull already parked (the common case, and every test case) issues no
-	// navigation. Mirrors the gas storage-ship worker.
-	if ship.CurrentLocation().Symbol != cmd.WaypointSymbol {
+	// Position the hull at its home waypoint AND put it in orbit before it is
+	// registered. A positioning failure is surfaced loudly and durably, never a
+	// silent registration at the wrong location.
+	positioned, posErr := h.positionHull(ctx, cmd, ship, logger)
+	if posErr != nil {
+		return "", h.handlePositionFailure(ctx, cmd, operation, posErr, logger)
+	}
+
+	if err := h.registerStorageShip(positioned, cmd, logger); err != nil {
+		return "", err
+	}
+	return positioned.CurrentLocation().Symbol, nil
+}
+
+// positionHull brings the warehouse hull to its home waypoint and puts it in ORBIT
+// — a warehouse anchors its stock in orbit, not docked. It retries a bounded number
+// of times to ride out a transient in-transit race; a cancellation is a shutdown,
+// never retried and surfaced immediately so the container exits gracefully and the
+// operation stays resumable (RULINGS #2). All ship-state changes go through the
+// daemon via the mediator (RULINGS #3).
+func (h *RunWarehouseHandler) positionHull(
+	ctx context.Context,
+	cmd *RunWarehouseCommand,
+	ship *navigation.Ship,
+	logger common.ContainerLogger,
+) (*navigation.Ship, error) {
+	var lastErr error
+	for attempt := 1; attempt <= warehousePositionMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		positioned, err := h.attemptPositionHull(ctx, cmd, ship, logger)
+		if err == nil {
+			return positioned, nil
+		}
+		lastErr = err
+
+		// A cancellation (graceful shutdown) is never a warehouse failure and is
+		// never retried — it neither self-heals by waiting nor should burn attempts.
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+
+		if attempt < warehousePositionMaxAttempts {
+			logger.Log("WARNING", "Warehouse hull positioning failed; retrying", map[string]interface{}{
+				"action":      "position_retry",
+				"ship_symbol": cmd.ShipSymbol,
+				"waypoint":    cmd.WaypointSymbol,
+				"attempt":     attempt,
+				"error":       err.Error(),
+			})
+			if waitErr := h.sleepOrCancel(ctx, warehousePositionBackoff*time.Duration(attempt)); waitErr != nil {
+				return nil, waitErr
+			}
+		}
+	}
+	return nil, fmt.Errorf("warehouse hull %s could not reach home waypoint %s after %d attempts: %w",
+		cmd.ShipSymbol, cmd.WaypointSymbol, warehousePositionMaxAttempts, lastErr)
+}
+
+// attemptPositionHull performs one navigate-then-orbit try. It navigates only when
+// the hull is away from home, then VERIFIES the hull actually reached the waypoint
+// before orbiting — a navigate that returns without error but leaves the hull
+// elsewhere is a failure here, never a registration at the wrong place. StartTransit
+// sets CurrentLocation to the destination, so a genuine arrival reads as the home
+// waypoint. Orbit is idempotent — a hull already in orbit issues no API call.
+func (h *RunWarehouseHandler) attemptPositionHull(
+	ctx context.Context,
+	cmd *RunWarehouseCommand,
+	ship *navigation.Ship,
+	logger common.ContainerLogger,
+) (*navigation.Ship, error) {
+	positioned := ship
+	if positioned.CurrentLocation().Symbol != cmd.WaypointSymbol {
 		logger.Log("INFO", "Warehouse hull navigating to home waypoint", map[string]interface{}{
 			"action":      "navigate_to_waypoint",
 			"ship_symbol": cmd.ShipSymbol,
-			"from":        ship.CurrentLocation().Symbol,
+			"from":        positioned.CurrentLocation().Symbol,
 			"to":          cmd.WaypointSymbol,
 		})
 		navResp, navErr := h.mediator.Send(ctx, &shipNav.NavigateRouteCommand{
@@ -151,22 +235,90 @@ func (h *RunWarehouseHandler) setup(ctx context.Context, cmd *RunWarehouseComman
 			PlayerID:    cmd.PlayerID,
 		})
 		if navErr != nil {
-			// Non-fatal: register where we are and let a later restart re-try
-			// parking. The warehouse can still buffer cargo; a mis-parked hull is
-			// a location problem, not a data-integrity one.
-			logger.Log("WARNING", "Failed to park warehouse hull; registering at current location", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"error":       navErr.Error(),
-			})
-		} else if resp, ok := navResp.(*shipNav.NavigateRouteResponse); ok {
-			ship = resp.Ship
+			return nil, navErr
+		}
+		if resp, ok := navResp.(*shipNav.NavigateRouteResponse); ok && resp.Ship != nil {
+			positioned = resp.Ship
 		}
 	}
 
-	if err := h.registerStorageShip(ship, cmd, logger); err != nil {
-		return "", err
+	// Anti-mis-anchor guard: the hull MUST be at its home waypoint before it is
+	// orbited and registered.
+	if positioned.CurrentLocation().Symbol != cmd.WaypointSymbol {
+		return nil, fmt.Errorf("warehouse hull %s is at %s, not home waypoint %s after navigation",
+			cmd.ShipSymbol, positioned.CurrentLocation().Symbol, cmd.WaypointSymbol)
 	}
-	return ship.CurrentLocation().Symbol, nil
+
+	// Orbit the hull at its waypoint — the stock anchor. Via the daemon (RULINGS #3).
+	if _, err := h.mediator.Send(ctx, &shipTypes.OrbitShipCommand{
+		Ship:     positioned,
+		PlayerID: cmd.PlayerID,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to orbit warehouse hull %s at %s: %w", cmd.ShipSymbol, cmd.WaypointSymbol, err)
+	}
+	return positioned, nil
+}
+
+// handlePositionFailure surfaces a positioning failure. A cancellation is a
+// graceful shutdown: the operation is left as-is so recovery re-adopts it at the
+// next boot (RULINGS #2), and the error is returned for a clean container exit. A
+// genuine failure is durable: the operation is marked FAILED with the reason
+// (restart-resilient via LastError, and skipped by RecoverStorageOperations'
+// running-only scan so no phantom storage ship is rebuilt), then returned so the
+// container runner's bounded restart budget + backoff terminalizes it loudly. The
+// hull is NEVER registered on this path.
+func (h *RunWarehouseHandler) handlePositionFailure(
+	ctx context.Context,
+	cmd *RunWarehouseCommand,
+	operation *storage.StorageOperation,
+	posErr error,
+	logger common.ContainerLogger,
+) error {
+	if ctx.Err() != nil || errors.Is(posErr, context.Canceled) {
+		logger.Log("INFO", "Warehouse hull positioning canceled (shutdown); operation left resumable", map[string]interface{}{
+			"action":      "position_canceled",
+			"ship_symbol": cmd.ShipSymbol,
+			"operation":   cmd.OperationID,
+		})
+		return posErr
+	}
+
+	logger.Log("ERROR", "Warehouse hull could not be positioned at its home waypoint; marking operation blocked", map[string]interface{}{
+		"action":      "warehouse_blocked",
+		"ship_symbol": cmd.ShipSymbol,
+		"waypoint":    cmd.WaypointSymbol,
+		"operation":   cmd.OperationID,
+		"error":       posErr.Error(),
+	})
+	if failErr := operation.Fail(posErr); failErr != nil {
+		logger.Log("WARNING", "Failed to mark warehouse operation blocked", map[string]interface{}{
+			"operation": cmd.OperationID,
+			"error":     failErr.Error(),
+		})
+	} else if updateErr := h.storageOpRepo.Update(ctx, operation); updateErr != nil {
+		logger.Log("WARNING", "Failed to persist blocked warehouse operation", map[string]interface{}{
+			"operation": cmd.OperationID,
+			"error":     updateErr.Error(),
+		})
+	}
+	return posErr
+}
+
+// sleepOrCancel waits d against the injected clock, returning early with the
+// context error if the container is shutting down. Instant under the test
+// MockClock; a real, ctx-interruptible sleep in production.
+func (h *RunWarehouseHandler) sleepOrCancel(ctx context.Context, d time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		h.clock.Sleep(d)
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 // getOrCreateWarehouseOperation resumes an existing warehouse operation row or
@@ -185,7 +337,17 @@ func (h *RunWarehouseHandler) getOrCreateWarehouseOperation(
 			"operation_id": cmd.OperationID,
 			"status":       existing.Status(),
 		})
-		if existing.IsPending() {
+		switch {
+		case existing.IsPending():
+			if startErr := existing.Start(); startErr == nil {
+				_ = h.storageOpRepo.Update(ctx, existing)
+			}
+		case existing.Status() == storage.OperationStatusFailed:
+			// A prior bring-up gave up and durably blocked this operation. A restart
+			// gets a fresh attempt: clear the FAILED state so a transient positioning
+			// failure recovers and ends RUNNING, while a genuine one re-fails on this
+			// pass.
+			existing.ResetForRestart()
 			if startErr := existing.Start(); startErr == nil {
 				_ = h.storageOpRepo.Update(ctx, existing)
 			}

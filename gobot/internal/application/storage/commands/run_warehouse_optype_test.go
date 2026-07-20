@@ -9,19 +9,22 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // warehouseOpCtxMediator records the operation_type carried on the ctx of the parking
 // NavigateRouteCommand the warehouse fires to move its hull to the home waypoint. That
 // hop's refuels inherit its ctx, so the ctx decides whether they attribute to the
-// warehouse operation or fall through to operation_type='manual' (sp-zc8i). Returning
-// (nil, nil) is enough: setup's navResp type-assertion is guarded, so it keeps the
-// original ship and still reaches registration.
+// warehouse operation or fall through to operation_type='manual' (sp-zc8i). It returns
+// the arrived hull (parked at the home waypoint) so setup's post-navigate positioning
+// check passes and reaches registration.
 type warehouseOpCtxMediator struct {
 	sawNav    bool
 	navOpType string
+	arrived   *navigation.Ship
 }
 
 func capturedWarehouseOpType(ctx context.Context) string {
@@ -32,9 +35,16 @@ func capturedWarehouseOpType(ctx context.Context) string {
 }
 
 func (m *warehouseOpCtxMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
-	if _, ok := request.(*shipNav.NavigateRouteCommand); ok {
+	switch c := request.(type) {
+	case *shipNav.NavigateRouteCommand:
 		m.sawNav = true
 		m.navOpType = capturedWarehouseOpType(ctx)
+		return &shipNav.NavigateRouteResponse{Ship: m.arrived}, nil
+	case *shipTypes.OrbitShipCommand:
+		if c.Ship != nil {
+			_, _ = c.Ship.EnsureInOrbit()
+		}
+		return &shipTypes.OrbitShipResponse{Status: "in_orbit"}, nil
 	}
 	return nil, nil
 }
@@ -53,7 +63,10 @@ func TestRunWarehouse_ParkingNavigate_CarriesWarehouseOperationContext(t *testin
 
 	// A hull parked AWAY from its home waypoint, so setup must navigate it home.
 	hull := newWarehouseTestHull(t, "HULL-STORE-OPTYPE", "X1-HOME-Z9", 120, nil)
-	med := &warehouseOpCtxMediator{}
+	// The navigate lands the hull at the home waypoint (docked); setup then orbits it.
+	med := &warehouseOpCtxMediator{
+		arrived: newWarehouseTestHullWithStatus(t, "HULL-STORE-OPTYPE", "X1-HOME-A1", 120, nil, navigation.NavStatusDocked),
+	}
 	handler := NewRunWarehouseHandler(
 		med, &stubWarehouseShipRepo{ship: hull}, newStubWarehouseOpRepo(), storageApp.NewInMemoryStorageCoordinator(), nil,
 	)

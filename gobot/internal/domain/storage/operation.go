@@ -250,6 +250,14 @@ func (op *StorageOperation) Fail(err error) error {
 	return op.lifecycle.Fail(err)
 }
 
+// ResetForRestart returns a FAILED (blocked) operation to a fresh PENDING state so
+// a restart can re-attempt bring-up: it clears the durable FAILED reason, and the
+// caller then re-Start()s the lifecycle. Lets a lifecycle owner un-block an
+// operation whose earlier failure may have been transient.
+func (op *StorageOperation) ResetForRestart() {
+	op.lifecycle.ResetForRestart()
+}
+
 // Query methods
 
 func (op *StorageOperation) IsRunning() bool {
