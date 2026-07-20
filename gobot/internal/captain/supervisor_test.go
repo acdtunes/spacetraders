@@ -60,15 +60,18 @@ func TestTickDefersRoutineEventsWithoutWaking(t *testing.T) {
 // to one line per cap engagement window, so three consecutive capped ticks
 // emit it once — while keeping the informative content intact.
 func TestCapReachedLogIsRateLimitedAcrossConsecutiveTicks(t *testing.T) {
-	sup, _, gw := newBridgeSupervisor(t)
+	sup, s, gw := newBridgeSupervisor(t)
 	now := time.Now()
 	for i := 0; i < 6; i++ {
 		sup.sessionStarts = append(sup.sessionStarts, now.Add(-time.Duration(i)*time.Minute))
 	}
-	// Overdue heartbeat: the gate wakes on every tick, and because the cap
-	// blocks bridgeWake, last_session never advances — so it stays overdue and
-	// keeps re-waking into the cap on every tick.
-	sup.lastSession = now.Add(-2 * time.Hour)
+	// A standing (unacked) interrupt keeps the wake gate open on every tick
+	// regardless of the cadence anchor, so the cap is hit on every tick and the
+	// cap-reached line's rate-limit is genuinely exercised. (A cap-suppressed
+	// HEARTBEAT no longer re-fires this way: sp-cu1ou advances the cadence anchor
+	// on the capped tick so an overdue heartbeat is serviced, not spammed.)
+	sup.lastSession = now
+	recordEvent(t, s, captain.EventWorkflowFailed)
 
 	out := captureOutput(t, func() {
 		for k := 0; k < 3; k++ {

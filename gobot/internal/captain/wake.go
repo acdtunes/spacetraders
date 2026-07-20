@@ -213,6 +213,31 @@ func (s *Supervisor) recordNewSession(now time.Time) {
 	s.recordWake(now)
 }
 
+// serviceCadenceAnchor advances and persists the heartbeat cadence anchor
+// (last_session) without any of recordWake's delivery-side bookkeeping: it
+// charges no session-cap slot, stamps no nudge-cooldown clock, and does NOT
+// clear the delivery-failure backoff (no wake was delivered).
+//
+// recordWake, the only other anchor writer, runs solely inside bridgeWake —
+// which the hourly-cap check returns before. Without this, a heartbeat wake the
+// cap suppresses leaves the anchor frozen in the past, so effectiveNextWake
+// stays due and the gate re-fires every poll, delivering a wake at the
+// cap-clearance rate instead of once per heartbeat interval. Servicing the
+// anchor marks the cadence satisfied for this interval so the next heartbeat is
+// a full interval out.
+//
+// SAFETY (never-suppress-a-wake): call this ONLY when the delivery channel is
+// healthy. During a delivery outage the anchor must stay frozen so the
+// never-wake ceiling (base+MaxWakeIntervalMinutes) remains a fixed deadline;
+// advancing it against a dead channel would push the guaranteed wake out
+// indefinitely. A full cap itself proves the channel is healthy — a slot is
+// charged only by a delivered firstWake — so a cap-suppressed heartbeat under a
+// healthy channel is being actively out-woken, never going dark.
+func (s *Supervisor) serviceCadenceAnchor(now time.Time) {
+	s.lastSession = now
+	s.saveState()
+}
+
 // deliveryThrottled reports whether this tick's wake attempt should be skipped
 // because a prior delivery failed and the exponential backoff window has not
 // yet elapsed (sp-sk68 D1). It never throttles when there have been zero

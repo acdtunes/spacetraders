@@ -70,6 +70,10 @@ type Supervisor struct {
 	// lastCapLog throttles the per-tick "session cap reached" line (sp-soh9).
 	// In-memory only: a restart re-logging once is harmless.
 	lastCapLog time.Time
+	// lastWakeDecisionLog throttles the "WAKE DECIDED" diagnostic (sp-cu1ou) so a
+	// standing interrupt (which keeps the gate open every poll) cannot spam it.
+	// In-memory only, same idiom/rationale as lastCapLog.
+	lastWakeDecisionLog time.Time
 	// Credit-gate satisfaction snapshot at the last delivery attempt (sp-sk68
 	// D4). A CreditsAbove/Below bound newly satisfied since the last attempt is
 	// a genuine edge that bypasses the delivery backoff; a still-satisfied
@@ -299,6 +303,18 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if !decision.ShouldWake {
 		return false, nil
 	}
+	// Wake-decision diagnostics (sp-cu1ou): a grep-able line recording why a wake
+	// fired plus the cadence inputs, so a runaway cadence is diagnosable from the
+	// log alone instead of needing a live captain to reconstruct it. Throttled
+	// (a standing interrupt holds the gate open every poll) so it stays low-noise.
+	if now.Sub(s.lastWakeDecisionLog) >= capLogInterval {
+		fmt.Printf("watchkeeper: WAKE DECIDED (%s) now=%s effectiveNextWake=%s last_session=%s declared_at=%s\n",
+			decision.Reason, now.Format(time.RFC3339),
+			effectiveNextWake(wakeGateInput{LastSession: s.lastSession, HeartbeatMinutes: s.cfg.HeartbeatMinutes,
+				MaxWakeIntervalMinutes: s.cfg.MaxWakeIntervalMinutes, Policy: policy}).Format(time.RFC3339),
+			s.lastSession.Format(time.RFC3339), policy.DeclaredAt.Format(time.RFC3339))
+		s.lastWakeDecisionLog = now
+	}
 	// Throttle repeated FAILED deliveries (sp-sk68 D1): once a wake delivery
 	// has failed, back off exponentially instead of hammering the dead channel
 	// every tick. A brand-new interrupt-class event bypasses the backoff so
@@ -311,6 +327,16 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 			fmt.Printf("watchkeeper: session cap reached (%d/h), %d events queued\n",
 				s.cfg.MaxSessionsPerHour, len(events))
 			s.lastCapLog = now
+		}
+		// A cap-suppressed wake must still advance the cadence anchor, or an
+		// overdue heartbeat stays due and re-fires every poll — waking the captain
+		// at the cap-clearance rate instead of the heartbeat interval (sp-cu1ou).
+		// Gated to a healthy delivery channel (deliveryFailures==0): during a
+		// delivery outage the anchor must stay frozen so the never-wake ceiling
+		// still fires. deliveryThrottled above already returned for an outage still
+		// inside its backoff; this guard also covers the post-backoff retry tick.
+		if s.deliveryFailures == 0 {
+			s.serviceCadenceAnchor(now)
 		}
 		return false, nil
 	}
